@@ -18,7 +18,7 @@ activate() and the compat canary all track it.
 This is a COLLECTIVE slot (kind="collective"): the kernel is handed the process group,
 so it is verified DISTRIBUTED (cacheon.verify_collective, fp32 cross-rank sum + trusted
 add/norm via the slot's collective_finish) and the end-to-end gate is mandatory. See
-docs/SLOT_CONTRACT.md.
+docs/architecture/slot-contract.md.
 """
 
 from __future__ import annotations

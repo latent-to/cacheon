@@ -5,10 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 import cacheon.eval.qualification_intake as intake
-from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.candidate_failure_product import reopen_candidate_failure
+from cacheon.eval.evidence_store import EvidenceArtifactRef, prepare_evidence_root
 from cacheon.eval.oci_backend import OCIBackendError
-from cacheon.eval.marginal_runtime import CandidateArmWorkerError
 from cacheon.eval.oci_outer_session import (
+    OuterSessionCandidateError,
     OuterSessionProcessError,
     OuterSessionWorkerError,
 )
@@ -57,7 +58,17 @@ def _fake_plan(monkeypatch, *, count: int = 2):
     source.digest = _d("source")
     plan = FakePlan()
     plan.selection_secret = b"s" * 32
-    plan.prepared = SimpleNamespace(source=source)
+    prepared_candidates = tuple(
+        SimpleNamespace(
+            arm=SimpleNamespace(
+                digest=_d(f"arm-{index}"),
+                selected_delta_digest=_d(f"delta-{index}"),
+            ),
+            launch=SimpleNamespace(digest=_d(f"launch-{index}")),
+        )
+        for index in range(count)
+    )
+    plan.prepared = SimpleNamespace(source=source, candidates=prepared_candidates)
     plan.commitment = SimpleNamespace(digest=_d("commitment"))
     plan.candidates = tuple(
         SimpleNamespace(selected_delta_digest=_d(f"delta-{index}"))
@@ -545,21 +556,19 @@ def test_cohort_failure_is_no_decision_with_deterministic_bisection(
     )
 
 
-def test_candidate_worker_error_is_contained_by_deterministic_bisection(
-    monkeypatch,
+def test_direct_singleton_candidate_error_publishes_terminal_failure(
+    tmp_path, monkeypatch
 ) -> None:
-    plan, manifest = _fake_plan(monkeypatch, count=3)
-    failure = CandidateArmWorkerError(
-        candidate_index=1,
-        selected_delta_digest=manifest.reservations[1].selected_delta_digest,
-        arm_digest=_d("candidate-arm"),
-        launch_digest=_d("candidate-launch"),
-        worker_error=OuterSessionWorkerError("candidate engine raised"),
+    plan, manifest = _fake_plan(monkeypatch, count=1)
+    plan.evidence_root = prepare_evidence_root(tmp_path / "evidence")
+    worker_error = OuterSessionCandidateError(
+        "batch: CandidateExecutionFailure: rank 0 failed",
+        candidate_failure="rank 0 RuntimeError at kernels/moe.py:17: boom",
     )
     monkeypatch.setattr(
         intake,
         "run_causal_qualification",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(worker_error),
     )
 
     result = intake.run_qualification_intake(
@@ -570,21 +579,12 @@ def test_candidate_worker_error_is_contained_by_deterministic_bisection(
         deadline=100.0,
     )
 
-    assert all(
-        row.decision is QualificationDecision.NO_DECISION
-        and row.retryable
-        and row.reason == "candidate_worker"
-        and row.report_digest is None
-        and row.failure_digest is not None
-        for row in result.outcomes
-    )
-    assert result.attempt_ref is None
-    assert result.retry_plan is not None
-    assert result.retry_plan.strategy == "bisect"
-    assert result.retry_plan.reservation_groups == (
-        (manifest.reservations[0].reservation_digest,),
-        tuple(row.reservation_digest for row in manifest.reservations[1:]),
-    )
+    assert result.retry_plan is None
+    assert result.outcomes[0].decision is QualificationDecision.FAIL
+    assert result.outcomes[0].reason == "candidate_exception"
+    assert result.attempt_ref is not None
+    product = reopen_candidate_failure(plan.evidence_root, result.attempt_ref)
+    assert product["failure"].endswith("kernels/moe.py:17: boom")
 
 
 @pytest.mark.parametrize("source", ("baseline", "reference"))
@@ -603,35 +603,6 @@ def test_shared_worker_error_reaches_the_authenticated_adapter_unchanged(
     with pytest.raises(
         OuterSessionWorkerError,
         match=rf"{source} worker raised",
-    ):
-        intake.run_qualification_intake(
-            _factory(plan, manifest),
-            executor=object(),
-            entropy_provider=lambda *_args: None,
-            hidden_judge=lambda **_kwargs: None,
-            deadline=100.0,
-        )
-
-
-def test_candidate_worker_identity_mismatch_is_a_controller_failure(
-    monkeypatch,
-) -> None:
-    plan, manifest = _fake_plan(monkeypatch, count=2)
-    failure = CandidateArmWorkerError(
-        candidate_index=1,
-        selected_delta_digest=manifest.reservations[0].selected_delta_digest,
-        arm_digest=_d("candidate-arm"),
-        launch_digest=_d("candidate-launch"),
-        worker_error=OuterSessionWorkerError("candidate engine raised"),
-    )
-    monkeypatch.setattr(
-        intake,
-        "run_causal_qualification",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
-    )
-
-    with pytest.raises(
-        intake.QualificationIntakeError, match="candidate worker identity"
     ):
         intake.run_qualification_intake(
             _factory(plan, manifest),

@@ -143,13 +143,11 @@ def test_registry_routes_two_disjoint_shape_variants_and_gaps_to_stock():
     registry.enable()
 
     base = CallDescriptor(dtype="bfloat16", head_dim=64)
-    first = registry.select(SLOT, base, write_fired_receipt=False)
+    first = registry.select(SLOT, base)
     second = registry.select(
-        SLOT, base.with_updates(head_dim=128), write_fired_receipt=False
-    )
+        SLOT, base.with_updates(head_dim=128),     )
     gap = registry.select(
-        SLOT, base.with_updates(head_dim=96), write_fired_receipt=False
-    )
+        SLOT, base.with_updates(head_dim=96),     )
 
     assert first.impl is registry.variants(SLOT)[0]
     assert first.impl.variant == "h64"
@@ -164,8 +162,8 @@ def test_manifest_architecture_claim_participates_in_eligibility():
     eligibility = eligibility_from_metadata({}, (), ("sm103",))
 
     assert eligibility.architectures == frozenset({"sm103"})
-    assert eligibility.accepts(dtype_name="bfloat16", last_dim=64, arch="sm103")
-    assert not eligibility.accepts(dtype_name="bfloat16", last_dim=64, arch="sm90")
+    assert eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch="sm103")).accepted
+    assert not eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch="sm90")).accepted
 
 
 def test_registry_rejects_duplicate_id_and_provable_overlap():
@@ -200,58 +198,15 @@ def test_selection_fail_closes_runtime_ambiguity_for_future_private_predicate():
     decision = registry.select(
         SLOT,
         CallDescriptor(private_shape="same"),
-        write_fired_receipt=False,
     )
 
     assert decision.outcome is SelectionOutcome.AMBIGUOUS
     assert decision.impl is None and decision.use_baseline
 
 
-def test_legacy_lookup_and_peek_stay_compatible_and_fail_closed_on_ambiguity():
-    registry = KernelRegistry()
-    singleton = KernelImpl(
-        slot=SLOT,
-        bundle_id="candidate",
-        entry=lambda *_args: None,
-        eligibility=Eligibility(dtypes=frozenset({"bfloat16"})),
-    )
-    registry.register(singleton)
-    registry.enable()
-    kwargs = dict(dtype_name="bfloat16", last_dim=64, arch=None)
-    assert registry.peek(SLOT, **kwargs) is singleton
-    assert registry.lookup(SLOT, **kwargs) is singleton
-
-    split = KernelRegistry()
-    split.register(
-        KernelImpl(
-            slot=SLOT,
-            bundle_id="candidate",
-            variant="small",
-            entry=lambda *_args: None,
-            eligibility=Eligibility(max_num_tokens=31),
-        )
-    )
-    split.register(
-        KernelImpl(
-            slot=SLOT,
-            bundle_id="candidate",
-            variant="large",
-            entry=lambda *_args: None,
-            eligibility=Eligibility(min_num_tokens=32),
-        )
-    )
-    split.enable()
-    assert split.peek(SLOT, num_tokens=8, **kwargs).variant == "small"
-    assert split.peek(SLOT, num_tokens=64, **kwargs).variant == "large"
-    # Historical lookup treats unknown num_tokens as unknown, so both accept it;
-    # row order must not become a priority rule.
-    assert split.peek(SLOT, num_tokens=None, **kwargs) is None
-
-
-def test_fired_receipt_is_semantic_slot_level_across_variants(monkeypatch):
-    from cacheon import registry as registry_module
-
-    registry_module._FIRED_SLOTS.clear()
+def test_selection_across_variants_writes_no_receipt(monkeypatch):
+    # Resolving an impl is routing, not execution. Whichever variant wins, nothing
+    # is claimed until a dispatcher actually invokes the entry.
     writes: list[tuple[str, dict, str | None]] = []
     monkeypatch.setattr(
         receipts,
@@ -266,8 +221,7 @@ def test_fired_receipt_is_semantic_slot_level_across_variants(monkeypatch):
     registry.select(SLOT, CallDescriptor(dtype="bfloat16", head_dim=64))
     registry.select(SLOT, CallDescriptor(dtype="bfloat16", head_dim=128))
 
-    assert writes == [("fired", {"slot": SLOT}, SLOT)]
-    registry_module._FIRED_SLOTS.clear()
+    assert writes == []
 
 
 def test_seam_loader_registers_every_variant(tmp_path):

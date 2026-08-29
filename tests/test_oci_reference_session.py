@@ -50,6 +50,7 @@ from cacheon.eval.reference_protocol import (
 )
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest, ProposalContributionRef
+from tests.support.pipes import PipeClient as _PipeClient, PipeManager as _PipeManager
 
 
 def _digest(label: str) -> str:
@@ -358,41 +359,6 @@ def test_one_session_returns_raw_evidence_for_ordered_multi_candidate_cohort() -
         replace(result.exchanges[0], evidence=changed_evidence)
     for forbidden in ("pass", "score", "crown", "verdict", "quality"):
         assert all(forbidden not in field.name for field in fields(type(result)))
-
-
-class _PipeClient:
-    def __init__(self) -> None:
-        request_read, request_write = os.pipe()
-        response_read, response_write = os.pipe()
-        self.stdin = os.fdopen(request_write, "wb", buffering=0)
-        self.stdout = os.fdopen(response_read, "rb", buffering=0)
-        self.request_read = request_read
-        self.response_write = response_write
-        self.closed = self.finalized = self.aborted = False
-
-    def finalize(self) -> None:
-        self.finalized = self.closed = True
-
-    def abort(self) -> None:
-        self.aborted = self.closed = True
-
-    def close(self) -> None:
-        for stream in (self.stdin, self.stdout):
-            if not stream.closed:
-                stream.close()
-        for fd in (self.request_read, self.response_write):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-
-
-class _PipeManager:
-    def __init__(self, client: _PipeClient) -> None:
-        self.client = client
-
-    def spawn_attached(self, _lease, _argv):
-        return self.client
 
 
 def _attached() -> tuple[AttachedReferenceTransport, _PipeClient]:

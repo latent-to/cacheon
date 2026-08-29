@@ -73,7 +73,7 @@ def _live_dispatch_graph_worker(rank, world_size, store_path):
                 bundle_id="live-cuda-test",
                 entry=entry,
                 eligibility=Eligibility(
-                    dtypes=frozenset({"float32"}), graph_safe=True
+                    dtypes=frozenset({"float32"})
                 ),
             )
         )
@@ -120,7 +120,7 @@ def _verify(source=ALLREDUCE, *, slot="collective.all_reduce", entry="all_reduce
             world_size=2, timeout_s=120.0, shapes=SHAPES):
     return verify_collective(
         get_slot(slot), str(source), entry, world_size=world_size,
-        backend="nccl", device="cuda", shapes=shapes, graph_safe=True,
+        backend="nccl", device="cuda", shapes=shapes,
         graph_replays=3, timeout_s=timeout_s,
     )
 

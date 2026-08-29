@@ -27,16 +27,17 @@ Graph safety is not synonymous with “uses CUDA.” It means the implementation
 to compute the slot contract when Python launch logic is frozen and only device work is
 replayed.
 
-## Declaration is not proof
+## There is nothing to declare
 
-This metadata:
+A bundle does not state whether it is graph-safe, and there is no metadata key
+for it. Whether a slot serves from inside the captured region is a property of
+that slot's live seam, owned by the validator. Every slot whose seam is captured
+routes the candidate under capture exactly as it routes it eagerly, and a kernel
+that cannot be captured fails there loudly instead of being quietly skipped while
+the captured graph keeps serving stock.
 
-```json
-{"graph_safe": true}
-```
-
-only declares that the variant may be routed in `cuda_graph` mode. It does not
-prove capture safety, satisfy qualification, or override a failed observation.
+The only slot currently outside the captured region is the MiniMax prefill index
+score, because SGLang runs prefill eager.
 
 The validator creates a graph requirement bound to all of the following:
 
@@ -74,8 +75,8 @@ silently makes the candidate N/A cannot create a crown.
 
 ## Local graph diagnostics
 
-On CUDA, `verify` graph-tests op slots by default. For block and collective
-variants, graph testing follows the effective `graph_safe` declaration:
+On CUDA, `verify` graph-tests every slot whose live seam is captured, which is
+every slot except MSA prefill:
 
 ```bash
 python -m cacheon.cli verify my_bundle \
@@ -147,11 +148,11 @@ capability domains. Do not branch on a host read of a runtime tensor. The graph
 requirement covers every selected variant and all of its applicable descriptor
 profiles.
 
-The MSA prefill call descriptor includes `graph_mode = "eager"` for its current
-live binding, but that is not permission to invent an exemption. Crownability is
-decided by the validator's published target/graph requirement, and the current
-graph veto requires complete positive evidence for selected members. Confirm the
-arena requirement before investing in an eager-only specialization.
+The MSA prefill call descriptor includes `graph_mode = "eager"` because its live
+seam genuinely runs eager. That is the validator's determination about one seam,
+not an exemption a bundle can claim for another slot. Crownability is decided by
+the published target/graph requirement, and the graph veto requires complete
+positive evidence for selected members.
 
 ## Do not benchmark a different regime
 
@@ -161,5 +162,5 @@ speedup. A graph-on candidate must be compared with the graph-on incumbent under
 evaluation stack.
 
 When graph verification fails, use the stage-specific guidance in
-[Diagnostics](diagnostics.md). Do not work around it by narrowing metadata until
-the candidate never executes.
+[Diagnostics](diagnostics.md). Narrowing metadata until the candidate never
+executes is not a workaround: a candidate that does not run cannot be crowned.

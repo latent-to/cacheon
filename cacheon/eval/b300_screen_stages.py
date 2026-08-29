@@ -32,6 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Protocol
 
 from cacheon.arena_service import (
+    MAX_SCREEN_REASON_CHARS,
     ArenaCandidateBinding,
     ArenaServiceManifest,
     ScreenGrade,
@@ -76,7 +77,7 @@ from cacheon.eval.oci_backend import (
     OCIEngineExecutor,
     TrustedArenaModelMountReceipt,
 )
-from cacheon.eval.oci_outer_session import SessionExecutionPlan
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError, SessionExecutionPlan
 from cacheon.eval.oci_prebuild import (
     OCIPrebuildError,
     OCIPrebuildResult,
@@ -174,7 +175,24 @@ def _stage_result(
             "stage": stage,
         },
     )
-    return ScreenStageResult(stage, grade, evidence, _elapsed_ms(started))
+    # The receipt keeps the bounded exact diagnostic in clear next to the digest
+    # that seals it. Candidate-controlled text is evidence here, not authority.
+    exception_type = (facts or {}).get("exception_type")
+    exception_detail = (facts or {}).get("exception_detail")
+    stated = (
+        f"{reason} ({exception_type}: {exception_detail})"
+        if isinstance(exception_type, str)
+        and exception_type
+        and isinstance(exception_detail, str)
+        and exception_detail
+        else f"{reason} ({exception_type})"
+        if isinstance(exception_type, str) and exception_type
+        else reason
+    )
+    stated = stated.encode("unicode_escape", "backslashreplace").decode("ascii")
+    if len(stated) > MAX_SCREEN_REASON_CHARS:
+        stated = stated[: MAX_SCREEN_REASON_CHARS - 3] + "..."
+    return ScreenStageResult(stage, grade, evidence, _elapsed_ms(started), stated)
 
 
 def _same_stat(left: os.stat_result, right: os.stat_result) -> bool:
@@ -1009,6 +1027,24 @@ class B300BuildABIGraphScreenAdapter:
             facts=facts,
         )
 
+    def _candidate_failure(
+        self, manifest, candidate, stage: str, started: float,
+        exc: OuterSessionCandidateError,
+    ) -> ScreenStageResult:
+        self._active = None
+        return _stage_result(
+            manifest=manifest, candidate=candidate, stage=stage,
+            grade=ScreenGrade.FAIL,
+            reason=(
+                "candidate_never_executed"
+                if exc.candidate_failure_type == "CandidateNeverExecutedError"
+                else "candidate_exception"
+            ),
+            authority_digest=self.identity_digest, started=started,
+            facts={"exception_detail": exc.candidate_failure,
+                   "exception_type": exc.candidate_failure_type},
+        )
+
     def _validate_plan(
         self,
         manifest: ArenaServiceManifest,
@@ -1232,6 +1268,8 @@ class B300BuildABIGraphScreenAdapter:
                 candidate,
                 launch=carrier.plan.eager_launch,
             )
+        except OuterSessionCandidateError as exc:
+            return self._candidate_failure(manifest, candidate, "abi", started, exc)
         except Exception as exc:
             self._active = None
             return self._no_decision(
@@ -1439,6 +1477,8 @@ class B300BuildABIGraphScreenAdapter:
                 candidate,
                 launch=carrier.plan.graph_launch,
             )
+        except OuterSessionCandidateError as exc:
+            return self._candidate_failure(manifest, candidate, "graph", started, exc)
         except Exception as exc:
             return self._no_decision(
                 manifest,

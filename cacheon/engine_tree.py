@@ -249,11 +249,6 @@ def _canonical_metadata(raw: bytes, *, relative: str) -> tuple[dict[str, object]
             raise EngineTreeError(f"metadata {relative!r} field {key!r} is invalid: {exc}") from exc
         if canonical_values:
             projected[key] = canonical_values
-    graph_safe = data.get("graph_safe", False)
-    if not isinstance(graph_safe, bool):
-        raise EngineTreeError(f"metadata {relative!r} field 'graph_safe' must be boolean")
-    if graph_safe:
-        projected["graph_safe"] = True
     for key in ("max_last_dim", "max_num_tokens", "min_num_tokens"):
         value = data.get(key)
         if value is None:

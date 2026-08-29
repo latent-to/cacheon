@@ -13,6 +13,7 @@ import cacheon.eval.oci_outer_session as outer
 from cacheon.eval.oci_outer_session import (
     AttachedSessionTransport,
     OpenedOuterSession,
+    OuterSessionCandidateError,
     OuterSessionInfrastructureError,
     OuterSessionProcessError,
     OuterSessionProtocolError,
@@ -48,6 +49,12 @@ from cacheon.eval.oci_session_protocol import (
     validate_init,
     validate_preflight_accept,
 )
+from tests.support.pipes import (
+    DiagnosticPipeClient as _DiagnosticPipeClient,
+    PipeClient as _PipeClient,
+    PipeManager as _PipeManager,
+)
+from tests.support.preflight import preflight_facts
 
 
 def _digest(label: str) -> str:
@@ -75,23 +82,10 @@ def _config() -> EngineSessionConfig:
 
 
 def _facts(config: EngineSessionConfig | None = None) -> RuntimePreflightFacts:
-    cfg = config or _config()
-    return RuntimePreflightFacts(
+    return preflight_facts(
         launch_digest=LAUNCH,
-        runtime_digest=_digest("runtime"),
-        stack_digest=_digest("stack"),
-        tree_digest=_digest("tree"),
-        engine_config_digest=cfg.digest,
-        worker_distribution_digest=_digest("worker"),
-        model_revision_digest=_digest("revision"),
-        model_manifest_digest=_digest("manifest"),
-        model_content_digest=_digest("content"),
-        sglang_version="0.0.0.dev1+g56e290315",
+        engine_config_digest=(config or _config()).digest,
         gpu_architectures=("sm120",) * 8,
-        topology_digest=_digest("topology"),
-        loopback_only=True,
-        read_only_inputs=True,
-        private_writable_cache=True,
     )
 
 
@@ -570,56 +564,6 @@ def test_duplicate_internal_binding_is_infrastructure_failure(
     assert transport.aborted
 
 
-class _PipeClient:
-    def __init__(self) -> None:
-        request_read, request_write = os.pipe()
-        response_read, response_write = os.pipe()
-        self.stdin = os.fdopen(request_write, "wb", buffering=0)
-        self.stdout = os.fdopen(response_read, "rb", buffering=0)
-        self.request_read = request_read
-        self.response_write = response_write
-        self.closed = False
-        self.finalized = False
-        self.aborted = False
-
-    def finalize(self) -> None:
-        self.finalized = True
-        self.closed = True
-
-    def abort(self) -> None:
-        self.aborted = True
-        self.closed = True
-
-    def close_fds(self) -> None:
-        for stream in (self.stdin, self.stdout):
-            if not stream.closed:
-                stream.close()
-        for fd in (self.request_read, self.response_write):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-
-
-class _DiagnosticPipeClient(_PipeClient):
-    def __init__(self, diagnostic: OCIAttachedDiagnostic) -> None:
-        super().__init__()
-        self._diagnostic = diagnostic
-
-    def stderr_diagnostic(self) -> OCIAttachedDiagnostic:
-        return self._diagnostic
-
-
-class _PipeManager:
-    def __init__(self, client: _PipeClient) -> None:
-        self.client = client
-        self.calls = 0
-
-    def spawn_attached(self, _lease, _argv):
-        self.calls += 1
-        return self.client
-
-
 def _attached(
     diagnostic: OCIAttachedDiagnostic | None = None,
 ) -> tuple[AttachedSessionTransport, _PipeClient]:
@@ -671,14 +615,14 @@ def test_attached_transport_is_nonblocking_and_manager_owns_both_teardown_paths(
         transport.finalize()
         assert client.finalized and not client.aborted
     finally:
-        client.close_fds()
+        client.close()
 
     transport, client = _attached()
     try:
         transport.abort()
         assert client.aborted and not client.finalized
     finally:
-        client.close_fds()
+        client.close()
 
 
 def test_attached_transport_rejects_partial_wrong_magic_oversized_and_timeout() -> None:
@@ -704,7 +648,7 @@ def test_attached_transport_rejects_partial_wrong_magic_oversized_and_timeout() 
                 )
         finally:
             transport.abort()
-            client.close_fds()
+            client.close()
 
     transport, client = _attached()
     try:
@@ -714,7 +658,7 @@ def test_attached_transport_rejects_partial_wrong_magic_oversized_and_timeout() 
             )
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
 
 def test_process_error_preserves_only_a_bounded_terminal_safe_stderr_tail() -> None:
@@ -743,7 +687,7 @@ def test_process_error_preserves_only_a_bounded_terminal_safe_stderr_tail() -> N
         assert "complete=true" in rendered
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
 
 def test_worker_error_attaches_private_artifact_receipt_path_and_digest(
@@ -799,7 +743,7 @@ def test_worker_error_attaches_private_artifact_receipt_path_and_digest(
         assert receipt.receipt_sha256 in rendered
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
 
 def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
@@ -812,7 +756,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
             transport.read_evidence(current, deadline=time.monotonic() + 1)
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
     transport, client = _attached()
     try:
@@ -828,7 +772,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
             transport.read_evidence(current, deadline=time.monotonic() + 1)
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
     transport, client = _attached()
     try:
@@ -838,4 +782,48 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
         assert transport.has_pending_output()
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
+
+
+def test_candidate_failure_type_survives_resident_control_frame() -> None:
+    class CandidateExecutionFailure(RuntimeError):
+        pass
+
+    transport, client = _attached()
+    try:
+        error = error_message(
+            session_id="1" * 32,
+            launch_digest=LAUNCH,
+            stage="resident",
+            error=CandidateExecutionFailure(
+                "rank 0 moe.fused_experts during prepare at kernels/moe.py:10: "
+                "CUDA out of memory. Tried to allocate 9.07 GiB"
+            ),
+        )
+        os.write(client.response_write, frame_message(error, max_bytes=MAX_CONTROL_BYTES))
+        with pytest.raises(OuterSessionCandidateError) as raised:
+            outer._control_or_error(
+                transport,
+                session_id="1" * 32,
+                launch_digest=LAUNCH,
+                deadline=time.monotonic() + 1,
+            )
+        assert "kernels/moe.py:10" in raised.value.candidate_failure
+        assert "9.07 GiB" in raised.value.candidate_failure
+        assert raised.value.candidate_failure_type == "CandidateExecutionFailure"
+    finally:
+        transport.abort()
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "error_type", ("CandidateEngineFailure", "CandidateNeverExecutedError")
+)
+def test_all_typed_candidate_failures_survive_worker_boundary(error_type) -> None:
+    error = outer._worker_error(
+        ("batch", error_type, "rank 2 kernels/fail.py:17 RuntimeError: boom"),
+        diagnostic_provider=None,
+    )
+    assert type(error) is OuterSessionCandidateError
+    assert error.candidate_failure_type == error_type
+    assert "kernels/fail.py:17" in error.candidate_failure

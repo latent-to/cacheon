@@ -9,7 +9,9 @@ Every stock read doubles as (a) the closing bracket of the previous candidate,
 (b) the opening bracket of the next, and (c) a contamination canary — the
 engine provably dispatches stock (the swap-out ack registered zero slots), so a
 stock read that leaves the lifetime's stock band flags in-process tampering or
-state rot and stops the lifetime for a recycle.
+state rot and stops the lifetime for a recycle.  The very first batch after a
+cold engine load is discarded before that band opens: it is CUDA/runtime
+warmup, not a stock measurement (mainnet 2026-08-25: ~5.3 tok/s then ~13.9).
 
 Verdicts reuse :func:`cacheon.eval.scoring.score_speedup` (noise-derived bar,
 NO-DECISION on disagreeing brackets).  Borderline candidates escalate to the
@@ -289,6 +291,12 @@ class ResidentScreenLoop:
         session = self._session
         prompt_plan = self._prompts
         if self._baseline_prev is None:
+            # Pay the cold first-batch once, then take the real baseline.  The
+            # discarded read must not enter `_stock`: otherwise
+            # ``fmean(_stock[:-1])`` on the first bracket is the warmup number
+            # and every honest closing/recovery read fails the 1.2% canary
+            # (mainnet probe 2026-08-26: 5.32 then 13.87x3).
+            session.execute_batch(prompt_plan, canary=True)
             opening = session.execute_batch(prompt_plan, canary=True)
             self._baseline_prev = _throughput(opening)
             self._stock.append(self._baseline_prev)

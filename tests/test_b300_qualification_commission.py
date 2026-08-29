@@ -32,31 +32,17 @@ from cacheon.eval.b300_sealed_qualification_commission import (
     QUALIFICATION_DEADLINE_MAXIMUM_SECONDS,
 )
 from cacheon.eval.calibration import CalibrationEvidenceSet, derive_calibration_manifest
-from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.target_catalog import default_target_catalog
+from tests.support.b300 import (
+    StubHiddenJudge as _Judge,
+    gpu as _gpu,
+    qualification_capabilities as _capabilities,
+)
 
 
 def _h(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
-
-
-class _Judge:
-    def __init__(self) -> None:
-        self.binding = HiddenJudgeBinding(
-            _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
-        )
-
-    def __call__(self, **_kwargs):
-        raise AssertionError("capability checks must not execute the hidden judge")
-
-
-class _Resolver:
-    def resolve_proposal(self, *_args, **_kwargs):
-        raise AssertionError("capability checks must not resolve sources")
-
-    def resolve_integrated(self, *_args, **_kwargs):
-        raise AssertionError("capability checks must not resolve sources")
 
 
 class _DeferredJudge:
@@ -70,22 +56,6 @@ class _DeferredJudge:
         result = _Judge()
         result.binding = self.binding
         return result
-
-
-def _capabilities(**overrides: object) -> commission.B300QualificationCapabilities:
-    values: dict[str, object] = {
-        "secret_loader": lambda _reference: b"s" * 32,
-        "entropy_provider": lambda *_args: None,
-        "hidden_judge": _Judge(),
-        "source_resolver": _Resolver(),
-        "source_resolver_digest": _h("source-resolver"),
-        "graph_facts_builder": lambda *_args: None,
-        "graph_facts_builder_digest": _h("graph-facts"),
-        "resident_count_quality_builder": lambda *_args: None,
-        "resident_count_quality_builder_digest": _h("resident-count-builder"),
-    }
-    values.update(overrides)
-    return commission.B300QualificationCapabilities(**values)
 
 
 def test_capabilities_seal_exact_callables_and_identities() -> None:
@@ -102,6 +72,10 @@ def test_capabilities_seal_exact_callables_and_identities() -> None:
         _capabilities(graph_facts_builder_digest="not-a-digest")
     with pytest.raises(commission.B300QualificationCommissionError):
         _capabilities(source_resolver_digest=_h("upper").upper())
+    with pytest.raises(commission.B300QualificationCommissionError):
+        _capabilities(incumbent_entries=[("moe.fused_experts_reduce", object())])
+    with pytest.raises(commission.B300QualificationCommissionError):
+        _capabilities(incumbent_entries={"moe.fused_experts_reduce": object()})
 
 
 def test_deferred_hidden_judge_binds_only_the_exact_composed_plan() -> None:
@@ -173,10 +147,19 @@ def test_pristine_reference_authority_removes_seam_selection(
         ),
     )
 
+    # Genesis: the declared incumbent is the empty stock stack, so the
+    # pristine tree/native identities coincide with the incumbent's.
     pristine_launch, pristine_plan = commission._pristine_reference_authority(
         incumbent_launch,
         incumbent_plan,
         case.preflight,
+        pristine_tree=SimpleNamespace(
+            stack_digest=incumbent_launch.stack_digest,
+            tree_digest=incumbent_launch.tree_digest,
+        ),
+        pristine_native=SimpleNamespace(
+            digest=incumbent_launch.native_build_spec_digest
+        ),
     )
 
     assert incumbent_plan.engine_config.seam_bindings == ("collective",)
@@ -187,6 +170,23 @@ def test_pristine_reference_authority_removes_seam_selection(
     assert pristine_plan.expected_preflight.engine_config_digest == (
         pristine_plan.engine_config.digest
     )
+
+    # Post-crown: pristine T stays anchored to the empty stock tree even when
+    # the incumbent baseline carries crowned contributions.
+    divergent, _ = commission._pristine_reference_authority(
+        incumbent_launch,
+        incumbent_plan,
+        case.preflight,
+        pristine_tree=SimpleNamespace(
+            stack_digest=_h("stock-stack"), tree_digest=_h("stock-tree")
+        ),
+        pristine_native=SimpleNamespace(digest=_h("stock-native")),
+    )
+    assert (
+        divergent.stack_digest,
+        divergent.tree_digest,
+        divergent.native_build_spec_digest,
+    ) == (_h("stock-stack"), _h("stock-tree"), _h("stock-native"))
 
 
 def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> None:
@@ -209,24 +209,6 @@ def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> N
         match="full catalog",
     ):
         commission._require_complete_factory_profiles(profiles[:-1])
-
-
-def _gpu(index: int) -> GPUConfiguration:
-    return GPUConfiguration(
-        physical_id=index,
-        uuid=f"GPU-00000000-{index:04x}-0000-0000-{index:012x}",
-        pci_bus_id=f"00000000:{index + 1:02x}:00.0",
-        name="NVIDIA B300 SXM6 AC",
-        memory_total_mib=288_000,
-        driver_version="600.10.01",
-        power_limit_mw=1_000_000,
-        compute_mode="Default",
-        persistence_mode="Enabled",
-        application_graphics_clock_mhz=None,
-        application_memory_clock_mhz=None,
-        max_graphics_clock_mhz=2_500,
-        max_memory_clock_mhz=5_000,
-    )
 
 
 def test_lane_policies_reopen_exact_canonical_pair() -> None:
@@ -492,3 +474,131 @@ def test_qualification_swap_root_is_runtime_traversable(tmp_path: Path) -> None:
     root.chmod(0o700)
     assert commission._swap_intake_root(root) == root
     assert root.stat().st_mode & 0o777 == 0o711
+
+
+def test_commissioned_authority_materializes_the_declared_incumbent(
+    tmp_path: Path,
+) -> None:
+    # d00e64fa regression: a real (non-empty) incumbent always materializes
+    # manifest.toml, which the genesis-only reject condition treated as
+    # "differs from the commissioned incumbent stack".
+    import tests.test_engine_tree as engine_tree_fixtures
+    from cacheon.eval import b300_screen_deployment as screen_deployment
+
+    source = engine_tree_fixtures._copy(tmp_path)
+    catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
+    snapshot = catalog.snapshot()
+    inputs = SimpleNamespace(
+        root=tmp_path / "deployment",
+        runtime=SimpleNamespace(
+            runtime_digest=_h("runtime"), base_engine_digest=_h("base")
+        ),
+    )
+    manifest = SimpleNamespace(digest=_h("arena"))
+
+    members, _, stock, stock_tree = screen_deployment._commissioned_stock_authority(
+        inputs,
+        manifest,
+        catalog,
+        snapshot,
+        error=commission.B300QualificationCommissionError,
+        label="pristine reference",
+    )
+    assert members
+    assert stock.entries == {}
+    assert stock_tree.runtime_manifest is None
+
+    _, _, incumbent, incumbent_tree = screen_deployment._commissioned_stock_authority(
+        inputs,
+        manifest,
+        catalog,
+        snapshot,
+        error=commission.B300QualificationCommissionError,
+        label="qualification",
+        entries={ref.target_id: ref},
+        resolver={("proposal", ref.artifact_digest): source},
+    )
+    assert incumbent.entries == {ref.target_id: ref}
+    assert incumbent_tree.runtime_manifest == "manifest.toml"
+    assert incumbent_tree.stack_digest == incumbent.digest
+    assert incumbent.digest != stock.digest
+
+
+def test_sealed_incumbent_bundle_is_derived_staged_and_bounded(
+    tmp_path: Path,
+) -> None:
+    """The v7 baseline injection identity is sealed from the stack entry.
+
+    Digest and slot set come from the resolver-verified source and the
+    registered target's members — never from a runtime swap acknowledgement —
+    and the bundle bytes are staged content-addressed into the swap intake.
+    Anything one swap cannot realize returns None (the two-process route),
+    not an error.
+    """
+
+    import tests.test_engine_tree as engine_tree_fixtures
+    from cacheon.bundle_hash import content_hash
+
+    source = engine_tree_fixtures._copy(tmp_path)
+    catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
+    intake = commission._swap_intake_root(tmp_path / "resident-intake" / "A")
+    resolver = SimpleNamespace(resolve_proposal=lambda digest: source)
+
+    genesis = SimpleNamespace(incumbent_entries={}, source_resolver=resolver)
+    assert commission._sealed_incumbent_bundle(genesis, catalog, intake) is None
+
+    capabilities = SimpleNamespace(
+        incumbent_entries={ref.target_id: ref}, source_resolver=resolver
+    )
+    sealed = commission._sealed_incumbent_bundle(capabilities, catalog, intake)
+    assert sealed is not None
+    assert sealed.target_id == ref.target_id
+    assert sealed.bundle_digest == ref.artifact_digest
+    assert sealed.slots == tuple(sorted(catalog.require(ref.target_id).members))
+    staged = intake / sealed.bundle_digest
+    assert staged.is_dir()
+    assert content_hash(staged) == sealed.bundle_digest
+
+    multiple = SimpleNamespace(
+        incumbent_entries={ref.target_id: ref, "second.target": ref},
+        source_resolver=resolver,
+    )
+    assert commission._sealed_incumbent_bundle(multiple, catalog, intake) is None
+
+
+def test_sealed_incumbent_bundle_refuses_unswappable_and_foreign_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.test_engine_tree as engine_tree_fixtures
+    from cacheon.eval import resident_screen_lane
+
+    source = engine_tree_fixtures._copy(tmp_path)
+    catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
+    intake = commission._swap_intake_root(tmp_path / "resident-intake" / "A")
+    capabilities = SimpleNamespace(
+        incumbent_entries={ref.target_id: ref},
+        source_resolver=SimpleNamespace(resolve_proposal=lambda digest: source),
+    )
+
+    monkeypatch.setattr(
+        resident_screen_lane,
+        "screen_swappability",
+        lambda manifest: "native-rebuild bundles are not swappable",
+    )
+    assert (
+        commission._sealed_incumbent_bundle(capabilities, catalog, intake) is None
+    )
+
+    import cacheon.manifest as manifest_module
+
+    monkeypatch.setattr(resident_screen_lane, "screen_swappability", lambda m: None)
+    monkeypatch.setattr(
+        manifest_module,
+        "load_manifest",
+        lambda path: SimpleNamespace(ops=(SimpleNamespace(slot="foreign.slot"),)),
+    )
+    with pytest.raises(
+        commission.B300QualificationCommissionError,
+        match="differ from its registered target members",
+    ):
+        commission._sealed_incumbent_bundle(capabilities, catalog, intake)

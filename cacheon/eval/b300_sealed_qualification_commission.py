@@ -133,7 +133,15 @@ class B300QualificationCommissionError(RuntimeError):
 
 @dataclass(frozen=True)
 class B300QualificationCapabilities:
-    """Validator-private callables plus their sealed reviewed identities."""
+    """Validator-private callables plus their sealed reviewed identities.
+
+    ``incumbent_entries`` declares the durable evaluation stack's crowned
+    contributions (empty at genesis). The commission constructs the measured
+    baseline from these entries; the CPU dispatcher's pinned incumbent and the
+    durable commit both refuse any product whose declared entries do not
+    reproduce the durable stack digest, so a wrong declaration fails closed
+    end to end.
+    """
 
     secret_loader: Callable[[str], bytes]
     entropy_provider: object
@@ -144,8 +152,22 @@ class B300QualificationCapabilities:
     graph_facts_builder_digest: str
     resident_count_quality_builder: object
     resident_count_quality_builder_digest: str
+    incumbent_entries: dict[str, object]
 
     def __post_init__(self) -> None:
+        from cacheon.stack_manifest import (
+            IntegratedContributionRef,
+            ProposalContributionRef,
+        )
+
+        if type(self.incumbent_entries) is not dict or any(
+            type(target) is not str
+            or type(ref) not in (ProposalContributionRef, IntegratedContributionRef)
+            for target, ref in self.incumbent_entries.items()
+        ):
+            raise B300QualificationCommissionError(
+                "incumbent entries are not an exact target-to-contribution mapping"
+            )
         if (
             not callable(self.secret_loader)
             or not callable(self.entropy_provider)

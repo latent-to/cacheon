@@ -29,6 +29,7 @@ from cacheon.chain.remote_worker_execution_marker import (
     publish_resident_entry,
 )
 from cacheon.chain.remote_worker_registration import PodPaths
+from cacheon.eval.remote_run_forensics import append_event as append_run_event, journal_path
 from cacheon.stack_identity import sha256_hex
 from tests import test_remote_evaluation_dispatcher as dispatcher_fixtures
 
@@ -222,6 +223,9 @@ def _temporary(authority: RecoveryAuthority, offset: int = 0) -> Path:
 
 
 def _write_response(authority: RecoveryAuthority, root: Path) -> None:
+    append_run_event(
+        journal_path(root), authority.request_id, "adapter.terminal", "completed"
+    )
     (root / "response.json").write_bytes(authority.response_bytes)
 
 
@@ -626,7 +630,7 @@ def _run_failed_adapter(authority: RecoveryAuthority, process: FailedAdapter) ->
 
 def _forbid_infrastructure(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
-    def forbidden(_request, _root, failure):
+    def forbidden(_request, _root, failure, **_kwargs):
         calls.append(failure)
         raise AssertionError("post-resident failure cannot become infrastructure result")
 
@@ -635,19 +639,17 @@ def _forbid_infrastructure(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 @pytest.mark.parametrize("failure", ["adapter_epoch_failed", "adapter_timeout"])
-def test_post_resident_failure_holds_and_preserves_marker(
+def test_post_resident_failure_publishes_diagnostic_and_preserves_marker(
     authority: RecoveryAuthority,
-    monkeypatch: pytest.MonkeyPatch,
     failure: str,
 ) -> None:
     process = FailedAdapter(failure, "valid")
-    infrastructure = _forbid_infrastructure(monkeypatch)
-    with pytest.raises(spool.RemoteWorkerError, match="resident_entry_failure"):
-        _run_failed_adapter(authority, process)
-    temporary = authority.paths.root / "results" / f".{authority.request_id}.{os.getpid()}"
-    assert (temporary / RESIDENT_ENTRY_MARKER).read_bytes() == process.marker_bytes
-    _assert_hold(authority, "resident_entry_failure")
-    assert process.calls == 1 and infrastructure == []
+    result = _run_failed_adapter(authority, process)
+    row = spool.load_json(result / "result.json")
+    assert row["state"] == "no_decision" and row["failure_code"] == failure
+    assert (result / RESIDENT_ENTRY_MARKER).read_bytes() == process.marker_bytes
+    assert spool.artifact_for_role(row, result, "worker_log").is_file()
+    assert process.calls == 1
 
 
 @pytest.mark.parametrize("marker", ["invalid", "symlink"])
@@ -697,14 +699,14 @@ def test_typed_pre_resident_failure_without_marker_remains_no_decision(
     assert not (authority.paths.root / "events.jsonl").exists()
 
 
-def test_request_failure_with_valid_marker_holds_post_resident(
-    authority: RecoveryAuthority, monkeypatch: pytest.MonkeyPatch
+def test_request_failure_with_valid_marker_publishes_diagnostic(
+    authority: RecoveryAuthority,
 ) -> None:
     process = FailedAdapter("adapter_request_failed", "valid")
-    infrastructure = _forbid_infrastructure(monkeypatch)
-    with pytest.raises(spool.RemoteWorkerError, match="resident_entry_failure"):
-        _run_failed_adapter(authority, process)
-    temporary = authority.paths.root / "results" / f".{authority.request_id}.{os.getpid()}"
-    assert (temporary / RESIDENT_ENTRY_MARKER).read_bytes() == process.marker_bytes
-    _assert_hold(authority, "resident_entry_failure")
-    assert process.calls == 1 and infrastructure == []
+    result = _run_failed_adapter(authority, process)
+    row = spool.load_json(result / "result.json")
+    assert row["state"] == "no_decision"
+    assert row["failure_code"] == "adapter_request_failed"
+    assert (result / RESIDENT_ENTRY_MARKER).read_bytes() == process.marker_bytes
+    assert spool.artifact_for_role(row, result, "worker_log").is_file()
+    assert process.calls == 1

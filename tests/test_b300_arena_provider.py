@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import os
 import time
 from pathlib import Path
 
@@ -16,7 +14,6 @@ from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
     ArenaQualificationWork,
-    ArenaRuntimeIdentity,
     ArenaService,
     ArenaServiceManifest,
     NonCrownScreenPolicy,
@@ -45,109 +42,27 @@ from cacheon.eval.b300_arena_provider import (
 from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
 )
-from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
+from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.oci_backend import (
     OCIBackendConfig,
     OCIEngineExecutor,
-    OCIRuntimeResourcePolicy,
 )
-from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
+from cacheon.eval.oci_prebuild import OCIPrebuildConfig
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationPlanFactory,
     QualificationReservation,
 )
-from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_queue import ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentScreenLifetimeFailed,
     ResidentServingScreenStage,
-    screen_waiver_result,
 )
+from tests.support.b300 import StubHiddenJudge as _Judge, arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
 
 
 SLOT = "activation.silu_and_mul"
-
-
-def _h(label: str) -> str:
-    return hashlib.sha256(label.encode()).hexdigest()
-
-
-def _runtime() -> ArenaRuntimeIdentity:
-    return ArenaRuntimeIdentity(
-        arena_id="production-b300-tp4",
-        runtime_digest=_h("runtime"),
-        base_engine_digest=_h("base-engine"),
-        validator_overlay_digest=_h("validator-overlay"),
-        worker_distribution_digest=_h("worker-distribution"),
-        model_revision_digest=_h("model-revision"),
-        model_manifest_digest=_h("model-manifest"),
-        model_content_digest=_h("model-content"),
-        target_architecture="sm103",
-        topology_class="nvlink-domain",
-        topology_digest=_h("topology"),
-        gpu_count=4,
-        tensor_parallel_size=4,
-    )
-
-
-def _runtime_policy() -> OCIRuntimeResourcePolicy:
-    return OCIRuntimeResourcePolicy(
-        uid=max(1, os.getuid()),
-        gid=max(1, os.getgid()),
-        cpu_millis=8_000,
-        memory_bytes=32 << 30,
-        pids_limit=4_096,
-        nofile_limit=65_536,
-        cache_bytes=4 << 30,
-        cache_inodes=100_000,
-        tmpfs_bytes=1 << 30,
-        shm_bytes=8 << 30,
-        init_timeout_seconds=120.0,
-        batch_timeout_seconds=60.0,
-        container_python="/usr/local/bin/python3",
-    )
-
-
-def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
-    return OCIPrebuildPolicy(
-        uid=runtime.uid,
-        gid=runtime.gid,
-        cpu_millis=8_000,
-        memory_bytes=32 << 30,
-        pids_limit=4_096,
-        tmpfs_bytes=1 << 30,
-        stage_bytes=16 << 30,
-        stage_inodes=100_000,
-        timeout_seconds=7_200.0,
-        native_compile_timeout_seconds=6_000,
-        container_python=runtime.container_python,
-        build_path=("/usr/local/cuda/bin", "/usr/local/bin", "/usr/bin", "/bin"),
-        build_tmpdir="/tmp",
-        pinned_build_roots=("/usr/include", "/usr/lib", "/usr/local/cuda"),
-        runtime_policy_digest=runtime.digest,
-    )
-
-
-def _gpu(index: int) -> GPUConfiguration:
-    return GPUConfiguration(
-        physical_id=index,
-        uuid=(
-            f"GPU-00000000-{index:04x}-0000-0000-{index:012x}"
-        ),
-        pci_bus_id=f"00000000:{index + 1:02x}:00.0",
-        name="NVIDIA B300 SXM6 AC",
-        memory_total_mib=288_000,
-        driver_version="600.10.01",
-        power_limit_mw=1_000_000,
-        compute_mode="Default",
-        persistence_mode="Enabled",
-        application_graphics_clock_mhz=None,
-        application_memory_clock_mhz=None,
-        max_graphics_clock_mhz=2_500,
-        max_memory_clock_mhz=5_000,
-    )
 
 
 @pytest.fixture
@@ -199,16 +114,6 @@ def executor_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     yield create
     for executor in executors:
         executor.manager.close()
-
-
-class _Judge:
-    def __init__(self) -> None:
-        self.binding = HiddenJudgeBinding(
-            _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
-        )
-
-    def __call__(self, **_kwargs):
-        raise AssertionError("the provider must not execute the hidden judge")
 
 
 class _FactoryBuilder:
@@ -485,9 +390,16 @@ def test_fail_is_not_rewritten(tmp_path: Path, executor_factory) -> None:
     assert resident.created == 0
 
 
-def test_no_decision_screen_evidence_is_waived_into_qualification(
+def test_no_decision_screen_evidence_parks_instead_of_reaching_qualification(
     tmp_path: Path, executor_factory
 ) -> None:
+    """An undecided ABI stage must not buy a seat on the GPU.
+
+    Qualification is the expensive half of the pipeline. Promoting on a stage
+    that returned no decision spends a full evaluation on a candidate whose
+    ABI was never actually checked.
+    """
+
     authorities, _runner, resident, _builder = _authorities(
         tmp_path,
         executor_factory,
@@ -498,9 +410,12 @@ def test_no_decision_screen_evidence_is_waived_into_qualification(
 
     receipt = service.screen(_binding(tmp_path / "no-decision"))
 
-    assert receipt.decision is PromotionDecision.PROMOTE
-    assert all(row.grade is ScreenGrade.PASS for row in receipt.results)
-    assert resident.created == 1
+    assert receipt.decision is PromotionDecision.HOLD
+    assert tuple(row.stage for row in receipt.results) == ("static", "build", "abi")
+    assert receipt.results[-1].grade is ScreenGrade.NO_DECISION
+    # The screen stops at the undecided stage: no later stage is run, and the
+    # candidate never reaches the resident lane.
+    assert resident.created == 0
     service._provider.close()
 
 
@@ -627,7 +542,38 @@ def test_engine_death_latches_epoch_without_silent_reboot(
     assert resident.closed == 1
 
 
-def test_canary_bypass_survives_resident_retirement(
+def test_candidate_failure_returns_fail_then_latches_dead_resident(
+    tmp_path: Path, executor_factory, monkeypatch
+) -> None:
+    authorities, _runner, resident, _builder = _authorities(
+        tmp_path, executor_factory
+    )
+    manifest = _manifest(authorities)
+    provider = B300ArenaServiceProvider(manifest, authorities)
+    candidate = _binding(tmp_path / "candidate")
+
+    def candidate_fail(stage, _candidate):
+        stage._lifetime_failed = True
+        return ScreenStageResult(
+            "abbreviated_serving",
+            ScreenGrade.FAIL,
+            _h("candidate-prepare-failure"),
+            1,
+            "candidate prepare OOM at kernels/moe.py:10",
+        )
+
+    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", candidate_fail)
+    result = provider.run_screen(
+        manifest, manifest.screens.stages[-1], candidate
+    )
+    assert result.grade is ScreenGrade.FAIL
+    with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
+        provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
+    assert resident.created == 1
+    provider.close()
+
+
+def test_canary_failure_holds_and_latches_resident_epoch(
     tmp_path: Path, executor_factory, monkeypatch
 ) -> None:
     authorities, _runner, resident, _builder = _authorities(
@@ -638,21 +584,26 @@ def test_canary_bypass_survives_resident_retirement(
     candidate = _binding(tmp_path / "candidate")
     calls = 0
 
-    def bypass(stage, item):
+    def canary_failure(stage, _item):
         nonlocal calls
         calls += 1
-        stage._bypass_reason = "stock canary unavailable"
-        return screen_waiver_result(item, stage._bypass_reason, 1)
+        stage._lifetime_failed = True
+        return ScreenStageResult(
+            "abbreviated_serving",
+            ScreenGrade.NO_DECISION,
+            _h("stock-canary-failure"),
+            1,
+            "validator_stock_canary_not_recovered reference=100 recovery=90,90",
+        )
 
-    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", bypass)
+    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", canary_failure)
     assert provider.run_screen(
         manifest, manifest.screens.stages[-1], candidate
-    ).grade is ScreenGrade.PASS
-    assert (calls, resident.created, resident.closed) == (1, 1, 1)
-    assert provider.run_screen(
-        manifest, manifest.screens.stages[-1], candidate
-    ).grade is ScreenGrade.PASS
-    assert (calls, resident.created, resident.closed) == (1, 1, 1)
+    ).grade is ScreenGrade.NO_DECISION
+    assert (calls, resident.created, resident.closed) == (1, 1, 0)
+    with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
+        provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
+    assert (calls, resident.created, resident.closed) == (1, 1, 0)
     provider.close()
 
 

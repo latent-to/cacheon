@@ -25,6 +25,41 @@ def _write(root, kind, payload, index):
     (root / f"{kind}.{index}.json").write_text(json.dumps(payload))
 
 
+def test_teardown_summary_retains_failed_receipts(tmp_path, capsys):
+    _write(
+        tmp_path,
+        "failed",
+        {
+            "error": "boom",
+            "error_type": "RuntimeError",
+            "line": 17,
+            "phase": "entry",
+            "rank": 1,
+            "slot": "slot.a",
+            "source": "kernels/fail.py",
+        },
+        0,
+    )
+    engine_worker._emit_execution_summary(str(tmp_path))
+    summary = json.loads(capsys.readouterr().err.split(engine_worker.EXECUTION_SUMMARY_PREFIX)[1])
+    assert summary["failed"][0]["source"] == "kernels/fail.py"
+    assert summary["failed"][0]["line"] == 17
+
+
+def test_only_candidate_owned_receipts_type_the_engine_failure(tmp_path):
+    candidate = tmp_path / "candidate"
+    runtime = tmp_path / "runtime"
+    _write(candidate, "failed", {"slot": "a", "error": "boom"}, 0)
+    _write(
+        runtime,
+        "failed",
+        {"slot": "a", "error": "permission", "failure_owner": "validator_runtime"},
+        0,
+    )
+    assert "boom" in engine_worker._candidate_receipt_failure(str(candidate), receipts)
+    assert engine_worker._candidate_receipt_failure(str(runtime), receipts) == ""
+
+
 def _distributed_receipt_worker(rank, world_size, store_path, receipt_dir):
     import torch.distributed as dist
 
@@ -108,20 +143,6 @@ def test_every_member_must_complete_every_slot(tmp_path):
         expected_member_count=2,
     )
     assert "4/4" in detail
-
-
-def test_any_selected_path_fallback_disqualifies(tmp_path):
-    active = [_active(10, 0, slots=("a",), world_size=1)]
-    complete = {"slot": "a", "pid": 10, "rank": 0, "world_size": 1}
-    _write(tmp_path, "completed", complete, 0)
-    _write(tmp_path, "fallback", {**complete, "error_type": "RuntimeError"}, 0)
-    with pytest.raises(RuntimeError, match="selected-path fallbacks"):
-        engine_worker._require_execution_completion(
-            str(tmp_path),
-            active_receipts=active,
-            expected_slots=["a"],
-            expected_member_count=1,
-        )
 
 
 def test_sealed_aot_requires_load_and_use_on_every_active_member(tmp_path):
@@ -217,6 +238,40 @@ def test_real_distributed_receipts_cover_every_nccl_member(tmp_path):
     assert ok, detail
 
 
+def test_coverage_failure_names_the_field_that_kept_the_candidate_off(tmp_path):
+    """A run where nothing executed must say WHY, not just that nothing did."""
+    active = [_active(10, 0, slots=("a",), world_size=1)]
+    _write(
+        tmp_path,
+        "not_selected",
+        {
+            "slot": "a",
+            "reasons": [
+                {
+                    "outcome": "out_of_domain",
+                    "fields": ["num_tokens"],
+                    "mismatches": [
+                        {
+                            "field": "num_tokens",
+                            "reason": "outside_domain",
+                            "expected": "in [1, 2048]",
+                        }
+                    ],
+                }
+            ],
+        },
+        0,
+    )
+    with pytest.raises(engine_worker.CandidateNeverExecutedError) as caught:
+        engine_worker._require_execution_completion(
+            str(tmp_path),
+            active_receipts=active,
+            expected_slots=["a"],
+            expected_member_count=1,
+        )
+    assert "not_selected=a:out_of_domain(num_tokens)" in str(caught.value)
+
+
 def test_total_silence_is_typed_as_the_candidate_never_executing(tmp_path):
     """The one coverage shape that is provably the candidate's own defect.
 
@@ -241,7 +296,7 @@ def test_total_silence_is_typed_as_the_candidate_never_executing(tmp_path):
     # boundary. The marker is the wire contract; a class name or a prose
     # fragment would be silently broken by any later edit.
     assert engine_worker.CANDIDATE_NEVER_EXECUTED_MARKER in str(caught.value)
-    assert "completed:0,fallback:0,aot_loaded:0,aot_invoked:0" in str(caught.value)
+    assert "completed:0,aot_loaded:0,aot_invoked:0" in str(caught.value)
 
 
 def test_partial_coverage_stays_infrastructure(tmp_path):

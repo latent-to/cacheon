@@ -37,6 +37,7 @@ from cacheon.chain.remote_qualification_evidence import (
 )
 from cacheon.chain.remote_worker_artifact_recovery import publication_archive
 from cacheon.chain.remote_worker_registration import verify_registration
+from cacheon.eval.remote_run_forensics import append_event as append_run_event, journal_path
 
 
 def _dispatcher_fixtures():
@@ -316,6 +317,9 @@ def _write_completed_result(authority: _Authority, plan) -> object:
     result_root.mkdir(parents=True)
     (result_root / "response.json").write_bytes(
         spool.spool_canonical_json(response.to_dict()) + b"\n"
+    )
+    append_run_event(
+        journal_path(result_root), plan.request_id, "adapter.terminal", "completed"
     )
     spool.finalize_adapter_response(
         plan.request_dict(),

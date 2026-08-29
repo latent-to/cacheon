@@ -116,6 +116,22 @@ class OuterSessionWorkerError(OuterSessionError):
     """The worker emitted one valid, bounded error control frame."""
 
 
+class OuterSessionCandidateError(OuterSessionWorkerError):
+    """A rank receipt proved that candidate code killed the worker."""
+
+    def __init__(
+        self,
+        message: str,
+        diagnostic_provider: Callable[[], OCIAttachedDiagnostic] | None = None,
+        *,
+        candidate_failure: str,
+        candidate_failure_type: str = "CandidateExecutionFailure",
+    ) -> None:
+        super().__init__(message, diagnostic_provider)
+        self.candidate_failure = candidate_failure
+        self.candidate_failure_type = candidate_failure_type
+
+
 class SessionTransport(Protocol):
     def start(self) -> None: ...
     def has_pending_output(self) -> bool: ...
@@ -302,8 +318,8 @@ class AttachedSessionTransport:
             except SessionProtocolError as exc:
                 raise OuterSessionProtocolError(str(exc)) from None
             if detail is not None:
-                raise self._diagnostic_error(
-                    OuterSessionWorkerError, ": ".join(detail)
+                raise _worker_error(
+                    detail, diagnostic_provider=self._diagnostic_provider()
                 )
             raise OuterSessionProtocolError("worker emitted an early control frame")
         if magic != EVIDENCE_MAGIC:
@@ -571,10 +587,33 @@ def _control_or_error(
     except SessionProtocolError as exc:
         raise OuterSessionProtocolError(str(exc)) from None
     if detail is not None:
-        raise OuterSessionWorkerError(
-            ": ".join(detail), diagnostic_provider(transport)
+        raise _worker_error(
+            detail, diagnostic_provider=diagnostic_provider(transport)
         )
     return message
+
+
+def _worker_error(
+    detail: tuple[str, str, str],
+    *,
+    diagnostic_provider: Callable[[], OCIAttachedDiagnostic] | None,
+) -> OuterSessionWorkerError:
+    """Preserve the worker's candidate attribution across the host boundary."""
+
+    stage, error_type, message = detail
+    rendered = ": ".join(detail)
+    if error_type in {
+        "CandidateEngineFailure",
+        "CandidateExecutionFailure",
+        "CandidateNeverExecutedError",
+    }:
+        return OuterSessionCandidateError(
+            rendered,
+            diagnostic_provider,
+            candidate_failure=message,
+            candidate_failure_type=error_type,
+        )
+    return OuterSessionWorkerError(rendered, diagnostic_provider)
 
 
 def _fresh_id(seen: set[str]) -> str:

@@ -66,6 +66,13 @@ from cacheon.eval.b300_publication_intake import (
     resolve_cohort_publications,
     safe_publication,
 )
+from cacheon.eval.remote_run_forensics import (
+    JOURNAL_NAME,
+    append_event as append_run_event,
+    bind_request,
+    exception_record,
+    journal_path,
+)
 
 
 class AdapterError(RuntimeError):
@@ -390,8 +397,12 @@ def run_with_runtime(
     result_dir: Path,
     runtime: AdapterRuntime,
 ) -> None:
+    request_id = request_dir.name.rsplit("-", 1)[-1]
+    journal = journal_path(result_dir)
+    append_run_event(journal, request_id, "adapter.runtime", "started")
     if type(runtime) is not AdapterRuntime or runtime.closed:
         raise AdapterEpochFailed("persistent adapter runtime is unavailable")
+    append_run_event(journal, request_id, "adapter.request", "started")
     try:
         runtime.verify_current()
     except Exception as exc:
@@ -500,17 +511,23 @@ def run_with_runtime(
         raise AdapterRequestFailed(
             "request carrier/authentication/staging failed before resident work"
         ) from exc
+    append_run_event(
+        journal, request_id, "adapter.request", "completed", evaluation_stage=stage
+    )
 
+    append_run_event(journal, request_id, "adapter.resident_entry", "started")
     try:
         publish_resident_entry(result_dir, outer)
     except Exception as exc:
         raise AdapterRequestFailed(
             "resident-entry marker failed before resident work"
         ) from exc
+    append_run_event(journal, request_id, "adapter.resident_entry", "completed")
 
     # Once the worker is called, an exception is conservatively epoch-fatal:
     # it may have followed resident mutation.  Typed result products, including
     # NO_DECISION outcomes, complete normally through this path.
+    append_run_event(journal, request_id, f"adapter.{stage}", "started")
     try:
         if stage == "qualification":
             try:
@@ -547,6 +564,8 @@ def run_with_runtime(
         raise AdapterEpochFailed(
             "resident evaluation failed after entering commissioned worker"
         ) from exc
+    append_run_event(journal, request_id, f"adapter.{stage}", "completed")
+    append_run_event(journal, request_id, "adapter.response", "completed")
 
 
 def _run(request_dir: Path, result_dir: Path, paths: AdapterPaths) -> None:
@@ -630,7 +649,10 @@ def validated_command_paths(
         or not request_dir.is_dir()
         or result_dir.is_symlink()
         or not result_dir.is_dir()
-        or any(result_dir.iterdir())
+        # The pod runner journals its own lifecycle rows into the shared
+        # per-request journal before handing the carrier over; anything else
+        # in the result dir is a stale collision.
+        or any(entry.name != JOURNAL_NAME for entry in result_dir.iterdir())
     ):
         raise AdapterRequestFailed(
             "request/result carrier state is invalid", request_id=request_id
@@ -646,9 +668,27 @@ def serve_runtime(
     _emit_control("ready", output=control_output)
     for raw in input_stream:
         request_id: str | None = None
+        result_dir: Path | None = None
         try:
             request_id, request_dir, result_dir = validated_command_paths(raw, paths)
-            run_with_runtime(request_dir, result_dir, runtime)
+            with bind_request(result_dir, request_id):
+                try:
+                    run_with_runtime(request_dir, result_dir, runtime)
+                except BaseException as exc:
+                    append_run_event(
+                        journal_path(result_dir),
+                        request_id,
+                        "adapter.terminal",
+                        "failed",
+                        failure=exception_record(exc),
+                    )
+                    raise
+                append_run_event(
+                    journal_path(result_dir),
+                    request_id,
+                    "adapter.terminal",
+                    "completed",
+                )
         except AdapterRequestFailed as exc:
             request_id = request_id or exc.request_id
             print(
@@ -795,7 +835,7 @@ def main(argv: list[str] | None = None) -> int:
         or not request_dir.is_dir()
         or result_dir.is_symlink()
         or not result_dir.is_dir()
-        or any(result_dir.iterdir())
+        or any(entry.name != JOURNAL_NAME for entry in result_dir.iterdir())
     ):
         raise AdapterError("request/result carrier state is invalid")
     _run(request_dir, result_dir, paths)

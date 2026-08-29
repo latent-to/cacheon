@@ -51,6 +51,7 @@ The registered rows are:
 | `layernorm` | `RMSNorm.forward_cuda` | `norm.rmsnorm` | Registry-selected |
 | `attention` | `flash_decode_with_gqa_share_sparse` | graph-native MiniMax-M3 `attention.decode` sparse attend | `attention` |
 | `attention_audit_mode` | `MiniMaxSparseAttnBackend.__init__` | keeps MSA prefill but routes the untimed decode audit through the scored Triton insertion | `attention` |
+| `msa_decode_score` | `_decode_score_kernel` | paged per-head `attention.msa_block_score`; stock owns top-k and attend | `msa_decode_score` |
 | `moe` | `FusedMoE.forward_impl` | `moe.fused_experts`, `moe.fused_experts_reduce` | `moe` |
 | `collective` | `GroupCoordinator.all_reduce` | `collective.all_reduce` | `collective` |
 | `arfusion` | `flashinfer_allreduce_residual_rmsnorm` | `collective.ar_residual_rmsnorm`; consume side for the deep epilogue | `arfusion` |
@@ -65,16 +66,11 @@ The registered rows are:
 Several adapters may share one binding when they implement one semantic product. The shallow AR-fusion consume adapter and both deep producer adapters share `arfusion`; activating only part of that set would violate the protocol.
 
 The catalog can contain a verified slot before the pinned runtime exposes a safe
-live chokepoint. In the current MiniMax-M3 arena,
-`attention.msa_block_score` has a slot and verifier contract but no live
-adapter; its deleted placeholder only raised `NotImplementedError`. The
-registered `norm.rmsnorm` adapter targets `RMSNorm.forward_cuda`, while the
-deployed model uses the separate `GemmaRMSNorm` class at every relevant
-callsite. Candidate code for either target therefore cannot execute in this
-arena. The MSA prefill sibling has an installed adapter. The separate
-`attention.decode` adapter patches both the sparse-attend defining symbol and
-SGLang's by-value consumer so the candidate becomes a member of the recorded
-decode graph rather than an eager-only warmup call. See
+live chokepoint. `norm.rmsnorm` remains such a case because MiniMax-M3 uses
+`GemmaRMSNorm`, not the registered `RMSNorm.forward_cuda`. The decode-score
+adapter replaces the pinned `_decode_score_kernel`; unchanged stock code consumes
+its paged per-head slab for top-k and attend. The separate `attention.decode`
+adapter patches both its defining symbol and by-value consumer. See
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 `resident_swap` is deliberately outside the crown path. It is inert unless the
@@ -189,7 +185,7 @@ For a signed release, one successful candidate-backed call crosses the seam in t
 6. The dispatcher resolves an eligible registered variant, allocates the typed output, and
    invokes the contribution.
 7. Output identity and layout are revalidated before returning to SGLang. The rank emits
-   `fired` and `completed` receipts for the selected slot.
+   `completed` receipts for the selected slot.
 
 If step 5 finds no eligible candidate, stock routing before selection can be legitimate.
 If steps 6 or 7 fail after selection, strict qualification and release-smoke policy do not
@@ -237,11 +233,44 @@ Scheduler ranks can write process-local seam receipts:
 
 - `active` — the sealed tree loaded and registered slots;
 - `load_failed` — activation failed or registered nothing;
-- `fired` — a dispatcher selected the candidate route;
-- `completed` — the candidate produced the model-facing output;
-- `fallback` — a selected route failed and a trusted fallback served in a non-strict context.
+- `not_selected` — a candidate is registered for this slot but the routing
+  decision sent the call to stock, with the field-level reason;
+- `completed` — the candidate produced the model-facing output.
 
-These receipts are valuable positive accounting. They catch phantom passes where a benchmark accidentally measures stock code. They are also used by the signed-release serve smoke to require active/routed/completed coverage and zero fallback.
+A `completed` receipt carries two further fields:
+
+- `calls` — how many times the candidate entry was invoked under this scope;
+- `captured` — whether at least one of those invocations happened while a CUDA
+  graph was capturing.
+
+`captured` is the load-bearing one. Scored windows replay a captured graph and do
+not re-enter Python. A candidate absent from the captured graph serves stock on
+every replay, while its `completed` receipt is already on disk from eager warmup
+minutes earlier. `captured: false` with
+`calls > 0` is exactly that shape and must not be read as candidate execution.
+Both fields are reported only when every rank carries them, and `captured` is
+true only when every rank agrees — one rank serving stock makes the measurement
+stock.
+
+A `not_selected` receipt carries one entry per DISTINCT routing reason, never one
+per call: `outcome` (`out_of_domain` or `ambiguous`), the `fields` that declined,
+and the expected domain for each. It is written from
+`KernelRegistry.select`, so it covers every dispatcher without any of them having
+to remember to report.
+
+It exists because "registered but never ran" used to be one shape on disk
+covering three unrelated causes — the declared domain never matched a live call,
+the seam never fired, or the entry was never reached — and each needs a different
+fix. With it, the ladder answers the question directly.
+
+These receipts are valuable positive accounting. They catch phantom passes where a benchmark accidentally measures stock code. They are also used by the signed-release serve smoke to require active/completed coverage.
+
+`fired` was retired on 2026-08-23. It recorded that the registry *resolved* an
+implementation, which is weaker than it reads — the caller could still decline
+afterwards — so every production call site opted out of the write and a
+probe-only duplicate of `lookup` existed solely to avoid it. Once an entry is
+invoked there are exactly two outcomes, `completed` or `fallback`, and either one
+proves selection.
 
 The active-member gate expects exactly the registered tensor-parallel scheduler
 ranks. Too few receipts means a scheduler did not activate; an extra receipt
@@ -278,13 +307,13 @@ Read receipts in lifecycle order instead of treating any single file as success:
 | Last trustworthy observation | Likely boundary | What to inspect |
 |---|---|---|
 | No `active` receipt | Bootstrap, watched import, sealed namespace, or registration | Pin, adapter canary, worker role, tree/release digests, scheduler logs |
-| `active`, no `fired` | Eligibility or wrong live chokepoint | Call descriptor, variant domain, topology, workload coverage, adapter firing |
-| `fired`, no `completed` | Candidate execution or post-call validation | Exception, deadline, output storage/layout, rank agreement, device state |
-| `fallback` after selection | Candidate route failed in a non-strict context | Preserve the failure; do not use the run as crown/release-smoke evidence |
+| `active`, `not_selected` present | The declared domain never matched a live call | The receipt names the field and the expected domain; compare against the sealed workload |
+| `active`, no `not_selected`, no `completed` | The chokepoint never fired, or the entry was never reached | Adapter firing, seam env, topology, deadline, exception, rank agreement, device state |
+| `completed` with `captured: false` | Candidate never entered the captured graph; scored replays served stock | Whether the seam was reached during capture, and graph metadata against the captured shapes |
 | Full per-rank coverage, quality/speed fails | Seam worked; the contribution did not qualify | Qualification evidence and pristine T report, not bootstrap code |
 
 A common diagnostic mistake is to stop at “the server answered.” Stock fallback can keep
-a server responsive. Authority requires the expected slot-by-rank `active`/`fired`/
+a server responsive. Authority requires the expected slot-by-rank `active`/
 `completed` coverage and the absence of `load_failed` or `fallback`, followed by the
 separate quality and performance gates.
 

@@ -34,6 +34,7 @@ class FakeSession:
     def __init__(self, stock_rate: float, candidate_rates: dict[str, float],
                  slots: dict[str, tuple[str, ...]] | None = None,
                  stock_drift_after: int | None = None,
+                 stock_rates: list[float] | None = None,
                  execution_ranks: int = 1) -> None:
         self.stock_rate = stock_rate
         self.candidate_rates = candidate_rates
@@ -41,6 +42,7 @@ class FakeSession:
             digest: ("moe.fused_experts",) for digest in candidate_rates
         }
         self.stock_drift_after = stock_drift_after
+        self.stock_rates = stock_rates
         self.execution_ranks = execution_ranks
         self.generation = 0
         self.active: str | None = None
@@ -74,7 +76,9 @@ class FakeSession:
         if self.active is None:
             rate = self.stock_rate
             self.stock_reads += 1
-            if (
+            if self.stock_rates is not None and self.stock_reads <= len(self.stock_rates):
+                rate = self.stock_rates[self.stock_reads - 1]
+            elif (
                 self.stock_drift_after is not None
                 and self.stock_reads > self.stock_drift_after
             ):
@@ -171,8 +175,9 @@ class TestScreenQueue:
             prompts=("p",),
         )
         assert [v.passed for v in report.verdicts] == [True, False]
-        # Zero engine reloads: 1 opening stock read + per candidate (C + closing B)
-        assert session.batch_count == 5
+        # Zero engine reloads: 1 discarded cold stock + 1 opening stock +
+        # per candidate (C + closing B)
+        assert session.batch_count == 6
         assert report.stopped_reason is None
 
     def test_slot_mismatch_fails_closed_and_returns_to_stock(self) -> None:
@@ -203,7 +208,9 @@ class TestScreenQueue:
         session = FakeSession(
             100.0,
             {DIGEST_A: 112.0, DIGEST_B: 112.0},
-            stock_drift_after=2,
+            # Discarded cold read + opening + first closing stay clean; drift
+            # on the second candidate's closing stock read.
+            stock_drift_after=3,
         )
         report = _Screened(
             session,
@@ -216,6 +223,28 @@ class TestScreenQueue:
         assert withdrawn.verdict is None
         assert "withdrawn" in (withdrawn.failure or "")
         assert withdrawn.candidate_id in report.unprocessed_candidate_ids
+
+    def test_cold_first_stock_read_is_discarded_before_the_canary_band(self) -> None:
+        """A cold opening must not become the canary reference.
+
+        Mainnet 2026-08-25 pinned ``fmean(_stock[:-1])`` on the first batch after
+        load (~5 tok/s) while every later stock read sat at ~13.9.  Discard the
+        warmup; the band opens on the next read.
+        """
+
+        session = FakeSession(
+            100.0,
+            {DIGEST_A: 112.0},
+            stock_rates=[5.0, 100.0, 100.0],
+        )
+        report = _Screened(session, [_candidate(DIGEST_A)], prompts=("p",))
+        [verdict] = report.verdicts
+        assert verdict.passed
+        assert not verdict.withdrawn
+        assert report.stopped_reason is None
+        # Discarded cold read never entered the scored baselines.
+        assert verdict.baseline_throughputs[0] == pytest.approx(100.0)
+        assert session.stock_reads == 3  # discard + opening + closing
 
     def test_lifetime_budget_stops_queue(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 112.0, DIGEST_B: 112.0})

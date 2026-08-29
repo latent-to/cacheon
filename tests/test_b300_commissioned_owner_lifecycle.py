@@ -610,7 +610,7 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
     monkeypatch.setattr(worker_module, "verify_request", reject_carrier)
     with pytest.raises(worker_module.AdapterRequestFailed):
         worker_module.run_with_runtime(
-            tmp_path / "bad-request",
+            tmp_path / ("b" * 64),
             tmp_path / "bad-result",
             runtime,
         )
@@ -660,7 +660,7 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
     result_dir.mkdir(mode=0o700)
     with pytest.raises(worker_module.AdapterEpochFailed) as captured:
         worker_module.run_with_runtime(
-            tmp_path / "delegated-request",
+            tmp_path / ("d" * 64),
             result_dir,
             runtime,
         )

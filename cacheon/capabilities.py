@@ -345,6 +345,26 @@ def msa_prefill_call_descriptor(
     )
 
 
+def msa_decode_score_call_descriptor(
+    *, dtype: str, architecture: str | None, graph_mode: str, head_dim: int,
+    block_size: int, kv_len: int, top_k: int, init_blocks: int,
+    local_blocks: int, batch_size: int, num_q_heads: int, num_kv_heads: int,
+    quant: str = "dense", model: str = "MiniMax-M3",
+    tp_size: int | None = None, world_size: int | None = None,
+) -> CallDescriptor:
+    """Canonical paged per-head MiniMax decode score call."""
+
+    return CallDescriptor(
+        dtype=dtype, architecture=architecture, graph_mode=graph_mode,
+        last_dim=head_dim, num_tokens=batch_size, head_dim=head_dim,
+        block_size=block_size, page_size=block_size, q_len=1, kv_len=kv_len,
+        batch_size=batch_size, num_q_heads=num_q_heads,
+        num_kv_heads=num_kv_heads, top_k=top_k, init_blocks=init_blocks,
+        local_blocks=local_blocks, phase="decode", layout="paged_nhd",
+        quant=quant, model=model, tp_size=tp_size, world_size=world_size,
+    )
+
+
 @dataclass(frozen=True)
 class CapabilityPredicate:
     """One field constraint: allowed values or an inclusive numeric range."""

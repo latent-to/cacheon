@@ -30,7 +30,6 @@ from cacheon._strict import require_digest, require_identifier
 
 SERVICE_SCHEMA_VERSION = 2
 SCREEN_STAGES = ("static", "build", "abi", "graph", "abbreviated_serving")
-_SCREEN_WAIVER_SCHEMA = "cacheon.arena.screen-waiver.v1"
 _IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,255}\Z")
 _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 
@@ -384,6 +383,13 @@ class ScreenStageResult:
     grade: ScreenGrade
     evidence_digest: str
     elapsed_ms: int
+    # Why the stage graded as it did, in the stage's own closed vocabulary
+    # ("static_policy (_CandidateStaticFailure)"). It travels in the signed
+    # receipt so the validator that stores the disposition and the miner who
+    # reads it see the same word the grader used. Empty means the stage did not
+    # say; it is then left out of the bytes, so every receipt written before
+    # the field existed keeps its digest.
+    reason: str = ""
 
     def __post_init__(self) -> None:
         if self.stage not in SCREEN_STAGES or type(self.grade) is not ScreenGrade:
@@ -392,14 +398,49 @@ class ScreenStageResult:
             self, "evidence_digest", _digest(self.evidence_digest, "screen evidence")
         )
         object.__setattr__(self, "elapsed_ms", _positive(self.elapsed_ms, "elapsed_ms"))
+        if (
+            type(self.reason) is not str
+            or len(self.reason) > MAX_SCREEN_REASON_CHARS
+            or _REASON.fullmatch(self.reason) is None
+        ):
+            raise ArenaServiceError("screen result reason is invalid")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        row: dict[str, object] = {
             "elapsed_ms": self.elapsed_ms,
             "evidence_digest": self.evidence_digest,
             "grade": self.grade.value,
             "stage": self.stage,
         }
+        if self.reason:
+            row["reason"] = self.reason
+        return row
+
+    @classmethod
+    def from_dict(cls, value: object) -> "ScreenStageResult":
+        """Rebuild one retained stage row; a missing reason is an older receipt."""
+
+        if type(value) is not dict or not _STAGE_ROW_FIELDS <= set(value) <= (
+            _STAGE_ROW_FIELDS | {"reason"}
+        ):
+            raise ArenaServiceError("screen stage row fields are not closed")
+        try:
+            return cls(
+                value["stage"],
+                ScreenGrade(value["grade"]),
+                value["evidence_digest"],
+                value["elapsed_ms"],
+                value.get("reason", ""),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ArenaServiceError(f"screen stage row is invalid: {exc}") from None
+
+
+#: One bounded printable line. Candidate text is diagnostic evidence only; it
+#: cannot select a grade, stage, policy, or authority.
+MAX_SCREEN_REASON_CHARS = 4_096
+_REASON = re.compile(r"[ -~]*\Z")
+_STAGE_ROW_FIELDS = frozenset({"elapsed_ms", "evidence_digest", "grade", "stage"})
 
 
 @dataclass(frozen=True)
@@ -613,33 +654,28 @@ class ArenaService:
             result = self._provider.run_screen(self.manifest, stage, candidate)
             if type(result) is not ScreenStageResult or result.stage != stage.stage:
                 raise ArenaServiceError("provider changed the requested screen stage")
-            if (
-                result.elapsed_ms > stage.timeout_ms
-                or result.grade is ScreenGrade.NO_DECISION
-            ):
-                reason = (
-                    "stage_timeout"
-                    if result.elapsed_ms > stage.timeout_ms
-                    else "stage_unavailable"
-                )
+            if result.elapsed_ms > stage.timeout_ms:
+                # Past its bound is not a decision either: the stage never
+                # finished the check the contract asked for.
                 result = ScreenStageResult(
                     result.stage,
-                    ScreenGrade.PASS,
-                    canonical_digest(
-                        _SCREEN_WAIVER_SCHEMA,
-                        {
-                            "candidate_digest": candidate.digest,
-                            "reason": reason,
-                            "service_digest": self.identity,
-                            "source_evidence_digest": result.evidence_digest,
-                            "stage": result.stage,
-                        },
-                    ),
+                    ScreenGrade.NO_DECISION,
+                    result.evidence_digest,
                     result.elapsed_ms,
+                    f"stage_timeout ({result.elapsed_ms} ms > {stage.timeout_ms} ms)",
                 )
             results.append(result)
             if result.grade is ScreenGrade.FAIL:
                 decision = PromotionDecision.REJECT
+                break
+            if result.grade is ScreenGrade.NO_DECISION:
+                # A stage that did not decide must never be converted into a
+                # PASS. Waiving it promoted a candidate on a gate that had not
+                # actually run -- and it erased the stage's own evidence digest
+                # behind a waiver digest, so nobody could see which gate was
+                # skipped or why. Park it instead: an operator releases the
+                # hold once they have looked at the cause.
+                decision = PromotionDecision.HOLD
                 break
         return ArenaScreenReceipt(
             self.identity,

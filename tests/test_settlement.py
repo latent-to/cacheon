@@ -356,8 +356,8 @@ def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
 
 def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> None:
     # These bytes include the current target-catalog digest. Replacing the never-live
-    # dense decode, MoE NVFP4, and paged MSA-prefill contracts are reviewed target
-    # identity epochs; the settlement schema itself remains unchanged.
+    # dense decode, MoE NVFP4, paged MSA-prefill, and MSA decode-score contracts
+    # are reviewed target identity epochs; the settlement schema remains unchanged.
     catalog = default_target_catalog()
     candidate = _candidate(
         _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
@@ -365,10 +365,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "148a8919e5a515e18acaeee9f89c6b7bd91052bee64bc02dbdba230cc3f56220"
+        "9ea7a26eff49837d2c53abd9d86e87993ebd3f9d862f269caed67d9905c2ad35"
     )
     assert candidate.digest == (
-        "69c000fc8061120c8e31b10061f907a200c026ab7842c981766103f3b81dc78e"
+        "7da3cd0625f341ea29512b8471ad249d37c8f4b2b09017ece68f5afdda86fd3f"
     )
 
 

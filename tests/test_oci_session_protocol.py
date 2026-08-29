@@ -59,6 +59,7 @@ from cacheon.eval.oci_session_protocol import (
     validate_preflight_accept,
     validate_ready,
 )
+from tests.support.preflight import preflight_facts
 
 
 def _digest(label: str) -> str:
@@ -97,23 +98,11 @@ def _config(**changes: object) -> EngineSessionConfig:
 def _facts(**changes: object) -> RuntimePreflightFacts:
     values: dict[str, object] = {
         "launch_digest": LAUNCH,
-        "runtime_digest": _digest("runtime"),
-        "stack_digest": _digest("stack"),
-        "tree_digest": _digest("tree"),
         "engine_config_digest": _config().digest,
-        "worker_distribution_digest": _digest("worker"),
-        "model_revision_digest": _digest("revision"),
-        "model_manifest_digest": _digest("manifest"),
-        "model_content_digest": _digest("content"),
-        "sglang_version": "0.0.0.dev1+g56e290315",
         "gpu_architectures": ("sm120",) * 8,
-        "topology_digest": _digest("topology"),
-        "loopback_only": True,
-        "read_only_inputs": True,
-        "private_writable_cache": True,
     }
     values.update(changes)
-    return RuntimePreflightFacts(**values)  # type: ignore[arg-type]
+    return preflight_facts(**values)  # type: ignore[arg-type]
 
 
 def _request(**changes: object) -> BatchRequest:
@@ -167,6 +156,7 @@ def test_seam_binding_table_is_closed_and_deep_epilogue_shares_arfusion() -> Non
         "attention": "CACHEON_ATTENTION_SEAM",
         "collective": "CACHEON_COLLECTIVE_SEAM",
         "moe": "CACHEON_MOE_SEAM",
+        "msa_decode_score": "CACHEON_MSA_DECODE_SCORE_SEAM",
         "msa_prefill": "CACHEON_MSA_PREFILL_SEAM",
     }
     bindings = {binding.binding_id: binding for binding in SEAM_BINDINGS}
@@ -195,6 +185,7 @@ def test_seam_bindings_normalize_and_emit_complete_explicit_environment() -> Non
         "CACHEON_ATTENTION_SEAM": "0",
         "CACHEON_COLLECTIVE_SEAM": "0",
         "CACHEON_MOE_SEAM": "0",
+        "CACHEON_MSA_DECODE_SCORE_SEAM": "0",
         "CACHEON_MSA_PREFILL_SEAM": "1",
     }
     assert seam_binding_environment(()) == {
@@ -202,6 +193,7 @@ def test_seam_bindings_normalize_and_emit_complete_explicit_environment() -> Non
         "CACHEON_ATTENTION_SEAM": "0",
         "CACHEON_COLLECTIVE_SEAM": "0",
         "CACHEON_MOE_SEAM": "0",
+        "CACHEON_MSA_DECODE_SCORE_SEAM": "0",
         "CACHEON_MSA_PREFILL_SEAM": "0",
     }
 

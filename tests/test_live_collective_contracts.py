@@ -12,7 +12,6 @@ import pytest
 torch = pytest.importorskip("torch")
 
 import cacheon.dispatch as dispatch  # noqa: E402
-import cacheon.registry as registry_module  # noqa: E402
 from cacheon import receipts  # noqa: E402
 from cacheon.registry import (  # noqa: E402
     Eligibility,
@@ -53,13 +52,9 @@ class _RecordingRegistry(KernelRegistry):
         super().__init__()
         self.selections = []
 
-    def select(self, slot, descriptor, *, write_fired_receipt=True):
-        self.selections.append((slot, descriptor, write_fired_receipt))
-        return super().select(
-            slot,
-            descriptor,
-            write_fired_receipt=write_fired_receipt,
-        )
+    def select(self, slot, descriptor):
+        self.selections.append((slot, descriptor))
+        return super().select(slot, descriptor)
 
 
 @pytest.fixture(autouse=True)
@@ -96,14 +91,11 @@ def _register(
     return registry
 
 
-def _offline(
-    shape, *, slot_name=None, world_size=2, graph_safe=False, model_key=None
-):
+def _offline(shape, *, slot_name=None, world_size=2, model_key=None):
     return _collective_descriptor(
         shape,
         dtype_name="float32",
         device="cpu",
-        graph_safe=graph_safe,
         model_key=model_key,
         architecture=None,
         world_size=world_size,
@@ -134,22 +126,21 @@ def _moe_layer(*, hidden=8, inter=4, experts=4, tp_size=2, reduce=True):
 def _assert_two_phase_parity(registry, slot, expected):
     selections = [row for row in registry.selections if row[0] == slot]
     assert len(selections) == 2
-    assert [row[2] for row in selections] == [False, True]
     assert all(row[1] == expected for row in selections)
 
 
-@pytest.mark.parametrize("graph_safe", (False, True))
+@pytest.mark.parametrize("capturing", (False, True))
 def test_allreduce_live_descriptor_exactly_matches_offline(
-    monkeypatch, graph_safe
+    monkeypatch, capturing
 ):
     monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: graph_safe)
+    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: capturing)
     group = _Group(2)
     registry = _register(
         ALL_REDUCE,
         lambda x, out, _group: out.copy_(x),
         eligibility=Eligibility(
-            dtypes=frozenset({"float32"}), graph_safe=graph_safe
+            dtypes=frozenset({"float32"})
         ),
     )
     wrapped = dispatch.make_allreduce_dispatcher(
@@ -161,7 +152,7 @@ def test_allreduce_live_descriptor_exactly_matches_offline(
 
     assert torch.equal(result, x)
     expected = _offline({"num_tokens": 3, "hidden": 8})
-    if graph_safe:
+    if capturing:
         expected = expected.with_updates(graph_mode="cuda_graph")
     _assert_two_phase_parity(
         registry,
@@ -258,7 +249,6 @@ def test_collective_model_constraint_is_consistently_unavailable_until_arena_bin
         {"num_tokens": 3, "hidden": 8},
         dtype_name="float32",
         device="cpu",
-        graph_safe=False,
         model_key="validator/local/model-path",
         architecture=None,
         world_size=2,
@@ -379,7 +369,7 @@ def test_stock_group_not_layer_moe_tp_hint_defines_reduce_topology(monkeypatch):
     assert torch.equal(wrapped(_moe_layer(tp_size=2), x, routed), x)
     assert all(
         descriptor["tp_size"] == 4 and descriptor["world_size"] == 4
-        for slot, descriptor, _write in registry.selections
+        for slot, descriptor in registry.selections
         if slot == MOE_REDUCE
     )
 
@@ -437,8 +427,14 @@ def test_moe_reduce_rejects_unverified_routing_dtypes(
     assert prepared == entered == []
 
 
-def test_collective_moe_prepare_failure_aborts_without_stock(monkeypatch):
+def test_collective_moe_prepare_failure_is_receipted_without_stock(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
+    monkeypatch.setattr(receipts, "_ONCE", set())
+    monkeypatch.setattr(receipts, "_SCOPE", "")
+    receipts.set_scope("prepare-failure")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     stock_calls = []
 
@@ -462,6 +458,11 @@ def test_collective_moe_prepare_failure_aborts_without_stock(monkeypatch):
     with pytest.raises(RuntimeError, match="prepare failed"):
         wrapped(_moe_layer(), x, routed)
     assert stock_calls == []
+    (failed,) = receipts.collect(tmp_path / "prepare-failure", "failed")
+    assert failed["slot"] == MOE_REDUCE
+    assert failed["phase"] == "prepare"
+    assert failed["source"] == "test_live_collective_contracts.py"
+    assert failed["line"] > 0
 
 
 def test_two_moe_variants_prepare_once_and_gap_serves_stock(monkeypatch):
@@ -701,7 +702,6 @@ def test_cuda_graph_detector_supports_current_legacy_and_direct_capture(monkeypa
 
 def test_post_selection_allocation_failure_aborts_without_fired_receipt(monkeypatch):
     monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
-    monkeypatch.setattr(registry_module, "_FIRED_SLOTS", set())
     written = []
     monkeypatch.setattr(receipts, "write", lambda kind, payload, **kw: written.append(kind))
     monkeypatch.setattr(

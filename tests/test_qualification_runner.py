@@ -575,29 +575,6 @@ class _Harness:
         monkeypatch.setattr(runner, "publish_causal_qualification", publish_attempt)
         monkeypatch.setattr(runner, "reopen_causal_qualification", reopen_attempt)
 
-    def run(self):
-        ids = iter(
-            f"{index + 1:032x}"
-            for index in range(
-                1
-                + 2
-                * len(self.value.candidates)
-                * self.value.speed_evidence_policy.candidate_reads
-            )
-        )
-        reference = runner.run_causal_qualification(
-            self.value,
-            executor=self.executor,
-            entropy_provider=self.entropy_provider,
-            hidden_judge=self.hidden_judge,
-            deadline=100.0,
-            id_factory=lambda: next(ids),
-        )
-        assert reference == self.attempt_reference
-        assert type(self.published_attempt) is runner.CohortQualificationAttempt
-        return self.published_attempt
-
-
 def _install_resident_runner_path(
     monkeypatch,
     harness: _Harness,
@@ -844,20 +821,35 @@ def _run_resident_harness(harness: _Harness, resident_baseline_executor):
     )
 
 
-def test_resident_speed_fail_exits_before_audit_t_and_legacy_lifecycle(
+def _resident_case(
     monkeypatch,
-) -> None:
+    *,
+    speed_decision=QualificationDecision.PASS,
+    escalated=False,
+    quality=(QualificationDecision.PASS,),
+    disposition=None,
+    **harness_kwargs,
+):
     harness = _Harness(
         monkeypatch,
         graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
+        quality=quality,
+        **harness_kwargs,
     )
+    if disposition is not None:
+        harness.value.speed_stage_disposition = disposition
     baseline, stage_reference, exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.FAIL,
-        escalated=False,
+        monkeypatch, harness, speed_decision=speed_decision, escalated=escalated
+    )
+    return harness, baseline, stage_reference, exits
+
+
+def test_resident_speed_fail_exits_before_audit_t_and_legacy_lifecycle(
+    monkeypatch,
+) -> None:
+    harness, baseline, stage_reference, exits = _resident_case(
+        monkeypatch, speed_decision=QualificationDecision.FAIL
     )
 
     reference = _run_resident_harness(harness, baseline)
@@ -881,20 +873,10 @@ def test_resident_speed_fail_exits_before_audit_t_and_legacy_lifecycle(
 def test_resident_calibration_continuation_collects_audit_and_t_after_speed_fail(
     monkeypatch,
 ) -> None:
-    harness = _Harness(
+    harness, baseline, _stage_reference, exits = _resident_case(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    harness.value.speed_stage_disposition = (
-        runner.SpeedStageDisposition.CALIBRATION_OBSERVATION
-    )
-    baseline, _stage_reference, exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
         speed_decision=QualificationDecision.FAIL,
-        escalated=False,
+        disposition=runner.SpeedStageDisposition.CALIBRATION_OBSERVATION,
     )
 
     reference = _run_resident_harness(harness, baseline)
@@ -913,18 +895,8 @@ def test_resident_calibration_continuation_collects_audit_and_t_after_speed_fail
 
 
 def test_resident_audit_fail_exits_before_t(monkeypatch) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-        audit=(QualificationDecision.FAIL,),
-    )
-    baseline, stage_reference, exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
+    harness, baseline, stage_reference, exits = _resident_case(
+        monkeypatch, audit=(QualificationDecision.FAIL,)
     )
 
     reference = _run_resident_harness(harness, baseline)
@@ -956,18 +928,8 @@ def test_resident_pass_uses_adaptive_t_coverage_without_legacy_speed_projection(
     quality: tuple[QualificationDecision, ...],
     expected_requests: int,
 ) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=quality,
-        repeat=escalated,
-    )
-    baseline, _stage_reference, exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=escalated,
+    harness, baseline, _stage_reference, exits = _resident_case(
+        monkeypatch, escalated=escalated, quality=quality, repeat=escalated
     )
 
     reference = _run_resident_harness(harness, baseline)
@@ -1026,18 +988,11 @@ def test_repeat_report_cannot_drop_c_prime_quality(monkeypatch) -> None:
     # C-prime quality regresses on the escalated resident schedule; the
     # conservative aggregate fails, and a reopened payload cannot shed the
     # repeat-quality coverage that carried the regression.
-    harness = _Harness(
+    harness, baseline, _stage_reference, _exits = _resident_case(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
+        escalated=True,
         quality=(QualificationDecision.PASS, QualificationDecision.FAIL),
         repeat=True,
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=True,
     )
     _run_resident_harness(harness, baseline)
     report = harness.published_attempt.reports[0]
@@ -1059,18 +1014,7 @@ def test_repeat_report_cannot_drop_c_prime_quality(monkeypatch) -> None:
 
 
 def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
-    )
+    harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
 
     def fail_reference(*_args, **_kwargs):
         raise OuterSessionWorkerError("pristine teacher failed")
@@ -1093,23 +1037,16 @@ def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> No
 def test_candidate_headlines_recompute_pass_fail_and_no_decision(
     monkeypatch, speed_decision, retryable
 ) -> None:
-    harness = _Harness(
+    # A non-PASS speed verdict stage-exits under the terminal disposition;
+    # the report-level headline only exists on the observation lane.
+    harness, baseline, _stage_reference, _exits = _resident_case(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    if speed_decision is not QualificationDecision.PASS:
-        # A non-PASS speed verdict stage-exits under the terminal disposition;
-        # the report-level headline only exists on the observation lane.
-        harness.value.speed_stage_disposition = (
-            runner.SpeedStageDisposition.CALIBRATION_OBSERVATION
-        )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
         speed_decision=speed_decision,
-        escalated=False,
+        disposition=(
+            None
+            if speed_decision is QualificationDecision.PASS
+            else runner.SpeedStageDisposition.CALIBRATION_OBSERVATION
+        ),
     )
     _run_resident_harness(harness, baseline)
     report = harness.published_attempt.reports[0]
@@ -1134,18 +1071,8 @@ def test_slot_audit_violation_is_a_hard_nonretryable_qualification_fail(
     # An audit violation terminates at the audit stage exit on every
     # disposition; the exit names the hard slot_audit_failed reason and
     # carries the violating receipt.
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-        audit=(QualificationDecision.FAIL,),
-    )
-    baseline, stage_reference, exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
+    harness, baseline, stage_reference, exits = _resident_case(
+        monkeypatch, audit=(QualificationDecision.FAIL,)
     )
     reference = _run_resident_harness(harness, baseline)
 
@@ -1161,37 +1088,20 @@ def test_slot_audit_violation_is_a_hard_nonretryable_qualification_fail(
 def test_t_exchange_substitution_is_rejected(monkeypatch) -> None:
     # The escalated resident schedule issues two T requests; a swapped exchange
     # order must be rejected exactly as it was on the retired cold schedule.
-    harness = _Harness(
+    harness, baseline, _stage_reference, _exits = _resident_case(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
+        escalated=True,
         quality=(QualificationDecision.PASS, QualificationDecision.PASS),
         repeat=True,
         swap_exchanges=True,
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=True,
     )
     with pytest.raises(runner.QualificationRunnerError, match="request|exchange"):
         _run_resident_harness(harness, baseline)
 
 
 def test_pre_t_quiescence_failure_prevents_reference_launch(monkeypatch) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-        fail_pre_t_quiescence=True,
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
+    harness, baseline, _stage_reference, _exits = _resident_case(
+        monkeypatch, fail_pre_t_quiescence=True
     )
     with pytest.raises(runner.QualificationRunnerError, match="quiescence"):
         _run_resident_harness(harness, baseline)
@@ -1200,18 +1110,7 @@ def test_pre_t_quiescence_failure_prevents_reference_launch(monkeypatch) -> None
 
 
 def test_stale_hidden_judge_binding_is_rejected_before_b(monkeypatch) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
-    )
+    harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     harness.hidden_judge.binding = runner.HiddenJudgeBinding(
         _d("stale-corpus"),
         _d("hidden-judge"),
@@ -1225,18 +1124,8 @@ def test_stale_hidden_judge_binding_is_rejected_before_b(monkeypatch) -> None:
 
 
 def test_identical_hidden_judge_inputs_are_memoized(monkeypatch) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-        exercise_judge_cache=True,
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
+    harness, baseline, _stage_reference, _exits = _resident_case(
+        monkeypatch, exercise_judge_cache=True
     )
     _run_resident_harness(harness, baseline)
     assert harness.hidden_judge.calls == 1
@@ -1316,18 +1205,7 @@ def test_shared_manager_reservation_excludes_another_thread() -> None:
 
 
 def test_reports_and_attempt_expose_no_score_crown_or_settlement_fields(monkeypatch) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
-    )
+    harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     _run_resident_harness(harness, baseline)
     attempt = harness.published_attempt
 
@@ -1345,18 +1223,7 @@ def test_reports_and_attempt_expose_no_score_crown_or_settlement_fields(monkeypa
 def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
     monkeypatch, tmp_path: Path
 ) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
-    )
+    harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     _run_resident_harness(harness, baseline)
     attempt = harness.published_attempt
     value = harness.value
@@ -1465,53 +1332,38 @@ def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
     )
 
 
-def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
-    policy = runner.SlotAuditPolicy(
-        "a" * 32,
-        250_000,
-        32,
-        ("norm.rmsnorm",),
-        1,
-    )
-    receipt = runner.AuditReceiptFacts(
-        "norm.rmsnorm",
-        32,
-        0,
-        0,
-        0,
-        1.0,
-        0.995,
-        "allclose",
-        901,
-        0,
-        1,
-    )
-    assert type(receipt.to_dict()["worst_frac"]) is float
-    assert type(receipt.to_dict()["min_ratio"]) is float
+def _audit_witness(prefix, policy, receipts, session_id):
     execution = runner.EngineExecutionEvidence(
         "cacheon.oci-engine-execution.v1",
-        _d("audit-launch"),
+        _d(f"{prefix}-launch"),
         SimpleNamespace(),
-        _d("audit-preflight"),
-        _d("audit-model"),
-        _d("audit-runtime-policy"),
-        SimpleNamespace(build_spec_digest=_d("audit-build")),
-        _d("audit-publication"),
-        _d("audit-argv"),
+        _d(f"{prefix}-preflight"),
+        _d(f"{prefix}-model"),
+        _d(f"{prefix}-runtime-policy"),
+        SimpleNamespace(build_spec_digest=_d(f"{prefix}-build")),
+        _d(f"{prefix}-publication"),
+        _d(f"{prefix}-argv"),
         (),
         (),
         SimpleNamespace(
             audit_policy_digest=policy.digest,
-            audit_receipts=(receipt,),
-            session_id="1" * 32,
+            audit_receipts=receipts,
+            session_id=session_id,
         ),
     )
-
-    witness = runner.AuditWitness.from_execution(
-        execution,
-        selected_delta_digest=_d("audit-delta"),
-        policy=policy,
+    return runner.AuditWitness.from_execution(
+        execution, selected_delta_digest=_d(f"{prefix}-delta"), policy=policy
     )
+
+
+def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
+    policy = runner.SlotAuditPolicy("a" * 32, 250_000, 32, ("norm.rmsnorm",), 1)
+    receipt = runner.AuditReceiptFacts(
+        "norm.rmsnorm", 32, 0, 0, 0, 1.0, 0.995, "allclose", 901, 0, 1
+    )
+    assert type(receipt.to_dict()["worst_frac"]) is float
+    assert type(receipt.to_dict()["min_ratio"]) is float
+    witness = _audit_witness("audit", policy, (receipt,), "1" * 32)
     durable = witness.to_dict()
     durable_receipt = durable["receipts"][0]
     assert durable_receipt == runner._record_dict(receipt)
@@ -1540,36 +1392,9 @@ def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
 
 def test_audit_witness_grades_policy_bound_empty_receipts_as_fail() -> None:
     policy = runner.SlotAuditPolicy(
-        "a" * 32,
-        250_000,
-        32,
-        ("moe.fused_experts_reduce",),
-        4,
+        "a" * 32, 250_000, 32, ("moe.fused_experts_reduce",), 4
     )
-    execution = runner.EngineExecutionEvidence(
-        "cacheon.oci-engine-execution.v1",
-        _d("empty-audit-launch"),
-        SimpleNamespace(),
-        _d("empty-audit-preflight"),
-        _d("empty-audit-model"),
-        _d("empty-audit-runtime-policy"),
-        SimpleNamespace(build_spec_digest=_d("empty-audit-build")),
-        _d("empty-audit-publication"),
-        _d("empty-audit-argv"),
-        (),
-        (),
-        SimpleNamespace(
-            audit_policy_digest=policy.digest,
-            audit_receipts=(),
-            session_id="3" * 32,
-        ),
-    )
-
-    witness = runner.AuditWitness.from_execution(
-        execution,
-        selected_delta_digest=_d("empty-audit-delta"),
-        policy=policy,
-    )
+    witness = _audit_witness("empty-audit", policy, (), "3" * 32)
 
     assert witness.decision is QualificationDecision.FAIL
     assert witness.receipts == ()
@@ -1591,50 +1416,11 @@ def test_audit_witness_host_regrade_does_not_import_torch(monkeypatch) -> None:
         monkeypatch.delattr(cacheon, name.rsplit(".", 1)[-1], raising=False)
     monkeypatch.setitem(sys.modules, "torch", None)
 
-    policy = runner.SlotAuditPolicy(
-        "b" * 32,
-        250_000,
-        32,
-        ("norm.rmsnorm",),
-        1,
-    )
+    policy = runner.SlotAuditPolicy("b" * 32, 250_000, 32, ("norm.rmsnorm",), 1)
     receipt = runner.AuditReceiptFacts(
-        "norm.rmsnorm",
-        32,
-        0,
-        0,
-        0,
-        1.0,
-        0.995,
-        "allclose",
-        902,
-        0,
-        1,
+        "norm.rmsnorm", 32, 0, 0, 0, 1.0, 0.995, "allclose", 902, 0, 1
     )
-    execution = runner.EngineExecutionEvidence(
-        "cacheon.oci-engine-execution.v1",
-        _d("torch-free-audit-launch"),
-        SimpleNamespace(),
-        _d("torch-free-audit-preflight"),
-        _d("torch-free-audit-model"),
-        _d("torch-free-audit-runtime-policy"),
-        SimpleNamespace(build_spec_digest=_d("torch-free-audit-build")),
-        _d("torch-free-audit-publication"),
-        _d("torch-free-audit-argv"),
-        (),
-        (),
-        SimpleNamespace(
-            audit_policy_digest=policy.digest,
-            audit_receipts=(receipt,),
-            session_id="2" * 32,
-        ),
-    )
-
-    witness = runner.AuditWitness.from_execution(
-        execution,
-        selected_delta_digest=_d("torch-free-audit-delta"),
-        policy=policy,
-    )
+    witness = _audit_witness("torch-free-audit", policy, (receipt,), "2" * 32)
     assert witness.decision is QualificationDecision.PASS
     assert runner.AuditWitness.from_dict(witness.to_dict()) == witness
     assert "cacheon.audit" not in sys.modules
@@ -1644,18 +1430,7 @@ def test_audit_witness_host_regrade_does_not_import_torch(monkeypatch) -> None:
 def test_durable_attempt_roundtrip_rejects_nested_decision_tamper(
     monkeypatch, tmp_path
 ) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
-    )
+    harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     _run_resident_harness(harness, baseline)
     attempt = harness.published_attempt
     root = tmp_path / "attempt-evidence"
@@ -1691,18 +1466,7 @@ def test_reopen_rejects_self_consistent_speed_witness_arm_relabel(
     test_qualification.py proves the real witness's internal digest admits an
     equally self-consistent forgery at construction."""
 
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
-    )
+    harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     # Reopen's resident branch demands an exactly-typed ResidentCrossoverPlan
     # before it will even read the witness, so the harness's namespace plan is
     # replaced by a real plan built through the production crossover math; the
@@ -1762,18 +1526,7 @@ def test_reopen_rejects_self_consistent_speed_witness_arm_relabel(
 def test_reference_execution_witness_rejects_launch_and_causal_tamper(
     monkeypatch, tamper
 ) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
-    )
+    harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     _run_resident_harness(harness, baseline)
     attempt = harness.published_attempt
     witness = attempt.reference_execution

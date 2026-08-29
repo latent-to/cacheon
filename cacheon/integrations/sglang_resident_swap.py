@@ -37,6 +37,23 @@ _SCHED_HOOK_FLAG = "_cacheon_resident_swap_flush"
 _applied_generation = -1
 _MOE_PREPARED_ATTR = "_cacheon_moe_prepared_by_impl"
 
+# B300/torch 2.11 measurement: fresh or purged pools ask the driver for
+# ~11 GiB per rebuild; reusing the prior id without empty_cache asks 0 GiB.
+# The retained receipt is `poolproof-authoritative.kv` in the handoff.
+_BACKEND_HOOKS = (
+    (
+        "sglang.srt.model_executor.runner_backend.full_cuda_graph_backend",
+        "FullCudaGraphBackend",
+    ),
+    (
+        "sglang.srt.model_executor.runner_backend.breakable_cuda_graph_backend",
+        "BreakableCudaGraphBackend",
+    ),
+)
+_POOL_HOOK_FLAG = "_cacheon_pool_carry"
+_carried_graph_pool: object | None = None
+_graph_pool_reused = False
+
 
 def _read_command(control_dir: str) -> tuple[int, str | None] | None:
     path = os.path.join(control_dir, "command.json")
@@ -69,12 +86,23 @@ def _write_ack(control_dir: str, rank: object, payload: dict[str, object]) -> No
 
 
 def _release_cuda_state(model_runner: object) -> int:
-    """Drop candidate layouts and the old graph before recapture."""
+    """Drop candidate layouts and the old graph before recapture.
+
+    The old backend's graph pool id is harvested first so the rebuild can
+    record into it, and empty_cache is skipped while a pool is carried —
+    purging between generations returns the pool's segments to the driver
+    and forfeits the reuse (measured mode D, 2026-08-24)."""
+
+    global _carried_graph_pool, _graph_pool_reused
 
     import torch
 
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+    old_runner = getattr(model_runner, "decode_cuda_graph_runner", None)
+    old_pool = getattr(getattr(old_runner, "backend", None), "_pool", None)
+    _carried_graph_pool = old_pool
+    _graph_pool_reused = False
     evicted = 0
     modules = getattr(getattr(model_runner, "model", None), "modules", None)
     if callable(modules):
@@ -87,7 +115,7 @@ def _release_cuda_state(model_runner: object) -> int:
                 delattr(layer, _MOE_PREPARED_ATTR)
     setattr(model_runner, "decode_cuda_graph_runner", None)
     gc.collect()
-    if torch.cuda.is_available():
+    if _carried_graph_pool is None and torch.cuda.is_available():
         torch.cuda.empty_cache()
     return evicted
 
@@ -110,6 +138,7 @@ def _apply_pending_swap(
         "pid": os.getpid(),
     }
     ack["evicted_prepared_entries"] = _release_cuda_state(model_runner)
+    ack["graph_pool_carried"] = False
     try:
         from cacheon import receipts, seam
 
@@ -117,12 +146,25 @@ def _apply_pending_swap(
         try:
             receipts.set_root(os.path.join(control_dir, "receipts"))
             ack["prior_generation"] = prior_generation
-            ack["prior_receipts"] = (
-                receipts.counts_for_scope(prior_generation, pid=os.getpid())
+            # The receipts themselves, not their counts: the controller reduces
+            # them to "did every rank run" and carries the rows on to the
+            # miner's report. ``None`` is the unobservable reading and stays
+            # distinct from an observed empty scope.
+            ack["prior_rows"] = (
+                receipts.rows_for_scope(prior_generation, pid=os.getpid())
                 if prior_generation >= 0
                 else {}
             )
             ack["receipt_scope"] = receipts.set_scope(generation)
+            # Same line the one-shot worker writes, so one reader explains both
+            # lanes from a retained log when the product is not at hand.
+            if prior_generation >= 0:
+                print(
+                    "CACHEON-EXECUTION-SUMMARY: "
+                    + json.dumps(ack["prior_rows"], sort_keys=True, default=str),
+                    file=sys.stderr,
+                    flush=True,
+                )
         except Exception:  # noqa: BLE001 - diagnostics never break an engine
             logger.exception("cacheon: receipt scope failed at generation %s", generation)
 
@@ -146,6 +188,7 @@ def _finish_swap(
     if pending is None:
         return
     generation, rank, started, ack = pending
+    ack["graph_pool_carried"] = _graph_pool_reused
     if error is not None:
         ack["ok"] = False
         ack["error"] = f"recapture failed: {error}"[:2048]
@@ -209,8 +252,37 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
         flush_cache._cacheon_orig = sched_fn  # type: ignore[attr-defined]
         setattr(sched_cls, _SCHED_METHOD, flush_cache)
 
+    for backend_module, backend_class in _BACKEND_HOOKS:
+        bmod = sys.modules.get(backend_module)
+        bcls = getattr(bmod, backend_class, None) if bmod is not None else None
+        bfn = getattr(bcls, "capture_session", None) if bcls is not None else None
+        if bfn is None or getattr(bfn, _POOL_HOOK_FLAG, False):
+            continue
+
+        def capture_session(self, stream, _orig=bfn):
+            global _graph_pool_reused
+            if (
+                hasattr(self, "_pool")
+                and self._pool is None
+                and _carried_graph_pool is not None
+            ):
+                self._pool = _carried_graph_pool
+                _graph_pool_reused = True
+            return _orig(self, stream)
+
+        functools.update_wrapper(capture_session, bfn)
+        setattr(capture_session, _POOL_HOOK_FLAG, True)
+        capture_session._cacheon_orig = bfn  # type: ignore[attr-defined]
+        setattr(bcls, "capture_session", capture_session)
+
 
 def uninstall() -> None:
+    for backend_module, backend_class in _BACKEND_HOOKS:
+        bmod = sys.modules.get(backend_module)
+        bcls = getattr(bmod, backend_class, None) if bmod is not None else None
+        bfn = getattr(bcls, "capture_session", None) if bcls is not None else None
+        if bfn is not None and getattr(bfn, _POOL_HOOK_FLAG, False):
+            setattr(bcls, "capture_session", bfn._cacheon_orig)
     mod = sys.modules.get(_MODULE)
     cls = getattr(mod, _CLASS, None) if mod is not None else None
     fn = getattr(cls, _METHOD, None) if cls is not None else None

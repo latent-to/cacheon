@@ -157,12 +157,11 @@ def test_live_dispatch_selects_only_matching_finalized_nvfp4(
     registry.register(KernelImpl(
         slot="moe.fused_experts", bundle_id="candidate", entry=entry,
         prepare=prepare, eligibility=Eligibility(
-            dtypes=frozenset({"float32"}), quant=quant, graph_safe=True,
+            dtypes=frozenset({"float32"}), quant=quant,
         ),
     ))
     registry.enable()
-    fired, completed, stock = [], [], object()
-    monkeypatch.setattr(registry, "_write_fired_once", fired.append)
+    completed, stock = [], object()
     monkeypatch.setattr(dispatch._receipts, "completed", completed.append)
     wrapped = make_moe_dispatcher(lambda *_: stock, registry=registry,
                                   slots=("moe.fused_experts",))
@@ -170,7 +169,7 @@ def test_live_dispatch_selects_only_matching_finalized_nvfp4(
                            topk_weights=inputs["topk_weights"])
     output = wrapped(_live_layer(inputs, complete=complete), inputs["x"], topk)
     assert (output is not stock) is routed
-    assert bool(prepared) is routed and bool(fired) is routed and bool(completed) is routed
+    assert bool(prepared) is routed and bool(completed) is routed
 
 
 def test_explicit_dense_quant_remains_applicable():

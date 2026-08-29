@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from cacheon.arena_service import ArenaCandidateBinding
+from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_canonical_json_evidence
 from cacheon.eval.b300_qualification_lanes import B300ArenaProviderError
 from cacheon.eval.b300_resident_pair_factory import (
     B300CommissionedResidentPairFactory,
@@ -54,7 +57,10 @@ from cacheon.eval.resident_pair_retirement_checkpoint import (
     build_resident_pair_retirement_checkpoint,
     regrade_resident_pair_retirement_checkpoint,
 )
+from cacheon.eval.resident_execution_evidence import EXECUTION_CODEC
 from cacheon.eval.resident_pair_binding import ResidentPairRuntimeBinding
+
+_LOG = logging.getLogger(__name__)
 
 
 class B300ResidentQualificationError(RuntimeError):
@@ -478,9 +484,74 @@ def run_b300_resident_qualification_prefix(
         ) from exc
 
 
+EXECUTION_EVIDENCE_DOMAIN = "qualification.execution"
+EXECUTION_EVIDENCE_SCHEMA = "cacheon.qualification.execution.v1"
+
+
+def execution_evidence_refs(
+    speed: ResidentPairCrossoverEvidence,
+    *,
+    evidence_root: str | Path,
+    request_digest: str,
+    authority_digest: str,
+    source_digest: str,
+) -> tuple[EvidenceArtifactRef, ...]:
+    """Publish what every rank did under each candidate generation; never raises.
+
+    The rows come back across the swap that closes a generation and decide,
+    inside the crossover, whether its reads may be graded. They do not decide
+    anything here: this writes them to the evidence store as an unsealed
+    artifact so the product carries them off the pod, where the miner's report
+    renders them. A run that could not write the artifact is still a valid run,
+    so the failure is logged and an empty tuple returned.
+    """
+
+    try:
+        swaps = []
+        for row in speed.request_slices:
+            for swap in row.new_swaps:
+                execution = swap.execution
+                # Stock generations close with no loaded rank and nothing to say.
+                if not any(rank.loaded or rank.load_error for rank in execution.ranks):
+                    continue
+                swaps.append(
+                    {
+                        "executed_ranks": execution.prior_execution_ranks,
+                        "expected_ranks": swap.expected_ranks,
+                        "generation": execution.prior_generation,
+                        "lane_id": row.lane_id,
+                        "ranks": [EXECUTION_CODEC.encode(rank) for rank in execution.ranks],
+                        "request_id": row.request_id,
+                    }
+                )
+        if not swaps:
+            return ()
+        return (
+            publish_canonical_json_evidence(
+                evidence_root,
+                {
+                    "authority_digest": authority_digest,
+                    "bundle_digest": speed.candidate_bundle_digest,
+                    "request_digest": request_digest,
+                    "schema": EXECUTION_EVIDENCE_SCHEMA,
+                    "source_digest": source_digest,
+                    "swaps": swaps,
+                },
+                domain=EXECUTION_EVIDENCE_DOMAIN,
+                schema=EXECUTION_EVIDENCE_SCHEMA,
+            ),
+        )
+    except Exception:  # noqa: BLE001 - a report artifact must not fail the run
+        _LOG.exception("resident execution evidence could not be published")
+        return ()
+
+
 __all__ = [
     "B300ResidentQualificationError",
     "B300ResidentQualificationHold",
     "B300ResidentQualificationPrefix",
+    "EXECUTION_EVIDENCE_DOMAIN",
+    "EXECUTION_EVIDENCE_SCHEMA",
+    "execution_evidence_refs",
     "run_b300_resident_qualification_prefix",
 ]

@@ -14,8 +14,7 @@ posts a timelock-encrypted payload (``set_reveal_commitment``, ≤1024 bytes,
 drand-encrypted until the reveal round — nobody can read the bundle URL before
 reveal, and the reveal block is the anti-copy priority timestamp). The validator
 reads finalized storage and events in canonical order before transactional intake.
-The older salted-hash transport (``set_commitment``/``get_all_commitments``)
-remains for compatibility. Settlement and weight-publication authority live in
+Settlement and weight-publication authority live in
 their dedicated control-plane modules, not in these thin SDK wrappers.
 """
 
@@ -67,14 +66,6 @@ class ChainWeightStateRetryableError(ChainWeightStateError):
     """Transient chain read/submit fault; safe for operator watch loops to retry."""
 
     retryable = True
-
-
-@dataclass
-class Commitment:
-    """A hotkey's current on-chain commitment — for Cacheon, the salted commit hash."""
-    hotkey: str
-    data: str
-    block: int = 0
 
 
 @dataclass(frozen=True)
@@ -450,6 +441,50 @@ def _weight_finalized_point(subtensor, block: int | None = None) -> tuple[int, s
     return requested, requested_hash
 
 
+def _finalized_metagraph_view(
+    subtensor, netuid: int, resolved_block: int, block_hash: str
+) -> tuple[object, MetagraphView]:
+    mg = subtensor.metagraph(netuid=netuid, block=resolved_block)
+    reported_block = _weight_uint(
+        getattr(mg, "block", None), "returned metagraph block"
+    )
+    if reported_block != resolved_block:
+        raise ChainWeightStateError(
+            "metagraph response does not match the requested finalized block"
+        )
+    uids = [_weight_uint(value, "metagraph UID") for value in list(mg.uids)]
+    hotkeys = list(mg.hotkeys)
+    permits = [bool(value) for value in list(mg.validator_permit)]
+    last_update = [
+        _weight_uint(value, "metagraph last-update block")
+        for value in list(mg.last_update)
+    ]
+    if not (
+        len(uids) == len(hotkeys) == len(permits) == len(last_update)
+    ):
+        raise ChainWeightStateError(
+            "metagraph UID/hotkey/permit/last-update widths differ"
+        )
+    if (
+        len(set(uids)) != len(uids)
+        or len(set(hotkeys)) != len(hotkeys)
+        or any(not isinstance(hotkey, str) or not hotkey for hotkey in hotkeys)
+    ):
+        raise ChainWeightStateError(
+            "metagraph contains invalid or duplicate UID/hotkey membership"
+        )
+    view = MetagraphView(
+        netuid=netuid,
+        block=resolved_block,
+        block_hash=block_hash,
+        uids=uids,
+        hotkeys=hotkeys,
+        validator_permit=permits,
+        last_update=last_update,
+    )
+    return mg, view
+
+
 def fetch_metagraph(
     subtensor, netuid: int, *, block: int | None = None
 ) -> MetagraphView:
@@ -464,43 +499,8 @@ def fetch_metagraph(
         raise ChainWeightStateError("netuid must be a non-negative integer")
     resolved_block, block_hash = _weight_finalized_point(subtensor, block)
     try:
-        mg = subtensor.metagraph(netuid=netuid, block=resolved_block)
-        reported_block = _weight_uint(
-            getattr(mg, "block", None), "returned metagraph block"
-        )
-        if reported_block != resolved_block:
-            raise ChainWeightStateError(
-                "metagraph response does not match the requested finalized block"
-            )
-        uids = [_weight_uint(value, "metagraph UID") for value in list(mg.uids)]
-        hotkeys = list(mg.hotkeys)
-        permits = [bool(value) for value in list(mg.validator_permit)]
-        last_update = [
-            _weight_uint(value, "metagraph last-update block")
-            for value in list(mg.last_update)
-        ]
-        if not (
-            len(uids) == len(hotkeys) == len(permits) == len(last_update)
-        ):
-            raise ChainWeightStateError(
-                "metagraph UID/hotkey/permit/last-update widths differ"
-            )
-        if (
-            len(set(uids)) != len(uids)
-            or len(set(hotkeys)) != len(hotkeys)
-            or any(not isinstance(hotkey, str) or not hotkey for hotkey in hotkeys)
-        ):
-            raise ChainWeightStateError(
-                "metagraph contains invalid or duplicate UID/hotkey membership"
-            )
-        view = MetagraphView(
-            netuid=netuid,
-            block=resolved_block,
-            block_hash=block_hash,
-            uids=uids,
-            hotkeys=hotkeys,
-            validator_permit=permits,
-            last_update=last_update,
+        _mg, view = _finalized_metagraph_view(
+            subtensor, netuid, resolved_block, block_hash
         )
         if _block_hash(subtensor, resolved_block) != block_hash:
             raise ChainWeightStateError(
@@ -575,36 +575,10 @@ def resolve_subnet_owner_burn_target(
             f"cannot resolve finalized burn authority: {exc}"
         ) from None
     try:
-        mg = subtensor.metagraph(netuid=netuid, block=resolved_block)
-        reported_block = _weight_uint(
-            getattr(mg, "block", None), "returned metagraph block"
+        mg, view = _finalized_metagraph_view(
+            subtensor, netuid, resolved_block, block_hash
         )
-        if reported_block != resolved_block:
-            raise ChainWeightStateError(
-                "metagraph response does not match the requested finalized block"
-            )
-        uids = [_weight_uint(value, "metagraph UID") for value in list(mg.uids)]
-        hotkeys = list(mg.hotkeys)
-        permits = [bool(value) for value in list(mg.validator_permit)]
-        last_update = [
-            _weight_uint(value, "metagraph last-update block")
-            for value in list(mg.last_update)
-        ]
-        coldkeys = _metagraph_coldkeys(mg, len(uids))
-        if not (
-            len(uids) == len(hotkeys) == len(permits) == len(last_update)
-        ):
-            raise ChainWeightStateError(
-                "metagraph UID/hotkey/permit/last-update widths differ"
-            )
-        if (
-            len(set(uids)) != len(uids)
-            or len(set(hotkeys)) != len(hotkeys)
-            or any(not isinstance(hotkey, str) or not hotkey for hotkey in hotkeys)
-        ):
-            raise ChainWeightStateError(
-                "metagraph contains invalid or duplicate UID/hotkey membership"
-            )
+        coldkeys = _metagraph_coldkeys(mg, len(view.uids))
         owner_coldkey = _require_account_id(
             getattr(mg, "owner_coldkey", None), "subnet owner coldkey"
         )
@@ -614,8 +588,8 @@ def resolve_subnet_owner_burn_target(
             allow_empty=True,
         )
         uid, hotkey, candidates = select_subnet_owner_burn_uid(
-            uids,
-            hotkeys,
+            view.uids,
+            view.hotkeys,
             coldkeys,
             owner_coldkey,
             owner_hotkey,
@@ -624,15 +598,6 @@ def resolve_subnet_owner_burn_target(
             raise ChainWeightStateError(
                 "finalized metagraph height/hash changed while burn target was read"
             )
-        view = MetagraphView(
-            netuid=netuid,
-            block=resolved_block,
-            block_hash=block_hash,
-            uids=uids,
-            hotkeys=hotkeys,
-            validator_permit=permits,
-            last_update=last_update,
-        )
         return SubnetOwnerBurnTarget(
             uid=uid,
             hotkey=hotkey,
@@ -677,19 +642,6 @@ def _reopen_metagraph_view(
             "supplied metagraph view differs from finalized chain membership"
         )
     return reopened
-
-
-def read_commitments(subtensor, netuid: int) -> dict[str, Commitment]:
-    """Read every hotkey's current commitment. Cacheon posts the salted commit hash;
-    the reveal (bundle + salt) is verified off-chain by the Ledger."""
-    block = int(subtensor.get_current_block())
-    raw = subtensor.get_all_commitments(netuid=netuid)  # {hotkey: data}
-    out: dict[str, Commitment] = {}
-    for hotkey, data in dict(raw).items():
-        if data is None:
-            continue
-        out[hotkey] = Commitment(hotkey=hotkey, data=str(data), block=block)
-    return out
 
 
 def _chain_uint(value: object, *, field: str) -> int:
@@ -866,34 +818,9 @@ def _decode_raw_reveal(value: object) -> str:
     return _decode_reveal_candidates(_reveal_byte_candidates(value))
 
 
-def _event_text(value: object, *, field: str, allow_hex: bool) -> str:
-    value = _unwrap(value)
-    if isinstance(value, str):
-        if allow_hex and value.startswith("0x"):
-            try:
-                value = bytes.fromhex(value[2:]).decode("utf-8")
-            except (UnicodeDecodeError, ValueError):
-                raise ChainRevealHistoryError(
-                    f"CommitmentRevealed {field} is not UTF-8"
-                ) from None
-        result = value
-    elif allow_hex and isinstance(value, (bytes, bytearray)):
-        try:
-            result = bytes(value).decode("utf-8")
-        except UnicodeDecodeError:
-            raise ChainRevealHistoryError(
-                f"CommitmentRevealed {field} is not UTF-8"
-            ) from None
-    elif allow_hex and isinstance(value, (list, tuple)) and all(
-        type(item) is int and 0 <= item <= 255 for item in value
-    ):
-        try:
-            result = bytes(value).decode("utf-8")
-        except UnicodeDecodeError:
-            raise ChainRevealHistoryError(
-                f"CommitmentRevealed {field} is not UTF-8"
-            ) from None
-    else:
+def _event_text(value: object, *, field: str) -> str:
+    result = _unwrap(value)
+    if not isinstance(result, str):
         raise ChainRevealHistoryError(f"CommitmentRevealed {field} is malformed")
     if not result or len(result.encode("utf-8")) > 4096 or "\x00" in result:
         raise ChainRevealHistoryError(f"CommitmentRevealed {field} is malformed")
@@ -965,7 +892,6 @@ def _reveal_events_at(
         hotkey = _event_text(
             _attribute(attributes, ("hotkey", "who", "account"), field="hotkey"),
             field="hotkey",
-            allow_hex=False,
         )
         rows.append(
             _RevealEventOccurrence(
@@ -1181,12 +1107,6 @@ def read_finalized_reveal_history(
     return FinalizedRevealSnapshot(finalized_block, finalized_hash, ordered)
 
 
-def read_reveal_history(subtensor, netuid: int) -> tuple[RevealedCommitment, ...]:
-    """Compatibility projection of exact finalized history."""
-
-    return read_finalized_reveal_history(subtensor, netuid).reveals
-
-
 def read_revealed_commitments(subtensor, netuid: int) -> dict[str, RevealedCommitment]:
     """Latest finalized reveal per hotkey, never a head-state authority."""
 
@@ -1301,18 +1221,6 @@ def _extrinsic_outcome(result) -> tuple[bool, str]:
     if isinstance(result, tuple):  # older SDKs: (success, message)
         return bool(result[0]), str(result[1] if len(result) > 1 else "")
     return bool(getattr(result, "success", result)), str(getattr(result, "message", ""))
-
-
-def post_commitment(subtensor, wallet, netuid: int, data: str, *, dry_run: bool = False) -> dict:
-    """Miner side: post a commitment (Cacheon's salted commit hash) on-chain."""
-    if dry_run:
-        logger.info("DRY RUN set_commitment netuid=%s data=%s", netuid, data)
-        return {"submitted": False, "dry_run": True, "data": data}
-    result = subtensor.set_commitment(wallet=wallet, netuid=netuid, data=data)
-    ok, message = _extrinsic_outcome(result)
-    if not ok:
-        logger.warning("set_commitment failed on-chain: %s", message or result)
-    return {"submitted": ok, "result": result, "message": message}
 
 
 def post_reveal_commitment(subtensor, wallet, netuid: int, data: str, *,

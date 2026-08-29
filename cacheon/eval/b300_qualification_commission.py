@@ -21,6 +21,7 @@ from cacheon.eval.b300_registered_qualification import (
     B300RegisteredQualificationError,
     B300RegisteredQualificationInputs,
     B300RegisteredQualificationPolicy,
+    SealedIncumbentBundle,
     build_b300_registered_qualification_factory,
 )
 from cacheon.eval.b300_resident_pair_factory import (
@@ -64,6 +65,7 @@ from cacheon.eval.oci_backend import (
     OCIEngineExecutor,
     TrustedArenaModelMountReceipt,
     expected_runtime_preflight,
+    stage_swap_bundle,
 )
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_resident_session import ResidentSessionPlan
@@ -85,8 +87,17 @@ def _pristine_reference_authority(
     incumbent_launch: EngineLaunchSpec,
     baseline_session_plan: SessionExecutionPlan,
     runtime_preflight: object,
+    *,
+    pristine_tree,
+    pristine_native,
 ) -> tuple[EngineLaunchSpec, SessionExecutionPlan]:
-    """Derive pristine T without the candidate/stock seam selection."""
+    """Derive pristine T without the candidate/stock seam selection.
+
+    Pristine T stays anchored to the empty stock tree even when the incumbent
+    carries crowned entries, so the quality/audit reference never moves with
+    the speed baseline; at genesis the two trees coincide and every replaced
+    field below is a no-op.
+    """
 
     pristine_config = replace(
         baseline_session_plan.engine_config,
@@ -94,6 +105,9 @@ def _pristine_reference_authority(
     )
     pristine_launch = replace(
         incumbent_launch,
+        stack_digest=pristine_tree.stack_digest,
+        tree_digest=pristine_tree.tree_digest,
+        native_build_spec_digest=pristine_native.digest,
         engine_config_digest=pristine_config.digest,
     )
     pristine_session_plan = replace(
@@ -181,6 +195,54 @@ def _swap_intake_root(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True, mode=0o711)
     path.chmod(0o711)
     return path
+
+
+def _sealed_incumbent_bundle(
+    capabilities: B300QualificationCapabilities,
+    catalog,
+    swap_intake_root: Path,
+) -> SealedIncumbentBundle | None:
+    """Derive and stage the bundle the v7 baseline read injects, or None.
+
+    The identity is sealed from the durable incumbent stack entry and its
+    resolver-verified source manifest — the swap acknowledgement never gets a
+    vote. None is not an error: at genesis, and whenever the incumbent stack
+    is not reachable by one swap (multiple entries, a non-proposal reference,
+    or a non-swappable bundle), every candidate routes to the version-8
+    two-process schedule, whose baseline boots the incumbent tree instead.
+    """
+
+    from cacheon.eval.resident_screen_lane import screen_swappability
+    from cacheon.manifest import load_manifest
+    from cacheon.stack_manifest import ProposalContributionRef
+
+    entries = dict(capabilities.incumbent_entries)
+    if len(entries) != 1:
+        return None
+    ((target_id, ref),) = entries.items()
+    if type(ref) is not ProposalContributionRef:
+        return None
+    try:
+        source = capabilities.source_resolver.resolve_proposal(ref.artifact_digest)
+        manifest = load_manifest(source)
+        if screen_swappability(manifest) is not None:
+            return None
+        slots = tuple(sorted({op.slot for op in manifest.ops}))
+        members = tuple(sorted(catalog.require(target_id).members))
+        if slots != members:
+            raise B300QualificationCommissionError(
+                "incumbent bundle slots differ from its registered target members"
+            )
+        staged = stage_swap_bundle(
+            swap_intake_root, source, expected_digest=ref.artifact_digest
+        )
+        return SealedIncumbentBundle(target_id, staged, slots)
+    except B300QualificationCommissionError:
+        raise
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        raise B300QualificationCommissionError(
+            f"incumbent bundle failed to seal for baseline injection: {exc}"
+        ) from None
 
 
 def _resident_plan(
@@ -414,7 +476,20 @@ def _compose_locked(
 ) -> B300RemoteQualificationCommission:
     snapshot = catalog.snapshot()
     lane_pair = inputs.qualification_lane_pair
-    target_members, context, stock, tree = (
+    target_members, context, stock, stock_tree = (
+        screen_deployment._commissioned_stock_authority(
+            inputs,
+            manifest,
+            catalog,
+            snapshot,
+            error=B300QualificationCommissionError,
+            label="pristine reference",
+        )
+    )
+    # The measured baseline is the durable incumbent the capabilities declare;
+    # at genesis the declared entries are empty and this reopens the exact
+    # stock tree above, so both arms of the branchless pair coincide.
+    _, _, incumbent, incumbent_tree = (
         screen_deployment._commissioned_stock_authority(
             inputs,
             manifest,
@@ -422,6 +497,8 @@ def _compose_locked(
             snapshot,
             error=B300QualificationCommissionError,
             label="qualification",
+            entries=capabilities.incumbent_entries,
+            resolver=capabilities.source_resolver,
         )
     )
     engine_config = screen_deployment._engine_config(
@@ -452,8 +529,13 @@ def _compose_locked(
         dp_size=1,
         device_policy_digest=candidate_executor.device_policy.policy_sha256,
     )
-    stock_native = screen_deployment._native_build(
-        tree.tree_digest,
+    incumbent_native = screen_deployment._native_build(
+        incumbent_tree.tree_digest,
+        inputs.preflight,
+        candidate_executor.config.prebuild.policy,
+    )
+    pristine_native = screen_deployment._native_build(
+        stock_tree.tree_digest,
         inputs.preflight,
         candidate_executor.config.prebuild.policy,
     )
@@ -461,8 +543,8 @@ def _compose_locked(
         runtime_digest=inputs.runtime.runtime_digest,
         base_engine_digest=inputs.runtime.base_engine_digest,
         arena_digest=manifest.digest,
-        stack_digest=tree.stack_digest,
-        tree_digest=tree.tree_digest,
+        stack_digest=incumbent_tree.stack_digest,
+        tree_digest=incumbent_tree.tree_digest,
         image_digest=inputs.preflight.image_digest,
         platform_digest=inputs.preflight.platform_digest,
         controller_distribution_digest=inputs.controller_distribution_digest,
@@ -478,17 +560,25 @@ def _compose_locked(
         resource_policy_digest=(
             candidate_executor.config.prebuild.policy.resource_policy_digest
         ),
-        native_build_spec_digest=stock_native.digest,
+        native_build_spec_digest=incumbent_native.digest,
         hardware=baseline_hardware,
     )
     trusted_baseline = TrustedLaunchBinding(
-        materialized_tree_root=tree.root,
+        materialized_tree_root=incumbent_tree.root,
         controller_distribution_digest=inputs.controller_distribution_digest,
-        native_build_spec=stock_native,
+        native_build_spec=incumbent_native,
         runtime_preflight_receipt=inputs.preflight,
         physical_hardware=baseline_physical,
     )
-    incumbent_binding = MaterializedArmBinding(tree, trusted_baseline)
+    incumbent_binding = MaterializedArmBinding(incumbent_tree, trusted_baseline)
+    trusted_pristine = TrustedLaunchBinding(
+        materialized_tree_root=stock_tree.root,
+        controller_distribution_digest=inputs.controller_distribution_digest,
+        native_build_spec=pristine_native,
+        runtime_preflight_receipt=inputs.preflight,
+        physical_hardware=baseline_physical,
+    )
+    pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
     baseline_session_plan = SessionExecutionPlan(
         launch_digest=incumbent_launch.digest,
         expected_engine_config_digest=engine_config.digest,
@@ -510,6 +600,8 @@ def _compose_locked(
         incumbent_launch,
         baseline_session_plan,
         inputs.preflight,
+        pristine_tree=stock_tree,
+        pristine_native=pristine_native,
     )
     workload_digest = marginal_workload_digest(baseline_session_plan)
     hidden_judge = _bind_hidden_judge(
@@ -530,7 +622,7 @@ def _compose_locked(
     reference = ReferenceManifest.from_pristine(
         stock,
         pristine_launch,
-        incumbent_binding,
+        pristine_binding,
         workload_digest=workload_digest,
         tokenizer_digest=inputs.prompt_identity["tokenizer_digest"],
         hidden_corpus_commitment=hidden_binding.hidden_corpus_commitment,
@@ -571,7 +663,7 @@ def _compose_locked(
         device_policy_digest=baseline_executor.device_policy.policy_sha256,
     )
     resident_native = screen_deployment._native_build(
-        tree.tree_digest,
+        incumbent_tree.tree_digest,
         inputs.preflight,
         baseline_executor.config.prebuild.policy,
     )
@@ -587,7 +679,7 @@ def _compose_locked(
         ),
     )
     resident_binding = TrustedLaunchBinding(
-        materialized_tree_root=tree.root,
+        materialized_tree_root=incumbent_tree.root,
         controller_distribution_digest=inputs.controller_distribution_digest,
         native_build_spec=resident_native,
         runtime_preflight_receipt=inputs.preflight,
@@ -607,6 +699,51 @@ def _compose_locked(
         baseline_executor.manager.namespace_digest,
         baseline_executor.config.runtime.digest,
         baseline_executor.device_policy.configuration_sha256,
+    )
+    # The standing pair's lane engines boot plain stock; the measured baseline
+    # (the incumbent stack above) is realized inside them by injecting the
+    # sealed incumbent bundle through the swap path. Trust gates on
+    # stock-launched sessions therefore stay exact, and the receipts carry
+    # both identities: the pair binding records each lane's booted stock
+    # launch, the crossover arms record the measured stacks. At genesis the
+    # incumbent tree reproduces stock and the identities coincide.
+    stock_resident_native = screen_deployment._native_build(
+        stock_tree.tree_digest,
+        inputs.preflight,
+        baseline_executor.config.prebuild.policy,
+    )
+    stock_resident_launch = replace(
+        resident_launch,
+        stack_digest=stock_tree.stack_digest,
+        tree_digest=stock_tree.tree_digest,
+        native_build_spec_digest=stock_resident_native.digest,
+    )
+    stock_resident_binding = TrustedLaunchBinding(
+        materialized_tree_root=stock_tree.root,
+        controller_distribution_digest=inputs.controller_distribution_digest,
+        native_build_spec=stock_resident_native,
+        runtime_preflight_receipt=inputs.preflight,
+        physical_hardware=resident_physical,
+    )
+    stock_resident_session_plan = replace(
+        baseline_session_plan,
+        launch_digest=stock_resident_launch.digest,
+        expected_preflight=expected_runtime_preflight(
+            stock_resident_launch, inputs.preflight
+        ),
+    )
+    stock_candidate_launch = replace(
+        incumbent_launch,
+        stack_digest=stock_tree.stack_digest,
+        tree_digest=stock_tree.tree_digest,
+        native_build_spec_digest=pristine_native.digest,
+    )
+    stock_candidate_session_plan = replace(
+        baseline_session_plan,
+        launch_digest=stock_candidate_launch.digest,
+        expected_preflight=expected_runtime_preflight(
+            stock_candidate_launch, inputs.preflight
+        ),
     )
     resident_speed_policy = ResidentSpeedPolicy.from_calibration(
         max_stage_seconds=speed_block["max_stage_seconds"],
@@ -640,42 +777,52 @@ def _compose_locked(
     orientation = lane_pair.orientation(screen_lane)
     baseline_lane_plan = B300ResidentStockLanePlan(
         orientation.resident_baseline,
-        tree,
-        resident_launch,
-        resident_binding,
-        _resident_plan(resident_launch, resident_binding, resident_session_plan),
-        resident_session_plan,
+        stock_tree,
+        stock_resident_launch,
+        stock_resident_binding,
+        _resident_plan(
+            stock_resident_launch,
+            stock_resident_binding,
+            stock_resident_session_plan,
+        ),
+        stock_resident_session_plan,
         baseline_executor,
     )
     candidate_lane_plan = B300ResidentStockLanePlan(
         orientation.candidate,
-        tree,
-        incumbent_launch,
-        incumbent_binding.launch_binding,
+        stock_tree,
+        stock_candidate_launch,
+        pristine_binding.launch_binding,
         _resident_plan(
-            incumbent_launch,
-            incumbent_binding.launch_binding,
-            baseline_session_plan,
+            stock_candidate_launch,
+            pristine_binding.launch_binding,
+            stock_candidate_session_plan,
         ),
-        baseline_session_plan,
+        stock_candidate_session_plan,
         candidate_executor,
     )
+    swap_intake = _swap_intake_root(inputs.root / "resident-intake" / screen_lane)
+    incumbent_bundle = _sealed_incumbent_bundle(capabilities, catalog, swap_intake)
     resident_pair_factory = B300CommissionedResidentPairFactory(
         service_digest=manifest.digest,
         readiness=readiness,
         lane_pair=lane_pair,
         lane_plans=(baseline_lane_plan, candidate_lane_plan),
         model_mount=model_mount,
-        swap_intake_root=_swap_intake_root(
-            inputs.root / "resident-intake" / screen_lane
-        ),
+        swap_intake_root=swap_intake,
     )
     try:
+        # The count-quality envelope is sealed against the stock identity the
+        # lane engines actually boot: stock tree, seam-armed graph-on engine
+        # config. The seamless pristine-T launch is the quality/audit
+        # reference, not this one, and the count builder capability refuses a
+        # launch whose engine config differs from the commissioned stock
+        # derivation.
         count_context = B300ResidentCountQualityBuilderContext(
             catalog,
             stock,
-            incumbent_launch,
-            incumbent_binding,
+            stock_candidate_launch,
+            pristine_binding,
             evidence_root,
             lane_pair,
             engine_config.max_running_requests,
@@ -698,7 +845,7 @@ def _compose_locked(
             catalog=catalog,
             policy=policy,
             expected_context=context,
-            incumbent_stack=stock,
+            incumbent_stack=incumbent,
             incumbent_binding=incumbent_binding,
             incumbent_launch=incumbent_launch,
             baseline_session_plan=baseline_session_plan,
@@ -719,11 +866,12 @@ def _compose_locked(
             calibration_context=calibration_context,
             calibration_artifact_ref=calibration_ref,
             pristine_stack=stock,
-            pristine_binding=incumbent_binding,
+            pristine_binding=pristine_binding,
             pristine_launch=pristine_launch,
             pristine_session_plan=pristine_session_plan,
             resident_baseline_arm=resident_baseline_arm,
             resident_speed_policy=resident_speed_policy,
+            incumbent_bundle=incumbent_bundle,
             candidate_executor_namespace_digest=(
                 candidate_executor.manager.namespace_digest
             ),
@@ -759,10 +907,10 @@ def _compose_locked(
     construction = B300QualificationConstructionAuthority(
         catalog=catalog,
         profiles=profiles,
-        incumbent_stack=stock,
-        incumbent_tree_digest=tree.tree_digest,
+        incumbent_stack=incumbent,
+        incumbent_tree_digest=incumbent_tree.tree_digest,
         pristine_stack=stock,
-        pristine_tree_digest=tree.tree_digest,
+        pristine_tree_digest=stock_tree.tree_digest,
         evidence_root=evidence_root,
         evidence_policy_digest=QUALIFICATION_EVIDENCE_POLICY_DIGEST,
         builder_source_digest=block["builder_source_digest"],

@@ -14,7 +14,7 @@ import stat
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -573,6 +573,38 @@ def reopen_evidence(
     return _read_sealed(target, reference, limit=limit)
 
 
+def reopen_evidence_anywhere(
+    roots: Iterable[str | Path],
+    reference: EvidenceArtifactRef,
+    *,
+    max_bytes: int = DEFAULT_MAX_EVIDENCE_BYTES,
+) -> bytes | None:
+    """Reopen one artifact from whichever store holds it; ``None`` if none does.
+
+    An operator's evidence root is per worker generation, so one submission's
+    evidence sits in whichever store was live when it ran, while the durable
+    record keeps only the digest. Reading it back therefore means asking several
+    stores, and a reader with one root is why a retained artifact still reads as
+    missing.
+
+    Safe to point at every store: a hit is authenticated by ``reopen_evidence``
+    against the reference's own digest, so a wrong store cannot answer for a
+    right one. Absence is a return value rather than an error because "no store
+    has it" is a normal answer here, unlike a store that holds corrupt bytes.
+    """
+
+    if type(reference) is not EvidenceArtifactRef:
+        raise EvidenceStoreError("evidence reference must be exact and typed")
+    for root in roots:
+        try:
+            return reopen_evidence(root, reference, max_bytes=max_bytes)
+        except EvidenceStoreError:
+            continue
+        except OSError:
+            continue
+    return None
+
+
 def publish_canonical_json_evidence(
     root: str | Path,
     value: object,
@@ -590,4 +622,4 @@ def publish_canonical_json_evidence(
 
 __all__ = ["DEFAULT_MAX_EVIDENCE_BYTES", "EvidenceArtifactRef", "EvidenceStoreError",
            "prepare_evidence_root", "publish_canonical_json_evidence",
-           "publish_evidence", "reopen_evidence"]
+           "publish_evidence", "reopen_evidence", "reopen_evidence_anywhere"]

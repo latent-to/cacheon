@@ -12,6 +12,7 @@ from cacheon.arena_service import ArenaCandidateBinding, ScreenGrade
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
 from cacheon.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.resident_execution_evidence import ResidentExecutionEvidence
@@ -19,7 +20,8 @@ from cacheon.eval.resident_queue import ScreenCandidate, ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentScreenLaneError,
-    ResidentScreenUnavailable,
+    ResidentScreenLifetimeFailed,
+    ResidentStockCanaryFailure,
     ResidentServingScreenStage,
     screen_swappability,
 )
@@ -208,7 +210,8 @@ class TestResidentScreenLane:
             lambda _n: FakeResidentSession(
                 100.0,
                 {DIGEST_A: 130.0, DIGEST_B: 130.0},
-                stock_rates=[100.0, 90.0, 80.0, 95.0, 95.0],
+                # discard, opening, drifted close, failed recoveryx2, then recoverx2
+                stock_rates=[100.0, 100.0, 90.0, 80.0, 95.0, 95.0],
             )
         )
         lane = ResidentScreenLane(
@@ -226,29 +229,39 @@ class TestResidentScreenLane:
             lambda n: FakeResidentSession(
                 100.0,
                 {DIGEST_A: 112.0},
-                stock_drift_after=1 if n == 1 else None,
+                # Discarded cold read + opening stay clean; drift afterward.
+                stock_drift_after=2 if n == 1 else None,
             )
         )
         lane = ResidentScreenLane(
             factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
         )
-        with pytest.raises(ResidentScreenUnavailable, match="screen bypassed"):
+        with pytest.raises(
+            ResidentStockCanaryFailure,
+            match=(
+                r"validator_stock_canary_not_recovered reference=95 "
+                r"recovery=90,90 tolerance=0\.012"
+            ),
+        ):
             lane.screen(_candidate())
         assert factory.calls == 1
         assert factory.sessions[0].finished
         lane.close()
 
-    def test_persistent_canary_drift_is_not_a_worker_epoch_failure(self) -> None:
+    def test_persistent_canary_drift_retains_measured_failure(self) -> None:
         factory = FakeLifetimeFactory(
             lambda _n: FakeResidentSession(
-                100.0, {DIGEST_A: 112.0}, stock_drift_after=1
+                100.0, {DIGEST_A: 112.0}, stock_drift_after=2
             )
         )
         lane = ResidentScreenLane(
             factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
         )
-        with pytest.raises(ResidentScreenUnavailable, match="screen bypassed"):
+        with pytest.raises(ResidentStockCanaryFailure) as captured:
             lane.screen(_candidate())
+        assert captured.value.reference == pytest.approx(95.0)
+        assert captured.value.recovery == pytest.approx((90.0, 90.0))
+        assert captured.value.tolerance == pytest.approx(0.012)
         assert factory.calls == 1
         assert all(session.finished for session in factory.sessions)
         lane.close()
@@ -482,27 +495,33 @@ class TestResidentServingScreenStage:
         assert stage.run_screen(binding).grade is ScreenGrade.FAIL
         lane.close()
 
-    def test_canary_drift_bypasses_without_second_lifetime(self, tmp_path) -> None:
+    def test_canary_drift_holds_with_measurements_without_second_lifetime(
+        self, tmp_path
+    ) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
         stage, lane, _root, factory = self._stage(
             tmp_path,
             lambda _n: FakeResidentSession(
-                100.0, {staged: 112.0}, stock_drift_after=1
+                100.0, {staged: 112.0}, stock_drift_after=2
             ),
         )
-        assert stage.run_screen(binding).grade is ScreenGrade.PASS
-        assert factory.calls == 1
-        assert stage.bypass_reason == (
-            "stock canary did not recover; routing screen bypassed"
+        result = stage.run_screen(binding)
+        assert result.grade is ScreenGrade.NO_DECISION
+        assert result.reason == (
+            "validator_stock_canary_not_recovered reference=95 "
+            "recovery=90,90 tolerance=0.012"
         )
-        assert stage.run_screen(binding).grade is ScreenGrade.PASS
+        assert factory.calls == 1
+        assert stage.lifetime_failed
+        with pytest.raises(
+            ResidentScreenLifetimeFailed, match="explicit service restart"
+        ):
+            stage.run_screen(binding)
         assert factory.calls == 1
         lane.close()
 
-    def test_failed_resident_lifetime_bypasses_without_adapter_failure(
-        self, tmp_path
-    ) -> None:
+    def test_failed_resident_lifetime_propagates_without_sticky_pass(self, tmp_path) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
         stage, lane, _root, factory = self._stage(
@@ -512,10 +531,41 @@ class TestResidentServingScreenStage:
             ),
         )
 
-        assert stage.run_screen(binding).grade is ScreenGrade.PASS
-        assert stage.bypass_reason is not None
-        assert "resident screen lifetime failed" in stage.bypass_reason
-        assert stage.run_screen(binding).grade is ScreenGrade.PASS
+        with pytest.raises(ResidentScreenLifetimeFailed, match="lifetime failed"):
+            stage.run_screen(binding)
+        with pytest.raises(ResidentScreenLifetimeFailed, match="explicit service restart"):
+            stage.run_screen(binding)
+        assert factory.calls == 1
+        lane.close()
+
+    def test_candidate_prepare_oom_is_a_terminal_screen_fail(self, tmp_path) -> None:
+        binding = _binding(tmp_path)
+        staged = binding.publication.content_hash
+
+        class PrepareOOMSession(FakeResidentSession):
+            def swap(self, bundle_digest):
+                if bundle_digest is not None:
+                    failure = (
+                        "rank 0 OutOfMemoryError in moe.fused_experts "
+                        "during prepare at kernels/moe.py:10: "
+                        "CUDA out of memory. Tried to allocate 9.07 GiB"
+                    )
+                    raise OuterSessionCandidateError(
+                        "resident: CandidateExecutionFailure: " + failure,
+                        candidate_failure=failure,
+                    )
+                return super().swap(bundle_digest)
+
+        stage, lane, _root, factory = self._stage(
+            tmp_path, lambda _n: PrepareOOMSession(100.0, {staged: 112.0})
+        )
+        result = stage.run_screen(binding)
+        assert result.grade is ScreenGrade.FAIL
+        assert "during prepare at kernels/moe.py:10" in result.reason
+        assert "9.07 GiB" in result.reason
+        assert stage.lifetime_failed
+        with pytest.raises(ResidentScreenLifetimeFailed, match="explicit service restart"):
+            stage.run_screen(binding)
         assert factory.calls == 1
         lane.close()
 

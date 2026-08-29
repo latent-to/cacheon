@@ -175,11 +175,19 @@ def test_foreign_session_fails_before_any_resident_work(tmp_path, resident_pairs
 def test_role_mapping_is_exact_and_both_orientations_execute(
     tmp_path, resident_pairs
 ) -> None:
+    # Borderline candidates keep both stages on the three-leg terminal
+    # schedule so each orientation shows its full lane sequence.
     plan_a, pair_a, clock_a, *_ = _setup(
-        tmp_path / "orientation-a", resident_pairs, baseline_pair_lane="A"
+        tmp_path / "orientation-a",
+        resident_pairs,
+        baseline_pair_lane="A",
+        candidate=((1.0 / 1.006,) * 3,),
     )
     plan_b, pair_b, clock_b, *_ = _setup(
-        tmp_path / "orientation-b", resident_pairs, baseline_pair_lane="B"
+        tmp_path / "orientation-b",
+        resident_pairs,
+        baseline_pair_lane="B",
+        candidate=((1.0 / 1.006,) * 3,),
     )
     plan_a = replace(plan_a, candidate_bundle_digest=_h("candidate-one"))
     plan_b = replace(plan_b, candidate_bundle_digest=_h("candidate-two"))

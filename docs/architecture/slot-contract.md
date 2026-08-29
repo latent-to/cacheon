@@ -45,6 +45,17 @@ The host times requests outside the candidate process. The validator owns worklo
 
 A feature that cannot preserve all four invariants is not a core slot. It needs a reviewed catalog or integration change, not a submission.
 
+### 5. Closure is arena-scoped and never inspects an implementation
+
+An arena may close a registered target it cannot currently measure. Closure
+keys on the **submitted target name only**: intake parks a submission for a
+closed target without judgement and releases its payment. Closing a target
+closes its standalone lane and nothing else — implementing that computation
+inside any open target's boundary is always legal and can never be a rejection
+reason. A fused kernel is judged solely by the contract of the one target it
+names. This property is pinned by
+`tests/test_chain_validator_loop.py::test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes`.
+
 ## Slot kinds
 
 The live catalog supports three kinds. Kind changes the breadth and capability of the boundary, not the trust model.
@@ -65,7 +76,7 @@ The current API contains **11 slots**.
 | `norm.rmsnorm` | `op` | `rmsnorm` | RMS normalization; residual addition remains outside |
 | `attention.sdpa` | `block` | `attention` | Scaled dot-product attention core |
 | `attention.decode` | `block` | `attention_decode` | Paged decode-attention boundary |
-| `attention.msa_block_score` | `block` | `msa_block_score` | MSA decode block-score sheet; validator owns top-k selection |
+| `attention.msa_block_score` | `block` | `msa_block_score` | Paged per-index-head decode scores; validator owns top-k and attend |
 | `attention.msa_prefill_block_score` | `block` | `msa_prefill_block_score` | Batched paged MSA prefill score-to-selection; validator audits indices and owns attend |
 | `moe.fused_experts` | `block` | `fused_experts` | Prepared MoE expert execution |
 | `moe.fused_experts_reduce` | `collective` | `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
@@ -74,10 +85,8 @@ The current API contains **11 slots**.
 | `collective.moe_finalize_ar_rmsnorm` | `collective` | `moe_finalize_ar_rmsnorm` | Deep MoE finalize, all-reduce, residual, and RMSNorm boundary |
 
 This table defines registered ABI contracts, not deployment availability. In
-the current MiniMax-M3 mainnet arena, `norm.rmsnorm` and
-`attention.msa_block_score` are unavailable because candidate code for those
-boundaries cannot execute. No other registered target is withdrawn by that
-arena-specific notice. See
+the current MiniMax-M3 mainnet arena, `norm.rmsnorm` is unavailable because
+MiniMax-M3 uses `GemmaRMSNorm`. No other registered target is withdrawn. See
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 Run `cacheon slots` against the installed code for the human-readable live list.

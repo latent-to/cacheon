@@ -37,12 +37,11 @@ class _MockMetagraph:
 
 
 class _MockSubtensor:
-    def __init__(self, *, hotkeys, commitments=None, revealed=None, block=100,
+    def __init__(self, *, hotkeys, revealed=None, block=100,
                  registered=None, events=None, weight_rows=None, last_updates=None,
                  weights_version=29):
         self._hotkeys = list(hotkeys)
         self._weights_version = weights_version
-        self._commitments = dict(commitments or {})
         self._revealed = dict(revealed or {})  # hotkey -> ((block, data), ...)
         self._block = block
         self._registered = set(hotkeys if registered is None else registered)
@@ -57,7 +56,6 @@ class _MockSubtensor:
         self.set_weights_calls: list[dict] = []
         self.metagraph_calls: list[int | None] = []
         self.weight_calls: list[int | None] = []
-        self.set_commitment_calls: list[str] = []
         self.set_reveal_commitment_calls: list[tuple] = []
 
     def metagraph(self, netuid=None, block=None):
@@ -80,9 +78,6 @@ class _MockSubtensor:
 
     def get_finalized_block_number(self):
         return self._block
-
-    def get_all_commitments(self, netuid=None):
-        return dict(self._commitments)
 
     def query_map(self, module, name, params=None, block=None):
         assert (module, name, params) == ("Commitments", "RevealedCommitments", [1])
@@ -130,10 +125,6 @@ class _MockSubtensor:
 
     def is_hotkey_registered(self, *, hotkey_ss58, netuid):
         return hotkey_ss58 in self._registered
-
-    def set_commitment(self, *, wallet, netuid, data):
-        self.set_commitment_calls.append(data)
-        return True
 
 
 def _wallet(ss58: str):
@@ -243,12 +234,6 @@ def test_sparse_weight_row_and_uid_mapping_share_one_finalized_block():
     )
     assert snapshot.weights == {"alice": 1.0}
     assert calls == [("metagraph", 100), ("weights", 100)]
-
-
-def test_read_commitments():
-    st = _MockSubtensor(hotkeys=["a", "b"], commitments={"a": "hashA", "b": "hashB"}, block=7)
-    cs = chain.read_commitments(st, netuid=1)
-    assert cs["a"].data == "hashA" and cs["a"].block == 7 and cs["b"].hotkey == "b"
 
 
 def test_set_weights_dry_run_does_not_submit():
@@ -369,14 +354,6 @@ def test_read_validator_weights_rejects_ambiguous_or_invalid_sparse_rows(rows):
         chain.read_validator_weight_snapshot(st, 1, "validator")
 
 
-def test_post_commitment_dry_run_and_submit():
-    st = _MockSubtensor(hotkeys=["a"])
-    assert chain.post_commitment(st, None, 1, "thehash", dry_run=True)["submitted"] is False
-    assert st.set_commitment_calls == []
-    assert chain.post_commitment(st, object(), 1, "thehash")["submitted"] is True
-    assert st.set_commitment_calls == ["thehash"]
-
-
 def test_commitment_wrappers_report_failed_extrinsics_honestly():
     class _FailedResponse:
         success = False
@@ -388,19 +365,15 @@ def test_commitment_wrappers_report_failed_extrinsics_honestly():
 
     for failed in (_FailedResponse(), (False, "rate limited"), None, False):
         st = _MockSubtensor(hotkeys=["a"])
-        st.set_commitment = lambda *, wallet, netuid, data, _r=failed: _r
         st.set_reveal_commitment = (
             lambda *, wallet, netuid, data, blocks_until_reveal, _r=failed: _r
         )
-        assert chain.post_commitment(st, object(), 1, "h")["submitted"] is False
         assert chain.post_reveal_commitment(st, object(), 1, "p")["submitted"] is False
 
     st = _MockSubtensor(hotkeys=["a"])
-    st.set_commitment = lambda *, wallet, netuid, data: _SucceededResponse()
     st.set_reveal_commitment = (
         lambda *, wallet, netuid, data, blocks_until_reveal: (True, "")
     )
-    assert chain.post_commitment(st, object(), 1, "h")["submitted"] is True
     assert chain.post_reveal_commitment(st, object(), 1, "p")["submitted"] is True
 
 
@@ -605,7 +578,7 @@ def test_same_hotkey_same_block_payloads_use_lexical_suborder_only():
             ]
         },
     )
-    rows = chain.read_reveal_history(st, 1)
+    rows = chain.read_finalized_reveal_history(st, 1).reveals
     assert [(row.event_index, row.hotkey, row.data) for row in rows] == [
         (0, "alice", "a-payload"),
         (1, "bob", "middle"),
@@ -616,14 +589,16 @@ def test_same_hotkey_same_block_payloads_use_lexical_suborder_only():
 def test_finalized_history_paginates_and_rejects_same_block_overflow():
     history = tuple((block, f"payload-{block}") for block in range(1, 13))
     st = _MockSubtensor(hotkeys=["alice"], revealed={"alice": history}, block=20)
-    assert [row.block for row in chain.read_reveal_history(st, 1)] == list(range(1, 13))
+    assert [
+        row.block for row in chain.read_finalized_reveal_history(st, 1).reveals
+    ] == list(range(1, 13))
 
     same_block = tuple((10, f"same-{index}") for index in range(12))
     saturated = _MockSubtensor(
         hotkeys=["alice"], revealed={"alice": same_block}, block=20
     )
     with pytest.raises(chain.ChainRevealHistoryError, match="storage/event mismatch"):
-        chain.read_reveal_history(saturated, 1)
+        chain.read_finalized_reveal_history(saturated, 1)
 
 
 def test_finalized_history_fails_closed_on_missing_or_extra_event():

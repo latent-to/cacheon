@@ -147,13 +147,18 @@ def test_allreduce_faithful_passes_gloo_cpu():
     res = verify_collective(slot, ALLREDUCE_BUNDLE, "all_reduce",
                             world_size=2, backend="gloo", device="cpu", seed=0)
     assert res.passed, "\n".join(f"{r.shape}: {r.detail}" for r in res.shape_results)
-    assert all(row.phase_outcome == GraphPhaseOutcome.eager_only_passed()
-               for row in res.shape_results)
+    # The all-reduce seam serves from the captured decode graph, so capture is
+    # required and a gloo/CPU run cannot produce it. Only the deliberately
+    # unsynchronized temporal burst is eager by construction.
+    assert all(row.phase_outcome in (
+        GraphPhaseOutcome.capture_infrastructure_failed(),
+        GraphPhaseOutcome.eager_only_passed(),
+    ) for row in res.shape_results)
     assert all(row.case_descriptor is not None for row in res.shape_results)
 
 
 def test_collective_cpu_verify_does_not_claim_graph_proof():
-    res = _verify(graph_safe=True)
+    res = _verify()
     assert res.passed
     assert res.graph_required
     assert not res.graph_verified
@@ -346,7 +351,7 @@ def test_collective_eligibility_runs_only_matching_shapes():
 
 def test_collective_graph_replay_and_timeout_arguments_fail_closed():
     with pytest.raises(ValueError, match="at least two"):
-        _verify(graph_safe=True, graph_replays=1)
+        _verify(graph_replays=1)
     for timeout in (0.0, -1.0, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="finite positive"):
             _verify(timeout_s=timeout)

@@ -5,7 +5,8 @@ written so that the *validator* owns everything risky around the call:
 
   * output allocation (shape/dtype/device/stride) — never the miner,
   * eligibility gating via the registry,
-  * a fallback to the trusted baseline on ineligibility or error,
+  * trusted stock routing before selection when the candidate is ineligible,
+  * fail-closed propagation after selection when the candidate raises,
   * a single, auditable call into the miner ``entry(*inputs, out)``.
 
 The miner's ``entry`` therefore only ever sees already-allocated tensors and is
@@ -23,7 +24,7 @@ import torch
 from cacheon import audit as _audit
 from cacheon import moe_export as _moe_export
 from cacheon import receipts as _receipts
-from cacheon.capabilities import collective_call_descriptor
+from cacheon.capabilities import CallDescriptor, collective_call_descriptor
 from cacheon.moe_nvfp4_contract import (
     call_descriptor as moe_call_descriptor,
     supports_layer as supports_nvfp4_moe_layer,
@@ -39,7 +40,6 @@ from cacheon.tensor_spec import (
 
 logger = logging.getLogger("cacheon.dispatch")
 _MOE_LOGGED_ACTIVE = False
-_MOE_LOGGED_FALLBACK = False
 _MOE_OUTER_REDUCE_ATTR = "_cacheon_outer_reduce_owner"
 _MOE_OUTER_REDUCE_TOKEN = object()
 _MOE_REDUCED_ATTR = "_cacheon_already_reduced"
@@ -166,6 +166,22 @@ def _allreduce_group_role(coordinator: object, group: object) -> Optional[str]:
     return None
 
 
+def _elementwise_descriptor(x: torch.Tensor, *, last_dim: int) -> CallDescriptor:
+    """Describe an elementwise op call the way the registry expects it.
+
+    ``num_tokens`` is everything but the last dimension. The legacy router used
+    to omit it, which silently ignored a declared token window: a kernel scoped
+    to decode-sized batches was routed on prefill-sized ones anyway.
+    """
+
+    return CallDescriptor.from_legacy(
+        dtype_name=_dtype_name(x.dtype),
+        last_dim=last_dim,
+        arch=_arch_tag(x.device.index or 0) if x.is_cuda else None,
+        num_tokens=int(x.numel() // last_dim) if last_dim else 0,
+    )
+
+
 def _collective_call_descriptor(
     x: torch.Tensor,
     *,
@@ -253,12 +269,9 @@ def make_silu_and_mul_dispatcher(
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_forward(self, x)
         last_dim = x.shape[-1]
-        impl = registry.lookup(
-            slot,
-            dtype_name=_dtype_name(x.dtype),
-            last_dim=last_dim,
-            arch=_arch_tag(x.device.index or 0) if x.is_cuda else None,
-        )
+        impl = registry.select(
+            slot, _elementwise_descriptor(x, last_dim=last_dim)
+        ).impl
         if impl is None:
             return baseline_forward(self, x)
 
@@ -266,15 +279,7 @@ def make_silu_and_mul_dispatcher(
         out = torch.empty((*x.shape[:-1], d), dtype=x.dtype, device=x.device)
         aud = _audit.sampled()
         a_x = x.clone() if aud else None  # pre-call clone: the kernel may scribble on x
-        try:
-            impl.entry(x, out)
-        except Exception as exc:
-            if registry.strict:
-                raise
-            # Quality/throughput already protect us; a crashing kernel just loses.
-            stock = baseline_forward(self, x)
-            _receipts.fallback(slot, exc)
-            return stock
+        _receipts.invoke(slot, impl.entry, x, out)
         if aud:
             _audit.run(slot, (out,), lambda: baseline_forward(self, a_x))
         _receipts.completed(slot)
@@ -310,42 +315,32 @@ def make_rmsnorm_dispatcher(
                 or getattr(self, "cast_x_before_out_mul", False)):
             return baseline_forward(self, x, residual, post_residual_addition)
 
-        impl = registry.lookup(
-            slot,
-            dtype_name=_dtype_name(x.dtype),
-            last_dim=x.shape[-1],
-            arch=_arch_tag(x.device.index or 0) if x.is_cuda else None,
-        )
+        impl = registry.select(
+            slot, _elementwise_descriptor(x, last_dim=x.shape[-1])
+        ).impl
         if impl is None:
             return baseline_forward(self, x, residual, post_residual_addition)
 
         eps = float(self.variance_epsilon)
         weight = self.weight.data
         aud = _audit.sampled()
-        try:
-            if residual is None:
-                a_x = x.clone() if aud else None
-                out = torch.empty_like(x)
-                impl.entry(x, weight, out, eps)
-                if aud:
-                    _audit.run(slot, (out,), lambda: baseline_forward(self, a_x, None, None))
-                _receipts.completed(slot)
-                return out
-            a_x, a_res = (x.clone(), residual.clone()) if aud else (None, None)
-            new_residual = x + residual  # validator owns the add
-            out = torch.empty_like(new_residual)
-            impl.entry(new_residual, weight, out, eps)
+        if residual is None:
+            a_x = x.clone() if aud else None
+            out = torch.empty_like(x)
+            _receipts.invoke(slot, impl.entry, x, weight, out, eps)
             if aud:
-                _audit.run(slot, (out, new_residual),
-                           lambda: baseline_forward(self, a_x, a_res, None))
+                _audit.run(slot, (out,), lambda: baseline_forward(self, a_x, None, None))
             _receipts.completed(slot)
-            return out, new_residual
-        except Exception as exc:
-            if registry.strict:
-                raise
-            stock = baseline_forward(self, x, residual, post_residual_addition)
-            _receipts.fallback(slot, exc)
-            return stock
+            return out
+        a_x, a_res = (x.clone(), residual.clone()) if aud else (None, None)
+        new_residual = x + residual  # validator owns the add
+        out = torch.empty_like(new_residual)
+        _receipts.invoke(slot, impl.entry, new_residual, weight, out, eps)
+        if aud:
+            _audit.run(slot, (out, new_residual),
+                       lambda: baseline_forward(self, a_x, a_res, None))
+        _receipts.completed(slot)
+        return out, new_residual
 
     return dispatched
 
@@ -366,202 +361,169 @@ def make_moe_dispatcher(
     def dispatched(self, hidden_states, topk_output):
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_forward(self, hidden_states, topk_output)
-        selected_slot = None
-        route_exc = None
-        selected_is_collective = False
         if _moe_seam_active():
-            try:
-                if not (_moe_supported(self) and hidden_states.dim() == 2):
+            if not (_moe_supported(self) and hidden_states.dim() == 2):
+                pass
+            else:
+                in_graph = _in_cuda_graph()
+                quant_fmt = _moe_quant_format(self)
+                routed = _standard_topk(topk_output)
+                if routed is None:
                     pass
                 else:
-                    in_graph = _in_cuda_graph()
-                    quant_fmt = _moe_quant_format(self)
-                    routed = _standard_topk(topk_output)
-                    if routed is None:
-                        pass
-                    else:
-                        x = hidden_states
-                        for slot in slots:
-                            reduce_slot = slot.endswith(".fused_experts_reduce")
-                            group = None
-                            descriptor = None
-                            if reduce_slot:
-                                topk_ids, topk_weights = routed
-                                if quant_fmt not in {None, "nvfp4"} or (
-                                    quant_fmt == "nvfp4"
-                                    and not supports_nvfp4_moe_layer(self)
-                                ):
-                                    continue
-                                if not (
-                                    x.is_contiguous()
-                                    and torch.is_tensor(topk_ids)
-                                    and torch.is_tensor(topk_weights)
-                                    and topk_ids.dim() == 2
-                                    and topk_weights.dim() == 2
-                                    and tuple(topk_ids.shape) == tuple(topk_weights.shape)
-                                    and topk_ids.shape[0] == x.shape[0]
-                                    and topk_ids.dtype == torch.int32
-                                    and topk_weights.dtype == torch.float32
-                                    and topk_ids.is_contiguous()
-                                    and topk_weights.is_contiguous()
-                                    and topk_ids.device == x.device
-                                    and topk_weights.device == x.device
-                                ):
-                                    continue
-                                if not (
-                                    getattr(self, "reduce_results", False)
-                                    or _moe_reduce_owner(self) is not None
-                                ):
-                                    continue
-                                group = _tp_device_group()
-                                group_size = _process_group_size(group)
-                                if group_size is None or group_size <= 1:
-                                    continue
-                                dimensions = {
-                                    "ep_size": int(getattr(self, "moe_ep_size", 1)),
-                                    "top_k": int(topk_ids.shape[-1]),
-                                }
-                                num_experts = getattr(self, "num_local_experts", None)
-                                if (
-                                    isinstance(num_experts, int)
-                                    and not isinstance(num_experts, bool)
-                                    and num_experts >= 0
-                                ):
-                                    dimensions["num_experts"] = num_experts
-                                intermediate = getattr(
-                                    self, "intermediate_size_per_partition", None
-                                )
-                                if (
-                                    isinstance(intermediate, int)
-                                    and not isinstance(intermediate, bool)
-                                    and intermediate >= 0
-                                ):
-                                    dimensions["intermediate_dim"] = intermediate
-                                descriptor = _collective_call_descriptor(
-                                    x,
-                                    group_size=group_size,
-                                    quant=quant_fmt or "dense",
-                                    **dimensions,
-                                )
-                                decision = registry.select(
-                                    slot,
-                                    descriptor,
-                                    write_fired_receipt=False,
-                                )
-                                impl = decision.impl
-                            else:
-                                if (
-                                    quant_fmt == "nvfp4"
-                                    and not supports_nvfp4_moe_layer(self)
-                                ):
-                                    continue
-                                topk_ids, _topk_weights = routed
-                                tp_size, world_size = _runtime_parallel_sizes()
-                                w13 = self.w13_weight.data
-                                w2 = self.w2_weight.data
-                                descriptor = moe_call_descriptor(
-                                    x,
-                                    topk_ids,
-                                    architecture=(
-                                        _arch_tag(x.device.index or 0)
-                                        if x.is_cuda else None
-                                    ),
-                                    graph_mode="cuda_graph" if in_graph else "eager",
-                                    quant=quant_fmt or "dense",
-                                    num_experts=int(w13.shape[0]),
-                                    intermediate_dim=int(
-                                        getattr(
-                                            self,
-                                            "intermediate_size_per_partition",
-                                            w2.shape[-1] * (2 if quant_fmt else 1),
-                                        )
-                                    ),
-                                    tp_size=tp_size,
-                                    world_size=world_size,
-                                )
-                                impl = registry.select(
-                                    slot, descriptor, write_fired_receipt=False
-                                ).impl
-                            # (prepare, forward) slot: a registered kernel MUST carry
-                            # prepare, else we can't honor the contract -> skip it.
-                            if impl is None or impl.prepare is None:
+                    x = hidden_states
+                    for slot in slots:
+                        reduce_slot = slot.endswith(".fused_experts_reduce")
+                        group = None
+                        descriptor = None
+                        if reduce_slot:
+                            topk_ids, topk_weights = routed
+                            if quant_fmt not in {None, "nvfp4"} or (
+                                quant_fmt == "nvfp4"
+                                and not supports_nvfp4_moe_layer(self)
+                            ):
                                 continue
-                            # Under CUDA graphs (the scoring config) only run a kernel the
-                            # miner DECLARED graph-capturable; otherwise trust the baseline
-                            # in-graph so an un-capturable kernel can't wedge graph capture.
-                            if (not reduce_slot and in_graph
-                                    and not impl.eligibility.graph_safe):
+                            if not (
+                                x.is_contiguous()
+                                and torch.is_tensor(topk_ids)
+                                and torch.is_tensor(topk_weights)
+                                and topk_ids.dim() == 2
+                                and topk_weights.dim() == 2
+                                and tuple(topk_ids.shape) == tuple(topk_weights.shape)
+                                and topk_ids.shape[0] == x.shape[0]
+                                and topk_ids.dtype == torch.int32
+                                and topk_weights.dtype == torch.float32
+                                and topk_ids.is_contiguous()
+                                and topk_weights.is_contiguous()
+                                and topk_ids.device == x.device
+                                and topk_weights.device == x.device
+                            ):
                                 continue
-                            if reduce_slot:
-                                # Commit the routing receipt only after every non-miner
-                                # preflight gate passed. Registry state is immutable in a
-                                # live engine, so identity must remain exact.
-                                selected_slot = slot
-                                selected_is_collective = True
-                                committed = registry.select(slot, descriptor)
-                                if committed.impl is not impl:
-                                    raise RuntimeError(
-                                        "collective selection changed between "
-                                        "preflight and commit"
-                                    )
-                            else:
-                                selected_slot = slot
-                                committed = registry.select(slot, descriptor)
-                                if committed.impl is not impl:
-                                    raise RuntimeError(
-                                        "MoE selection changed between preflight and commit"
-                                    )
-                            # Audit: baseline forward_impl on a pre-call clone (its TP
-                            # reduce is collective — rank-seeded sampling keeps lockstep).
-                            # Both sides are post-reduce here (the kernel path replays the
-                            # validator reduce for plain fused_experts), so comparable.
-                            aud = not in_graph and _audit.sampled()
-                            a_x = x.clone() if aud else None
-                            out = _run_moe_kernel(
-                                self,
-                                x,
-                                routed,
-                                impl,
-                                slot,
-                                group=group,
+                            if not (
+                                getattr(self, "reduce_results", False)
+                                or _moe_reduce_owner(self) is not None
+                            ):
+                                continue
+                            group = _tp_device_group()
+                            group_size = _process_group_size(group)
+                            if group_size is None or group_size <= 1:
+                                continue
+                            dimensions = {
+                                "ep_size": int(getattr(self, "moe_ep_size", 1)),
+                                "top_k": int(topk_ids.shape[-1]),
+                            }
+                            num_experts = getattr(self, "num_local_experts", None)
+                            if (
+                                isinstance(num_experts, int)
+                                and not isinstance(num_experts, bool)
+                                and num_experts >= 0
+                            ):
+                                dimensions["num_experts"] = num_experts
+                            intermediate = getattr(
+                                self, "intermediate_size_per_partition", None
                             )
-                            if aud:
-                                def stock_reference():
-                                    stock = baseline_forward(self, a_x, topk_output)
-                                    if reduce_slot and _moe_reduce_owner(self) is not None:
-                                        from sglang.srt.distributed.communication_op import (
-                                            tensor_model_parallel_all_reduce,
-                                        )
-
-                                        stock = tensor_model_parallel_all_reduce(stock)
-                                    return stock
-
-                                _audit.run(
-                                    slot,
-                                    (out,) if torch.is_tensor(out) else tuple(out),
-                                    stock_reference,
+                            if (
+                                isinstance(intermediate, int)
+                                and not isinstance(intermediate, bool)
+                                and intermediate >= 0
+                            ):
+                                dimensions["intermediate_dim"] = intermediate
+                            descriptor = _collective_call_descriptor(
+                                x,
+                                group_size=group_size,
+                                quant=quant_fmt or "dense",
+                                **dimensions,
+                            )
+                            decision = registry.select(slot, descriptor)
+                            impl = decision.impl
+                        else:
+                            if (
+                                quant_fmt == "nvfp4"
+                                and not supports_nvfp4_moe_layer(self)
+                            ):
+                                continue
+                            topk_ids, _topk_weights = routed
+                            tp_size, world_size = _runtime_parallel_sizes()
+                            w13 = self.w13_weight.data
+                            w2 = self.w2_weight.data
+                            descriptor = moe_call_descriptor(
+                                x,
+                                topk_ids,
+                                architecture=(
+                                    _arch_tag(x.device.index or 0)
+                                    if x.is_cuda else None
+                                ),
+                                graph_mode="cuda_graph" if in_graph else "eager",
+                                quant=quant_fmt or "dense",
+                                num_experts=int(w13.shape[0]),
+                                intermediate_dim=int(
+                                    getattr(
+                                        self,
+                                        "intermediate_size_per_partition",
+                                        w2.shape[-1] * (2 if quant_fmt else 1),
+                                    )
+                                ),
+                                tp_size=tp_size,
+                                world_size=world_size,
+                            )
+                            impl = registry.select(slot, descriptor).impl
+                        if impl is None:
+                            continue
+                        if impl.prepare is None:
+                            raise RuntimeError(
+                                f"selected MoE candidate for {slot} has no prepare"
+                            )
+                        if reduce_slot:
+                            # Commit the routing receipt only after every non-miner
+                            # preflight gate passed. Registry state is immutable in a
+                            # live engine, so identity must remain exact.
+                            committed = registry.select(slot, descriptor)
+                            if committed.impl is not impl:
+                                raise RuntimeError(
+                                    "collective selection changed between "
+                                    "preflight and commit"
                                 )
-                            if not (reduce_slot and _moe_reduce_owner(self) is not None):
-                                _log_once_active(slot)
-                                _receipts.completed(slot)
-                            return out
-            except Exception as exc:  # noqa: BLE001
-                if selected_is_collective:
-                    # Once the lockstep ranks uniquely selected this collective route,
-                    # any later rank-local failure (clone/allocation/prepare/entry) must
-                    # abort the candidate engine. A stock call from only one rank would
-                    # diverge from peers entering candidate NCCL.
-                    raise
-                if registry.strict:
-                    raise
-                if selected_slot is not None:
-                    route_exc = exc
-                _log_once_fallback(exc)
-                # any mismatch with this sglang's internals -> trust the baseline
-        stock = baseline_forward(self, hidden_states, topk_output)
-        if route_exc is not None:
-            _receipts.fallback(selected_slot, route_exc)
-        return stock
+                        else:
+                            committed = registry.select(slot, descriptor)
+                            if committed.impl is not impl:
+                                raise RuntimeError(
+                                    "MoE selection changed between preflight and commit"
+                                )
+                        # Audit: baseline forward_impl on a pre-call clone (its TP
+                        # reduce is collective — rank-seeded sampling keeps lockstep).
+                        # Both sides are post-reduce here (the kernel path replays the
+                        # validator reduce for plain fused_experts), so comparable.
+                        aud = not in_graph and _audit.sampled()
+                        a_x = x.clone() if aud else None
+                        out = _run_moe_kernel(
+                            self,
+                            x,
+                            routed,
+                            impl,
+                            slot,
+                            group=group,
+                        )
+                        if aud:
+                            def stock_reference():
+                                stock = baseline_forward(self, a_x, topk_output)
+                                if reduce_slot and _moe_reduce_owner(self) is not None:
+                                    from sglang.srt.distributed.communication_op import (
+                                        tensor_model_parallel_all_reduce,
+                                    )
+
+                                    stock = tensor_model_parallel_all_reduce(stock)
+                                return stock
+
+                            _audit.run(
+                                slot,
+                                (out,) if torch.is_tensor(out) else tuple(out),
+                                stock_reference,
+                            )
+                        if not (reduce_slot and _moe_reduce_owner(self) is not None):
+                            _log_once_active(slot)
+                            _receipts.completed(slot)
+                        return out
+        return baseline_forward(self, hidden_states, topk_output)
 
     return dispatched
 
@@ -571,15 +533,6 @@ def _log_once_active(slot: str) -> None:
     if not _MOE_LOGGED_ACTIVE:
         _MOE_LOGGED_ACTIVE = True
         logger.warning("cacheon: MoE seam ACTIVE — experts routed through miner kernel (slot=%s)", slot)
-
-
-def _log_once_fallback(exc: Exception) -> None:
-    global _MOE_LOGGED_FALLBACK
-    if not _MOE_LOGGED_FALLBACK:
-        _MOE_LOGGED_FALLBACK = True
-        logger.warning("cacheon: MoE seam FELL BACK to baseline after kernel error: %r", exc)
-
-
 def _moe_seam_active() -> bool:
     import os
 
@@ -650,6 +603,13 @@ def _in_cuda_graph() -> bool:
         return False
 
 
+# Capture detection has exactly one authority and it is the one above. Receipts
+# record whether a candidate was invoked inside a capture — the fact that decides
+# whether the scored replays run its code or stock — and get it from here rather
+# than growing a second, quietly divergent detector.
+_receipts.set_graph_probe(_in_cuda_graph)
+
+
 def _standard_topk(topk_output):
     """Return ``(topk_ids, topk_weights)`` iff routing is already materialized (the
     STANDARD format), else None. BypassedTopKOutput / TritonKernelTopKOutput don't carry
@@ -682,7 +642,9 @@ def _moe_prepared(self, impl, slot):
             args = spec.prepare_from_layer(self)
         else:
             args = (self.w13_weight.data, self.w2_weight.data)
-        cache[key] = impl.prepare(*args)
+        cache[key] = _receipts.invoke(
+            slot, impl.prepare, *args, phase="prepare"
+        )
     return cache[key]
 
 
@@ -721,7 +683,7 @@ def _run_moe_kernel(
         prepared = _moe_prepared(self, impl, slot)
         _clear_moe_reduced(out)
         try:
-            impl.entry(x, topk_ids, topk_weights, prepared, out, group)
+            _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out, group)
         finally:
             _clear_moe_reduced(out)
         _validate_live_outputs(
@@ -735,7 +697,7 @@ def _run_moe_kernel(
     prepared = _moe_prepared(self, impl, slot)
     _clear_moe_reduced(out)
     try:
-        impl.entry(x, topk_ids, topk_weights, prepared, out)
+        _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out)
     finally:
         _clear_moe_reduced(out)
     _validate_live_outputs(
@@ -789,7 +751,6 @@ def _moe_data_parallel_world_size() -> Optional[int]:
 
 
 _COLLECTIVE_LOGGED_ACTIVE = False
-_COLLECTIVE_LOGGED_FALLBACK = False
 
 
 def make_allreduce_dispatcher(
@@ -809,96 +770,84 @@ def make_allreduce_dispatcher(
 
     SCOPE (MVP, mirrors the other seams): only the multi-rank (``world_size > 1``)
     default SUM all-reduce of a 2D tensor, opt-in via ``CACHEON_COLLECTIVE_SEAM=1``.
-    Extra args/kwargs or single-rank → trusted baseline. Under CUDA-graph capture
-    (the scoring config) a kernel runs only if it DECLARED ``graph_safe``; an
-    undeclared kernel stays eager-only and the stock reduce runs in-graph. The miner gets
+    Extra args/kwargs or single-rank → trusted baseline. A registered candidate runs
+    under CUDA-graph capture exactly as it runs eager; capture is the scoring config,
+    so a kernel that cannot be captured fails loudly here. The miner gets
     the process group (``self.device_group``) — a wider capability than op/block slots —
     so this slot is verified DISTRIBUTED (cacheon.verify_collective) and the end-to-end
-    gate is mandatory (docs/SLOT_CONTRACT.md).
+    gate is mandatory (docs/architecture/slot-contract.md).
     """
 
     def dispatched(self, input_, *args, **kwargs):
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_all_reduce(self, input_, *args, **kwargs)
-        selected = False
         if _collective_seam_active() and not args and not kwargs:
-            try:
+            if (
+                torch.is_tensor(input_)
+                and input_.dim() == 2
+                and input_.is_floating_point()
+                and input_.is_contiguous()
+            ):
+                group = getattr(self, "device_group", None)
+                group_size = _process_group_size(group)
+                group_role = _allreduce_group_role(self, group)
+                claimed_size = getattr(self, "world_size", None)
                 if (
-                    torch.is_tensor(input_)
-                    and input_.dim() == 2
-                    and input_.is_floating_point()
-                    and input_.is_contiguous()
+                    group_size is not None
+                    and group_size > 1
+                    and group_role is not None
+                    and (
+                        claimed_size is None
+                        or (
+                            isinstance(claimed_size, int)
+                            and not isinstance(claimed_size, bool)
+                            and claimed_size == group_size
+                        )
+                    )
                 ):
-                    group = getattr(self, "device_group", None)
-                    group_size = _process_group_size(group)
-                    group_role = _allreduce_group_role(self, group)
-                    claimed_size = getattr(self, "world_size", None)
-                    if (
-                        group_size is not None
-                        and group_size > 1
-                        and group_role is not None
-                        and (
-                            claimed_size is None
-                            or (
-                                isinstance(claimed_size, int)
-                                and not isinstance(claimed_size, bool)
-                                and claimed_size == group_size
-                            )
+                    descriptor = _collective_call_descriptor(
+                        input_, group_size=group_size
+                    )
+                    impl = registry.select(
+                        slot, descriptor
+                    ).impl
+                else:
+                    impl = None
+                if impl is not None:
+                    # Audited baseline is COLLECTIVE (see arfusion note): rank-seeded
+                    # sampling + lockstep dispatch make the extra reduce safe.
+                    aud = not _in_cuda_graph() and _audit.sampled()
+                    a_in = input_.clone() if aud else None
+                    live_inputs = {"x": input_}
+                    contract, allocation, tensor_inputs, input_bindings = (
+                        _allocate_live_outputs(
+                            slot, live_inputs, like=input_
                         )
-                    ):
-                        descriptor = _collective_call_descriptor(
-                            input_, group_size=group_size
+                    )
+                    if len(allocation.outputs) != 1:
+                        raise RuntimeError(
+                            f"{slot} must declare exactly one live output"
                         )
-                        impl = registry.select(
-                            slot, descriptor, write_fired_receipt=False
-                        ).impl
-                    else:
-                        impl = None
-                    if impl is not None:
-                        selected = True
-                        # Audited baseline is COLLECTIVE (see arfusion note): rank-seeded
-                        # sampling + lockstep dispatch make the extra reduce safe.
-                        aud = not _in_cuda_graph() and _audit.sampled()
-                        a_in = input_.clone() if aud else None
-                        live_inputs = {"x": input_}
-                        contract, allocation, tensor_inputs, input_bindings = (
-                            _allocate_live_outputs(
-                                slot, live_inputs, like=input_
-                            )
+                    out = allocation.outputs[0]
+                    committed = registry.select(slot, descriptor)
+                    if committed.impl is not impl:
+                        raise RuntimeError(
+                            "collective selection changed between preflight and commit"
                         )
-                        if len(allocation.outputs) != 1:
-                            raise RuntimeError(
-                                f"{slot} must declare exactly one live output"
-                            )
-                        out = allocation.outputs[0]
-                        committed = registry.select(slot, descriptor)
-                        if committed.impl is not impl:
-                            raise RuntimeError(
-                                "collective selection changed between preflight and commit"
-                            )
-                        impl.entry(input_, out, group)  # miner fills out with sum-over-ranks
-                        _validate_live_outputs(
-                            contract,
-                            allocation,
-                            tensor_inputs,
-                            input_bindings,
-                            like=input_,
-                        )
-                        if aud:
-                            _audit.run(slot, (out,), lambda: baseline_all_reduce(self, a_in))
-                        _log_collective_active()
-                        _receipts.completed(slot)
-                        return out
-            except Exception as exc:  # noqa: BLE001
-                if selected:
-                    # Selection is a lockstep collective boundary. Never enter stock
-                    # on one rank after peers may have committed to candidate NCCL.
-                    raise
-                if registry.strict:
-                    raise
-                _log_collective_fallback(exc)
-        stock = baseline_all_reduce(self, input_, *args, **kwargs)
-        return stock
+                    _receipts.invoke(slot, impl.entry, input_, out, group)  # miner fills out with sum-over-ranks
+                    _validate_live_outputs(
+                        contract,
+                        allocation,
+                        tensor_inputs,
+                        input_bindings,
+                        like=input_,
+                    )
+                    if aud:
+                        _audit.run(slot, (out,), lambda: baseline_all_reduce(self, a_in))
+                    _log_collective_active()
+                    _receipts.completed(slot)
+                    return out
+        return baseline_all_reduce(self, input_, *args, **kwargs)
 
     return dispatched
 
@@ -914,21 +863,11 @@ def _log_collective_active() -> None:
     if not _COLLECTIVE_LOGGED_ACTIVE:
         _COLLECTIVE_LOGGED_ACTIVE = True
         logger.warning("cacheon: collective.all_reduce seam ACTIVE — TP reduce routed through miner kernel")
-
-
-def _log_collective_fallback(exc: Exception) -> None:
-    global _COLLECTIVE_LOGGED_FALLBACK
-    if not _COLLECTIVE_LOGGED_FALLBACK:
-        _COLLECTIVE_LOGGED_FALLBACK = True
-        logger.warning("cacheon: collective.all_reduce seam FELL BACK to baseline after kernel error: %r", exc)
-
-
 # ---------------------------------------------------------------------------
 # collective.ar_residual_rmsnorm — the fused AR+residual+RMSNorm epilogue waist
 # ---------------------------------------------------------------------------
 
 _ARFUSION_LOGGED_ACTIVE = False
-_ARFUSION_LOGGED_FALLBACK = False
 
 
 def make_arfusion_dispatcher(
@@ -956,7 +895,7 @@ def make_arfusion_dispatcher(
     ``CACHEON_ARFUSION_SEAM=1``. Token-count dispatch windows (a kernel measured to win
     only at decode-sized T) are declared via eligibility ``max_num_tokens`` — oversized
     calls (prefill) route to the trusted baseline rather than trusting the kernel to
-    decline. Under CUDA-graph capture a kernel runs only if it declared ``graph_safe``.
+    decline.
     """
 
     def dispatched(input_tensor, residual, weight, eps=1e-6, max_token_num=2048,
@@ -990,105 +929,89 @@ def make_arfusion_dispatcher(
                         exp, input_tensor, residual, weight, eps, max_token_num,
                         use_oneshot, trigger_completion_at_end, fp32_acc,
                         use_attn_tp_group, registry=registry, baseline_fn=baseline_fn)
-            selected = False
-            try:
-                # Contiguity guard = STOCK PARITY: the stock function refuses
-                # non-contiguous input/residual/weight (real call sites pass views —
-                # upstream guards for it, flashinfer_comm_fusion.py). A raw-pointer
-                # kernel fed a strided view reads the wrong layout silently; verify
-                # can't see it (it always builds contiguous tensors), only the
-                # engine's own call mix does.
+            # Contiguity guard = STOCK PARITY: the stock function refuses
+            # non-contiguous input/residual/weight (real call sites pass views —
+            # upstream guards for it, flashinfer_comm_fusion.py). A raw-pointer
+            # kernel fed a strided view reads the wrong layout silently; verify
+            # can't see it (it always builds contiguous tensors), only the
+            # engine's own call mix does.
+            if (
+                torch.is_tensor(input_tensor)
+                and input_tensor.dim() == 2
+                and input_tensor.is_floating_point()
+                and torch.is_tensor(residual)
+                and tuple(residual.shape) == tuple(input_tensor.shape)
+                and residual.dtype == input_tensor.dtype
+                and residual.device == input_tensor.device
+                and torch.is_tensor(weight)
+                and weight.dim() == 1
+                and weight.shape[0] == input_tensor.shape[-1]
+                and weight.dtype == input_tensor.dtype
+                and weight.device == input_tensor.device
+                and input_tensor.is_contiguous()
+                and residual.is_contiguous()
+                and weight.is_contiguous()
+            ):
+                group = _arfusion_group(use_attn_tp_group)
+                group_size = _process_group_size(group)
+                impl = None
                 if (
-                    torch.is_tensor(input_tensor)
-                    and input_tensor.dim() == 2
-                    and input_tensor.is_floating_point()
-                    and torch.is_tensor(residual)
-                    and tuple(residual.shape) == tuple(input_tensor.shape)
-                    and residual.dtype == input_tensor.dtype
-                    and residual.device == input_tensor.device
-                    and torch.is_tensor(weight)
-                    and weight.dim() == 1
-                    and weight.shape[0] == input_tensor.shape[-1]
-                    and weight.dtype == input_tensor.dtype
-                    and weight.device == input_tensor.device
-                    and input_tensor.is_contiguous()
-                    and residual.is_contiguous()
-                    and weight.is_contiguous()
+                    group_size is not None
+                    and group_size > 1
+                    and _arfusion_group_role(use_attn_tp_group) == "tp"
                 ):
-                    group = _arfusion_group(use_attn_tp_group)
-                    group_size = _process_group_size(group)
-                    impl = None
-                    if (
-                        group_size is not None
-                        and group_size > 1
-                        and _arfusion_group_role(use_attn_tp_group) == "tp"
-                    ):
-                        descriptor = _collective_call_descriptor(
-                            input_tensor, group_size=group_size
+                    descriptor = _collective_call_descriptor(
+                        input_tensor, group_size=group_size
+                    )
+                    impl = registry.select(
+                        slot, descriptor
+                    ).impl
+                if impl is not None:
+                    # The audited baseline is COLLECTIVE: safe only because the
+                    # sampling RNG is rank-identically seeded (audit.py) and all
+                    # ranks reach this dispatcher in lockstep; never under capture.
+                    aud = not _in_cuda_graph() and _audit.sampled()
+                    if aud:
+                        a_x, a_res = input_tensor.clone(), residual.clone()
+                    live_inputs = {
+                        "x": input_tensor,
+                        "residual": residual,
+                        "weight": weight,
+                        "eps": float(eps),
+                    }
+                    contract, allocation, tensor_inputs, input_bindings = (
+                        _allocate_live_outputs(
+                            slot, live_inputs, like=input_tensor
                         )
-                        impl = registry.select(
-                            slot, descriptor, write_fired_receipt=False
-                        ).impl
-                    if impl is not None:
-                        selected = True
-                        # The audited baseline is COLLECTIVE: safe only because the
-                        # sampling RNG is rank-identically seeded (audit.py) and all
-                        # ranks reach this dispatcher in lockstep; never under capture.
-                        aud = not _in_cuda_graph() and _audit.sampled()
-                        if aud:
-                            a_x, a_res = input_tensor.clone(), residual.clone()
-                        live_inputs = {
-                            "x": input_tensor,
-                            "residual": residual,
-                            "weight": weight,
-                            "eps": float(eps),
-                        }
-                        contract, allocation, tensor_inputs, input_bindings = (
-                            _allocate_live_outputs(
-                                slot, live_inputs, like=input_tensor
-                            )
+                    )
+                    if len(allocation.outputs) != 2:
+                        raise RuntimeError(
+                            f"{slot} must declare exactly two live outputs"
                         )
-                        if len(allocation.outputs) != 2:
-                            raise RuntimeError(
-                                f"{slot} must declare exactly two live outputs"
-                            )
-                        out_norm, out_residual = allocation.outputs
-                        committed = registry.select(slot, descriptor)
-                        if committed.impl is not impl:
-                            raise RuntimeError(
-                                "collective selection changed between preflight and commit"
-                            )
-                        impl.entry(input_tensor, residual, weight, float(eps),
-                                   out_norm, out_residual, group)
-                        _validate_live_outputs(
-                            contract,
-                            allocation,
-                            tensor_inputs,
-                            input_bindings,
-                            like=input_tensor,
+                    out_norm, out_residual = allocation.outputs
+                    committed = registry.select(slot, descriptor)
+                    if committed.impl is not impl:
+                        raise RuntimeError(
+                            "collective selection changed between preflight and commit"
                         )
-                        if aud:
-                            _audit.run(slot, (out_norm, out_residual),
-                                       lambda: baseline_fn(a_x, a_res, weight, eps,
-                                                           max_token_num, use_oneshot,
-                                                           trigger_completion_at_end,
-                                                           fp32_acc, use_attn_tp_group))
-                        _log_arfusion_active()
-                        _receipts.completed(slot)
-                        return out_norm, out_residual
-            except Exception as exc:  # noqa: BLE001
-                if selected:
-                    # Any rank-local failure after unique selection must abort; peers
-                    # may already be committed to the candidate collective sequence.
-                    raise
-                if registry.strict:
-                    raise
-                _log_arfusion_fallback(exc)
-            stock = baseline_fn(
-                input_tensor, residual, weight, eps, max_token_num, use_oneshot,
-                trigger_completion_at_end, fp32_acc, use_attn_tp_group
-            )
-            return stock
+                    _receipts.invoke(slot, impl.entry, input_tensor, residual, weight, float(eps),
+                            out_norm, out_residual, group)
+                    _validate_live_outputs(
+                        contract,
+                        allocation,
+                        tensor_inputs,
+                        input_bindings,
+                        like=input_tensor,
+                    )
+                    if aud:
+                        _audit.run(slot, (out_norm, out_residual),
+                                   lambda: baseline_fn(a_x, a_res, weight, eps,
+                                                       max_token_num, use_oneshot,
+                                                       trigger_completion_at_end,
+                                                       fp32_acc, use_attn_tp_group))
+                    _log_arfusion_active()
+                    _receipts.completed(slot)
+                    return out_norm, out_residual
         return baseline_fn(input_tensor, residual, weight, eps, max_token_num,
                            use_oneshot, trigger_completion_at_end, fp32_acc,
                            use_attn_tp_group)
@@ -1112,11 +1035,17 @@ def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
 
     Export is the destructive boundary: after FlashInfer skipped finalize, the
     pended tensor may run only the *same* variant, capability contract, and process
-    group that Cacheon selected before arming. A deterministic mismatch is recoverable
-    through trusted local finalize + stock fusion. Once candidate collective code has
-    been invoked, however, per-rank stock recovery is unsafe and the candidate engine
-    must fail as a unit.
+    group that Cacheon selected before arming. With no deep candidate registered the
+    export is finished by trusted local finalize + stock fusion, which is stock end
+    to end. With one registered, every mismatch below is fatal: recovering into stock
+    would put stock inside a run that carries the candidate's name.
     """
+    if not registry.variants(_DEEP_SLOT) or not registry.active:
+        return _deep_trusted_recovery(
+            exp, input_tensor, residual, weight, eps, max_token_num, use_oneshot,
+            trigger_completion_at_end, fp32_acc, use_attn_tp_group,
+            baseline_fn=baseline_fn,
+        )
     t = input_tensor.shape[0] if torch.is_tensor(input_tensor) and input_tensor.dim() == 2 else -1
     try:
         exp_t = int(exp["T"])
@@ -1137,175 +1066,170 @@ def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
             f"/{exp_h} K={exp_k}) — refusing to serve an unfinalized output"
         )
 
-    route_committed = False
-    try:
-        selection = exp.get("selection")
-        if not isinstance(selection, _moe_export.DeepSelection):
-            raise ValueError("export pend has no producer-bound selection")
-        if not (
-            input_tensor.dtype == torch.bfloat16
-            and input_tensor.is_contiguous()
-            and torch.is_tensor(residual)
-            and tuple(residual.shape) == tuple(input_tensor.shape)
-            and residual.dtype == input_tensor.dtype
-            and residual.device == input_tensor.device
-            and residual.is_contiguous()
-            and torch.is_tensor(weight)
-            and weight.dim() == 1
-            and weight.shape[0] == exp_h
-            and weight.dtype == input_tensor.dtype
-            and weight.device == input_tensor.device
-            and weight.is_contiguous()
-        ):
-            raise ValueError("consume tensors do not match the deep live ABI")
+    selection = exp.get("selection")
+    if not isinstance(selection, _moe_export.DeepSelection):
+        raise ValueError("export pend has no producer-bound selection")
+    if not (
+        input_tensor.dtype == torch.bfloat16
+        and input_tensor.is_contiguous()
+        and torch.is_tensor(residual)
+        and tuple(residual.shape) == tuple(input_tensor.shape)
+        and residual.dtype == input_tensor.dtype
+        and residual.device == input_tensor.device
+        and residual.is_contiguous()
+        and torch.is_tensor(weight)
+        and weight.dim() == 1
+        and weight.shape[0] == exp_h
+        and weight.dtype == input_tensor.dtype
+        and weight.device == input_tensor.device
+        and weight.is_contiguous()
+    ):
+        raise ValueError("consume tensors do not match the deep live ABI")
 
-        group = _arfusion_group(use_attn_tp_group)
-        topology = _moe_export.group_topology(group)
-        if (
-            _arfusion_group_role(use_attn_tp_group) != "tp"
-            or topology is None
-            or topology != selection.topology
-        ):
-            raise ValueError("consume process group differs from export preflight")
+    group = _arfusion_group(use_attn_tp_group)
+    topology = _moe_export.group_topology(group)
+    if (
+        _arfusion_group_role(use_attn_tp_group) != "tp"
+        or topology is None
+        or topology != selection.topology
+    ):
+        raise ValueError("consume process group differs from export preflight")
 
-        dimensions = {
-            "ep_size": 1,
-            "num_tokens": t,
-            "exp_tokens": exp_t,
-            "top_k": exp_k,
-        }
-        descriptor = _collective_call_descriptor(
-            input_tensor,
-            group_size=topology.world_size,
-            **dimensions,
-        )
-        decision = registry.select(
-            _DEEP_SLOT, descriptor, write_fired_receipt=False
-        )
-        impl = decision.impl
-        if impl is not selection.impl:
-            raise ValueError("consume selected a different or ineligible deep variant")
+    dimensions = {
+        "ep_size": 1,
+        "num_tokens": t,
+        "exp_tokens": exp_t,
+        "top_k": exp_k,
+    }
+    descriptor = _collective_call_descriptor(
+        input_tensor,
+        group_size=topology.world_size,
+        **dimensions,
+    )
+    decision = registry.select(_DEEP_SLOT, descriptor)
+    impl = decision.impl
+    if impl is not selection.impl:
+        raise ValueError("consume selected a different or ineligible deep variant")
 
-        # Every producer-observed invariant must still hold. ``num_tokens`` alone may
-        # shrink because CUDA-graph batch padding is head-trimmed at consume.
-        producer_invariants = {
-            key: value
-            for key, value in selection.descriptor.items()
-            if key != "num_tokens"
-        }
-        consume_invariants = {
-            key: value for key, value in descriptor.items() if key != "num_tokens"
-        }
-        if producer_invariants != consume_invariants:
-            raise ValueError("consume descriptor differs from export preflight")
+    # Every producer-observed invariant must still hold. ``num_tokens`` alone may
+    # shrink because CUDA-graph batch padding is head-trimmed at consume.
+    producer_invariants = {
+        key: value
+        for key, value in selection.descriptor.items()
+        if key != "num_tokens"
+    }
+    consume_invariants = {
+        key: value for key, value in descriptor.items() if key != "num_tokens"
+    }
+    if producer_invariants != consume_invariants:
+        raise ValueError("consume descriptor differs from export preflight")
 
-        # Everything above is deterministic routing/topology metadata shared by the
-        # lockstep ranks. From here onward, pointer wrapping, cloning, allocation,
-        # candidate execution, and post-validation are rank-local fallible work: a
-        # failure must abort the engine, never enter stock on only one rank.
-        route_committed = True
+    # Everything above is deterministic routing/topology metadata shared by the
+    # lockstep ranks. From here onward, pointer wrapping, cloning, allocation,
+    # candidate execution, and post-validation are rank-local fallible work: a
+    # failure must abort the engine, never enter stock on only one rank.
+    gemm_out, row_map, scales = _moe_export.export_views(exp, input_tensor.device)
+    if not (
+        tuple(gemm_out.shape) == (exp_t * exp_k, exp_h)
+        and gemm_out.dtype == torch.bfloat16
+        and gemm_out.device == input_tensor.device
+        and gemm_out.is_contiguous()
+        and tuple(row_map.shape) == (exp_t * exp_k,)
+        and row_map.dtype == torch.int32
+        and row_map.device == input_tensor.device
+        and row_map.is_contiguous()
+        and tuple(scales.shape) == (exp_t, exp_k)
+        and scales.dtype == torch.float32
+        and scales.device == input_tensor.device
+        and scales.is_contiguous()
+    ):
+        raise RuntimeError("deep export views violate the typed live ABI")
 
-        gemm_out, row_map, scales = _moe_export.export_views(exp, input_tensor.device)
-        if not (
-            tuple(gemm_out.shape) == (exp_t * exp_k, exp_h)
-            and gemm_out.dtype == torch.bfloat16
-            and gemm_out.device == input_tensor.device
-            and gemm_out.is_contiguous()
-            and tuple(row_map.shape) == (exp_t * exp_k,)
-            and row_map.dtype == torch.int32
-            and row_map.device == input_tensor.device
-            and row_map.is_contiguous()
-            and tuple(scales.shape) == (exp_t, exp_k)
-            and scales.dtype == torch.float32
-            and scales.device == input_tensor.device
-            and scales.is_contiguous()
-        ):
-            raise RuntimeError("deep export views violate the typed live ABI")
-
-        # Collective audit: rank-identical sampling keeps the reference all-reduce
-        # in lockstep. This fallible clone/allocation prelude is deliberately after
-        # route commitment, so a rank-local failure aborts instead of diverging into
-        # stock while peers enter candidate collectives.
-        aud = not _in_cuda_graph() and _audit.sampled()
-        if aud:
-            a_inputs = {
-                "gemm_out": gemm_out.clone(),
-                "row_map": row_map.clone(),
-                "scales": scales.clone(),
-                "residual": residual.clone(),
-                "weight": weight,
-                "eps": eps,
-            }
-        live_inputs = {
-            "gemm_out": gemm_out,
-            "row_map": row_map,
-            "scales": scales,
-            "residual": residual,
+    # Collective audit: rank-identical sampling keeps the reference all-reduce
+    # in lockstep. This fallible clone/allocation prelude is deliberately after
+    # route commitment, so a rank-local failure aborts instead of diverging into
+    # stock while peers enter candidate collectives.
+    aud = not _in_cuda_graph() and _audit.sampled()
+    if aud:
+        a_inputs = {
+            "gemm_out": gemm_out.clone(),
+            "row_map": row_map.clone(),
+            "scales": scales.clone(),
+            "residual": residual.clone(),
             "weight": weight,
-            "eps": float(eps),
+            "eps": eps,
         }
-        contract, allocation, tensor_inputs, input_bindings = _allocate_live_outputs(
-            _DEEP_SLOT, live_inputs, like=input_tensor
-        )
-        if len(allocation.outputs) != 2:
-            raise RuntimeError(f"{_DEEP_SLOT} must declare exactly two live outputs")
-        out_norm, out_residual = allocation.outputs
+    live_inputs = {
+        "gemm_out": gemm_out,
+        "row_map": row_map,
+        "scales": scales,
+        "residual": residual,
+        "weight": weight,
+        "eps": float(eps),
+    }
+    contract, allocation, tensor_inputs, input_bindings = _allocate_live_outputs(
+        _DEEP_SLOT, live_inputs, like=input_tensor
+    )
+    if len(allocation.outputs) != 2:
+        raise RuntimeError(f"{_DEEP_SLOT} must declare exactly two live outputs")
+    out_norm, out_residual = allocation.outputs
 
-        committed = registry.select(_DEEP_SLOT, descriptor)
-        if committed.impl is not impl:
-            raise ValueError("deep selection changed between preflight and commit")
-        impl.entry(
-            gemm_out,
-            row_map,
-            scales,
-            residual,
-            weight,
-            float(eps),
-            out_norm,
-            out_residual,
-            group,
-        )
-        _validate_live_outputs(
-            contract,
-            allocation,
-            tensor_inputs,
-            input_bindings,
-            like=input_tensor,
-        )
-        if aud:
-            def _reference():
-                import torch.distributed as dist
+    committed = registry.select(_DEEP_SLOT, descriptor)
+    if committed.impl is not impl:
+        raise ValueError("deep selection changed between preflight and commit")
+    _receipts.invoke(
+        _DEEP_SLOT,
+        impl.entry,
+        gemm_out,
+        row_map,
+        scales,
+        residual,
+        weight,
+        float(eps),
+        out_norm,
+        out_residual,
+        group,
+    )
+    _validate_live_outputs(
+        contract,
+        allocation,
+        tensor_inputs,
+        input_bindings,
+        like=input_tensor,
+    )
+    if aud:
+        def _reference():
+            import torch.distributed as dist
 
-                from cacheon.slots import (
-                    _ar_norm_reference_from_sum,
-                    _moe_fin_local_finalize,
-                )
+            from cacheon.slots import (
+                _ar_norm_reference_from_sum,
+                _moe_fin_local_finalize,
+            )
 
-                part = _moe_fin_local_finalize(a_inputs)
-                dist.all_reduce(part, group=group)
-                return _ar_norm_reference_from_sum(a_inputs, part, None)
+            part = _moe_fin_local_finalize(a_inputs)
+            dist.all_reduce(part, group=group)
+            return _ar_norm_reference_from_sum(a_inputs, part, None)
 
-            _audit.run(_DEEP_SLOT, (out_norm, out_residual), _reference)
-        _log_arfusion_active()
-        _receipts.completed(_DEEP_SLOT)
-        return out_norm, out_residual
-    except Exception as exc:  # noqa: BLE001
-        if route_committed:
-            # Another rank may already be in candidate NCCL. Never enter stock from
-            # only this rank, and never claim a fallback receipt when none was served.
-            raise
-        if registry.strict:
-            raise
-        _log_arfusion_fallback(exc)
+        _audit.run(_DEEP_SLOT, (out_norm, out_residual), _reference)
+    _log_arfusion_active()
+    _receipts.completed(_DEEP_SLOT)
+    return out_norm, out_residual
 
-    # Trusted recovery: fp32 finalize from the exported views (head-trimmed to this
-    # call's T), then the stock fusion path on the now-FINALIZED tensor. Correct but
-    # slow — receipted as an orphan so a nonzero count is visible seam-health data.
+
+def _deep_trusted_recovery(exp, input_tensor, residual, weight, eps, max_token_num,
+                           use_oneshot, trigger_completion_at_end, fp32_acc,
+                           use_attn_tp_group, *, baseline_fn):
+    """Finish a skipped-finalize export with no candidate involved, anywhere.
+
+    fp32 finalize from the exported views (head-trimmed to this call's T), then the
+    stock fusion on the now-FINALIZED tensor. Receipted as an orphan so a nonzero
+    count stays visible as seam-health data.
+    """
+
     finalized = _moe_export.trusted_finalize(exp, input_tensor)
     _moe_export.orphaned(exp)
-    stock = baseline_fn(finalized, residual, weight, eps, max_token_num, use_oneshot,
-                        trigger_completion_at_end, fp32_acc, use_attn_tp_group)
-    return stock
+    return baseline_fn(finalized, residual, weight, eps, max_token_num, use_oneshot,
+                       trigger_completion_at_end, fp32_acc, use_attn_tp_group)
 
 
 # (The 2026-07-07 one-off "stockcheck" diagnostic that lived here was productized
@@ -1375,16 +1299,6 @@ def _log_arfusion_active() -> None:
         _ARFUSION_LOGGED_ACTIVE = True
         logger.warning(
             "cacheon: collective.ar_residual_rmsnorm seam ACTIVE — fused AR+norm epilogue routed through miner kernel")
-
-
-def _log_arfusion_fallback(exc: Exception) -> None:
-    global _ARFUSION_LOGGED_FALLBACK
-    if not _ARFUSION_LOGGED_FALLBACK:
-        _ARFUSION_LOGGED_FALLBACK = True
-        logger.warning(
-            "cacheon: collective.ar_residual_rmsnorm seam FELL BACK to baseline after kernel error: %r", exc)
-
-
 def _dtype_name(dtype: torch.dtype) -> str:
     return {
         torch.bfloat16: "bfloat16",

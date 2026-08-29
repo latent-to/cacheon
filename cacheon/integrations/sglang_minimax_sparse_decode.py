@@ -1,57 +1,260 @@
-"""Atomically bind the decode dispatcher to SGLang's source and by-value consumer."""
+"""Bind MiniMax sparse-attend and decode-score seams to the pinned runtime."""
 
 from __future__ import annotations
 
-from types import ModuleType
+import os
+from collections.abc import Callable
+
+import torch
 
 from cacheon import audit as _audit
-from cacheon.minimax_sparse_decode_dispatch import (
-    make_minimax_sparse_decode_dispatcher,
+from cacheon import receipts as _receipts
+from cacheon.capabilities import CallDescriptor, msa_decode_score_call_descriptor
+from cacheon.dispatch import (
+    _allocate_live_outputs,
+    _arch_tag,
+    _dtype_name,
+    _in_cuda_graph,
+    _runtime_parallel_sizes,
+    _validate_live_outputs,
 )
+from cacheon.integrations._by_value_function import ByValueFunctionPatch
 from cacheon.registry import REGISTRY, KernelRegistry
+
+# ---- MiniMax sparse-decode dispatch (after stock scoring and top-k selection) ----
+
+
+def _descriptor(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    req_to_token: torch.Tensor,
+    topk_idx: torch.Tensor,
+    *,
+    block_size: int,
+    in_graph: bool,
+) -> CallDescriptor:
+    tp_size, world_size = _runtime_parallel_sizes()
+    fields: dict[str, object] = {
+        "architecture": _arch_tag(q.device.index or 0) if q.is_cuda else None,
+        "batch_size": int(q.shape[0]),
+        "block_size": int(block_size),
+        "dtype": _dtype_name(q.dtype),
+        "graph_mode": "cuda_graph" if in_graph else "eager",
+        "head_dim": int(q.shape[-1]),
+        "last_dim": int(q.shape[-1]),
+        "layout": "paged_nhd",
+        "kv_len": int(req_to_token.shape[1]),
+        "model": "MiniMax-M3",
+        "num_kv_heads": int(k_cache.shape[1]),
+        "num_q_heads": int(q.shape[1]),
+        "num_tokens": int(q.shape[0]),
+        "page_size": int(block_size),
+        "phase": "decode",
+        "q_len": 1,
+        "quant": "fp8" if "float8" in str(k_cache.dtype).lower() else "dense",
+        "top_k": int(topk_idx.shape[-1]),
+    }
+    if tp_size is not None:
+        fields["tp_size"] = tp_size
+    if world_size is not None:
+        fields["world_size"] = world_size
+    return CallDescriptor({key: value for key, value in fields.items() if value is not None})
+
+
+def make_minimax_sparse_decode_dispatcher(
+    baseline: Callable[..., torch.Tensor],
+    *,
+    registry: KernelRegistry = REGISTRY,
+    slot: str = "attention.decode",
+) -> Callable[..., torch.Tensor]:
+    """Wrap the graph-native sparse-attend function used by M3 decode."""
+
+    def dispatched(
+        q,
+        sink,
+        k_cache,
+        v_cache,
+        req_to_token,
+        seq_lens,
+        slot_ids,
+        block_size,
+        topk_idx,
+        sm_scale=None,
+        use_tma=True,
+    ):
+        def stock():
+            return baseline(
+                q, sink, k_cache, v_cache, req_to_token, seq_lens, slot_ids,
+                block_size, topk_idx, sm_scale, use_tma,
+            )
+
+        supported = (
+            torch.is_tensor(q)
+            and torch.is_tensor(k_cache)
+            and torch.is_tensor(v_cache)
+            and torch.is_tensor(req_to_token)
+            and torch.is_tensor(seq_lens)
+            and torch.is_tensor(slot_ids)
+            and torch.is_tensor(topk_idx)
+            and sink is None
+            and "float8" not in str(k_cache.dtype).lower()
+        )
+        if not supported:
+            return stock()
+
+        in_graph = _in_cuda_graph()
+        descriptor = _descriptor(
+            q, k_cache, req_to_token, topk_idx,
+            block_size=int(block_size), in_graph=in_graph,
+        )
+        selected = registry.select(slot, descriptor).impl
+        if selected is None:
+            return stock()
+
+        live_inputs = {
+            "q": q,
+            "k_cache": k_cache,
+            "v_cache": v_cache,
+            "req_to_token": req_to_token,
+            "seq_lens": seq_lens,
+            "req_pool_indices": slot_ids,
+            "topk_idx": topk_idx,
+            "sm_scale": float(sm_scale if sm_scale is not None else q.shape[-1] ** -0.5),
+            "block_size": int(block_size),
+        }
+        contract, allocation, tensor_inputs, input_bindings = _allocate_live_outputs(
+            slot, live_inputs, like=q
+        )
+        if len(allocation.outputs) != 1:
+            raise RuntimeError("attention.decode must declare exactly one output")
+        output = allocation.outputs[0]
+        committed = registry.select(slot, descriptor)
+        if committed.impl is not selected:
+            raise RuntimeError("attention.decode selection changed before invocation")
+        # Audit stock first on pristine inputs; never clone the multi-GB cache.
+        audited = not in_graph and _audit.sampled()
+        expected = stock() if audited else None
+        selected.entry(
+            q,
+            k_cache,
+            v_cache,
+            req_to_token,
+            seq_lens,
+            slot_ids,
+            topk_idx,
+            output,
+            live_inputs["sm_scale"],
+            int(block_size),
+        )
+        _validate_live_outputs(
+            contract, allocation, tensor_inputs, input_bindings, like=q
+        )
+        if audited:
+            _audit.record(slot, (output,), (expected,))
+        # Eager recapture warmup may compile, but cannot prove graph execution.
+        if in_graph or _audit.enabled():
+            _receipts.completed(slot)
+        return output
+
+    return dispatched
+
+
+class _MsaScoreKernel:
+    """Triton-launch-compatible proxy for the pinned decode score producer."""
+
+    def __init__(self, stock: object, registry: KernelRegistry, slot: str) -> None:
+        self._stock, self._registry, self._slot = stock, registry, slot
+
+    def __getitem__(self, grid):
+        stock_launch = self._stock[grid]
+
+        def launch(
+            q, k_cache, req_to_token, score, seq_lens, slot_ids,
+            max_slots, batch_size, gqa_group_size, head_dim, block_size, topk,
+            sm_scale, init_blocks, local_blocks, *strides, **meta,
+        ):
+            supported = (
+                os.environ.get("CACHEON_MSA_DECODE_SCORE_SEAM") == "1"
+                and meta.get("SCORE_TYPE") == "max"
+                and all(torch.is_tensor(value) for value in (
+                    q, k_cache, req_to_token, score, seq_lens, slot_ids
+                ))
+                and q.dim() == k_cache.dim() == score.dim() == 3
+                and score.dtype == torch.float32
+                and int(max_slots) == k_cache.shape[0]
+                and int(batch_size) == q.shape[0] == score.shape[1]
+                and int(head_dim) == q.shape[-1] == k_cache.shape[-1]
+                and int(gqa_group_size) * k_cache.shape[1] == q.shape[1] == score.shape[0]
+                and score.shape[2] > int(topk)
+            )
+            if not supported:
+                return stock_launch(
+                    q, k_cache, req_to_token, score, seq_lens, slot_ids,
+                    max_slots, batch_size, gqa_group_size, head_dim, block_size,
+                    topk, sm_scale, init_blocks, local_blocks, *strides, **meta,
+                )
+
+            tp_size, world_size = _runtime_parallel_sizes()
+            descriptor = msa_decode_score_call_descriptor(
+                dtype=_dtype_name(q.dtype),
+                architecture=_arch_tag(q.device.index or 0) if q.is_cuda else None,
+                graph_mode="cuda_graph" if _in_cuda_graph() else "eager",
+                head_dim=int(head_dim), block_size=int(block_size),
+                kv_len=int(score.shape[2]) * int(block_size), top_k=int(topk),
+                init_blocks=int(init_blocks), local_blocks=int(local_blocks),
+                batch_size=int(batch_size), num_q_heads=int(q.shape[1]),
+                num_kv_heads=int(k_cache.shape[1]),
+                quant="fp8" if "float8" in str(k_cache.dtype).lower() else "dense",
+                tp_size=tp_size, world_size=world_size,
+            )
+            selected = self._registry.select(self._slot, descriptor).impl
+            if selected is None:
+                return stock_launch(
+                    q, k_cache, req_to_token, score, seq_lens, slot_ids,
+                    max_slots, batch_size, gqa_group_size, head_dim, block_size,
+                    topk, sm_scale, init_blocks, local_blocks, *strides, **meta,
+                )
+            identity = (score.data_ptr(), score.shape, score.stride(), score.dtype, score.device)
+            if self._registry.select(self._slot, descriptor).impl is not selected:
+                raise RuntimeError("MSA score selection changed before invocation")
+            selected.entry(
+                q, k_cache, req_to_token, slot_ids, seq_lens, score, float(sm_scale),
+                int(block_size), int(topk), int(init_blocks), int(local_blocks),
+            )
+            if identity != (
+                score.data_ptr(), score.shape, score.stride(), score.dtype, score.device
+            ):
+                raise RuntimeError("MSA score candidate changed validator output identity")
+            if descriptor["graph_mode"] == "cuda_graph" or _audit.enabled():
+                _receipts.completed(self._slot)
+
+        return launch
+
+
+def make_msa_block_score_kernel(
+    stock: object, *, registry: KernelRegistry = REGISTRY,
+    slot: str = "attention.msa_block_score",
+) -> object:
+    if not hasattr(stock, "__getitem__"):
+        raise TypeError("stock MSA score kernel is not launchable")
+    return _MsaScoreKernel(stock, registry, slot)
+
 
 _SOURCE = "sglang.srt.layers.attention.minimax_sparse_ops.decode.topk_sparse"
 _CONSUMER = "sglang.srt.layers.attention.minimax_sparse_ops.minimax_sparse"
 _FUNCTION = "flash_decode_with_gqa_share_sparse"
-_PATCHED = "_cacheon_sparse_decode_patched"
-_ORIGINAL = "_cacheon_orig_flash_decode_with_gqa_share_sparse"
-_DISPATCHER = "_cacheon_dispatch_flash_decode_with_gqa_share_sparse"
+_PATCH = ByValueFunctionPatch(_SOURCE, _CONSUMER, _FUNCTION, "cacheon_sparse_decode")
+_PATCHED = _PATCH.patched
 _BACKEND = "sglang.srt.layers.attention.minimax_sparse_backend"
 _BACKEND_CLASS = "MiniMaxSparseAttnBackend"
 _BACKEND_ORIGINAL = "_cacheon_orig_decode_audit_init"
-
-
-def _initializing(module: ModuleType) -> bool:
-    spec = getattr(module, "__spec__", None)
-    return bool(spec is not None and getattr(spec, "_initializing", False))
-
-
-def _consumer_state(
-    consumer: ModuleType | None, *, original: object, dispatcher: object
-) -> str:
-    if consumer is None:
-        return "absent"
-    if not hasattr(consumer, _FUNCTION):
-        if _initializing(consumer):
-            return "initializing"
-        raise RuntimeError("MiniMax sparse-decode consumer lacks its stock binding")
-    binding = getattr(consumer, _FUNCTION)
-    if binding is original:
-        return "original"
-    if binding is dispatcher:
-        return "dispatcher"
-    raise RuntimeError("MiniMax sparse-decode consumer binding drifted")
-
-
-def _installed(source: ModuleType) -> tuple[object, object]:
-    try:
-        original = getattr(source, _ORIGINAL)
-        dispatcher = getattr(source, _DISPATCHER)
-    except AttributeError as exc:
-        raise RuntimeError("MiniMax sparse-decode seam has partial state") from exc
-    if original is dispatcher or getattr(source, _FUNCTION, None) is not dispatcher:
-        raise RuntimeError("MiniMax sparse-decode defining binding drifted")
-    return original, dispatcher
+_SCORE_SOURCE = (
+    "sglang.srt.layers.attention.minimax_sparse_ops.decode.flash_with_topk_idx"
+)
+_SCORE_FUNCTION = "_decode_score_kernel"
+_SCORE_PATCH = ByValueFunctionPatch(
+    _SCORE_SOURCE, None, _SCORE_FUNCTION, "cacheon_msa_score", False
+)
 
 
 def _install_audit_mode() -> None:
@@ -66,8 +269,7 @@ def _install_audit_mode() -> None:
     def initialize(self, *args, **kwargs):
         original(self, *args, **kwargs)
         if _audit.enabled():
-            self._use_msa_decode = False
-            self._msa_owns_decode = False
+            self._use_msa_decode = self._msa_owns_decode = False
 
     setattr(cls, _BACKEND_ORIGINAL, original)
     cls.__init__ = initialize
@@ -75,84 +277,49 @@ def _install_audit_mode() -> None:
 
 
 def install(registry: KernelRegistry = REGISTRY) -> None:
-    import sys
-
     _install_audit_mode()
-    source = sys.modules.get(_SOURCE)
-    if source is None:
-        return
-    consumer = sys.modules.get(_CONSUMER)
-    if getattr(source, _PATCHED, False):
-        original, dispatcher = _installed(source)
-        if _consumer_state(
-            consumer, original=original, dispatcher=dispatcher
-        ) == "original":
-            setattr(consumer, _FUNCTION, dispatcher)
-        return
-    if hasattr(source, _ORIGINAL) or hasattr(source, _DISPATCHER):
-        raise RuntimeError("MiniMax sparse-decode seam has stale patch state")
-    original = getattr(source, _FUNCTION, None)
-    if original is None:
-        return
-    if not callable(original):
-        raise RuntimeError("MiniMax sparse-decode stock binding is not callable")
-    dispatcher = make_minimax_sparse_decode_dispatcher(original, registry=registry)
-    state = _consumer_state(
-        consumer, original=original, dispatcher=dispatcher
+    _SCORE_PATCH.install(
+        lambda original, _: make_msa_block_score_kernel(original, registry=registry)
     )
-    setattr(source, _ORIGINAL, original)
-    setattr(source, _DISPATCHER, dispatcher)
-    setattr(source, _FUNCTION, dispatcher)
-    setattr(source, _PATCHED, True)
-    if state == "original":
-        setattr(consumer, _FUNCTION, dispatcher)
+    _PATCH.install(
+        lambda original, _source: make_minimax_sparse_decode_dispatcher(
+            original, registry=registry
+        )
+    )
 
 
 def uninstall() -> None:
     import sys
 
-    backend = sys.modules.get(_BACKEND)
-    cls = getattr(backend, _BACKEND_CLASS, None) if backend is not None else None
+    _SCORE_PATCH.uninstall()
+    module = sys.modules.get(_BACKEND)
+    cls = getattr(module, _BACKEND_CLASS, None) if module is not None else None
     if cls is not None and getattr(cls, _PATCHED, False):
         cls.__init__ = getattr(cls, _BACKEND_ORIGINAL)
         delattr(cls, _BACKEND_ORIGINAL)
         setattr(cls, _PATCHED, False)
-    source = sys.modules.get(_SOURCE)
-    if source is None or not getattr(source, _PATCHED, False):
-        return
-    original, dispatcher = _installed(source)
-    consumer = sys.modules.get(_CONSUMER)
-    state = _consumer_state(
-        consumer, original=original, dispatcher=dispatcher
-    )
-    if state == "dispatcher":
-        setattr(consumer, _FUNCTION, original)
-    setattr(source, _FUNCTION, original)
-    delattr(source, _ORIGINAL)
-    delattr(source, _DISPATCHER)
-    setattr(source, _PATCHED, False)
+    _PATCH.uninstall()
 
 
 def is_installed() -> bool:
     import sys
 
-    source = sys.modules.get(_SOURCE)
-    if source is None or not getattr(source, _PATCHED, False):
-        return False
-    backend = sys.modules.get(_BACKEND)
-    cls = getattr(backend, _BACKEND_CLASS, None) if backend is not None else None
-    if cls is not None and not (
-        getattr(cls, _PATCHED, False) and hasattr(cls, _BACKEND_ORIGINAL)
+    score = sys.modules.get(_SCORE_SOURCE)
+    if not _PATCH.is_installed() or (
+        score is not None and not _SCORE_PATCH.is_installed()
     ):
         return False
-    try:
-        original, dispatcher = _installed(source)
-        state = _consumer_state(
-            sys.modules.get(_CONSUMER), original=original, dispatcher=dispatcher
-        )
-    except RuntimeError:
-        return False
-    return state in {"absent", "initializing", "dispatcher"}
+    module = sys.modules.get(_BACKEND)
+    cls = getattr(module, _BACKEND_CLASS, None) if module is not None else None
+    return cls is None or (
+        getattr(cls, _PATCHED, False) and hasattr(cls, _BACKEND_ORIGINAL)
+    )
 
 
-__all__ = ["install", "is_installed", "uninstall"]
+__all__ = [
+    "install",
+    "is_installed",
+    "make_minimax_sparse_decode_dispatcher",
+    "make_msa_block_score_kernel",
+    "uninstall",
+]

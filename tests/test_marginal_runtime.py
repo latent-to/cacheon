@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -55,6 +54,7 @@ from cacheon.stack_manifest import (
 )
 from cacheon.stack_plan import MarginalArmPlan, plan_candidate_stack, plan_marginal_arm
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
+from tests.support.preflight import preflight_receipt
 
 
 ROOT = Path(__file__).parents[1]
@@ -82,35 +82,12 @@ def _specs(catalog: TargetCatalog) -> dict[str, str]:
 
 
 def _preflight() -> RuntimePreflightReceipt:
-    image = _digest("image")
-    return RuntimePreflightReceipt(
-        schema="cacheon-runtime-preflight-v2",
-        requested_image="registry.example/worker@sha256:" + image,
-        image_digest=image,
-        local_image_id="sha256:" + "a" * 64,
-        repo_digests=("registry.example/worker@sha256:" + image,),
-        oci_platform="linux/amd64",
-        platform_digest=_digest("platform"),
-        docker_binary="/usr/bin/docker",
-        uid=max(1, os.getuid()),
-        gid=max(1, os.getgid()),
-        sglang_version="0.0.0.dev1+g56e290315",
-        worker_distribution="cacheon-harness",
-        worker_version="0.0.1",
-        worker_distribution_digest=_digest("worker"),
-        worker_file_count=200,
-        worker_total_bytes=1_000_000,
-        python_implementation="cpython",
-        python_executable="/usr/local/bin/python3",
-        python_version="3.12.0",
-        python_abi="cpython-312-x86_64-linux-gnu",
-        python_platform="linux-x86_64",
-        machine="x86_64",
-        package_versions=(),
-        cudart_library="libcudart.so.13",
-        cuda_visible_devices="",
-        nvidia_visible_devices="void",
-        security_argv_sha256=_digest("preflight argv"),
+    return preflight_receipt(
+        image=_digest("image"),
+        platform=_digest("platform"),
+        worker=_digest("worker"),
+        registry="worker",
+        argv_label="preflight argv",
     )
 
 

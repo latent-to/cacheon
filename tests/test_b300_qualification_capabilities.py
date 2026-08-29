@@ -199,12 +199,13 @@ def test_closed_resolver_binds_both_source_kinds_and_detects_stale_bytes(
         resolver.resolve_proposal(proposal_digest)
 
 
-def test_empty_incumbent_resolver_is_explicit_and_fails_closed(tmp_path: Path) -> None:
-    empty = capabilities.ClosedContributionSourceResolver.empty_incumbent()
+def test_empty_resolver_is_the_genesis_authority_and_fails_closed(tmp_path: Path) -> None:
+    empty = capabilities.ClosedContributionSourceResolver({}, {})
     with pytest.raises(capabilities.B300QualificationCapabilityError, match="closed"):
         empty.resolve_integrated(_h("incumbent"))
-    with pytest.raises(capabilities.B300QualificationCapabilityError, match="explicit"):
-        capabilities.ClosedContributionSourceResolver({}, {})
+    with pytest.raises(capabilities.B300QualificationCapabilityError, match="closed"):
+        empty.resolve_proposal(_h("incumbent"))
+    assert empty.digest == capabilities.ClosedContributionSourceResolver({}, {}).digest
 
     source = tmp_path / "source"
     source.mkdir()

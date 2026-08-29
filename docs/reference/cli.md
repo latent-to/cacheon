@@ -21,6 +21,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-compat` | operator | diagnostic | Check the installed Bittensor SDK surface without chain access |
 | `scan` | contributor | local gate | Parse a bundle and apply recursive static policy |
 | `verify` | contributor | local gate | Check declared slot behavior against validator-owned references |
+| `explain` | all | read-only | Say in plain language what an evaluation product records about a bundle |
 | `chain-package` | contributor | packaging | Build a canonical archive and print its content hash |
 | `chain-publish` | contributor | object-store mutation | Package, publish, and anonymously verify a content-addressed proposal archive |
 | `chain-eval-cost` | contributor | read-only | Print the published eval-cost quote (v1 is a fixed TAO transfer) |
@@ -35,6 +36,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-snapshot` | validator | private object-store mutation | Publish and reopen a consistent validator recovery snapshot |
 | `chain-snapshot-verify` | validator | recovery verification | Download and semantically reopen one snapshot, optionally into fresh staging |
 | `chain-archive-schema3-hold` | validator | durable state transition | Terminally archive one exact legacy schema-3 reproduction hold |
+| `chain-release-hold` | validator | durable state transition | Return one held or no-decision reservation to its queue under a stated reason |
 | `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation, or run the subnet-owner burn bypass |
 | `mint-push-credentials` | operator | weight-share push auth | Create/rotate HMAC secrets for eval → serve-weights |
 | `mint-weight-gateway` | operator | weight-share deploy | Create a dedicated HTTP authority wallet (and optional push credentials) for serve-weights |
@@ -105,6 +107,25 @@ requested rank count; a host without enough CUDA devices falls back to CPU/Gloo 
 Verification proves only the exercised component contract. It does not establish model
 integration, serving throughput, pristine quality, isolation, independent reproduction,
 or settlement.
+
+### `explain`
+
+```bash
+python -m cacheon.cli explain qualification-product.json
+python -m cacheon.cli explain collected-result.json --log worker-stderr.log
+python -m cacheon.cli explain --evidence-dir retained-failed-run/
+```
+
+Renders one evaluation product — or a validator's collected result, which
+embeds it — as plain language: whether the kernel ran, whether it was correct,
+and whether it was faster, with the disqualifying fact stated before any
+number. What the GPUs did comes from the product's `qualification.execution`
+artifact when the run published one; `--log` supplies a retained worker stderr
+for runs that did not, and is the only source of the per-shape kernel trace.
+When a failed run produced no product, `--evidence-dir` reads its retained
+`*.stderr` artifacts directly and reports the candidate bundle hash, source
+file, line, callable phase, exception, affected GPU/ranks, and failing call
+chain.
 
 ## Submission commands
 
@@ -268,13 +289,47 @@ more than one row:
 ```bash
 python -m cacheon.cli chain-miner-report \
   --intake-db /srv/cacheon/state/intake.sqlite3 \
-  --miner-hotkey <SS58>
+  --miner-hotkey <SS58> \
+  --remote-spool-root /srv/cacheon/remote-worker
 ```
 
 Each submission is reported with its typed outcome, the persisted reason code, a
 stated cause, and a next step. Reasons that are not the candidate's fault —
 queue-window expiry and validator-side infrastructure holds — say so explicitly
-rather than reading as a verdict. Add `--json` for the machine-readable record.
+rather than reading as a verdict. A screen rejection names the stage that
+stopped the bundle and the reason that stage recorded, which travels inside the
+signed screen receipt. Add `--json` for the machine-readable record.
+
+Pass `--evidence-root <dir>` (repeatable, one per worker generation) to reopen
+the retained qualification evidence behind each attempt. The report then renders
+what the attempt measured and, for resident-lane runs, what every GPU did with
+the kernel: whether it loaded, how often each slot was called, whether those
+calls were inside the CUDA graph the timed windows replay, whether it raised,
+and why any call routed to SGLang's kernel instead. Those rows are published by
+the run as the unsealed `qualification.execution` artifact and matched to the
+submission by its publication digest; an attempt whose store is not configured
+is reported as not retained rather than omitted.
+
+Pass `--remote-spool-root <dir>` once per retained worker epoch to join the
+immutable lease/recovery history with request transport events and the result's
+request-scoped `worker_log`. That artifact contains adapter phases and the
+bounded engine/native output routed to OCI stderr, plus sidecar identity for
+every OCI lifetime in the request. A crash report therefore names the last completed
+phase, observed component, exception chain, file and line, and retained raw-log
+hash without searching VM or pod logs.
+
+The submissions dashboard consumes this same reader. Its detail drawer shows the
+plain-English explanation and offers one raw `.log` containing the exact
+request-scoped adapter diagnostics and retained OCI diagnostic streams. The OCI
+worker reserves stdout for framed protocol and redirects ordinary Python/native
+stdout into that retained stream. Section headers mark missing or truncated bytes;
+a bounded prefix is never labeled complete.
+
+A candidate-owned load or invocation error is retained as its own qualification
+failure product. With the corresponding `--evidence-root`, this command prints
+the offending reservation and candidate arm, exact error, and diagnostic
+stream hash. Fresh registered qualification is singleton-bound, so a
+proved candidate exception is terminal `FAIL` without a retry or a cohort guess.
 
 The report never derives a decision. A row carrying no typed decision is reported
 as having none. It reads the same durable rows through the same read-only
@@ -451,6 +506,23 @@ python -m cacheon.cli chain-archive-schema3-hold \
 This is a terminal, evidence-preserving disposition for one exact legacy
 schema-3 single-PASS hold. It does not qualify, reproduce, release, crown, or
 publish weights. Current-schema work must use the normal authority path.
+
+### `chain-release-hold`
+
+```bash
+python -m cacheon.cli chain-release-hold \
+  --network <network> --netuid <netuid> \
+  --intake-db chain_intake/intake.sqlite3 \
+  --reservation-id <reservation-id> \
+  --reason "lane repaired; rerun"
+```
+
+Returns one `held` or `no_decision` reservation to the queue position its
+retained state supports: `reproduction_pending` when one settlement
+qualification exists, otherwise `published`, otherwise `transport_retry`. The
+operator reason is persisted on the row. It never signs, settles, crowns, or
+touches evidence, and it refuses a legacy schema-3 migration hold, which has
+its own terminal command above.
 
 ### `set-weights`
 

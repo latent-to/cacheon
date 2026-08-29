@@ -35,6 +35,7 @@ import torch
 from cacheon.capabilities import (
     CONTEXT_FIELDS,
     CallDescriptor,
+    msa_decode_score_call_descriptor,
     msa_prefill_call_descriptor,
 )
 from cacheon.registry import Eligibility
@@ -46,6 +47,7 @@ from cacheon.tensor_spec import (
     validate_output_allocation,
     validate_tensor_binding,
 )
+from cacheon.kernel_trace import format_kernels, launched_kernels
 from cacheon.verification_outcomes import (
     _CandidateGraphCallError,
     _GraphCheck,
@@ -928,7 +930,6 @@ def verify_entry(
     seed: int = 0,
     shapes: Optional[list[dict]] = None,
     jitter_seed: Optional[int] = None,
-    graph_safe: Optional[bool] = None,
     graph_replays: int = _DEFAULT_GRAPH_REPLAYS,
     eligibility: Optional[Eligibility] = None,
     architecture: Optional[str] = None,
@@ -946,11 +947,12 @@ def verify_entry(
     the miner's ``prepare`` callable too — it runs once on the raw weights and its
     result is handed to ``entry`` as ``prepared`` (otherwise ``prepared`` is None).
 
-    On CUDA, op slots are graph-verified by default because their serving seam is
-    always captured.  Block slots are graph-verified when the caller passes their
-    declared ``graph_safe=True`` metadata.  CPU runs retain the eager numerical gate
-    but return ``graph_required=True, graph_verified=False`` when graph proof was
-    requested.  With ``eligibility``, validator code describes every generated
+    On CUDA, a slot whose live serving seam sits inside the captured region is
+    graph-verified — the validator owns that fact via
+    ``SlotSpec.serving_graph_captured``; a candidate cannot declare itself out of
+    it.  CPU runs retain the eager numerical gate but return
+    ``graph_required=True, graph_verified=False``.  With ``eligibility``, validator
+    code describes every generated
     call before invocation: off-domain shapes are reported N/A without entering
     miner code, and a domain matching zero catalog shapes fails verification.
     ``_graph_backend`` is a private CPU-test hook; production must omit it.
@@ -961,7 +963,7 @@ def verify_entry(
             "cacheon.verify_collective.verify_collective, not the single-process verify_entry"
         )
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    graph_required = slot.kind == "op" if graph_safe is None else bool(graph_safe)
+    graph_required = slot.serving_graph_captured
     graph_capable_run = str(device).startswith("cuda") or _graph_backend is not None
     verification_graph_mode = (
         "cuda_graph" if graph_required and graph_capable_run else "eager"
@@ -1170,7 +1172,8 @@ def verify_entry(
                 )
                 if mutation:
                     raise RuntimeError(f"prepare {mutation}")
-            slot.invoke_entry(entry, inputs, outs, prepared)
+            with launched_kernels(str(device).startswith("cuda")) as kernels_seen:
+                slot.invoke_entry(entry, inputs, outs, prepared)
             validate_output_allocation(
                 output_contract,
                 allocation,
@@ -1233,7 +1236,8 @@ def verify_entry(
                         detail="; ".join(details), metric=metric,
                         graph_replays=checked_replays,
                         phase_outcome=phase_outcome,
-                        case_descriptor=case_descriptor)
+                        case_descriptor=case_descriptor,
+                        kernels=dict(kernels_seen))
         )
 
     applicable = [result for result in results if result.applicable]
@@ -1289,6 +1293,21 @@ def _verification_call_descriptor(
     """
 
     resolved_arch = architecture or _device_architecture(device)
+    if slot.name == "attention.msa_block_score" and {
+        "q", "k_cache", "req_to_token", "slot_ids", "seq_lens", "block_size",
+        "topk", "init_blocks", "local_blocks",
+    } <= set(inputs):
+        q, k_cache = inputs["q"], inputs["k_cache"]
+        return msa_decode_score_call_descriptor(
+            dtype=_name(q.dtype), architecture=resolved_arch, graph_mode=graph_mode,
+            head_dim=int(q.shape[-1]), block_size=int(inputs["block_size"]),
+            kv_len=int(inputs["req_to_token"].shape[1]), top_k=int(inputs["topk"]),
+            init_blocks=int(inputs["init_blocks"]),
+            local_blocks=int(inputs["local_blocks"]), batch_size=int(q.shape[0]),
+            num_q_heads=int(q.shape[1]), num_kv_heads=int(k_cache.shape[1]),
+            quant="fp8" if "float8" in str(k_cache.dtype).lower() else "dense",
+            model=model_key or "MiniMax-M3", tp_size=tp_size, world_size=world_size,
+        )
     if slot.name == "attention.decode" and {
         "q", "k_cache", "v_cache", "req_to_token", "seq_lens",
         "req_pool_indices", "topk_idx", "block_size",
@@ -1428,7 +1447,6 @@ def verify_entry_from_source(
     jitter_seed: Optional[int] = None,
     model_key: Optional[str] = None,
     override_point: Optional[str] = None,
-    graph_safe: Optional[bool] = None,
     graph_replays: int = _DEFAULT_GRAPH_REPLAYS,
     eligibility_metadata: Optional[dict] = None,
     manifest_dtypes: tuple[str, ...] = (),
@@ -1505,7 +1523,7 @@ def verify_entry_from_source(
             eligibility_metadata, manifest_dtypes, manifest_architectures
         )
     return verify_entry(slot, entry, prepare=prepare, dtype=dtype, device=device, seed=seed,
-                        shapes=shapes, jitter_seed=jitter_seed, graph_safe=graph_safe,
+                        shapes=shapes, jitter_seed=jitter_seed,
                         graph_replays=graph_replays, eligibility=eligibility,
                         tp_size=tp_size, world_size=world_size,
                         model_key=model_key,
@@ -1557,4 +1575,5 @@ def format_verify(result: VerifyResult) -> str:
             f"  {status} shape={r.shape} max_abs={r.max_abs_err:.3e} max_rel={r.max_rel_err:.3e}{score}"
             + replay + (f"  {r.detail}" if r.detail else "")
         )
+        lines.extend(format_kernels(r.kernels))
     return "\n".join(lines)

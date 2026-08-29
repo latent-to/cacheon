@@ -7,6 +7,7 @@ the policy scanner and the manifest path-safety checks, plus eligibility and KL.
 from __future__ import annotations
 
 import cacheon.manifest as M
+from cacheon.capabilities import CallDescriptor
 from cacheon.registry import eligibility_from_metadata
 from cacheon.sandbox import scan_source
 
@@ -128,7 +129,7 @@ def test_eligibility_gates():
         {"dtypes": ["bfloat16"], "architectures": ["sm90"], "max_last_dim": 8192},
         ("bfloat16",),
     )
-    assert e.accepts(dtype_name="bfloat16", last_dim=4096, arch="sm90")
-    assert not e.accepts(dtype_name="float32", last_dim=4096, arch="sm90")
-    assert not e.accepts(dtype_name="bfloat16", last_dim=4096, arch="sm80")
-    assert not e.accepts(dtype_name="bfloat16", last_dim=9000, arch="sm90")
+    assert e.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=4096, arch="sm90")).accepted
+    assert not e.match(CallDescriptor.from_legacy(dtype_name="float32", last_dim=4096, arch="sm90")).accepted
+    assert not e.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=4096, arch="sm80")).accepted
+    assert not e.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=9000, arch="sm90")).accepted

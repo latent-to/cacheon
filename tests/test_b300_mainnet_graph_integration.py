@@ -29,7 +29,12 @@ from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.candidate_failure_product import (
+    CANDIDATE_FAILURE_SCHEMA,
+    reopen_candidate_failure,
+)
 from cacheon.eval.oci_backend import OCIEngineExecutor
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
@@ -379,6 +384,45 @@ def test_resident_authority_mismatch_is_an_authenticated_hold(
     assert type(result) is B300QualificationGraphGateHold
     assert result.reason is RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE
     assert intake_calls == []
+
+
+def test_resident_candidate_exception_is_a_terminal_failure_product(
+    tmp_path: Path,
+    executor_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, executor_factory, failure=False)
+    _install_plan(case, monkeypatch)
+    worker_error = OuterSessionCandidateError(
+        "batch: CandidateExecutionFailure: rank 2 failed",
+        candidate_failure="rank 2 RuntimeError at kernels/moe.py:17: boom",
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "run_b300_resident_qualification_prefix",
+        lambda **_kwargs: (_ for _ in ()).throw(worker_error),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "run_qualification_intake",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a proved resident candidate exception must stop before intake"
+        ),
+    )
+    try:
+        result = _run(case)
+    finally:
+        case.worker.close()
+
+    assert type(result) is B300RemoteQualificationRun
+    batch = result.run.payload
+    assert batch.retry_plan is None
+    assert batch.attempt_ref is not None
+    assert batch.attempt_ref.schema == CANDIDATE_FAILURE_SCHEMA
+    assert batch.outcomes[0].decision is QualificationDecision.FAIL
+    assert batch.outcomes[0].reason == "candidate_exception"
+    failure = reopen_candidate_failure(case.plan.evidence_root, batch.attempt_ref)
+    assert failure["failure"].endswith("kernels/moe.py:17: boom")
 
 
 def test_graph_fail_returns_terminal_without_intake_pair_or_settlement(

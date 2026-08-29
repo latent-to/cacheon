@@ -484,8 +484,6 @@ retained design intent and the reserved durable schema are described in
 | Previously confirmed vector changes | `held` | Treat as an incident; compare chain history and signer activity |
 | Emissions parameters differ from bound policy | Projection refused | Use the consensus-approved bound policy or migrate authority explicitly |
 | Weighted recipient UID changes before or after signing | Submission aborts or retained publication is held | Reopen exact finalized metagraph authority; never confirm against reassigned UIDs |
-| V2 boundary is missed or confirmation is slow | Earliest boundary remains pending; later boundaries do not overtake it | Restore publication/readback authority; catch-up remains cadence-limited |
-| V2 activation bytes or approval differ | Atomic activation aborts | Reopen the independently approved exact policy, arena, roster, membership, and audit authority |
 | Held reservation has no disposition | It remains durable and may block later work until explicit disposition or eligible finalized-block SLA expiry | Preserve and monitor it; use audited `release_hold` or minimum-age `expire` when operator action is required, never silent deletion |
 | Arena must be retired as an authority domain | No generic transition is available | Define and implement a reviewed typed arena-retirement policy before changing economic authority |
 
@@ -502,8 +500,7 @@ constructing replacement evidence from summaries.
 - Protect the hotkey and wallet store; evaluator containers never receive them.
 - Alert on `pending` age, `held` state, readback divergence, missing families, and
   metagraph/UID churn.
-- Alert separately on V1 publication state, V2 activation state, earliest debt boundary,
-  readback confirmation, and cursor catch-up.
+- Alert separately on V1 publication state, readback confirmation, and cursor catch-up.
 - Do not bypass a hold by deleting journal rows or editing the projection.
 - Coordinate emissions-policy parameters across the validator set; they are consensus
   configuration, not miner input.

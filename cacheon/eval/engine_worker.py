@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -30,32 +31,11 @@ class CandidateExecutionCoverageError(RuntimeError):
 
 
 class CandidateNeverExecutedError(CandidateExecutionCoverageError):
-    """The receipt path provably worked and the candidate still never ran.
+    """Every expected rank loaded the slot, but none recorded an execution."""
 
-    This is the one coverage shape that is a fact about the *candidate* rather
-    than the infrastructure, and the distinction rests on evidence rather than
-    on inference:
 
-    ``cacheon/seam.py`` writes the ``active`` receipt from the candidate's own
-    process, through this same module, into this same root. The caller has
-    already required those receipts and validated that every expected member
-    reported the expected slot set. So when the seam loaded, registered the
-    target slot, and successfully wrote into the root -- and then *every*
-    execution kind is empty, completed and fallback alike -- the path is sound
-    and the candidate simply never dispatched. A miner whose kernel registers a
-    slot it never serves has a broken bundle, not a broken validator.
-
-    Partial coverage stays :class:`CandidateExecutionCoverageError`. Some
-    receipts but not all can be a member that died mid-run or a read that raced
-    a write, and neither may be charged to a candidate.
-
-    Observed on mainnet 2026-08-18: two native-rebuild bundles
-    (``norm.rmsnorm``, ``attention.msa_block_score``) each reported
-    ``completed:0,fallback:0,aot_loaded:0,aot_invoked:0`` behind a passing
-    active-member check, burned their full retry budget as
-    ``qualification_worker_error``, and parked with no verdict -- while the
-    miners had paid a submission cost for a decision they never received.
-    """
+class CandidateEngineFailure(RuntimeError):
+    """Candidate load or invocation receipts identify the failing bundle."""
 
 
 def _truthy_env(name: str) -> bool:
@@ -194,8 +174,6 @@ def engine_kwargs(cfg, *, active: bool = False) -> dict[str, Any]:
     if moe_runner_backend:
         kwargs["moe_runner_backend"] = moe_runner_backend
     disable_custom_all_reduce = getattr(cfg, "disable_custom_all_reduce", False)
-    if active and getattr(cfg, "candidate_disable_custom_all_reduce", None) is not None:
-        disable_custom_all_reduce = cfg.candidate_disable_custom_all_reduce
     if disable_custom_all_reduce:
         kwargs["disable_custom_all_reduce"] = True
     kwargs.update(getattr(cfg, "extra_engine_kwargs", {}) or {})
@@ -239,6 +217,122 @@ def _active_execution_members(
     return list(slot_sets[0])
 
 
+def _routing_reasons(rows: list[dict]) -> str:
+    """Render the recorded not-selected reasons for an execution-coverage error."""
+
+    parts: list[str] = []
+    for row in rows:
+        slot = row.get("slot")
+        for reason in row.get("reasons") or ():
+            fields = ",".join(reason.get("fields") or ()) or "-"
+            parts.append(f"{slot}:{reason.get('outcome')}({fields})")
+    return "; not_selected=" + " ".join(sorted(parts)) if parts else ""
+
+
+#: Prefix marking the one machine-readable execution line in a retained stderr
+#: stream. Grepping for it is the whole contract; see ``EXECUTION_SUMMARY_PREFIX``
+#: consumers in ``cacheon.eval.explain``.
+EXECUTION_SUMMARY_PREFIX = "CACHEON-EXECUTION-SUMMARY: "
+
+#: Same channel, same contract, for the settings the engine was built with.
+ENGINE_CONFIG_PREFIX = "CACHEON-ENGINE-CONFIG: "
+
+
+def build_session_environment(
+    *,
+    active: bool,
+    bundle_path: str,
+    framework_mode: bool,
+    receipt_dir: str,
+    audit_policy: object,
+    install_seams: bool,
+    gate_environment: dict[str, str],
+) -> dict[str, str]:
+    """The environment the in-container engine and its TP ranks inherit.
+
+    Pure and separate from the session so it can be asserted directly. The
+    previous kernel-trace attempt shipped with a commit message saying the
+    audit arm armed it while nothing in production set the variable at all;
+    that claim was unfalsifiable because this dict was unreachable from a test.
+    """
+    audited = audit_policy is not None
+    return {
+        "CACHEON_ACTIVE": "1" if active else "0",
+        "CACHEON_BUNDLE_PATH": bundle_path if active else "",
+        "CACHEON_FRAMEWORK_MODE": "1" if framework_mode else "0",
+        "CACHEON_SEAM_RECEIPT_DIR": receipt_dir,
+        "CACHEON_SLOT_AUDIT": (
+            format(audit_policy.sample_rate_ppm / 1_000_000, ".17g") if audited else ""
+        ),
+        "CACHEON_SLOT_AUDIT_SEED": (
+            str(int(audit_policy.validator_seed, 16)) if audited else ""
+        ),
+        # Names the kernels the candidate actually launched on the device.
+        # Bound to the audit role for the same reason ``disable_cuda_graph`` is:
+        # arming it replaces every registry entry with a wrapper for the life of
+        # the process, so on a timed arm it would tax the hot path of the thing
+        # being measured. Empty string reads as disarmed. Baseline arms load no
+        # bundle and have nothing to wrap, so it is inert there regardless.
+        "CACHEON_KERNEL_TRACE": "1" if audited else "",
+        "SGLANG_PLUGINS": "cacheon" if install_seams else "",
+        **gate_environment,
+    }
+
+
+def _emit_execution_summary(receipt_dir: str) -> None:
+    """Write the execution facts to stderr before the receipt directory is removed.
+
+    The receipt directory is process-local, on a container tmpfs, and deleted at
+    teardown, so everything it knows — which slots registered, how many times each
+    ran, whether the run was inside a captured graph, and why a call routed to
+    stock instead — dies with the worker. Every one of those is what a miner is
+    asking for when they ask what happened to their bundle.
+
+    Stderr is the channel that outlives the container: the host drains it, hashes
+    every byte, and retains a bounded prefix with its own receipt. Emitted on
+    success as well as failure, because "it passed but lost on speed" needs this
+    evidence just as much as "it never ran" — and today only the failure path
+    says anything at all.
+
+    Never raises. This runs in a teardown path where an exception would mask the
+    real outcome of the run.
+    """
+
+    try:
+        from cacheon import receipts
+
+        summary: dict[str, Any] = {}
+        for kind in ("active", "completed", "failed", "load_failed", "not_selected"):
+            rows = receipts.collect(receipt_dir, kind)
+            if rows:
+                summary[kind] = rows
+        print(
+            EXECUTION_SUMMARY_PREFIX + json.dumps(summary, sort_keys=True, default=str),
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001 - a diagnostic must not mask the run's outcome
+        logger.exception("cacheon: execution summary emit failed")
+
+
+def _candidate_receipt_failure(receipt_dir: str, receipt_module: object) -> str:
+    """Return the bounded candidate-owned load/invocation receipt rows."""
+
+    failures = [
+        {"kind": kind, **row}
+        for kind in ("failed", "load_failed")
+        for row in receipt_module.collect(receipt_dir, kind)
+        if row.get("failure_owner") != "validator_runtime"
+        and row.get("reason") != "pending candidate authority changed"
+    ]
+    return (
+        ""
+        if not failures
+        else "candidate receipts reported failure: "
+        + json.dumps(failures[:16], sort_keys=True, default=str)[:12_000]
+    )
+
+
 def _require_execution_completion(
     receipt_dir: str,
     *,
@@ -251,7 +345,6 @@ def _require_execution_completion(
     from cacheon import receipts
 
     completed = receipts.collect(receipt_dir, "completed")
-    fallbacks = receipts.collect(receipt_dir, "fallback")
     aot_loaded = receipts.collect(receipt_dir, "aot_loaded")
     aot_invoked = receipts.collect(receipt_dir, "aot_invoked")
     passed, detail = receipts.completed_gate(
@@ -259,11 +352,10 @@ def _require_execution_completion(
         expected_slots=expected_slots,
         member_receipts=active_receipts,
         expected_member_count=expected_member_count,
-        fallback_receipts=fallbacks,
     )
     if not passed:
         observed = (
-            f"observed_receipts=completed:{len(completed)},fallback:{len(fallbacks)},"
+            f"observed_receipts=completed:{len(completed)},"
             f"aot_loaded:{len(aot_loaded)},aot_invoked:{len(aot_invoked)}"
         )
         message = (
@@ -271,12 +363,16 @@ def _require_execution_completion(
             + detail
             + "; "
             + observed
+            # The routing reason, when the registry recorded one. Without it this
+            # error says only that nothing ran; with it, it says which declared
+            # field kept the candidate off every live call.
+            + _routing_reasons(receipts.collect(receipt_dir, "not_selected"))
         )
         # Total silence, behind an active-member check that already passed, is
         # the candidate's own defect: the seam wrote ``active`` into this very
         # root, so the path works and nothing dispatched. Anything partial is
         # ambiguous and stays infrastructure.
-        if not (completed or fallbacks or aot_loaded or aot_invoked):
+        if not (completed or aot_loaded or aot_invoked):
             raise CandidateNeverExecutedError(
                 message + "; " + CANDIDATE_NEVER_EXECUTED_MARKER
             )
@@ -424,24 +520,15 @@ def isolated_engine_session(
     )
     receipt_dir = tempfile.mkdtemp(prefix="cacheon_receipts_") if active else ""
     try:
-        session_environment = {
-            "CACHEON_ACTIVE": "1" if active else "0",
-            "CACHEON_BUNDLE_PATH": bundle_path if active else "",
-            "CACHEON_FRAMEWORK_MODE": "1" if framework_mode else "0",
-            "CACHEON_SEAM_RECEIPT_DIR": receipt_dir,
-            "CACHEON_SLOT_AUDIT": (
-                ""
-                if audit_policy is None
-                else format(audit_policy.sample_rate_ppm / 1_000_000, ".17g")
-            ),
-            "CACHEON_SLOT_AUDIT_SEED": (
-                ""
-                if audit_policy is None
-                else str(int(audit_policy.validator_seed, 16))
-            ),
-            "SGLANG_PLUGINS": "cacheon" if install_seams else "",
-            **gate_environment,
-        }
+        session_environment = build_session_environment(
+            active=active,
+            bundle_path=bundle_path,
+            framework_mode=framework_mode,
+            receipt_dir=receipt_dir,
+            audit_policy=audit_policy,
+            install_seams=install_seams,
+            gate_environment=gate_environment,
+        )
         with _environment(**session_environment):
             import sglang as sgl
 
@@ -451,6 +538,21 @@ def isolated_engine_session(
                 # carry no audit policy and therefore retain their sealed graph
                 # configuration and zero audit overhead.
                 kwargs["disable_cuda_graph"] = True
+            # Emitted for the stock arm too, which has no receipt directory, so
+            # this cannot ride on the receipts. Without it the settings that
+            # decide which backend each arm ran on -- and therefore whether the
+            # pair was comparable at all -- are absent from the retained record
+            # and unrecoverable afterwards.
+            print(
+                ENGINE_CONFIG_PREFIX
+                + json.dumps(
+                    {"arm": "candidate" if active else "stock", "engine": kwargs},
+                    sort_keys=True,
+                    default=str,
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
             engine = sgl.Engine(**kwargs)
             active_receipts: list[dict] = []
             expected_slots: list[str] = []
@@ -505,6 +607,13 @@ def isolated_engine_session(
                     kill_process_tree(os.getpid(), include_parent=False)
                 except Exception:  # noqa: BLE001 - outer OCI teardown remains authoritative
                     pass
+    except BaseException as exc:
+        if receipt_dir and receipts is not None:
+            failure = _candidate_receipt_failure(receipt_dir, receipts)
+            if failure:
+                raise CandidateEngineFailure(failure) from exc
+        raise
     finally:
         if receipt_dir:
+            _emit_execution_summary(receipt_dir)
             shutil.rmtree(receipt_dir, ignore_errors=True)

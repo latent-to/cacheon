@@ -192,18 +192,18 @@ NVFP4 expert-weight format is not an attention-kernel requirement.
 ### `attention.msa_block_score`
 
 ```python
-def msa_block_score(q, index_k, seq_lens, block_size, out):
-    # out: per-request block-max scores
+def msa_block_score(
+    q, k_cache, req_to_token, slot_ids, seq_lens, out,
+    sm_scale, block_size, topk, init_blocks, local_blocks,
+):
+    # out: FP32 (local_index_heads, batch, context // block_size)
     ...
 ```
 
-The validator owns top-k block selection and the subsequent attend. Your output
-is a score sheet, and correctness is judged through the selected block sets.
-
-!!! warning "Not available on the current MiniMax-M3 arena"
-    The decode-side contract has no installing adapter in the pinned runtime.
-    This section defines the ABI, but miners must not pay for or submit
-    `attention.msa_block_score` to the current mainnet arena.
+`req_to_token[slot_ids]` maps each logical sequence position into `k_cache`.
+The candidate fills every live per-head block score, including init/local forced
+blocks and `-inf` tail cells. Stock code retains per-head top-k, head reduction,
+and sparse attend. Correctness uses top-16 selected-set overlap ≥ 0.875.
 
 ### `attention.msa_prefill_block_score`
 
@@ -394,7 +394,8 @@ predicate whose field is absent from the binding fails closed.
 
 ## Graph behavior
 
-`graph_safe: true` is a routing declaration, not evidence. A crownable path must
+A bundle declares nothing about graph safety; the validator decides which slots
+serve from the captured region. A crownable path must
 have validator-produced graph observations for every applicable selected
 variant and shape. CUDA host synchronization, data-dependent Python control
 flow, allocations tied to replay values, pointer retention, or incomplete

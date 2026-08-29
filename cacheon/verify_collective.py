@@ -73,7 +73,7 @@ def _collective_descriptor(
     slot_name: str | None = None,
     dtype_name: str,
     device: str,
-    graph_safe: bool,
+    run_mode: str = "single",
     model_key: str | None,
     architecture: str | None,
     world_size: int,
@@ -103,7 +103,11 @@ def _collective_descriptor(
     return collective_call_descriptor(
         dtype=dtype_name,
         architecture=architecture or _device_architecture(device),
-        graph_mode="cuda_graph" if graph_safe and device == "cuda" else "eager",
+        graph_mode=(
+            "cuda_graph"
+            if device == "cuda" and run_mode != "temporal_eager"
+            else "eager"
+        ),
         # Live Sglang collective bindings do not yet receive a canonical arena-model
         # identity. Omitting it here makes model-constrained variants consistently
         # N/A instead of qualifying offline and then never routing live. PR3 manifests
@@ -167,7 +171,7 @@ def _rank_barrier(dist_module: Any, *, rank: int, device: str) -> None:
 
 def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path, entry_name,
                  shape, dtype_name, device, seed, result_dir, prepare_name=None, model_key=None,
-                 bundle_path=None, graph_safe=False,
+                 bundle_path=None,
                  graph_replays=_DEFAULT_GRAPH_REPLAYS, verdict_identities=(),
                  run_mode="single", variant_name=None):
     """One rank: init the group, run the miner collective into a validator-owned buffer,
@@ -318,9 +322,7 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
         # burst. The graph sequence is a separate worker so capture synchronization
         # cannot erase rank skew from this protocol-state check.
         verify_graph = bool(
-            graph_safe
-            and device == "cuda"
-            and run_mode in {"single", "graph_sequence"}
+            device == "cuda" and run_mode in {"single", "graph_sequence"}
         )
         # Live layers prepare invariant weights once, then reuse the same prepared
         # object across token buckets/calls. Cache by validator-observed static input
@@ -620,7 +622,7 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
             )
         elif verify_graph:
             phase_outcome = GraphPhaseOutcome.graph_passed(graph_replays)
-        elif graph_safe and device != "cuda" and run_mode != "temporal_eager":
+        elif device != "cuda" and run_mode != "temporal_eager":
             phase_outcome = GraphPhaseOutcome.capture_infrastructure_failed()
         else:
             phase_outcome = GraphPhaseOutcome.eager_only_passed()
@@ -696,7 +698,6 @@ def verify_collective(
     jitter_seed: int | None = None,
     bundle_path: str | None = None,
     variant_name: str | None = None,
-    graph_safe: bool = False,
     graph_replays: int = _DEFAULT_GRAPH_REPLAYS,
     timeout_s: float | None = None,
     eligibility: Eligibility | None = None,
@@ -710,8 +711,8 @@ def verify_collective(
     the validator per-model slot profile (activation reference + metric); None -> generic.
     ``jitter_seed`` perturbs the count dims per run (same anti-shape-branching guard as
     the per-op verify — without it a collective kernel could hard-code the fixed verify
-    shapes); jittered in the parent so every rank builds identical shapes. A declared
-    graph-safe CUDA collective is captured once per applicable clean-room shape and all
+    shapes); jittered in the parent so every rank builds identical shapes. A
+    CUDA collective is captured once per applicable clean-room shape and all
     outputs are poisoned and graded after every replay. CPU/gloo remains numerical-only.
     Eligibility is resolved in the trusted parent before rebuild or miner import, so an
     off-architecture variant is N/A rather than an attempted compile or phantom pass.
@@ -746,7 +747,7 @@ def verify_collective(
         raise ValueError("collective backend must be 'gloo' or 'nccl'")
     if (device, backend) not in {("cpu", "gloo"), ("cuda", "nccl")}:
         raise ValueError("collective verify requires cpu/gloo or cuda/nccl")
-    if graph_safe and graph_replays < 2:
+    if graph_replays < 2:
         raise ValueError("CUDA graph verification requires at least two replays")
     if timeout_s is None:
         timeout_s = float(os.environ.get("CACHEON_COLLECTIVE_VERIFY_TIMEOUT_S", "900"))
@@ -786,18 +787,13 @@ def verify_collective(
             if isinstance(shape_or_seq, (list, tuple))
             else [shape_or_seq]
         )
-        graph_case = bool(
-            graph_safe
-            and device == "cuda"
-            and run_mode in {"single", "graph_sequence"}
-        )
         calls = tuple(
             _collective_descriptor(
                 shape,
                 slot_name=slot.name,
                 dtype_name=dtype_name,
                 device=device,
-                graph_safe=graph_case,
+                run_mode=run_mode,
                 model_key=model_key,
                 architecture=architecture or ("cpu" if device == "cpu" else None),
                 world_size=world_size,
@@ -829,7 +825,7 @@ def verify_collective(
                 verdict_identities.append(_regular_identity(path))
             args = (world_size, backend, init_method, slot.name, source_path, entry_name,
                     shape_or_seq, dtype_name, device, run_seed, rd, prepare_name, model_key,
-                    bundle_path, graph_safe, graph_replays, verdict_identities, run_mode,
+                    bundle_path, graph_replays, verdict_identities, run_mode,
                     variant_name)
             spawn_err: str | None = None
             processes = []
@@ -986,7 +982,7 @@ def verify_collective(
                     _collective_descriptor(
                         candidate, slot_name=slot.name,
                         dtype_name=dtype_name, device=device,
-                        graph_safe=graph_safe, model_key=model_key,
+                        model_key=model_key,
                         architecture=architecture,
                         world_size=world_size,
                     )
@@ -1046,7 +1042,7 @@ def verify_collective(
 
     graph_sequence_result = None
     graph_seq = _graph_capture_sequence(applicable_shapes)
-    if graph_safe and device == "cuda" and graph_seq is not None:
+    if device == "cuda" and graph_seq is not None:
         label = {
             "sequence": "same-process cuda graphs: num_tokens "
             + "->".join(str(shape.get("num_tokens")) for shape in graph_seq)
@@ -1067,8 +1063,7 @@ def verify_collective(
         else bool(applicable_results)
     )
     graph_verified = bool(
-        graph_safe
-        and device == "cuda"
+        device == "cuda"
         and applicable_single_results
         and all(
             result.passed and result.graph_replays == graph_replays
@@ -1089,7 +1084,7 @@ def verify_collective(
         dtype=dtype_name,
         passed=coverage_sufficient and all(r.passed for r in applicable_results),
         shape_results=results,
-        graph_required=bool(graph_safe),
+        graph_required=True,
         graph_verified=graph_verified,
         coverage_required=coverage_required,
         context_inapplicable=context_inapplicable,

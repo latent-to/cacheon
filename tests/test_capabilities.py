@@ -150,16 +150,14 @@ def test_legacy_eligibility_metadata_is_preserved():
         ("bfloat16",),
     )
     assert eligibility.capabilities.predicates == ()
-    assert eligibility.accepts(
-        dtype_name="bfloat16", last_dim=128, arch="sm103", num_tokens=48
-    )
-    # Legacy behavior: unknown arch/token count was not a rejection.
-    assert eligibility.accepts(
+    assert eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=128, arch="sm103", num_tokens=48)).accepted
+    # A constrained field the caller does not supply is a rejection, not a pass.
+    # The legacy router used to wave these through, which routed a kernel outside
+    # its own declared token window.
+    assert not eligibility.match(CallDescriptor.from_legacy(
         dtype_name="bfloat16", last_dim=128, arch=None, num_tokens=None
-    )
-    assert not eligibility.accepts(
-        dtype_name="bfloat16", last_dim=129, arch="sm103", num_tokens=48
-    )
+    )).accepted
+    assert not eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=129, arch="sm103", num_tokens=48)).accepted
 
 
 def test_new_capability_metadata_requires_binding_to_supply_fields():
@@ -168,9 +166,7 @@ def test_new_capability_metadata_requires_binding_to_supply_fields():
         ("bfloat16",),
     )
     # An old dispatcher does not know these fields and therefore serves stock.
-    assert not eligibility.accepts(
-        dtype_name="bfloat16", last_dim=128, arch="sm103"
-    )
+    assert not eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=128, arch="sm103")).accepted
     assert eligibility.match(
         CallDescriptor(
             dtype="bfloat16", head_dim=128, block_size=128, last_dim=128
@@ -194,7 +190,6 @@ def _registry(eligibility: Eligibility) -> KernelRegistry:
 def test_registry_selection_exposes_validator_owned_fallback_reasons():
     eligibility = eligibility_from_metadata(
         {
-            "graph_safe": False,
             "quant": ["nvfp4"],
             "capabilities": {
                 "head_dim": 128,
@@ -229,45 +224,32 @@ def test_registry_selection_exposes_validator_owned_fallback_reasons():
     wrong = registry.select(
         "attention.msa_prefill_block_score",
         good.with_updates(head_dim=64),
-        write_fired_receipt=False,
     )
     assert wrong.outcome is SelectionOutcome.OUT_OF_DOMAIN
     assert wrong.candidate is not None and wrong.impl is None
     assert [m.field for m in wrong.capability_match.mismatches] == ["head_dim"]
 
     selected = registry.select(
-        "attention.msa_prefill_block_score", good, write_fired_receipt=False
-    )
+        "attention.msa_prefill_block_score", good,     )
     assert selected.outcome is SelectionOutcome.SELECTED
     assert selected.use_candidate and selected.impl is selected.candidate
 
 
-def test_graph_and_quant_context_are_enforced_by_canonical_selection():
+def test_quant_context_is_enforced_by_canonical_selection():
     registry = _registry(
         Eligibility(
             dtypes=frozenset({"bfloat16"}),
             quant=frozenset({"nvfp4"}),
-            graph_safe=False,
         )
     )
     registry.enable()
     base = CallDescriptor(dtype="bfloat16", quant="nvfp4", graph_mode="eager")
     assert registry.select(
-        "attention.msa_prefill_block_score", base, write_fired_receipt=False
-    ).use_candidate
-
-    graph = registry.select(
-        "attention.msa_prefill_block_score",
-        base.with_updates(graph_mode="cuda_graph"),
-        write_fired_receipt=False,
-    )
-    assert graph.outcome is SelectionOutcome.OUT_OF_DOMAIN
-    assert [m.field for m in graph.capability_match.mismatches] == ["graph_mode"]
+        "attention.msa_prefill_block_score", base,     ).use_candidate
 
     quant = registry.select(
         "attention.msa_prefill_block_score",
         base.with_updates(quant="dense"),
-        write_fired_receipt=False,
     )
     assert quant.outcome is SelectionOutcome.OUT_OF_DOMAIN
     assert [m.field for m in quant.capability_match.mismatches] == ["quant"]
@@ -288,11 +270,9 @@ def test_implicit_dense_and_nvfp4_domains_do_not_overlap():
     registry.enable()
     assert registry.select(
         "moe.fused_experts", CallDescriptor(quant="dense"),
-        write_fired_receipt=False,
     ).impl.variant == "dense"
     assert registry.select(
         "moe.fused_experts", CallDescriptor(quant="nvfp4"),
-        write_fired_receipt=False,
     ).impl.variant == "nvfp4"
 
 
@@ -304,19 +284,13 @@ def test_legacy_domain_spellings_use_descriptor_canonicalization():
     assert eligibility.match(
         CallDescriptor(dtype="bfloat16", architecture="sm103")
     ).accepted
-    assert eligibility.accepts(
-        dtype_name="torch.bfloat16", last_dim=128, arch="SM_103"
-    )
+    assert eligibility.match(CallDescriptor.from_legacy(dtype_name="torch.bfloat16", last_dim=128, arch="SM_103")).accepted
 
 
 @pytest.mark.parametrize(
     "metadata, manifest_dtypes",
     [
         ({"capabilities": {"dtype": "float16"}}, ("bfloat16",)),
-        (
-            {"graph_safe": False, "capabilities": {"graph_mode": "cuda_graph"}},
-            (),
-        ),
     ],
 )
 def test_contradictory_variant_domain_rejects_at_registration(
@@ -337,7 +311,6 @@ def test_inverted_legacy_token_range_rejects_before_registration():
 @pytest.mark.parametrize(
     "metadata, message",
     [
-        ({"graph_safe": "false"}, "graph_safe.*boolean"),
         ({"dtypes": "bfloat16"}, "dtypes.*list of strings"),
         ({"architectures": ["sm103", 120]}, "architectures.*non-empty strings"),
         ({"quant": None}, "quant.*list of strings"),
@@ -388,7 +361,6 @@ def test_blockscore_metadata_declares_production_domain_normatively():
     metadata = {
         "dtypes": ["bfloat16"],
         "architectures": ["sm103"],
-        "graph_safe": False,
         "quant": ["dense"],
         "capabilities": {
             "dtype": "bfloat16",

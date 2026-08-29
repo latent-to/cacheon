@@ -224,6 +224,16 @@ def _install_fake_execution(
     executor.execute_opened = execute_opened  # type: ignore[method-assign]
 
 
+def _speed(plan, baseline, candidate, mount):
+    return run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+
+
 def _rig(
     tmp_path: Path,
     candidate_durations: tuple[float, ...],
@@ -392,13 +402,7 @@ def test_clear_result_stops_after_three_serialized_reads(
     plan, baseline, candidate, mount, trace, overlap = _rig(
         tmp_path, candidate_durations
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
 
     assert result.decision is expected_decision
     assert not result.escalated
@@ -425,13 +429,7 @@ def test_borderline_result_adds_only_candidate_and_baseline_repeat(
     plan, baseline, candidate, mount, trace, overlap = _rig(
         tmp_path, (0.993, 0.993)
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
 
     assert result.escalated
     assert result.decision is SpeedStageDecision.PASS
@@ -473,17 +471,69 @@ def test_plan_rejects_overlapping_physical_lanes(tmp_path: Path) -> None:
         )
 
 
+def test_plan_seals_the_baseline_bundle_only_under_symmetric_swap(
+    tmp_path: Path,
+) -> None:
+    """The injected-baseline identity is a v7 pair-native concept only.
+
+    Slots without a digest, unsorted or duplicate slots, and any policy
+    version other than 7 (v8 boots the incumbent; pre-v7 has no baseline
+    swap) are plan construction errors, and the sealed fields participate in
+    the plan digest.
+    """
+
+    plan, *_ = _rig(tmp_path, (1.0, 1.0))
+
+    def policy(version: int) -> ResidentSpeedPolicy:
+        return ResidentSpeedPolicy(
+            60,
+            0.005,
+            2.0,
+            0.002,
+            "8" * 64,
+            "9" * 64,
+            version=version,
+            min_windows=3,
+            max_window_scatter=0.05,
+            max_conditioning_slowdown=1.5,
+        )
+
+    sealed = replace(
+        plan,
+        policy=policy(7),
+        baseline_bundle_digest="a" * 64,
+        baseline_bundle_slots=("a.slot", "b.slot"),
+    )
+    assert sealed.digest != replace(plan, policy=policy(7)).digest
+    for bad in (
+        dict(baseline_bundle_slots=("a.slot",)),  # slots without a digest
+        dict(baseline_bundle_digest="a" * 64),  # digest without slots
+        dict(
+            baseline_bundle_digest="a" * 64,
+            baseline_bundle_slots=("b.slot", "a.slot"),
+        ),
+        dict(
+            baseline_bundle_digest="a" * 64,
+            baseline_bundle_slots=("a.slot", "a.slot"),
+        ),
+    ):
+        with pytest.raises(CrossoverRuntimeError):
+            replace(plan, policy=policy(7), **bad)
+    for version in (6, 8):
+        with pytest.raises(CrossoverRuntimeError, match="symmetric-swap"):
+            replace(
+                plan,
+                policy=policy(version),
+                baseline_bundle_digest="a" * 64,
+                baseline_bundle_slots=("a.slot",),
+            )
+
+
 def test_retained_rate_span_is_independently_regraded(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path, (0.90, 0.90)
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
     first = result.rates[0]
     changed_seconds = first.timed_seconds * 2
     changed_charged_seconds = first.conditioning_seconds + changed_seconds
@@ -511,13 +561,7 @@ def test_resident_speed_witness_round_trips_pass_or_fail_raw_stage(
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path, candidate_durations
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
 
     witness = ResidentSpeedWitness.from_evidence(result, plan)
     assert ResidentSpeedWitness.from_dict(witness.to_dict()) == witness
@@ -576,13 +620,7 @@ def test_resident_speed_witness_binds_distinct_numa_lane_policies(
         != plan.candidate.launch.resource_policy_digest
     )
 
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
     witness = ResidentSpeedWitness.from_evidence(result, plan)
 
     assert witness.baseline_runtime_resource_policy_digest == (
@@ -609,13 +647,7 @@ def test_resident_settlement_control_accepts_exact_lane_policy_swap(
         (0.90, 0.90),
         distinct_runtime_policies=True,
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
     primary_witness = ResidentSpeedWitness.from_evidence(result, plan)
     reproduction_policy = replace(
         primary_witness.resident_policy,
@@ -839,13 +871,7 @@ def test_v8_reads_exactly_b_c_and_the_bookend(
         policy=_policy_v8(),
         timed_batches=3,
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
 
     assert result.decision is expected_decision
     assert not result.escalated
@@ -875,13 +901,7 @@ def test_v8_reads_the_bookend_even_when_the_call_is_not_close(
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path, (0.5,), policy=_policy_v8(), timed_batches=3
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
 
     assert result.decision is SpeedStageDecision.PASS
     assert tuple(row.role for row in result.rates) == ("B", "C", "B_prime")
@@ -899,13 +919,7 @@ def test_v8_bookend_can_convict_a_borderline_candidate(tmp_path: Path) -> None:
         timed_batches=3,
         baseline_durations=(1.0, 1.02, 1.0),
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
 
     assert result.decision is SpeedStageDecision.FAIL
     assert tuple(row.role for row in result.rates) == ("B", "C", "B_prime")
@@ -923,13 +937,7 @@ def test_v8_conditioning_regression_fails_a_fast_candidate(tmp_path: Path) -> No
         timed_batches=3,
         candidate_conditioning=0.2,
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
 
     assert result.decision is SpeedStageDecision.FAIL
     assert result.final_verdict.passed_speedup  # the speed number alone passed
@@ -955,13 +963,7 @@ def test_v8_settled_speedup_is_not_graded_by_v6_arithmetic(
         policy=_policy_v8(),
         timed_batches=3,
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
     witness = ResidentSpeedWitness.from_evidence(result, plan)
     assert witness.resident_policy.version == 8
 
@@ -980,13 +982,7 @@ def test_v8_evidence_cannot_claim_the_retired_five_arm_schedule(
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path, (0.90,), policy=_policy_v8(), timed_batches=3
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
     # C-prime and B-double-prime do not exist under v8. Sealed evidence that
     # claims the escalated schedule is malformed, not merely unusual.
     with pytest.raises(CrossoverRuntimeError, match="evidence is malformed"):
@@ -1008,13 +1004,7 @@ def test_conditional_bookend_policies_cannot_serve_this_substrate(
         timed_batches=3,
     )
     with pytest.raises(CrossoverRuntimeError, match="conditional-bookend"):
-        run_resident_crossover_speed(
-            plan,
-            baseline_executor=baseline,
-            candidate_executor=candidate,
-            model_mount=mount,
-            deadline=time.monotonic() + 60,
-        )
+        _speed(plan, baseline, candidate, mount)
     assert trace == []
 
 
@@ -1024,13 +1014,7 @@ def test_v3_crossover_scores_window_medians_and_retains_windows(
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path, (0.90, 0.90), policy=_policy_v3(), timed_batches=3
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
 
     assert result.decision is SpeedStageDecision.PASS
     assert not result.escalated
@@ -1060,13 +1044,7 @@ def test_v3_tampered_window_fails_independent_regrade(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path, (0.90, 0.90), policy=_policy_v3(), timed_batches=3
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
     first = result.rates[0]
     slowed = replace(first.windows[1], seconds=first.windows[1].seconds * 2)
     tampered = replace(
@@ -1091,26 +1069,14 @@ def test_v3_scatter_blowout_refuses_the_stage_not_the_candidate(
     # the read refuses to produce a scored number, so the stage dies as
     # typed infrastructure before any verdict exists.
     with pytest.raises(CrossoverRuntimeError, match="window scatter exceeds"):
-        run_resident_crossover_speed(
-            plan,
-            baseline_executor=baseline,
-            candidate_executor=candidate,
-            model_mount=mount,
-            deadline=time.monotonic() + 60,
-        )
+        _speed(plan, baseline, candidate, mount)
 
 
 def test_v3_witness_refuses_window_retention_mismatch(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path, (0.90, 0.90), policy=_policy_v3(), timed_batches=3
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
     witness = ResidentSpeedWitness.from_evidence(result, plan)
     stripped = witness.to_dict()
     stripped["rates"] = [
@@ -1146,13 +1112,7 @@ def test_v3_conditioning_regression_fails_a_fast_but_prefill_slow_candidate(
         timed_batches=3,
         candidate_conditioning=0.2,
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
     assert result.decision is SpeedStageDecision.FAIL
     assert not result.escalated
     assert result.final_verdict.passed_speedup  # the speed number alone passed
@@ -1171,12 +1131,6 @@ def test_v3_conditioning_within_bound_does_not_disturb_the_verdict(
         timed_batches=3,
         candidate_conditioning=0.12,  # 1.2x, inside the sealed 1.25 bound
     )
-    result = run_resident_crossover_speed(
-        plan,
-        baseline_executor=baseline,
-        candidate_executor=candidate,
-        model_mount=mount,
-        deadline=time.monotonic() + 60,
-    )
+    result = _speed(plan, baseline, candidate, mount)
     assert result.decision is SpeedStageDecision.PASS
     assert result.regrade(plan) == result.final_verdict

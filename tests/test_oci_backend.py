@@ -58,14 +58,24 @@ from cacheon.eval.oci_process import (
 )
 from cacheon.eval.oci_session_protocol import EngineSessionConfig
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
+from tests.support.b300 import gpu, prebuild_policy, runtime_policy, sha as _digest
+from tests.support.preflight import preflight_receipt
+
+
+def _gpu() -> GPUConfiguration:
+    return gpu(model="rtx6000")
+
+
+def _runtime_policy() -> OCIRuntimeResourcePolicy:
+    return runtime_policy()
+
+
+def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
+    return prebuild_policy(runtime)
 
 
 DOCKER = "/usr/bin/docker"
 IMAGE_ID = "sha256:" + "a" * 64
-
-
-def _digest(label: str) -> str:
-    return hashlib.sha256(label.encode()).hexdigest()
 
 
 def _mkdir(path: Path) -> Path:
@@ -74,93 +84,16 @@ def _mkdir(path: Path) -> Path:
     return path
 
 
-def _runtime_policy() -> OCIRuntimeResourcePolicy:
-    return OCIRuntimeResourcePolicy(
-        uid=max(1, os.getuid()),
-        gid=max(1, os.getgid()),
-        cpu_millis=8_000,
-        memory_bytes=32 << 30,
-        pids_limit=4_096,
-        nofile_limit=65_536,
-        cache_bytes=4 << 30,
-        cache_inodes=100_000,
-        tmpfs_bytes=1 << 30,
-        shm_bytes=8 << 30,
-        init_timeout_seconds=120.0,
-        batch_timeout_seconds=60.0,
-        container_python="/usr/local/bin/python3",
-    )
-
-
-def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
-    return OCIPrebuildPolicy(
-        uid=runtime.uid,
-        gid=runtime.gid,
-        cpu_millis=8_000,
-        memory_bytes=32 << 30,
-        pids_limit=4_096,
-        tmpfs_bytes=1 << 30,
-        stage_bytes=16 << 30,
-        stage_inodes=100_000,
-        timeout_seconds=7_200.0,
-        native_compile_timeout_seconds=6_000,
-        container_python=runtime.container_python,
-        build_path=("/usr/local/cuda/bin", "/usr/local/bin", "/usr/bin", "/bin"),
-        build_tmpdir="/tmp",
-        pinned_build_roots=("/usr/include", "/usr/lib", "/usr/local/cuda"),
-        runtime_policy_digest=runtime.digest,
-    )
-
-
 def _preflight(
     *, image: str, platform: str, worker: str, runtime: OCIRuntimeResourcePolicy
 ) -> RuntimePreflightReceipt:
-    return RuntimePreflightReceipt(
-        schema="cacheon-runtime-preflight-v2",
-        requested_image="registry.example/cacheon@sha256:" + image,
-        image_digest=image,
-        local_image_id=IMAGE_ID,
-        repo_digests=("registry.example/cacheon@sha256:" + image,),
-        oci_platform="linux/amd64",
-        platform_digest=platform,
-        docker_binary=DOCKER,
+    return preflight_receipt(
+        image=image,
+        platform=platform,
+        worker=worker,
         uid=runtime.uid,
         gid=runtime.gid,
-        sglang_version="0.0.0.dev1+g56e290315",
-        worker_distribution="cacheon-harness",
-        worker_version="0.0.1",
-        worker_distribution_digest=worker,
-        worker_file_count=200,
-        worker_total_bytes=1_000_000,
-        python_implementation="cpython",
         python_executable=runtime.container_python,
-        python_version="3.12.0",
-        python_abi="cpython-312-x86_64-linux-gnu",
-        python_platform="linux-x86_64",
-        machine="x86_64",
-        package_versions=(),
-        cudart_library="libcudart.so.13",
-        cuda_visible_devices="",
-        nvidia_visible_devices="void",
-        security_argv_sha256=_digest("preflight-argv"),
-    )
-
-
-def _gpu() -> GPUConfiguration:
-    return GPUConfiguration(
-        physical_id=0,
-        uuid="GPU-00000000-0000-0000-0000-000000000000",
-        pci_bus_id="00000000:01:00.0",
-        name="NVIDIA RTX PRO 6000 Blackwell Server Edition",
-        memory_total_mib=98_304,
-        driver_version="595.71.05",
-        power_limit_mw=600_000,
-        compute_mode="Default",
-        persistence_mode="Enabled",
-        application_graphics_clock_mhz=None,
-        application_memory_clock_mhz=None,
-        max_graphics_clock_mhz=2_100,
-        max_memory_clock_mhz=4_000,
     )
 
 
@@ -357,6 +290,53 @@ def _manager(case: SimpleNamespace) -> OCIProcessManager:
     )
 
 
+def _executor(case: SimpleNamespace) -> OCIEngineExecutor:
+    return OCIEngineExecutor(case.config, case.device_policy, manager=_manager(case))
+
+
+def _executor_with(case, manager, session_runner) -> OCIEngineExecutor:
+    return OCIEngineExecutor(
+        case.config,
+        case.device_policy,
+        manager=manager,
+        session_runner=session_runner,
+    )
+
+
+def _execute(executor, case):
+    return executor.execute(
+        case.launch, case.binding, case.mount, case.plan, deadline=200.0
+    )
+
+
+def _execute_reference_runtime(executor, case, run):
+    return executor._execute_runtime(
+        case.launch,
+        case.binding,
+        case.mount,
+        absolute=200.0,
+        resolved=case.resolved,
+        preflight=case.preflight,
+        model_root=case.model,
+        session_protocol="reference",
+        run=run,
+    )
+
+
+def _argv(case, lease, cache, resolved, runtime, **over):
+    return build_runtime_argv(
+        lease=lease,
+        resolved=resolved,
+        preflight=case.preflight,
+        model_root=case.model,
+        publication=case.publication,
+        cache_root=cache,
+        seccomp_path=lease.stage_paths[0],
+        runtime=runtime,
+        **over,
+    )
+
+
 def _resolved(case: SimpleNamespace, launch: EngineLaunchSpec) -> ResolvedEngineLaunch:
     return replace(case.resolved, spec=launch)
 
@@ -509,11 +489,7 @@ def test_reference_reopens_control_receipt_then_rejects_added_native_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     case = _case(tmp_path)
-    executor = OCIEngineExecutor(
-        case.config,
-        case.device_policy,
-        manager=_manager(case),
-    )
+    executor = _executor(case)
     _install_execution_fakes(case, executor, monkeypatch)
     control = SimpleNamespace(
         **dict(
@@ -540,17 +516,7 @@ def test_reference_reopens_control_receipt_then_rejects_added_native_file(
     )
 
     with pytest.raises(OCIBackendError, match="acquired contribution state"):
-        executor._execute_runtime(
-            case.launch,
-            case.binding,
-            case.mount,
-            absolute=200.0,
-            resolved=case.resolved,
-            preflight=case.preflight,
-            model_root=case.model,
-            session_protocol="reference",
-            run=lambda *_args: object(),
-        )
+        _execute_reference_runtime(executor, case, lambda *_args: object())
     assert executor.device_guard.deadlines == [  # type: ignore[attr-defined]
         ("pre", 200.0),
         ("post", 200.0),
@@ -561,11 +527,7 @@ def test_reference_runtime_accepts_control_receipt_through_both_reopens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     case = _case(tmp_path)
-    executor = OCIEngineExecutor(
-        case.config,
-        case.device_policy,
-        manager=_manager(case),
-    )
+    executor = _executor(case)
     _install_execution_fakes(case, executor, monkeypatch)
     control = SimpleNamespace(
         **dict(
@@ -589,17 +551,7 @@ def test_reference_runtime_accepts_control_receipt_through_both_reopens(
 
     monkeypatch.setattr(backend, "AttachedReferenceTransport", Transport)
     marker = object()
-    raw = executor._execute_runtime(
-        case.launch,
-        case.binding,
-        case.mount,
-        absolute=200.0,
-        resolved=case.resolved,
-        preflight=case.preflight,
-        model_root=case.model,
-        session_protocol="reference",
-        run=lambda *_args: marker,
-    )
+    raw = _execute_reference_runtime(executor, case, lambda *_args: marker)
     assert raw.value is marker
     assert raw.publication_digest == control.publication_digest
     assert executor.device_guard.deadlines == [  # type: ignore[attr-defined]
@@ -704,16 +656,7 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
     )
     cache = _mkdir(lease.mount_paths[0])
     lease.stage_paths[0].write_bytes(case.config.prebuild.seccomp_profile.read_bytes())
-    argv = build_runtime_argv(
-        lease=lease,
-        resolved=case.resolved,
-        preflight=case.preflight,
-        model_root=case.model,
-        publication=case.publication,
-        cache_root=cache,
-        seccomp_path=lease.stage_paths[0],
-        runtime=case.runtime,
-    )
+    argv = _argv(case, lease, cache, case.resolved, case.runtime)
 
     for exact in (
         "--pull=never",
@@ -756,18 +699,15 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         assert forbidden not in encoded
 
     profile_digest = hashlib.sha256(b"cute-compile-profile").hexdigest()
-    profiled_argv = build_runtime_argv(
-        lease=lease,
-        resolved=replace(
+    profiled_argv = _argv(
+        case,
+        lease,
+        cache,
+        replace(
             case.resolved,
             native_compile_profile=SimpleNamespace(digest=profile_digest),
         ),
-        preflight=case.preflight,
-        model_root=case.model,
-        publication=case.publication,
-        cache_root=cache,
-        seccomp_path=lease.stage_paths[0],
-        runtime=case.runtime,
+        case.runtime,
     )
     assert "--read-only" not in argv
     assert f"--env=CACHEON_CUTE_COMPILE_PROFILE_DIGEST={profile_digest}" in profiled_argv
@@ -780,16 +720,7 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
             physical_gpu_ids=("0", "1"),
         ),
     )
-    multi_argv = build_runtime_argv(
-        lease=lease,
-        resolved=multi_resolved,
-        preflight=case.preflight,
-        model_root=case.model,
-        publication=case.publication,
-        cache_root=cache,
-        seccomp_path=lease.stage_paths[0],
-        runtime=case.runtime,
-    )
+    multi_argv = _argv(case, lease, cache, multi_resolved, case.runtime)
     assert '--gpus="device=0,1"' in multi_argv
 
     isolated_runtime = replace(
@@ -797,41 +728,21 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         cpuset_cpus="0-3,8-11",
         cpuset_mems="0",
     )
-    isolated_argv = build_runtime_argv(
-        lease=lease,
-        resolved=case.resolved,
-        preflight=case.preflight,
-        model_root=case.model,
-        publication=case.publication,
-        cache_root=cache,
-        seccomp_path=lease.stage_paths[0],
-        runtime=isolated_runtime,
-    )
+    isolated_argv = _argv(case, lease, cache, case.resolved, isolated_runtime)
     assert "--cpuset-cpus=0-3,8-11" in isolated_argv
     assert "--cpuset-mems=0" in isolated_argv
 
-    reference_argv = build_runtime_argv(
-        lease=lease,
-        resolved=case.resolved,
-        preflight=case.preflight,
-        model_root=case.model,
-        publication=case.publication,
-        cache_root=cache,
-        seccomp_path=lease.stage_paths[0],
-        runtime=case.runtime,
-        session_protocol="reference",
+    reference_argv = _argv(
+        case, lease, cache, case.resolved, case.runtime, session_protocol="reference"
     )
     assert "--env=CACHEON_SESSION_PROTOCOL=reference" in reference_argv
     with pytest.raises(OCIBackendError, match="protocol"):
-        build_runtime_argv(
-            lease=lease,
-            resolved=case.resolved,
-            preflight=case.preflight,
-            model_root=case.model,
-            publication=case.publication,
-            cache_root=cache,
-            seccomp_path=lease.stage_paths[0],
-            runtime=case.runtime,
+        _argv(
+            case,
+            lease,
+            cache,
+            case.resolved,
+            case.runtime,
             session_protocol="candidate-chosen",
         )
 
@@ -840,9 +751,7 @@ def test_launch_validation_binds_runtime_model_config_and_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     case = _case(tmp_path)
-    executor = OCIEngineExecutor(
-        case.config, case.device_policy, manager=_manager(case)
-    )
+    executor = _executor(case)
     monkeypatch.setattr(
         backend,
         "resolve_engine_launch",
@@ -922,20 +831,9 @@ def test_execute_shares_deadline_and_returns_raw_triplet(
         callback("before_first_timed", 1, deadline)
         return _session_evidence(case)
 
-    executor = OCIEngineExecutor(
-        case.config,
-        case.device_policy,
-        manager=manager,
-        session_runner=session_runner,
-    )
+    executor = _executor_with(case, manager, session_runner)
     prebuild_deadlines = _install_execution_fakes(case, executor, monkeypatch)
-    result = executor.execute(
-        case.launch,
-        case.binding,
-        case.mount,
-        case.plan,
-        deadline=200.0,
-    )
+    result = _execute(executor, case)
 
     assert type(result) is EngineExecutionEvidence
     assert prebuild_deadlines == [200.0]
@@ -1068,21 +966,10 @@ def test_execute_failure_still_releases_lease_and_post_drains(
         del plan, kwargs
         raise RuntimeError("session failed")
 
-    executor = OCIEngineExecutor(
-        case.config,
-        case.device_policy,
-        manager=manager,
-        session_runner=fail_session,
-    )
+    executor = _executor_with(case, manager, fail_session)
     _install_execution_fakes(case, executor, monkeypatch)
     with pytest.raises(RuntimeError, match="session failed"):
-        executor.execute(
-            case.launch,
-            case.binding,
-            case.mount,
-            case.plan,
-            deadline=200.0,
-        )
+        _execute(executor, case)
 
     assert not tuple(manager.leases_root.glob("*.json"))
     assert not tuple(manager.resources_root.iterdir())
@@ -1140,22 +1027,11 @@ def test_execute_failure_attaches_finalized_stderr_artifact_after_abort(
     def fail_session(*_args, **_kwargs) -> SessionExecutionEvidence:
         raise failure
 
-    executor = OCIEngineExecutor(
-        case.config,
-        case.device_policy,
-        manager=manager,
-        session_runner=fail_session,
-    )
+    executor = _executor_with(case, manager, fail_session)
     _install_execution_fakes(case, executor, monkeypatch)
     monkeypatch.setattr(backend, "AttachedSessionTransport", DiagnosticTransport)
     with pytest.raises(OuterSessionProtocolError) as raised:
-        executor.execute(
-            case.launch,
-            case.binding,
-            case.mount,
-            case.plan,
-            deadline=200.0,
-        )
+        _execute(executor, case)
     assert raised.value is failure
     assert raised.value.diagnostic == diagnostic
     assert receipt.receipt_sha256 in str(raised.value)

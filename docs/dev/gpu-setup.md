@@ -254,7 +254,7 @@ denominator. Do not treat them as qualification evidence.
 | `compat` reports a moved seam | Confirm exact SGLang pin; follow the bump process rather than patching around it |
 | Scheduler cannot import Cacheon | Install editable package in the same environment and use module invocation |
 | Collective hangs | Rank/world-size agreement, visible devices, topology, and clean prior processes |
-| Graph path falls back | Capability metadata, `graph_safe`, static allocations, host syncs, dynamic-input contract |
+| Capture fails | Capability metadata, static allocations, host syncs, dynamic-input contract |
 | Baselines drift | Stop scoring; inspect thermals, clocks, competing processes, device cleanup, and arena conditioning |
 
 Source: [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py),

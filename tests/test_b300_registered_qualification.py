@@ -543,6 +543,79 @@ def test_registered_plan_accepts_commissioned_resident_policy(
     assert value.resident_speed_plan.policy.version == version
 
 
+def test_pair_native_routing_requires_swap_reachability_and_same_target() -> None:
+    """v7 measures both arms by injection over stock-booted engines.
+
+    That comparison is exact only at genesis or when the candidate replaces
+    the incumbent's own registered target and the incumbent itself is a
+    single injectable bundle; everything else boots real trees on v8.
+    """
+
+    bundle = registered.SealedIncumbentBundle(
+        "attention.msa_prefill_block_score",
+        _h("crowned"),
+        ("attention.msa_prefill_block_score",),
+    )
+    route = registered.resident_pair_native
+    assert route(
+        swappable=True, genesis=True, incumbent_bundle=None,
+        candidate_target_id="any.target",
+    )
+    assert route(
+        swappable=True, genesis=False, incumbent_bundle=bundle,
+        candidate_target_id="attention.msa_prefill_block_score",
+    )
+    # Non-swappable candidates always boot.
+    assert not route(
+        swappable=False, genesis=True, incumbent_bundle=None,
+        candidate_target_id="any.target",
+    )
+    # A different-target candidate composed over stock would omit the
+    # incumbent's win from its own arm.
+    assert not route(
+        swappable=True, genesis=False, incumbent_bundle=bundle,
+        candidate_target_id="moe.fused_experts_reduce",
+    )
+    # An incumbent one swap cannot realize routes everyone to v8.
+    assert not route(
+        swappable=True, genesis=False, incumbent_bundle=None,
+        candidate_target_id="attention.msa_prefill_block_score",
+    )
+
+
+def test_sealed_incumbent_bundle_binds_to_the_declared_stack_entry(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+    foreign = registered.SealedIncumbentBundle(
+        "attention.msa_prefill_block_score",
+        _h("not-in-the-stack"),
+        ("attention.msa_prefill_block_score",),
+    )
+    with pytest.raises(
+        registered.B300RegisteredQualificationError,
+        match="differs from the incumbent stack entry",
+    ):
+        replace(harness.inputs, incumbent_bundle=foreign)
+
+    with pytest.raises(
+        registered.B300RegisteredQualificationError,
+        match="sorted distinct slots",
+    ):
+        registered.SealedIncumbentBundle(
+            "attention.msa_prefill_block_score",
+            _h("crowned"),
+            ("b.slot", "a.slot"),
+        )
+    with pytest.raises(
+        registered.B300RegisteredQualificationError,
+        match="incumbent bundle digest",
+    ):
+        registered.SealedIncumbentBundle(
+            "attention.msa_prefill_block_score", "nothex", ("a.slot",)
+        )
+
+
 def test_native_candidate_is_planned_on_the_two_process_schedule(
     tmp_path: Path,
 ) -> None:

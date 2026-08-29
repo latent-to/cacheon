@@ -182,11 +182,8 @@ allocated ppm is sent to the validator hotkey for the tick; other families keep
 their allocations, and the claimant resumes receiving its decayed share if it
 returns.
 
-Finite-debt V2 does not reuse this standing-decay formula. It issues finite principal
-from reproduced log-relative improvement and a family clock, composes registered-CROWN
-and reviewed-discovery debt, and debits only after confirmed chain readback. The two
-generations remain separately versioned and never publish concurrently. See
-[Emissions policy](../reference/emissions-policy.md).
+Finite-debt V2 is a retained design, not an implemented lane; it does not reuse this
+standing-decay formula. See [Emissions policy](../reference/emissions-policy.md).
 
 Read [Settlement and weights](settlement-and-weights.md) for transaction and publication
 details.

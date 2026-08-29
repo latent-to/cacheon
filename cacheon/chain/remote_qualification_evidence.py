@@ -17,8 +17,8 @@ from typing import Iterable
 
 from cacheon.arena_service import (
     ArenaScreenReceipt,
+    ArenaServiceError,
     PromotionDecision,
-    ScreenGrade,
     ScreenStageResult,
 )
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
@@ -28,6 +28,12 @@ from cacheon.eval.evidence_store import (
     EvidenceStoreError,
     publish_evidence,
     reopen_evidence,
+)
+from cacheon.eval.candidate_failure_product import (
+    CANDIDATE_FAILURE_SCHEMA,
+    CandidateFailureProductError,
+    candidate_failure_digest,
+    reopen_candidate_failure,
 )
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
@@ -448,6 +454,31 @@ def import_remote_qualification_evidence(
             raise RemoteEvaluationDispatcherError(
                 str(exc)
             ) from None
+    if attempt_ref is not None and attempt_ref.schema == CANDIDATE_FAILURE_SCHEMA:
+        try:
+            failure = reopen_candidate_failure(evidence_root, attempt_ref)
+        except CandidateFailureProductError as exc:
+            raise RemoteEvaluationDispatcherError(str(exc)) from None
+        outcomes = product.batch.outcomes
+        culprit_row = failure["culprit"]
+        if (
+            len(outcomes) != 1
+            or len(product.authority_manifest.reservations) != 1
+            or product.batch.retry_plan is not None
+            or failure["authority_manifest_digest"] != product.authority_manifest.digest
+            or failure["source_digest"] != product.authority_manifest.source_digest
+            or culprit_row["reservation_digest"] != outcomes[0].reservation_digest
+            or culprit_row["selected_delta_digest"] != outcomes[0].selected_delta_digest
+            or culprit_row["target_id"]
+            != product.authority_manifest.reservations[0].target_id
+            or outcomes[0].decision is not QualificationDecision.FAIL
+            or outcomes[0].retryable
+            or outcomes[0].reason != failure["failure_kind"]
+            or outcomes[0].report_digest != candidate_failure_digest(failure)
+        ):
+            raise RemoteEvaluationDispatcherError(
+                "candidate failure product differs from its qualification outcomes"
+            )
     return result
 
 
@@ -455,26 +486,12 @@ def _screen_receipt_from_dict(value: object) -> ArenaScreenReceipt:
     fields = {"candidate_digest", "decision", "results", "screen_attempt", "service_digest"}
     if type(value) is not dict or set(value) != fields or type(value["results"]) is not list:
         raise RemoteEvaluationDispatcherError("screen response fields are not closed")
-    results = []
-    for row in value["results"]:
-        if type(row) is not dict or set(row) != {
-            "elapsed_ms",
-            "evidence_digest",
-            "grade",
-            "stage",
-        }:
-            raise RemoteEvaluationDispatcherError("screen stage response is malformed")
-        try:
-            results.append(
-                ScreenStageResult(
-                    row["stage"],
-                    ScreenGrade(row["grade"]),
-                    row["evidence_digest"],
-                    row["elapsed_ms"],
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            raise RemoteEvaluationDispatcherError("screen stage response is invalid") from exc
+    try:
+        results = [ScreenStageResult.from_dict(row) for row in value["results"]]
+    except ArenaServiceError as exc:
+        raise RemoteEvaluationDispatcherError(
+            f"screen stage response is invalid: {exc}"
+        ) from None
     try:
         return ArenaScreenReceipt(
             value["service_digest"],  # type: ignore[arg-type]

@@ -541,7 +541,14 @@ def _engine_config(
         deterministic=False,
         attention_backend=None,
         disable_cuda_graph=disable_cuda_graph,
-        mem_fraction_static=0.75,
+        # 0.70 keeps >=13 GiB/GPU free for the post-swap decode-graph rebuild:
+        # the pinned fork shares no graph memory pool across runner
+        # generations, so a rebuild on a traffic-warmed engine needs fresh
+        # headroom (OOMed 3/3 at 0.75 on 2026-08-24, 9.07 GiB ask vs ~3.7 GiB
+        # free). expandable_segments cannot substitute here: flashinfer
+        # allreduce fusion needs cudaIpcGetMemHandle, which VMM-backed
+        # allocation breaks.
+        mem_fraction_static=0.70,
         log_level="error",
         max_running_requests=cell.concurrency,
         tp_size=TP_SIZE,
@@ -560,12 +567,18 @@ def _commissioned_stock_authority(
     *,
     error: type[Exception],
     label: str,
+    entries: object = None,
+    resolver: object = None,
 ):
-    """Target members plus the empty-stack stock tree, from one exact catalog.
+    """Target members plus one commissioned incumbent tree, from one catalog.
 
-    The screen and qualification commissions build the identical stock
-    identity — same context, same empty manifest, same on-disk
-    ``resident-stock-{digest}`` tree — so the authority lives once here.
+    With no ``entries`` this is the empty-stack stock identity the screen and
+    pristine-reference paths share — same context, same empty manifest, same
+    on-disk ``resident-stock-{digest}`` tree (name kept for pod tree-cache
+    continuity). A qualification commission passes the durable incumbent's
+    ``entries`` plus the capabilities source resolver and gets the current
+    crowned baseline instead; the CPU dispatcher's pin check enforces that the
+    declared entries reproduce the durable stack digest exactly.
     ``error``/``label`` keep each commission's fail-closed error class and
     wording exactly as before.
     """
@@ -594,30 +607,32 @@ def _commissioned_stock_authority(
         catalog_digest=catalog.digest,
         target_spec_digests=_catalog_specs(catalog),
     )
-    stock = EvaluationStackManifest(
+    stack = EvaluationStackManifest(
         runtime_digest=context.runtime_digest,
         base_engine_digest=context.base_engine_digest,
         arena_digest=context.arena_digest,
         catalog_snapshot=snapshot,
         catalog_digest=catalog.digest,
-        entries={},
+        entries=dict(entries) if entries else {},
     )
     trees_root = inputs.root / "engine-trees"
     trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    destination = trees_root / f"resident-stock-{stock.digest}"
+    destination = trees_root / f"resident-stock-{stack.digest}"
     if destination.exists():
         tree = reopen_materialized_engine_tree(destination)
     else:
         tree = materialize_engine_tree(
-            stock,
+            stack,
             context=context,
             catalog=catalog,
-            resolver={},
+            resolver=resolver if resolver is not None else {},
             destination=destination,
         )
-    if tree.stack_digest != stock.digest or tree.runtime_manifest is not None:
-        raise error(f"{label} stock tree differs from the empty commissioned stack")
-    return target_members, context, stock, tree
+    if tree.stack_digest != stack.digest or (
+        tree.runtime_manifest is not None
+    ) != bool(entries):
+        raise error(f"{label} tree differs from the commissioned incumbent stack")
+    return target_members, context, stack, tree
 
 
 def _native_build(

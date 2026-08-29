@@ -419,6 +419,15 @@ class ResidentCrossoverPlan:
     baseline: ResidentArmPlan
     candidate: ResidentArmPlan
     policy: ResidentSpeedPolicy
+    # The sealed incumbent bundle the pair-native v7 baseline read injects
+    # through the swap path.  Both lane engines boot plain stock; the baseline
+    # arm realizes the incumbent stack by activating exactly this bundle, so
+    # the digest and the registered slot set come from the commissioned stack
+    # entry and its manifest — never from a runtime swap acknowledgement.  At
+    # genesis (and on the version-8 two-process schedule, whose baseline boots
+    # the incumbent tree instead) both fields are empty.
+    baseline_bundle_digest: str | None = None
+    baseline_bundle_slots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         try:
@@ -436,6 +445,31 @@ class ResidentCrossoverPlan:
             != _workload(self.candidate.session_plan)
         ):
             raise CrossoverRuntimeError("resident crossover plan is inconsistent")
+        if self.baseline_bundle_digest is None:
+            if self.baseline_bundle_slots != ():
+                raise CrossoverRuntimeError(
+                    "baseline bundle slots require a baseline bundle digest"
+                )
+        else:
+            try:
+                injected = require_sha256_hex(
+                    self.baseline_bundle_digest, field="baseline_bundle_digest"
+                )
+            except ValueError as exc:
+                raise CrossoverRuntimeError(str(exc)) from None
+            object.__setattr__(self, "baseline_bundle_digest", injected)
+            slots = self.baseline_bundle_slots
+            if (
+                type(slots) is not tuple
+                or not slots
+                or any(type(slot) is not str or not slot for slot in slots)
+                or list(slots) != sorted(set(slots))
+                or self.policy.version != 7
+            ):
+                raise CrossoverRuntimeError(
+                    "baseline bundle injection requires sorted distinct slots "
+                    "and the symmetric-swap policy version"
+                )
         allowed_differences = {
             "stack_digest",
             "tree_digest",
@@ -494,6 +528,10 @@ class ResidentCrossoverPlan:
             "cacheon.qualification.resident-crossover-plan",
             {
                 "baseline": arm(self.baseline),
+                "baseline_bundle": {
+                    "digest": self.baseline_bundle_digest or "",
+                    "slots": list(self.baseline_bundle_slots),
+                },
                 "candidate": arm(self.candidate),
                 "policy": self.policy.digest,
                 "selected_delta": self.selected_delta_digest,

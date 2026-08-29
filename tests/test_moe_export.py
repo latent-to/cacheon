@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from cacheon import moe_export
-from cacheon.capabilities import collective_call_descriptor
+from cacheon.capabilities import CallDescriptor, collective_call_descriptor
 from cacheon.dispatch import make_arfusion_dispatcher
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
@@ -208,10 +208,8 @@ def test_cpu_export_double_does_not_claim_host_cuda_architecture(monkeypatch):
 
 
 def test_export_preflight_writes_no_fired_receipt(monkeypatch, tmp_path):
-    from cacheon import registry as registry_mod
 
     monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
-    monkeypatch.setattr(registry_mod, "_FIRED_SLOTS", set())
     out, kwargs = _export_kwargs()
     _armed(monkeypatch, _FakeRaw(export=(1, 1, 2, 3, 64, 32, 32, 5, 16)))
     moe_export.maybe_export(_orig_recorder([], out), (), kwargs,
@@ -453,7 +451,7 @@ def _pend(*, registry=None, group=None, t=64, k=5, hid=32):
     pend = {"g2": 1, "idx": 2, "scl": 3, "T": t, "K": k, "hid": hid}
     if registry is not None and group is not None:
         descriptor = _producer_descriptor(t=t, k=k, hid=hid, group=group)
-        impl = registry.select(DEEP, descriptor, write_fired_receipt=False).impl
+        impl = registry.select(DEEP, descriptor).impl
         assert impl is not None
         pend["selection"] = moe_export.DeepSelection(
             impl=impl,
@@ -625,12 +623,14 @@ def test_producer_variant_identity_blocks_head_trim_variant_switch(
     base_calls = []
     d = make_arfusion_dispatcher(_baseline_recorder(base_calls), registry=reg)
     x = full[:32]
-    assert d(x, x.clone(), torch.ones(32, dtype=x.dtype))[0] == "baseline"
-    assert calls == []
-    assert len(base_calls) == 1 and moe_export._state["orphans"] == 1
+    # The export preflighted the 'large' variant; consume resolves 'small'. A deep
+    # candidate arm cannot quietly finish in the trusted epilogue.
+    with pytest.raises(ValueError, match="different or ineligible deep variant"):
+        d(x, x.clone(), torch.ones(32, dtype=x.dtype))
+    assert calls == [] and base_calls == []
 
 
-def test_consume_topology_mismatch_recovers_without_candidate(
+def test_consume_topology_mismatch_aborts_inside_a_candidate_arm(
     monkeypatch, _fake_group
 ):
     import cacheon.dispatch as dispatch
@@ -644,9 +644,9 @@ def test_consume_topology_mismatch_recovers_without_candidate(
     monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: other_group)
     base_calls = []
     d = make_arfusion_dispatcher(_baseline_recorder(base_calls), registry=reg)
-    assert d(x, x.clone(), torch.ones(32, dtype=x.dtype))[0] == "baseline"
-    assert record == []
-    assert len(base_calls) == 1 and moe_export._state["orphans"] == 1
+    with pytest.raises(ValueError, match="process group differs"):
+        d(x, x.clone(), torch.ones(32, dtype=x.dtype))
+    assert record == [] and base_calls == []
 
 
 def test_plain_calls_untouched_when_no_pend(monkeypatch, _fake_group):
@@ -667,8 +667,8 @@ def test_eligibility_min_num_tokens_from_metadata():
 
     e = eligibility_from_metadata({"min_num_tokens": 48}, ("bfloat16",))
     assert e.min_num_tokens == 48
-    assert not e.accepts(dtype_name="bfloat16", last_dim=64, arch=None, num_tokens=4)
-    assert e.accepts(dtype_name="bfloat16", last_dim=64, arch=None, num_tokens=48)
+    assert not e.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch=None, num_tokens=4)).accepted
+    assert e.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch=None, num_tokens=48)).accepted
 
 
 # ---- integrations (stub sglang modules) ------------------------------------------

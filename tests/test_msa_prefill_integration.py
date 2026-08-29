@@ -1,6 +1,4 @@
-"""Import-order and identity tests for the SGLang MSA prefill seam."""
-
-from __future__ import annotations
+"""Shared by-value binding contract plus MSA-prefill factory wiring."""
 
 import importlib.machinery
 import sys
@@ -11,156 +9,92 @@ import pytest
 from cacheon.integrations import sglang_msa_prefill as seam
 
 
-def _module(name: str) -> ModuleType:
-    return ModuleType(name)
-
-
 def _stock(*_args, **_kwargs):
     return "stock"
 
 
 @pytest.fixture()
-def fake_dispatcher(monkeypatch):
-    made: list[tuple[object, object, object]] = []
+def factory(monkeypatch):
+    calls = []
 
-    def factory(original, source, *, registry):
-        def dispatcher(*args, **kwargs):
-            return original(*args, **kwargs)
+    def make(original, source, *, registry):
+        calls.append((original, source, registry))
+        return lambda *args, **kwargs: original(*args, **kwargs)
 
-        made.append((original, source, registry))
-        return dispatcher
-
-    monkeypatch.setattr(seam, "make_msa_prefill_dispatcher", factory)
-    return made
+    monkeypatch.setattr(seam, "make_msa_prefill_dispatcher", make)
+    return calls
 
 
-def _load_source(monkeypatch) -> ModuleType:
-    source = _module(seam._SOURCE_MODULE)
-    source.flash_prefill_with_topk_index = _stock
-    monkeypatch.setitem(sys.modules, seam._SOURCE_MODULE, source)
-    monkeypatch.delitem(sys.modules, seam._CONSUMER_MODULE, raising=False)
+def _source(monkeypatch):
+    source = ModuleType(seam._PATCH.source_module)
+    setattr(source, seam._PATCH.function, _stock)
+    monkeypatch.setitem(sys.modules, seam._PATCH.source_module, source)
+    monkeypatch.delitem(sys.modules, seam._PATCH.consumer_module, raising=False)
     return source
 
 
-def test_already_imported_consumer_is_rebound_and_uninstalled(
-    monkeypatch, fake_dispatcher
-):
-    source = _load_source(monkeypatch)
-    consumer = _module(seam._CONSUMER_MODULE)
-    consumer.flash_prefill_with_topk_index = _stock
-    monkeypatch.setitem(sys.modules, seam._CONSUMER_MODULE, consumer)
+def _consumer(monkeypatch, binding=_stock):
+    consumer = ModuleType(seam._PATCH.consumer_module)
+    setattr(consumer, seam._PATCH.function, binding)
+    monkeypatch.setitem(sys.modules, seam._PATCH.consumer_module, consumer)
+    return consumer
 
-    registry = object()
+
+def test_loaded_and_future_consumers_patch_once_and_restore(monkeypatch, factory):
+    source, consumer, registry = _source(monkeypatch), _consumer(monkeypatch), object()
     seam.install(registry)
-    dispatcher = source.flash_prefill_with_topk_index
-
-    assert dispatcher is consumer.flash_prefill_with_topk_index
-    assert dispatcher is not _stock
-    assert fake_dispatcher == [(_stock, source, registry)]
-    assert seam.is_installed()
-
+    dispatcher = getattr(source, seam._PATCH.function)
+    assert dispatcher is getattr(consumer, seam._PATCH.function)
+    assert factory == [(_stock, source, registry)] and seam.is_installed()
     seam.install(registry)
-    assert fake_dispatcher == [(_stock, source, registry)]
-    assert source.flash_prefill_with_topk_index is dispatcher
-
+    assert len(factory) == 1
     seam.uninstall()
-    assert source.flash_prefill_with_topk_index is _stock
-    assert consumer.flash_prefill_with_topk_index is _stock
-    assert not seam.is_installed()
+    assert getattr(source, seam._PATCH.function) is _stock
+    assert getattr(consumer, seam._PATCH.function) is _stock
 
-
-def test_source_first_makes_future_from_import_read_dispatcher(
-    monkeypatch, fake_dispatcher
-):
-    source = _load_source(monkeypatch)
-    seam.install()
-    dispatcher = source.flash_prefill_with_topk_index
-
-    # This assignment is the semantic result of a later
-    # ``from flash_with_topk_idx import flash_prefill_with_topk_index``.
-    consumer = _module(seam._CONSUMER_MODULE)
-    consumer.flash_prefill_with_topk_index = source.flash_prefill_with_topk_index
-    monkeypatch.setitem(sys.modules, seam._CONSUMER_MODULE, consumer)
-
-    assert consumer.flash_prefill_with_topk_index is dispatcher
+    source = _source(monkeypatch)
+    seam.install(registry)
+    consumer = _consumer(monkeypatch, getattr(source, seam._PATCH.function))
     assert seam.is_installed()
-    seam.install()
-    assert consumer.flash_prefill_with_topk_index is dispatcher
-
     seam.uninstall()
-    assert source.flash_prefill_with_topk_index is _stock
-    assert consumer.flash_prefill_with_topk_index is _stock
+    assert getattr(consumer, seam._PATCH.function) is _stock
 
 
-def test_consumer_mid_import_is_not_mistaken_for_upstream_drift(
-    monkeypatch, fake_dispatcher
-):
-    source = _load_source(monkeypatch)
-    consumer = _module(seam._CONSUMER_MODULE)
-    spec = importlib.machinery.ModuleSpec(seam._CONSUMER_MODULE, loader=None)
+def test_consumer_import_window_is_valid(monkeypatch, factory):
+    source = _source(monkeypatch)
+    consumer = ModuleType(seam._PATCH.consumer_module)
+    spec = importlib.machinery.ModuleSpec(seam._PATCH.consumer_module, loader=None)
     spec._initializing = True
     consumer.__spec__ = spec
-    monkeypatch.setitem(sys.modules, seam._CONSUMER_MODULE, consumer)
-
+    monkeypatch.setitem(sys.modules, seam._PATCH.consumer_module, consumer)
     seam.install()
-    dispatcher = source.flash_prefill_with_topk_index
-    assert seam.is_installed()
-
-    # The paused ``from`` statement resumes after the source post-import hook.
-    consumer.flash_prefill_with_topk_index = source.flash_prefill_with_topk_index
+    setattr(consumer, seam._PATCH.function, getattr(source, seam._PATCH.function))
     spec._initializing = False
-    assert consumer.flash_prefill_with_topk_index is dispatcher
     assert seam.is_installed()
 
 
-def test_foreign_loaded_consumer_fails_atomically(monkeypatch, fake_dispatcher):
-    source = _load_source(monkeypatch)
-    consumer = _module(seam._CONSUMER_MODULE)
+def test_foreign_or_missing_consumer_fails_without_clobber(monkeypatch, factory):
+    source = _source(monkeypatch)
     foreign = lambda: None
-    consumer.flash_prefill_with_topk_index = foreign
-    monkeypatch.setitem(sys.modules, seam._CONSUMER_MODULE, consumer)
+    consumer = _consumer(monkeypatch, foreign)
+    with pytest.raises(RuntimeError, match="binding drifted"):
+        seam.install()
+    assert getattr(source, seam._PATCH.function) is _stock
+    assert getattr(consumer, seam._PATCH.function) is foreign
 
-    with pytest.raises(RuntimeError, match="refusing to clobber"):
+    monkeypatch.delattr(consumer, seam._PATCH.function)
+    with pytest.raises(RuntimeError, match="no reachable binding"):
         seam.install()
 
-    assert source.flash_prefill_with_topk_index is _stock
-    assert consumer.flash_prefill_with_topk_index is foreign
-    assert not getattr(source, seam._PATCH_FLAG, False)
-    assert not hasattr(source, seam._ORIG_ATTR)
-    assert not hasattr(source, seam._DISPATCH_ATTR)
 
-
-def test_binding_drift_is_not_reported_installed_or_clobbered_on_uninstall(
-    monkeypatch, fake_dispatcher
-):
-    source = _load_source(monkeypatch)
-    consumer = _module(seam._CONSUMER_MODULE)
-    consumer.flash_prefill_with_topk_index = _stock
-    monkeypatch.setitem(sys.modules, seam._CONSUMER_MODULE, consumer)
+def test_drift_is_neither_installed_nor_overwritten(monkeypatch, factory):
+    source, consumer = _source(monkeypatch), _consumer(monkeypatch)
     seam.install()
-    dispatcher = source.flash_prefill_with_topk_index
-
+    dispatcher = getattr(source, seam._PATCH.function)
     foreign = lambda: None
-    consumer.flash_prefill_with_topk_index = foreign
+    setattr(consumer, seam._PATCH.function, foreign)
     assert not seam.is_installed()
-    with pytest.raises(RuntimeError, match="refusing to clobber"):
-        seam.install()
-    with pytest.raises(RuntimeError, match="refusing to clobber"):
+    with pytest.raises(RuntimeError, match="binding drifted"):
         seam.uninstall()
-
-    assert source.flash_prefill_with_topk_index is dispatcher
-    assert consumer.flash_prefill_with_topk_index is foreign
-    assert getattr(source, seam._PATCH_FLAG) is True
-
-
-def test_completed_consumer_without_call_site_fails_closed(
-    monkeypatch, fake_dispatcher
-):
-    source = _load_source(monkeypatch)
-    consumer = _module(seam._CONSUMER_MODULE)
-    monkeypatch.setitem(sys.modules, seam._CONSUMER_MODULE, consumer)
-
-    with pytest.raises(RuntimeError, match="unreachable seam"):
-        seam.install()
-    assert source.flash_prefill_with_topk_index is _stock
-    assert not seam.is_installed()
+    assert getattr(source, seam._PATCH.function) is dispatcher
+    assert getattr(consumer, seam._PATCH.function) is foreign

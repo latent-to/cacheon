@@ -25,6 +25,7 @@ from cacheon.eval.crossover_runtime import (
 )
 from cacheon.eval.continuation_codec import ContinuationCodec, ContinuationCodecError
 from cacheon.eval.oci_resident_session import ResidentBatchEvidence, ResidentBatchShape
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.resident_evaluation_pair import (
     ResidentEvaluationHandle,
@@ -42,7 +43,6 @@ from cacheon.eval.scoring import (
     RawSpeedEvidenceError,
     SpeedupVerdict,
     marginal_workload_digest,
-    score_speedup,
 )
 from cacheon.eval.speed_verdict import (
     resident_speed_roles,
@@ -344,12 +344,23 @@ def _rate_from_slice(
     lane = plan.candidate_pair_lane if candidate else plan.baseline_pair_lane
     template = arm.session_plan
     batches, swaps = request.new_batches, request.new_swaps
-    # v7 puts the baseline through one stock-to-stock swap so both arms take the
-    # same recapture path; v6 and earlier left the baseline unswapped.
-    expected_swaps = 2 if candidate else int(crossover.policy.version >= 7)
+    # v7 puts the baseline through the same leading swap as the candidate so
+    # both arms enter measurement through one recapture path: it activates the
+    # sealed incumbent bundle when the commission declared one, and swaps to
+    # stock at genesis; v6 and earlier left the baseline unswapped.  Every
+    # activation is closed by the coordinator's exact stock restoration, so an
+    # activating read declares two swaps and always ends clean.
+    injected = (
+        plan.candidate_bundle_digest if candidate else crossover.baseline_bundle_digest
+    )
+    if injected is not None:
+        expected_swaps, slice_bundle = 2, injected
+    else:
+        expected_swaps = int(crossover.policy.version >= 7)
+        slice_bundle = plan.candidate_bundle_digest
     if (
         type(request) is not ResidentRequestSlice
-        or request.bundle_digest != plan.candidate_bundle_digest
+        or request.bundle_digest != slice_bundle
         or request.lane_id != lane
         or request.session_id != plan.session_id(lane)
         or request.expected_batch_count != len(template.prompt_batches)
@@ -360,12 +371,18 @@ def _rate_from_slice(
         or request.ending_slots
     ):
         raise ResidentPairCrossoverHold(f"resident {role} request slice is incomplete")
-    if candidate:
+    if injected is not None:
         activation, restoration = swaps
         baseline_restock = None
         valid_dispatch = (
-            activation.bundle_digest == plan.candidate_bundle_digest
+            activation.bundle_digest == injected
             and bool(activation.slots)
+            # The baseline's slot set is sealed at commission from the
+            # incumbent stack entry's manifest; accepting the swap ack's own
+            # slots here would let a broken activation measure stock under
+            # incumbent labels. The candidate's slots stay ack-derived — its
+            # execution is proven by the count/audit machinery, not by names.
+            and (candidate or activation.slots == crossover.baseline_bundle_slots)
             and restoration.bundle_digest is None
             and not restoration.slots
             and activation.generation == request.starting_generation + 1
@@ -373,8 +390,8 @@ def _rate_from_slice(
             and request.ending_generation == restoration.generation
         )
     elif expected_swaps:
-        # v7 baseline: exactly one stock-to-stock swap, taken *before* the
-        # batches so both arms enter measurement through the same recapture.
+        # v7 genesis baseline: exactly one stock-to-stock swap, taken *before*
+        # the batches so both arms enter measurement through the same recapture.
         # It must carry no bundle and no slots — otherwise the "baseline" ran
         # something — and it advances the generation exactly once, like the
         # candidate activation. It is a leading swap, never a restoration:
@@ -392,13 +409,15 @@ def _rate_from_slice(
         valid_dispatch = request.ending_generation == request.starting_generation
     if not valid_dispatch:
         raise ResidentPairCrossoverHold(f"resident {role} dispatch or stock restore is ambiguous")
-    if candidate:
-        # The candidate's reads are worth nothing unless its kernel actually ran
-        # during them. Registering a slot is not running it: a bundle can load,
+    if restoration is not None:
+        # An activating read is worth nothing unless its kernel actually ran
+        # during it. Registering a slot is not running it: a bundle can load,
         # register, capture, and then never dispatch, and every such run still
-        # produces a clean speed number. The restoration swap closes the
-        # activation generation, so it carries that generation's per-rank
-        # execution count.
+        # produces a clean speed number. For the baseline that is exactly the
+        # fake-attribution trap this schedule exists to close: an incumbent
+        # that loads but never dispatches would time plain stock under
+        # incumbent labels. The restoration swap closes the activation
+        # generation, so it carries that generation's per-rank execution count.
         #
         # HOLD rather than FAIL, deliberately. An unproven execution and a
         # broken evidence path are different claims, and only the first is the
@@ -409,18 +428,19 @@ def _rate_from_slice(
             expected_ranks=restoration.expected_ranks,
         )
         if not proven:
+            owner = "candidate" if candidate else "injected incumbent"
             detail = (
-                f"resident {role} candidate has no proof its kernel executed "
+                f"resident {role} {owner} has no proof its kernel executed "
                 f"(generation {restoration.execution.prior_generation}, "
                 f"ranks {restoration.execution.prior_execution_ranks} of "
-                f"{restoration.expected_ranks})"
+                f"{restoration.expected_ranks}){restoration.execution.faults()}"
             )
             raise ResidentPairCrossoverHold(detail)
     previous = request.host_started_at
     seen: set[str] = set()
-    # Whichever swap precedes the batches: the candidate's activation, or v7's
-    # stock-to-stock baseline swap. Stock exposes no slots either way.
-    leading = activation if candidate else baseline_restock
+    # Whichever swap precedes the batches: an activation (the candidate's, or
+    # the baseline's sealed incumbent), or v7's genesis stock-to-stock swap.
+    leading = activation if activation is not None else baseline_restock
     expected_generation = (
         leading.generation if leading is not None else request.starting_generation
     )
@@ -490,46 +510,22 @@ def _rate_from_slice(
     )
 
 
-def _score(policy: ResidentSpeedPolicy, baselines: list[ResidentReadRate], candidates: list[ResidentReadRate]) -> SpeedupVerdict:
-    try:
-        return score_speedup(
-            [policy.scored_tokens_per_second(row) for row in baselines],
-            [policy.scored_tokens_per_second(row) for row in candidates],
-            min_margin=policy.min_margin,
-            k=policy.noise_multiplier,
-            max_noise=policy.max_noise,
-        )
-    except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
-        raise ResidentPairCrossoverHold(f"resident speed measurement is unfit: {exc}") from None
-
-
-def _initial_decision(verdict: SpeedupVerdict, margin: float) -> SpeedStageDecision | None:
-    if not verdict.confident:
-        return None
-    if verdict.speedup <= verdict.required - margin:
-        return SpeedStageDecision.FAIL
-    if verdict.speedup >= verdict.required + margin:
-        return SpeedStageDecision.PASS
-    return None
-
-
 def _regrade(evidence: ResidentPairCrossoverEvidence, plan: ResidentPairCrossoverPlan) -> SpeedupVerdict:
     if type(plan) is not ResidentPairCrossoverPlan:
         raise ResidentPairCrossoverError("resident pair crossover plan is not exact")
     crossover = plan.crossover_plan
+    # The pair-native substrate shipped with the v6 conditional-bookend grade;
+    # no earlier pair evidence exists to reopen, so earlier versions are a
+    # caller error rather than a schedule.
+    if crossover.policy.version < 6:
+        raise ResidentPairCrossoverError(
+            "the pair-native schedule requires speed policy version >= 6"
+        )
     observed_roles = tuple(row.role for row in evidence.rates)
-    if crossover.policy.version >= 6:
-        expected_roles = resident_speed_roles(
-            crossover.policy.version, len(evidence.rates)
-        )
-        schedule_valid = not evidence.escalated and bool(expected_roles)
-    else:
-        expected_roles = (
-            ("B", "C", "B_prime", "C_prime", "B_double_prime")
-            if evidence.escalated
-            else ("B", "C", "B_prime")
-        )
-        schedule_valid = True
+    expected_roles = resident_speed_roles(
+        crossover.policy.version, len(evidence.rates)
+    )
+    schedule_valid = not evidence.escalated and bool(expected_roles)
     if (
         not schedule_valid
         or evidence.plan_digest != plan.digest
@@ -574,50 +570,16 @@ def _regrade(evidence: ResidentPairCrossoverEvidence, plan: ResidentPairCrossove
         recomputed.append(row)
     if tuple(recomputed) != evidence.rates:
         raise ResidentPairCrossoverHold("resident pair rates do not regrade from raw slices")
-    baselines = [row for row in recomputed if row.role.startswith("B")]
-    candidates = [row for row in recomputed if row.role.startswith("C")]
     policy = crossover.policy
-    if policy.version >= 6:
-        try:
-            initial, final, decision = v6_grade(
-                policy, recomputed[0], recomputed[1],
-                recomputed[2] if len(recomputed) == 3 else None,
-            )
-        except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
-            raise ResidentPairCrossoverHold(
-                f"resident speed measurement is unfit: {exc}"
-            ) from None
-    else:
-        initial = _score(policy, baselines[:2], candidates[:1])
-        try:
-            conditioning_failed = policy.conditioning_regression(
-                baselines[0], candidates[0]
-            )
-        except CrossoverRuntimeError as exc:
-            raise ResidentPairCrossoverHold(str(exc)) from None
-        disposition = SpeedStageDecision.FAIL if conditioning_failed else _initial_decision(
-            initial, policy.min_margin
+    try:
+        initial, final, decision = v6_grade(
+            policy, recomputed[0], recomputed[1],
+            recomputed[2] if len(recomputed) == 3 else None,
         )
-        if disposition is None:
-            if not evidence.escalated:
-                raise ResidentPairCrossoverHold("borderline resident evidence omitted escalation")
-            final = _score(policy, baselines, candidates)
-            try:
-                conditioning_failed = policy.conditioning_regression(
-                    baselines[1], candidates[1]
-                )
-            except CrossoverRuntimeError as exc:
-                raise ResidentPairCrossoverHold(str(exc)) from None
-            if conditioning_failed:
-                decision = SpeedStageDecision.FAIL
-            elif not final.confident:
-                raise ResidentPairCrossoverHold("post-escalation resident speed is nonconfident")
-            else:
-                decision = SpeedStageDecision.PASS if final.passed_speedup else SpeedStageDecision.FAIL
-        else:
-            if evidence.escalated:
-                raise ResidentPairCrossoverHold("clear resident evidence added repeat reads")
-            final, decision = initial, disposition
+    except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
+        raise ResidentPairCrossoverHold(
+            f"resident speed measurement is unfit: {exc}"
+        ) from None
     if (
         evidence.initial_verdict != initial
         or evidence.final_verdict != final
@@ -644,6 +606,10 @@ def run_resident_pair_crossover(
     stage_deadline = min(float(deadline), started + plan.crossover_plan.policy.max_stage_seconds)
     if stage_deadline <= started:
         raise ResidentPairCrossoverHold("resident pair speed stage has no wall-clock budget")
+    if plan.crossover_plan.policy.version < 6:
+        raise ResidentPairCrossoverError(
+            "the pair-native schedule requires speed policy version >= 6"
+        )
     if pair.identities != plan.pair_binding.identities:
         raise ResidentPairCrossoverHold("standing pair sessions differ from the sealed plan")
     lock = _pair_lock(pair)
@@ -661,9 +627,10 @@ def run_resident_pair_crossover(
     # for 0.117% of that (B vs B_prime, same lane) and the physical lane for
     # none of it, because the sign did not flip when the lanes swapped roles.
     # The swap is the only remaining per-role difference, so the baseline lane
-    # now takes `swap(None)`: the same registry clear and CUDA-graph recapture,
-    # loading nothing. That equalises the recapture, not the candidate's module
-    # load, so the inert controls decide whether it is sufficient.
+    # takes the same leading swap: the sealed incumbent bundle once a crown
+    # exists, or `swap(None)` at genesis — the same registry clear and
+    # CUDA-graph recapture either way, so the measured baseline is the
+    # commissioned incumbent stack while both engines stay stock-booted.
     symmetric_swap = plan.crossover_plan.policy.version >= 7
 
     def read(role: str) -> None:
@@ -672,10 +639,18 @@ def run_resident_pair_crossover(
         candidate = role.startswith("C")
         lane = plan.candidate_pair_lane if candidate else plan.baseline_pair_lane
         template = plan.crossover_plan.baseline.session_plan
+        # The plan validates that a baseline bundle only exists under the
+        # symmetric-swap policy version, so `injected` is None exactly when
+        # this read must not activate anything.
+        injected = (
+            plan.candidate_bundle_digest
+            if candidate
+            else plan.crossover_plan.baseline_bundle_digest
+        )
 
         def operation(handle: ResidentEvaluationHandle) -> tuple[ResidentBatchEvidence, ...]:
-            if candidate:
-                handle.swap(plan.candidate_bundle_digest)
+            if injected is not None:
+                handle.swap(injected)
             elif symmetric_swap:
                 handle.swap(None)
             return tuple(
@@ -686,14 +661,17 @@ def run_resident_pair_crossover(
         try:
             result = pair.run_lane(
                 lane,
-                plan.candidate_bundle_digest,
+                injected if injected is not None else plan.candidate_bundle_digest,
                 operation,
                 expected_batch_count=len(template.prompt_batches),
-                # A candidate activation declares its own stock restoration; a
-                # symmetric baseline swap is already stock and needs none.
-                expected_swap_count=2 if candidate else int(symmetric_swap),
+                # An activation declares its own stock restoration; the genesis
+                # baseline's symmetric swap is already stock and needs none.
+                expected_swap_count=2 if injected is not None else int(symmetric_swap),
                 deadline=stage_deadline,
             )
+            fatal = pair.fatal_error
+            if isinstance(fatal, OuterSessionCandidateError):
+                raise fatal
         except ResidentEvaluationPairError as exc:
             raise ResidentPairCrossoverHold(f"resident {role} execution is on HOLD: {exc}") from None
         completed = _within_wall(clock, stage_deadline)
@@ -718,50 +696,22 @@ def run_resident_pair_crossover(
         read("B")
         read("C")
         policy = plan.crossover_plan.policy
-        if policy.version >= 6:
-            try:
-                initial, disposition = speed_grade(
-                    policy, [rates[0]], [rates[1]], concluding=False
-                )
-            except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
-                raise ResidentPairCrossoverHold(
-                    f"resident speed measurement is unfit: {exc}"
-                ) from None
-            if disposition is not None:
-                final, decision = initial, disposition
-            else:
-                read("B_prime")
-                final, decision = speed_grade(
-                    policy, [rates[0], rates[2]], [rates[1]], concluding=True
-                )
-            escalated = False
+        try:
+            initial, disposition = speed_grade(
+                policy, [rates[0]], [rates[1]], concluding=False
+            )
+        except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
+            raise ResidentPairCrossoverHold(
+                f"resident speed measurement is unfit: {exc}"
+            ) from None
+        if disposition is not None:
+            final, decision = initial, disposition
         else:
             read("B_prime")
-            initial = _score(policy, [rates[0], rates[2]], [rates[1]])
-            try:
-                conditioning_failed = policy.conditioning_regression(rates[0], rates[1])
-            except CrossoverRuntimeError as exc:
-                raise ResidentPairCrossoverHold(str(exc)) from None
-            disposition = SpeedStageDecision.FAIL if conditioning_failed else _initial_decision(
-                initial, policy.min_margin
+            final, decision = speed_grade(
+                policy, [rates[0], rates[2]], [rates[1]], concluding=True
             )
-            escalated = disposition is None
-            if escalated:
-                read("C_prime")
-                read("B_double_prime")
-                final = _score(policy, [rates[0], rates[2], rates[4]], [rates[1], rates[3]])
-                try:
-                    conditioning_failed = policy.conditioning_regression(rates[2], rates[3])
-                except CrossoverRuntimeError as exc:
-                    raise ResidentPairCrossoverHold(str(exc)) from None
-                if conditioning_failed:
-                    decision = SpeedStageDecision.FAIL
-                elif not final.confident:
-                    raise ResidentPairCrossoverHold("post-escalation resident speed is nonconfident")
-                else:
-                    decision = SpeedStageDecision.PASS if final.passed_speedup else SpeedStageDecision.FAIL
-            else:
-                final, decision = initial, disposition
+        escalated = False
         completed = _now(clock)
         if completed > stage_deadline:
             raise ResidentPairCrossoverHold("resident pair speed stage timed out")

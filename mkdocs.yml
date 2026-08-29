@@ -9,29 +9,6 @@ site_dir: site
 # never part of the published documentation source set.
 exclude_docs: |
   WORKLOG.md
-# These pages preserve paths embedded in content-addressed release or example
-# inputs. Their bodies are checker-validated links, never duplicate guidance.
-not_in_nav: |
-  DEV_ENVIRONMENT.md
-  EMISSIONS_POLICY.md
-  FIDELITY.md
-  GPU_SETUP.md
-  HOW_CACHEON_WORKS.md
-  INCENTIVES.md
-  MINER_GUIDE.md
-  PRODUCT_CONTRACT.md
-  REFEREE_HARDENING_AUDIT.md
-  REFEREE_HARDENING_DONOR_MAP.md
-  REFEREE_HARDENING_SPLIT_PLAN.md
-  SGLANG_TRACKING.md
-  SLOT_CONTRACT.md
-  STATE_OF_RECORD.md
-  SUBMISSION_MODEL.md
-  SUBMISSION_MODEL_BUILD_SPEC.md
-  SUBMISSION_TERMS.md
-  SUBNET_BLUEPRINT.md
-  TESTNET.md
-
 repo_url: https://github.com/latent-to/cacheon
 repo_name: latent-to/cacheon
 edit_uri: edit/main/docs/
@@ -176,13 +153,10 @@ nav:
       - Bundle manifest: reference/manifest-schema.md
       - Stack manifests: reference/stack-manifests.md
       - Emissions policy: reference/emissions-policy.md
-      - Arena service types: reference/arenas.md
       - Codebase map: reference/codebase-map.md
       - Glossary: reference/glossary.md
   - Results and development:
-      - Evaluation report: results/evaluations.md
       - MiniMax-M3 case study: results/minimax-m3.md
-      - Design evolution: history/changelog.md
       - GPU setup: dev/gpu-setup.md
       - Development environment: dev/environment.md
       - SGLang compatibility: dev/sglang-tracking.md

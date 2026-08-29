@@ -805,7 +805,7 @@ def test_reference_worker_rejects_any_contribution_manifest_before_engine(monkey
         os.close(output_read)
 
 
-def test_protocol_fd_is_cloexec_stdout_is_silenced_and_stderr_is_separate(tmp_path):
+def test_protocol_fd_is_cloexec_and_engine_stdout_joins_retained_diagnostics(tmp_path):
     script = tmp_path / "fd_probe.py"
     script.write_text(
         "import os\n"
@@ -827,7 +827,7 @@ def test_protocol_fd_is_cloexec_stdout_is_silenced_and_stderr_is_separate(tmp_pa
     )
     assert result.returncode == 0
     assert result.stdout == b"protocol-only"
-    assert result.stderr == b"scheduler-traceback\n"
+    assert result.stderr == b"engine-noise\nscheduler-traceback\n"
 
 
 def test_worker_fallback_stderr_diagnostic_has_a_hard_byte_cap(tmp_path):

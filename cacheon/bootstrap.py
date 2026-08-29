@@ -28,14 +28,9 @@ from cacheon.seams import TARGET_MODULES as _TARGETS
 
 
 def _run_activate() -> None:
-    try:
-        from cacheon import seam
+    from cacheon import seam
 
-        seam.activate()
-    except Exception:  # noqa: BLE001 - never break the host interpreter
-        import logging
-
-        logging.getLogger("cacheon.bootstrap").exception("cacheon: seam activate failed")
+    seam.activate()
 
 
 def _wrap_loader(loader):

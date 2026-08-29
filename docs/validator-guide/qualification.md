@@ -194,11 +194,11 @@ evidence-publication exceptions abort the pass and recover through controller
 restart/hold handling rather than this typed batch product. Neither mechanism changes
 finalized arrival order.
 
-A typed candidate-worker error is attributable only when it binds the exact candidate
-arm and identity. The controller can contain that candidate and continue producing
-durable outcomes for unaffected cohort members. Baseline-lane, shared-controller,
-audit/T, or untyped worker failures are infrastructure authority failures; they are never
-assigned to a convenient candidate.
+A typed candidate-worker error is attributable only when rank receipts bind the exact
+registered singleton arm and identity. It publishes a terminal candidate failure product
+instead of entering the generic retry path. Baseline-lane, shared-controller, audit/T,
+multi-candidate, or untyped worker failures are infrastructure authority failures; they
+are never assigned to a convenient candidate.
 
 ## Gates and three-way decisions
 
@@ -409,6 +409,29 @@ Each authenticated qualification request resolves its closed promoted cohort,
 derives a candidate-local `B300RemoteQualificationAdapter`, and runs through
 `B300MainnetWorker.run_remote_qualification`. Screen-only construction and
 one-shot adapter mode still refuse qualification before resident work.
+
+The commission measures B against the durable incumbent stack the
+capabilities factory declares (`incumbent_entries`, resolved through the same
+closed source resolver); at genesis the declaration is empty and the baseline
+is the stock tree. How that baseline is realized depends on the schedule.
+Both standing pair-native lane engines always boot plain stock; on the v7
+schedule the baseline read injects the sealed incumbent bundle through the
+same swap path the candidate uses — the digest and registered slot set are
+sealed at commission from the stack entry and its resolver-verified manifest,
+staged content-addressed into the swap intake, re-hashed inside the container
+at swap time, and the read holds unless the incumbent's execution is proven
+on every rank. The v7 schedule therefore serves only hot-swappable candidates
+that replace the incumbent's own registered target (or genesis); every other
+candidate — non-swappable bundles, different-target challengers, or an
+incumbent stack one swap cannot realize — runs the version-8 two-process
+schedule, whose baseline process boots the materialized incumbent tree. The
+worker routes on the sealed version the plan carries, so plan and execution
+cannot disagree. Pristine T stays anchored to the empty stock stack
+regardless of the declared incumbent, so the untimed audit reference never
+inherits crowned contributions. A declaration that does not reproduce the
+durable stack identity fails closed at the dispatcher's incumbent pin and at
+the durable commit. Screens keep the stock baseline: the resident hot-swap
+screen is routing-only and cannot crown.
 
 `eval/resident_evaluation_pair.py` is a distinct authority in this design: it owns
 the standing resident-pair service lifecycle — two persistent sessions, request

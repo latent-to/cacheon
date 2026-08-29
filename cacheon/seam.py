@@ -166,10 +166,12 @@ def _install_adapters(release_required: bool) -> None:
         try:
             mod = import_module(f"cacheon.integrations.{adapter.integration}")
             mod.install(REGISTRY)
-        except Exception:  # noqa: BLE001 - never break engine startup
+        except Exception:  # noqa: BLE001 - preserve the adapter's exact cause
             logger.exception("cacheon: failed to install seam %s", adapter.name)
             if release_required:
                 _release_abort(f"seam {adapter.name} did not install")
+            if _truthy(os.environ.get("CACHEON_ACTIVE")):
+                raise
 
 
 def load_candidate_bundle() -> None:
@@ -293,13 +295,7 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
             )
         os.environ["CACHEON_BUNDLE_PATH"] = bundle
         os.environ["CACHEON_ACTIVE"] = "1"
-        _load_bundle_into_registry(bundle)
-        REGISTRY.enable()
-        _bundle_loaded = True
-        result["slots"] = sorted(REGISTRY.slots())
-        logger.info(
-            "cacheon: resident swap -> bundle %s slots %s", bundle, result["slots"]
-        )
+        result["slots"] = _enable_loaded_bundle(bundle)
     else:
         os.environ.pop("CACHEON_BUNDLE_PATH", None)
         logger.info("cacheon: resident swap -> stock dispatch")
@@ -359,42 +355,89 @@ def _load_candidate_bundle_locked(
                     bundle,
                 )
                 return
-        _load_bundle_into_registry(bundle)
-        REGISTRY.enable()
-        if _truthy(os.environ.get("CACHEON_STRICT")):
-            # Surface kernel errors instead of silently falling back (debug/proof: a
-            # failing kernel crashes the engine rather than masquerading as baseline).
-            REGISTRY.set_strict(True)
-        _bundle_loaded = True
         _bundle_pending = None
-        logger.info("cacheon: bundle %s active -> slots %s", bundle, REGISTRY.slots())
-        from cacheon import receipts
-
-        if REGISTRY.slots():
-            # Positive evidence for the eval driver (anti phantom-pass): this rank
-            # loaded the bundle and enabled the registry. See cacheon/receipts.py.
-            receipts.write("active", {"bundle": bundle, "slots": REGISTRY.slots()})
-        else:
-            # Loaded without exception but registered nothing (scan-tree reject, no
-            # known slots, every op skipped): for the eval this is exactly as
-            # stock-vs-stock as a failed load — say so, don't stay silent.
-            receipts.write("load_failed", {"bundle": bundle, "reason": "no slots registered"})
+        if not _enable_loaded_bundle(bundle):
             if release_required:
                 _release_abort("bundle registered no slots")
+            raise RuntimeError("bundle registered no slots")
         # Registry-conditional adapters (defer_gate/moe_export install only once
         # the deep slot is registered) saw an empty registry on every pre-load
         # activate() pass. Retry them NOW rather than hoping a later watched
         # module import re-triggers activate() after this load.
         _install_adapters(release_required)
-    except Exception:  # noqa: BLE001 - a bad bundle must not wedge the engine
+    except Exception as exc:  # noqa: BLE001 - a bad bundle must not wedge the engine
         _bundle_pending = None
         logger.exception("cacheon: bundle load failed for %s", bundle)
         from cacheon import receipts
 
-        receipts.write("load_failed", {"bundle": bundle, "reason": "exception during load"})
+        payload = {
+            "bundle": bundle,
+            "error_type": type(exc).__name__,
+            "reason": str(exc)[:512],
+        }
+        if receipts.validator_runtime_failure(payload["error_type"], payload["reason"]):
+            payload["failure_owner"] = "validator_runtime"
+        root = Path(bundle)
+        cursor = exc.__traceback__
+        location = None
+        while cursor is not None:
+            source = Path(cursor.tb_frame.f_code.co_filename)
+            try:
+                relative = source.relative_to(root)
+            except ValueError:
+                cursor = cursor.tb_next
+                continue
+            location = (relative.as_posix()[:128], cursor.tb_lineno)
+            cursor = cursor.tb_next
+        if location is not None:
+            payload.update(source=location[0], line=location[1])
+        receipts.write("load_failed", payload)
         REGISTRY.clear()
         if release_required:
             _release_abort("bundle activation failed")
+        raise
+
+
+def _enable_loaded_bundle(bundle: str) -> list[str]:
+    """Load and enable one bundle, recording what happened. Returns its slots.
+
+    The only path allowed to bring a bundle live. There used to be two, and the
+    resident one wrote no receipts, so a resident rank could not answer "did the
+    module import" or "did it register" at all — the two questions a miner asks
+    first when their kernel appears not to have run. The evidence belongs with
+    the load, not with one of its callers.
+    """
+
+    global _bundle_loaded
+
+    # Imported here, not at module scope: every other function in this file does
+    # the same, because importing the registry at import time would run it before
+    # the spawn-safe seam is installed.
+    from cacheon.registry import REGISTRY
+
+    _load_bundle_into_registry(bundle)
+    REGISTRY.enable()
+    _bundle_loaded = True
+    # Between enable and first dispatch is the only window where every entry is
+    # registered and none has been called, so the instrument sees a bundle's
+    # first invocation — which is the one that reveals which path it takes.
+    from cacheon.kernel_trace import arm
+
+    arm(REGISTRY)
+    slots = sorted(REGISTRY.slots())
+    logger.info("cacheon: bundle %s active -> slots %s", bundle, slots)
+    from cacheon import receipts
+
+    if slots:
+        # Positive evidence for the eval driver (anti phantom-pass): this rank
+        # loaded the bundle and enabled the registry. See cacheon/receipts.py.
+        receipts.write("active", {"bundle": bundle, "slots": slots})
+    else:
+        # Loaded without exception but registered nothing (scan-tree reject, no
+        # known slots, every op skipped): for the eval this is exactly as
+        # stock-vs-stock as a failed load — say so, don't stay silent.
+        receipts.write("load_failed", {"bundle": bundle, "reason": "no slots registered"})
+    return slots
 
 
 def _load_bundle_into_registry(bundle: str) -> None:

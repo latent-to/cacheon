@@ -96,8 +96,7 @@ def _registry(entry, *, q_len=2):
     registry = _RecordingRegistry()
     eligibility = eligibility_from_metadata(
         {
-            "graph_safe": False,
-            "capabilities": {
+                        "capabilities": {
                 "dtype": "float32",
                 "architecture": "sm103",
                 "head_dim": 2,
@@ -209,34 +208,21 @@ def test_msa_v2_off_domain_is_wholly_stock(monkeypatch):
     assert registry.decisions and registry.decisions[0]["q_len"] == 2
 
 
-def test_msa_v2_selected_failure_receipts_after_stock_recovery(monkeypatch):
+def test_msa_v2_selected_failure_never_recovers_into_stock(monkeypatch):
+    # The candidate was selected for this call. Finishing it in stock would put a
+    # stock measurement inside a run that still carries the candidate's name.
     module = _install_runtime(monkeypatch)
-    fallbacks = []
-    monkeypatch.setattr(
-        dispatch._receipts,
-        "fallback",
-        lambda slot, exc: fallbacks.append((slot, type(exc).__name__)),
-    )
 
     def boom(*_args):
         raise RuntimeError("candidate path failed")
 
-    stock_result = object()
     wrapped = dispatch.make_msa_prefill_dispatcher(
-        lambda *_a, **_k: stock_result, module, registry=_registry(boom)
-    )
-    assert _invoke(wrapped) is stock_result
-    assert fallbacks == [(SLOT, "RuntimeError")]
-
-    fallbacks.clear()
-    wrapped = dispatch.make_msa_prefill_dispatcher(
-        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("stock failed")),
+        lambda *_a, **_k: pytest.fail("stock served inside a candidate arm"),
         module,
         registry=_registry(boom),
     )
-    with pytest.raises(ValueError, match="stock failed"):
+    with pytest.raises(RuntimeError, match="candidate path failed"):
         _invoke(wrapped)
-    assert fallbacks == []
 
 
 def test_msa_v2_audits_consumed_selection_without_stock_topk_tail(monkeypatch):

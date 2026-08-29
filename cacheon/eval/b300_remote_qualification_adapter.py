@@ -24,8 +24,8 @@ from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaQualificationRequest,
     ArenaScreenReceipt,
+    ArenaServiceError,
     PromotionDecision,
-    ScreenGrade,
     ScreenStageResult,
 )
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
@@ -83,9 +83,6 @@ _CANDIDATE_FIELDS = frozenset(
 _LOG = logging.getLogger(__name__)
 _SCREEN_RECEIPT_FIELDS = frozenset(
     {"candidate_digest", "decision", "results", "screen_attempt", "service_digest"}
-)
-_SCREEN_RESULT_FIELDS = frozenset(
-    {"elapsed_ms", "evidence_digest", "grade", "stage"}
 )
 _SCALAR_TYPES = {type(None), bool, int, float, str, bytes}
 
@@ -209,25 +206,12 @@ def _screen_receipt(value: object) -> ArenaScreenReceipt:
         raise B300RemoteQualificationAdapterError(
             "remote promoted receipt is not a closed object"
         )
-    results = []
-    for row in value["results"]:
-        if type(row) is not dict or set(row) != _SCREEN_RESULT_FIELDS:
-            raise B300RemoteQualificationAdapterError(
-                "remote promoted screen stage is not closed"
-            )
-        try:
-            results.append(
-                ScreenStageResult(
-                    row["stage"],
-                    ScreenGrade(row["grade"]),
-                    row["evidence_digest"],
-                    row["elapsed_ms"],
-                )
-            )
-        except (TypeError, ValueError, RuntimeError) as exc:
-            raise B300RemoteQualificationAdapterError(
-                "remote promoted screen stage is invalid"
-            ) from exc
+    try:
+        results = [ScreenStageResult.from_dict(row) for row in value["results"]]
+    except ArenaServiceError as exc:
+        raise B300RemoteQualificationAdapterError(
+            f"remote promoted screen stage is invalid: {exc}"
+        ) from None
     try:
         return ArenaScreenReceipt(
             value["service_digest"],

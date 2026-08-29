@@ -60,6 +60,10 @@ from cacheon.chain.remote_evaluation_dispatcher import (
 )
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
 from cacheon.eval.evidence_store import publish_evidence, reopen_evidence
+from cacheon.eval.candidate_failure_product import (
+    candidate_failure_digest,
+    publish_candidate_failure,
+)
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
@@ -734,4 +738,73 @@ def test_remote_qualification_product_closes_inventory_bytes_and_bounds(
             readiness=readiness,
             evidence_root=pod_root,
             evidence_references=(reference,),
+        )
+
+
+def test_remote_candidate_failure_product_is_reopened_against_outcomes(
+    tmp_path: Path,
+) -> None:
+    service = ArenaService(_manifest(), _Provider())
+    readiness = WorkerReadiness.for_service(
+        service, ready_receipt_digest=_h("failure-ready"), ready_epoch=10
+    )
+    reservation = QualificationReservation(
+        _h("failure-reservation"), _h("failure-submission"), "target.0",
+        _h("failure-selected"), 0, "failure-miner", BLOCK, 0, 0, ("slot.0",),
+    )
+    authority = QualificationAuthorityManifest(
+        "registered", _h("failure-authority"), _h("failure-source"),
+        _h("failure-commitment"), _h("failure-secret"),
+        (reservation.selected_delta_digest,), (reservation,),
+    )
+    pod_root = tmp_path / "failure-pod-evidence"
+    reference, failure = publish_candidate_failure(
+        pod_root,
+        authority_manifest_digest=authority.digest,
+        source_digest=authority.source_digest,
+        culprit_reservation_digest=reservation.reservation_digest,
+        selected_delta_digest=reservation.selected_delta_digest,
+        target_id=reservation.target_id,
+        arm_digest=_h("failure-arm"),
+        launch_digest=_h("failure-launch"),
+        failure_kind="candidate_exception",
+        failure="rank 0 RuntimeError at kernels/fail.py:17: boom",
+    )
+    outcome = QualificationIntakeOutcome(
+        reservation.reservation_digest,
+        reservation.selected_delta_digest,
+        authority.digest,
+        QualificationDecision.FAIL,
+        "candidate_exception",
+        False,
+        attempt_artifact_sha256=reference.sha256,
+        report_digest=candidate_failure_digest(failure),
+    )
+    batch = QualificationIntakeBatch(authority.digest, (outcome,), reference)
+    product = capture_remote_qualification_product(
+        batch=batch,
+        authority_manifest=authority,
+        incumbent_stack=_incumbent(service),
+        incumbent_tree_digest=_h("failure-tree"),
+        screen_lane="primary",
+        service_digest=service.identity,
+        readiness=readiness,
+        evidence_root=pod_root,
+        evidence_references=(),
+    )
+    assert import_remote_qualification_evidence(
+        product, tmp_path / "failure-cpu-evidence"
+    ) == (reference,)
+
+    wrong = dataclasses.replace(
+        product,
+        batch=QualificationIntakeBatch(
+            authority.digest,
+            (dataclasses.replace(outcome, reason="speed_regression"),),
+            reference,
+        ),
+    )
+    with pytest.raises(RemoteEvaluationDispatcherError, match="differs from its qualification"):
+        import_remote_qualification_evidence(
+            wrong, tmp_path / "failure-cpu-invalid"
         )

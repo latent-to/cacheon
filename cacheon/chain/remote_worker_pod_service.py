@@ -84,6 +84,12 @@ from cacheon.eval.native_artifact import (
     NativeArtifactRaceError,
     _rename_noreplace,
 )
+from cacheon.eval.remote_run_forensics import (
+    append_event as append_run_event,
+    capture_adapter_stream,
+    journal_path,
+    publish_worker_log,
+)
 from cacheon.stack_identity import sha256_hex
 
 
@@ -121,9 +127,11 @@ def infrastructure_result(
 ) -> None:
     if failure_code not in ALLOWED_FAILURE_CODES:
         fail("pod failure code is not registered")
-    result_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+    result_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if result_root.is_symlink() or not result_root.is_dir():
+        fail("infrastructure result root is not a directory")
     blobs = result_root / "blobs"
-    blobs.mkdir(mode=0o700)
+    blobs.mkdir(mode=0o700, exist_ok=True)
     payload = (
         spool_canonical_json(
             infrastructure_result_payload(request, failure_code, credential)
@@ -132,11 +140,13 @@ def infrastructure_result(
     )
     digest = sha256_hex(payload)
     atomic_bytes(blobs / digest, payload, mode=0o400)
+    worker_log = publish_worker_log(result_root, request["request_id"])
     atomic_json(
         result_root / "result.json",
         {
             "artifacts": [
-                {"role": "adapter_result", "sha256": digest, "size": len(payload)}
+                {"role": "adapter_result", "sha256": digest, "size": len(payload)},
+                worker_log,
             ],
             "failure_code": failure_code,
             "request_id": request["request_id"],
@@ -339,7 +349,23 @@ def recover_interrupted(
             has_result = result_json.is_symlink() or result_json.exists()
             has_response = response_json.is_symlink() or response_json.exists()
             if not has_result and not has_response:
-                recovery_hold(paths, request["request_id"], "partial_temporary_result")
+                journal = journal_path(temporary)
+                if not journal.is_file() or journal.is_symlink():
+                    recovery_hold(paths, request["request_id"], "partial_temporary_result")
+                append_run_event(
+                    journal,
+                    request["request_id"],
+                    "pod.recovery",
+                    "failed",
+                    failure_code="pod_service_restart",
+                )
+                infrastructure_result(
+                    request,
+                    temporary,
+                    "pod_service_restart",
+                    credential=credential,
+                )
+                has_result = True
             try:
                 if has_result:
                     verify_adapter_result(
@@ -567,6 +593,7 @@ class PersistentAdapterProcess:
         )
         return True
 
+    @capture_adapter_stream
     def evaluate(
         self,
         request: Mapping[str, Any],
@@ -738,6 +765,13 @@ def run_adapter(
         return final
     temporary = results / f".{request_id}.{os.getpid()}"
     temporary.mkdir(mode=0o700)
+    append_run_event(
+        journal_path(temporary),
+        request_id,
+        "pod.adapter",
+        "started",
+        worker_epoch=registration["worker_epoch"],
+    )
     deadline = min(request["deadline_unix"], int(time.time()) + MAX_JOB_SECONDS)
     owns_process = adapter_process is None
     process = adapter_process or PersistentAdapterProcess(
@@ -752,10 +786,30 @@ def run_adapter(
         if owns_process:
             process.close()
     if failure is not None:
-        require_pre_resident_failure(paths, temporary, request, failure)
-        shutil.rmtree(temporary, ignore_errors=True)
+        marker = temporary / RESIDENT_ENTRY_MARKER
+        try:
+            marker.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            recovery_hold(paths, request_id, "invalid_resident_entry_marker")
+        else:
+            try:
+                reopen_resident_entry(temporary, request)
+            except RemoteWorkerExecutionMarkerError:
+                recovery_hold(paths, request_id, "invalid_resident_entry_marker")
+        append_run_event(
+            journal_path(temporary),
+            request_id,
+            "pod.adapter",
+            "failed",
+            failure_code=failure,
+        )
         infrastructure_result(request, temporary, failure, credential=credential)
     else:
+        append_run_event(
+            journal_path(temporary), request_id, "pod.adapter", "completed"
+        )
         try:
             finalize_adapter_response(
                 request,

@@ -6,7 +6,7 @@ Two checks, both cheap:
      pinned one? This is the "should we consider a bump?" signal.
   2. The seam compat canary (`cacheon.compat`) — if sglang is importable here, do
      our integration points still exist? (Full behavioral confirmation needs a GPU
-     box; see docs/SGLANG_TRACKING.md.)
+     box; see docs/dev/sglang-tracking.md.)
 
 Exit 1 on a broken compatibility invariant: the installed package differs from the
 committed pin, or a seam/API moved. A newer PyPI release is only a WARNING: bumping is a
@@ -58,7 +58,7 @@ def main() -> int:
     # Two SEPARATE signals — only one is code-actionable, so only one fails CI:
     #   * compat_broken -> installed pin mismatch or a moved API/chokepoint. HARD FAIL (exit 1).
     #   * newer_release -> sglang shipped a version past the pin. A human bump+re-baseline decision
-    #                      (docs/SGLANG_TRACKING.md), NOT a code fix. WARNING only (does not fail CI),
+    #                      (docs/dev/sglang-tracking.md), NOT a code fix. WARNING only (does not fail CI),
     #                      else the canary goes red on every sglang release = alert fatigue.
     compat_broken = False
     newer_release = False
@@ -70,7 +70,7 @@ def main() -> int:
         print(f"latest on PyPI:          {latest}")
         if latest != PINNED_SGLANG:
             msg = (f"newer sglang available: {PINNED_SGLANG} -> {latest}. "
-                   "Consider the bump+re-baseline process (docs/SGLANG_TRACKING.md).")
+                   "Consider the bump+re-baseline process (docs/dev/sglang-tracking.md).")
             print(f"  -> {msg}")
             print(f"::warning title=sglang newer release::{msg}")  # GitHub annotation, non-failing
             newer_release = True

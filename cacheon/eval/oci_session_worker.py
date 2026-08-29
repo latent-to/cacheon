@@ -141,21 +141,16 @@ def _write_all(fd: int, payload: bytes) -> None:
 
 
 def _reserve_protocol_fd() -> int:
-    """Keep stdout as CLOEXEC protocol and isolate engine stdout from it.
+    """Keep stdout as CLOEXEC protocol and retain engine stdout as diagnostics.
 
-    Stderr remains the container's stderr.  The trusted host continuously drains
-    that separate pipe, retains a fixed-size tail, and discards older bytes, so a
-    scheduler traceback survives without letting candidate output contaminate the
-    framed protocol or grow host memory without bound.
+    The trusted host continuously drains the separate stderr pipe and retains its
+    bounded artifact.  Redirecting fd 1 there keeps Python and native-library
+    stdout out of the framed protocol without throwing miner diagnostics away.
     """
 
     protocol = os.dup(1)
     os.set_inheritable(protocol, False)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, 1)
-    finally:
-        os.close(devnull)
+    os.dup2(2, 1)
     return protocol
 
 
@@ -729,6 +724,51 @@ def _resident_control_dir() -> str:
     return control_dir
 
 
+class CandidateExecutionFailure(RuntimeError):
+    """The candidate raised inside a scheduler rank; the engine died with it."""
+
+
+def _candidate_failures(control_dir: str | None) -> str:
+    """Every ``failed`` receipt under the resident receipt root, as one sentence.
+
+    Read without the receipts module's scope state: the ranks wrote these under
+    ``<control_dir>/receipts/<generation>/`` and this process only ever reads.
+    Never raises — this runs on the way out of a failing session.
+    """
+
+    if not control_dir:
+        return ""
+    from cacheon.receipts import validator_runtime_failure
+
+    found: list[str] = []
+    try:
+        for path in sorted(Path(control_dir, "receipts").glob("*/failed*.json"))[:16]:
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(row, dict):
+                continue
+            message = str(row.get("error", ""))[:256].replace("\n", " ")
+            if row.get("failure_owner") == "validator_runtime" or validator_runtime_failure(
+                row.get("error_type"), message
+            ):
+                continue
+            phase = str(row.get("phase", "entry"))[:16]
+            source = str(row.get("source", ""))[:128]
+            line = row.get("line")
+            location = (
+                f" at {source}:{line}"
+                if source and type(line) is int and line > 0
+                else ""
+            )
+            found.append(
+                f"rank {row.get('rank')} {row.get('error_type')} in "
+                f"{row.get('slot')} (generation {path.parent.name}) "
+                f"during {phase}{location}: {message}"
+            )
+    except (OSError, ValueError):
+        return ""
+    return "; ".join(f"candidate raised {item}" for item in found)
+
+
 def _read_rank_acks(control_dir: str, *, tp_size: int) -> dict[int, dict]:
     rows: dict[int, dict] = {}
     for rank in range(tp_size):
@@ -895,8 +935,7 @@ def _serve_resident(
                         request=request,
                         slots=slots,
                         rank_count=tp_size,
-                        prior_generation=execution.prior_generation,
-                        prior_execution_ranks=execution.prior_execution_ranks,
+                        execution=execution,
                     ),
                     max_bytes=MAX_CONTROL_BYTES,
                 ),
@@ -1176,6 +1215,7 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
     session_id: str | None = None
     launch_digest: str | None = None
     request: BatchRequest | None = None
+    resident_control_dir: str | None = None
     stage = "init"
     try:
         init = _read_control_frame(control_fd, max_bytes=MAX_INIT_BYTES)
@@ -1193,7 +1233,6 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
             )
         stage = "preflight"
         facts, tree = _validate_live_preflight(config, launch_digest=launch_digest)
-        resident_control_dir: str | None = None
         if session_protocol == "resident":
             if not _read_only_directory(Path(CONTAINER_SWAP_INTAKE_PATH)):
                 raise SessionProtocolError(
@@ -1332,6 +1371,13 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                 request = None
     except BaseException as exc:  # noqa: BLE001 - bounded untrusted diagnostic
         reported = False
+        # A candidate that raised inside a scheduler rank takes the rank down,
+        # and what this process observes is the engine dying — an
+        # infrastructure-shaped error. The rank receipted the raise on its way
+        # out; naming it here is what keeps that failure off the lane's record.
+        blamed = _candidate_failures(resident_control_dir)
+        if blamed:
+            exc = CandidateExecutionFailure(f"{blamed}; engine: {type(exc).__name__}")
         if session_id is not None and launch_digest is not None:
             try:
                 _write_all(

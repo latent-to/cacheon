@@ -54,6 +54,7 @@ from cacheon.eval.b300_qualification_graph_store_io import (
 )
 from cacheon.eval.b300_resident_qualification import (
     B300ResidentQualificationError,
+    execution_evidence_refs,
     run_b300_resident_qualification_prefix,
 )
 from cacheon.eval.resident_pair_quality_lifecycle import (
@@ -61,7 +62,9 @@ from cacheon.eval.resident_pair_quality_lifecycle import (
     ResidentPairQualityLifecycleError,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.candidate_failure_product import candidate_failure_batch
 from cacheon.eval.oci_backend import OCIEngineExecutor
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
@@ -79,8 +82,6 @@ from cacheon.eval.qualification_runner import (
     ATTEMPT_SCHEMA_V4,
     reopen_causal_qualification,
 )
-from cacheon.eval.resident_screen_lane import screen_swappability
-from cacheon.manifest import load_manifest
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
@@ -627,7 +628,11 @@ class B300MainnetWorker:
                 authority_digest=work.factory.manifest.authority_digest,
                 source_digest=plan.prepared.source.digest,
             )
-            if screen_swappability(load_manifest(candidates[0].publication.root)) is None:
+            # Route on the version the sealed plan carries: the plan builder
+            # already decided pair-native vs two-process (swappability plus
+            # the incumbent-injection conditions), so re-deriving any of it
+            # here could only disagree with the substrate the plan encodes.
+            if plan.resident_speed_plan.policy.version < 8:
                 try:
                     resident_prefix = run_b300_resident_qualification_prefix(
                         factory=self._resident_pair_factory,
@@ -637,6 +642,13 @@ class B300MainnetWorker:
                         continuation=continuation,
                         screen_lane=self._remote_qualification_lane,
                         deadline=float(work.deadline),
+                    )
+                    supporting_evidence_refs += execution_evidence_refs(
+                        resident_prefix.speed,
+                        evidence_root=plan.evidence_root,
+                        request_digest=request_digest,
+                        authority_digest=work.factory.manifest.authority_digest,
+                        source_digest=plan.prepared.source.digest,
                     )
                     resident_pair_lifecycle = ResidentPairMarginalLifecycleEvidence(
                         plan.prepared,
@@ -649,6 +661,18 @@ class B300MainnetWorker:
                             None if resident_prefix.count_result is None
                             else self._resident_count_quality.stock_authority
                         ),
+                    )
+                except OuterSessionCandidateError as exc:
+                    batch = candidate_failure_batch(
+                        work.factory.manifest,
+                        plan,
+                        exc,
+                    )
+                    self._validate_batch(batch, work, candidates)
+                    return (
+                        batch,
+                        work.factory.manifest,
+                        supporting_evidence_refs,
                     )
                 except (
                     B300ResidentQualificationError,

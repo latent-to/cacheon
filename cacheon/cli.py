@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from cacheon.manifest import (all_declared_cuda_sources, all_declared_dep_patches,
                              load_manifest, resolve_source)
@@ -675,6 +676,59 @@ def _add_object_store_args(parser: argparse.ArgumentParser) -> None:
         default="",
         help="filesystem root for provider=local",
     )
+
+
+def _add_archive_store_args(parser: argparse.ArgumentParser) -> None:
+    from cacheon.chain.archive import DEFAULT_VALIDATOR_ARCHIVE_PREFIX
+
+    parser.add_argument(
+        "--object-store-provider",
+        default="",
+        help=(
+            "S3 backend/preset: s3 | hippius | minio (default: generic s3; "
+            "hippius/minio map provider defaults)"
+        ),
+    )
+    parser.add_argument(
+        "--object-store-bucket",
+        default="",
+        help="private validator bucket (or CACHEON_OBJECT_STORE_BUCKET)",
+    )
+    parser.add_argument(
+        "--object-store-prefix",
+        default="",
+        help=(
+            "private archive key prefix (default "
+            f"{DEFAULT_VALIDATOR_ARCHIVE_PREFIX}; env "
+            "CACHEON_VALIDATOR_ARCHIVE_PREFIX)"
+        ),
+    )
+    parser.add_argument(
+        "--object-store-endpoint",
+        default="",
+        help="S3-compatible API endpoint; no provider preset is required",
+    )
+    parser.add_argument("--object-store-region", default="", help="override signing region")
+    parser.add_argument(
+        "--object-store-access-key",
+        default="",
+        help="access key (or CACHEON_OBJECT_STORE_ACCESS_KEY_ID / AWS_ACCESS_KEY_ID)",
+    )
+    parser.add_argument(
+        "--object-store-secret-key",
+        default="",
+        help=(
+            "secret key (or CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY / "
+            "AWS_SECRET_ACCESS_KEY)"
+        ),
+    )
+    parser.add_argument(
+        "--object-store-addressing",
+        default="",
+        help="S3 addressing style: path | virtual | auto",
+    )
+
+
 def cmd_serve_weights(args: argparse.Namespace) -> int:
     """Serve the current weight offer from object storage to permitted validators.
 
@@ -1662,6 +1716,7 @@ def cmd_chain_miner_report(args: argparse.Namespace) -> int:
     """Report every retained submission for one hotkey with a stated cause."""
 
     import json
+    from pathlib import Path
 
     from cacheon.chain.miner_feedback import (
         format_miner_submissions,
@@ -1670,7 +1725,12 @@ def cmd_chain_miner_report(args: argparse.Namespace) -> int:
     from cacheon.chain.operator_status import OperatorStatusError
 
     try:
-        value = miner_submissions(args.intake_db, hotkey=args.miner_hotkey)
+        value = miner_submissions(
+            args.intake_db,
+            hotkey=args.miner_hotkey,
+            evidence_roots=tuple(Path(root) for root in args.evidence_root),
+            spool_roots=tuple(Path(root) for root in args.remote_spool_root),
+        )
     except OperatorStatusError as exc:
         print(f"MINER REPORT REFUSED: {exc}")
         return 2
@@ -1846,6 +1906,23 @@ def cmd_chain_snapshot_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_release_hold(args: argparse.Namespace) -> int:
+    """Return one held reservation to its queue under a stated operator reason."""
+
+    from cacheon import chain
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+
+    subtensor = chain.connect(args.network)
+    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
+    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
+        released = store.release_hold(args.reservation_id, reason=args.reason)
+    print(
+        f"released hold {released.reservation_id}: status={released.status} "
+        f"reason={released.reason}"
+    )
+    return 0
+
+
 def cmd_chain_archive_schema3_hold(args: argparse.Namespace) -> int:
     """Archive one legacy schema-v3 hold without loading any signer authority."""
 
@@ -1915,6 +1992,64 @@ def cmd_chain_register(args: argparse.Namespace) -> int:
             return 1
     for check in chain.preflight(subtensor, wallet, args.netuid):
         print(f"  [{'ok' if check.ok else 'MISSING'}] {check.name}: {check.detail}")
+    return 0
+
+
+def _find_product(value: object, depth: int = 0) -> dict | None:
+    """Locate the evaluation product inside whatever wrapper it arrived in.
+
+    Operators publish the bare product; validators keep collections that embed it
+    under transport envelopes. Searching for the shape rather than the path means
+    a new wrapper does not need a new branch here.
+    """
+
+    if depth > 6:
+        return None
+    if isinstance(value, dict):
+        if "evidence" in value and ("batch" in value or "authority_manifest" in value):
+            return value
+        for nested in value.values():
+            found = _find_product(nested, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for nested in value[:16]:
+            found = _find_product(nested, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def cmd_explain(args: argparse.Namespace) -> int:
+    from cacheon.eval.explain import explain
+
+    product = {"evidence": []}
+    if args.product:
+        with open(args.product, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+        product = _find_product(raw)
+        if product is None:
+            print(f"{args.product}: no evaluation product found in this file")
+            return 2
+    elif not args.evidence_dir and not args.log:
+        print("explain requires a product JSON, --log, or --evidence-dir")
+        return 2
+    logs: list[bytes] = []
+    if args.log:
+        with open(args.log, "rb") as handle:
+            logs.append(handle.read())
+    if args.evidence_dir:
+        root = Path(args.evidence_dir)
+        if not root.is_dir():
+            print(f"{root}: evidence directory not found")
+            return 2
+        paths = sorted(root.rglob("*.stderr"))
+        receipted = [
+            path for path in paths if path.with_name(path.name + ".json").is_file()
+        ]
+        logs.extend(path.read_bytes() for path in (receipted or paths))
+    for line in explain(product, stderr=b"\n".join(logs) if logs else None):
+        print(line)
     return 0
 
 
@@ -2063,7 +2198,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     if effective_device == "cpu":
         print("[note] some or all of this verify runs on CPU: it checks op-correctness "
               "only — it does not predict GPU throughput, CUDA-graph capture, or the "
-              "fidelity gates (see docs/GPU_SETUP.md).")
+              "fidelity gates (see docs/dev/gpu-setup.md).")
     rc = 0
     known_rows = 0
     context_inapplicable_rows = 0
@@ -2081,10 +2216,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
                   "(activation + low-bit metric)")
         slot = slot_for_model(op.slot, model_key)
         src = resolve_source(args.bundle, op)
-        graph_safe = None if slot.kind == "op" else bool(
-            metadata.get("graph_safe", False)
-        )
-
         scan = scan_path(src)
         if not scan.ok:
             print(f"  [FAIL] {label}: failed policy scan")
@@ -2107,7 +2238,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
                                        # rebuild plan (declared cuda_sources) must apply
                                        # in the ranks that load the kernel
                                        bundle_path=str(args.bundle),
-                                       graph_safe=bool(graph_safe),
                                        eligibility=eligibility_by_row[row_index],
                                        tp_size=getattr(args, "tp_size", None),
                                        variant_name=op.variant)
@@ -2133,7 +2263,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
             jitter_seed=args.seed,  # count-dim jitter so shapes vary per run (anti shape-branch)
             model_key=model_key,  # validator per-model slot profile (activation + metric)
             override_point=op.override_point,  # compose a miner epilogue into the base kernel
-            graph_safe=graph_safe,
             eligibility_metadata=metadata,
             manifest_dtypes=op.dtypes,
             manifest_architectures=op.architectures,
@@ -2172,7 +2301,7 @@ def build_parser() -> argparse.ArgumentParser:
             "                               chain-eval-cost-credit\n"
             "  environment checks ......... compat, chain-compat\n"
             "\n"
-            "New to Cacheon? Start with docs/MINER_GUIDE.md."
+            "New to Cacheon? Start with docs/miner-guide/overview.md."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2822,6 +2951,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
     sp.add_argument("--miner-hotkey", required=True)
+    sp.add_argument(
+        "--evidence-root",
+        action="append",
+        default=[],
+        help=(
+            "a retained qualification evidence store to reopen; repeatable, one "
+            "per worker generation. Renders what each attempt measured and what "
+            "every GPU did with the kernel, from the bytes the verdict rests on"
+        ),
+    )
+    sp.add_argument(
+        "--remote-spool-root",
+        action="append",
+        default=[],
+        help="retained VM remote-worker spool; repeat for preserved worker epochs",
+    )
     sp.add_argument("--json", action="store_true", help="emit canonical compact JSON")
     sp.set_defaults(func=cmd_chain_miner_report)
 
@@ -2912,52 +3057,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(models/images are never discovered automatically)"
         ),
     )
-    sp.add_argument(
-        "--object-store-provider",
-        default="",
-        help=(
-            "S3 backend/preset: s3 | hippius | minio (default: generic s3; "
-            "hippius/minio map provider defaults)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-bucket",
-        default="",
-        help="private validator bucket (or CACHEON_OBJECT_STORE_BUCKET)",
-    )
-    sp.add_argument(
-        "--object-store-prefix",
-        default="",
-        help=(
-            "private archive key prefix (default "
-            f"{DEFAULT_VALIDATOR_ARCHIVE_PREFIX}; env "
-            "CACHEON_VALIDATOR_ARCHIVE_PREFIX)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-endpoint",
-        default="",
-        help="S3-compatible API endpoint; no provider preset is required",
-    )
-    sp.add_argument("--object-store-region", default="", help="override signing region")
-    sp.add_argument(
-        "--object-store-access-key",
-        default="",
-        help="access key (or CACHEON_OBJECT_STORE_ACCESS_KEY_ID / AWS_ACCESS_KEY_ID)",
-    )
-    sp.add_argument(
-        "--object-store-secret-key",
-        default="",
-        help=(
-            "secret key (or CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY / "
-            "AWS_SECRET_ACCESS_KEY)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-addressing",
-        default="",
-        help="S3 addressing style: path | virtual | auto",
-    )
+    _add_archive_store_args(sp)
     sp.set_defaults(func=cmd_chain_snapshot)
 
     sp = sub.add_parser(
@@ -2973,52 +3073,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="optional fresh private staging path; omitted means temporary verification",
     )
-    sp.add_argument(
-        "--object-store-provider",
-        default="",
-        help=(
-            "S3 backend/preset: s3 | hippius | minio (default: generic s3; "
-            "hippius/minio map provider defaults)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-bucket",
-        default="",
-        help="private validator bucket (or CACHEON_OBJECT_STORE_BUCKET)",
-    )
-    sp.add_argument(
-        "--object-store-prefix",
-        default="",
-        help=(
-            "private archive key prefix (default "
-            f"{DEFAULT_VALIDATOR_ARCHIVE_PREFIX}; env "
-            "CACHEON_VALIDATOR_ARCHIVE_PREFIX)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-endpoint",
-        default="",
-        help="S3-compatible API endpoint; no provider preset is required",
-    )
-    sp.add_argument("--object-store-region", default="", help="override signing region")
-    sp.add_argument(
-        "--object-store-access-key",
-        default="",
-        help="access key (or CACHEON_OBJECT_STORE_ACCESS_KEY_ID / AWS_ACCESS_KEY_ID)",
-    )
-    sp.add_argument(
-        "--object-store-secret-key",
-        default="",
-        help=(
-            "secret key (or CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY / "
-            "AWS_SECRET_ACCESS_KEY)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-addressing",
-        default="",
-        help="S3 addressing style: path | virtual | auto",
-    )
+    _add_archive_store_args(sp)
     sp.set_defaults(func=cmd_chain_snapshot_verify)
 
     sp = sub.add_parser(
@@ -3035,6 +3090,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reason", required=True, help="bounded operator audit reason")
     sp.set_defaults(func=cmd_chain_archive_schema3_hold)
 
+    sp = sub.add_parser(
+        "chain-release-hold",
+        help=(
+            "operator: return one held or no-decision reservation to its queue "
+            "with a stated reason; never signs, settles, or crowns"
+        ),
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument("--network", required=True)
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    sp.add_argument("--reservation-id", required=True)
+    sp.add_argument("--reason", required=True, help="bounded operator audit reason")
+    sp.set_defaults(func=cmd_chain_release_hold)
+
     sp = sub.add_parser("chain-register",
                         help="register this hotkey on a subnet (burned_register; needs "
                              "the coldkey password) + preflight")
@@ -3047,6 +3116,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("scan", help="static policy scan of a bundle")
     sp.add_argument("bundle")
     sp.set_defaults(func=cmd_scan)
+
+    sp = sub.add_parser(
+        "explain", help="say in plain language what happened to an evaluated bundle",
+        epilog=("examples:\n"
+                "  # the product an operator publishes for one evaluation\n"
+                "  cacheon explain qualification-product.json\n"
+                "  # or the collection a validator kept, which embeds the product\n"
+                "  cacheon explain collected-result.json\n"
+                "  # a failed run that produced no product\n"
+                "  cacheon explain --evidence-dir retained-run/"),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp.add_argument("product", nargs="?", help="path to an evaluation product JSON")
+    sp.add_argument("--log", default=None,
+                    help="retained worker stderr for this run; adds what each rank "
+                         "actually did (loaded, ran, how often, in a captured graph, "
+                         "or why the call routed to stock instead)")
+    sp.add_argument("--evidence-dir", default=None,
+                    help="retained run directory; reads worker *.stderr artifacts, "
+                         "including failures that produced no product")
+    sp.set_defaults(func=cmd_explain)
 
     sp = sub.add_parser(
         "verify", help="op-level correctness vs reference",

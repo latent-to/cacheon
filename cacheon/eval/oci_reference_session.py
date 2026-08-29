@@ -22,6 +22,8 @@ from cacheon.eval.oci_outer_session import (
     OuterSessionProtocolError,
     OuterSessionTimeoutError,
     OuterSessionWorkerError,
+    SessionTransport,
+    _now,
     diagnostic_provider,
     perform_init_handshake,
     require_session_timeouts,
@@ -58,30 +60,14 @@ class ReferenceSessionError(RuntimeError):
     """The pristine-reference plan or transcript is invalid."""
 
 
-class ReferenceTransport(Protocol):
-    def start(self) -> None: ...
-    def has_pending_output(self) -> bool: ...
-    def write_frame(self, frame: bytes, *, deadline: float) -> None: ...
-    def read_control(self, *, max_bytes: int, deadline: float) -> dict: ...
+class ReferenceTransport(SessionTransport, Protocol):
     def read_reference_evidence(
         self, request: ReferenceRequest, *, deadline: float
     ) -> ReferenceEvidence: ...
-    def finalize(self) -> None: ...
-    def abort(self) -> None: ...
 
 
 def _digest(value: object, *, field: str) -> str:
     return require_digest(value, field=field, error=ReferenceSessionError)
-
-
-def _now(clock: Callable[[], float], *, previous: float | None = None) -> float:
-    try:
-        result = float(clock())
-    except Exception as exc:
-        raise OuterSessionInfrastructureError(f"host clock failed: {exc}") from None
-    if not math.isfinite(result) or (previous is not None and result < previous):
-        raise OuterSessionInfrastructureError("host clock moved backwards")
-    return result
 
 
 @dataclass(frozen=True)

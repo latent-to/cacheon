@@ -166,6 +166,26 @@ A narrower domain is honest only when it represents a real supported algorithmic
 and still covers material calls; using eligibility to hide an implementation bug will
 either leave a coverage hole or produce no marginal effect.
 
+### What actually reached the device
+
+On CUDA, `verify` reports the kernels each shape launched:
+
+```text
+  ok  shape={'num_tokens': 3, 'd': 1024} max_abs=3.125e-02 max_rel=7.812e-03 graph_replays=3
+      device kernels (1):
+        x1    _silu_and_mul_kernel
+```
+
+The profiler is armed only around your entry, and the validator launches nothing
+inside that window, so everything listed came from your bundle. It works the same
+for a Triton kernel, a compiled `.so`, or plain torch calls, and it is untimed —
+it never runs inside a measured window.
+
+Read it for two things. First, whether your own kernel is there at all: a bundle
+that lists only `at::native::` names is calling torch, whatever its source looks
+like. Second, which internal path ran, when your entry chooses between several —
+each choice launches different kernels, and the list names the one taken.
+
 ## 4. Graph evidence
 
 Graph failures are classified separately:
@@ -180,7 +200,7 @@ Graph failures are classified separately:
 
 Common causes are host synchronization, data-dependent Python branching,
 capture-time compilation/allocation, stale pointers, partial replay writes, or
-collective ordering changes. `graph_safe: true` is only a declaration.
+collective ordering changes.
 
 Do not “fix” graph failure by disabling CUDA graphs in a local profile; that changes the
 serving regime. See [Graph evidence](graph-safety.md).

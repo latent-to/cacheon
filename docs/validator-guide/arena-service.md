@@ -43,7 +43,8 @@ description of intent — the sealed prompt batches are validated against the
 cell before anything commissions, the engine configuration (context length,
 admission width, cache policy) derives from the cell, and a qualification
 session whose output budget or read count differs from the cell cannot
-commission. What the manifest declares is therefore what the engine runs.
+commission. A tensor-parallel size larger than the bound GPU count is
+rejected. What the manifest declares is therefore what the engine runs.
 
 This prevents a candidate, operator typo, or later configuration drift from
 quietly changing the workload represented by a result. Whether the declared
@@ -54,7 +55,7 @@ The manifest also seals `closed_targets`: registered families the commissioned
 cells cannot measure. The list is data from the sealed commissioning inputs,
 validated against the target catalog — never a hardcoded list in evaluator
 code. Intake parks proposals for closed targets without charging them; see
-[Arenas](../reference/arenas.md).
+[Why submissions fail](../miner-guide/why-submissions-fail.md).
 
 ## Non-crownable screens
 
@@ -85,7 +86,7 @@ batch to the current swap generation. Stock reads bracket candidates and act as 
 B0 → swap(candidate-1) → C1 → swap(stock) → B1 → ...
 ```
 
-The closing stock swap must prove `fired` and `completed` on every rank, with no
+The closing stock swap must prove `completed` on every rank, with no
 fallback or load failure. A cold candidate is rejected before promotion.
 
 The queue may reuse a preceding stock bracket under policy and withdraws the lane when a
@@ -157,6 +158,18 @@ archive path. This row-level SLA is not a generic wall-clock TTL or a typed tran
 that retires an entire arena. Settlement lease expiry and a discovery claim's configured
 lifetime remain different state machines. Operators must monitor held rows and preserve
 their evidence; deleting them is not a supported recovery path.
+
+## Boundary types
+
+| Type | Role |
+|---|---|
+| `ArenaServiceRegistry` | Closed mapping supplied by deployment code |
+| `ArenaService` | Typed screening and qualification-planning boundary for one arena |
+| `ArenaServiceManifest` | Frozen runtime, workload, capacity, screens, and policy identity |
+| `ArenaCandidateBinding` | Exact qualification reservation, immutable publication, and screen attempt handed to a service |
+| `ArenaScreenReceipt` | Typed results from the five non-crown screening stages |
+| `ArenaQualificationRequest` / `ArenaQualificationWork` | Closed request and provider-returned qualification plan |
+| `ArenaServiceProvider` | Deployment-supplied in-process protocol; no production implementation ships in the repository |
 
 ## Provider interface
 
@@ -281,7 +294,8 @@ arena ID alone is not enough to compare measurements after a deployment change.
 
 ## Nonclaims
 
-- The repository does not ship a production provider for any hardware fleet.
+- The repository does not ship a production provider for any hardware fleet,
+  and no `--eval-cmd` shell escape hatch exists.
 - Registry typing does not attest that an operator chose representative prompts or
   sufficient capacity.
 - Screens do not prove a win, grant a crown, or authorize a release.

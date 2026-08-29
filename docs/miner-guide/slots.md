@@ -29,7 +29,7 @@ manifest; it does not require the Python function itself to be named `entry`.
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
 | `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | dense/GQA/MQA attention output |
 | `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | MiniMax-M3 graph-native sparse attention over validator-selected blocks |
-| `attention.msa_block_score` | block | `entry(q, index_k, seq_lens, block_size, out)` | decode-time block scores; validator owns top-k selection and attend |
+| `attention.msa_block_score` | block | `entry(q, k_cache, req_to_token, slot_ids, seq_lens, out, sm_scale, block_size, topk, init_blocks, local_blocks)` | paged per-head decode scores; stock owns top-k and attend |
 | `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | one batched paged prefill score-to-selection call; validator audits indices and owns attend |
 | `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
@@ -39,34 +39,46 @@ manifest; it does not require the Python function itself to be named `entry`.
 
 ## Current MiniMax-M3 availability
 
-As of 2026-08-20, two registered slot contracts are **unavailable for paid
+As of 2026-08-24, five registered slot contracts are **unavailable for paid
 submission in the current MiniMax-M3 mainnet arena**:
 
 - `norm.rmsnorm`: the deployed model uses `GemmaRMSNorm` at every relevant
   normalization callsite. The registered adapter patches the separate
   `RMSNorm.forward_cuda` boundary, so a candidate for this slot cannot execute.
-- `attention.msa_block_score`: the decode-side contract has no installing
-  adapter for the pinned runtime, so a candidate for this slot cannot execute.
+- `activation.silu_and_mul`: the deployed model computes expert activation
+  inside the MoE grouped-GEMM epilogue on 57 of 60 layers, and its three dense
+  layers route a swigluoai function the registered adapter does not patch. A
+  candidate for this slot loads but is never called.
+- `attention.sdpa`: no serving adapter binds this contract in the deployed
+  runtime, so a candidate can never execute in a measured arm.
+- `attention.msa_prefill_block_score`: closed pending its first clean
+  end-to-end control run on the deployed arena; the decode sibling
+  `attention.msa_block_score` is open.
+- `moe.fused_experts_reduce`: sealed closed pending its full-engine
+  outer-reduction proof.
 
-Do not pay for or submit either target to the current arena. They remain in the
-registry as ABI and verifier contracts; this arena-specific notice does not
-withdraw any other registered target.
+Do not pay for or submit those targets; intake parks them without judgement
+and the payment is not consumed. Every other registered target remains open.
 
-The decode MSA slot outputs scores and retains stock selection. Prefill V2
-instead receives the engine's live top-k and writes validator-allocated `int32`
-indices for the whole paged batch in one call. The validator compares the
-consumed sets with its independent reference and retains sparse attention and
-the rest of the model. `-1` is required padding for short causal rows.
+Closure removes only the standalone lane. The same computation remains fully
+claimable **inside open targets**: activation belongs to the
+`moe.fused_experts` boundary (the validator-owned per-model table carries the
+swigluoai parameters for exactly that), normalization belongs to the two fused
+collective boundaries, and a fused kernel is judged only by the contract of
+the target it names — never by what it absorbs internally. See the slot
+contract's closure section.
+
+The decode MSA slot follows `req_to_token[slot_ids]` and fills one FP32 score
+slab per local index head. Stock code retains top-k and attend. Prefill V2
+instead writes validator-allocated `int32` indices for the whole paged batch;
+`-1` is required padding for short causal rows.
 
 The prefill slot is a distinct long-prefill boundary and its canonical live
 descriptor is eager; do not assume a decode optimization exercises it.
 
-Registration and live installation are also different facts. The
-`attention.msa_block_score` decode contract is registered and CPU-verifiable, but its
-current pinned runtime has no installing adapter for that chokepoint. The
-prefill sibling has a real guarded adapter. Confirm that the operator's arena
-actually binds and activates the target before investing in a production
-submission; a contract alone does not make a callsite hot.
+Registration and installation remain different facts. The pinned runtime now
+binds `attention.msa_block_score` at `_decode_score_kernel`; the prefill sibling
+has its own guarded adapter.
 
 Collective slots are distributed contracts. `group` is the process group the
 validator supplies, and every listed output is validator-allocated. Test with
@@ -127,10 +139,9 @@ Start from the published arena, not from an isolated kernel idea:
 
 For a first offline implementation, `activation.silu_and_mul` and
 `norm.rmsnorm` have the smallest single-process ABIs. They are useful for
-learning the contract, not a promise of current-arena availability or economic
-headroom; `norm.rmsnorm` is specifically unavailable in the current
-MiniMax-M3 arena as stated above. Advanced collective and deep-MoE targets
-require the matching multi-GPU and build environment to test honestly.
+learning the contract only: both are unavailable for paid submission in the
+current MiniMax-M3 arena as stated above. Advanced collective and deep-MoE
+targets require the matching multi-GPU and build environment to test honestly.
 
 ### A decision procedure
 

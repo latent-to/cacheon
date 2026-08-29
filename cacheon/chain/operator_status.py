@@ -329,15 +329,16 @@ def _screen_dispositions(
 ) -> list[dict[str, object]]:
     from cacheon.arena_service import (
         ArenaScreenReceipt,
+        ArenaServiceError,
         PromotionDecision,
-        ScreenGrade,
         ScreenStageResult,
     )
 
     result: list[dict[str, object]] = []
     rows = db.execute(
         "SELECT attempt_index,service_digest,candidate_digest,receipt_digest,"
-        "receipt_json,decision,stage_count,lane FROM arena_screen_dispositions "
+        "receipt_json,decision,stage_count,lane "
+        "FROM arena_screen_dispositions "
         "WHERE reservation_id=? ORDER BY attempt_index",
         (reservation_id,),
     )
@@ -345,13 +346,7 @@ def _screen_dispositions(
         try:
             raw = json.loads(row["receipt_json"])
             stages = tuple(
-                ScreenStageResult(
-                    item["stage"],
-                    ScreenGrade(item["grade"]),
-                    item["evidence_digest"],
-                    item["elapsed_ms"],
-                )
-                for item in raw["results"]
+                ScreenStageResult.from_dict(item) for item in raw["results"]
             )
             receipt = ArenaScreenReceipt(
                 raw["service_digest"],
@@ -360,7 +355,7 @@ def _screen_dispositions(
                 stages,
                 PromotionDecision(raw["decision"]),
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, ArenaServiceError) as exc:
             raise OperatorStatusError(f"screen receipt is corrupt: {exc}") from None
         if (
             receipt.digest != row["receipt_digest"]

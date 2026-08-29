@@ -42,10 +42,10 @@ from cacheon.eval.oci_process import (
     OCIProcessManager,
     OCIProcessResult,
 )
-from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from cacheon.stack_identity import canonical_json_bytes
 from cacheon.stack_manifest import EvaluationStackContext, EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
+from tests.support.preflight import preflight_receipt
 
 
 DOCKER = "/usr/bin/docker"
@@ -154,34 +154,13 @@ def _preflight(
     policy: OCIPrebuildPolicy,
     sglang_version: str = "0.0.0.dev1",
 ):
-    return RuntimePreflightReceipt(
-        schema="cacheon-runtime-preflight-v2",
-        requested_image="registry.example/cacheon@sha256:" + image,
-        image_digest=image,
-        local_image_id=IMAGE_ID,
-        repo_digests=("registry.example/cacheon@sha256:" + image,),
-        oci_platform="linux/amd64",
-        platform_digest=platform,
-        docker_binary=DOCKER,
+    return preflight_receipt(
+        image=image,
+        platform=platform,
+        worker=worker,
         uid=policy.uid,
         gid=policy.gid,
         sglang_version=sglang_version,
-        worker_distribution="cacheon-harness",
-        worker_version="0.0.1",
-        worker_distribution_digest=worker,
-        worker_file_count=200,
-        worker_total_bytes=1_000_000,
-        python_implementation="cpython",
-        python_executable="/usr/local/bin/python3",
-        python_version="3.12.0",
-        python_abi="cpython-312-x86_64-linux-gnu",
-        python_platform="linux-x86_64",
-        machine="x86_64",
-        package_versions=(),
-        cudart_library="libcudart.so.13",
-        cuda_visible_devices="",
-        nvidia_visible_devices="void",
-        security_argv_sha256=_digest("preflight-argv"),
     )
 
 
@@ -303,6 +282,28 @@ class _Controls:
         return CommandResult(0, b"", b"")
 
 
+def _manager(config, **over):
+    return OCIProcessManager(
+        docker_binary=DOCKER,
+        recovery_root=config.recovery_root,
+        executor_id=config.executor_id,
+        runner=_Controls(),
+        **over,
+    )
+
+
+def _prebuild_argv(lease, resolved, preflight, config, **over):
+    return build_prebuild_argv(
+        lease=lease,
+        resolved=resolved,
+        preflight=preflight,
+        config=config,
+        stage_path=lease.mount_paths[0],
+        seccomp_path=lease.stage_paths[0],
+        **over,
+    )
+
+
 def _compile_profile() -> NativeCuTeCompileProfile:
     return NativeCuTeCompileProfile(
         logical_architecture="sm103",
@@ -400,26 +401,14 @@ def test_exact_prebuild_argv_has_only_two_mounts_no_gpu_no_egress_no_caps(
     isolated = _policy(cpuset_cpus="0-3,8-11", cpuset_mems="0")
     tree, launch, binding, preflight, config = _case(tmp_path, policy=isolated)
     resolved = resolve_engine_launch(launch, binding)
-    manager = OCIProcessManager(
-        docker_binary=DOCKER,
-        recovery_root=config.recovery_root,
-        executor_id=config.executor_id,
-        runner=_Controls(),
-    )
+    manager = _manager(config)
     lease = manager.register(
         lease_id="prebuild-test",
         container_name="cacheon-prebuild-test",
         mount_relpaths=("stage",),
         stage_relpaths=("seccomp.json",),
     )
-    argv = build_prebuild_argv(
-        lease=lease,
-        resolved=resolved,
-        preflight=preflight,
-        config=config,
-        stage_path=lease.mount_paths[0],
-        seccomp_path=lease.stage_paths[0],
-    )
+    argv = _prebuild_argv(lease, resolved, preflight, config)
 
     assert argv[: len(lease.run_prefix(DOCKER))] == lease.run_prefix(DOCKER)
     assert "--network=none" in argv and "--read-only" in argv
@@ -471,26 +460,15 @@ def test_profiled_prebuild_adds_one_read_only_profile_mount_and_digest_env(
         resolved,
         native_compile_profile=SimpleNamespace(digest=profile_digest),
     )
-    manager = OCIProcessManager(
-        docker_binary=DOCKER,
-        recovery_root=config.recovery_root,
-        executor_id=config.executor_id,
-        runner=_Controls(),
-    )
+    manager = _manager(config)
     lease = manager.register(
         lease_id="profiled-prebuild-test",
         container_name="cacheon-profiled-prebuild-test",
         mount_relpaths=("stage",),
         stage_relpaths=("seccomp.json", "cute-profile.json"),
     )
-    argv = build_prebuild_argv(
-        lease=lease,
-        resolved=profiled,
-        preflight=preflight,
-        config=config,
-        stage_path=lease.mount_paths[0],
-        seccomp_path=lease.stage_paths[0],
-        compile_profile_path=lease.stage_paths[1],
+    argv = _prebuild_argv(
+        lease, profiled, preflight, config, compile_profile_path=lease.stage_paths[1]
     )
     profile_mounts = [
         value
@@ -503,14 +481,7 @@ def test_profiled_prebuild_adds_one_read_only_profile_mount_and_digest_env(
     assert "--env=CACHEON_CUTE_COMPILE_PROFILE=/cacheon/cute-compile-profile.json" in argv
 
     with pytest.raises(OCIPrebuildError, match="does not match launch authority"):
-        build_prebuild_argv(
-            lease=lease,
-            resolved=profiled,
-            preflight=preflight,
-            config=config,
-            stage_path=lease.mount_paths[0],
-            seccomp_path=lease.stage_paths[0],
-        )
+        _prebuild_argv(lease, profiled, preflight, config)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="production publication uses Linux renameat2")
@@ -518,12 +489,7 @@ def test_run_builds_publishes_reopens_and_then_reuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _tree_row, launch, binding, _preflight_row, config = _case(tmp_path)
-    manager = OCIProcessManager(
-        docker_binary=DOCKER,
-        recovery_root=config.recovery_root,
-        executor_id=config.executor_id,
-        runner=_Controls(),
-    )
+    manager = _manager(config)
     stage_holder: list[Path] = []
 
     def mount(_lease, path, **_kwargs):
@@ -564,13 +530,7 @@ def test_prebuild_rejects_expired_deadline_before_binding_or_lease(
     tmp_path: Path,
 ) -> None:
     _tree_row, launch, binding, _preflight_row, config = _case(tmp_path)
-    manager = OCIProcessManager(
-        docker_binary=DOCKER,
-        recovery_root=config.recovery_root,
-        executor_id=config.executor_id,
-        runner=_Controls(),
-        clock=lambda: 10.0,
-    )
+    manager = _manager(config, clock=lambda: 10.0)
     with pytest.raises(OCIPrebuildError, match="deadline expired during binding"):
         run_oci_prebuild(launch, binding, config, manager=manager, deadline=10.0)
     assert list(manager.leases_root.iterdir()) == []
@@ -583,13 +543,7 @@ def test_prebuild_rechecks_deadline_after_binding_work(
 
     _tree_row, launch, binding, _preflight_row, config = _case(tmp_path)
     now = {"value": 100.0}
-    manager = OCIProcessManager(
-        docker_binary=DOCKER,
-        recovery_root=config.recovery_root,
-        executor_id=config.executor_id,
-        runner=_Controls(),
-        clock=lambda: now["value"],
-    )
+    manager = _manager(config, clock=lambda: now["value"])
     real_validate = prebuild_mod._validate_binding
 
     def validate(*args, **kwargs):
@@ -614,13 +568,7 @@ def test_prebuild_container_timeout_is_capped_by_absolute_deadline_and_policy(
     expected_timeout: float,
 ) -> None:
     _tree_row, launch, binding, _preflight_row, config = _case(tmp_path)
-    manager = OCIProcessManager(
-        docker_binary=DOCKER,
-        recovery_root=config.recovery_root,
-        executor_id=config.executor_id,
-        runner=_Controls(),
-        clock=lambda: 100.0,
-    )
+    manager = _manager(config, clock=lambda: 100.0)
     observed = []
 
     def mount(_lease, path, **_kwargs):
@@ -645,12 +593,7 @@ def test_prebuild_failure_preserves_only_bounded_terminal_safe_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _tree_row, launch, binding, _preflight_row, config = _case(tmp_path)
-    manager = OCIProcessManager(
-        docker_binary=DOCKER,
-        recovery_root=config.recovery_root,
-        executor_id=config.executor_id,
-        runner=_Controls(),
-    )
+    manager = _manager(config)
 
     def mount(_lease, path, **_kwargs):
         Path(path).mkdir(parents=True)
@@ -679,12 +622,7 @@ def test_prebuild_expiry_after_container_prevents_publication_and_releases_lease
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _tree_row, launch, binding, _preflight_row, config = _case(tmp_path)
-    manager = OCIProcessManager(
-        docker_binary=DOCKER,
-        recovery_root=config.recovery_root,
-        executor_id=config.executor_id,
-        runner=_Controls(),
-    )
+    manager = _manager(config)
     now = {"value": 100.0}
     monkeypatch.setattr(manager, "clock", lambda: now["value"])
     stage_holder: list[Path] = []
@@ -716,13 +654,7 @@ def test_prebuild_deadline_fails_closed_on_nonfinite_manager_clock(
     tmp_path: Path,
 ) -> None:
     _tree_row, launch, binding, _preflight_row, config = _case(tmp_path)
-    manager = OCIProcessManager(
-        docker_binary=DOCKER,
-        recovery_root=config.recovery_root,
-        executor_id=config.executor_id,
-        runner=_Controls(),
-        clock=lambda: float("nan"),
-    )
+    manager = _manager(config, clock=lambda: float("nan"))
     with pytest.raises(OCIPrebuildError, match="clock returned a non-finite"):
         run_oci_prebuild(launch, binding, config, manager=manager, deadline=105.0)
 

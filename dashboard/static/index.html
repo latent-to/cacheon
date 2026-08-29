@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="theme-color" content="#030405"/>
+<meta name="description" content="Cacheon — live submissions, evaluations, and crowned kernels for the inference optimization arena on Bittensor netuid 14."/>
+<title>Cacheon · submissions · netuid 14</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48"/>
+<link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192"/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"/>
+<style>
+:root {
+  /* cacheon.ai brand palette */
+  color-scheme: dark;
+  --bg: #030405; --panel: #09090b; --panel2: #10141b; --line: #1e2330;
+  --fg: #fff; --muted: #8f99a8; --accent: #2dd4bf;
+  --ok: #4ade80; --warn: #facc15; --bad: #f87171; --info: #a78bfa;
+  --crown: #2dd4bf;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 13px/1.5 Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+header { position: sticky; top: 0; z-index: 10; background: rgba(14,14,17,.92);
+  backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); }
+header::before { content: ""; display: block; height: 2px;
+  background: linear-gradient(90deg, var(--accent), rgba(45,212,191,.25) 45%, transparent 75%); }
+.hwrap { max-width: 1280px; margin: 0 auto; padding: 10px 20px;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand img { display: block; width: 26px; height: 26px; border-radius: 7px; }
+h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: -.2px; color: var(--fg); }
+.brand small { display: block; color: var(--muted); font-size: 9.5px; font-weight: 500;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  text-transform: uppercase; letter-spacing: .8px; margin-top: 0; }
+nav { display: flex; gap: 2px; flex-wrap: wrap; }
+nav button { background: none; border: 0; color: var(--muted); padding: 7px 10px;
+  font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .7px;
+  cursor: pointer; border-radius: 7px; }
+nav button:hover { color: var(--fg); background: var(--panel2); }
+nav button.on { color: var(--accent); background: rgba(45,212,191,.08); font-weight: 500; }
+#meta { margin-left: auto; color: var(--muted); font-size: 11.5px;
+  display: flex; gap: 12px; align-items: center; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+main { max-width: 1280px; margin: 0 auto; padding: 20px; }
+h2 { font-size: 13px; font-weight: 650; margin: 26px 0 10px; color: var(--fg);
+  text-transform: uppercase; letter-spacing: .6px; }
+h2:first-child { margin-top: 4px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.card b { display: block; font-size: 22px; font-weight: 650; margin-bottom: 2px; }
+.card span { color: var(--muted); font-size: 11px; }
+.card.ok b { color: var(--ok); } .card.warn b { color: var(--warn); }
+.card.bad b { color: var(--bad); } .card.info b { color: var(--info); }
+.card.crown b { color: var(--crown); }
+table { width: 100%; border-collapse: collapse; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px;
+  padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap;
+  text-transform: uppercase; letter-spacing: .4px; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--panel2); }
+tr.clickable { cursor: pointer; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; border: 1px solid transparent; white-space: nowrap; }
+.pill.ok { color: var(--ok); background: rgba(74,222,128,.1); border-color: rgba(74,222,128,.3); }
+.pill.warn { color: var(--warn); background: rgba(250,204,21,.1); border-color: rgba(250,204,21,.3); }
+.pill.bad { color: var(--bad); background: rgba(248,113,113,.1); border-color: rgba(248,113,113,.3); }
+.pill.info { color: var(--info); background: rgba(167,139,250,.1); border-color: rgba(167,139,250,.3); }
+.pill.mute { color: var(--muted); background: rgba(143,153,168,.1); border-color: rgba(143,153,168,.3); }
+.pill.crown { color: var(--crown); background: rgba(45,212,191,.12); border-color: rgba(45,212,191,.35); }
+.muted { color: var(--muted); }
+.small { font-size: 11.5px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+.toolbar { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; align-items: center; }
+input[type=text], select { background: var(--panel); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; }
+input[type=text] { min-width: 260px; }
+.btn { display: inline-block; background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 12px; font: inherit; cursor: pointer; }
+.btn:hover { border-color: var(--muted); text-decoration: none; }
+.copy { cursor: pointer; color: var(--muted); }
+.copy:hover { color: var(--fg); }
+#drawer { position: fixed; top: 0; right: -560px; width: 540px; max-width: 94vw;
+  height: 100vh; background: var(--panel); border-left: 1px solid var(--line);
+  transition: right .18s ease; z-index: 30; overflow-y: auto; padding: 20px; }
+#drawer.open { right: 0; box-shadow: -18px 0 50px rgba(0,0,0,.5); }
+#drawer h3 { margin: 0 0 4px; font-size: 14px; }
+#drawer .kv { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px;
+  margin: 14px 0; font-size: 12.5px; }
+#drawer .kv dt { color: var(--muted); } #drawer .kv dd { margin: 0; word-break: break-all; }
+.forensics-run { border: 1px solid var(--line); border-radius: 9px; padding: 12px;
+  margin: 10px 0; background: var(--bg); }
+.forensics-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.forensics-head .btn { margin-left: auto; }
+.forensics-log { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px;
+  overflow-y: auto; padding: 10px; border-radius: 7px; background: var(--panel2);
+  color: var(--fg); font: 11px/1.55 "JetBrains Mono", ui-monospace, monospace; }
+.spark { display: flex; gap: 2px; padding: 8px 0 0; }
+/* Cap column width so a short history stays thin; a full 45-day window fills the row. */
+.spark .col { flex: 1 1 0; max-width: 26px; position: relative; }
+.spark .barbox { height: 60px; display: flex; align-items: flex-end; }
+.spark .b { width: 100%; background: var(--accent); opacity: .7;
+  border-radius: 2px 2px 0 0; min-height: 2px; }
+.spark .col:hover .b { opacity: 1; }
+.spark .d { color: var(--muted); font-size: 9px; text-align: center; margin-top: 3px;
+  font-family: "JetBrains Mono", ui-monospace, monospace; white-space: nowrap;
+  min-height: 12px; }
+.spark .col:hover::after { content: attr(data-tip); position: absolute;
+  bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
+  padding: 3px 9px; border-radius: 6px; font-size: 11px; white-space: nowrap;
+  z-index: 5; pointer-events: none; }
+.callout { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--warn);
+  border-radius: 8px; padding: 10px 14px; margin: 10px 0; color: var(--muted); }
+.bar { height: 6px; border-radius: 4px; background: var(--panel2); overflow: hidden; margin-top: 4px; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+.empty { color: var(--muted); padding: 18px; text-align: center; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; }
+footer { max-width: 1280px; margin: 0 auto; padding: 10px 20px 30px; color: var(--muted); font-size: 11px; }
+.est { border-bottom: 1px dotted var(--muted); cursor: help; }
+</style>
+</head>
+<body>
+<header><div class="hwrap">
+  <div class="brand">
+    <img src="/icon-192.png" alt="Cacheon"/>
+    <div>
+      <h1>Cacheon</h1>
+      <small>submissions · netuid 14</small>
+    </div>
+  </div>
+  <nav id="tabs"></nav>
+  <div id="meta"></div>
+</div></header>
+<main id="view"></main>
+<div id="drawer"></div>
+<footer>
+  <b>Cacheon</b> — the inference optimization arena on Bittensor netuid 14.
+  <a href="https://cacheon.ai" target="_blank" rel="noopener">cacheon.ai</a>
+  · <a href="https://github.com/latent-to/cacheon" target="_blank" rel="noopener">latent-to/cacheon</a>
+  · API docs at <a href="/docs">/docs</a>.<br/>
+  Read-only intake view. Times shown in your locale
+  (<span id="tz"></span>); dotted times are block-estimates pending exact chain lookup.
+</footer>
+<script>
+"use strict";
+const TABS = [
+  ["overview", "Overview"], ["queue", "Queue"], ["submissions", "Submissions"],
+  ["payments", "Payments"], ["winners", "Winners"], ["miners", "Miners"],
+  ["timeline", "Timeline"], ["system", "System"],
+];
+let tab = location.hash.replace("#", "") || "overview";
+let subFilters = { q: "", status: "", offset: 0 };
+let timer = null;
+
+document.getElementById("tz").textContent =
+  Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const short = (s, n = 10) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n) + "…" : s || "—"; };
+
+function fmtTime(t) {
+  if (!t || !t.time_unix) return '<span class="muted">—</span>';
+  const d = new Date(t.time_unix * 1000);
+  const str = d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  const cls = t.time_estimated ? ' class="est" title="estimated from block number"' : "";
+  return `<span${cls}>${esc(str)}</span>`;
+}
+function ago(unix) {
+  if (!unix) return "—";
+  let s = Math.max(0, Math.floor(Date.now() / 1000 - unix));
+  return dur(s) + " ago";
+}
+function dur(s) {
+  if (s == null) return "—";
+  s = Math.round(s);
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  return Math.floor(s / 86400) + "d " + Math.floor((s % 86400) / 3600) + "h";
+}
+function key(addr, links, n = 8) {
+  if (!addr) return '<span class="muted">—</span>';
+  const url = links && links.tao_app;
+  const inner = `<code title="${esc(addr)}">${esc(short(addr, n))}</code>`;
+  const cp = `<span class="copy" title="copy" onclick="navigator.clipboard.writeText('${esc(addr)}');this.textContent='✓';setTimeout(()=>this.textContent='⧉',900)">⧉</span>`;
+  return (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${inner}</a>` : inner) + " " + cp;
+}
+function blockLink(t, links) {
+  if (!t || !t.block) return '<span class="muted">—</span>';
+  const url = links && links.tao_app;
+  const b = Number(t.block).toLocaleString();
+  return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${b}</a>` : b;
+}
+const STATUS_TONE = {
+  qualified: "ok", promoted: "ok", crowned: "crown", published: "info",
+  screening: "info", qualifying: "info", reproduction_pending: "info",
+  reserved: "mute", deferred: "mute", fetching: "info", transport_retry: "warn",
+  held: "warn", no_decision: "warn", failed: "bad", expired: "mute",
+  active: "ok", completed: "ok", released: "mute", inactive: "warn",
+  confirmed: "ok", pending: "info",
+};
+const pill = (s) => `<span class="pill ${STATUS_TONE[s] || "mute"}">${esc(s || "—")}</span>`;
+
+async function api(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(path + " → " + res.status);
+  return res.json();
+}
+function table(headers, rowsHtml, empty) {
+  if (!rowsHtml.length) return `<div class="empty">${esc(empty || "Nothing here.")}</div>`;
+  return `<table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+    <tbody>${rowsHtml.join("")}</tbody></table>`;
+}
+const card = (v, label, tone = "") =>
+  `<div class="card ${tone}"><b>${v}</b><span>${esc(label)}</span></div>`;
+
+/* ---------------- tabs ---------------- */
+function renderTabs() {
+  $("#tabs").innerHTML = TABS.map(([id, label]) =>
+    `<button class="${id === tab ? "on" : ""}" onclick="go('${id}')">${label}</button>`).join("");
+}
+window.go = (id) => { tab = id; location.hash = id; renderTabs(); refresh(); };
+
+async function updateMeta() {
+  try {
+    const h = await api("/api/health");
+    const chainDot = `<span class="dot" style="background:var(--${h.chain.ok ? "ok" : "bad"})"></span>`;
+    const dbDot = `<span class="dot" style="background:var(--${h.db.ok ? "ok" : "bad"})"></span>`;
+    const tip = h.chain.tip && h.chain.tip.block
+      ? "tip " + Number(h.chain.tip.block).toLocaleString() : "tip —";
+    const lag = h.intake_lag_blocks == null ? "" :
+      ` · intake lag ${h.intake_lag_blocks} blk`;
+    $("#meta").innerHTML = `${dbDot}db ${chainDot}chain · ${tip}${lag}`;
+  } catch { $("#meta").innerHTML = '<span class="pill bad">api unreachable</span>'; }
+}
+
+/* ---------------- views ---------------- */
+async function viewOverview() {
+  const [o, q] = await Promise.all([api("/api/overview"), api("/api/queue")]);
+  const t = o.totals;
+  const days = o.submissions_per_day || [];
+  const max = Math.max(1, ...days.map((d) => d.count));
+  const shown = days.slice(-45);
+  const labelStep = Math.ceil(shown.length / 15); // avoid crowding on long histories
+  const spark = shown.map((d, i) => `
+    <div class="col" data-tip="${d.day} · ${d.count} submission${d.count === 1 ? "" : "s"}">
+      <div class="barbox"><div class="b" style="height:${Math.max(3, (d.count / max) * 100)}%"></div></div>
+      <div class="d">${i % labelStep === 0 ? d.day.slice(5) : ""}</div>
+    </div>`).join("");
+  const reasons = (o.failure_reasons || []).map((r) => `<tr>
+      <td class="mono small">${esc(short(r.reason || "(no reason)", 70))}</td>
+      <td>${r.n}<div class="bar"><i style="width:${(r.n / (o.failure_reasons[0].n || 1)) * 100}%"></i></div></td>
+    </tr>`);
+  const lease = (q.active_leases || [])[0];
+  return `
+    <div class="cards">
+      ${card(t.submissions, "total submissions")}
+      ${card(t.active, "in pipeline", t.active ? "info" : "")}
+      ${card(t.held, "held", t.held ? "warn" : "")}
+      ${card(t.qualified, "qualified", "ok")}
+      ${card(t.crowned, "crowned (winners)", "crown")}
+      ${card(t.failed, "failed", t.failed ? "bad" : "")}
+      ${card(t.expired, "expired")}
+      ${card(t.unique_hotkeys, "unique hotkeys")}
+      ${card(t.active_leases, "running evals", t.active_leases ? "ok" : "")}
+      ${card(t.payments_tao.toFixed(0) + " τ", t.payments_count + " eval-fee payments", "info")}
+    </div>
+    ${lease ? `<div class="callout" style="border-left-color:var(--ok)">
+      <b style="color:var(--fg)">Eval running now:</b>
+      ${pill(lease.stage)} <code>${esc(short(lease.reservation_id, 12))}</code>
+      on <b>${esc(lease.target_id || "—")}</b> (${esc(lease.target_summary)}) ·
+      running ${dur(lease.running_seconds)} · lease expires in ${dur(lease.remaining_seconds)}
+    </div>` : `<div class="callout">No evaluation lease active right now.</div>`}
+    <h2>Submissions per day (UTC)</h2>
+    <div class="spark">${spark || '<span class="muted">no data yet</span>'}</div>
+    <div class="grid2">
+      <div><h2>Status breakdown</h2>
+        ${table(["Status", "Count"], Object.entries(o.counts)
+          .filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1])
+          .map(([s, n]) => `<tr><td>${pill(s)}</td><td>${n}</td></tr>`))}
+      </div>
+      <div><h2>Top failure reasons</h2>${table(["Reason", "Count"], reasons)}</div>
+    </div>`;
+}
+
+async function viewQueue() {
+  const q = await api("/api/queue");
+  const active = (q.active_leases || []).map((l) => `<tr>
+    <td>${pill(l.stage)}</td>
+    <td><code>${esc(short(l.reservation_id, 12))}</code></td>
+    <td>${esc(l.target_id || "—")}<div class="muted small">${esc(l.target_summary)}</div></td>
+    <td>${key(l.hotkey, { tao_app: "https://www.tao.app/portfolio/" + l.hotkey })}</td>
+    <td>${fmtTime(l.claimed)}<div class="muted small">running ${dur(l.running_seconds)}</div></td>
+    <td>${l.remaining_blocks ?? "—"} blk<div class="muted small">≈ ${dur(l.remaining_seconds)}</div></td>
+    <td>gen ${l.generation} ${pill(l.reservation_status)}</td></tr>`);
+  const pending = (q.pending || []).map((s) => `<tr class="clickable" onclick="openDetail('${s.reservation_id}')">
+    <td>${s.queue_position}</td>
+    <td><code>${esc(short(s.reservation_id, 12))}</code></td>
+    <td>${pill(s.status)}</td>
+    <td>${esc(s.target_id || "—")}</td>
+    <td>${key(s.hotkey, s.hotkey_links)}</td>
+    <td>${fmtTime(s.submitted)}<div class="muted small">waiting ${dur(s.waiting_seconds)}</div></td>
+    <td>${s.payment ? '<span class="pill ok">1 τ paid</span>' : '<span class="pill mute">unpaid</span>'}</td>
+    <td>${esc(s.screen_status || "—")} <span class="muted small">×${s.screen_attempts}</span></td>
+    <td class="small muted">${esc(short(s.reason, 46))}</td></tr>`);
+  const gpu = (q.gpu_requests || []).map((r) => `<tr>
+    <td><code>${esc(r.request_id)}</code></td>
+    <td>${r.queued_unix ? ago(r.queued_unix) : "—"}</td>
+    <td>${r.deadline_unix ? fmtTime({ time_unix: r.deadline_unix }) : "—"}</td>
+    <td>${esc(r.kind || "—")}</td></tr>`);
+  const recent = (q.recent_leases || []).map((l) => `<tr>
+    <td>${pill(l.stage)}</td><td>${pill(l.state)}</td>
+    <td>${fmtTime(l.claimed)}</td>
+    <td class="small muted">${esc(short(l.reason, 60))}</td></tr>`);
+  const sup = q.supervisor || {}, hb = q.gpu_heartbeat || {};
+  return `
+    <div class="cards">
+      ${card(q.pending.length, "pending in queue", q.pending.length ? "info" : "")}
+      ${card(q.active_leases.length, "running evals", q.active_leases.length ? "ok" : "")}
+      ${card(q.gpu_requests.length, "GPU requests in spool")}
+      ${card(esc(sup.phase || "—"), "supervisor phase")}
+      ${card(hb.age_s != null ? dur(hb.age_s) : "—", "GPU heartbeat age",
+             hb.age_s > 120 ? "warn" : "ok")}
+    </div>
+    <h2>Running evaluations (wall clock)</h2>
+    ${table(["Stage","Reservation","Target","Hotkey","Started","Lease left","State"], active,
+      "No active evaluation lease.")}
+    <h2>Pending submissions (queue order)</h2>
+    ${table(["#","Reservation","Status","Target","Hotkey","Submitted","Fee","Screen","Reason"], pending,
+      "Queue is empty — no active-pipeline submissions.")}
+    <div class="grid2">
+      <div><h2>GPU spool requests</h2>${table(["Request","Queued","Deadline","Kind"], gpu, "Spool outbox empty.")}</div>
+      <div><h2>Recently finished leases</h2>${table(["Stage","State","Claimed","Reason"], recent, "None.")}</div>
+    </div>
+    <p class="muted small">Supervisor: ${esc(sup.phase || "—")} / ${esc(sup.last_stage || "—")}
+      ${sup.time_unix ? "· " + ago(sup.time_unix) : ""}
+      ${sup.hold_reason ? "· hold: " + esc(sup.hold_reason) : ""} ·
+      GPU adapter ${hb.adapter_alive ? "alive" : "not running"} ·
+      active request ${esc(short(hb.active_request_id, 14))}</p>`;
+}
+
+async function viewSubmissions() {
+  const params = new URLSearchParams({ limit: 50, offset: subFilters.offset });
+  if (subFilters.q) params.set("q", subFilters.q);
+  if (subFilters.status) params.set("status", subFilters.status);
+  const d = await api("/api/submissions?" + params);
+  const rows = d.items.map((s) => `<tr class="clickable" onclick="openDetail('${s.reservation_id}')">
+    <td><code>${esc(short(s.reservation_id, 12))}</code></td>
+    <td>${pill(s.status)}</td>
+    <td>${key(s.hotkey, s.hotkey_links)}</td>
+    <td>${fmtTime(s.submitted)}</td>
+    <td>${blockLink(s.submitted, s.block_links)}</td>
+    <td>${esc(s.target_id || "—")}</td>
+    <td>${s.payment
+        ? `<a href="${esc(s.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(s.payment.ref)}</a>`
+        : '<span class="muted">—</span>'}</td>
+    <td>${esc(s.screen_status || "—")}</td>
+    <td>${esc(s.decision || "—")}</td>
+    <td class="small muted" title="${esc(s.reason)}">${esc(short(s.reason || s.invalid_reason, 44))}</td>
+  </tr>`);
+  const statuses = ["", "published", "promoted", "screening", "qualifying", "held",
+    "qualified", "failed", "expired", "reserved", "deferred"];
+  const page = Math.floor(subFilters.offset / 50) + 1;
+  const pages = Math.max(1, Math.ceil(d.total / 50));
+  return `
+    <div class="toolbar">
+      <input type="text" id="subq" placeholder="Search id / hotkey / hash / target / reason…"
+        value="${esc(subFilters.q)}" onkeydown="if(event.key==='Enter'){subFilters.q=this.value;subFilters.offset=0;refresh();}"/>
+      <select onchange="subFilters.status=this.value;subFilters.offset=0;refresh();">
+        ${statuses.map((s) => `<option value="${s}" ${s === subFilters.status ? "selected" : ""}>${s || "all statuses"}</option>`).join("")}
+      </select>
+      <span class="muted small">${d.total} match${d.total === 1 ? "" : "es"}</span>
+      <span style="margin-left:auto"></span>
+      <button class="btn" ${subFilters.offset ? "" : "disabled"}
+        onclick="subFilters.offset=Math.max(0,subFilters.offset-50);refresh();">‹ Prev</button>
+      <span class="muted small">page ${page}/${pages}</span>
+      <button class="btn" ${subFilters.offset + 50 < d.total ? "" : "disabled"}
+        onclick="subFilters.offset+=50;refresh();">Next ›</button>
+    </div>
+    ${table(["Reservation","Status","Hotkey","Submitted","Block","Target","Fee tx","Screen","Decision","Detail"],
+      rows, "No submissions match.")}`;
+}
+
+async function viewPayments() {
+  const d = await api("/api/payments");
+  const rows = d.items.map((p) => `<tr>
+    <td><a href="${esc(p.links.tao_app)}" target="_blank" rel="noopener"><code>${esc(p.ref)}</code></a></td>
+    <td>${fmtTime(p.payment)}</td>
+    <td>${p.amount_tao.toFixed(2)} τ</td>
+    <td>${p.coldkey ? key(p.coldkey, p.coldkey_links) : '<span class="pill mute" title="resolving from chain…">resolving…</span>'}</td>
+    <td>${key(p.hotkey, p.hotkey_links)}</td>
+    <td>${p.applied ? '<span class="pill ok">applied</span>' : '<span class="pill warn">recorded</span>'}
+        <span class="pill mute">consumed</span></td>
+    <td>${pill(p.outcome)}<div class="muted small">${esc(short(p.outcome_reason, 40))}</div></td>
+    <td class="clickable" onclick="openDetail('${p.reservation_id}')">
+      <code>${esc(short(p.reservation_id, 12))}</code>
+      <div class="muted small">${esc(p.target_id || "")}</div></td>
+  </tr>`);
+  const credits = (d.credits || []).map((c) => `<tr>
+    <td><code>${esc(short(c.credit_id, 12))}</code></td>
+    <td>${key(c.hotkey, { tao_app: "https://www.tao.app/portfolio/" + c.hotkey })}</td>
+    <td>${c.amount_tao.toFixed(2)} τ</td>
+    <td>${c.spent ? '<span class="pill mute">spent</span>' : '<span class="pill ok">available</span>'}</td>
+    <td class="small muted">${esc(c.note || "—")}</td></tr>`);
+  return `
+    <div class="callout">Each admitted submission costs <b style="color:var(--fg)">1 τ</b>, paid by the miner's
+      coldkey to the subnet owner ${d.destination_coldkey
+        ? key(d.destination_coldkey, d.destination_links, 12) : ""} via
+      <code>Balances.transfer_keep_alive</code> + remark in a <code>Utility.batch_all</code>.
+      A row below means intake verified and consumed the payment. “Applied” = it admitted the linked
+      submission; the outcome column shows where that submission ended up.</div>
+    <h2>Eval-cost payments</h2>
+    ${table(["Tx ref (block-extrinsic)","Time","Amount","Paying coldkey","Miner hotkey","Payment status","Submission outcome","Reservation"],
+      rows, "No eval-cost payments recorded yet.")}
+    <h2>Operator credits</h2>
+    ${table(["Credit","Hotkey","Amount","State","Note"], credits, "No operator-granted eval credits.")}`;
+}
+
+async function viewWinners() {
+  const d = await api("/api/winners");
+  const rows = d.items.map((w) => {
+    const hc = w.hotkey_chain || {};
+    return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
+    <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div></td>
+    <td>${w.improvement_pct != null ? `<b style="color:var(--accent)">+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
+        <div class="muted small">${w.speedup ? w.speedup.toFixed(5) + "× primary" : ""}
+        ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
+    <td>${key(w.hotkey, w.hotkey_links)}</td>
+    <td>${fmtTime(w.crowned)}<div class="muted small">block ${blockLink(w.crowned, w.crowned_links)}</div></td>
+    <td>${pill(w.reward_claim_status)}</td>
+    <td>${hc.registered
+        ? `<span class="pill ok">uid ${hc.uid}</span>
+           <div class="small">${hc.emission_tao_per_day != null ? hc.emission_tao_per_day.toFixed(4) + " τ/day" : "—"}</div>
+           <div class="muted small">incentive ${hc.incentive != null ? hc.incentive.toFixed(4) : "—"}</div>`
+        : '<span class="pill bad">deregistered</span>'}</td>
+  </tr>`;});
+  return `
+    ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
+    <h2>Crowned improvements</h2>
+    ${table(["Improved op","Improvement","Winner hotkey","Crowned","Reward claim","On-chain now (emission)"],
+      rows, "No crowned winners yet.")}`;
+}
+
+async function viewMiners() {
+  const d = await api("/api/miners");
+  const rows = d.items.map((m) => `<tr>
+    <td>${key(m.hotkey, m.hotkey_links)}</td>
+    <td>${m.registered ? `<span class="pill ok">uid ${m.uid}</span>` : '<span class="pill mute">not registered</span>'}</td>
+    <td><b>${m.submissions}</b></td>
+    <td>${m.crowned ? `<span class="pill crown">${m.crowned}</span>` : "—"}</td>
+    <td>${m.qualified || 0}</td>
+    <td>${m.active || 0}</td>
+    <td>${m.held || 0}</td>
+    <td>${m.failed || 0} <span class="muted">/ ${m.expired || 0}</span></td>
+    <td>${m.paid || 0}</td>
+    <td>${fmtTime(m.first_seen)}</td>
+    <td>${fmtTime(m.last_seen)}</td>
+    <td>${m.emission_tao_per_day != null ? m.emission_tao_per_day.toFixed(4) + " τ/d" : "—"}</td>
+  </tr>`);
+  return `<h2>Miners (by hotkey)</h2>
+    ${table(["Hotkey","Registered","Subs","Crowns","Qualified","Active","Held","Failed / expired","Paid fees","First seen","Last seen","Emission"],
+      rows, "No submissions yet.")}`;
+}
+
+async function viewTimeline() {
+  const [ev, w] = await Promise.all([api("/api/events?limit=200"), api("/api/weights?limit=20")]);
+  const tone = { CROWN: "crown", ADOPTION: "ok", HOLD: "warn", STACK_TRANSITION: "info" };
+  const rows = ev.items.map((e) => `<tr>
+    <td class="muted">#${e.sequence}</td>
+    <td><span class="pill ${tone[e.event_type] || "mute"}">${esc(e.event_type)}</span></td>
+    <td>${e.when ? fmtTime(e.when) : '<span class="muted">—</span>'}</td>
+    <td>${esc(e.target_id)}<div class="muted small">${esc(e.target_summary)}</div></td>
+    <td class="small muted">${esc(e.reason || "—")}</td>
+    <td class="clickable" onclick="openDetail('${e.reservation_id}')"><code>${esc(short(e.reservation_id, 12))}</code></td>
+  </tr>`);
+  const wRows = w.items.map((x) => `<tr>
+    <td class="muted">#${x.sequence}</td><td>${pill(x.status)}</td>
+    <td>${x.submit_block ? Number(x.submit_block).toLocaleString() : "—"}</td>
+    <td>${x.confirmed_block ? Number(x.confirmed_block).toLocaleString() : "—"}</td>
+    <td class="small muted">${esc(short(x.reason, 60))}</td></tr>`);
+  return `
+    <h2>Settlement events</h2>
+    ${table(["Seq","Event","When","Target","Reason","Reservation"], rows, "No settlement events yet.")}
+    <h2>Weight publications (latest)</h2>
+    ${table(["Seq","Status","Submit block","Confirmed","Reason"], wRows, "No weight publications.")}`;
+}
+
+async function viewSystem() {
+  const h = await api("/api/health");
+  const procs = h.processes.map((p) => `<tr>
+    <td>${esc(p.name)}</td>
+    <td>${p.up ? '<span class="pill ok">up</span>' : '<span class="pill bad">down</span>'}</td></tr>`);
+  const hb = h.gpu_heartbeat || {};
+  return `
+    <div class="cards">
+      ${card(h.db.ok ? "ok" : "down", "intake DB", h.db.ok ? "ok" : "bad")}
+      ${card(h.chain.ok ? "ok" : "down", "chain RPC", h.chain.ok ? "ok" : "bad")}
+      ${card(h.chain.tip.block ? Number(h.chain.tip.block).toLocaleString() : "—", "finalized tip")}
+      ${card(h.intake_lag_blocks ?? "—", "intake lag (blocks)",
+        h.intake_lag_blocks > 40 ? "warn" : "ok")}
+      ${card(hb.age_s != null ? dur(hb.age_s) : "—", "GPU heartbeat", hb.age_s > 120 ? "warn" : "ok")}
+      ${card(h.chain.metagraph_age_s != null ? dur(h.chain.metagraph_age_s) : "—", "metagraph age")}
+    </div>
+    <div class="grid2">
+      <div><h2>Processes (CPU VM)</h2>${table(["Component","State"], procs)}</div>
+      <div><h2>Detail</h2>
+        <dl class="kv" style="display:grid;grid-template-columns:170px 1fr;gap:4px 12px">
+          <dt class="muted">Network</dt><dd class="mono small">netuid ${h.chain.netuid}</dd>
+          <dt class="muted">Worker epoch</dt><dd class="mono small">${esc(h.worker_epoch || "—")}</dd>
+          <dt class="muted">GPU state</dt><dd class="mono small">${esc(hb.state || "—")} · adapter ${hb.adapter_alive ? "alive" : "off"} · req ${esc(short(hb.active_request_id, 16))}</dd>
+          <dt class="muted">Audit updated</dt><dd class="mono small">${h.intake_finalized.audit_mtime_unix ? ago(h.intake_finalized.audit_mtime_unix) : "—"}</dd>
+        </dl>
+      </div>
+    </div>`;
+}
+
+/* ---------------- detail drawer ---------------- */
+window.openDetail = async (rid) => {
+  const el = $("#drawer");
+  el.innerHTML = '<p class="muted">Loading…</p>';
+  el.classList.add("open");
+  let d;
+  try { d = await api("/api/submissions/" + rid); }
+  catch { el.innerHTML = '<p class="muted">Not found.</p>'; return; }
+  const kv = (k, v) => `<dt>${esc(k)}</dt><dd>${v}</dd>`;
+  const settle = d.settlement ? `
+    <h2>Settlement</h2><dl class="kv">
+      ${kv("Status", pill(d.settlement.status))}
+      ${kv("Speedup (primary)", d.settlement.speedup_primary ? d.settlement.speedup_primary.toFixed(6) + "×" : "—")}
+      ${kv("Speedup (repro)", d.settlement.speedup_reproduction ? d.settlement.speedup_reproduction.toFixed(6) + "×" : "—")}
+      ${kv("Crowned", fmtTime(d.settlement.crowned))}
+      ${kv("Reason", esc(d.settlement.reason || "—"))}
+    </dl>` : "";
+  const screens = (d.screen_attempts_history || []).map((a) =>
+    `<tr><td>#${a.attempt}</td><td>${pill(a.decision)}</td><td>${esc(a.lane)}</td><td>${a.stage_count} stages</td></tr>`);
+  const quals = (d.qualification_attempts || []).map((a) =>
+    `<tr><td>#${a.attempt}</td><td>${pill(a.decision)}</td><td class="small muted">${esc(short(a.reason, 60))}</td></tr>`);
+  const leases = (d.leases || []).map((l) =>
+    `<tr><td>${pill(l.stage)}</td><td>${pill(l.state)}</td><td>${fmtTime(l.claimed)}</td>
+     <td class="small muted">${esc(short(l.reason, 40))}</td></tr>`);
+  const forensicRuns = (d.forensics || []).map((r) => {
+    const log = r.worker_log;
+    if (!log) return `<div class="forensics-run">
+      <div class="forensics-head"><code>${esc(short(r.request_id, 16))}</code>
+        ${pill(r.result_state || "no result")}</div>
+      <p class="muted small">${esc(r.worker_log_state || "No request log was retained.")}</p>
+    </div>`;
+    const complete = log.retention === "complete";
+    return `<div class="forensics-run">
+      <div class="forensics-head"><code>${esc(short(r.request_id, 16))}</code>
+        ${pill(r.result_state || "no result")}
+        <span class="pill ${complete ? "ok" : "warn"}">${esc(log.retention)} logs</span>
+        <a class="btn" href="${esc(log.download_url)}">Download ${complete ? "full" : "retained"} raw output (.log)</a>
+      </div>
+      <p class="muted small">Worker log ${Number(log.size).toLocaleString()} bytes · sha256 <code>${esc(short(log.sha256, 18))}</code></p>
+      <pre class="forensics-log">${esc((log.explanation || []).join("\n"))}</pre>
+    </div>`;
+  }).join("");
+  const forensics = `<h2>What happened in evaluation</h2>
+    ${d.forensics_error ? `<div class="callout">Forensics unreadable: ${esc(d.forensics_error)}</div>` :
+      forensicRuns || '<div class="empty">No request-scoped log was retained for this submission. Older evaluations predate worker-log retention.</div>'}
+    ${forensicRuns ? '<p class="muted small">The download contains the exact request-scoped adapter diagnostics and engine stdout/stderr. Engine stdout is redirected into this retained diagnostic stream after the framed protocol channel is reserved. A partial badge means a stream was truncated or removed before sealing.</p>' : ""}`;
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:start">
+      <div><h3>Submission</h3><code class="small">${esc(d.reservation_id)}</code></div>
+      <button class="btn" onclick="document.getElementById('drawer').classList.remove('open')">✕ close</button>
+    </div>
+    <dl class="kv">
+      ${kv("Status", pill(d.status) + (d.decision ? " " + pill(d.decision) : ""))}
+      ${kv("Reason", esc(d.reason || d.invalid_reason || "—"))}
+      ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
+      ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}
+      ${kv("Target", esc(d.target_id || "—") + `<div class="muted small">${esc(d.target_summary)}</div>`)}
+      ${kv("Content hash", `<code class="small">${esc(short(d.content_hash, 26))}</code>`)}
+      ${kv("Eval fee", d.payment
+          ? `<a href="${esc(d.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(d.payment.ref)}</a> · ${fmtTime(d.payment)}`
+          : "unpaid / pre-fee")}
+      ${kv("Screen", esc(d.screen_status || "—") + " · lane " + esc(d.screen_lane || "—") + " · attempts " + d.screen_attempts)}
+      ${kv("Transport attempts", d.transport_attempts)}
+      ${kv("Admission epoch", d.admission_epoch)}
+    </dl>
+    ${settle}
+    ${screens.length ? "<h2>Screen attempts</h2>" + table(["#","Decision","Lane","Stages"], screens) : ""}
+    ${quals.length ? "<h2>Qualification attempts</h2>" + table(["#","Decision","Reason"], quals) : ""}
+    ${leases.length ? "<h2>Evaluation leases</h2>" + table(["Stage","State","Claimed","Reason"], leases) : ""}
+    ${forensics}`;
+};
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") $("#drawer").classList.remove("open");
+});
+
+/* ---------------- refresh loop ---------------- */
+const VIEWS = { overview: viewOverview, queue: viewQueue, submissions: viewSubmissions,
+  payments: viewPayments, winners: viewWinners, miners: viewMiners,
+  timeline: viewTimeline, system: viewSystem };
+
+async function refresh() {
+  clearTimeout(timer);
+  updateMeta();
+  const view = $("#view");
+  try {
+    view.innerHTML = await VIEWS[tab]();
+  } catch (err) {
+    view.innerHTML = `<div class="empty">Failed to load: ${esc(err.message)}</div>`;
+  }
+  timer = setTimeout(refresh, 15000);
+}
+renderTabs();
+refresh();
+</script>
+</body>
+</html>

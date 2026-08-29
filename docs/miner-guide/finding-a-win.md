@@ -88,9 +88,8 @@ problems. So are TP topologies with and without fast peer links.
 
 For attention work:
 
-- `attention.msa_block_score` defines a decode-side block-score boundary, but
-  it is unavailable in the current MiniMax-M3 arena because no installing
-  decode adapter exists;
+- `attention.msa_block_score` owns paged per-index-head decode scores while
+  stock code retains top-k and attend;
 - `attention.msa_prefill_block_score` is the batched paged long-prefill
   score-to-selection boundary;
 - an optimization to one should not be measured on a workload dominated by the

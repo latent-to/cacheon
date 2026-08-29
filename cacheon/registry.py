@@ -32,6 +32,7 @@ from cacheon.capabilities import (
     capability_domain_from_metadata,
     canonical_value,
 )
+from cacheon import receipts as _receipts
 from cacheon.manifest import DEFAULT_VARIANT
 
 
@@ -47,15 +48,6 @@ class Eligibility:
     dtypes: frozenset[str] = frozenset()
     architectures: frozenset[str] = frozenset()
     max_last_dim: Optional[int] = None  # cap on x.shape[-1]
-    # The miner DECLARES the kernel is CUDA-graph-capturable: static shapes, no host
-    # syncs (.item()/.cpu()), no data-dependent Python control flow, writes only to the
-    # validator-allocated buffer. Required to run the block/collective seams under the
-    # scoring config (graphs ON) — that is the ONLY regime a real MoE/comms win is worth
-    # anything in (graphs-off cripples the baseline ~4.5-6.5x). Default False: an
-    # undeclared kernel stays eager-only (so it can't wedge graph capture); the seam
-    # falls back to the trusted baseline in-graph. A kernel that lies (declares graph_safe
-    # but isn't) either errors at capture -> fallback, or is caught by the fidelity gate.
-    graph_safe: bool = False
     # The quantization formats this kernel's (prepare, forward) handle, e.g.
     # ``{"nvfp4"}`` or ``{"fp8"}``. EMPTY (default) means the kernel takes DENSE
     # (unquantized) expert weights only. The MoE dispatcher pairs a kernel to a layer
@@ -118,41 +110,6 @@ class Eligibility:
         ):
             raise ValueError("min_num_tokens must not exceed max_num_tokens")
 
-    def accepts(self, *, dtype_name: str, last_dim: int, arch: Optional[str],
-                num_tokens: Optional[int] = None) -> bool:
-        try:
-            dtype_name = str(canonical_value("dtype", dtype_name))
-            arch = (
-                None
-                if arch is None
-                else str(canonical_value("architecture", arch))
-            )
-        except (TypeError, ValueError):
-            return False
-        if self.dtypes and dtype_name not in self.dtypes:
-            return False
-        if self.architectures and arch is not None and arch not in self.architectures:
-            return False
-        if self.max_last_dim is not None and last_dim > self.max_last_dim:
-            return False
-        if (self.max_num_tokens is not None and num_tokens is not None
-                and num_tokens > self.max_num_tokens):
-            return False
-        if (self.min_num_tokens is not None and num_tokens is not None
-                and num_tokens < self.min_num_tokens):
-            return False
-        # New normative predicates fail closed on missing live fields.  The
-        # legacy bridge provides the fields old dispatchers already know; a
-        # capability such as head_dim intentionally remains ineligible until its
-        # validator-owned arena binding supplies head_dim.
-        descriptor = CallDescriptor.from_legacy(
-            dtype_name=dtype_name,
-            last_dim=last_dim,
-            arch=arch,
-            num_tokens=num_tokens,
-        )
-        return self.capabilities.match(descriptor).accepted
-
     def match(self, descriptor: CallDescriptor) -> CapabilityMatch:
         """Match a complete canonical descriptor, including legacy constraints.
 
@@ -207,9 +164,6 @@ class Eligibility:
                 _outside("quant", f"one of {sorted(self.quant)!r}", descriptor["quant"])
         elif descriptor.get("quant") not in (None, "dense"):
             _outside("quant", "dense", descriptor["quant"])
-        if descriptor.get("graph_mode") == "cuda_graph" and not self.graph_safe:
-            _outside("graph_mode", "eager (graph_safe is false)", "cuda_graph")
-
         mismatches.extend(self.capabilities.match(descriptor).mismatches)
         # A field may be constrained by both legacy and new metadata.  Preserve
         # the intersection semantics but avoid duplicate identical diagnostics.
@@ -290,8 +244,6 @@ def _add_eligibility_constraints(
             eligibility.min_num_tokens, eligibility.max_num_tokens
         )
     _field("quant").allow(set(eligibility.quant) or {"dense"})
-    if not eligibility.graph_safe:
-        _field("graph_mode").excluded.add("cuda_graph")
 
     complete = True
     for predicate in eligibility.capabilities.predicates:
@@ -405,12 +357,6 @@ class SelectionDecision:
         return not self.use_candidate
 
 
-# Slots whose miner impl was SELECTED at least once in this process — guards the
-# one-time routing-only "fired" receipt. This event is deliberately not evidence
-# that candidate execution completed; stronger execution accounting is a separate
-# referee-hardening layer.
-_FIRED_SLOTS: set[tuple[str, str]] = set()
-
 
 class KernelRegistry:
     """Process-global registry. One active bundle at a time (MVP)."""
@@ -421,7 +367,6 @@ class KernelRegistry:
         # match a call or stock is served.
         self._by_slot: dict[str, list[KernelImpl]] = {}
         self._active: bool = False
-        self._strict: bool = False  # if True, a kernel exception aborts instead of falling back
         self._lock = threading.Lock()
 
     # ---- registration (validator-side) ----
@@ -474,21 +419,12 @@ class KernelRegistry:
     def active(self) -> bool:
         return self._active
 
-    @property
-    def strict(self) -> bool:
-        return self._strict
-
-    def set_strict(self, value: bool) -> None:
-        self._strict = value
-
     # ---- lookup (dispatcher-side, hot path) ----
 
     def select(
         self,
         slot: str,
         descriptor: CallDescriptor,
-        *,
-        write_fired_receipt: bool = True,
     ) -> SelectionDecision:
         """Choose candidate or baseline for a canonical live call.
 
@@ -519,6 +455,13 @@ class KernelRegistry:
         if not accepted:
             only_impl = variants[0] if len(variants) == 1 else None
             only_match = variant_matches[0].match if len(variants) == 1 else None
+            _receipts.not_selected(
+                slot,
+                SelectionOutcome.OUT_OF_DOMAIN.value,
+                # Every variant's reasons, deduplicated by the receipt: with two
+                # variants the useful answer is why BOTH declined, not why one did.
+                {m for row in variant_matches for m in row.match.mismatches},
+            )
             return SelectionDecision(
                 slot,
                 descriptor,
@@ -531,6 +474,9 @@ class KernelRegistry:
             # Registration catches every overlap expressible in today's public
             # capability vocabulary.  This remains the authoritative guard for
             # future/private predicates whose intersection was not provable then.
+            _receipts.not_selected(
+                slot, SelectionOutcome.AMBIGUOUS.value, ()
+            )
             return SelectionDecision(
                 slot,
                 descriptor,
@@ -538,8 +484,6 @@ class KernelRegistry:
                 variant_matches=variant_matches,
             )
         impl, match = accepted[0]
-        if write_fired_receipt:
-            self._write_fired_once(slot)
         return SelectionDecision(
             slot,
             descriptor,
@@ -548,84 +492,6 @@ class KernelRegistry:
             capability_match=match,
             variant_matches=variant_matches,
         )
-
-    @staticmethod
-    def _write_fired_once(slot: str) -> None:
-        from cacheon import receipts
-
-        key = (receipts.current_scope(), slot)
-        if key not in _FIRED_SLOTS:
-            # First time this process SELECTS the miner impl for this slot. This proves
-            # routing only: eligibility/graph checks and the call itself may still fail
-            # or decline downstream.
-            _FIRED_SLOTS.add(key)
-            receipts.write("fired", {"slot": slot}, tag=slot)
-
-    def lookup(
-        self, slot: str, *, dtype_name: str, last_dim: int, arch: Optional[str],
-        num_tokens: Optional[int] = None
-    ) -> Optional[KernelImpl]:
-        # Preserve the old API's special case: unknown architecture and token
-        # count do not reject legacy fields.  New normative capability fields are
-        # still checked (and missing ones fail closed) by Eligibility.accepts.
-        impl = self._legacy_select(
-            slot,
-            dtype_name=dtype_name,
-            last_dim=last_dim,
-            arch=arch,
-            num_tokens=num_tokens,
-        )
-        if impl is None:
-            return None
-        self._write_fired_once(slot)
-        return impl
-
-    def peek(
-        self, slot: str, *, dtype_name: str, last_dim: int, arch: Optional[str],
-        num_tokens: Optional[int] = None
-    ) -> Optional[KernelImpl]:
-        """Eligibility probe WITHOUT the 'fired' receipt. For pre-flight gates (the
-        deep export seam asks "would the consume kernel run?" before arming
-        skip-finalize) — 'fired' must keep meaning "the miner entry was actually
-        selected at a call site", so probes must not write it."""
-        return self._legacy_select(
-            slot,
-            dtype_name=dtype_name,
-            last_dim=last_dim,
-            arch=arch,
-            num_tokens=num_tokens,
-        )
-
-    def _legacy_select(
-        self,
-        slot: str,
-        *,
-        dtype_name: str,
-        last_dim: int,
-        arch: Optional[str],
-        num_tokens: Optional[int],
-    ) -> Optional[KernelImpl]:
-        """Compatibility selection for integrations not yet on CallDescriptor.
-
-        The historical allowance for an unknown architecture/token count is
-        preserved by using Eligibility.accepts.  Multiple variants are still
-        fail-closed: old bindings may route only when their limited descriptor
-        identifies exactly one implementation.
-        """
-        if not self._active:
-            return None
-        variants = self._by_slot.get(slot, ())
-        matches = [
-            impl
-            for impl in variants
-            if impl.eligibility.accepts(
-                dtype_name=dtype_name,
-                last_dim=last_dim,
-                arch=arch,
-                num_tokens=num_tokens,
-            )
-        ]
-        return matches[0] if len(matches) == 1 else None
 
     def variants(self, slot: str) -> tuple[KernelImpl, ...]:
         """Return registered variants for ``slot`` in deterministic load order."""
@@ -659,10 +525,6 @@ def eligibility_from_metadata(
         if any(not isinstance(value, str) or not value.strip() for value in values):
             raise ValueError(f"metadata {name!r} must contain non-empty strings")
         return {value for value in values}
-
-    graph_safe = meta.get("graph_safe", False)
-    if not isinstance(graph_safe, bool):
-        raise ValueError("metadata 'graph_safe' must be a boolean")
 
     def _canonical_declared(
         field_name: str, values: set[str] | tuple[str, ...]
@@ -709,7 +571,6 @@ def eligibility_from_metadata(
         dtypes=frozenset(dtypes),
         architectures=frozenset(archs),
         max_last_dim=_optional_bound("max_last_dim"),
-        graph_safe=graph_safe,
         quant=frozenset(_string_values("quant")),
         max_num_tokens=_optional_bound("max_num_tokens"),
         min_num_tokens=_optional_bound("min_num_tokens"),

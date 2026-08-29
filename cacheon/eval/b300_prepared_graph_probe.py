@@ -703,7 +703,6 @@ def _execute_variant(root: Path, op: OpEntry, policy: PreparedGraphProbePolicy) 
         "model_key": policy.model_profile_key,
         "bundle_path": str(root),
         "variant_name": op.variant,
-        "graph_safe": True,
         "graph_replays": policy.expected_graph_replays,
         "tp_size": policy.tp_size,
     }

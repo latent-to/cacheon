@@ -15,6 +15,9 @@ from cacheon.chain import remote_worker_spool as spool
 from cacheon.chain.publication import reopen_worker_bundle
 from cacheon.eval import b300_publication_intake as publication_intake
 from cacheon.eval import b300_remote_worker_adapter as adapter
+from tests.support.b300 import (
+    qualification_capabilities as _qualification_capabilities,
+)
 
 
 def _spool_fixtures():
@@ -292,7 +295,7 @@ def test_adapter_pre_resident_carrier_failure_never_calls_worker(
 
     monkeypatch.setattr(adapter, "verify_request", rejecting_verify)
     with pytest.raises(adapter.AdapterRequestFailed) as captured:
-        adapter.run_with_runtime(tmp_path / "request", tmp_path / "result", runtime)
+        adapter.run_with_runtime(tmp_path / ("1" * 64), tmp_path / "result", runtime)
     assert isinstance(captured.value.__cause__, spool.RemoteWorkerError)
     assert runtime.worker.calls == 0
 
@@ -306,7 +309,7 @@ def test_qualification_requests_are_refused_before_resident_work(
         monkeypatch, stage="qualification", wire=object()
     )
     with pytest.raises(adapter.AdapterRequestFailed) as captured:
-        adapter.run_with_runtime(tmp_path / "request", tmp_path / "result", runtime)
+        adapter.run_with_runtime(tmp_path / ("1" * 64), tmp_path / "result", runtime)
     assert "qualification execution authority" in str(captured.value.__cause__)
     assert runtime.worker.calls == 0
 
@@ -541,7 +544,7 @@ def test_qualification_execution_failure_is_epoch_fatal(
     result_dir = tmp_path / "result"
     result_dir.mkdir(mode=0o700)
     with pytest.raises(adapter.AdapterEpochFailed) as captured:
-        adapter.run_with_runtime(tmp_path / "request", result_dir, runtime)
+        adapter.run_with_runtime(tmp_path / ("1" * 64), result_dir, runtime)
     assert isinstance(captured.value.__cause__, QualificationContinuationError)
     assert runtime.worker.retire_calls == 1
     assert (result_dir / "RESIDENT_ENTRY_ARMED.json").is_file()
@@ -638,7 +641,7 @@ def test_screen_requests_still_use_only_screen_worker(
     result_dir = tmp_path / "result"
     result_dir.mkdir(mode=0o700)
 
-    adapter.run_with_runtime(tmp_path / "request", result_dir, runtime)
+    adapter.run_with_runtime(tmp_path / ("1" * 64), result_dir, runtime)
 
     assert (result_dir / "response.json").is_file()
     assert screen_calls == [(lease, candidate)]
@@ -742,45 +745,6 @@ def test_adapter_epoch_failure_exits_before_next_command(
             "schema": spool.SCHEMA_ADAPTER_CONTROL,
             "state": "epoch_failed",
         },
-    )
-
-
-def _qualification_capabilities():
-    import hashlib
-
-    from cacheon.eval.b300_qualification_commission import (
-        B300QualificationCapabilities,
-    )
-    from cacheon.eval.qualification_runner import HiddenJudgeBinding
-
-    def _h(seed: str) -> str:
-        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
-
-    class _Judge:
-        binding = HiddenJudgeBinding(
-            _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
-        )
-
-        def __call__(self, **_kwargs):
-            raise AssertionError("wiring tests must not execute the hidden judge")
-
-    class _Resolver:
-        def resolve_proposal(self, *_args, **_kwargs):
-            raise AssertionError("wiring tests must not resolve sources")
-
-        def resolve_integrated(self, *_args, **_kwargs):
-            raise AssertionError("wiring tests must not resolve sources")
-
-    return B300QualificationCapabilities(
-        secret_loader=lambda _reference: b"s" * 32,
-        entropy_provider=lambda *_args: None,
-        hidden_judge=_Judge(),
-        source_resolver=_Resolver(),
-        source_resolver_digest=_h("source-resolver"),
-        graph_facts_builder=lambda *_args: None,
-        graph_facts_builder_digest=_h("graph-facts"),
-        resident_count_quality_builder=lambda *_args: None,
-        resident_count_quality_builder_digest=_h("resident-count-builder"),
     )
 
 
@@ -985,3 +949,39 @@ def test_cli_requires_explicit_continuation_root(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as captured:
         adapter.main(argv)
     assert captured.value.code == 2
+
+
+def test_result_carrier_tolerates_only_the_shared_run_journal(
+    tmp_path: Path,
+) -> None:
+    paths = _adapter_paths(tmp_path)
+    request_id = "5" * 64
+    request_dir = paths.processing_root / request_id
+    request_dir.mkdir(parents=True)
+    result_dir = paths.results_root / f".{request_id}.1"
+    result_dir.mkdir(parents=True)
+    raw = (
+        adapter.spool_canonical_json(
+            {
+                "schema": adapter.SCHEMA_ADAPTER_COMMAND,
+                "operation": "evaluate",
+                "request_id": request_id,
+                "request_dir": str(request_dir),
+                "result_dir": str(result_dir),
+            }
+        )
+        + b"\n"
+    )
+
+    # The pod runner journals its own lifecycle rows into the shared
+    # per-request journal before delegating to the adapter.
+    (result_dir / adapter.JOURNAL_NAME).write_text('{"event":"started"}\n')
+    assert adapter.validated_command_paths(raw, paths) == (
+        request_id,
+        request_dir,
+        result_dir,
+    )
+
+    (result_dir / "stale-result.json").write_text("{}\n")
+    with pytest.raises(adapter.AdapterRequestFailed, match="carrier state"):
+        adapter.validated_command_paths(raw, paths)

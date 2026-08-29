@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import shutil
 import time
 from dataclasses import replace
@@ -34,7 +32,7 @@ from cacheon.eval.b300_screen_stages import (
     B300StaticScreenAdapter,
     compose_b300_non_serving_screen_handlers,
 )
-from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
+from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     LogicalHardwareSpec,
@@ -58,6 +56,7 @@ from cacheon.eval.oci_backend import (
 )
 from cacheon.eval.oci_outer_session import (
     BatchExecutionEvidence,
+    OuterSessionCandidateError,
     SessionExecutionEvidence,
     SessionExecutionPlan,
 )
@@ -75,13 +74,19 @@ from cacheon.eval.oci_session_protocol import (
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
+from tests.support.b300 import gpu as _gpu, prebuild_policy, runtime_policy, sha as _h
+from tests.support.preflight import preflight_receipt
+
+
+def _runtime_policy() -> OCIRuntimeResourcePolicy:
+    return runtime_policy("screen")
+
+
+def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
+    return prebuild_policy(runtime, "screen")
 
 
 SLOT = "activation.silu_and_mul"
-
-
-def _h(label: str) -> str:
-    return hashlib.sha256(label.encode()).hexdigest()
 
 
 def _workload() -> Workload:
@@ -228,62 +233,6 @@ def test_static_rejects_candidate_outside_sealed_runtime_quant(
     assert adapter.run_screen(manifest, policy, compatible).grade is ScreenGrade.PASS
 
 
-def _runtime_policy() -> OCIRuntimeResourcePolicy:
-    return OCIRuntimeResourcePolicy(
-        uid=max(1, os.getuid()),
-        gid=max(1, os.getgid()),
-        cpu_millis=8_000,
-        memory_bytes=8 << 30,
-        pids_limit=2_048,
-        nofile_limit=32_768,
-        cache_bytes=2 << 30,
-        cache_inodes=10_000,
-        tmpfs_bytes=1 << 30,
-        shm_bytes=2 << 30,
-        init_timeout_seconds=30.0,
-        batch_timeout_seconds=30.0,
-        container_python="/usr/local/bin/python3",
-    )
-
-
-def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
-    return OCIPrebuildPolicy(
-        uid=runtime.uid,
-        gid=runtime.gid,
-        cpu_millis=8_000,
-        memory_bytes=8 << 30,
-        pids_limit=2_048,
-        tmpfs_bytes=1 << 30,
-        stage_bytes=4 << 30,
-        stage_inodes=10_000,
-        timeout_seconds=300.0,
-        native_compile_timeout_seconds=240,
-        container_python=runtime.container_python,
-        build_path=("/usr/local/cuda/bin", "/usr/local/bin", "/usr/bin", "/bin"),
-        build_tmpdir="/tmp",
-        pinned_build_roots=("/usr/include", "/usr/lib", "/usr/local/cuda"),
-        runtime_policy_digest=runtime.digest,
-    )
-
-
-def _gpu(index: int) -> GPUConfiguration:
-    return GPUConfiguration(
-        physical_id=index,
-        uuid=f"GPU-00000000-{index:04x}-0000-0000-{index:012x}",
-        pci_bus_id=f"00000000:{index + 1:02x}:00.0",
-        name="NVIDIA B300 SXM6 AC",
-        memory_total_mib=288_000,
-        driver_version="600.10.01",
-        power_limit_mw=1_000_000,
-        compute_mode="Default",
-        persistence_mode="Enabled",
-        application_graphics_clock_mhz=None,
-        application_memory_clock_mhz=None,
-        max_graphics_clock_mhz=2_500,
-        max_memory_clock_mhz=5_000,
-    )
-
-
 def _executor(root: Path) -> OCIEngineExecutor:
     runtime = _runtime_policy()
     executor = OCIEngineExecutor(
@@ -316,34 +265,15 @@ def _preflight(
     worker: str,
     runtime: OCIRuntimeResourcePolicy,
 ) -> RuntimePreflightReceipt:
-    return RuntimePreflightReceipt(
-        schema="cacheon-runtime-preflight-v2",
-        requested_image="registry.example/cacheon@sha256:" + image,
-        image_digest=image,
-        local_image_id="sha256:" + "a" * 64,
-        repo_digests=("registry.example/cacheon@sha256:" + image,),
-        oci_platform="linux/amd64",
-        platform_digest=platform,
-        docker_binary="/usr/bin/docker",
+    return preflight_receipt(
+        image=image,
+        platform=platform,
+        worker=worker,
         uid=runtime.uid,
         gid=runtime.gid,
-        sglang_version="0.0.0.dev1+g56e290315",
-        worker_distribution="cacheon-harness",
-        worker_version="0.0.1",
-        worker_distribution_digest=worker,
+        python_executable=runtime.container_python,
         worker_file_count=100,
         worker_total_bytes=100_000,
-        python_implementation="cpython",
-        python_executable=runtime.container_python,
-        python_version="3.12.0",
-        python_abi="cpython-312-x86_64-linux-gnu",
-        python_platform="linux-x86_64",
-        machine="x86_64",
-        package_versions=(),
-        cudart_library="libcudart.so.13",
-        cuda_visible_devices="",
-        nvidia_visible_devices="void",
-        security_argv_sha256=_h("preflight-argv"),
     )
 
 
@@ -766,6 +696,56 @@ def test_pipeline_order_or_execution_exception_is_no_decision_and_clears_carrier
     assert build.grade is ScreenGrade.PASS
     assert abi.grade is ScreenGrade.NO_DECISION
     assert graph_after_clear.grade is ScreenGrade.NO_DECISION
+
+
+def test_typed_candidate_exception_is_exact_terminal_screen_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = default_target_catalog()
+    manifest, candidate, executor, plan, prebuild, _identity = _screen_case(
+        tmp_path, catalog,
+    )
+    monkeypatch.setattr(screen_stages, "_resolve_candidate_tree", lambda *_a, **_k: None)
+    monkeypatch.setattr(screen_stages, "run_oci_prebuild", lambda *_a, **_k: prebuild)
+    failure = (
+        "rank 3 RuntimeError in moe.fused_experts during entry at "
+        "kernels/moe.py:117: invalid launch geometry"
+    )
+    monkeypatch.setattr(
+        OCIEngineExecutor,
+        "execute",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            OuterSessionCandidateError(
+                "batch: CandidateEngineFailure",
+                candidate_failure=failure,
+                candidate_failure_type="CandidateEngineFailure",
+            )
+        ),
+    )
+    adapter = B300BuildABIGraphScreenAdapter(
+        catalog=catalog,
+        executor=executor,
+        plan_resolver_digest=_h("plan-resolver"),
+        plan_resolver=lambda _manifest, _candidate: plan,
+        evidence_policy_digest=_h("evidence-policy"),
+        evidence_root=tmp_path / "evidence",
+    )
+    try:
+        assert adapter.run_screen(
+            manifest, ScreenStagePolicy("build", 30_000), candidate
+        ).grade is ScreenGrade.PASS
+        abi = adapter.run_screen(
+            manifest, ScreenStagePolicy("abi", 30_000), candidate
+        )
+    finally:
+        adapter.close()
+        executor.manager.close()
+
+    assert abi.grade is ScreenGrade.FAIL
+    assert abi.reason.startswith("candidate_exception (CandidateEngineFailure:")
+    assert "kernels/moe.py:117" in abi.reason
+    assert "invalid launch geometry" in abi.reason
 
 
 def test_composition_exposes_only_the_exact_non_serving_order(tmp_path: Path) -> None:

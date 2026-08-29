@@ -80,6 +80,16 @@ Several terminal paths are omitted from the diagram for readability: an operator
 explicitly expire sufficiently old inactive work, copy reconciliation can turn a later
 submission into `failed`, and bounded retry exhaustion leads to `held`.
 
+Retry exhaustion is enforced at the lease layer. Every released evaluation lease
+counts toward a per-reservation cap of three, regardless of which infrastructure
+class released it, unless its release reason begins with `operator` (a deliberate
+operator disposition) or `screen_claim_` (a pre-dispatch claim race). The count is
+consecutive: it covers releases since the reservation's most recent completed lease,
+so a successful stage resets it and a fleet-wide transient does not permanently
+poison rows that later succeed. At the cap the reservation is parked as `held` with
+reason `systemic_release_cap:<count>` and waits for the operator `release_hold`
+disposition. Infrastructure failures are never converted into a candidate verdict.
+
 ## Public CLI: intake only
 
 The supported standalone command is:
@@ -224,17 +234,24 @@ Read the result in this order:
    Report it as validator `NO_DECISION`, quote the digest, and do not guess at a more
    specific cause.
 
-The last case is a real current limitation: this command cannot reconstruct bytes that
-were never durably referenced. Private evaluator logs must therefore remain under the
-deployment's log-retention policy until typed failure-artifact retention and archive
-indexing cover every infrastructure path. The command makes that gap visible; it does
-not claim the gap is closed.
+Candidate-owned load and invocation errors are now durably referenced by a typed
+qualification failure product and are rendered by `chain-miner-report` when its
+evidence store is supplied. New remote results also carry a request-scoped
+`worker_log`; with `--remote-spool-root`, the same report joins its adapter phases
+and retained OCI output to lease, recovery, and transport events. Historical
+digest-only failures remain explicitly limited because later code cannot recreate
+bytes that were never retained.
+
+The read-only submissions dashboard uses the same `worker_log` reader. A request
+with retained forensics shows that explanation in its detail drawer and provides a
+hash-verified raw log containing its adapter diagnostics and retained engine
+stdout/stderr. Section headers state when an older or interrupted runtime lost or
+truncated a stream.
 
 For support across every retained submission by one miner, use
 `chain-miner-report --miner-hotkey <HOTKEY>`. It composes the same privacy-safe
 reservation facts with duplicate-replay history and prints the stated cause and
-next action for each row. It does not infer candidate blame from status text and
-cannot recover failure bytes that were retained only by digest. See the
+next action for each row. It does not infer candidate blame from status text. See the
 [CLI reference](../reference/cli.md#chain-miner-report).
 
 The private recovery mirror is also outside the live transaction path:

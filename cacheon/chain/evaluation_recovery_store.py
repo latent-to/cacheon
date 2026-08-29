@@ -1104,7 +1104,7 @@ class EvaluationRecoveryStoreMixin:
             ),
             allow_expired=held_migration,
         )
-        self._cap_systemic_releases(lease)
+        self._cap_infrastructure_releases(lease)
         return lease
 
     def _release_recovery(

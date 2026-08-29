@@ -34,8 +34,7 @@ refused fail-closed, and domain-stamped digests (model provision, weight
 projections, intake scope) rotated with the vocabulary. One reader-only
 exception preserves the exact hash-bound `optima-op-abi-v0` manifest spelling
 for already-finalized bundles; readers do not rewrite its committed bytes.
-`HOW_CACHEON_WORKS.md` redirects to the canonical
-architecture documentation. The rename does not alter kernels, timed
+The rename does not alter kernels, timed
 evaluation arithmetic, or crown/settlement formulas. File and line counts describe the accompanying
 change set; they are not quality metrics. The suite is
 CPU/non-empirical validation and does not establish GPU performance,
@@ -97,6 +96,25 @@ The evidence classes are intentionally non-substitutable:
   diagnostics without taking the controller's writer lock. They report typed
   retained causes and evidence limitations rather than inferring candidate blame
   from a status string.
+- Candidate load/invocation exceptions now cross the OCI boundary as a distinct
+  candidate-owned type only when scheduler receipts prove ownership. Qualification
+  publishes a content-addressed failure product containing the exact arm, launch,
+  reservation, rank/slot/phase/file/line error, and retained diagnostic hash.
+  Fresh registered qualification is singleton-bound, so that proved exception is
+  terminal `FAIL` without a retry. Validator-runtime receipts remain infrastructure
+  outcomes.
+- Engine/native stdout and stderr share the retained bounded OCI diagnostic after
+  the framed protocol descriptor is reserved. `explain --log <artifact>` works
+  without a product. Fetch and manifest failures retain safe generic guidance
+  without exposing the validator's private path or transport detail.
+- Every new remote request also publishes the existing `worker_log` output role.
+  It joins adapter phase events and every OCI diagnostic receipt/raw prefix to the
+  request ID on both success and infrastructure failure. `chain-miner-report
+  --remote-spool-root` combines it with immutable lease/recovery and transport
+  events, so the displayed failure names its observed component and exact traceback.
+  The read-only submissions dashboard now renders the same explanation and exposes
+  a per-request raw diagnostic log, with partial retention stated in the section
+  headers.
 
 ### Validator recovery archive
 
@@ -147,19 +165,22 @@ The executable catalog contains 11 slots and one registered atomic target:
 | Collective | `moe.fused_experts_reduce`, `collective.all_reduce`, `collective.ar_residual_rmsnorm`, `collective.moe_finalize_ar_rmsnorm` |
 | Atomic target | `collective.moe_epilogue.v1` over the two MoE epilogue collective members |
 
-The table records registered contracts, not deployment availability. As of
-2026-08-20, two targets are unavailable in the current MiniMax-M3 mainnet
-arena:
+The table records contracts, not deployment availability. As of 2026-08-24,
+five targets are unavailable in the MiniMax-M3 arena: `norm.rmsnorm`
+(GemmaRMSNorm outside the registered seam), `activation.silu_and_mul` (the
+model activates inside the MoE GEMM epilogue; the dense-layer swigluoai
+callsite is unpatched — measured never-called on 2026-08-23),
+`attention.sdpa` (no serving adapter binds it),
+`attention.msa_prefill_block_score` (closed pending its first clean
+end-to-end control run; the decode sibling is open), and
+`moe.fused_experts_reduce` (sealed closed pending its full-engine
+outer-reduction proof). Their computation stays claimable inside open fused
+targets; closure keys on the submitted target name only. The miner-facing
+notice is
+[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
-- `norm.rmsnorm`: MiniMax-M3 uses `GemmaRMSNorm` at the relevant model
-  callsites, while the registered adapter targets `RMSNorm.forward_cuda`;
-- `attention.msa_block_score`: the pinned runtime has no installing
-  decode-side adapter for this contract.
-
-Candidate code for either target cannot execute, so miners must not pay for or
-submit them to this arena. Their ABI/verifier registrations remain, and this
-finding does not withdraw any other registered target. The miner-facing notice
-is [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+`attention.msa_block_score` binds the pinned `_decode_score_kernel`; candidate
+code fills paged per-index-head scores while stock code retains top-k and attend.
 
 The closed direct-artifact registry has one crownable provider,
 `cutlass.cute.cubin.v1`. Candidate compiler-factory code runs in a GPU-hidden,
@@ -261,6 +282,22 @@ lane emitted no execution evidence at all — it is launched stock, so the
 one-shot driver's `active`-gated receipt directory was never created for it,
 and registration was the only thing the crossover could observe.
 
+Since **2026-08-23** (source on this branch, not yet deployed) the closing swap
+carries each rank's receipt rows, not only their count: per registered slot,
+the call count, whether any call happened inside a CUDA-graph capture, the
+exception a raising entry left behind, and the routing reasons for calls that
+went to stock. The host reduces the rows itself; a rank counts as executed only
+when it loaded, raised nothing, and was captured on every slot SGLang serves
+from its graph (`attention.msa_prefill_block_score` is the one eager exemption),
+so a candidate called only during eager warmup can no longer pass the guard.
+The rows are published by the worker as the unsealed `qualification.execution`
+artifact, travel in the product, and are rendered by `chain-miner-report
+--evidence-root` and `explain`. A hold raised by the guard names the faulting
+ranks. Retained mainnet evidence for this path is the four lane-A rank lines of
+2026-08-23 (msa_block_score, 1,140 calls per rank, captured), read back from
+the container log and used as the fixture; no run has yet produced the
+artifact on the pod.
+
 Since **2026-08-18** resident speed policy **version 8** serves candidates that
 cannot be hot-swapped into a loaded engine. A bundle declaring CUDA, C++ or PTX
 sources, AOT artifacts, dependency patches, or engine setup is routed to the
@@ -348,6 +385,31 @@ Version 1 and version 2 evidence remain readable for historical compatibility.
 Screen measurements do not enter this authority. Candidate-attributable
 failure can produce `FAIL`; infrastructure, drift, missing evidence, or broken
 authority produces `NO_DECISION`.
+
+From 2026-08-29 the qualification commission constructs its measured baseline
+from the durable incumbent stack the qualification-capabilities factory
+declares (`incumbent_entries`; empty at genesis, where it reproduces the
+stock tree exactly), while pristine T remains the empty stock stack and the
+resident screen keeps its stock baseline. The change followed the first
+production crown (2026-08-28), which advanced the durable evaluation stack
+while the worker could only construct a stock baseline. The former
+empty-incumbent resolver mode is removed; an empty closed resolver is the
+genesis authority and fails closed on any lookup. Commission registrations
+sealed before this revision do not replay against it; a fresh commission is
+required.
+
+Also from 2026-08-29, the declared baseline is realized per schedule rather
+than by booting champion trees into the pair lanes: v7 pair-native engines
+boot plain stock and the baseline read injects the sealed incumbent bundle
+through the swap path (identity sealed from the stack entry and its
+resolver-verified manifest, never from a swap acknowledgement; execution must
+be proven per rank or the read holds), while the version-8 two-process
+schedule boots the materialized incumbent tree for its baseline process. v7
+serves hot-swappable candidates replacing the incumbent's registered target
+(or genesis); everything else routes to v8, and the worker routes on the
+sealed plan version. The retired pre-v6 pair-native grading branches were
+deleted in the same change; the pair-native substrate now refuses speed
+policy versions below 6 at run and regrade.
 
 From 2026-07-25 the resident speed policy of record was version 2: the scored
 rate is the

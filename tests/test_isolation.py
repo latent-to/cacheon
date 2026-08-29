@@ -120,7 +120,6 @@ def test_engine_kwargs_preserve_candidate_overrides():
         moe_runner_backend="baseline-moe",
         candidate_moe_runner_backend="candidate-moe",
         disable_custom_all_reduce=False,
-        candidate_disable_custom_all_reduce=True,
         extra_engine_kwargs={"page_size": 32},
         candidate_extra_engine_kwargs={"page_size": 64},
     )
@@ -132,7 +131,9 @@ def test_engine_kwargs_preserve_candidate_overrides():
     assert "disable_custom_all_reduce" not in baseline
     assert candidate["attention_backend"] == "candidate-attention"
     assert candidate["moe_runner_backend"] == "candidate-moe"
-    assert candidate["disable_custom_all_reduce"] is True
+    # No per-arm all-reduce override exists: arms differing on that key are
+    # "not a comparison" by the validator's own reporting.
+    assert "disable_custom_all_reduce" not in candidate
     assert candidate["page_size"] == 64
 
 

@@ -87,113 +87,104 @@ def make_dispatcher(
         if os.environ.get("CACHEON_MSA_PREFILL_SEAM") != "1":
             return stock()
 
-        selected = False
-        try:
-            if not (
-                disable_index_value
-                and score_type == "max"
-                and sink is None
-                and k_cache.shape[1] == 1
-                and q.is_cuda
-                and q.dim() == 3
-            ):
-                return stock()
-            if (
-                cu_seqblocks_q is None
-                or max_seqblock_q is None
-                or all_seqblock_q is None
-            ):
-                return stock()
+        if not (
+            disable_index_value
+            and score_type == "max"
+            and sink is None
+            and k_cache.shape[1] == 1
+            and q.is_cuda
+            and q.dim() == 3
+        ):
+            return stock()
+        if (
+            cu_seqblocks_q is None
+            or max_seqblock_q is None
+            or all_seqblock_q is None
+        ):
+            return stock()
 
-            total_q, num_heads, head_dim = q.shape
-            batch_size = cu_seqlens.shape[0] - 1
-            scale = float(
-                sm_scale if sm_scale is not None else head_dim**-0.5
-            ) * 1.4426950409
-            tp_size, world_size = runtime_parallel_sizes()
-            descriptor = msa_prefill_call_descriptor(
-                dtype=str(q.dtype).removeprefix("torch."),
-                architecture=arch_tag(q.device.index or 0),
-                head_dim=head_dim,
-                block_size=block_size_k,
-                q_len=max_seqlen_q,
-                kv_len=max_seqlen_k,
-                top_k=topk,
-                q_block_size=block_size_q,
-                init_blocks=init_blocks,
-                local_blocks=local_blocks,
-                batch_size=batch_size,
-                num_q_heads=num_heads,
-                num_kv_heads=1,
-                num_tokens=total_q,
-                tp_size=tp_size,
-                world_size=world_size,
+        total_q, num_heads, head_dim = q.shape
+        batch_size = cu_seqlens.shape[0] - 1
+        scale = float(
+            sm_scale if sm_scale is not None else head_dim**-0.5
+        ) * 1.4426950409
+        tp_size, world_size = runtime_parallel_sizes()
+        descriptor = msa_prefill_call_descriptor(
+            dtype=str(q.dtype).removeprefix("torch."),
+            architecture=arch_tag(q.device.index or 0),
+            head_dim=head_dim,
+            block_size=block_size_k,
+            q_len=max_seqlen_q,
+            kv_len=max_seqlen_k,
+            top_k=topk,
+            q_block_size=block_size_q,
+            init_blocks=init_blocks,
+            local_blocks=local_blocks,
+            batch_size=batch_size,
+            num_q_heads=num_heads,
+            num_kv_heads=1,
+            num_tokens=total_q,
+            tp_size=tp_size,
+            world_size=world_size,
+        )
+        decision = registry.select(slot, descriptor)
+        if not decision.use_candidate:
+            return stock()
+
+
+        inputs = {
+            "q": q,
+            "index_k_cache": k_cache,
+            "req_to_token": req_to_token,
+            "slot_ids": slot_ids,
+            "cu_seqlens": cu_seqlens,
+            "seq_lens": seq_lens,
+            "prefix_lens": prefix_lens,
+            "max_seqlen_q": max_seqlen_q,
+            "max_seqlen_k": max_seqlen_k,
+            "block_size_q": block_size_q,
+            "block_size_k": block_size_k,
+            "topk": topk,
+            "init_blocks": init_blocks,
+            "local_blocks": local_blocks,
+            "scale": scale,
+            "cu_seqblocks_q": cu_seqblocks_q,
+            "max_seqblock_q": max_seqblock_q,
+            "all_seqblock_q": all_seqblock_q,
+        }
+        contract = output_slot.output_contract(inputs)
+        spec = contract.outputs[0]
+        topk_idx = torch.full(
+            spec.shape,
+            -1,
+            dtype=spec.dtype or torch.int32,
+            device=spec.device or q.device,
+        )
+        validate_output_spec(
+            contract,
+            [topk_idx],
+            fallback_dtype=torch.int32,
+            fallback_device=q.device,
+            inputs=tuple(v for v in inputs.values() if torch.is_tensor(v)),
+        )
+
+        audited = _audit.sampled()
+        expected_idx = None
+        if audited:
+            expected = stock()
+            expected_idx = (
+                expected[1]
+                if isinstance(expected, (tuple, list)) and len(expected) > 1
+                else None
             )
-            decision = registry.select(slot, descriptor)
-            if not decision.use_candidate:
-                return stock()
-            selected = True
 
-            inputs = {
-                "q": q,
-                "index_k_cache": k_cache,
-                "req_to_token": req_to_token,
-                "slot_ids": slot_ids,
-                "cu_seqlens": cu_seqlens,
-                "seq_lens": seq_lens,
-                "prefix_lens": prefix_lens,
-                "max_seqlen_q": max_seqlen_q,
-                "max_seqlen_k": max_seqlen_k,
-                "block_size_q": block_size_q,
-                "block_size_k": block_size_k,
-                "topk": topk,
-                "init_blocks": init_blocks,
-                "local_blocks": local_blocks,
-                "scale": scale,
-                "cu_seqblocks_q": cu_seqblocks_q,
-                "max_seqblock_q": max_seqblock_q,
-                "all_seqblock_q": all_seqblock_q,
-            }
-            contract = output_slot.output_contract(inputs)
-            spec = contract.outputs[0]
-            topk_idx = torch.full(
-                spec.shape,
-                -1,
-                dtype=spec.dtype or torch.int32,
-                device=spec.device or q.device,
-            )
-            validate_output_spec(
-                contract,
-                [topk_idx],
-                fallback_dtype=torch.int32,
-                fallback_device=q.device,
-                inputs=tuple(v for v in inputs.values() if torch.is_tensor(v)),
-            )
-
-            audited = _audit.sampled()
-            expected_idx = None
-            if audited:
-                expected = stock()
-                expected_idx = (
-                    expected[1]
-                    if isinstance(expected, (tuple, list)) and len(expected) > 1
-                    else None
-                )
-
-            decision.impl.entry(*(inputs[name] for name in INPUT_NAMES), topk_idx)
-            if audited:
-                if expected_idx is None:
-                    _audit.baseline_refused(slot)
-                else:
-                    _audit.record(slot, (topk_idx,), (expected_idx,))
-            _receipts.completed(slot)
-            return None, topk_idx
-        except Exception as exc:  # noqa: BLE001
-            if registry.strict:
-                raise
-            result = stock()
-            if selected:
-                _receipts.fallback(slot, exc)
-            return result
+        _receipts.invoke(slot, decision.impl.entry, *(inputs[name] for name in INPUT_NAMES), topk_idx)
+        if audited:
+            if expected_idx is None:
+                _audit.baseline_refused(slot)
+            else:
+                _audit.record(slot, (topk_idx,), (expected_idx,))
+        _receipts.completed(slot)
+        return None, topk_idx
 
     return dispatched

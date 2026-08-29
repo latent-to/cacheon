@@ -21,6 +21,7 @@ from cacheon.eval.oci_session_protocol import (
     preflight_accept_message,
     ready_message,
 )
+from tests.support.preflight import preflight_facts
 
 
 def _h(label: str) -> str:
@@ -45,22 +46,10 @@ def _config() -> EngineSessionConfig:
 
 
 def _facts(config: EngineSessionConfig, launch: str) -> RuntimePreflightFacts:
-    return RuntimePreflightFacts(
+    return preflight_facts(
         launch_digest=launch,
-        runtime_digest=_h("runtime"),
-        stack_digest=_h("stack"),
-        tree_digest=_h("tree"),
         engine_config_digest=config.digest,
-        worker_distribution_digest=_h("worker"),
-        model_revision_digest=_h("revision"),
-        model_manifest_digest=_h("manifest"),
-        model_content_digest=_h("content"),
         sglang_version="0.0.0.dev1",
-        gpu_architectures=("sm120",),
-        topology_digest=_h("topology"),
-        loopback_only=True,
-        read_only_inputs=True,
-        private_writable_cache=True,
     )
 
 

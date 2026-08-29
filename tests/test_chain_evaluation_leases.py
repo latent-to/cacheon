@@ -650,11 +650,18 @@ def test_systemic_release_cap_parks_reservation_held(tmp_path):
         ) is None
 
 
-def test_non_systemic_releases_never_trip_the_cap(tmp_path):
+def test_exempt_releases_never_trip_the_cap(tmp_path):
+    # Deliberate operator actions and pre-dispatch claim races are the only
+    # release classes outside the cap; four of them park nothing.
     with _store(tmp_path) as store:
         row = _published_rows(store, 1)[0]
         clock = 10
-        for _ in range(4):
+        for reason in (
+            "operator_release",
+            "screen_claim_snapshot",
+            "operator_reviewed_legacy_screen_only:v1:a:b",
+            "screen_claim_materialization",
+        ):
             _advance(store, clock)
             lease = store.claim_evaluation_lease(
                 stage="screen", owner="worker-a", current_block=clock
@@ -662,7 +669,87 @@ def test_non_systemic_releases_never_trip_the_cap(tmp_path):
             assert lease is not None
             _advance(store, clock + 1)
             store.release_evaluation_lease(
-                lease, current_block=clock + 1, reason="operator_release"
+                lease, current_block=clock + 1, reason=reason
             )
             clock += 2
         assert store.get(row.reservation_id).status == "published"
+
+
+def test_infrastructure_release_cap_parks_the_screen_catch_all(tmp_path):
+    # The exact reason that starved the screen queue on 2026-08-25..28 and
+    # 2026-08-29: outside the old opt-in 'systemic%' count, it retried one
+    # FIFO head row forever. Every non-exempt release now counts.
+    with _store(tmp_path) as store:
+        row = _published_rows(store, 1)[0]
+        clock = 10
+        for round_number in (1, 2, 3):
+            _advance(store, clock)
+            lease = store.claim_evaluation_lease(
+                stage="screen", owner="worker-a", current_block=clock
+            )
+            assert lease is not None, f"round {round_number} could not claim"
+            _advance(store, clock + 1)
+            store.release_evaluation_lease(
+                lease,
+                current_block=clock + 1,
+                reason="remote_screen_infrastructure",
+            )
+            clock += 2
+        retained = store.get(row.reservation_id)
+        assert retained.status == "held"
+        assert retained.reason == "systemic_release_cap:3"
+
+
+def test_release_cap_counts_consecutively_and_resets_on_completion(tmp_path):
+    # Two strikes, then a completed screen, then two more strikes: the row
+    # stays live because the count restarts at its newest success — a healthy
+    # row that survived a fleet-wide outage is not one blip from parking.
+    with _store(tmp_path) as store:
+        row = _published_rows(store, 1)[0]
+        clock = 10
+        for _ in range(2):
+            _advance(store, clock)
+            lease = store.claim_evaluation_lease(
+                stage="screen", owner="worker-a", current_block=clock
+            )
+            assert lease is not None
+            _advance(store, clock + 1)
+            store.release_evaluation_lease(
+                lease,
+                current_block=clock + 1,
+                reason="remote_screen_infrastructure",
+            )
+            clock += 2
+        _advance(store, clock)
+        lease = store.claim_evaluation_lease(
+            stage="screen", owner="worker-a", current_block=clock
+        )
+        assert lease is not None
+        with store.accept_evaluation_result(
+            lease, current_block=clock, result_digest=_h("reset-result")
+        ):
+            _complete_screen(store, lease)
+        assert store.get(row.reservation_id).status == "promoted"
+        clock += 2
+        for round_number in (1, 2, 3):
+            _advance(store, clock)
+            lease = store.claim_evaluation_lease(
+                stage="qualification",
+                owner="worker-a",
+                current_block=clock,
+                max_members=1,
+            )
+            assert lease is not None, f"round {round_number} could not claim"
+            _advance(store, clock + 1)
+            store.release_evaluation_lease(
+                lease,
+                current_block=clock + 1,
+                reason="worker_pre_resident:adapter_request_failed",
+            )
+            clock += 2
+            retained = store.get(row.reservation_id)
+            if round_number < 3:
+                assert retained.status == "promoted"
+            else:
+                assert retained.status == "held"
+                assert retained.reason == "systemic_release_cap:3"

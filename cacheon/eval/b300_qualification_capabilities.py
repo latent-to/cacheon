@@ -564,44 +564,33 @@ def _source_tree(path_value: object) -> tuple[Path, str, tuple[int, int]]:
 
 
 class ClosedContributionSourceResolver:
-    """Closed digest-to-source mapping with drift detection and an empty mode."""
+    """Closed digest-to-source mapping with drift detection.
+
+    An empty mapping is the genesis resolver: it resolves nothing, so any
+    lookup fails closed with the same error as an unknown digest.
+    """
 
     def __init__(
         self,
         proposal_sources: Mapping[str, object],
         integrated_sources: Mapping[str, object],
-        *,
-        empty_incumbent: bool = False,
     ) -> None:
         if not isinstance(proposal_sources, Mapping) or not isinstance(integrated_sources, Mapping):
             raise B300QualificationCapabilityError("resolver mappings are not explicit mappings")
-        if empty_incumbent and (proposal_sources or integrated_sources):
-            raise B300QualificationCapabilityError(
-                "empty-incumbent resolver cannot contain source mappings"
-            )
-        if not empty_incumbent and not (proposal_sources or integrated_sources):
-            raise B300QualificationCapabilityError(
-                "an empty resolver requires explicit empty-incumbent mode"
-            )
         if set(proposal_sources) & set(integrated_sources):
             raise B300QualificationCapabilityError(
                 "proposal and integrated resolver identities are ambiguous"
             )
         self._proposal = self._snapshots(proposal_sources, field="proposal")
         self._integrated = self._snapshots(integrated_sources, field="integrated")
-        policy = "empty-incumbent-fail-closed" if empty_incumbent else "closed-explicit-mappings"
         self.digest = canonical_digest(
             RESOLVER_SCHEMA,
             {
                 "integrated": [row.identity_data("integrated") for row in self._integrated.values()],
-                "policy": policy,
+                "policy": "closed-explicit-mappings",
                 "proposal": [row.identity_data("proposal") for row in self._proposal.values()],
             },
         )
-
-    @classmethod
-    def empty_incumbent(cls) -> "ClosedContributionSourceResolver":
-        return cls({}, {}, empty_incumbent=True)
 
     @staticmethod
     def _snapshots(
