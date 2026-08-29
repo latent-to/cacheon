@@ -812,13 +812,16 @@ def _compose_locked(
         swap_intake_root=swap_intake,
     )
     try:
-        # The count-quality envelope is sealed against the pristine stock
-        # identity; the measured baseline moving to the incumbent must not
-        # move this binding.
+        # The count-quality envelope is sealed against the stock identity the
+        # lane engines actually boot: stock tree, seam-armed graph-on engine
+        # config. The seamless pristine-T launch is the quality/audit
+        # reference, not this one, and the count builder capability refuses a
+        # launch whose engine config differs from the commissioned stock
+        # derivation.
         count_context = B300ResidentCountQualityBuilderContext(
             catalog,
             stock,
-            pristine_launch,
+            stock_candidate_launch,
             pristine_binding,
             evidence_root,
             lane_pair,
