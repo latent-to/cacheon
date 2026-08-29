@@ -949,3 +949,39 @@ def test_cli_requires_explicit_continuation_root(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as captured:
         adapter.main(argv)
     assert captured.value.code == 2
+
+
+def test_result_carrier_tolerates_only_the_shared_run_journal(
+    tmp_path: Path,
+) -> None:
+    paths = _adapter_paths(tmp_path)
+    request_id = "5" * 64
+    request_dir = paths.processing_root / request_id
+    request_dir.mkdir(parents=True)
+    result_dir = paths.results_root / f".{request_id}.1"
+    result_dir.mkdir(parents=True)
+    raw = (
+        adapter.spool_canonical_json(
+            {
+                "schema": adapter.SCHEMA_ADAPTER_COMMAND,
+                "operation": "evaluate",
+                "request_id": request_id,
+                "request_dir": str(request_dir),
+                "result_dir": str(result_dir),
+            }
+        )
+        + b"\n"
+    )
+
+    # The pod runner journals its own lifecycle rows into the shared
+    # per-request journal before delegating to the adapter.
+    (result_dir / adapter.JOURNAL_NAME).write_text('{"event":"started"}\n')
+    assert adapter.validated_command_paths(raw, paths) == (
+        request_id,
+        request_dir,
+        result_dir,
+    )
+
+    (result_dir / "stale-result.json").write_text("{}\n")
+    with pytest.raises(adapter.AdapterRequestFailed, match="carrier state"):
+        adapter.validated_command_paths(raw, paths)

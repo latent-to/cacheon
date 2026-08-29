@@ -67,6 +67,7 @@ from cacheon.eval.b300_publication_intake import (
     safe_publication,
 )
 from cacheon.eval.remote_run_forensics import (
+    JOURNAL_NAME,
     append_event as append_run_event,
     bind_request,
     exception_record,
@@ -648,7 +649,10 @@ def validated_command_paths(
         or not request_dir.is_dir()
         or result_dir.is_symlink()
         or not result_dir.is_dir()
-        or any(result_dir.iterdir())
+        # The pod runner journals its own lifecycle rows into the shared
+        # per-request journal before handing the carrier over; anything else
+        # in the result dir is a stale collision.
+        or any(entry.name != JOURNAL_NAME for entry in result_dir.iterdir())
     ):
         raise AdapterRequestFailed(
             "request/result carrier state is invalid", request_id=request_id
@@ -831,7 +835,7 @@ def main(argv: list[str] | None = None) -> int:
         or not request_dir.is_dir()
         or result_dir.is_symlink()
         or not result_dir.is_dir()
-        or any(result_dir.iterdir())
+        or any(entry.name != JOURNAL_NAME for entry in result_dir.iterdir())
     ):
         raise AdapterError("request/result carrier state is invalid")
     _run(request_dir, result_dir, paths)
