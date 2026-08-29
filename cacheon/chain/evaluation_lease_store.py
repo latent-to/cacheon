@@ -774,30 +774,50 @@ class EvaluationLeaseStoreMixin:
                 reason=reason,
                 result_digest=result_digest,
             )
-            if reason.startswith("systemic"):
-                self._cap_systemic_releases(lease)
+            if not reason.startswith(self._CAP_EXEMPT_RELEASE_PREFIXES):
+                self._cap_infrastructure_releases(lease)
         return lease
 
     _SYSTEMIC_RELEASE_CAP = 3
+    # Deliberate operator actions and pre-dispatch claim races never indicate
+    # a poisoned row.  Every other release class counts toward the cap: the
+    # old opt-in ``systemic%`` count let the screen catch-all reason retry one
+    # FIFO head row through 31 lease generations (2026-08-25..28) and another
+    # 30+ on 2026-08-29, starving the whole screen queue both times.
+    _CAP_EXEMPT_RELEASE_PREFIXES = ("operator", "screen_claim_")
 
-    def _cap_systemic_releases(self, lease: EvaluationLease) -> None:
-        """Park reservations that keep surviving systemic releases.
+    def _cap_infrastructure_releases(self, lease: EvaluationLease) -> None:
+        """Park reservations that keep surviving infrastructure releases.
 
-        A systemic release deliberately consumes no candidate attempt --
+        An infrastructure release deliberately consumes no candidate attempt --
         infrastructure failure never becomes a candidate verdict.  Unbounded,
         that honesty is a free loop: the same reservation is reclaimed and
-        systemically released forever (observed 2026-08-10: one reservation
-        claimed 16 times against a dead worker).  At the cap the reservation
-        parks as ``held`` with a blank candidate decision for operator
-        attention.  Holding is not a verdict; ``release_hold`` reopens it.
+        released forever (observed 2026-08-10: one reservation claimed 16
+        times against a dead worker).  The count is consecutive, not
+        lifetime: only releases after the reservation's newest completed
+        lease count, so rows that merely survived a fleet-wide outage reset
+        on their next success instead of parking one blip later.  At the cap
+        the reservation parks as ``held`` with a blank candidate decision for
+        operator attention.  Holding is not a verdict; ``release_hold``
+        reopens it.
         """
+        exempt = " ".join(
+            "AND e.reason NOT LIKE '{}%' ESCAPE '\\'".format(
+                prefix.replace("_", "\\_")
+            )
+            for prefix in self._CAP_EXEMPT_RELEASE_PREFIXES
+        )
         for member in lease.members:
             count = self._db.execute(
-                "SELECT COUNT(*) FROM evaluation_leases AS l "
-                "JOIN evaluation_lease_members AS m ON m.lease_id=l.lease_id "
-                "WHERE m.reservation_id=? AND l.state='released' "
-                "AND l.reason LIKE 'systemic%'",
-                (member.reservation_id,),
+                "SELECT COUNT(*) FROM evaluation_lease_events AS e "
+                "JOIN evaluation_lease_members AS m ON m.lease_id=e.lease_id "
+                "WHERE m.reservation_id=? AND e.event_type='released' "
+                + exempt +
+                " AND e.sequence > COALESCE(("
+                "SELECT MAX(e2.sequence) FROM evaluation_lease_events AS e2 "
+                "JOIN evaluation_lease_members AS m2 ON m2.lease_id=e2.lease_id "
+                "WHERE m2.reservation_id=? AND e2.event_type='completed'), 0)",
+                (member.reservation_id, member.reservation_id),
             ).fetchone()[0]
             if count < self._SYSTEMIC_RELEASE_CAP:
                 continue
