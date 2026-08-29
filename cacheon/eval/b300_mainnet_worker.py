@@ -82,8 +82,6 @@ from cacheon.eval.qualification_runner import (
     ATTEMPT_SCHEMA_V4,
     reopen_causal_qualification,
 )
-from cacheon.eval.resident_screen_lane import screen_swappability
-from cacheon.manifest import load_manifest
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
@@ -630,7 +628,11 @@ class B300MainnetWorker:
                 authority_digest=work.factory.manifest.authority_digest,
                 source_digest=plan.prepared.source.digest,
             )
-            if screen_swappability(load_manifest(candidates[0].publication.root)) is None:
+            # Route on the version the sealed plan carries: the plan builder
+            # already decided pair-native vs two-process (swappability plus
+            # the incumbent-injection conditions), so re-deriving any of it
+            # here could only disagree with the substrate the plan encodes.
+            if plan.resident_speed_plan.policy.version < 8:
                 try:
                     resident_prefix = run_b300_resident_qualification_prefix(
                         factory=self._resident_pair_factory,

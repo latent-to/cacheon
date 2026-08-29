@@ -3,12 +3,11 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import replace
-from types import MethodType, SimpleNamespace
+from types import MethodType
 
 import pytest
 
 import cacheon.eval.qualification_runner as runner_module
-from cacheon.audit_gate import gate
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.chain.remote_evaluation_dispatcher import (
     RemoteEvaluationDispatcherError,
@@ -21,7 +20,7 @@ from cacheon.eval.crossover_runtime import (
     ResidentSpeedPolicy,
     SpeedStageDecision,
 )
-from cacheon.eval.device_state import DeviceStateReceipt, DeviceStateSample
+from cacheon.eval.device_state import DeviceStateReceipt
 from cacheon.eval.oci_backend import (
     ResidentEngineExecutionEvidence,
     runtime_identity_from_preflight,
@@ -29,24 +28,19 @@ from cacheon.eval.oci_backend import (
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.oci_resident_session import ResidentBatchEvidence, ResidentSessionEvidence
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
-from cacheon.eval.qualification import QualificationDecision, SelectionEntropyReceipt
+from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
-    QualificationIntakeBatch,
-    QualificationIntakeOutcome,
     QualificationPlanFactory,
     run_qualification_intake,
 )
 from cacheon.eval.qualification_runner import (
-    ATTEMPT_SCHEMA_V4,
-    CohortQualificationAttempt,
     HiddenJudgeBinding,
     STAGE_EXIT_SCHEMA_V2,
     STAGE_EXIT_SCHEMA_V3,
     _resident_closure_codec,
     qualification_authority_digest,
-    reopen_causal_qualification,
     reopen_qualification_stage_exit,
     run_causal_qualification,
 )
@@ -90,8 +84,6 @@ from tests.test_b300_resident_pair_factory import (
     _h,
 )
 from tests.test_marginal_runtime import FUSED
-from tests.test_qualification_continuation import _MemoryContinuation
-from tests.test_qualification_runner import _quality_verdict
 
 
 pytest_plugins = ("tests.test_b300_resident_pair_factory",)
@@ -328,7 +320,6 @@ def _coordinator_case(
     managed_executors,
     *,
     source_fixture=None,
-    escalated=False,
     count_drop=0,
 ):
     from cacheon.eval import b300_resident_qualification as coordinator
@@ -341,6 +332,20 @@ def _coordinator_case(
         source_fixture=source_fixture,
     )
     plan = replace(plan, model_mount=commissioned.model_mount)
+    # The pair-native grade starts at v6; the graph fixture still seals the
+    # pre-pair v3 policy, so lift it and let the fixture's one-window reads
+    # through the window gate.
+    resident = plan.resident_speed_plan
+    assert resident is not None
+    plan = replace(
+        plan,
+        resident_speed_plan=replace(
+            resident, policy=replace(resident.policy, version=6)
+        ),
+    )
+    monkeypatch.setattr(
+        ResidentSpeedPolicy, "read_window_scatter", lambda _policy, _row: 0.0
+    )
     template, judge, outputs, admission, envelope = _count_template(
         "coordinator",
         commissioned.plans[0].lane_policy.digest,
@@ -407,11 +412,7 @@ def _coordinator_case(
     ):
         del _plan, _factory, screen_lane
         if pair is not None:
-            if escalated:
-                lifetimes.factories[0].sessions[0].durations = (1.0, 1.0, 1.0)
-                lifetimes.factories[1].sessions[0].durations = (0.995, 0.98)
-            else:
-                lifetimes.factories[1].sessions[0].durations = (0.8,)
+            lifetimes.factories[1].sessions[0].durations = (0.8,)
         binding = pair.binding if pair is not None else retirement.pair_binding
         crossover = ResidentCrossoverPlan(
             plan.candidates[0].selected_delta_digest,
@@ -420,10 +421,14 @@ def _coordinator_case(
             ResidentSpeedPolicy(
                 60,
                 0.005,
-                0.1 if escalated else 2.0,
-                0.1,
+                2.0,
+                0.01,
                 _h("coordinator:calibration"),
                 _h("coordinator:calibration-context"),
+                version=6,
+                min_windows=3,
+                max_window_scatter=0.01,
+                max_conditioning_slowdown=1.5,
             ),
         )
         return ResidentPairCrossoverPlan(
@@ -447,12 +452,24 @@ def test_retirement_publishes_once_and_reopens_without_live_pair(
     commissioned.factory.open_request(authority, deadline=100.0)
     borrowed = commissioned.factory.borrow(authority)
     lifetimes.factories[1].sessions[0].durations = (0.8,)
+    monkeypatch.setattr(
+        ResidentSpeedPolicy, "read_window_scatter", lambda _policy, _row: 0.0
+    )
     crossover = ResidentCrossoverPlan(
         _h("retirement:selected-delta"),
         _arm(commissioned.plans[0]),
         _arm(commissioned.plans[1]),
         ResidentSpeedPolicy(
-            60, 0.005, 2.0, 0.1, _h("calibration"), _h("calibration-context")
+            60,
+            0.005,
+            2.0,
+            0.01,
+            _h("calibration"),
+            _h("calibration-context"),
+            version=6,
+            min_windows=3,
+            max_window_scatter=0.01,
+            max_conditioning_slowdown=1.5,
         ),
     )
     speed_plan = ResidentPairCrossoverPlan(
@@ -604,18 +621,17 @@ def _exact_lifecycle(harness, plan, capability, prefix, *, preserve_workload=Fal
 
 
 @pytest.mark.parametrize("source_fixture", (None, FUSED), ids=("singleton", "atomic"))
-@pytest.mark.parametrize("escalated", (False, True), ids=("three-read", "five-read"))
 def test_production_coordinator_reopens_without_new_pair_or_evaluator_work(
-    tmp_path, monkeypatch, lifetimes, managed_executors, source_fixture, escalated
+    tmp_path, monkeypatch, lifetimes, managed_executors, source_fixture
 ):
     coordinator, commissioned, harness, plan, capability, continuation = (
         _coordinator_case(
             tmp_path, monkeypatch, lifetimes, managed_executors,
-            source_fixture=source_fixture, escalated=escalated))
+            source_fixture=source_fixture))
     first = _run_prefix(
         coordinator, commissioned, harness, plan, capability, continuation)
     assert first.count_result.decision == "PASS"
-    assert first.speed.escalated is escalated
+    assert first.speed.escalated is False
     assert len(lifetimes.calls) == 2
     history = tuple(len(row.sessions[0].batch_rows) for row in lifetimes.factories)
 
@@ -626,11 +642,11 @@ def test_production_coordinator_reopens_without_new_pair_or_evaluator_work(
     assert len(lifetimes.calls) == 2
     assert tuple(len(row.sessions[0].batch_rows) for row in lifetimes.factories) == history
 
-    if source_fixture is not None or escalated:
+    if source_fixture is not None:
         return
     prepared, _resident, lifecycle = _exact_lifecycle(harness, plan, capability, first)
     assert lifecycle.candidates[0].candidate is prepared.candidates[0]
-    assert lifecycle.role_names == ("B", "C", "B_prime")
+    assert lifecycle.role_names == ("B", "C")
     closure = lifecycle.closure
     assert closure is not None
     codec = _resident_closure_codec()
@@ -663,9 +679,6 @@ def test_registered_count_fail_is_a_durable_terminal_without_audit_or_t(
         coordinator, commissioned, harness, plan, capability, continuation)
     assert prefix.count_result is not None
     assert prefix.count_result.decision == "FAIL"
-    monkeypatch.setattr(
-        ResidentSpeedPolicy, "read_window_scatter", lambda _policy, _row: 0.0
-    )
     prepared, resident, lifecycle = _exact_lifecycle(
         harness, plan, capability, prefix, preserve_workload=True
     )
@@ -721,33 +734,14 @@ def test_registered_count_fail_is_a_durable_terminal_without_audit_or_t(
 def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
     tmp_path, monkeypatch, lifetimes, managed_executors
 ):
-    coordinator, commissioned, harness, old_plan, capability, prefix_scope = (
+    coordinator, commissioned, harness, plan, capability, prefix_scope = (
         _coordinator_case(tmp_path, monkeypatch, lifetimes, managed_executors)
     )
     prefix = _run_prefix(
-        coordinator, commissioned, harness, old_plan, capability, prefix_scope)
+        coordinator, commissioned, harness, plan, capability, prefix_scope)
     assert prefix.count_result.decision == "PASS"
-    resident = old_plan.resident_speed_plan
-    assert resident is not None
-    plan = replace(
-        old_plan,
-        resident_speed_plan=replace(
-            resident,
-            policy=replace(resident.policy, version=6),
-        ),
-    )
-    monkeypatch.setattr(
-        ResidentSpeedPolicy, "read_window_scatter", lambda _policy, _row: 0.0
-    )
     _prepared, _resident, lifecycle = _exact_lifecycle(
         harness, plan, capability, prefix, preserve_workload=True
-    )
-    lifecycle = replace(
-        lifecycle,
-        retirement=replace(
-            lifecycle.retirement,
-            qualification_authority_digest=qualification_authority_digest(plan),
-        ),
     )
     assert lifecycle.role_names == ("B", "C")
     assert lifecycle.crossover.decision is SpeedStageDecision.PASS
@@ -832,198 +826,6 @@ def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
             _capture(batch, authority, plan, reference, readiness, supports[:-1]),
             tmp_path / "v6-pass-missing-stock",
         )
-
-
-def test_real_v4_attempt_restarts_and_imports_through_cpu_semantic_reopen(
-    tmp_path, monkeypatch, lifetimes, managed_executors
-):
-    coordinator, commissioned, harness, plan, capability, continuation0 = (
-        _coordinator_case(tmp_path, monkeypatch, lifetimes, managed_executors)
-    )
-    prefix = _run_prefix(
-        coordinator, commissioned, harness, plan, capability, continuation0)
-    monkeypatch.setattr(
-        ResidentSpeedPolicy, "read_window_scatter", lambda _policy, _row: 0.0)
-    _prepared, _resident, lifecycle = _exact_lifecycle(
-        harness, plan, capability, prefix, preserve_workload=True)
-    closure = lifecycle.closure
-    assert closure is not None
-    base = lifecycle.retirement_cutoff + 1.0
-    candidate = plan.candidates[0]
-    delta = candidate.selected_delta_digest
-    policy = plan.audit_policies[0]
-    receipts = tuple(
-        runner_module.AuditReceiptFacts(
-            slot, policy.minimum_calls, 0, 0, 0, 1.0, 0.995,
-            "allclose", 900 + rank, rank, policy.expected_member_count)
-        for slot in policy.expected_slots
-        for rank in range(policy.expected_member_count))
-    passed, detail = gate(
-        [row.to_gate_dict() for row in receipts],
-        min_calls=policy.minimum_calls,
-        expected_slots=policy.expected_slots,
-        expected_member_count=policy.expected_member_count)
-    assert passed
-    audit = runner_module.AuditWitness(
-        delta, plan.resident_audit_plan.launch.digest, _h("real-v4-audit"), "f" * 32,
-        plan.expected_runtime_resource_policy_digest,
-        policy, receipts, QualificationDecision.PASS, detail)
-
-    def quiet(sequence, observed):
-        return OCIQuiescenceReceipt(
-            "cacheon.oci-quiescence.v1", "cpu-v4", "a" * 32,
-            _h("cpu-v4-namespace"), sequence, observed, (), (), ())
-
-    def device(sequence, phase, started, completed):
-        return DeviceStateReceipt(
-            "cacheon.device-state-receipt.v1", sequence, "e" * 32, phase,
-            tuple(range(plan.pristine_launch.hardware.visible_gpu_count)),
-            _h("cpu-v4-device"), plan.expected_device_policy_digest,
-            started, completed, 1,
-            (DeviceStateSample(started, (), (), True, "idle"),))
-
-    before, after = quiet(1, base + 2.0), quiet(2, base + 6.0)
-    pre = device(1, "pre", base + 3.0, base + 3.5)
-    post = device(2, "post", base + 4.0, base + 5.0)
-    request = SimpleNamespace(sha256=_h("cpu-v4-t-request"))
-    exchange = SimpleNamespace(
-        request=request, request_sha256=request.sha256,
-        evidence_frame_sha256=_h("cpu-v4-t-frame"))
-    session = SimpleNamespace(
-        exchanges=(exchange,), digest=_h("cpu-v4-t-session"),
-        session_id="d" * 32, request_plan_digest=_h("cpu-v4-request-plan"))
-    binding0 = plan.pristine_binding
-    execution = SimpleNamespace(
-        launch_digest=plan.pristine_launch.digest,
-        runtime_identity=runtime_identity_from_preflight(binding0.runtime_preflight_receipt),
-        runtime_preflight_receipt_sha256=binding0.runtime_preflight_receipt.sha256,
-        arena_model_receipt_digest=plan.model_mount.digest,
-        resource_policy_digest=plan.expected_runtime_resource_policy_digest,
-        prebuild=SimpleNamespace(build_spec_digest=binding0.native_build_spec.digest),
-        native_publication_digest=_h("cpu-v4-publication"),
-        runtime_argv_sha256=_h("cpu-v4-argv"), recovered_lease_ids=(),
-        device_receipts=(pre, post), session=session)
-    entropy = SelectionEntropyReceipt(
-        plan.commitment.entropy_source_digest, plan.commitment.digest,
-        _h("cpu-v4-entropy"), _h("cpu-v4-entropy-authority"))
-    selection = runner_module.SelectionReceipt.reveal(
-        plan.commitment, secret=plan.selection_secret, entropy=entropy,
-        sealed_cohort_trajectory_digest=runner_module.cohort_trajectory_digest(lifecycle))
-    profile = candidate.profile
-    selected = selection.selected_prompt_digests
-    lifecycle_digest = runner_module.candidate_lifecycle_digest(
-        lifecycle, selected_delta_digest=delta)
-    binding = runner_module.ReferenceQualityRawBinding(
-        runner_module.canonical_digest(
-            "cacheon.qualification.candidate-identity",
-            {
-                "calibration_digest": plan.calibration_manifest.digest,
-                "candidate_lifecycle_digest": lifecycle_digest,
-                "graph_requirement_digest": candidate.graph_requirement.digest,
-                "profile_digest": profile.digest,
-                "selected_delta_digest": delta,
-                "selection_digest": selection.digest,
-                "t_request_sha256": request.sha256,
-                "t_session_digest": session.digest,
-            }),
-        profile.reference.digest, plan.calibration_manifest.digest,
-        selection.digest, lifecycle_digest,
-        runner_module.selected_trajectory_digest(
-            lifecycle, selected_delta_digest=delta,
-            selected_prompt_digests=selected),
-        runner_module.selected_trajectory_projection_digest(
-            lifecycle, selected_delta_digest=delta, selected_prompt_digests=selected),
-        selected, session.digest, request.sha256,
-        profile.support_policy_digest,
-        runner_module.derived_hidden_task_plan_digest(profile, selected),
-        profile.nll_tail_threshold, profile.tokens_per_prompt,
-        profile.topk_width, profile.hidden_tasks_per_prompt)
-    stages = []
-
-    def stage(**_kwargs):
-        stages.append("audit+t")
-        return SimpleNamespace(
-            terminal=False, lifecycle=lifecycle,
-            audit_witnesses={audit.selected_delta_digest: audit},
-            audit_started=base, audit_completed=base + 1.0,
-            teardown_before=before, entropy=entropy,
-            entropy_observed=base + 2.5, selection=selection,
-            requests=(request,), plan=SimpleNamespace(digest=_h("cpu-v4-t-plan")),
-            reference_execution=execution, teardown_after=after,
-            t_pre=pre, t_post=post)
-
-    monkeypatch.setattr(runner_module, "run_continuation_quality_stage", stage)
-    monkeypatch.setattr(runner_module, "request_sha256", lambda row: row.sha256)
-    monkeypatch.setattr(
-        runner_module, "_raw_artifact",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            binding=binding, to_dict=lambda: {"binding": binding.to_dict()}))
-    verdict = _quality_verdict(
-        QualificationDecision.PASS, 0, plan.calibration_manifest.digest)
-    monkeypatch.setattr(
-        runner_module, "reopen_reference_quality_evidence",
-        lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(
-        runner_module, "score_reference_quality", lambda *_args, **_kwargs: verdict)
-    monkeypatch.setattr(
-        runner_module, "validate_quality_binding", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        runner_module, "_validate_reference_execution", lambda *_args: None)
-
-    class PairContinuation(_MemoryContinuation):
-        def load_resident_pair_speed(self, _expected):
-            return lifecycle.crossover
-
-        def load_resident_pair_retirement(self):
-            return lifecycle.retirement
-
-    monkeypatch.setattr(runner_module, "QualificationContinuation", PairContinuation)
-
-    continuation = PairContinuation(
-        authority_digest=qualification_authority_digest(plan),
-        source_digest=plan.prepared.source.digest)
-    kwargs = dict(
-        executor=commissioned.plans[1].executor,
-        entropy_provider=lambda _commitment, _teardown: entropy,
-        hidden_judge=_forbidden_judge(
-            profile, "synthetic CPU T entered the live hidden judge"),
-        deadline=time.monotonic() + 30.0,
-        continuation=continuation,
-        resident_pair_lifecycle=lifecycle)
-    attempt_ref = run_causal_qualification(plan, **kwargs)
-    attempt = reopen_causal_qualification(
-        plan.evidence_root, attempt_ref, expected=plan,
-        resident_pair_lifecycle=lifecycle)
-    assert attempt_ref.schema == ATTEMPT_SCHEMA_V4
-    assert type(attempt) is CohortQualificationAttempt
-    assert run_causal_qualification(plan, **kwargs) == attempt_ref
-    assert stages == ["audit+t"]
-
-    authority = QualificationAuthorityManifest.seal(
-        plan, reservations=(harness.candidate.reservation,),
-        selection_secret_reference=_h("cpu-v4-secret-reference"))
-    report = attempt.reports[0]
-    batch = QualificationIntakeBatch(authority.digest, (
-        QualificationIntakeOutcome(
-            harness.candidate.reservation.reservation_digest,
-            report.selected_delta_digest, authority.digest,
-            QualificationDecision.PASS, "qualification_pass", False,
-            attempt_artifact_sha256=attempt_ref.sha256,
-            report_digest=report.digest),), attempt_ref)
-    reference = profile.reference
-    readiness = _readiness(plan, reference, "cpu-v4")
-    supports = (
-        report.raw_quality_artifact,
-        closure.count_checkpoint.raw_execution_evidence,
-        closure.count_checkpoint.candidate_observation,
-        closure.stock_authority.artifact)
-    product = _capture(batch, authority, plan, reference, readiness, supports)
-    assert import_remote_qualification_evidence(
-        product, tmp_path / "cpu-v4-import") == product.evidence_inventory
-    with pytest.raises(RemoteEvaluationDispatcherError, match="supporting evidence"):
-        import_remote_qualification_evidence(
-            _capture(batch, authority, plan, reference, readiness, supports[:-1]),
-            tmp_path / "cpu-v4-missing-support")
 
 
 def test_count_checkpoint_without_retirement_holds_and_never_reopens_pair(

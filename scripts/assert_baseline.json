@@ -165,7 +165,7 @@
 "tests/test_resident_execution_evidence.py": 37,
 "tests/test_resident_pair_binding.py": 27,
 "tests/test_resident_pair_crossover.py": 67,
-"tests/test_resident_pair_retirement_checkpoint.py": 65,
+"tests/test_resident_pair_retirement_checkpoint.py": 57,
 "tests/test_resident_pair_speed_witness.py": 13,
 "tests/test_resident_queue.py": 37,
 "tests/test_resident_request_deadline.py": 24,

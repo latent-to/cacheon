@@ -522,3 +522,83 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     assert incumbent_tree.runtime_manifest == "manifest.toml"
     assert incumbent_tree.stack_digest == incumbent.digest
     assert incumbent.digest != stock.digest
+
+
+def test_sealed_incumbent_bundle_is_derived_staged_and_bounded(
+    tmp_path: Path,
+) -> None:
+    """The v7 baseline injection identity is sealed from the stack entry.
+
+    Digest and slot set come from the resolver-verified source and the
+    registered target's members — never from a runtime swap acknowledgement —
+    and the bundle bytes are staged content-addressed into the swap intake.
+    Anything one swap cannot realize returns None (the two-process route),
+    not an error.
+    """
+
+    import tests.test_engine_tree as engine_tree_fixtures
+    from cacheon.bundle_hash import content_hash
+
+    source = engine_tree_fixtures._copy(tmp_path)
+    catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
+    intake = commission._swap_intake_root(tmp_path / "resident-intake" / "A")
+    resolver = SimpleNamespace(resolve_proposal=lambda digest: source)
+
+    genesis = SimpleNamespace(incumbent_entries={}, source_resolver=resolver)
+    assert commission._sealed_incumbent_bundle(genesis, catalog, intake) is None
+
+    capabilities = SimpleNamespace(
+        incumbent_entries={ref.target_id: ref}, source_resolver=resolver
+    )
+    sealed = commission._sealed_incumbent_bundle(capabilities, catalog, intake)
+    assert sealed is not None
+    assert sealed.target_id == ref.target_id
+    assert sealed.bundle_digest == ref.artifact_digest
+    assert sealed.slots == tuple(sorted(catalog.require(ref.target_id).members))
+    staged = intake / sealed.bundle_digest
+    assert staged.is_dir()
+    assert content_hash(staged) == sealed.bundle_digest
+
+    multiple = SimpleNamespace(
+        incumbent_entries={ref.target_id: ref, "second.target": ref},
+        source_resolver=resolver,
+    )
+    assert commission._sealed_incumbent_bundle(multiple, catalog, intake) is None
+
+
+def test_sealed_incumbent_bundle_refuses_unswappable_and_foreign_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.test_engine_tree as engine_tree_fixtures
+    from cacheon.eval import resident_screen_lane
+
+    source = engine_tree_fixtures._copy(tmp_path)
+    catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
+    intake = commission._swap_intake_root(tmp_path / "resident-intake" / "A")
+    capabilities = SimpleNamespace(
+        incumbent_entries={ref.target_id: ref},
+        source_resolver=SimpleNamespace(resolve_proposal=lambda digest: source),
+    )
+
+    monkeypatch.setattr(
+        resident_screen_lane,
+        "screen_swappability",
+        lambda manifest: "native-rebuild bundles are not swappable",
+    )
+    assert (
+        commission._sealed_incumbent_bundle(capabilities, catalog, intake) is None
+    )
+
+    import cacheon.manifest as manifest_module
+
+    monkeypatch.setattr(resident_screen_lane, "screen_swappability", lambda m: None)
+    monkeypatch.setattr(
+        manifest_module,
+        "load_manifest",
+        lambda path: SimpleNamespace(ops=(SimpleNamespace(slot="foreign.slot"),)),
+    )
+    with pytest.raises(
+        commission.B300QualificationCommissionError,
+        match="differ from its registered target members",
+    ):
+        commission._sealed_incumbent_bundle(capabilities, catalog, intake)

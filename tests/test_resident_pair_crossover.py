@@ -29,6 +29,7 @@ from cacheon.eval.resident_pair_binding import (
     ResidentPairRuntimeBinding,
 )
 from cacheon.eval.resident_pair_crossover import (
+    ResidentPairCrossoverError,
     ResidentPairCrossoverHold,
     ResidentPairCrossoverPlan,
     run_resident_pair_crossover,
@@ -243,18 +244,30 @@ def _setup(
     cleanup_pairs,
     *,
     baseline=(1.0,),
-    candidate=(0.8,),
+    candidate=(1.0 / 1.006,),
     policy=None,
-    timed_batches=1,
+    timed_batches=3,
     baseline_pair_lane="A",
     candidate_executed_ranks=None,
+    baseline_executed_ranks=None,
+    baseline_bundle_digest=None,
+    baseline_bundle_slots=(),
 ):
+    # The pair-native substrate refuses policies below v6, so the default rig
+    # is the v6 conditional-bookend policy over three timed windows; scalar
+    # durations repeat into identical windows (zero scatter).
     crossover, *_ = _rig(
         tmp_path,
         (1.0, 1.0),
-        policy=policy,
+        policy=_borderline_policy(version=6) if policy is None else policy,
         timed_batches=timed_batches,
     )
+    if baseline_bundle_digest is not None or baseline_bundle_slots:
+        crossover = replace(
+            crossover,
+            baseline_bundle_digest=baseline_bundle_digest,
+            baseline_bundle_slots=baseline_bundle_slots,
+        )
     clock, activity = _Clock(), _Activity()
     template = crossover.baseline.session_plan
     if baseline_pair_lane not in ("A", "B"):
@@ -267,7 +280,9 @@ def _setup(
         clock,
         activity,
         executed_ranks=(
-            None if baseline_pair_lane == "A" else candidate_executed_ranks
+            baseline_executed_ranks
+            if baseline_pair_lane == "A"
+            else candidate_executed_ranks
         ),
     )
     factory_b = _Factory(
@@ -277,7 +292,9 @@ def _setup(
         clock,
         activity,
         executed_ranks=(
-            None if baseline_pair_lane == "B" else candidate_executed_ranks
+            baseline_executed_ranks
+            if baseline_pair_lane == "B"
+            else candidate_executed_ranks
         ),
     )
     pair = ResidentEvaluationPair(
@@ -318,81 +335,40 @@ def _setup(
     return plan, pair, clock, activity, factory_a, factory_b
 
 
-@pytest.mark.parametrize(
-    ("candidate_duration", "decision"),
-    ((0.75, SpeedStageDecision.PASS), (1.25, SpeedStageDecision.FAIL)),
-)
-def test_exact_serial_b_c_b_prime_clear_decisions(
-    tmp_path, cleanup_pairs, candidate_duration, decision
-):
-    plan, pair, clock, activity, factory_a, factory_b = _setup(
-        tmp_path,
-        cleanup_pairs,
-        baseline=(1.0, 1.0),
-        candidate=(candidate_duration,),
-    )
-    evidence = run_resident_pair_crossover(
-        plan, pair=pair, deadline=clock() + 120.0, clock=clock
-    )
-
-    assert evidence.decision is decision
-    assert not evidence.escalated
-    assert tuple(row.role for row in evidence.rates) == ("B", "C", "B_prime")
-    assert tuple(row.lane_id for row in evidence.request_slices) == ("A", "B", "A")
-    assert tuple(len(row.new_swaps) for row in evidence.request_slices) == (0, 2, 0)
-    assert all(
-        row.ending_bundle_digest is None and not row.ending_slots
-        for row in evidence.request_slices
-    )
-    assert evidence.regrade(plan) == evidence.final_verdict
-    assert not activity.overlap
-    assert factory_a.sessions[0].finish_calls == factory_b.sessions[0].finish_calls == 0
-
-
-def _borderline_policy(*, version=1):
-    windowed = version >= 3
+def _borderline_policy(*, version):
+    # The pair-native substrate shipped with the v6 conditional-bookend grade;
+    # earlier versions are refused at run and regrade.
     return ResidentSpeedPolicy(
         60,
         0.005,
         0.1,
-        0.002 if version >= 6 else 0.02 if version >= 2 else 0.1,
+        0.002,
         "8" * 64,
         "9" * 64,
         version=version,
-        min_windows=3 if windowed else 0,
-        max_window_scatter=0.01 if windowed else 0.0,
-        max_conditioning_slowdown=1.5 if windowed else 0.0,
+        min_windows=3,
+        max_window_scatter=0.01,
+        max_conditioning_slowdown=1.5,
     )
 
 
-def test_borderline_escalates_exactly_and_settles_pass(tmp_path, cleanup_pairs):
-    plan, pair, clock, _, factory_a, factory_b = _setup(
+def test_pair_native_refuses_pre_v6_policies(tmp_path, cleanup_pairs):
+    """No pre-v6 pair evidence exists; a pre-v6 plan is a caller error."""
+
+    plan, pair, clock, *_ = _setup(
         tmp_path,
         cleanup_pairs,
-        baseline=(1.0, 1.0, 1.0),
-        candidate=(0.995, 0.98),
-        policy=_borderline_policy(),
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((0.8,) * 3,),
+        policy=_borderline_policy(version=5),
+        timed_batches=3,
     )
-    evidence = run_resident_pair_crossover(
-        plan, pair=pair, deadline=clock() + 120.0, clock=clock
-    )
-
-    assert evidence.escalated and evidence.decision is SpeedStageDecision.PASS
-    assert tuple(row.role for row in evidence.rates) == (
-        "B",
-        "C",
-        "B_prime",
-        "C_prime",
-        "B_double_prime",
-    )
-    assert tuple(row.lane_id for row in evidence.request_slices) == (
-        "A",
-        "B",
-        "A",
-        "B",
-        "A",
-    )
-    assert factory_a.sessions[0].finish_calls == factory_b.sessions[0].finish_calls == 0
+    with pytest.raises(
+        ResidentPairCrossoverError, match="requires speed policy version >= 6"
+    ):
+        run_resident_pair_crossover(
+            plan, pair=pair, deadline=clock() + 120.0, clock=clock
+        )
 
 
 @pytest.mark.parametrize(
@@ -501,6 +477,114 @@ def test_v7_swaps_both_arms_so_neither_role_is_measured_unswapped(
 
 
 @pytest.mark.parametrize(
+    ("candidate_duration", "decision"),
+    ((1.05, SpeedStageDecision.FAIL), (0.99, SpeedStageDecision.PASS)),
+)
+def test_v7_baseline_injects_the_sealed_incumbent(
+    tmp_path, cleanup_pairs, candidate_duration, decision
+):
+    """Past genesis the v7 baseline read activates the sealed incumbent bundle.
+
+    Both lane engines stay stock-booted; the measured baseline is realized by
+    injection, so the B read takes the candidate's exact slice shape — a
+    leading activation carrying the commissioned digest and slot set, closed
+    by the coordinator's stock restoration — and ends clean like every read.
+    """
+
+    incumbent = _h("crowned-incumbent")
+    plan, pair, clock, activity, *_ = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((candidate_duration,) * 3,),
+        policy=_borderline_policy(version=7),
+        timed_batches=3,
+        baseline_bundle_digest=incumbent,
+        baseline_bundle_slots=("registered.slot",),
+    )
+
+    evidence = run_resident_pair_crossover(
+        plan, pair=pair, deadline=clock() + 120.0, clock=clock
+    )
+
+    assert evidence.decision is decision
+    baseline_slice, candidate_slice = evidence.request_slices
+    assert baseline_slice.bundle_digest == incumbent
+    assert candidate_slice.bundle_digest == plan.candidate_bundle_digest
+    assert baseline_slice.expected_swap_count == 2
+    activation, restoration = baseline_slice.new_swaps
+    assert activation.bundle_digest == incumbent
+    assert activation.slots == ("registered.slot",)
+    assert restoration.bundle_digest is None and not restoration.slots
+    # Timed baseline batches ran under the incumbent's registered slots.
+    assert all(
+        row.active_slots == ("registered.slot",)
+        for row in baseline_slice.new_batches
+    )
+    # Both slices end restored to stock.
+    assert baseline_slice.ending_bundle_digest is None
+    assert not baseline_slice.ending_slots
+    assert candidate_slice.ending_bundle_digest is None
+    assert evidence.regrade(plan) == evidence.final_verdict
+    assert not activity.overlap
+
+
+@pytest.mark.parametrize("executed_ranks", (-1, 0, 3))
+def test_an_injected_incumbent_without_proven_execution_is_hold(
+    tmp_path, cleanup_pairs, executed_ranks
+):
+    """A baseline that loads the incumbent but never runs it measured stock.
+
+    That is exactly the fake-attribution trap the injection design closes:
+    without this hold, an inert incumbent bundle would time plain stock under
+    incumbent labels and every honest candidate would be graded against the
+    wrong bar.
+    """
+
+    plan, pair, clock, *_ = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((0.99,) * 3,),
+        policy=_borderline_policy(version=7),
+        timed_batches=3,
+        baseline_bundle_digest=_h("crowned-incumbent"),
+        baseline_bundle_slots=("registered.slot",),
+        baseline_executed_ranks=executed_ranks,
+    )
+    with pytest.raises(ResidentPairCrossoverHold) as caught:
+        run_resident_pair_crossover(
+            plan, pair=pair, deadline=clock() + 120.0, clock=clock
+        )
+    assert "injected incumbent has no proof its kernel executed" in str(caught.value)
+
+
+def test_injected_incumbent_slots_are_sealed_not_ack_derived(
+    tmp_path, cleanup_pairs
+):
+    """The baseline activation must register exactly the commissioned slot set."""
+
+    plan, pair, clock, *_ = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((0.99,) * 3,),
+        policy=_borderline_policy(version=7),
+        timed_batches=3,
+        baseline_bundle_digest=_h("crowned-incumbent"),
+        # The stub engine registers ("registered.slot",); a sealed set naming
+        # anything else must hold rather than accept the ack's word for it.
+        baseline_bundle_slots=("another.slot",),
+    )
+    with pytest.raises(
+        ResidentPairCrossoverHold, match="dispatch or stock restore is ambiguous"
+    ):
+        run_resident_pair_crossover(
+            plan, pair=pair, deadline=clock() + 120.0, clock=clock
+        )
+
+
+@pytest.mark.parametrize(
     "executed_ranks, why",
     [
         (-1, "unobserved: the rank evidence path was incomplete"),
@@ -547,8 +631,10 @@ def test_candidate_exception_crosses_the_real_resident_pair_path_typed(
     plan, pair, clock, _activity, _factory_a, factory_b = _setup(
         tmp_path,
         cleanup_pairs,
-        baseline=(1.0,),
-        candidate=(0.8,),
+        baseline=((1.0,) * 3,),
+        candidate=((0.8,) * 3,),
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
     )
     session = factory_b.sessions[0]
     candidate_error = OuterSessionCandidateError(
@@ -646,7 +732,16 @@ def test_v6_regrade_rejects_missing_b_prime_and_bad_windows(
 def test_independent_regrade_rejects_schedule_tampering(
     tmp_path, cleanup_pairs, tamper
 ):
-    plan, pair, clock, *_ = _setup(tmp_path, cleanup_pairs)
+    # A borderline candidate makes v6 append B-prime, giving three slices to
+    # tamper with.
+    plan, pair, clock, *_ = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((1.0 / 1.006,) * 3,),
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
+    )
     evidence = run_resident_pair_crossover(
         plan, pair=pair, deadline=clock() + 120.0, clock=clock
     )
@@ -669,8 +764,15 @@ def test_independent_regrade_rejects_schedule_tampering(
         changed.regrade(plan)
 
 
-def test_incomplete_and_scattered_evidence_are_hold(tmp_path, cleanup_pairs):
-    plan, pair, clock, *_ = _setup(tmp_path / "incomplete", cleanup_pairs)
+def test_incomplete_evidence_is_hold(tmp_path, cleanup_pairs):
+    plan, pair, clock, *_ = _setup(
+        tmp_path / "incomplete",
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((0.8,) * 3,),
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
+    )
     evidence = run_resident_pair_crossover(
         plan, pair=pair, deadline=clock() + 120.0, clock=clock
     )
@@ -687,43 +789,15 @@ def test_incomplete_and_scattered_evidence_are_hold(tmp_path, cleanup_pairs):
     with pytest.raises(ResidentPairCrossoverHold):
         changed.regrade(plan)
 
-    noisy_plan, noisy_pair, noisy_clock, *_ = _setup(
-        tmp_path / "scatter",
-        cleanup_pairs,
-        baseline=((0.5, 1.0, 2.0), (0.5, 1.0, 2.0)),
-        candidate=((1.0, 1.0, 1.0),),
-        policy=_borderline_policy(version=3),
-        timed_batches=3,
-    )
-    with pytest.raises(ResidentPairCrossoverHold, match="unfit"):
-        run_resident_pair_crossover(
-            noisy_plan,
-            pair=noisy_pair,
-            deadline=noisy_clock() + 120.0,
-            clock=noisy_clock,
-        )
-
-
-def test_post_escalation_nonconfidence_is_hold(tmp_path, cleanup_pairs):
-    plan, pair, clock, *_ = _setup(
-        tmp_path,
-        cleanup_pairs,
-        baseline=(1.0, 1.0, 1.0),
-        candidate=(0.995, 0.5),
-        policy=_borderline_policy(),
-    )
-    with pytest.raises(ResidentPairCrossoverHold, match="post-escalation"):
-        run_resident_pair_crossover(
-            plan, pair=pair, deadline=clock() + 120.0, clock=clock
-        )
-
 
 def test_three_bundle_digests_reuse_sessions_without_finish(tmp_path, cleanup_pairs):
     base, pair, clock, _, factory_a, factory_b = _setup(
         tmp_path,
         cleanup_pairs,
-        baseline=(1.0,) * 6,
-        candidate=(0.75,) * 3,
+        baseline=((1.0,) * 3,) * 3,
+        candidate=((0.75,) * 3,) * 3,
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
     )
     identities = pair.identities
     for index in range(3):
@@ -739,7 +813,14 @@ def test_three_bundle_digests_reuse_sessions_without_finish(tmp_path, cleanup_pa
 def test_one_absolute_stage_deadline_binds_every_resident_read(
     tmp_path, cleanup_pairs, monkeypatch
 ):
-    plan, pair, clock, *_ = _setup(tmp_path, cleanup_pairs)
+    plan, pair, clock, *_ = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((0.8,) * 3,),
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
+    )
     observed = []
     original = ResidentEvaluationPair.run_lane
 
@@ -752,7 +833,8 @@ def test_one_absolute_stage_deadline_binds_every_resident_read(
         plan, pair=pair, deadline=clock() + 120.0, clock=clock
     )
 
-    assert observed == [evidence.deadline_monotonic_s] * 3
+    assert len(evidence.rates) == 2
+    assert observed == [evidence.deadline_monotonic_s] * len(evidence.rates)
 
     called = False
 
@@ -779,8 +861,12 @@ def test_concurrent_stages_are_pair_global_and_whole_stage_serialized(
     base, pair, clock, activity, factory_a, factory_b = _setup(
         tmp_path,
         cleanup_pairs,
-        baseline=(1.0,) * 50,
-        candidate=(0.75,) * 30,
+        # A borderline candidate keeps every stage on the three-leg terminal
+        # schedule so the serialized six-slice tail below stays exact.
+        baseline=(((1.0,) * 3,) * 50),
+        candidate=(((1.0 / 1.006,) * 3,) * 30),
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
     )
     for round_index in range(10):
         barrier = threading.Barrier(2)

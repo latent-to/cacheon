@@ -21,6 +21,7 @@ from cacheon.eval.b300_registered_qualification import (
     B300RegisteredQualificationError,
     B300RegisteredQualificationInputs,
     B300RegisteredQualificationPolicy,
+    SealedIncumbentBundle,
     build_b300_registered_qualification_factory,
 )
 from cacheon.eval.b300_resident_pair_factory import (
@@ -64,6 +65,7 @@ from cacheon.eval.oci_backend import (
     OCIEngineExecutor,
     TrustedArenaModelMountReceipt,
     expected_runtime_preflight,
+    stage_swap_bundle,
 )
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_resident_session import ResidentSessionPlan
@@ -193,6 +195,54 @@ def _swap_intake_root(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True, mode=0o711)
     path.chmod(0o711)
     return path
+
+
+def _sealed_incumbent_bundle(
+    capabilities: B300QualificationCapabilities,
+    catalog,
+    swap_intake_root: Path,
+) -> SealedIncumbentBundle | None:
+    """Derive and stage the bundle the v7 baseline read injects, or None.
+
+    The identity is sealed from the durable incumbent stack entry and its
+    resolver-verified source manifest — the swap acknowledgement never gets a
+    vote. None is not an error: at genesis, and whenever the incumbent stack
+    is not reachable by one swap (multiple entries, a non-proposal reference,
+    or a non-swappable bundle), every candidate routes to the version-8
+    two-process schedule, whose baseline boots the incumbent tree instead.
+    """
+
+    from cacheon.eval.resident_screen_lane import screen_swappability
+    from cacheon.manifest import load_manifest
+    from cacheon.stack_manifest import ProposalContributionRef
+
+    entries = dict(capabilities.incumbent_entries)
+    if len(entries) != 1:
+        return None
+    ((target_id, ref),) = entries.items()
+    if type(ref) is not ProposalContributionRef:
+        return None
+    try:
+        source = capabilities.source_resolver.resolve_proposal(ref.artifact_digest)
+        manifest = load_manifest(source)
+        if screen_swappability(manifest) is not None:
+            return None
+        slots = tuple(sorted({op.slot for op in manifest.ops}))
+        members = tuple(sorted(catalog.require(target_id).members))
+        if slots != members:
+            raise B300QualificationCommissionError(
+                "incumbent bundle slots differ from its registered target members"
+            )
+        staged = stage_swap_bundle(
+            swap_intake_root, source, expected_digest=ref.artifact_digest
+        )
+        return SealedIncumbentBundle(target_id, staged, slots)
+    except B300QualificationCommissionError:
+        raise
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        raise B300QualificationCommissionError(
+            f"incumbent bundle failed to seal for baseline injection: {exc}"
+        ) from None
 
 
 def _resident_plan(
@@ -650,6 +700,51 @@ def _compose_locked(
         baseline_executor.config.runtime.digest,
         baseline_executor.device_policy.configuration_sha256,
     )
+    # The standing pair's lane engines boot plain stock; the measured baseline
+    # (the incumbent stack above) is realized inside them by injecting the
+    # sealed incumbent bundle through the swap path. Trust gates on
+    # stock-launched sessions therefore stay exact, and the receipts carry
+    # both identities: the pair binding records each lane's booted stock
+    # launch, the crossover arms record the measured stacks. At genesis the
+    # incumbent tree reproduces stock and the identities coincide.
+    stock_resident_native = screen_deployment._native_build(
+        stock_tree.tree_digest,
+        inputs.preflight,
+        baseline_executor.config.prebuild.policy,
+    )
+    stock_resident_launch = replace(
+        resident_launch,
+        stack_digest=stock_tree.stack_digest,
+        tree_digest=stock_tree.tree_digest,
+        native_build_spec_digest=stock_resident_native.digest,
+    )
+    stock_resident_binding = TrustedLaunchBinding(
+        materialized_tree_root=stock_tree.root,
+        controller_distribution_digest=inputs.controller_distribution_digest,
+        native_build_spec=stock_resident_native,
+        runtime_preflight_receipt=inputs.preflight,
+        physical_hardware=resident_physical,
+    )
+    stock_resident_session_plan = replace(
+        baseline_session_plan,
+        launch_digest=stock_resident_launch.digest,
+        expected_preflight=expected_runtime_preflight(
+            stock_resident_launch, inputs.preflight
+        ),
+    )
+    stock_candidate_launch = replace(
+        incumbent_launch,
+        stack_digest=stock_tree.stack_digest,
+        tree_digest=stock_tree.tree_digest,
+        native_build_spec_digest=pristine_native.digest,
+    )
+    stock_candidate_session_plan = replace(
+        baseline_session_plan,
+        launch_digest=stock_candidate_launch.digest,
+        expected_preflight=expected_runtime_preflight(
+            stock_candidate_launch, inputs.preflight
+        ),
+    )
     resident_speed_policy = ResidentSpeedPolicy.from_calibration(
         max_stage_seconds=speed_block["max_stage_seconds"],
         max_qualification_seconds=speed_block["max_qualification_seconds"],
@@ -682,42 +777,49 @@ def _compose_locked(
     orientation = lane_pair.orientation(screen_lane)
     baseline_lane_plan = B300ResidentStockLanePlan(
         orientation.resident_baseline,
-        incumbent_tree,
-        resident_launch,
-        resident_binding,
-        _resident_plan(resident_launch, resident_binding, resident_session_plan),
-        resident_session_plan,
+        stock_tree,
+        stock_resident_launch,
+        stock_resident_binding,
+        _resident_plan(
+            stock_resident_launch,
+            stock_resident_binding,
+            stock_resident_session_plan,
+        ),
+        stock_resident_session_plan,
         baseline_executor,
     )
     candidate_lane_plan = B300ResidentStockLanePlan(
         orientation.candidate,
-        incumbent_tree,
-        incumbent_launch,
-        incumbent_binding.launch_binding,
+        stock_tree,
+        stock_candidate_launch,
+        pristine_binding.launch_binding,
         _resident_plan(
-            incumbent_launch,
-            incumbent_binding.launch_binding,
-            baseline_session_plan,
+            stock_candidate_launch,
+            pristine_binding.launch_binding,
+            stock_candidate_session_plan,
         ),
-        baseline_session_plan,
+        stock_candidate_session_plan,
         candidate_executor,
     )
+    swap_intake = _swap_intake_root(inputs.root / "resident-intake" / screen_lane)
+    incumbent_bundle = _sealed_incumbent_bundle(capabilities, catalog, swap_intake)
     resident_pair_factory = B300CommissionedResidentPairFactory(
         service_digest=manifest.digest,
         readiness=readiness,
         lane_pair=lane_pair,
         lane_plans=(baseline_lane_plan, candidate_lane_plan),
         model_mount=model_mount,
-        swap_intake_root=_swap_intake_root(
-            inputs.root / "resident-intake" / screen_lane
-        ),
+        swap_intake_root=swap_intake,
     )
     try:
+        # The count-quality envelope is sealed against the pristine stock
+        # identity; the measured baseline moving to the incumbent must not
+        # move this binding.
         count_context = B300ResidentCountQualityBuilderContext(
             catalog,
-            incumbent,
-            incumbent_launch,
-            incumbent_binding,
+            stock,
+            pristine_launch,
+            pristine_binding,
             evidence_root,
             lane_pair,
             engine_config.max_running_requests,
@@ -766,6 +868,7 @@ def _compose_locked(
             pristine_session_plan=pristine_session_plan,
             resident_baseline_arm=resident_baseline_arm,
             resident_speed_policy=resident_speed_policy,
+            incumbent_bundle=incumbent_bundle,
             candidate_executor_namespace_digest=(
                 candidate_executor.manager.namespace_digest
             ),

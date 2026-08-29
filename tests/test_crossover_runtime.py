@@ -471,6 +471,64 @@ def test_plan_rejects_overlapping_physical_lanes(tmp_path: Path) -> None:
         )
 
 
+def test_plan_seals_the_baseline_bundle_only_under_symmetric_swap(
+    tmp_path: Path,
+) -> None:
+    """The injected-baseline identity is a v7 pair-native concept only.
+
+    Slots without a digest, unsorted or duplicate slots, and any policy
+    version other than 7 (v8 boots the incumbent; pre-v7 has no baseline
+    swap) are plan construction errors, and the sealed fields participate in
+    the plan digest.
+    """
+
+    plan, *_ = _rig(tmp_path, (1.0, 1.0))
+
+    def policy(version: int) -> ResidentSpeedPolicy:
+        return ResidentSpeedPolicy(
+            60,
+            0.005,
+            2.0,
+            0.002,
+            "8" * 64,
+            "9" * 64,
+            version=version,
+            min_windows=3,
+            max_window_scatter=0.05,
+            max_conditioning_slowdown=1.5,
+        )
+
+    sealed = replace(
+        plan,
+        policy=policy(7),
+        baseline_bundle_digest="a" * 64,
+        baseline_bundle_slots=("a.slot", "b.slot"),
+    )
+    assert sealed.digest != replace(plan, policy=policy(7)).digest
+    for bad in (
+        dict(baseline_bundle_slots=("a.slot",)),  # slots without a digest
+        dict(baseline_bundle_digest="a" * 64),  # digest without slots
+        dict(
+            baseline_bundle_digest="a" * 64,
+            baseline_bundle_slots=("b.slot", "a.slot"),
+        ),
+        dict(
+            baseline_bundle_digest="a" * 64,
+            baseline_bundle_slots=("a.slot", "a.slot"),
+        ),
+    ):
+        with pytest.raises(CrossoverRuntimeError):
+            replace(plan, policy=policy(7), **bad)
+    for version in (6, 8):
+        with pytest.raises(CrossoverRuntimeError, match="symmetric-swap"):
+            replace(
+                plan,
+                policy=policy(version),
+                baseline_bundle_digest="a" * 64,
+                baseline_bundle_slots=("a.slot",),
+            )
+
+
 def test_retained_rate_span_is_independently_regraded(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path, (0.90, 0.90)

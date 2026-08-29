@@ -626,6 +626,46 @@ _COMMISSION_SEAL = object()
 
 
 @dataclass(frozen=True)
+class SealedIncumbentBundle:
+    """The one swappable incumbent contribution the v7 baseline read injects.
+
+    Derived at commission from the durable incumbent stack entry and its
+    resolver-verified source manifest — never from a runtime swap
+    acknowledgement.  Absent at genesis and whenever the incumbent stack
+    cannot be realized by a single swap (multiple entries, a non-swappable
+    bundle, or a non-proposal reference); every candidate then routes to the
+    version-8 two-process schedule, whose baseline boots the incumbent tree.
+    """
+
+    target_id: str
+    bundle_digest: str
+    slots: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "bundle_digest",
+            require_digest(
+                self.bundle_digest,
+                field="incumbent bundle digest",
+                error=B300RegisteredQualificationError,
+            ),
+        )
+        slots = self.slots
+        if (
+            type(self.target_id) is not str
+            or not self.target_id
+            or type(slots) is not tuple
+            or not slots
+            or any(type(slot) is not str or not slot for slot in slots)
+            or list(slots) != sorted(set(slots))
+        ):
+            raise B300RegisteredQualificationError(
+                "sealed incumbent bundle requires a target and sorted distinct slots"
+            )
+
+
+@dataclass(frozen=True)
 class B300RegisteredQualificationInputs:
     """Exact runtime, measurement, calibration, and prompt authorities.
 
@@ -664,6 +704,7 @@ class B300RegisteredQualificationInputs:
     candidate_executor_namespace_digest: str
     candidate_runtime_resource_policy_digest: str
     candidate_device_configuration_digest: str
+    incumbent_bundle: SealedIncumbentBundle | None = None
     seal: object = dc_field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -760,6 +801,22 @@ class B300RegisteredQualificationInputs:
             raise B300RegisteredQualificationError(
                 "resident-v3 baseline/candidate lane authority is inconsistent"
             )
+        if self.incumbent_bundle is not None:
+            if type(self.incumbent_bundle) is not SealedIncumbentBundle:
+                raise B300RegisteredQualificationError(
+                    "sealed incumbent bundle authority is not exactly typed"
+                )
+            declared = self.incumbent_stack.entries.get(
+                self.incumbent_bundle.target_id
+            )
+            if (
+                declared is None
+                or getattr(declared, "artifact_digest", None)
+                != self.incumbent_bundle.bundle_digest
+            ):
+                raise B300RegisteredQualificationError(
+                    "sealed incumbent bundle differs from the incumbent stack entry"
+                )
         if (
             self.policy.tokens_per_prompt
             != self.baseline_session_plan.max_new_tokens

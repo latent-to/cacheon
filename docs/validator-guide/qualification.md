@@ -413,7 +413,20 @@ one-shot adapter mode still refuse qualification before resident work.
 The commission measures B against the durable incumbent stack the
 capabilities factory declares (`incumbent_entries`, resolved through the same
 closed source resolver); at genesis the declaration is empty and the baseline
-is the stock tree. Pristine T stays anchored to the empty stock stack
+is the stock tree. How that baseline is realized depends on the schedule.
+Both standing pair-native lane engines always boot plain stock; on the v7
+schedule the baseline read injects the sealed incumbent bundle through the
+same swap path the candidate uses — the digest and registered slot set are
+sealed at commission from the stack entry and its resolver-verified manifest,
+staged content-addressed into the swap intake, re-hashed inside the container
+at swap time, and the read holds unless the incumbent's execution is proven
+on every rank. The v7 schedule therefore serves only hot-swappable candidates
+that replace the incumbent's own registered target (or genesis); every other
+candidate — non-swappable bundles, different-target challengers, or an
+incumbent stack one swap cannot realize — runs the version-8 two-process
+schedule, whose baseline process boots the materialized incumbent tree. The
+worker routes on the sealed version the plan carries, so plan and execution
+cannot disagree. Pristine T stays anchored to the empty stock stack
 regardless of the declared incumbent, so the untimed audit reference never
 inherits crowned contributions. A declaration that does not reproduce the
 durable stack identity fails closed at the dispatcher's incumbent pin and at

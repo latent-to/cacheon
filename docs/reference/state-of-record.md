@@ -398,6 +398,19 @@ genesis authority and fails closed on any lookup. Commission registrations
 sealed before this revision do not replay against it; a fresh commission is
 required.
 
+Also from 2026-08-29, the declared baseline is realized per schedule rather
+than by booting champion trees into the pair lanes: v7 pair-native engines
+boot plain stock and the baseline read injects the sealed incumbent bundle
+through the swap path (identity sealed from the stack entry and its
+resolver-verified manifest, never from a swap acknowledgement; execution must
+be proven per rank or the read holds), while the version-8 two-process
+schedule boots the materialized incumbent tree for its baseline process. v7
+serves hot-swappable candidates replacing the incumbent's registered target
+(or genesis); everything else routes to v8, and the worker routes on the
+sealed plan version. The retired pre-v6 pair-native grading branches were
+deleted in the same change; the pair-native substrate now refuses speed
+policy versions below 6 at run and regrade.
+
 From 2026-07-25 the resident speed policy of record was version 2: the scored
 rate is the
 steady-state timed window (`timed_tokens / timed_seconds`), conditioning stays
