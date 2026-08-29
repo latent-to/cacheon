@@ -31,6 +31,11 @@ from dashboard.forensics import (
     forensics_log,
     submission_forensics,
 )
+from dashboard.receipts import (
+    qualification_evidence_roots,
+    qualification_speed,
+    screen_stages,
+)
 
 # ---------------------------------------------------------------- config ---
 
@@ -45,6 +50,13 @@ HEARTBEAT_PATH = SPOOL / "state" / "heartbeat.json"
 REGISTRATION_PATH = Path(
     "/root/cacheon-ops/remote-worker/state/current-registration.json")
 LOG_ROOT = Path("/root/cacheon-ops/logs")
+# Qualification stage-exit artifacts live in per-generation evidence stores;
+# these are every place a graded attempt's artifact may still be retained.
+QUAL_EVIDENCE_STATE = Path("/root/cacheon-ops/remote-worker/state")
+QUAL_EVIDENCE_EXTRA = (
+    Path("/root/cacheon-ops/remote-worker/standing-qual-evidence"),
+    MISSION / "evidence",
+)
 
 NETWORK = os.environ.get(
     "CACHEON_DASH_NETWORK", "wss://archive.sub.latent.to")
@@ -765,15 +777,19 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
 
     detail["screen_attempts_history"] = [
         {"attempt": d["attempt_index"], "decision": d["decision"],
-         "lane": d["lane"], "stage_count": d["stage_count"]}
+         "lane": d["lane"], "stage_count": d["stage_count"],
+         "stages": screen_stages(d["receipt_json"])}
         for d in rows(con, """
-            SELECT attempt_index, decision, lane, stage_count
+            SELECT attempt_index, decision, lane, stage_count, receipt_json
             FROM arena_screen_dispositions WHERE reservation_id=? ORDER BY attempt_index
         """, (rid,))]
+    evidence_roots = qualification_evidence_roots(
+        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA)
     detail["qualification_attempts"] = [
-        {"attempt": d["attempt_index"], "decision": d["decision"], "reason": d["reason"]}
+        {"attempt": d["attempt_index"], "decision": d["decision"], "reason": d["reason"],
+         "speed": qualification_speed(d["attempt_ref_json"], evidence_roots)}
         for d in rows(con, """
-            SELECT attempt_index, decision, reason
+            SELECT attempt_index, decision, reason, attempt_ref_json
             FROM qualification_dispositions WHERE reservation_id=? ORDER BY attempt_index
         """, (rid,))]
 

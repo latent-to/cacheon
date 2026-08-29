@@ -63,8 +63,15 @@ already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
 `/api/submissions/{id}`, `/api/payments`, `/api/winners`, `/api/miners`,
 `/api/events`, `/api/weights`, `/api/hotkey/{ss58}`, `/api/health`.
 
-The submission detail reuses the validator's `worker_log` explanation. Each
-request with retained forensics links to
+The submission detail renders the signed evaluation records in full. Each
+screen attempt carries `stages` — every graded check from the signed receipt
+(stage, grade, reason, elapsed time), so a `screen_rejected` names the exact
+failing check and its measured margin. Each qualification attempt carries
+`speed` — the lane rates from the retained stage-exit artifact (per-role
+tokens/second, timed windows, window scatter, conditioning ratio, and the
+C/B speedup); `speed` is null when no local evidence store retains that
+attempt's artifact. It also reuses the validator's `worker_log` explanation.
+Each request with retained forensics links to
 `/api/submissions/{reservation_id}/forensics/{request_id}.log`. The response is
 built read-only from the hash-verified result and contains the exact
 request-scoped adapter diagnostics and retained OCI diagnostic streams. The OCI
