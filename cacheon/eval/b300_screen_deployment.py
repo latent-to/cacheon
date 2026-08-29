@@ -628,7 +628,9 @@ def _commissioned_stock_authority(
             resolver=resolver if resolver is not None else {},
             destination=destination,
         )
-    if tree.stack_digest != stack.digest or tree.runtime_manifest is not None:
+    if tree.stack_digest != stack.digest or (
+        tree.runtime_manifest is not None
+    ) != bool(entries):
         raise error(f"{label} tree differs from the commissioned incumbent stack")
     return target_members, context, stack, tree
 

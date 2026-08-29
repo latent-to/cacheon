@@ -474,3 +474,51 @@ def test_qualification_swap_root_is_runtime_traversable(tmp_path: Path) -> None:
     root.chmod(0o700)
     assert commission._swap_intake_root(root) == root
     assert root.stat().st_mode & 0o777 == 0o711
+
+
+def test_commissioned_authority_materializes_the_declared_incumbent(
+    tmp_path: Path,
+) -> None:
+    # d00e64fa regression: a real (non-empty) incumbent always materializes
+    # manifest.toml, which the genesis-only reject condition treated as
+    # "differs from the commissioned incumbent stack".
+    import tests.test_engine_tree as engine_tree_fixtures
+    from cacheon.eval import b300_screen_deployment as screen_deployment
+
+    source = engine_tree_fixtures._copy(tmp_path)
+    catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
+    snapshot = catalog.snapshot()
+    inputs = SimpleNamespace(
+        root=tmp_path / "deployment",
+        runtime=SimpleNamespace(
+            runtime_digest=_h("runtime"), base_engine_digest=_h("base")
+        ),
+    )
+    manifest = SimpleNamespace(digest=_h("arena"))
+
+    members, _, stock, stock_tree = screen_deployment._commissioned_stock_authority(
+        inputs,
+        manifest,
+        catalog,
+        snapshot,
+        error=commission.B300QualificationCommissionError,
+        label="pristine reference",
+    )
+    assert members
+    assert stock.entries == {}
+    assert stock_tree.runtime_manifest is None
+
+    _, _, incumbent, incumbent_tree = screen_deployment._commissioned_stock_authority(
+        inputs,
+        manifest,
+        catalog,
+        snapshot,
+        error=commission.B300QualificationCommissionError,
+        label="qualification",
+        entries={ref.target_id: ref},
+        resolver={("proposal", ref.artifact_digest): source},
+    )
+    assert incumbent.entries == {ref.target_id: ref}
+    assert incumbent_tree.runtime_manifest == "manifest.toml"
+    assert incumbent_tree.stack_digest == incumbent.digest
+    assert incumbent.digest != stock.digest
