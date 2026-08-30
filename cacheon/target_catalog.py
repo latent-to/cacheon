@@ -1158,6 +1158,7 @@ SINGLETON_TARGET_IDS = (
     "collective.moe_finalize_ar_rmsnorm",
     "moe.fused_experts",
     "moe.fused_experts_reduce",
+    "moe.fused_routed_experts",
     "norm.rmsnorm",
 )
 
@@ -1335,6 +1336,21 @@ _SINGLETON_CONTRACTS = {
         verification_profile_id="moe.fused_experts.m3-nvfp4.verify.v3",
         binding_family_id="sglang.moe.fused-experts.dispatch.v1",
         correctness=CorrectnessContractRef(mode="cosine", min_cosine="0.985"),
+    ),
+    "moe.fused_routed_experts": _contract_ref(
+        "moe.fused_routed_experts",
+        kind="block",
+        entry="fused_routed_experts",
+        prepare="prepare",
+        graph_dynamic_inputs=("x", "router_logits"),
+        input_abi_id="moe.fused_routed_experts.input.v1",
+        output_abi_id="moe.fused_routed_experts.output.v1",
+        reference_id="moe.fused_routed_experts.reference.v1",
+        verification_profile_id="moe.fused_routed_experts.verify.v1",
+        binding_family_id="sglang.moe.fused-experts.dispatch.v1",
+        # Generic contract projection; the GLM arena registration bumps the
+        # verify id and swaps in the measured NVFP4 cosine floor.
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.97"),
     ),
     "moe.fused_experts_reduce": _contract_ref(
         "moe.fused_experts_reduce",

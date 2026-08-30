@@ -4,7 +4,7 @@ A slot is a validator-owned semantic boundary inside the pinned engine. A
 contribution supplies an implementation for that boundary; the validator owns
 the call site, inputs, output allocation, reference, and verification policy.
 
-The registered API contains **11 slots**. The registry in
+The registered API contains **12 slots**. The registry in
 [`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
 is authoritative; print it with `python -m cacheon.cli slots`.
 
@@ -19,6 +19,7 @@ is authoritative; print it with `python -m cacheon.cli slots`.
 | `attention.msa_block_score` | block | `entry(q, k_cache, req_to_token, slot_ids, seq_lens, out, sm_scale, block_size, topk, init_blocks, local_blocks)` | top-16 overlap ≥ 0.875 |
 | `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | selected-set overlap ≥ 0.90 |
 | `moe.fused_experts` | block | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out)` | matched ratio ≥ 0.97 |
+| `moe.fused_routed_experts` | block | `prepare(w13, w2, topk, routed_scaling)` + `entry(x, router_logits, correction_bias, prepared, out)` | matched ratio ≥ 0.97 |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out, group)` | matched ratio ≥ 0.97 |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | matched ratio ≥ 0.99 |
@@ -27,6 +28,14 @@ is authoritative; print it with `python -m cacheon.cli slots`.
 The callable names in a bundle are selected by its manifest; the signatures
 above describe their semantic argument order. Entries fill validator-allocated
 outputs and do not return the tensor consumed by the model.
+
+`moe.fused_routed_experts` is the fat MoE boundary: the implementation receives
+router logits and owns the routing head (selection on `sigmoid(logits) +
+correction_bias`, combine weights from the unbiased sigmoid scores, renormalized
+and scaled by `routed_scaling`), the expert computation, and the weighted
+combine. It binds the same engine seam as `moe.fused_experts` and exists for
+runner backends that route inside the fused kernel, where materialized
+`topk_ids`/`topk_weights` never appear at the seam.
 
 ## How to read a signature
 

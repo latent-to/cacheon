@@ -358,6 +358,9 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     # These bytes include the current target-catalog digest. Replacing the never-live
     # dense decode, MoE NVFP4, paged MSA-prefill, and MSA decode-score contracts
     # are reviewed target identity epochs; the settlement schema remains unchanged.
+    # Epoch 2026-08-30: the moe.fused_routed_experts catalog row (the GLM fat MoE
+    # slot) landed, moving the catalog digest. Historical records are unaffected —
+    # they embed their own catalog snapshot/digest.
     catalog = default_target_catalog()
     candidate = _candidate(
         _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
@@ -365,10 +368,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "9ea7a26eff49837d2c53abd9d86e87993ebd3f9d862f269caed67d9905c2ad35"
+        "d26d3e9bcad355205ec9a5cf0d249c9b46873ffd81e3af2c526b81f2cc2af1a4"
     )
     assert candidate.digest == (
-        "7da3cd0625f341ea29512b8471ad249d37c8f4b2b09017ece68f5afdda86fd3f"
+        "ab6a3e915474e3d702d45d0dfbc703dc7fba2495b81adaadc8e974d27d983bcc"
     )
 
 

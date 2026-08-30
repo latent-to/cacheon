@@ -86,7 +86,11 @@ def _blockscore_bindings():
 def test_every_native_slot_has_one_shared_validator_owned_call_abi():
     from cacheon.slots import SLOTS
 
-    unsupported = {"moe.fused_experts", "moe.fused_experts_reduce"}
+    unsupported = {
+        "moe.fused_experts",
+        "moe.fused_experts_reduce",
+        "moe.fused_routed_experts",
+    }
     assert set(SLOT_CALL_ABIS) == set(SLOTS) - unsupported
     assert set(SLOT_CALL_ABIS) == set(_EXPECTED_CALL_ARGS)
     assert all(SLOTS[slot].call_abi is None for slot in unsupported)

@@ -20,6 +20,7 @@ from cacheon.verify import verify_entry  # noqa: E402
 ATTN_BUNDLE = "examples/miner_attention_torch/kernels/attention.py"
 ATTN_DECODE_BUNDLE = "examples/miner_attention_decode_torch/kernels/attention_decode.py"
 MOE_BUNDLE = "examples/miner_moe_fused_experts_torch/kernels/moe.py"
+ROUTED_MOE_BUNDLE = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
 
 
 def test_slot_kind_discriminator():
@@ -97,6 +98,49 @@ def test_moe_broken_prepare_fails_cpu():
     slot = get_slot("moe.fused_experts")
     result = verify_entry(slot, fwd, prepare=broken_prepare, dtype=torch.float32, device="cpu", seed=0)
     assert not result.passed
+
+
+def test_routed_moe_passes_correctness_cpu():
+    # The FAT slot: the miner receives router LOGITS and owns routing + experts +
+    # combine. The example implements the engine's biased-sigmoid gate faithfully.
+    fwd = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    prep = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+    slot = get_slot("moe.fused_routed_experts")
+    result = verify_entry(slot, fwd, prepare=prep, dtype=torch.float32, device="cpu", seed=0)
+    assert result.passed, "\n".join(
+        f"{r.shape}: ratio={r.pass_ratio} {r.detail}" for r in result.shape_results
+    )
+
+
+def test_routed_moe_wrong_routing_fails_cpu():
+    # Selecting on the UNBIASED scores (dropping the correction bias) picks a
+    # different expert set on margin-boosted inputs -> wrong combine -> FAIL.
+    # This pins that the slot actually grades the routing head, not just the GEMMs.
+    faithful = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    prep = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+
+    def unbiased_routing(x, router_logits, correction_bias, prepared, out):
+        faithful(x, router_logits, torch.zeros_like(correction_bias), prepared, out)
+
+    slot = get_slot("moe.fused_routed_experts")
+    result = verify_entry(
+        slot, unbiased_routing, prepare=prep, dtype=torch.float32, device="cpu", seed=0
+    )
+    assert not result.passed
+
+
+def test_routed_moe_margin_enforced_inputs():
+    # Every verification row must have an unambiguous selection: the gap between
+    # the k-th and (k+1)-th biased choice score is real, so top-k is stable and a
+    # single output gate cannot false-fail an honest kernel on a near-tie.
+    slot = get_slot("moe.fused_routed_experts")
+    for shape in slot.shapes:
+        i = slot.make_inputs(dtype=torch.float32, device="cpu", seed=7, **shape)
+        choice = torch.sigmoid(i["router_logits"]) + i["correction_bias"].unsqueeze(0)
+        sorted_choice = choice.sort(dim=-1, descending=True).values
+        k = shape["topk"]
+        gap = sorted_choice[:, k - 1] - sorted_choice[:, k]
+        assert torch.all(gap > 0.01), f"ambiguous selection at {shape}"
 
 
 def test_moe_is_prepare_forward_slot():

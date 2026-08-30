@@ -64,8 +64,29 @@ from cacheon.stack_plan import MarginalArmPlan
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
+# The B300 (MiniMax-M3) arena's registered subset, pinned explicitly. The target
+# catalog is the cross-arena vocabulary and grows on rotation; an arena's
+# registered set is arena data and must NOT auto-derive from it — otherwise a
+# new arena's slot (e.g. the GLM fat MoE slot) silently joins the live M3
+# qualification identity the moment its catalog row lands.
+_B300_ARENA_TARGET_IDS = (
+    "activation.silu_and_mul",
+    "attention.decode",
+    "attention.msa_block_score",
+    "attention.msa_prefill_block_score",
+    "attention.sdpa",
+    "collective.all_reduce",
+    "collective.ar_residual_rmsnorm",
+    "collective.moe_epilogue.v1",
+    "collective.moe_finalize_ar_rmsnorm",
+    "moe.fused_experts",
+    "moe.fused_experts_reduce",
+    "norm.rmsnorm",
+)
+
+
 def registered_b300_target_ids(catalog: TargetCatalog) -> tuple[str, ...]:
-    """Return the exact canonical registered IDs carried by one catalog."""
+    """Return the B300 arena's registered IDs, validated against one catalog."""
 
     if type(catalog) is not TargetCatalog:
         raise TypeError("registered B300 catalog is not exact")
@@ -82,7 +103,14 @@ def registered_b300_target_ids(catalog: TargetCatalog) -> tuple[str, ...]:
         or checked != tuple(sorted(set(checked)))
     ):
         raise ValueError("registered B300 catalog target rows are not canonical")
-    return checked
+    missing = tuple(
+        target for target in _B300_ARENA_TARGET_IDS if target not in checked
+    )
+    if missing:
+        raise ValueError(
+            f"registered B300 targets missing from the catalog: {missing!r}"
+        )
+    return _B300_ARENA_TARGET_IDS
 
 
 REGISTERED_B300_TARGET_IDS = registered_b300_target_ids(default_target_catalog())

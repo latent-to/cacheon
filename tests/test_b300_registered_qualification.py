@@ -417,16 +417,24 @@ def test_registry_exactly_covers_all_twelve_registered_targets_without_fe_identi
 ) -> None:
     harness = _harness(tmp_path)
 
+    # The B300 arena's registered set is PINNED arena data: it excludes catalog
+    # rows that belong to other arenas (the GLM fat MoE slot) and must not grow
+    # when the cross-arena catalog does.
     expected = tuple(
-        sorted((*SINGLETON_TARGET_IDS, MOE_EPILOGUE_ATOMIC_TARGET))
+        sorted(
+            (
+                *(t for t in SINGLETON_TARGET_IDS if t != "moe.fused_routed_experts"),
+                MOE_EPILOGUE_ATOMIC_TARGET,
+            )
+        )
     )
     snapshot_ids = tuple(
         row["target_id"]
         for row in harness.inputs.catalog.snapshot()["targets"]
     )
     assert registered.REGISTERED_B300_TARGET_IDS == expected
-    assert registered.REGISTERED_B300_TARGET_IDS == snapshot_ids
-    assert len(snapshot_ids) == 12
+    assert set(registered.REGISTERED_B300_TARGET_IDS) <= set(snapshot_ids)
+    assert len(registered.REGISTERED_B300_TARGET_IDS) == 12
     assert registered.ORDINARY_B300_TARGET_IDS == expected
     projection = registered.registered_b300_member_contract_projection(
         harness.inputs.catalog

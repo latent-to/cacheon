@@ -534,6 +534,113 @@ MOE_FUSED_EXPERTS = SlotSpec(
 
 
 # ---------------------------------------------------------------------------
+# Slot (BLOCK): moe.fused_routed_experts   (the FAT MoE slot: routing + experts
+#   + combine in one contract)
+#
+# The boundary every served MoE engine of this class must have: FusedMoE.forward_impl
+# receiving (hidden_states, router LOGITS). On runner backends that route inside the
+# fused kernel (flashinfer_trtllm hands the seam a BypassedTopKOutput carrying
+# router_logits only), the thin fused_experts contract cannot bind — this slot is
+# that boundary. Measured 2026-08-30 (GLM-5.3 decode cell): routing + both expert
+# GEMMs + finalize + input quant ≈ 53% of decode GPU time.
+#
+# Routing math mirrors the pinned engine exactly (topk.py biased_grouped_topk_impl,
+# no group step at n_group=1): select on sigmoid(logits) + correction_bias, weight
+# by the UNBIASED sigmoid scores gathered at the selection, renormalize with the
+# +1e-20 epsilon, scale by routed_scaling. The near-tie discontinuity that makes a
+# single output gate false-fail honest kernels (two experts tied at rank k) is
+# killed at INPUT SYNTHESIS, not with a hybrid metric: the input builder boosts the
+# selected experts' logits so every verification row has an unambiguous top-k, and
+# real-serving tie behavior stays covered by the end-to-end quality gates.
+# ---------------------------------------------------------------------------
+
+
+def _routed_moe_inputs(*, num_tokens: int, num_experts: int, hidden: int, inter: int,
+                       topk: int, routed_scaling: float = 1.0, dtype: torch.dtype,
+                       device: str, seed: int) -> dict:
+    g = torch.Generator(device=device).manual_seed(seed)
+
+    def rnd(*shape: int, scale: float = 1.0) -> torch.Tensor:
+        return (torch.randn(*shape, generator=g, device=device, dtype=torch.float32) * scale).to(dtype)
+
+    logits = torch.randn(num_tokens, num_experts, generator=g, device=device,
+                         dtype=torch.float32)
+    bias = torch.randn(num_experts, generator=g, device=device,
+                       dtype=torch.float32) * 0.1
+    # Margin enforcement: lift the already-selected experts' logits so the
+    # selection gap at rank `topk` is unambiguous for every row (the boost is
+    # monotone in choice score, so the selected SET is unchanged).
+    choice = torch.sigmoid(logits) + bias.unsqueeze(0)
+    chosen = choice.topk(topk, dim=-1).indices
+    logits = logits.scatter_add(
+        1, chosen, torch.ones_like(chosen, dtype=torch.float32)
+    )
+    return {
+        "x": rnd(num_tokens, hidden, scale=0.1),
+        "w13": rnd(num_experts, 2 * inter, hidden, scale=0.05),
+        "w2": rnd(num_experts, hidden, inter, scale=0.05),
+        "router_logits": logits,
+        "correction_bias": bias,
+        "topk": int(topk),
+        "routed_scaling": float(routed_scaling),
+    }
+
+
+def _routed_moe_topk(router_logits: torch.Tensor, correction_bias: torch.Tensor,
+                     topk: int, routed_scaling: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """The pinned engine's routing head in fp32 (selection biased, weights unbiased)."""
+    scores = torch.sigmoid(router_logits.float())
+    choice = scores + correction_bias.float().unsqueeze(0)
+    topk_ids = torch.topk(choice, k=topk, dim=-1).indices
+    weights = scores.gather(1, topk_ids)
+    weights = weights / (weights.sum(-1, keepdim=True) + 1e-20)
+    return topk_ids.to(torch.int32), (weights * routed_scaling).float()
+
+
+def _routed_moe_reference(i: dict, act: Activation = _SILU) -> torch.Tensor:
+    topk_ids, topk_weights = _routed_moe_topk(
+        i["router_logits"], i["correction_bias"], i["topk"], i["routed_scaling"]
+    )
+    return _moe_reference(i["x"], i["w13"], i["w2"], topk_ids, topk_weights, act)
+
+
+MOE_FUSED_ROUTED_EXPERTS = SlotSpec(
+    name="moe.fused_routed_experts",
+    entry="fused_routed_experts",
+    prepare="prepare",
+    summary=(
+        "fused ROUTED MoE — routing + experts + combine, a (prepare, forward) PAIR. "
+        "prepare(w13, w2, topk, routed_scaling) -> prepared (once at load); "
+        "forward(x, router_logits, correction_bias, prepared, out). "
+        "x:(M,H) router_logits:(M,E) correction_bias:(E,) w13:(E,2I,H)[gate;up] "
+        "w2:(E,H,I) -> out:(M,H). Selection = topk(sigmoid(logits)+bias); weights = "
+        "unbiased sigmoid scores renormalized (+1e-20) and scaled by routed_scaling."
+    ),
+    kind="block",
+    make_inputs=_routed_moe_inputs,
+    out_shapes=lambda i: [(i["x"].shape[0], i["x"].shape[1])],
+    invoke_reference=lambda i: [_routed_moe_reference(i)],
+    invoke_prepare=lambda prepare_fn, i: prepare_fn(
+        i["w13"], i["w2"], i["topk"], i["routed_scaling"]
+    ),
+    invoke_entry=lambda entry, i, outs, prepared: entry(
+        i["x"], i["router_logits"], i["correction_bias"], prepared, outs[0]
+    ),
+    graph_dynamic_inputs=("x", "router_logits"),
+    shapes=(
+        {"num_tokens": 4, "num_experts": 8, "hidden": 256, "inter": 128, "topk": 2,
+         "routed_scaling": 1.0},
+        {"num_tokens": 16, "num_experts": 32, "hidden": 512, "inter": 256, "topk": 4,
+         "routed_scaling": 2.5},
+        {"num_tokens": 33, "num_experts": 16, "hidden": 320, "inter": 192, "topk": 4,
+         "routed_scaling": 1.0},
+    ),
+    correctness=Correctness("matched_ratio", min_ratio=0.97),
+    tolerances=_BF16_TOL,
+)
+
+
+# ---------------------------------------------------------------------------
 # Catalog
 # ---------------------------------------------------------------------------
 
@@ -942,6 +1049,7 @@ SLOTS: dict[str, SlotSpec] = {
     ATTENTION_MSA_BLOCK_SCORE.name: ATTENTION_MSA_BLOCK_SCORE,
     ATTENTION_MSA_PREFILL_BLOCK_SCORE.name: ATTENTION_MSA_PREFILL_BLOCK_SCORE,
     MOE_FUSED_EXPERTS.name: MOE_FUSED_EXPERTS,
+    MOE_FUSED_ROUTED_EXPERTS.name: MOE_FUSED_ROUTED_EXPERTS,
     MOE_FUSED_EXPERTS_REDUCE.name: MOE_FUSED_EXPERTS_REDUCE,
     COLLECTIVE_ALL_REDUCE.name: COLLECTIVE_ALL_REDUCE,
     COLLECTIVE_AR_RESIDUAL_RMSNORM.name: COLLECTIVE_AR_RESIDUAL_RMSNORM,
@@ -998,6 +1106,7 @@ class SlotProfile:
 
 
 _MOE_SLOTS = ("moe.fused_experts", "moe.fused_experts_reduce")
+_ROUTED_MOE_SLOTS = ("moe.fused_routed_experts",)
 
 
 def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
@@ -1006,6 +1115,39 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
     everything else — inputs, shapes, seam wiring — is untouched. The module-level slot
     singletons are never mutated, so ``get_slot`` stays generic."""
     repl: dict = {}
+    if profile.quant == "nvfp4" and profile.shapes is None:
+        raise ValueError(
+            f"profile for {slot.name!r} sets quant={profile.quant!r} but no shapes; "
+            "a quantized profile must carry the arena's per-rank verification shapes"
+        )
+    if slot.name in _ROUTED_MOE_SLOTS:
+        routed_act = profile.activation
+
+        def _routed_ref(i, _act=routed_act):
+            return [_routed_moe_reference(i, _act)]
+
+        repl["invoke_reference"] = _routed_ref
+        if profile.quant == "nvfp4":
+            make_dense_routed = slot.make_inputs
+            routed_fused = profile.num_fused_shared_experts
+
+            def _routed_quant_inputs(**kwargs):
+                dense = make_dense_routed(**kwargs)
+                dense.update(
+                    __moe_tp_size__=int(kwargs.get("world_size", 4)),
+                    __moe_ep_size__=1,
+                    __moe_ep_rank__=0,
+                    __moe_reduce_results__=False,
+                    __moe_num_fused_shared_experts__=routed_fused,
+                    __moe_activation__=routed_act.kind,
+                )
+                return _moe_nvfp4_verification_inputs(dense)
+
+            repl["make_inputs"] = _routed_quant_inputs
+            repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
+                *_moe_prepare_args_from_inputs(i), i["topk"], i["routed_scaling"]
+            )
+            repl["call_abi"] = None
     if slot.name in _MOE_SLOTS:
         act = profile.activation
 
@@ -1021,11 +1163,6 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
     if profile.correctness is not None:
         repl["correctness"] = profile.correctness
     if slot.name in _MOE_SLOTS and profile.quant == "nvfp4":
-        if profile.shapes is None:
-            raise ValueError(
-                f"profile for {slot.name!r} sets quant={profile.quant!r} but no shapes; "
-                "a quantized profile must carry the arena's per-rank verification shapes"
-            )
         make_dense_inputs = slot.make_inputs
         fused = profile.num_fused_shared_experts
         scale = profile.routed_weight_scale
@@ -1131,6 +1268,16 @@ _GLM53_MOE_NVFP4_PROFILE = SlotProfile(
     routed_weight_scale=2.5,
 )
 
+_GLM53_ROUTED_MOE_PROFILE = replace(
+    _GLM53_MOE_NVFP4_PROFILE,
+    # The fat slot owns the routing head too, so routed_scaling (2.5) is part of
+    # the CONTRACT the miner implements, carried per shape into make_inputs.
+    shapes=tuple(
+        {**s, "routed_scaling": 2.5}
+        for s in _GLM53_MOE_NVFP4_PROFILE.shapes
+    ),
+)
+
 # model key (as a miner may declare it / as the validator keys its served model) -> {slot: profile}
 MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
     "MiniMax-M3": {
@@ -1145,6 +1292,7 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
     "GLM-5.3": {
         "moe.fused_experts": _GLM53_MOE_NVFP4_PROFILE,
         "moe.fused_experts_reduce": _GLM53_MOE_NVFP4_PROFILE,
+        "moe.fused_routed_experts": _GLM53_ROUTED_MOE_PROFILE,
     },
 }
 # NVFP4 builds carry a "-NVFP4" suffix in their declared model id; alias them.
