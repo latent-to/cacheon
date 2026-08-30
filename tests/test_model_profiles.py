@@ -65,6 +65,20 @@ def test_slot_for_model_glm53_profile_resolves():
     assert not torch.allclose(ref_glm, ref_m3, atol=1e-3)
 
 
+def test_slot_for_model_glm53_correctness_is_calibrated_cosine():
+    # Regression for the false-FAIL fallback: with no profile correctness the
+    # GLM NVFP4 slots inherited the generic elementwise matched_ratio gate,
+    # which NVFP4 cannot pass. The registered gate is the measured floor
+    # (glm53_nvfp4_gate.py 2026-08-30) WITH the energy guard — cosine alone
+    # is scale-invariant and passes a kernel that drops routed_scaling.
+    for slot in ("moe.fused_experts", "moe.fused_routed_experts"):
+        for key in ("GLM-5.3", "GLM-5.3-NVFP4"):
+            c = slot_for_model(slot, key).correctness
+            assert c.mode == "cosine"
+            assert c.min_cosine == 0.985
+            assert c.max_rel_norm_err == 0.05
+
+
 def test_specialized_routing_draw_follows_profile():
     shape = dict(num_tokens=8, num_experts=8, hidden=64, inter=32, topk=3,
                  dtype=torch.float32, device="cpu", seed=3)

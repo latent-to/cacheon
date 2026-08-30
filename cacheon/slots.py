@@ -1065,10 +1065,14 @@ _GLM53_MOE_NVFP4_PROFILE = SlotProfile(
     # (shared expert is unquantized and separate), so num_fused_shared_experts=0
     # and num_experts is 256, NOT 257 — read from the live engine, not the plan.
     # routed_weight_scale mirrors routed_scaling_factor=2.5 (norm_topk_prob=True).
-    # correctness: the NVFP4 cosine floor at THIS shape is uncalibrated — the
-    # GLM analogue of m3_swigluoai_gate.py must measure it before the GLM arena
-    # registers (registration blocker; M3's 0.985 floor is M3-shape-specific and
-    # must not be copied).
+    # correctness: measured at THIS shape by glm53_nvfp4_gate.py (2026-08-30,
+    # E=256/inter 512/top-8/silu, M=2048): block floor with the served fp4xfp4
+    # intermediate requant = cosine 0.9959 / rel_norm_err 0.0012; bar = floor
+    # minus margin. The norm guard is load-bearing: cosine is scale-invariant,
+    # and a kernel that drops routed_scaling ties the cosine floor exactly
+    # (rejected only via rel_norm 0.60). Controls: swigluoai-act 0.44,
+    # shuffled-routing 0.04, both cosine-rejected.
+    correctness=Correctness("cosine", min_cosine=0.985, max_rel_norm_err=0.05),
     quant="nvfp4",
     shapes=(
         {"num_tokens": 1, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
