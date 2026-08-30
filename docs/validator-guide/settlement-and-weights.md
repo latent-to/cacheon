@@ -129,8 +129,9 @@ singleton families while active.
 
 Credit comes from marginal improvement accepted by a two-PASS pair satisfying
 the seven digest-distinctness checks. The exact conversion to integer policy
-units and the standing-decay equation are defined in
-[Legacy V1](../reference/emissions-policy.md#legacy-v1).
+units, the standing-decay equation, and the champion floor that pays the most
+recently crowned claim of a target lineage at least 80% of the lineage's pooled
+credit are defined in [Legacy V1](../reference/emissions-policy.md#legacy-v1).
 
 Retired or neutralized contributions receive no standing credit. Engine-stack
 packaging, integration, and release do not create additional reward families.
