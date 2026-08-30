@@ -8,7 +8,14 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from cacheon.slots import Activation, _moe_reference, get_slot, slot_for_model  # noqa: E402
+from cacheon.slots import (  # noqa: E402
+    Activation,
+    SlotProfile,
+    _moe_reference,
+    get_slot,
+    slot_for_model,
+    specialize_slot,
+)
 from cacheon.verify import verify_entry_from_source  # noqa: E402
 
 _SMALL_SHAPE = {"num_tokens": 8, "num_experts": 4, "hidden": 64, "inter": 64, "topk": 2}
@@ -35,6 +42,57 @@ def test_slot_for_model_m3_swaps_activation_and_correctness():
     ref_silu = generic.invoke_reference(inp)[0]
     ref_swig = m3.invoke_reference(inp)[0]
     assert not torch.allclose(ref_silu, ref_swig, atol=1e-3)
+
+
+def test_slot_for_model_glm53_profile_resolves():
+    glm = slot_for_model("moe.fused_experts", "GLM-5.3")
+    generic = get_slot("moe.fused_experts")
+    # Shapes come from the profile record (receipted from the served config):
+    # 256 routed experts, top-8, per-rank inter 512 at TP4, no fused shared expert.
+    assert glm.shapes[0]["num_experts"] == 256
+    assert glm.shapes[0]["inter"] == 512
+    assert all(s["topk"] == 8 for s in glm.shapes)
+    assert glm.shapes != generic.shapes
+    assert slot_for_model("moe.fused_experts", "GLM-5.3-NVFP4").shapes == glm.shapes
+    # GLM experts are plain SiLU: on the same inputs the GLM reference equals the
+    # generic SiLU reference and differs from M3's swigluoai one.
+    inp = generic.make_inputs(dtype=torch.float32, device="cpu", seed=0,
+                              num_tokens=8, num_experts=4, hidden=32, inter=16, topk=2)
+    ref_generic = generic.invoke_reference(inp)[0]
+    ref_glm = glm.invoke_reference(inp)[0]
+    ref_m3 = slot_for_model("moe.fused_experts", "MiniMax-M3").invoke_reference(inp)[0]
+    assert torch.allclose(ref_generic, ref_glm, atol=1e-6)
+    assert not torch.allclose(ref_glm, ref_m3, atol=1e-3)
+
+
+def test_specialized_routing_draw_follows_profile():
+    shape = dict(num_tokens=8, num_experts=8, hidden=64, inter=32, topk=3,
+                 dtype=torch.float32, device="cpu", seed=3)
+    # M3 (fused shared expert): last id column pinned to experts-1 with weight 1.0,
+    # routed weights normalized then scaled 2x — the pre-refactor behavior.
+    m3 = slot_for_model("moe.fused_experts", "MiniMax-M3").make_inputs(**shape)
+    assert torch.all(m3["topk_ids"][:, -1] == 7)
+    assert torch.all(m3["topk_weights"][:, -1] == 1.0)
+    assert torch.allclose(m3["topk_weights"][:, :-1].sum(-1),
+                          torch.full((8,), 2.0), atol=1e-5)
+    assert m3["__moe_num_fused_shared_experts__"] == 1
+    assert m3["__moe_activation__"] == "swigluoai"
+    # GLM (no fused shared expert): a pure distinct routed draw over all experts,
+    # weights normalized then scaled by routed_scaling_factor 2.5.
+    glm = slot_for_model("moe.fused_experts", "GLM-5.3").make_inputs(**shape)
+    assert glm["topk_ids"].shape == (8, 3)
+    for row in glm["topk_ids"]:
+        assert len(set(row.tolist())) == 3  # distinct experts per token
+    assert torch.allclose(glm["topk_weights"].sum(-1),
+                          torch.full((8,), 2.5), atol=1e-5)
+    assert glm["__moe_num_fused_shared_experts__"] == 0
+    assert glm["__moe_activation__"] == "silu"
+
+
+def test_quant_profile_without_shapes_is_rejected():
+    bad = SlotProfile(quant="nvfp4")
+    with pytest.raises(ValueError, match="no shapes"):
+        specialize_slot(get_slot("moe.fused_experts"), bad)
 
 
 def test_moe_reference_swigluoai_differs_from_silu():

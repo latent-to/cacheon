@@ -117,7 +117,10 @@ def _layer_view(
             is_gated=True, num_experts=experts, top_k=top_k,
             hidden_size=int(w13.shape[-1]) * 2,
             intermediate_size_per_partition=intermediate,
-            activation="swigluoai",
+            # A MODEL fact, carried by the arena profile through the verification
+            # inputs (__moe_activation__). The swigluoai default preserves the
+            # live-layer path on M3, where sglang's own runner config is authoritative.
+            activation=str(_context(source, "activation", "swigluoai")),
             num_fused_shared_experts=fused_shared,
         ),
     )

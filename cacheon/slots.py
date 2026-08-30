@@ -981,11 +981,20 @@ def list_slots() -> list[str]:
 class SlotProfile:
     """Validator-owned (model, slot) overrides. ``activation`` retargets the HP reference
     to the model's real activation; ``correctness`` (optional) swaps the op-sanity metric
-    (e.g. cosine for a low-bit kernel). None fields keep the generic slot default."""
+    (e.g. cosine for a low-bit kernel). None fields keep the generic slot default.
+
+    Every model fact a slot needs lives HERE, not in specialize_slot branches: the
+    verification ``shapes`` (per-rank shards, at the arena TP), the fused-shared-expert
+    count (0 when the arena serves shared experts unfused — read it from the live
+    server_args, not the checkpoint), and the routed-weight scale the synthetic routing
+    mimics. Rotating the arena adds a MODEL_PROFILES entry; it does not edit code."""
 
     activation: Activation = field(default_factory=Activation)
     correctness: Optional[Correctness] = None
     quant: Optional[str] = None
+    shapes: Optional[tuple[dict, ...]] = None
+    num_fused_shared_experts: int = 0
+    routed_weight_scale: float = 1.0
 
 
 _MOE_SLOTS = ("moe.fused_experts", "moe.fused_experts_reduce")
@@ -1012,35 +1021,57 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
     if profile.correctness is not None:
         repl["correctness"] = profile.correctness
     if slot.name in _MOE_SLOTS and profile.quant == "nvfp4":
+        if profile.shapes is None:
+            raise ValueError(
+                f"profile for {slot.name!r} sets quant={profile.quant!r} but no shapes; "
+                "a quantized profile must carry the arena's per-rank verification shapes"
+            )
         make_dense_inputs = slot.make_inputs
+        fused = profile.num_fused_shared_experts
+        scale = profile.routed_weight_scale
+        act_kind = profile.activation.kind
 
         def _quant_inputs(**kwargs):
             dense = make_dense_inputs(**kwargs)
             tokens, top_k = dense["topk_ids"].shape
             experts = dense["w13"].shape[0]
-            routed_k = top_k - 1
+            routed_k = top_k - fused
             generator = torch.Generator(device=kwargs["device"]).manual_seed(
                 int(kwargs["seed"]) + 17_171
             )
+            # Distinct-expert routing draw (real routers never repeat an expert per
+            # token, unlike the generic randint inputs). When the arena fuses shared
+            # experts, the last `fused` expert ids are the shared ones by convention
+            # and always ride with weight 1.0; `fused == 0` is a pure routed draw.
             routed = torch.rand(
-                tokens, experts - 1, generator=generator, device=kwargs["device"]
+                tokens, experts - fused, generator=generator, device=kwargs["device"]
             ).topk(routed_k, dim=-1).indices.to(torch.int32)
             scores = torch.rand(
                 tokens, routed_k, generator=generator, device=kwargs["device"]
             )
-            dense["topk_ids"] = torch.cat(
-                (routed, torch.full_like(routed[:, :1], experts - 1)), dim=-1
-            )
-            dense["topk_weights"] = torch.cat(
-                (2 * scores / scores.sum(-1, keepdim=True), torch.ones_like(scores[:, :1])),
-                dim=-1,
-            )
+            routed_weights = scale * scores / scores.sum(-1, keepdim=True)
+            if fused:
+                shared_ids = (
+                    torch.arange(
+                        experts - fused, experts,
+                        device=kwargs["device"], dtype=torch.int32,
+                    )
+                    .expand(tokens, fused)
+                )
+                dense["topk_ids"] = torch.cat((routed, shared_ids), dim=-1)
+                dense["topk_weights"] = torch.cat(
+                    (routed_weights, torch.ones_like(scores[:, :fused])), dim=-1
+                )
+            else:
+                dense["topk_ids"] = routed
+                dense["topk_weights"] = routed_weights
             dense.update(
                 __moe_tp_size__=int(kwargs.get("world_size", 4)),
                 __moe_ep_size__=1,
                 __moe_ep_rank__=0,
                 __moe_reduce_results__=False,
-                __moe_num_fused_shared_experts__=1,
+                __moe_num_fused_shared_experts__=fused,
+                __moe_activation__=act_kind,
             )
             return _moe_nvfp4_verification_inputs(dense)
 
@@ -1049,7 +1080,8 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
             *_moe_prepare_args_from_inputs(i)
         )
         repl["call_abi"] = None
-        repl["shapes"] = _M3_MOE_SHAPES
+    if profile.shapes is not None:
+        repl["shapes"] = profile.shapes
     return replace(slot, **repl) if repl else slot
 
 
@@ -1061,12 +1093,43 @@ _M3_MOE_PROFILE = SlotProfile(
     # No norm guard yet (max_rel_norm_err uncalibrated — TODO measure the floor).
     correctness=Correctness("cosine", min_cosine=0.985),
 )
-_M3_MOE_SHAPES = (
-    {"num_tokens": 1, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
-    {"num_tokens": 8, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
-    {"num_tokens": 32, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
+_M3_MOE_NVFP4_PROFILE = replace(
+    _M3_MOE_PROFILE,
+    quant="nvfp4",
+    # Per-rank shards at the M3 arena's TP4 (moe_intermediate 3072 / 4). M3 serves
+    # the shared expert FUSED into the routed kernel: 128 routed + 1 shared = 129,
+    # top-4 routed + 1 = 5, routed weights scaled 2x.
+    shapes=(
+        {"num_tokens": 1, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
+        {"num_tokens": 8, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
+        {"num_tokens": 32, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
+    ),
+    num_fused_shared_experts=1,
+    routed_weight_scale=2.0,
 )
-_M3_MOE_NVFP4_PROFILE = replace(_M3_MOE_PROFILE, quant="nvfp4")
+
+_GLM53_MOE_NVFP4_PROFILE = SlotProfile(
+    # GLM-5.3 experts are plain SiLU (config hidden_act=silu) — the Activation()
+    # default. Shapes receipted from the served config + server_args 2026-08-30:
+    # 256 routed experts, top-8, hidden 6144, moe_intermediate 2048 -> 512/rank at
+    # the arena's TP4. The served path runs disable_shared_experts_fusion=True
+    # (shared expert is unquantized and separate), so num_fused_shared_experts=0
+    # and num_experts is 256, NOT 257 — read from the live engine, not the plan.
+    # routed_weight_scale mirrors routed_scaling_factor=2.5 (norm_topk_prob=True).
+    # correctness: the NVFP4 cosine floor at THIS shape is uncalibrated — the
+    # GLM analogue of m3_swigluoai_gate.py must measure it before the GLM arena
+    # registers (registration blocker; M3's 0.985 floor is M3-shape-specific and
+    # must not be copied).
+    quant="nvfp4",
+    shapes=(
+        {"num_tokens": 1, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
+        {"num_tokens": 8, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
+        {"num_tokens": 32, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
+        {"num_tokens": 128, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
+    ),
+    num_fused_shared_experts=0,
+    routed_weight_scale=2.5,
+)
 
 # model key (as a miner may declare it / as the validator keys its served model) -> {slot: profile}
 MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
@@ -1079,9 +1142,14 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
         "moe.fused_experts": _M3_MOE_NVFP4_PROFILE,
         "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
     },
+    "GLM-5.3": {
+        "moe.fused_experts": _GLM53_MOE_NVFP4_PROFILE,
+        "moe.fused_experts_reduce": _GLM53_MOE_NVFP4_PROFILE,
+    },
 }
 # NVFP4 builds carry a "-NVFP4" suffix in their declared model id; alias them.
 MODEL_PROFILES["MiniMax-M3-NVFP4"] = MODEL_PROFILES["MiniMax-M3"]
+MODEL_PROFILES["GLM-5.3-NVFP4"] = MODEL_PROFILES["GLM-5.3"]
 
 
 def model_profile(model_key: Optional[str], slot_name: str) -> Optional[SlotProfile]:
