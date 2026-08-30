@@ -147,6 +147,120 @@ def test_bypassed_routing_falls_back(monkeypatch):
     assert dispatched(_fake_layer(inputs), inputs["x"], _bypassed_topk_output()) is _BASELINE
 
 
+ROUTED_MOE_BUNDLE = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
+
+
+def _routed_inputs(seed=0):
+    slot = get_slot("moe.fused_routed_experts")
+    shape = {"num_tokens": 16, "num_experts": 8, "hidden": 256, "inter": 128,
+             "topk": 2, "routed_scaling": 2.5}
+    return slot.make_inputs(**shape, dtype=torch.float32, device="cpu", seed=seed)
+
+
+def _routed_topk_output(inputs, **overrides):
+    # Duck-typed BypassedTopKOutput + TopKConfig at the pin: routing NOT
+    # materialized; the config carries the routing head's parameters.
+    cfg = dict(
+        top_k=inputs["topk"],
+        correction_bias=inputs["correction_bias"],
+        routed_scaling_factor=inputs["routed_scaling"],
+        scoring_func="sigmoid",
+        renormalize=True,
+        apply_routed_scaling_factor_on_output=False,
+        custom_routing_function=None,
+        num_fused_shared_experts=0,
+        use_grouped_topk=False,
+        num_expert_group=None,
+        topk_group=None,
+    )
+    cfg.update(overrides)
+    return SimpleNamespace(
+        hidden_states=inputs["x"],
+        router_logits=inputs["router_logits"],
+        topk_config=SimpleNamespace(**cfg),
+    )
+
+
+def _routed_registry(entry, prepare):
+    reg = KernelRegistry()
+    reg.register(
+        KernelImpl(
+            slot="moe.fused_routed_experts",
+            bundle_id="test-routed",
+            entry=entry,
+            prepare=prepare,
+            eligibility=Eligibility(dtypes=frozenset({"float32"})),
+        )
+    )
+    reg.enable()
+    return reg
+
+
+def test_routed_moe_dispatches_on_bypassed_routing(monkeypatch):
+    # The fat slot binds where the thin one cannot: router LOGITS at the seam.
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    inputs = _routed_inputs()
+    slot = get_slot("moe.fused_routed_experts")
+    reference = slot.invoke_reference(inputs)[0]
+
+    entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    prepare = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+    dispatched = make_moe_dispatcher(
+        _baseline_forward, registry=_routed_registry(entry, prepare)
+    )
+    out = dispatched(_fake_layer(inputs), inputs["x"], _routed_topk_output(inputs))
+    assert out is not _BASELINE, "fat slot should have routed to the miner kernel"
+    assert tuple(out.shape) == (inputs["x"].shape[0], inputs["x"].shape[1])
+    assert _matched_ratio(out, reference) >= slot.correctness.min_ratio
+
+
+def test_routed_moe_out_of_contract_config_stays_stock(monkeypatch):
+    # A routing config outside the slot's fixed head (softmax scoring, grouped
+    # selection, output-side scaling, fused shared experts) must serve stock —
+    # the dispatcher never approximates routing semantics.
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    inputs = _routed_inputs()
+    entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    prepare = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+    dispatched = make_moe_dispatcher(
+        _baseline_forward, registry=_routed_registry(entry, prepare)
+    )
+    layer = _fake_layer(inputs)
+    for bad in (
+        {"scoring_func": "softmax"},
+        {"apply_routed_scaling_factor_on_output": True},
+        {"num_fused_shared_experts": 1},
+        {"use_grouped_topk": True, "num_expert_group": 4, "topk_group": 2},
+        {"renormalize": False},
+        {"correction_bias": None},
+    ):
+        out = dispatched(layer, inputs["x"], _routed_topk_output(inputs, **bad))
+        assert out is _BASELINE, f"config {bad} must stay stock"
+
+
+def test_routed_moe_prepare_receives_routing_config(monkeypatch):
+    # prepare gets (w13, w2, top_k, routed_scaling) — the static routing config
+    # from the live TopKConfig — and is memoized per layer like the thin slot.
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    inputs = _routed_inputs()
+    base_prepare = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+    seen = []
+
+    def spying_prepare(w13, w2, topk, routed_scaling):
+        seen.append((topk, routed_scaling))
+        return base_prepare(w13, w2, topk, routed_scaling)
+
+    entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    dispatched = make_moe_dispatcher(
+        _baseline_forward, registry=_routed_registry(entry, spying_prepare)
+    )
+    layer = _fake_layer(inputs)
+    topk_output = _routed_topk_output(inputs)
+    dispatched(layer, inputs["x"], topk_output)
+    dispatched(layer, inputs["x"], topk_output)
+    assert seen == [(inputs["topk"], inputs["routed_scaling"])]
+
+
 def test_missing_prepare_aborts_selected_candidate(monkeypatch):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()

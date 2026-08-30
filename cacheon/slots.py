@@ -623,6 +623,9 @@ MOE_FUSED_ROUTED_EXPERTS = SlotSpec(
     invoke_prepare=lambda prepare_fn, i: prepare_fn(
         i["w13"], i["w2"], i["topk"], i["routed_scaling"]
     ),
+    # Live layers map through the same nvfp4-aware contract as the thin slot;
+    # the dispatcher appends (top_k, routed_scaling) from the engine's TopKConfig.
+    prepare_from_layer=_moe_prepare_args_from_layer,
     invoke_entry=lambda entry, i, outs, prepared: entry(
         i["x"], i["router_logits"], i["correction_bias"], prepared, outs[0]
     ),

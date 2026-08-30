@@ -21,17 +21,17 @@ _NVFP4_TENSORS = (
 )
 
 
-def call_descriptor(
+def _descriptor_fields(
     x: torch.Tensor,
-    topk_ids: torch.Tensor,
     *,
     architecture: str | None,
     graph_mode: str,
     quant: str,
     num_experts: int,
     intermediate_dim: int,
-    tp_size: int | None = None,
-    world_size: int | None = None,
+    top_k: int,
+    tp_size: int | None,
+    world_size: int | None,
 ) -> CallDescriptor:
     fields: dict[str, object] = {
         "architecture": architecture,
@@ -44,13 +44,65 @@ def call_descriptor(
         "num_experts": int(num_experts),
         "num_tokens": int(x.shape[0]),
         "quant": quant,
-        "top_k": int(topk_ids.shape[-1]),
+        "top_k": int(top_k),
     }
     if tp_size is not None:
         fields["tp_size"] = tp_size
     if world_size is not None:
         fields["world_size"] = world_size
     return CallDescriptor({key: value for key, value in fields.items() if value is not None})
+
+
+def call_descriptor(
+    x: torch.Tensor,
+    topk_ids: torch.Tensor,
+    *,
+    architecture: str | None,
+    graph_mode: str,
+    quant: str,
+    num_experts: int,
+    intermediate_dim: int,
+    tp_size: int | None = None,
+    world_size: int | None = None,
+) -> CallDescriptor:
+    return _descriptor_fields(
+        x,
+        architecture=architecture,
+        graph_mode=graph_mode,
+        quant=quant,
+        num_experts=num_experts,
+        intermediate_dim=intermediate_dim,
+        top_k=int(topk_ids.shape[-1]),
+        tp_size=tp_size,
+        world_size=world_size,
+    )
+
+
+def routed_call_descriptor(
+    x: torch.Tensor,
+    *,
+    top_k: int,
+    architecture: str | None,
+    graph_mode: str,
+    quant: str,
+    num_experts: int,
+    intermediate_dim: int,
+    tp_size: int | None = None,
+    world_size: int | None = None,
+) -> CallDescriptor:
+    """The fat routed-MoE slot's descriptor: same vocabulary, but top_k comes from
+    the engine's TopKConfig — no materialized topk_ids exist at this seam."""
+    return _descriptor_fields(
+        x,
+        architecture=architecture,
+        graph_mode=graph_mode,
+        quant=quant,
+        num_experts=num_experts,
+        intermediate_dim=intermediate_dim,
+        top_k=top_k,
+        tp_size=tp_size,
+        world_size=world_size,
+    )
 
 
 def _value(source: object, name: str) -> Any:

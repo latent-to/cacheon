@@ -27,6 +27,7 @@ from cacheon import receipts as _receipts
 from cacheon.capabilities import CallDescriptor, collective_call_descriptor
 from cacheon.moe_nvfp4_contract import (
     call_descriptor as moe_call_descriptor,
+    routed_call_descriptor as routed_moe_call_descriptor,
     supports_layer as supports_nvfp4_moe_layer,
 )
 from cacheon.registry import REGISTRY, KernelRegistry
@@ -369,7 +370,19 @@ def make_moe_dispatcher(
                 quant_fmt = _moe_quant_format(self)
                 routed = _standard_topk(topk_output)
                 if routed is None:
-                    pass
+                    # BYPASSED routing (e.g. flashinfer_trtllm hands router LOGITS
+                    # only): the fat routed-MoE slot is that boundary.
+                    result = _try_routed_moe(
+                        self,
+                        hidden_states,
+                        topk_output,
+                        registry,
+                        in_graph=in_graph,
+                        quant_fmt=quant_fmt,
+                        baseline_forward=baseline_forward,
+                    )
+                    if result is not None:
+                        return result
                 else:
                     x = hidden_states
                     for slot in slots:
@@ -621,14 +634,160 @@ def _standard_topk(topk_output):
     return topk_ids, topk_weights
 
 
-def _moe_prepared(self, impl, slot):
+_ROUTED_MOE_SLOT = "moe.fused_routed_experts"
+
+
+def _bypassed_routing_contract(topk_output):
+    """Return ``(router_logits, correction_bias, top_k, routed_scaling)`` iff the
+    BYPASSED routing config matches the fat slot's contract EXACTLY, else None.
+
+    The slot's routing head is fixed: sigmoid scoring, selection on scores+bias,
+    weights from the unbiased scores renormalized then scaled, no expert grouping,
+    no fused shared experts, no custom routing. An engine config outside that
+    domain stays stock — the dispatcher never approximates routing semantics."""
+    router_logits = getattr(topk_output, "router_logits", None)
+    cfg = getattr(topk_output, "topk_config", None)
+    if cfg is None or not torch.is_tensor(router_logits):
+        return None
+    bias = getattr(cfg, "correction_bias", None)
+    top_k = getattr(cfg, "top_k", None)
+    scaling = getattr(cfg, "routed_scaling_factor", None)
+    if not torch.is_tensor(bias):
+        return None
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+        return None
+    if not isinstance(scaling, (int, float)) or isinstance(scaling, bool):
+        return None
+    if getattr(cfg, "scoring_func", None) != "sigmoid":
+        return None
+    if not getattr(cfg, "renormalize", False):
+        return None
+    if getattr(cfg, "apply_routed_scaling_factor_on_output", False):
+        return None
+    if getattr(cfg, "custom_routing_function", None) is not None:
+        return None
+    if int(getattr(cfg, "num_fused_shared_experts", 0) or 0) != 0:
+        return None
+    if getattr(cfg, "use_grouped_topk", False):
+        if getattr(cfg, "num_expert_group", None) not in (None, 0, 1):
+            return None
+        if getattr(cfg, "topk_group", None) not in (None, 0, 1):
+            return None
+    return router_logits, bias, int(top_k), float(scaling)
+
+
+def _try_routed_moe(
+    self, x, topk_output, registry, *, in_graph, quant_fmt, baseline_forward
+):
+    """Dispatch a BYPASSED-routing batch into the fat routed-MoE slot.
+
+    Returns the combined output, or None when no registered implementation (or an
+    out-of-contract routing config) applies — the caller then serves stock."""
+    fat = _bypassed_routing_contract(topk_output)
+    if fat is None:
+        return None
+    if quant_fmt == "nvfp4" and not supports_nvfp4_moe_layer(self):
+        return None
+    router_logits, correction_bias, top_k, routed_scaling = fat
+    tp_size, world_size = _runtime_parallel_sizes()
+    w13 = self.w13_weight.data
+    w2 = self.w2_weight.data
+    descriptor = routed_moe_call_descriptor(
+        x,
+        top_k=top_k,
+        architecture=_arch_tag(x.device.index or 0) if x.is_cuda else None,
+        graph_mode="cuda_graph" if in_graph else "eager",
+        quant=quant_fmt or "dense",
+        num_experts=int(w13.shape[0]),
+        intermediate_dim=int(
+            getattr(
+                self,
+                "intermediate_size_per_partition",
+                w2.shape[-1] * (2 if quant_fmt else 1),
+            )
+        ),
+        tp_size=tp_size,
+        world_size=world_size,
+    )
+    impl = registry.select(_ROUTED_MOE_SLOT, descriptor).impl
+    if impl is None:
+        return None
+    if impl.prepare is None:
+        raise RuntimeError(
+            f"selected MoE candidate for {_ROUTED_MOE_SLOT} has no prepare"
+        )
+    committed = registry.select(_ROUTED_MOE_SLOT, descriptor)
+    if committed.impl is not impl:
+        raise RuntimeError("MoE selection changed between preflight and commit")
+    aud = not in_graph and _audit.sampled()
+    a_x = x.clone() if aud else None
+    out = _run_routed_moe_kernel(
+        self,
+        x,
+        router_logits,
+        correction_bias,
+        impl,
+        top_k=top_k,
+        routed_scaling=routed_scaling,
+    )
+    if aud:
+        _audit.run(
+            _ROUTED_MOE_SLOT,
+            (out,) if torch.is_tensor(out) else tuple(out),
+            lambda: baseline_forward(self, a_x, topk_output),
+        )
+    _log_once_active(_ROUTED_MOE_SLOT)
+    _receipts.completed(_ROUTED_MOE_SLOT)
+    return out
+
+
+def _run_routed_moe_kernel(
+    self, x, router_logits, correction_bias, impl, *, top_k, routed_scaling
+):
+    """Run the fat routed-experts contract into validator-allocated output."""
+    live_inputs = {
+        "x": x,
+        "router_logits": router_logits,
+        "correction_bias": correction_bias,
+    }
+    contract, allocation, tensor_inputs, input_bindings = _allocate_live_outputs(
+        _ROUTED_MOE_SLOT, live_inputs, like=x
+    )
+    if len(allocation.outputs) != 1:
+        raise RuntimeError(f"{_ROUTED_MOE_SLOT} must declare exactly one live output")
+    out = allocation.outputs[0]
+    prepared = _moe_prepared(
+        self, impl, _ROUTED_MOE_SLOT,
+        extra_prepare_args=(top_k, routed_scaling),
+    )
+    _clear_moe_reduced(out)
+    try:
+        _receipts.invoke(
+            _ROUTED_MOE_SLOT, impl.entry,
+            x, router_logits, correction_bias, prepared, out,
+        )
+    finally:
+        _clear_moe_reduced(out)
+    _validate_live_outputs(
+        contract, allocation, tensor_inputs, input_bindings, like=x
+    )
+    if getattr(self, "reduce_results", False) and getattr(self, "moe_tp_size", 1) > 1:
+        from sglang.srt.distributed.communication_op import tensor_model_parallel_all_reduce
+
+        out = tensor_model_parallel_all_reduce(out)
+    return out
+
+
+def _moe_prepared(self, impl, slot, extra_prepare_args=()):
     """Run ``prepare`` once per implementation on this layer's expert weights.
 
     A layer may route different shapes to different variants.  A single layer-wide
     prepared object would hand variant B the layout produced by variant A, so the
     cache identity includes the slot, bundle, variant, and callable.  The slot's
     ``prepare_from_layer`` (validator-owned) maps the live sglang layer to the prepare
-    call shape — weights + biases + layout flags — so the miner owns only the transform."""
+    call shape — weights + biases + layout flags — so the miner owns only the
+    transform. ``extra_prepare_args`` appends validator-owned static routing config
+    (the fat slot's top_k + routed_scaling, read from the live TopKConfig)."""
     cache = getattr(self, "_cacheon_moe_prepared_by_impl", None)
     if cache is None:
         cache = {}
@@ -643,7 +802,7 @@ def _moe_prepared(self, impl, slot):
         else:
             args = (self.w13_weight.data, self.w2_weight.data)
         cache[key] = _receipts.invoke(
-            slot, impl.prepare, *args, phase="prepare"
+            slot, impl.prepare, *args, *extra_prepare_args, phase="prepare"
         )
     return cache[key]
 
