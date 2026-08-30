@@ -45,7 +45,7 @@ Conceptual shape:
   "catalog_digest": "<sha256>",
   "catalog_snapshot": {},
   "entries": {
-    "attention.sdpa": { "type": "proposal", "...": "..." }
+    "moe.fused_experts": { "type": "proposal", "...": "..." }
   }
 }
 ```
@@ -69,7 +69,7 @@ evidence cannot be reinterpreted through a newer catalog.
 
 ### A marginal transition
 
-Suppose the incumbent already contains an `attention.sdpa` contribution and a
+Suppose the incumbent already contains a `moe.fused_experts` contribution and a
 new proposal wins `norm.rmsnorm`. C is not a two-file bundle: the validator
 materializes a complete engine equal to the incumbent everywhere except the
 resolved RMSNorm target. After two matching PASS attempts, settlement can
@@ -98,7 +98,7 @@ That makes it chain-independent and suitable for deterministic materialization:
   "catalog_digest": "<sha256>",
   "catalog_snapshot": {},
   "entries": {
-    "attention.sdpa": { "type": "integrated", "...": "..." }
+    "moe.fused_experts": { "type": "integrated", "...": "..." }
   }
 }
 ```

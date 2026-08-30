@@ -15,9 +15,8 @@ resolution. Before adapting one for submission, add the appropriate
 | [`miner_silu_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_silu_torch) | smallest CPU-importable `entry(x, out)` bundle | correctness/packaging only; not expected to beat a tuned incumbent |
 | [`miner_silu_triton`](https://github.com/latent-to/cacheon/tree/main/examples/miner_silu_triton) | Triton activation implementation and architecture constraints | needs matching GPU/Triton environment |
 | [`miner_rmsnorm_triton`](https://github.com/latent-to/cacheon/tree/main/examples/miner_rmsnorm_triton) | pure RMSNorm output ownership in Triton | local example, not crown evidence |
-| [`miner_attention_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_attention_torch) | `attention.sdpa` block ABI and GQA/MQA reference shape | slow Torch diagnostic implementation |
-| [`miner_attention_decode_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_attention_decode_torch) | `attention.decode` ABI with `seq_lens` | slow eager diagnostic implementation |
 | [`miner_moe_fused_experts_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_moe_fused_experts_torch) | MoE `prepare` plus serving `entry` | dense reference-style code, not a quantized fast path |
+| [`miner_moe_fused_routed_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_moe_fused_routed_torch) | fat MoE boundary: faithful routing head plus experts plus combine | dense reference-style code, not a quantized fast path |
 | [`miner_moe_fused_experts_reduce_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_moe_fused_experts_reduce_torch) | distributed MoE entry that owns its trailing reduction | needs multi-rank verification for the real contract |
 | [`miner_allreduce_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_allreduce_torch) | simplest collective ABI using the supplied group | correctness example, not a competitive collective algorithm |
 
@@ -45,7 +44,7 @@ submission — widening the catalog is a reviewed validator-side change.
 
 Two test fixtures are useful for inspecting modern manifest structure:
 
-- [`stack_msa_singleton`](https://github.com/latent-to/cacheon/tree/main/tests/fixtures/stack_msa_singleton)
+- [`stack_norm_singleton`](https://github.com/latent-to/cacheon/tree/main/tests/fixtures/stack_norm_singleton)
   shows explicit singleton competition identity and capability metadata;
 - [`stack_fused_epilogue_atomic`](https://github.com/latent-to/cacheon/tree/main/tests/fixtures/stack_fused_epilogue_atomic)
   shows explicit atomic identity, member rows, declared CUDA source, dependency

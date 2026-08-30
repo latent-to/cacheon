@@ -63,7 +63,7 @@ def test_reconcile_marks_only_live_matching_rows() -> None:
         policy_module._repo_root() / "tests/fixtures/stack_fused_epilogue_atomic"
     )
     other = fingerprint_submitted_delta(
-        policy_module._repo_root() / "tests/fixtures/stack_msa_singleton"
+        policy_module._repo_root() / "tests/fixtures/stack_norm_singleton"
     )
     store = _Store(
         [
@@ -71,7 +71,7 @@ def test_reconcile_marks_only_live_matching_rows() -> None:
             _Row("already-failed", "failed", fixture),
             _Row("expired-row", "expired", fixture),
             _Row("no-fingerprint", "promoted", None),
-            _Row("msa-copy", "published", other),
+            _Row("norm-copy", "published", other),
         ]
     )
 
@@ -79,7 +79,7 @@ def test_reconcile_marks_only_live_matching_rows() -> None:
 
     assert dispositions == (
         ("resubmission", "stack_fused_epilogue_atomic"),
-        ("msa-copy", "stack_msa_singleton"),
+        ("norm-copy", "stack_norm_singleton"),
     )
     assert store.marked == list(dispositions)
 
@@ -103,7 +103,7 @@ def _doctored(base, library_fp):
 
 def test_submission_containing_library_code_is_demoted() -> None:
     base = fingerprint_submitted_delta(
-        policy_module._repo_root() / "tests/fixtures/stack_msa_singleton"
+        policy_module._repo_root() / "tests/fixtures/stack_norm_singleton"
     )
     table = policy_module.validator_library_fingerprints()
     library_fp, rel = next(iter(sorted(table.items())))
@@ -144,7 +144,7 @@ def test_lease_fenced_mark_defers_without_killing_the_tick() -> None:
 
 def test_library_kill_flag_off_is_inert(monkeypatch) -> None:
     base = fingerprint_submitted_delta(
-        policy_module._repo_root() / "tests/fixtures/stack_msa_singleton"
+        policy_module._repo_root() / "tests/fixtures/stack_norm_singleton"
     )
     table = policy_module.validator_library_fingerprints()
     library_fp = next(iter(sorted(table)))

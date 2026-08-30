@@ -4,7 +4,7 @@ A slot is a validator-owned semantic boundary inside the pinned engine. A
 contribution supplies an implementation for that boundary; the validator owns
 the call site, inputs, output allocation, reference, and verification policy.
 
-The registered API contains **12 slots**. The registry in
+The registered API contains **8 slots**. The registry in
 [`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
 is authoritative; print it with `python -m cacheon.cli slots`.
 
@@ -14,10 +14,6 @@ is authoritative; print it with `python -m cacheon.cli slots`.
 |---|---|---|---|
 | `activation.silu_and_mul` | op | `entry(x, out)` | allclose |
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | allclose |
-| `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | matched ratio ≥ 0.99 |
-| `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | matched ratio ≥ 0.99 |
-| `attention.msa_block_score` | block | `entry(q, k_cache, req_to_token, slot_ids, seq_lens, out, sm_scale, block_size, topk, init_blocks, local_blocks)` | top-16 overlap ≥ 0.875 |
-| `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | selected-set overlap ≥ 0.90 |
 | `moe.fused_experts` | block | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out)` | matched ratio ≥ 0.97 |
 | `moe.fused_routed_experts` | block | `prepare(w13, w2, topk, routed_scaling)` + `entry(x, router_logits, correction_bias, prepared, out)` | matched ratio ≥ 0.97 |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out, group)` | matched ratio ≥ 0.97 |
@@ -118,8 +114,8 @@ validator refreshes registered dynamic inputs and poisons outputs between
 replays before comparing against fresh trusted references.
 
 An implementation that cannot establish graph safety is not credited for work the
-baseline performs. `attention.decode` uses paged caches and validator-selected block
-IDs at SGLang's captured sparse-attend call; an eager warmup alone cannot produce the
+baseline performs. Slots whose serving seam sits inside the captured region (the
+MoE expert slots) are graph-verified; an eager warmup alone cannot produce the
 qualifying execution receipt.
 
 ### Graph failure examples

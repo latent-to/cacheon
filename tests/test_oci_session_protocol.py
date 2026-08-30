@@ -153,11 +153,8 @@ def test_engine_config_is_exact_immutable_and_digest_stable() -> None:
 def test_seam_binding_table_is_closed_and_deep_epilogue_shares_arfusion() -> None:
     assert dict(SEAM_BINDING_ENV_GATES) == {
         "arfusion": "CACHEON_ARFUSION_SEAM",
-        "attention": "CACHEON_ATTENTION_SEAM",
         "collective": "CACHEON_COLLECTIVE_SEAM",
         "moe": "CACHEON_MOE_SEAM",
-        "msa_decode_score": "CACHEON_MSA_DECODE_SCORE_SEAM",
-        "msa_prefill": "CACHEON_MSA_PREFILL_SEAM",
     }
     bindings = {binding.binding_id: binding for binding in SEAM_BINDINGS}
     assert bindings["arfusion"].adapters == (
@@ -178,35 +175,29 @@ def test_seam_binding_table_is_closed_and_deep_epilogue_shares_arfusion() -> Non
 
 
 def test_seam_bindings_normalize_and_emit_complete_explicit_environment() -> None:
-    selected = normalize_seam_bindings(["arfusion", "msa_prefill"])
-    assert selected == ("arfusion", "msa_prefill")
+    selected = normalize_seam_bindings(["arfusion", "moe"])
+    assert selected == ("arfusion", "moe")
     assert seam_binding_environment(selected) == {
         "CACHEON_ARFUSION_SEAM": "1",
-        "CACHEON_ATTENTION_SEAM": "0",
         "CACHEON_COLLECTIVE_SEAM": "0",
-        "CACHEON_MOE_SEAM": "0",
-        "CACHEON_MSA_DECODE_SCORE_SEAM": "0",
-        "CACHEON_MSA_PREFILL_SEAM": "1",
+        "CACHEON_MOE_SEAM": "1",
     }
     assert seam_binding_environment(()) == {
         "CACHEON_ARFUSION_SEAM": "0",
-        "CACHEON_ATTENTION_SEAM": "0",
         "CACHEON_COLLECTIVE_SEAM": "0",
         "CACHEON_MOE_SEAM": "0",
-        "CACHEON_MSA_DECODE_SCORE_SEAM": "0",
-        "CACHEON_MSA_PREFILL_SEAM": "0",
     }
 
 
 @pytest.mark.parametrize(
     ("value", "match"),
     [
-        ("attention", "array"),
-        ({"attention"}, "array"),
+        ("collective", "array"),
+        ({"collective"}, "array"),
         (("unknown",), "unknown"),
-        (("moe", "attention"), "sorted"),
-        (("attention", "attention"), "duplicates"),
-        (("attention", 1), "strings"),
+        (("moe", "collective"), "sorted"),
+        (("collective", "collective"), "duplicates"),
+        (("collective", 1), "strings"),
     ],
 )
 def test_seam_bindings_reject_noncanonical_or_open_input(
@@ -219,13 +210,13 @@ def test_seam_bindings_reject_noncanonical_or_open_input(
 
 
 def test_engine_config_binds_seams_in_wire_and_digest() -> None:
-    config = _config(seam_bindings=("attention", "collective"))
+    config = _config(seam_bindings=("collective", "moe"))
     row = config.to_dict()
-    assert row["seam_bindings"] == ["attention", "collective"]
+    assert row["seam_bindings"] == ["collective", "moe"]
     assert EngineSessionConfig.from_dict(row) == config
     assert config.digest != _config().digest
 
-    row["seam_bindings"] = ("attention",)
+    row["seam_bindings"] = ("collective",)
     with pytest.raises(SessionProtocolError, match="array"):
         EngineSessionConfig.from_dict(row)
 
@@ -245,9 +236,9 @@ def test_engine_config_binds_seams_in_wire_and_digest() -> None:
         ({"moe_runner_backend": "x\n"}, "moe_runner_backend"),
         ({"engine_kwargs": {"arbitrary": True}}, "unsupported keys"),
         ({"engine_kwargs": {"page_size": False}}, "page_size"),
-        ({"seam_bindings": "attention"}, "array"),
-        ({"seam_bindings": ("moe", "attention")}, "sorted"),
-        ({"seam_bindings": ("attention", "attention")}, "duplicates"),
+        ({"seam_bindings": "collective"}, "array"),
+        ({"seam_bindings": ("moe", "collective")}, "sorted"),
+        ({"seam_bindings": ("collective", "collective")}, "duplicates"),
         ({"seam_bindings": ("unknown",)}, "unknown"),
     ],
 )

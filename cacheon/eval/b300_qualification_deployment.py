@@ -71,10 +71,6 @@ from cacheon.target_catalog import TargetCatalog, default_target_catalog
 # qualification identity the moment its catalog row lands.
 _B300_ARENA_TARGET_IDS = (
     "activation.silu_and_mul",
-    "attention.decode",
-    "attention.msa_block_score",
-    "attention.msa_prefill_block_score",
-    "attention.sdpa",
     "collective.all_reduce",
     "collective.ar_residual_rmsnorm",
     "collective.moe_epilogue.v1",

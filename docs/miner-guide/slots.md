@@ -20,18 +20,15 @@ The authoritative sources are
 
 ## Current slot catalog
 
-There are 11 semantic slots. `entry` below means the callable named by your
+There are 8 semantic slots. `entry` below means the callable named by your
 manifest; it does not require the Python function itself to be named `entry`.
 
 | Slot | Kind | Required call boundary | What the validator retains |
 |---|---|---|---|
 | `activation.silu_and_mul` | op | `entry(x, out)` | MLP activation output |
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
-| `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | dense/GQA/MQA attention output |
-| `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | MiniMax-M3 graph-native sparse attention over validator-selected blocks |
-| `attention.msa_block_score` | block | `entry(q, k_cache, req_to_token, slot_ids, seq_lens, out, sm_scale, block_size, topk, init_blocks, local_blocks)` | paged per-head decode scores; stock owns top-k and attend |
-| `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | one batched paged prefill score-to-selection call; validator audits indices and owns attend |
 | `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
+| `moe.fused_routed_experts` | block | `prepare(w13, w2, topk, routed_scaling)` plus `entry(x, router_logits, correction_bias, prepared, out)` | routed, combined expert result; the implementation owns the routing head |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | sum across the supplied process group |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | reduced residual and normalized output |
@@ -39,7 +36,7 @@ manifest; it does not require the Python function itself to be named `entry`.
 
 ## Current MiniMax-M3 availability
 
-As of 2026-08-24, five registered slot contracts are **unavailable for paid
+As of 2026-08-30, three registered slot contracts are **unavailable for paid
 submission in the current MiniMax-M3 mainnet arena**:
 
 - `norm.rmsnorm`: the deployed model uses `GemmaRMSNorm` at every relevant
@@ -49,11 +46,6 @@ submission in the current MiniMax-M3 mainnet arena**:
   inside the MoE grouped-GEMM epilogue on 57 of 60 layers, and its three dense
   layers route a swigluoai function the registered adapter does not patch. A
   candidate for this slot loads but is never called.
-- `attention.sdpa`: no serving adapter binds this contract in the deployed
-  runtime, so a candidate can never execute in a measured arm.
-- `attention.msa_prefill_block_score`: closed pending its first clean
-  end-to-end control run on the deployed arena; the decode sibling
-  `attention.msa_block_score` is open.
 - `moe.fused_experts_reduce`: sealed closed pending its full-engine
   outer-reduction proof.
 
@@ -68,17 +60,8 @@ collective boundaries, and a fused kernel is judged only by the contract of
 the target it names — never by what it absorbs internally. See the slot
 contract's closure section.
 
-The decode MSA slot follows `req_to_token[slot_ids]` and fills one FP32 score
-slab per local index head. Stock code retains top-k and attend. Prefill V2
-instead writes validator-allocated `int32` indices for the whole paged batch;
-`-1` is required padding for short causal rows.
-
-The prefill slot is a distinct long-prefill boundary and its canonical live
-descriptor is eager; do not assume a decode optimization exercises it.
-
-Registration and installation remain different facts. The pinned runtime now
-binds `attention.msa_block_score` at `_decode_score_kernel`; the prefill sibling
-has its own guarded adapter.
+Registration and installation remain different facts: the catalog can register
+a slot before the pinned runtime binds a live adapter for it.
 
 Collective slots are distributed contracts. `group` is the process group the
 validator supplies, and every listed output is validator-allocated. Test with
@@ -90,12 +73,12 @@ See [Kernel ABI](kernel-abi.md) for tensor semantics and
 ## Singleton targets
 
 The current default target catalog registers one singleton target for each of
-the 11 slots. Its target ID is the slot ID. A normal proposal therefore names
+the 8 slots. Its target ID is the slot ID. A normal proposal therefore names
 the slot target explicitly:
 
 ```toml
 [competition]
-target = "attention.msa_prefill_block_score"
+target = "moe.fused_experts"
 mode = "slot"
 ```
 

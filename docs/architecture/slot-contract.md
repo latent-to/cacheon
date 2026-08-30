@@ -74,10 +74,6 @@ The current API contains **11 slots**.
 |---|---|---|---|
 | `activation.silu_and_mul` | `op` | `silu_and_mul` | Gated MLP activation product |
 | `norm.rmsnorm` | `op` | `rmsnorm` | RMS normalization; residual addition remains outside |
-| `attention.sdpa` | `block` | `attention` | Scaled dot-product attention core |
-| `attention.decode` | `block` | `attention_decode` | Paged decode-attention boundary |
-| `attention.msa_block_score` | `block` | `msa_block_score` | Paged per-index-head decode scores; validator owns top-k and attend |
-| `attention.msa_prefill_block_score` | `block` | `msa_prefill_block_score` | Batched paged MSA prefill score-to-selection; validator audits indices and owns attend |
 | `moe.fused_experts` | `block` | `fused_experts` | Prepared MoE expert execution |
 | `moe.fused_experts_reduce` | `collective` | `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |

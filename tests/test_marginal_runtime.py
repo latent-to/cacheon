@@ -60,7 +60,7 @@ from tests.support.preflight import preflight_receipt
 ROOT = Path(__file__).parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
 SILU = ROOT / "examples" / "miner_silu_torch"
-MSA = FIXTURES / "stack_msa_singleton"
+SINGLETON = FIXTURES / "stack_norm_singleton"
 FUSED = FIXTURES / "stack_fused_epilogue_atomic"
 
 
@@ -424,7 +424,7 @@ def test_singleton_derives_exact_launch_and_session_plan(tmp_path: Path) -> None
     assert all(word not in encoded for word in ("baseline", "challenger", "target_id"))
 
 
-@pytest.mark.parametrize("fixture", (MSA, FUSED), ids=("msa-singleton", "fused-atomic"))
+@pytest.mark.parametrize("fixture", (SINGLETON, FUSED), ids=("norm-singleton", "fused-atomic"))
 def test_singleton_and_atomic_fixtures_bind_without_runtime_import(
     tmp_path: Path, fixture: Path
 ) -> None:
@@ -438,7 +438,7 @@ def test_singleton_and_atomic_fixtures_bind_without_runtime_import(
 
 def test_prepare_rejects_swaps_environment_context_and_workload(tmp_path: Path) -> None:
     case = _case(tmp_path)
-    other = _case(tmp_path / "other", MSA, suffix="-other")
+    other = _case(tmp_path / "other", SINGLETON, suffix="-other")
     with pytest.raises(MarginalRuntimeError):
         prepare_marginal_runtime(
             case.arm,

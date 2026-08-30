@@ -67,7 +67,7 @@ def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...]
     prompt = tmp_path / "prompt-authority.json"
     prompt_value = {
         "accepted_token_subsequences": [],
-        "closed_targets": ["attention.msa_prefill_block_score"],
+        "closed_targets": ["moe.fused_experts_reduce"],
         "hidden_corpus_commitment": _h("hidden-corpus"),
         "hidden_judge_digest": _h("hidden-judge"),
         "hidden_task_policy_digest": _h("hidden-task-policy"),
@@ -440,10 +440,10 @@ def test_closed_targets_are_sealed_registered_data() -> None:
 
     catalog = default_target_catalog()
     prompt = {
-        "closed_targets": ["attention.msa_prefill_block_score", "norm.rmsnorm"]
+        "closed_targets": ["moe.fused_experts_reduce", "norm.rmsnorm"]
     }
     assert deployment._closed_targets(prompt, catalog) == (
-        "attention.msa_prefill_block_score",
+        "moe.fused_experts_reduce",
         "norm.rmsnorm",
     )
     with pytest.raises(

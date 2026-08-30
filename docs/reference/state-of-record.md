@@ -156,31 +156,37 @@ does not establish that a paid OCI lifetime has mounted or executed that model.
 
 ### Slots, targets, and direct artifacts
 
-The executable catalog contains 11 slots and one registered atomic target:
+The executable catalog contains 8 slots and one registered atomic target:
 
 | Kind | Registered identifiers |
 |---|---|
 | Op | `activation.silu_and_mul`, `norm.rmsnorm` |
-| Block | `attention.sdpa`, `attention.decode`, `attention.msa_block_score`, `attention.msa_prefill_block_score`, `moe.fused_experts` |
+| Block | `moe.fused_experts`, `moe.fused_routed_experts` |
 | Collective | `moe.fused_experts_reduce`, `collective.all_reduce`, `collective.ar_residual_rmsnorm`, `collective.moe_finalize_ar_rmsnorm` |
 | Atomic target | `collective.moe_epilogue.v1` over the two MoE epilogue collective members |
 
-The table records contracts, not deployment availability. As of 2026-08-24,
-five targets are unavailable in the MiniMax-M3 arena: `norm.rmsnorm`
+On 2026-08-30 the four M3 attention slots (`attention.sdpa`,
+`attention.decode`, `attention.msa_block_score`,
+`attention.msa_prefill_block_score`), their seam adapters, ABIs, catalog rows,
+example bundles, and the MSA verification-probe synthesis were retired from the
+tree as part of the generic slot-contract work; `moe.fused_routed_experts` (the
+fat routed-MoE boundary) was registered in the same change. This is a reviewed
+target identity epoch: catalog and settlement digests moved, and the B300
+arena's registered set is now pinned arena data rather than derived from the
+cross-arena catalog. Historical evaluation records embed their own catalog
+snapshots and are unaffected. The deployed M3 lane runs from its pinned source
+trees and is unaffected by repository-side retirement.
+
+The table records contracts, not deployment availability. As of 2026-08-30,
+three targets are unavailable in the MiniMax-M3 arena: `norm.rmsnorm`
 (GemmaRMSNorm outside the registered seam), `activation.silu_and_mul` (the
 model activates inside the MoE GEMM epilogue; the dense-layer swigluoai
-callsite is unpatched — measured never-called on 2026-08-23),
-`attention.sdpa` (no serving adapter binds it),
-`attention.msa_prefill_block_score` (closed pending its first clean
-end-to-end control run; the decode sibling is open), and
+callsite is unpatched — measured never-called on 2026-08-23), and
 `moe.fused_experts_reduce` (sealed closed pending its full-engine
 outer-reduction proof). Their computation stays claimable inside open fused
 targets; closure keys on the submitted target name only. The miner-facing
 notice is
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
-
-`attention.msa_block_score` binds the pinned `_decode_score_kernel`; candidate
-code fills paged per-index-head scores while stock code retains top-k and attend.
 
 The closed direct-artifact registry has one crownable provider,
 `cutlass.cute.cubin.v1`. Candidate compiler-factory code runs in a GPU-hidden,
@@ -288,7 +294,7 @@ the call count, whether any call happened inside a CUDA-graph capture, the
 exception a raising entry left behind, and the routing reasons for calls that
 went to stock. The host reduces the rows itself; a rank counts as executed only
 when it loaded, raised nothing, and was captured on every slot SGLang serves
-from its graph (`attention.msa_prefill_block_score` is the one eager exemption),
+from its graph (a slot whose SlotSpec declares an eager serving seam is exempt),
 so a candidate called only during eager warmup can no longer pass the guard.
 The rows are published by the worker as the unsealed `qualification.execution`
 artifact, travel in the product, and are rendered by `chain-miner-report

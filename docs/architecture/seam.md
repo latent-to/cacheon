@@ -49,15 +49,11 @@ The registered rows are:
 |---|---|---|---|
 | `activation` | `SiluAndMul.forward_cuda` | `activation.silu_and_mul` | Registry-selected |
 | `layernorm` | `RMSNorm.forward_cuda` | `norm.rmsnorm` | Registry-selected |
-| `attention` | `flash_decode_with_gqa_share_sparse` | graph-native MiniMax-M3 `attention.decode` sparse attend | `attention` |
-| `attention_audit_mode` | `MiniMaxSparseAttnBackend.__init__` | keeps MSA prefill but routes the untimed decode audit through the scored Triton insertion | `attention` |
-| `msa_decode_score` | `_decode_score_kernel` | paged per-head `attention.msa_block_score`; stock owns top-k and attend | `msa_decode_score` |
-| `moe` | `FusedMoE.forward_impl` | `moe.fused_experts`, `moe.fused_experts_reduce` | `moe` |
+| `moe` | `FusedMoE.forward_impl` | `moe.fused_experts`, `moe.fused_experts_reduce`, `moe.fused_routed_experts` | `moe` |
 | `collective` | `GroupCoordinator.all_reduce` | `collective.all_reduce` | `collective` |
 | `arfusion` | `flashinfer_allreduce_residual_rmsnorm` | `collective.ar_residual_rmsnorm`; consume side for the deep epilogue | `arfusion` |
 | `defer_gate` | `LayerCommunicator.should_fuse_mlp_allreduce_with_next_layer` | Deep epilogue producer/scoping gate | `arfusion` |
 | `moe_export` | `flashinfer_cutlass_fused_moe` | `collective.moe_finalize_ar_rmsnorm` export wrapper | `arfusion` |
-| `msa_prefill` | `flash_prefill_with_topk_index` | `attention.msa_prefill_block_score` | `msa_prefill` |
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot | None |
 | `artifact_context` | `ModelRunner.init_torch_distributed` | Rank-local sealed direct-artifact binding; not a slot | None |
 | `resident_swap` | `ModelRunner.init_decode_cuda_graph` plus idle-gated scheduler cache flush | Persistent resident screening only; not qualification or a slot | None |
@@ -67,10 +63,7 @@ Several adapters may share one binding when they implement one semantic product.
 
 The catalog can contain a verified slot before the pinned runtime exposes a safe
 live chokepoint. `norm.rmsnorm` remains such a case because MiniMax-M3 uses
-`GemmaRMSNorm`, not the registered `RMSNorm.forward_cuda`. The decode-score
-adapter replaces the pinned `_decode_score_kernel`; unchanged stock code consumes
-its paged per-head slab for top-k and attend. The separate `attention.decode`
-adapter patches both its defining symbol and by-value consumer. See
+`GemmaRMSNorm`, not the registered `RMSNorm.forward_cuda`. See
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 `resident_swap` is deliberately outside the crown path. It is inert unless the

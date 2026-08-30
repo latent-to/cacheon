@@ -29,10 +29,10 @@ from cacheon.target_catalog import (
 )
 
 
-MSA = "attention.msa_prefill_block_score"
+ROUTED = "moe.fused_routed_experts"
 SILU = "activation.silu_and_mul"
 NORM = "norm.rmsnorm"
-SDPA = "attention.sdpa"
+ALLREDUCE = "collective.all_reduce"
 
 
 def _h(label: str) -> str:
@@ -112,8 +112,8 @@ def _plan(
 @pytest.mark.parametrize(
     "initial_target,replacement_target,expected_removed",
     [
-        (None, MSA, ()),
-        (MSA, MSA, ()),
+        (None, ROUTED, ()),
+        (ROUTED, ROUTED, ()),
         (None, MOE_EPILOGUE_ATOMIC_TARGET, ()),
         (MOE_EPILOGUE_ATOMIC_TARGET, MOE_EPILOGUE_ATOMIC_TARGET, ()),
     ],
@@ -149,14 +149,14 @@ def test_registered_stock_and_same_target_transitions(
 
 def test_planning_rejects_a_catalog_outside_the_frozen_stack_context():
     catalog = default_target_catalog()
-    context = _context(catalog, (MSA,))
+    context = _context(catalog, (ROUTED,))
     incumbent = _stack(catalog)
-    narrow = TargetCatalog((catalog.require(MSA),))
+    narrow = TargetCatalog((catalog.require(ROUTED),))
 
     with pytest.raises(StackPlanError, match="catalog does not match"):
         _plan(
             incumbent,
-            _ref(catalog, MSA, "replacement"),
+            _ref(catalog, ROUTED, "replacement"),
             narrow,
             context,
         )
@@ -219,18 +219,18 @@ def test_atomic_incumbent_cannot_be_implicitly_decomposed_to_singleton():
 
 def _dependency_catalog() -> tuple[TargetCatalog, str]:
     base = default_target_catalog()
-    atomic_id = "atomic.silu_sdpa"
+    atomic_id = "atomic.silu_allreduce"
     specs = [
         base.require(SILU),
         replace(base.require(NORM), requires=frozenset({SILU})),
-        base.require(SDPA),
+        base.require(ALLREDUCE),
         TargetSpec(
             target_id=atomic_id,
             kind=TargetKind.ATOMIC,
-            members=(SILU, SDPA),
-            displaces=frozenset({SILU, SDPA}),
+            members=(SILU, ALLREDUCE),
+            displaces=frozenset({SILU, ALLREDUCE}),
             allowed_features=frozenset({FEATURE_ENTRY}),
-            atomic_semantics_id="silu-sdpa-atomic.v1",
+            atomic_semantics_id="silu-allreduce-atomic.v1",
         ),
     ]
     return TargetCatalog(specs), atomic_id
@@ -270,11 +270,11 @@ def test_displacement_rejects_stranded_active_dependent():
 
 def test_stale_target_spec_and_selected_payload_noop_reject():
     catalog = default_target_catalog()
-    context = _context(catalog, (MSA,))
-    prior = _ref(catalog, MSA, "prior", payload="same")
-    incumbent = _stack(catalog, {MSA: prior})
+    context = _context(catalog, (ROUTED,))
+    prior = _ref(catalog, ROUTED, "prior", payload="same")
+    incumbent = _stack(catalog, {ROUTED: prior})
     padded_alias = ProposalContributionRef(
-        target_id=MSA,
+        target_id=ROUTED,
         target_spec_digest=prior.target_spec_digest,
         artifact_digest=_h("different padding"),
         selected_payload_digest=prior.selected_payload_digest,
@@ -290,9 +290,9 @@ def test_stale_target_spec_and_selected_payload_noop_reject():
 
 def test_marginal_plan_rejects_equal_tree_and_detects_incumbent_rebase():
     catalog = default_target_catalog()
-    context = _context(catalog, (MSA, SILU))
+    context = _context(catalog, (ROUTED, SILU))
     incumbent = _stack(catalog)
-    replacement = _ref(catalog, MSA, "msa")
+    replacement = _ref(catalog, ROUTED, "routed")
     with pytest.raises(StackPlanError, match="tree digests must differ"):
         _plan(
             incumbent,
@@ -315,26 +315,26 @@ def test_marginal_plan_rejects_equal_tree_and_detects_incumbent_rebase():
 
 def _two_arms():
     catalog = default_target_catalog()
-    context = _context(catalog, (MSA, SILU))
+    context = _context(catalog, (ROUTED, SILU))
     incumbent = _stack(catalog)
-    msa = _plan(incumbent, _ref(catalog, MSA, "msa"), catalog, context)
+    routed = _plan(incumbent, _ref(catalog, ROUTED, "routed"), catalog, context)
     silu = _plan(incumbent, _ref(catalog, SILU, "silu"), catalog, context)
-    return catalog, context, incumbent, msa, silu
+    return catalog, context, incumbent, routed, silu
 
 
 def test_cohort_order_is_entropy_derived_and_authority_remains_distinct():
-    _, context, incumbent, msa, silu = _two_arms()
+    _, context, incumbent, routed, silu = _two_arms()
     entropy = _h("post-seal entropy")
-    authority = (silu.transition.replacement, msa.transition.replacement)
+    authority = (silu.transition.replacement, routed.transition.replacement)
     first = CohortPlan.seal(
-        (msa, silu),
+        (routed, silu),
         entropy_digest=entropy,
         authority_order=authority,
         catalog=default_target_catalog(),
         expected_context=context,
     )
     second = CohortPlan.seal(
-        (silu, msa),
+        (silu, routed),
         entropy_digest=entropy,
         authority_order=authority,
         catalog=default_target_catalog(),
@@ -348,7 +348,7 @@ def test_cohort_order_is_entropy_derived_and_authority_remains_distinct():
     )
     assert first.authority_order == authority
     assert set(first.execution_order) == {
-        msa.selected_delta_digest,
+        routed.selected_delta_digest,
         silu.selected_delta_digest,
     }
     first.require_current(
@@ -359,7 +359,7 @@ def test_cohort_order_is_entropy_derived_and_authority_remains_distinct():
     ) is first
     with pytest.raises(StaleStackPlanError, match="stack is stale"):
         first.require_current(
-            msa.candidate,
+            routed.candidate,
             tree_digest=_h("tree:b"),
             expected_context=context,
         )
@@ -372,39 +372,39 @@ def test_cohort_order_is_entropy_derived_and_authority_remains_distinct():
     ["duplicate_delta", "duplicate_tree", "duplicate_authority", "missing_authority"],
 )
 def test_cohort_rejects_duplicate_work_and_invalid_authority(case):
-    catalog, context, incumbent, msa, silu = _two_arms()
-    arms = (msa, silu)
-    authority = (msa.transition.replacement, silu.transition.replacement)
+    catalog, context, incumbent, routed, silu = _two_arms()
+    arms = (routed, silu)
+    authority = (routed.transition.replacement, silu.transition.replacement)
     message = ""
     if case == "duplicate_delta":
-        alias = _ref(catalog, MSA, "padding alias", payload="msa")
+        alias = _ref(catalog, ROUTED, "padding alias", payload="routed")
         # _ref's payload label matches the original selected payload while the
         # whole artifact and attribution identities differ.
         duplicate = _plan(
             incumbent,
             alias,
             catalog,
-            _context(catalog, (MSA, SILU)),
+            _context(catalog, (ROUTED, SILU)),
             candidate_tree="tree:alias",
         )
-        arms = (msa, duplicate)
-        authority = (msa.transition.replacement, duplicate.transition.replacement)
+        arms = (routed, duplicate)
+        authority = (routed.transition.replacement, duplicate.transition.replacement)
         message = "duplicate selected deltas"
     elif case == "duplicate_tree":
         duplicate_tree = _plan(
             incumbent,
             silu.transition.replacement,
             catalog,
-            _context(catalog, (MSA, SILU)),
-            candidate_tree=f"tree:c:{msa.selected_delta_digest}",
+            _context(catalog, (ROUTED, SILU)),
+            candidate_tree=f"tree:c:{routed.selected_delta_digest}",
         )
-        arms = (msa, duplicate_tree)
+        arms = (routed, duplicate_tree)
         message = "duplicate candidate trees"
     elif case == "duplicate_authority":
-        authority = (msa.transition.replacement, msa.transition.replacement)
+        authority = (routed.transition.replacement, routed.transition.replacement)
         message = "duplicate contributions"
     else:
-        authority = (msa.transition.replacement,)
+        authority = (routed.transition.replacement,)
         message = "every cohort contribution exactly once"
 
     with pytest.raises(StackPlanError, match=message):
@@ -418,33 +418,33 @@ def test_cohort_rejects_duplicate_work_and_invalid_authority(case):
 
 
 def test_rollback_is_exact_and_rejects_stale_stack_or_tree():
-    catalog, context, _, msa, _ = _two_arms()
+    catalog, context, _, routed, _ = _two_arms()
     rollback = RollbackPlan.from_arm(
-        msa, catalog=catalog, expected_context=context
+        routed, catalog=catalog, expected_context=context
     )
 
     restored, restored_tree = rollback.reconstruct(
-        msa.candidate,
-        tree_digest=msa.challenger.tree_digest,
-        source_arm=msa,
+        routed.candidate,
+        tree_digest=routed.challenger.tree_digest,
+        source_arm=routed,
         catalog=catalog,
         expected_context=context,
     )
-    assert restored.digest == msa.incumbent.digest
-    assert restored_tree == msa.baseline_before.tree_digest
+    assert restored.digest == routed.incumbent.digest
+    assert restored_tree == routed.baseline_before.tree_digest
     with pytest.raises(StaleStackPlanError, match="current stack is stale"):
         rollback.reconstruct(
-            msa.incumbent,
-            tree_digest=msa.challenger.tree_digest,
-            source_arm=msa,
+            routed.incumbent,
+            tree_digest=routed.challenger.tree_digest,
+            source_arm=routed,
             catalog=catalog,
             expected_context=context,
         )
     with pytest.raises(StaleStackPlanError, match="current tree is stale"):
         rollback.reconstruct(
-            msa.candidate,
+            routed.candidate,
             tree_digest=_h("wrong tree"),
-            source_arm=msa,
+            source_arm=routed,
             catalog=catalog,
             expected_context=context,
         )
@@ -461,26 +461,26 @@ def test_rollback_is_exact_and_rejects_stale_stack_or_tree():
     )
     with pytest.raises(StackPlanError, match="does not reopen"):
         forged.reconstruct(
-            msa.candidate,
-            tree_digest=msa.challenger.tree_digest,
-            source_arm=msa,
+            routed.candidate,
+            tree_digest=routed.challenger.tree_digest,
+            source_arm=routed,
             catalog=catalog,
             expected_context=context,
         )
 
 
 def test_plan_schema_versions_are_type_exact():
-    catalog, context, _, msa, sdpa = _two_arms()
+    catalog, context, _, routed, sdpa = _two_arms()
     cohort = CohortPlan.seal(
-        (msa, sdpa),
+        (routed, sdpa),
         entropy_digest=_h("entropy"),
-        authority_order=(msa.transition.replacement, sdpa.transition.replacement),
+        authority_order=(routed.transition.replacement, sdpa.transition.replacement),
         catalog=catalog,
         expected_context=context,
     )
     rollback = RollbackPlan.from_arm(
-        msa, catalog=catalog, expected_context=context
+        routed, catalog=catalog, expected_context=context
     )
-    for record in (msa, cohort, rollback):
+    for record in (routed, cohort, rollback):
         with pytest.raises(StackPlanError, match="schema_version"):
             replace(record, schema_version=True)

@@ -29,18 +29,15 @@ that digest is insufficient to reopen historical authority.
 
 ## Registered targets
 
-The `target-catalog.v1` policy contains the 11 singleton slot targets plus one
+The `target-catalog.v1` policy contains the 8 singleton slot targets plus one
 atomic target:
 
 | Target | Kind | Members / effect |
 |---|---|---|
 | `activation.silu_and_mul` | slot | Same-named slot |
 | `norm.rmsnorm` | slot | Same-named slot |
-| `attention.sdpa` | slot | Same-named slot |
-| `attention.decode` | slot | Same-named slot |
-| `attention.msa_block_score` | slot | Same-named slot |
-| `attention.msa_prefill_block_score` | slot | Same-named slot |
 | `moe.fused_experts` | slot | Experts without ownership of the trailing reduction |
+| `moe.fused_routed_experts` | slot | Routing head plus experts plus combine (the fat MoE boundary) |
 | `moe.fused_experts_reduce` | slot | Experts plus their trailing reduction |
 | `collective.all_reduce` | slot | Same-named slot |
 | `collective.ar_residual_rmsnorm` | slot | Same-named slot |
@@ -56,8 +53,7 @@ creating duplicate permanent reward titles.
 Catalog registration defines identity and admission; it does not by itself
 prove that a serving seam is installed or that the deployed model reaches it.
 In the current MiniMax-M3 mainnet arena, `norm.rmsnorm` cannot execute because
-the model uses `GemmaRMSNorm`; do not pay for or submit that target. The MSA
-decode-score target has a live pinned-runtime adapter. See
+the model uses `GemmaRMSNorm`; do not pay for or submit that target. See
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 ## Resolution
@@ -66,7 +62,7 @@ A new contribution should declare exactly one competition target explicitly:
 
 ```toml
 [competition]
-target = "attention.msa_prefill_block_score"
+target = "moe.fused_experts"
 mode = "slot"
 ```
 

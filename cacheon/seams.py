@@ -70,35 +70,6 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
                 "sglang_silu", "SiluAndMul.forward_cuda", ("activation.silu_and_mul",)),
     SeamAdapter("layernorm", "sglang.srt.layers.layernorm",
                 "sglang_norm", "RMSNorm.forward_cuda", ("norm.rmsnorm",)),
-    SeamAdapter(
-        "attention",
-        "sglang.srt.layers.attention.minimax_sparse_ops.decode.topk_sparse",
-        "sglang_minimax_sparse_decode",
-        "flash_decode_with_gqa_share_sparse",
-        ("attention.decode",),
-        requires="sglang.srt.layers.attention.minimax_sparse_ops",
-        binding_id="attention",
-        environment_gate="CACHEON_ATTENTION_SEAM",
-    ),
-    SeamAdapter(
-        "attention_audit_mode",
-        "sglang.srt.layers.attention.minimax_sparse_backend",
-        "sglang_minimax_sparse_decode",
-        "MiniMaxSparseAttnBackend.__init__",
-        ("attention.decode",),
-        requires="sglang.srt.layers.attention.minimax_sparse_ops",
-        binding_id="attention",
-        environment_gate="CACHEON_ATTENTION_SEAM",
-    ),
-    SeamAdapter(
-        "msa_decode_score",
-        "sglang.srt.layers.attention.minimax_sparse_ops.decode.flash_with_topk_idx",
-        "sglang_minimax_sparse_decode", "attr:_decode_score_kernel",
-        ("attention.msa_block_score",),
-        requires="sglang.srt.layers.attention.minimax_sparse_ops",
-        binding_id="msa_decode_score",
-        environment_gate="CACHEON_MSA_DECODE_SCORE_SEAM",
-    ),
     SeamAdapter("moe", "sglang.srt.layers.moe.fused_moe_triton.layer",
                 "sglang_moe", "FusedMoE.forward_impl",
                 ("moe.fused_experts", "moe.fused_experts_reduce",
@@ -133,20 +104,6 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
                 "sglang_moe_export", "flashinfer_cutlass_fused_moe",
                 ("collective.moe_finalize_ar_rmsnorm",), requires="flashinfer",
                 binding_id="arfusion", environment_gate="CACHEON_ARFUSION_SEAM"),
-    # Module-LEVEL function chokepoint on the MSA (MiniMax-M3) arena's PREFILL indexer:
-    # every sparse layer's chunked-prefill block-scoring funnels through this wrapper
-    # (the score kernel alone is ~30% of long-context serving prefill). The miner fills
-    # the score SHEET; the wrapper's stock top-k tail keeps the SELECTION validator-
-    # owned. `requires` points at the M3-only package so the compat canary SKIPS this
-    # row on pins without the MSA backend (why the decode-side sibling stayed a stub —
-    # that reason no longer applies to table rows with `requires`).
-    SeamAdapter("msa_prefill",
-                "sglang.srt.layers.attention.minimax_sparse_ops.prefill.flash_with_topk_idx",
-                "sglang_msa_prefill", "flash_prefill_with_topk_index",
-                ("attention.msa_prefill_block_score",),
-                requires="sglang.srt.layers.attention.minimax_sparse_ops",
-                binding_id="msa_prefill",
-                environment_gate="CACHEON_MSA_PREFILL_SEAM"),
     # NOT a slot seam: the candidate-bundle load gate. sglang spawns scheduler ranks
     # AND a detokenizer (output-path!) through the same bootstrap, and the detokenizer
     # imports watched modules too — so seam.activate() never loads miner code; this

@@ -1,8 +1,8 @@
 """CPU tests for the generalized (op + block) slot abstraction.
 
-Covers: (1) the new ``kind`` discriminator, (2) a multi-input *block* slot
-(attention.sdpa) verifies a faithful pure-torch kernel, (3) the ``matched_ratio``
-correctness mode FAILS a broken attention kernel, and (4) backward-compat — the
+Covers: (1) the ``kind`` discriminator, (2) multi-input *block* slots (the MoE
+pair slots) verify faithful pure-torch kernels, (3) the ``matched_ratio``
+correctness mode FAILS broken kernels, and (4) backward-compat — the
 single-op slots (silu) still verify under the generalized spec. torch-only; skipped
 where torch is unavailable (e.g. the dev laptop); runs on the pod.
 """
@@ -17,62 +17,15 @@ from cacheon.sandbox import load_entry  # noqa: E402
 from cacheon.slots import get_slot  # noqa: E402
 from cacheon.verify import verify_entry  # noqa: E402
 
-ATTN_BUNDLE = "examples/miner_attention_torch/kernels/attention.py"
-ATTN_DECODE_BUNDLE = "examples/miner_attention_decode_torch/kernels/attention_decode.py"
 MOE_BUNDLE = "examples/miner_moe_fused_experts_torch/kernels/moe.py"
 ROUTED_MOE_BUNDLE = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
 
 
 def test_slot_kind_discriminator():
-    assert get_slot("attention.sdpa").kind == "block"
-    assert get_slot("attention.decode").kind == "block"
+    assert get_slot("moe.fused_experts").kind == "block"
+    assert get_slot("moe.fused_routed_experts").kind == "block"
     assert get_slot("activation.silu_and_mul").kind == "op"
     assert get_slot("norm.rmsnorm").kind == "op"
-
-
-def test_attention_block_passes_correctness_cpu():
-    entry = load_entry(ATTN_BUNDLE, "attention")
-    slot = get_slot("attention.sdpa")
-    result = verify_entry(slot, entry, dtype=torch.float32, device="cpu", seed=0)
-    assert result.passed, "\n".join(
-        f"{r.shape}: max_abs={r.max_abs_err} ratio={r.pass_ratio} {r.detail}" for r in result.shape_results
-    )
-
-
-def test_broken_attention_fails_matched_ratio_cpu():
-    # A broken "kernel": ignores k/v entirely and copies q -> wrong everywhere, so the
-    # fraction-of-elements-within-tolerance falls below the slot's min_ratio (0.99).
-    def broken(q, k, v, out, sm_scale, causal=True):
-        out.copy_(q)
-
-    slot = get_slot("attention.sdpa")
-    result = verify_entry(slot, broken, dtype=torch.float32, device="cpu", seed=0)
-    assert not result.passed
-
-
-def test_attention_decode_passes_correctness_cpu():
-    entry = load_entry(ATTN_DECODE_BUNDLE, "attention_decode")
-    slot = get_slot("attention.decode")
-    result = verify_entry(slot, entry, dtype=torch.float32, device="cpu", seed=0)
-    assert result.passed, "\n".join(
-        f"{r.shape}: max_abs={r.max_abs_err} ratio={r.pass_ratio} {r.detail}" for r in result.shape_results
-    )
-
-
-def test_broken_decode_fails_matched_ratio_cpu():
-    # A candidate that ignores the validator-selected blocks cannot pass merely
-    # because it has the right output shape.
-    def broken(
-        q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices,
-        topk_idx, out, sm_scale, block_size,
-    ):
-        del k_cache, v_cache, req_to_token, seq_lens, req_pool_indices
-        del topk_idx, sm_scale, block_size
-        out.copy_(q)
-
-    slot = get_slot("attention.decode")
-    result = verify_entry(slot, broken, dtype=torch.float32, device="cpu", seed=0)
-    assert not result.passed
 
 
 def test_moe_prepare_forward_passes_correctness_cpu():
@@ -165,10 +118,9 @@ def test_silu_op_still_verifies_under_generalized_spec():
 
 
 def test_matched_ratio_is_active_only_for_the_block_slot():
-    # The op slots keep all-close; the attention block uses matched_ratio. This guards
+    # The op slots keep all-close; the block slots use matched_ratio. This guards
     # against accidentally loosening the op gates when the abstraction was generalized.
     assert get_slot("activation.silu_and_mul").correctness.mode == "allclose"
     assert get_slot("norm.rmsnorm").correctness.mode == "allclose"
-    assert get_slot("attention.sdpa").correctness.mode == "matched_ratio"
-    assert get_slot("attention.decode").correctness.mode == "matched_ratio"
     assert get_slot("moe.fused_experts").correctness.mode == "matched_ratio"
+    assert get_slot("moe.fused_routed_experts").correctness.mode == "matched_ratio"

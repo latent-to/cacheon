@@ -1,12 +1,12 @@
-bundle_id = "fixture-msa-singleton"
+bundle_id = "fixture-norm-singleton"
 abi_version = "cacheon-op-abi-v0"
 
 [competition]
-target = "attention.msa_prefill_block_score"
+target = "norm.rmsnorm"
 mode = "slot"
 
 [[ops]]
-slot = "attention.msa_prefill_block_score"
+slot = "norm.rmsnorm"
 variant = "fixture"
 source = "kernels/blockscore.py"
 entry = "blockscore"

@@ -524,7 +524,7 @@ def test_registered_target_and_canonical_evidence_root_are_fail_closed(
 ) -> None:
     construction = _construction(tmp_path, _runtime())
 
-    assert construction.profile_for("attention.decode").target_id == "attention.decode"
+    assert construction.profile_for("moe.fused_experts").target_id == "moe.fused_experts"
     assert (
         construction.profile_for("collective.moe_epilogue.v1").target_id
         == "collective.moe_epilogue.v1"
@@ -675,7 +675,7 @@ def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
         )
 
     source = fixtures._candidate_source(tmp_path / "foreign-source")
-    kernel = source / "kernels" / "msa_prefill_block_score.py"
+    kernel = source / "kernels" / "rmsnorm_stub.py"
     kernel.write_text(kernel.read_text() + "\n# foreign contribution variant\n")
     publication = fixtures.publish_worker_bundle(
         source,

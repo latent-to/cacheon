@@ -12,9 +12,13 @@ import pytest
 import cacheon.cute_cubin as cute_cubin
 import cacheon.patchers.build_cute_aot as build_cute_aot
 import cacheon.patchers.build_cute_cubin as build_cute_cubin
+from types import MappingProxyType
+
 from cacheon.artifact_abi import (
     ArtifactBinding,
     ArtifactPrelaunch,
+    SlotCallABI,
+    SlotResource,
     parse_artifact_bindings,
     parse_artifact_prelaunch,
     parse_provider_capability_requirements,
@@ -66,7 +70,44 @@ from cacheon.manifest import (
 from cacheon.stack_identity import canonical_json_bytes
 
 
-SLOT = "attention.msa_prefill_block_score"
+SLOT = "test.blockscore"
+
+# Registry-independent fixture ABI (a selection-style call: two input tensors,
+# capability and non-capability scalars, one write output, a stream) — rich
+# enough to exercise the device-artifact machinery without a live slot.
+_BLOCKSCORE_TEST_ABI = SlotCallABI(
+    slot=SLOT,
+    resources=(
+        SlotResource("input.q", "tensor"),
+        SlotResource("input.index_k_cache", "tensor"),
+        SlotResource(
+            "input.max_seqlen_k", "scalar", scalar_type="i64",
+            capability_field="kv_len",
+        ),
+        SlotResource(
+            "input.block_size_k", "scalar", scalar_type="i64",
+            capability_field="block_size",
+        ),
+        SlotResource("input.scale", "scalar", scalar_type="f64"),
+        SlotResource("output.topk_idx", "tensor", access="write"),
+        SlotResource("stream.current", "stream"),
+    ),
+    call_args=(
+        "input.q", "input.index_k_cache", "input.max_seqlen_k",
+        "input.block_size_k", "input.scale", "output.topk_idx",
+    ),
+)
+
+
+@pytest.fixture(autouse=True)
+def _register_blockscore_test_abi(monkeypatch):
+    import cacheon.artifact_abi as abi_mod
+
+    monkeypatch.setattr(
+        abi_mod,
+        "SLOT_CALL_ABIS",
+        MappingProxyType({**abi_mod.SLOT_CALL_ABIS, SLOT: _BLOCKSCORE_TEST_ABI}),
+    )
 
 
 def _digest(label: str) -> str:
@@ -896,11 +937,7 @@ def test_device_publication_load_resolve_invoke_and_shutdown(
             return self
 
     q, index_k, output = object(), object(), Output()
-    metadata = [object() for _ in range(5)]
-    entry(
-        q, index_k, *metadata, 3, 7, 128, 128, 8, 1, 2, 0.125,
-        object(), 1, 1, output,
-    )
+    entry(q, index_k, 7, 128, 0.125, output)
     shutdown_direct_artifact_runtimes()
 
     assert calls == [(q, index_k, output, 7, 0.125, "stream")]

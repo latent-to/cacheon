@@ -142,28 +142,6 @@ def run_checks() -> list[Check]:
     except Exception as exc:  # noqa: BLE001
         add("seam: RMSNorm (layernorm)", False, repr(exc))
 
-    # MiniMax sparse decode imports this function by value. Check the exact pinned
-    # ABI and the second binding; a callable source symbol alone is not enough.
-    if _requires_present("sglang.srt.layers.attention.minimax_sparse_ops"):
-        try:
-            from sglang.srt.layers.attention.minimax_sparse_ops import minimax_sparse
-            from sglang.srt.layers.attention.minimax_sparse_ops.decode import topk_sparse
-
-            source = topk_sparse.flash_decode_with_gqa_share_sparse
-            consumer = minimax_sparse.flash_decode_with_gqa_share_sparse
-            expected = (
-                "q", "sink", "k_cache", "v_cache", "req_to_token", "seq_lens",
-                "slot_ids", "block_size", "topk_idx", "sm_scale", "use_tma",
-            )
-            params = tuple(inspect.signature(source).parameters)
-            add(
-                "seam: MiniMax sparse decode function and consumer",
-                params == expected and source is consumer,
-                f"params={params!r}; shared_binding={source is consumer}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            add("seam: MiniMax sparse decode function and consumer", False, repr(exc))
-
     # MoE seam (the MoE BLOCK slot chokepoint: FusedMoE.forward_impl(hidden_states,
     # topk_output) — the waist all paths converge on; .forward is bypassed under
     # piecewise capture, so we patch forward_impl, see cacheon/integrations/sglang_moe.py)

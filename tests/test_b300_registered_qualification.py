@@ -68,7 +68,7 @@ from tests.test_calibration import _observations
 from tests.test_marginal_runtime import FUSED, _case, _local_binding, _native
 
 
-TARGET = "attention.msa_prefill_block_score"
+TARGET = "norm.rmsnorm"
 
 
 def _h(label: str) -> str:
@@ -94,29 +94,29 @@ def _candidate_source(root: Path) -> Path:
     metadata = root / "metadata"
     kernels.mkdir(parents=True)
     metadata.mkdir()
-    (kernels / "msa_prefill_block_score.py").write_text(
-        "def msa_prefill_block_score(q, index_k, out=None):\n"
+    (kernels / "rmsnorm_stub.py").write_text(
+        "def rmsnorm_stub(q, index_k, out=None):\n"
         "    return q if out is None else out.copy_(q)\n"
     )
-    (metadata / "msa_prefill.json").write_text(
-        '{"op":"attention.msa_prefill_block_score"}\n'
+    (metadata / "rmsnorm_stub.json").write_text(
+        '{"op":"norm.rmsnorm"}\n'
     )
     (root / "rebuild.json").write_text('{"steps":[]}\n')
     (root / "manifest.toml").write_text(
         "\n".join(
             (
-                'bundle_id = "ordinary-msa-prefill"',
+                'bundle_id = "ordinary-rmsnorm-stub"',
                 'abi_version = "cacheon-op-abi-v0"',
                 "[competition]",
                 f'target = "{TARGET}"',
                 'mode = "slot"',
                 "[[ops]]",
                 f'slot = "{TARGET}"',
-                'source = "kernels/msa_prefill_block_score.py"',
-                'entry = "msa_prefill_block_score"',
+                'source = "kernels/rmsnorm_stub.py"',
+                'entry = "rmsnorm_stub"',
                 'dtypes = ["bfloat16", "float16"]',
                 'architectures = ["sm100", "sm103"]',
-                'metadata = "metadata/msa_prefill.json"',
+                'metadata = "metadata/rmsnorm_stub.json"',
             )
         )
         + "\n"
@@ -412,7 +412,7 @@ def _harness(
     )
 
 
-def test_registry_exactly_covers_all_twelve_registered_targets_without_fe_identity(
+def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identity(
     tmp_path: Path,
 ) -> None:
     harness = _harness(tmp_path)
@@ -434,7 +434,7 @@ def test_registry_exactly_covers_all_twelve_registered_targets_without_fe_identi
     )
     assert registered.REGISTERED_B300_TARGET_IDS == expected
     assert set(registered.REGISTERED_B300_TARGET_IDS) <= set(snapshot_ids)
-    assert len(registered.REGISTERED_B300_TARGET_IDS) == 12
+    assert len(registered.REGISTERED_B300_TARGET_IDS) == 8
     assert registered.ORDINARY_B300_TARGET_IDS == expected
     projection = registered.registered_b300_member_contract_projection(
         harness.inputs.catalog
@@ -442,8 +442,8 @@ def test_registry_exactly_covers_all_twelve_registered_targets_without_fe_identi
     assert tuple(row.target_id for row in harness.factory.profiles) == (
         tuple(row.target_id for row in projection)
     )
-    assert "attention.decode" in expected
-    assert "attention.msa_prefill_block_score" in expected
+    assert "moe.fused_routed_experts" not in expected
+    assert "norm.rmsnorm" in expected
     assert MOE_EPILOGUE_ATOMIC_TARGET in expected
     assert harness.factory.components.profiles == harness.factory.profiles
     assert (
@@ -560,9 +560,9 @@ def test_pair_native_routing_requires_swap_reachability_and_same_target() -> Non
     """
 
     bundle = registered.SealedIncumbentBundle(
-        "attention.msa_prefill_block_score",
+        "norm.rmsnorm",
         _h("crowned"),
-        ("attention.msa_prefill_block_score",),
+        ("norm.rmsnorm",),
     )
     route = registered.resident_pair_native
     assert route(
@@ -571,7 +571,7 @@ def test_pair_native_routing_requires_swap_reachability_and_same_target() -> Non
     )
     assert route(
         swappable=True, genesis=False, incumbent_bundle=bundle,
-        candidate_target_id="attention.msa_prefill_block_score",
+        candidate_target_id="norm.rmsnorm",
     )
     # Non-swappable candidates always boot.
     assert not route(
@@ -587,7 +587,7 @@ def test_pair_native_routing_requires_swap_reachability_and_same_target() -> Non
     # An incumbent one swap cannot realize routes everyone to v8.
     assert not route(
         swappable=True, genesis=False, incumbent_bundle=None,
-        candidate_target_id="attention.msa_prefill_block_score",
+        candidate_target_id="norm.rmsnorm",
     )
 
 
@@ -596,9 +596,9 @@ def test_sealed_incumbent_bundle_binds_to_the_declared_stack_entry(
 ) -> None:
     harness = _harness(tmp_path)
     foreign = registered.SealedIncumbentBundle(
-        "attention.msa_prefill_block_score",
+        "norm.rmsnorm",
         _h("not-in-the-stack"),
-        ("attention.msa_prefill_block_score",),
+        ("norm.rmsnorm",),
     )
     with pytest.raises(
         registered.B300RegisteredQualificationError,
@@ -611,7 +611,7 @@ def test_sealed_incumbent_bundle_binds_to_the_declared_stack_entry(
         match="sorted distinct slots",
     ):
         registered.SealedIncumbentBundle(
-            "attention.msa_prefill_block_score",
+            "norm.rmsnorm",
             _h("crowned"),
             ("b.slot", "a.slot"),
         )
@@ -620,7 +620,7 @@ def test_sealed_incumbent_bundle_binds_to_the_declared_stack_entry(
         match="incumbent bundle digest",
     ):
         registered.SealedIncumbentBundle(
-            "attention.msa_prefill_block_score", "nothex", ("a.slot",)
+            "norm.rmsnorm", "nothex", ("a.slot",)
         )
 
 
@@ -816,14 +816,14 @@ def test_graph_facts_cannot_relabel_another_registered_target(
     def wrong_target(_candidate, _prepared):
         descriptor = _h("wrong-target-shape")
         requirement = GraphVariantRequirement(
-            "attention.decode",
+            "moe.fused_experts",
             "default",
             (descriptor,),
             True,
             (descriptor,),
         )
         observation = GraphVariantObservation(
-            "attention.decode",
+            "moe.fused_experts",
             "default",
             True,
             True,
@@ -867,7 +867,7 @@ def test_atomic_graph_facts_require_the_exact_member_domain(
     harness = _harness(tmp_path, FUSED)
     expected = harness.candidate.reservation.target_members
     members = expected[:1] if mode == "missing" else tuple(
-        sorted((*expected, "attention.decode"))
+        sorted((*expected, "moe.fused_experts"))
     )
 
     inputs = replace(

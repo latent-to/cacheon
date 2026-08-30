@@ -1396,27 +1396,6 @@ def _deep_trusted_recovery(exp, input_tensor, residual, weight, eps, max_token_n
 # dispatchers, receipted, and gated by the eval driver.)
 
 
-def make_msa_prefill_dispatcher(
-    baseline_fn: Callable[..., object],
-    module: object,
-    *,
-    registry: KernelRegistry = REGISTRY,
-    slot: str = "attention.msa_prefill_block_score",
-) -> Callable[..., object]:
-    from cacheon.msa_prefill_dispatch import make_dispatcher
-
-    return make_dispatcher(
-        baseline_fn,
-        module,
-        registry=registry,
-        slot=slot,
-        arch_tag=_arch_tag,
-        runtime_parallel_sizes=_runtime_parallel_sizes,
-        dynamo_compiling=_dynamo_compiling,
-        in_cuda_graph=_in_cuda_graph,
-    )
-
-
 def _arfusion_group(use_attn_tp_group: bool):
     """The torch ProcessGroup the stock call would reduce over. ``use_attn_tp_group``
     mirrors the stock argument (attention-TP vs full-TP chain); under plain TP the two

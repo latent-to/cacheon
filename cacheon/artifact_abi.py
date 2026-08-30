@@ -2272,77 +2272,6 @@ RMSNORM_CALL_ABI = SlotCallABI(
     call_args=("input.x", "input.weight", "output.out", "input.eps"),
 )
 
-ATTENTION_SDPA_CALL_ABI = SlotCallABI(
-    slot="attention.sdpa",
-    resources=(
-        SlotResource("input.q", "tensor"),
-        SlotResource("input.k", "tensor"),
-        SlotResource("input.v", "tensor"),
-        SlotResource(
-            "input.sm_scale",
-            "scalar",
-            scalar_type="f64",
-            capability_field="sm_scale",
-        ),
-        SlotResource(
-            "input.causal",
-            "scalar",
-            scalar_type="bool",
-            capability_field="causal",
-        ),
-        SlotResource("output.out", "tensor", access="write"),
-        _STREAM_RESOURCE,
-    ),
-    call_args=(
-        "input.q",
-        "input.k",
-        "input.v",
-        "output.out",
-        "input.sm_scale",
-        "input.causal",
-    ),
-)
-
-ATTENTION_DECODE_CALL_ABI = SlotCallABI(
-    slot="attention.decode",
-    resources=(
-        SlotResource("input.q", "tensor"),
-        SlotResource("input.k_cache", "tensor"),
-        SlotResource("input.v_cache", "tensor"),
-        SlotResource("input.req_to_token", "tensor"),
-        SlotResource("input.seq_lens", "tensor"),
-        SlotResource("input.req_pool_indices", "tensor"),
-        SlotResource("input.topk_idx", "tensor"),
-        SlotResource("output.out", "tensor", access="write"),
-        SlotResource(
-            "input.sm_scale",
-            "scalar",
-            scalar_type="f64",
-            capability_field="sm_scale",
-        ),
-        SlotResource(
-            "input.block_size",
-            "scalar",
-            scalar_type="i32",
-            capability_field="block_size",
-        ),
-        _STREAM_RESOURCE,
-    ),
-    call_args=(
-        "input.q",
-        "input.k_cache",
-        "input.v_cache",
-        "input.req_to_token",
-        "input.seq_lens",
-        "input.req_pool_indices",
-        "input.topk_idx",
-        "output.out",
-        "input.sm_scale",
-        "input.block_size",
-    ),
-)
-
-
 COLLECTIVE_ALL_REDUCE_CALL_ABI = SlotCallABI(
     slot="collective.all_reduce",
     resources=(
@@ -2408,105 +2337,15 @@ COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI = SlotCallABI(
     ),
 )
 
-MSA_BLOCK_SCORE_CALL_ABI = SlotCallABI(
-    slot="attention.msa_block_score",
-    resources=(
-        SlotResource("input.q", "tensor"),
-        SlotResource("input.k_cache", "tensor"),
-        SlotResource("input.req_to_token", "tensor"),
-        SlotResource("input.slot_ids", "tensor"),
-        SlotResource("input.seq_lens", "tensor"),
-        SlotResource("output.block_scores", "tensor", access="write"),
-        SlotResource("input.sm_scale", "scalar", scalar_type="f32"),
-        SlotResource("input.block_size", "scalar", scalar_type="i64",
-                     capability_field="block_size"),
-        SlotResource("input.topk", "scalar", scalar_type="i64"),
-        SlotResource("input.init_blocks", "scalar", scalar_type="i64"),
-        SlotResource("input.local_blocks", "scalar", scalar_type="i64"),
-        _STREAM_RESOURCE,
-    ),
-    call_args=(
-        "input.q",
-        "input.k_cache",
-        "input.req_to_token",
-        "input.slot_ids",
-        "input.seq_lens",
-        "output.block_scores",
-        "input.sm_scale",
-        "input.block_size",
-        "input.topk",
-        "input.init_blocks",
-        "input.local_blocks",
-    ),
-)
-
-MSA_PREFILL_BLOCK_SCORE_CALL_ABI = SlotCallABI(
-    slot="attention.msa_prefill_block_score",
-    resources=(
-        SlotResource("input.q", "tensor"),
-        SlotResource("input.index_k_cache", "tensor"),
-        SlotResource("input.req_to_token", "tensor"),
-        SlotResource("input.slot_ids", "tensor"),
-        SlotResource("input.cu_seqlens", "tensor"),
-        SlotResource("input.seq_lens", "tensor"),
-        SlotResource("input.prefix_lens", "tensor"),
-        SlotResource(
-            "input.max_seqlen_q", "scalar", scalar_type="i64",
-            capability_field="q_len",
-        ),
-        SlotResource(
-            "input.max_seqlen_k", "scalar", scalar_type="i64",
-            capability_field="kv_len",
-        ),
-        SlotResource(
-            "input.block_size_q", "scalar", scalar_type="i64",
-            capability_field="q_block_size",
-        ),
-        SlotResource(
-            "input.block_size_k", "scalar", scalar_type="i64",
-            capability_field="block_size",
-        ),
-        SlotResource(
-            "input.topk", "scalar", scalar_type="i64", capability_field="top_k"
-        ),
-        SlotResource(
-            "input.init_blocks", "scalar", scalar_type="i64",
-            capability_field="init_blocks",
-        ),
-        SlotResource(
-            "input.local_blocks", "scalar", scalar_type="i64",
-            capability_field="local_blocks",
-        ),
-        SlotResource("input.scale", "scalar", scalar_type="f64"),
-        SlotResource("input.cu_seqblocks_q", "tensor"),
-        SlotResource("input.max_seqblock_q", "scalar", scalar_type="i64"),
-        SlotResource("input.all_seqblock_q", "scalar", scalar_type="i64"),
-        SlotResource("output.topk_idx", "tensor", access="write"),
-        _STREAM_RESOURCE,
-    ),
-    call_args=(
-        "input.q", "input.index_k_cache", "input.req_to_token", "input.slot_ids",
-        "input.cu_seqlens", "input.seq_lens", "input.prefix_lens",
-        "input.max_seqlen_q", "input.max_seqlen_k", "input.block_size_q",
-        "input.block_size_k", "input.topk", "input.init_blocks",
-        "input.local_blocks", "input.scale", "input.cu_seqblocks_q",
-        "input.max_seqblock_q", "input.all_seqblock_q", "output.topk_idx",
-    ),
-)
-
 SLOT_CALL_ABIS: Mapping[str, SlotCallABI] = MappingProxyType(
     {
         abi.slot: abi
         for abi in (
             SILU_AND_MUL_CALL_ABI,
             RMSNORM_CALL_ABI,
-            ATTENTION_SDPA_CALL_ABI,
-            ATTENTION_DECODE_CALL_ABI,
             COLLECTIVE_ALL_REDUCE_CALL_ABI,
             COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
             COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
-            MSA_BLOCK_SCORE_CALL_ABI,
-            MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
         )
     }
 )
@@ -2526,13 +2365,9 @@ __all__ = [
     "ArtifactResourcePlan",
     "ArtifactShapeExtent",
     "ArtifactShapeFactor",
-    "ATTENTION_DECODE_CALL_ABI",
-    "ATTENTION_SDPA_CALL_ABI",
     "COLLECTIVE_ALL_REDUCE_CALL_ABI",
     "COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI",
     "COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI",
-    "MSA_PREFILL_BLOCK_SCORE_CALL_ABI",
-    "MSA_BLOCK_SCORE_CALL_ABI",
     "RMSNORM_CALL_ABI",
     "SLOT_CALL_ABIS",
     "SILU_AND_MUL_CALL_ABI",

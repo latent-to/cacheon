@@ -86,14 +86,8 @@ not submittable until the catalog registers that surface.
 Decode, short prefill, and long/chunked prefill are different performance
 problems. So are TP topologies with and without fast peer links.
 
-For attention work:
-
-- `attention.msa_block_score` owns paged per-index-head decode scores while
-  stock code retains top-k and attend;
-- `attention.msa_prefill_block_score` is the batched paged long-prefill
-  score-to-selection boundary;
-- an optimization to one should not be measured on a workload dominated by the
-  other.
+An optimization to a decode-dominated boundary should not be measured on a
+workload dominated by prefill, and vice versa.
 
 A developer diagnostic can generate longer inputs, but repeated timed prompts
 with radix caching enabled may turn later passes into cache hits. For a prefill

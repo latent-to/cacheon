@@ -4,16 +4,16 @@
       "macOS arm64, CPython 3.11, 2026-08-09",
       "Linux x86_64 (two-B200 validator host), CPython 3.12, 2026-08-09",
       "macOS arm64, CPython 3.11, 2026-08-23 (two example bundles repinned)",
-      "Linux x86_64 (eight-B300 pod), CPython 3.12, 2026-08-23 (cross-check)"
+      "Linux x86_64 (eight-B300 pod), CPython 3.12, 2026-08-23 (cross-check)",
+      "macOS arm64, CPython 3.11, 2026-08-30 (identity epoch: M3 attention bundles retired, routed MoE bundle pinned, singleton fixture repointed at norm.rmsnorm; every carried-over tree's digest unchanged; Linux cross-check pending)"
     ],
     "contract": "content_hash(tree) for every committed example bundle and stack fixture; see tests/test_golden_consensus_vectors.py"
   },
   "content_hashes": {
     "examples/miner_allreduce_torch": "e17a2f17833f7b59c7f1f27684773bb5d9210296304e51ebbf1707b7355e7c68",
-    "examples/miner_attention_decode_torch": "797fc8aed83984c8396c10a34eab640aa8f75bb8e975d8974abbcdad1a682fdf",
-    "examples/miner_attention_torch": "29ee924b65903a706fe6f55b2d38baa6238117f3204951efa3678aef9b19fbd1",
     "examples/miner_moe_fused_experts_reduce_torch": "edf967fe578becaece04c26ece0777fd4e9f600577a1bc34d975d94f0bde248b",
     "examples/miner_moe_fused_experts_torch": "5376645cb576601d279ab30c890c519dccb72db980e547df531dd21b36d162be",
+    "examples/miner_moe_fused_routed_torch": "cfb8212c4ec64ea1b0a3100b4912d2b8af54d03f9e442bf3d934eafc3766a6e0",
     "examples/miner_rmsnorm_broken": "9d3c91f9eeed12832a78706aab5e2990cf6a997889e12801aa8837de2e581a99",
     "examples/miner_rmsnorm_triton": "7d2415ec527ed3d5b81622d4fb0d9ccdfc8736fef72c35c6fc3495efefb79eb9",
     "examples/miner_setup_demo": "f05d468b64f0b76b7b0f5b83337da0ebe3a4d48417179495524cdb11ef16ebc7",
@@ -23,6 +23,6 @@
     "examples/miner_silu_torch": "3d518dda8356bddd8c18fc2d3d02465a044135caee04853609ccdcb6c35c44db",
     "examples/miner_silu_triton": "b94303ed254f96cb09c5c65e410b76a5b32d04b2d5d6251bca741db36fa5c92e",
     "tests/fixtures/stack_fused_epilogue_atomic": "da41654eb467be71245fc5a2a9d5c14e364d5a95653c42f0ad31b94e6d9e9ad0",
-    "tests/fixtures/stack_msa_singleton": "8f1f2bbe7515dafef92a7137bb046c61f18ef0679c04a2ad80847812757f81ea"
+    "tests/fixtures/stack_norm_singleton": "7a87ddf2a4d03ea4b5f4c9fffc16354a0cefed1b36f00c8db3e694e1573ff80c"
   }
 }

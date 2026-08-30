@@ -15,8 +15,8 @@ whole-model submissions).
 * ``"op"`` — a single fused op. ``silu_and_mul`` (``entry(x, out)``), ``rmsnorm``
   (``entry(x, weight, out, eps)``).
 * ``"block"`` — a region that fuses several ops behind one tensor-in/tensor-out
-  contract, for bigger wins. ``attention.sdpa`` (``entry(q, k, v, out, sm_scale,
-  causal)``) is the first: it subsumes QK^T + softmax + (·)V. A block has the *same
+  contract, for bigger wins. ``moe.fused_experts`` (dispatch + expert GEMMs +
+  activation + combine behind one call) is the canonical one. A block has the *same
   shape* of contract as an op (named tensor inputs -> validator-allocated outputs),
   just wider — which is exactly why the seam / verify / registry machinery is
   unchanged. The breadth is bounded: a slot must stay strictly upstream of the
@@ -54,19 +54,13 @@ import torch
 import torch.nn.functional as F
 
 from cacheon.artifact_abi import (
-    ATTENTION_DECODE_CALL_ABI,
-    ATTENTION_SDPA_CALL_ABI,
     COLLECTIVE_ALL_REDUCE_CALL_ABI,
     COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
     COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
-    MSA_BLOCK_SCORE_CALL_ABI,
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
     RMSNORM_CALL_ABI,
     SILU_AND_MUL_CALL_ABI,
     SlotCallABI,
 )
-from cacheon.minimax_sparse_decode_slot import build_slot as build_minimax_sparse_decode_slot
-from cacheon.minimax_sparse_prefill_slot import build_slot as build_minimax_sparse_prefill_slot
 from cacheon.moe_nvfp4_contract import (
     prepare_args_from_inputs as _moe_prepare_args_from_inputs,
     prepare_args_from_layer as _moe_prepare_args_from_layer,
@@ -330,97 +324,6 @@ RMSNORM = SlotSpec(
     correctness=Correctness("allclose"),
     tolerances=_BF16_TOL,
     call_abi=RMSNORM_CALL_ABI,
-)
-
-
-# ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.sdpa   (scaled-dot-product attention, GQA/MQA-capable)
-#   q:(T,Hq,D)  k,v:(S,Hkv,D) -> o:(T,Hq,D) = softmax(qk^T*scale + causal) v
-#   contract: entry(q, k, v, out, sm_scale, causal)
-#
-# This is the first *block* slot — the attention compute core every backend
-# (FlashAttention / FlashInfer / FlashMLA / Triton) implements. It demonstrates the
-# generalization: several fused ops behind one typed boundary, multiple tensor
-# inputs, and a matched-ratio gate. This generic dense contract is offline-only in
-# the MiniMax-M3 arena; its graph-native decode sibling owns paged sparse attend.
-# ---------------------------------------------------------------------------
-
-
-def _sdpa_reference(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, sm_scale: float, causal: bool) -> torch.Tensor:
-    # q:(T,Hq,D)  k,v:(S,Hkv,Dv) -> o:(T,Hq,Dv).  GQA/MQA via Hq % Hkv == 0.
-    T, Hq, D = q.shape
-    S, Hkv, Dv = v.shape
-    g = Hq // Hkv
-    q32 = q.float()
-    k32 = k.float().repeat_interleave(g, dim=1)  # (S,Hq,D)
-    v32 = v.float().repeat_interleave(g, dim=1)  # (S,Hq,Dv)
-    scores = torch.matmul(q32.permute(1, 0, 2), k32.permute(1, 2, 0)) * sm_scale  # (Hq,T,S)
-    if causal:
-        offset = S - T  # the cached prefix length (0 in the self-contained case)
-        ti = torch.arange(T, device=q.device).view(T, 1)
-        si = torch.arange(S, device=q.device).view(1, S)
-        scores = scores.masked_fill((si > ti + offset).view(1, T, S), float("-inf"))
-    p = torch.softmax(scores, dim=-1)
-    o = torch.matmul(p, v32.permute(1, 0, 2)).permute(1, 0, 2)  # (T,Hq,Dv)
-    return o.to(q.dtype)
-
-
-def _sdpa_inputs(*, num_tokens: int, num_q_heads: int, num_kv_heads: int, head_dim: int,
-                 dtype: torch.dtype, device: str, seed: int) -> dict:
-    g = torch.Generator(device=device).manual_seed(seed)
-
-    def rnd(*shape: int) -> torch.Tensor:
-        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
-
-    return {
-        "q": rnd(num_tokens, num_q_heads, head_dim),
-        "k": rnd(num_tokens, num_kv_heads, head_dim),
-        "v": rnd(num_tokens, num_kv_heads, head_dim),
-        "sm_scale": 1.0 / (head_dim ** 0.5),
-        "causal": True,
-    }
-
-
-ATTENTION_SDPA = SlotSpec(
-    name="attention.sdpa",
-    entry="attention",
-    summary=(
-        "o = softmax(q k^T * scale + causal_mask) v  (GQA/MQA);  "
-        "q:(T,Hq,D) k,v:(S,Hkv,D) -> o:(T,Hq,D);  entry(q, k, v, out, sm_scale, causal)"
-    ),
-    kind="block",
-    make_inputs=_sdpa_inputs,
-    out_shapes=lambda i: [tuple(i["q"].shape)],
-    invoke_reference=lambda i: [_sdpa_reference(i["q"], i["k"], i["v"], i["sm_scale"], i["causal"])],
-    invoke_entry=lambda entry, i, outs, prepared: entry(i["q"], i["k"], i["v"], outs[0], i["sm_scale"], i["causal"]),
-    graph_dynamic_inputs=("q", "k", "v"),
-    shapes=(
-        {"num_tokens": 1, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64},
-        {"num_tokens": 16, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128},   # GQA
-        {"num_tokens": 64, "num_q_heads": 16, "num_kv_heads": 16, "head_dim": 128},
-        {"num_tokens": 128, "num_q_heads": 8, "num_kv_heads": 1, "head_dim": 128},  # MQA
-    ),
-    # A real attention kernel reorders the softmax reduction (flash / online softmax)
-    # and may run in fp8, so it is NOT bit-exact: gate on a matched ratio against the
-    # fp32 reference, not all-close. 0.99 tolerates a thin tail of ULP-level diffs.
-    correctness=Correctness("matched_ratio", min_ratio=0.99),
-    tolerances=_BF16_TOL,
-    # Attention's intrinsic end-to-end KL floor (~6e-3 vs flash) is above the generic
-    # 5e-3 gate; calibrate to ~5x the floor so a faithful attention kernel isn't false-failed.
-    kl_threshold=3e-2,
-    call_abi=ATTENTION_SDPA_CALL_ABI,
-)
-
-
-# ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.decode
-#   MiniMax-M3's graph-native sparse decode boundary over paged main/index KV.
-#   The focused constructor keeps this oversized registry to wiring only.
-# ---------------------------------------------------------------------------
-
-
-ATTENTION_DECODE = build_minimax_sparse_decode_slot(
-    SlotSpec, Correctness, _BF16_TOL, ATTENTION_DECODE_CALL_ABI
 )
 
 
@@ -954,103 +857,9 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 )
 
 
-# MiniMax decode scores are paged and consumed per index head.  The old dense,
-# summed-head sheet modeled another operation: topk(sum(heads)) is not the stock
-# union/reduction of per-head top-k selections.
-def _msa_inputs(*, batch: int, context: int, num_q_heads: int, num_kv_heads: int,
-                head_dim: int, block_size: int, topk: int, init_blocks: int,
-                local_blocks: int, dtype: torch.dtype, device: str, seed: int) -> dict:
-    generator = torch.Generator(device=device).manual_seed(seed)
-    rnd = lambda *shape: torch.randn(  # noqa: E731
-        *shape, generator=generator, device=device, dtype=torch.float32
-    ).to(dtype)
-    context = max(topk + 4, (context + block_size - 1) // block_size) * block_size
-    pages, requests = context // block_size, batch + 2
-    req_to_token = torch.empty(requests, context, dtype=torch.int32, device=device)
-    logical = torch.arange(context, device=device)
-    for request in range(requests):
-        order = torch.randperm(pages, generator=generator, device=device)
-        req_to_token[request] = (
-            (request % 2) * context + order[logical // block_size] * block_size
-            + logical % block_size
-        ).int()
-    seq_lens = torch.randint(
-        context - 3 * block_size + 1, context + 1, (batch,), generator=generator,
-        dtype=torch.int32, device=device,
-    )
-    seq_lens[0] = context
-    return {
-        "q": rnd(batch, num_q_heads, head_dim),
-        "k_cache": rnd(2 * context, num_kv_heads, head_dim),
-        "req_to_token": req_to_token,
-        "slot_ids": torch.randperm(requests, generator=generator, device=device)[:batch].int(),
-        "seq_lens": seq_lens, "sm_scale": head_dim**-0.5,
-        "block_size": block_size, "topk": topk,
-        "init_blocks": init_blocks, "local_blocks": local_blocks,
-    }
-
-
-def _msa_block_score_reference(i):
-    q, cache, block = i["q"].float(), i["k_cache"].float(), i["block_size"]
-    physical = i["req_to_token"][i["slot_ids"].long()].long()
-    keys, kv_heads = cache[physical], cache.shape[1]
-    grouped_q = q.view(q.shape[0], kv_heads, q.shape[1] // kv_heads, q.shape[2])
-    token = torch.einsum("bkgd,bskd->bkgs", grouped_q, keys)
-    token = token.flatten(1, 2).permute(1, 0, 2) * i["sm_scale"] * 1.4426950409
-    positions = torch.arange(token.shape[-1], device=q.device)
-    token.masked_fill_(positions >= i["seq_lens"].view(-1, 1), float("-inf"))
-    scores = token.view(q.shape[1], q.shape[0], -1, block).amax(-1)
-    blocks = (i["seq_lens"] + block - 1) // block
-    columns = torch.arange(scores.shape[-1], device=q.device).view(1, 1, -1)
-    scores.masked_fill_(columns >= blocks.view(1, -1, 1), float("-inf"))
-    scores[:, :, :i["init_blocks"]] = 1e30
-    local = (columns >= (blocks - i["local_blocks"]).clamp_min(0).view(1, -1, 1))
-    scores.masked_fill_(local & (columns < blocks.view(1, -1, 1)), 1e29)
-    return scores
-
-
-ATTENTION_MSA_BLOCK_SCORE = SlotSpec(
-    name="attention.msa_block_score",
-    entry="msa_block_score",
-    summary=(
-        "Paged MiniMax decode index scores: q:(B,Hq,D), k_cache:(slots,Hkv,D), "
-        "page mapping and row lengths -> fp32 scores:(Hq,B,blocks). The candidate "
-        "owns scores; the validator retains per-head top-k, reduction and attend."
-    ),
-    kind="block",
-    make_inputs=_msa_inputs,
-    out_shapes=lambda i: [(i["q"].shape[1], i["q"].shape[0],
-                           i["req_to_token"].shape[1] // i["block_size"])],
-    invoke_reference=lambda i: [_msa_block_score_reference(i)],
-    invoke_entry=lambda entry, i, outs, prepared: entry(
-        i["q"], i["k_cache"], i["req_to_token"], i["slot_ids"], i["seq_lens"],
-        outs[0], i["sm_scale"], i["block_size"], i["topk"], i["init_blocks"],
-        i["local_blocks"]),
-    graph_dynamic_inputs=("q", "k_cache", "req_to_token", "slot_ids", "seq_lens"),
-    # MiniMax-M3 has four global index heads; TP4 shards one head to each rank.
-    shapes=tuple({"batch": batch, "context": 2560, "num_q_heads": 1,
-                  "num_kv_heads": 1, "head_dim": 128, "block_size": 128,
-                  "topk": 16, "init_blocks": 0, "local_blocks": 1}
-                 for batch in (1, 8, 32)),
-    correctness=Correctness("topk_overlap", top_k=16, min_overlap=0.875),
-    tolerances=_BF16_TOL,
-    kl_threshold=3e-2,
-    call_abi=MSA_BLOCK_SCORE_CALL_ABI,
-)
-
-
-ATTENTION_MSA_PREFILL_BLOCK_SCORE = build_minimax_sparse_prefill_slot(
-    SlotSpec, Correctness, _BF16_TOL, MSA_PREFILL_BLOCK_SCORE_CALL_ABI
-)
-
-
 SLOTS: dict[str, SlotSpec] = {
     SILU_AND_MUL.name: SILU_AND_MUL,
     RMSNORM.name: RMSNORM,
-    ATTENTION_SDPA.name: ATTENTION_SDPA,
-    ATTENTION_DECODE.name: ATTENTION_DECODE,
-    ATTENTION_MSA_BLOCK_SCORE.name: ATTENTION_MSA_BLOCK_SCORE,
-    ATTENTION_MSA_PREFILL_BLOCK_SCORE.name: ATTENTION_MSA_PREFILL_BLOCK_SCORE,
     MOE_FUSED_EXPERTS.name: MOE_FUSED_EXPERTS,
     MOE_FUSED_ROUTED_EXPERTS.name: MOE_FUSED_ROUTED_EXPERTS,
     MOE_FUSED_EXPERTS_REDUCE.name: MOE_FUSED_EXPERTS_REDUCE,
