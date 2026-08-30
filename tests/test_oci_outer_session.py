@@ -249,6 +249,41 @@ def test_plan_validates_every_frame_before_start_and_contains_no_execution_polic
     assert not hasattr(plan, "score")
 
 
+def test_session_executes_sealed_request_geometry_per_batch() -> None:
+    plan = _plan(
+        batch_max_new_tokens=(2, 4, 4),
+        batch_expected_prompt_tokens=(8, 65, 65),
+        quality_max_new_tokens=2,
+    )
+    clock = _Clock()
+    transport = _FakeTransport(clock, plan.expected_preflight)
+    result = run_outer_session(
+        plan,
+        transport=transport,
+        deadline=1000.0,
+        init_timeout_s=30.0,
+        batch_timeout_s=30.0,
+        clock=clock,
+    )
+
+    assert [row.max_new_tokens for row in transport.requests] == [2, 4, 4]
+    assert [row.expected_prompt_tokens for row in transport.requests] == [8, 65, 65]
+    assert [row.token_numerator for row in result.batches] == [4, 8, 8]
+    assert plan.quality_tokens_per_prompt == 2
+
+    with pytest.raises(OuterSessionInfrastructureError, match="exactly cover"):
+        _plan(
+            batch_max_new_tokens=(2, 4),
+            batch_expected_prompt_tokens=(8, 65),
+        )
+    with pytest.raises(OuterSessionInfrastructureError, match="absent"):
+        _plan(
+            batch_max_new_tokens=(2, 4, 4),
+            batch_expected_prompt_tokens=(8, 65, 65),
+            quality_max_new_tokens=3,
+        )
+
+
 def test_happy_path_accepts_preflight_before_ready_and_returns_raw_host_intervals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

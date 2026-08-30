@@ -43,24 +43,24 @@ class _Store:
         self.marked.append((reservation_id, reference_name))
 
 
-def test_corpus_includes_the_published_fused_epilogue_fixture() -> None:
+def test_corpus_includes_the_published_dp_exchange_example() -> None:
     names = [name for name, _fp in validator_reference_fingerprints()]
-    assert "stack_fused_epilogue_atomic" in names
+    assert "miner_dp_attention_exchange_torch" in names
     assert len(names) == len(set(names))
 
 
 def test_resubmitted_public_fixture_is_an_authoritative_reference_copy() -> None:
     fingerprint = fingerprint_submitted_delta(
-        policy_module._repo_root() / "tests/fixtures/stack_fused_epilogue_atomic"
+        policy_module._repo_root() / "examples/miner_dp_attention_exchange_torch"
     )
-    assert reference_copy_match(fingerprint) == "stack_fused_epilogue_atomic"
+    assert reference_copy_match(fingerprint) == "miner_dp_attention_exchange_torch"
     assert reference_copy_match(None) is None
     assert reference_copy_match(object()) is None
 
 
 def test_reconcile_marks_only_live_matching_rows() -> None:
     fixture = fingerprint_submitted_delta(
-        policy_module._repo_root() / "tests/fixtures/stack_fused_epilogue_atomic"
+        policy_module._repo_root() / "examples/miner_dp_attention_exchange_torch"
     )
     other = fingerprint_submitted_delta(
         policy_module._repo_root() / "tests/fixtures/stack_norm_singleton"
@@ -78,7 +78,7 @@ def test_reconcile_marks_only_live_matching_rows() -> None:
     dispositions = reconcile_reference_copies(store)
 
     assert dispositions == (
-        ("resubmission", "stack_fused_epilogue_atomic"),
+        ("resubmission", "miner_dp_attention_exchange_torch"),
         ("norm-copy", "stack_norm_singleton"),
     )
     assert store.marked == list(dispositions)
@@ -123,7 +123,7 @@ def test_lease_fenced_mark_defers_without_killing_the_tick() -> None:
     from cacheon.chain.intake import IntakeError
 
     fixture = fingerprint_submitted_delta(
-        policy_module._repo_root() / "tests/fixtures/stack_fused_epilogue_atomic"
+        policy_module._repo_root() / "examples/miner_dp_attention_exchange_torch"
     )
 
     class _FencedStore(_Store):
@@ -139,7 +139,7 @@ def test_lease_fenced_mark_defers_without_killing_the_tick() -> None:
         ]
     )
     dispositions = reconcile_reference_copies(store)
-    assert dispositions == (("free", "stack_fused_epilogue_atomic"),)
+    assert dispositions == (("free", "miner_dp_attention_exchange_torch"),)
 
 
 def test_library_kill_flag_off_is_inert(monkeypatch) -> None:

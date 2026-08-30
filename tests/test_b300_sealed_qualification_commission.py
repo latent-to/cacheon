@@ -25,12 +25,14 @@ from cacheon.eval.b300_qualification_deployment import (
     B300RegisteredProfileAuthority,
 )
 from cacheon.eval.b300_registered_qualification_inputs import (
-    ORDINARY_B300_TARGET_IDS,
-    REGISTERED_B300_TARGET_IDS,
     B300RegisteredQualificationError,
     registered_b300_member_contract_projection,
 )
-from tests.support.b300 import StubHiddenJudge as _Judge
+from tests.support.b300 import (
+    GLM53_REGISTERED_TARGET_IDS,
+    M3_REGISTERED_TARGET_IDS,
+    StubHiddenJudge as _Judge,
+)
 from cacheon.stack_identity import canonical_json_bytes
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
@@ -58,7 +60,7 @@ def _resident_count_quality(catalog, evidence_root: Path):
     product = _product(
         evidence_root.parent,
         catalog,
-        REGISTERED_B300_TARGET_IDS[0],
+        M3_REGISTERED_TARGET_IDS[0],
         f"{evidence_root.name}-authority",
     )
     stock_observation = reopen_resident_count_stock(
@@ -280,29 +282,45 @@ def test_sealed_commission_block_fails_closed(name: str, block) -> None:
 def test_profile_rows_cover_all_registered_targets_and_bind_member_authority() -> None:
     catalog = default_target_catalog()
     rows = sealed.sealed_qualification_profile_rows(
-        catalog, builder_source_digest=_h("reviewed-one")
+        catalog,
+        registered_target_ids=M3_REGISTERED_TARGET_IDS,
+        builder_source_digest=_h("reviewed-one"),
     )
     assert tuple(target for target, _spec, _resolver in rows) == (
-        REGISTERED_B300_TARGET_IDS
+        M3_REGISTERED_TARGET_IDS
     )
-    assert ORDINARY_B300_TARGET_IDS == REGISTERED_B300_TARGET_IDS
     assert all(
         spec == catalog.target_spec_digest(target) for target, spec, _ in rows
     )
+    assert sealed.predicted_qualification_registry_digest(
+        catalog,
+        registered_target_ids=GLM53_REGISTERED_TARGET_IDS,
+        builder_source_digest=_h("reviewed-one"),
+    ) != sealed.predicted_qualification_registry_digest(
+        catalog,
+        registered_target_ids=M3_REGISTERED_TARGET_IDS,
+        builder_source_digest=_h("reviewed-one"),
+    )
     other = sealed.sealed_qualification_profile_rows(
-        catalog, builder_source_digest=_h("reviewed-two")
+        catalog,
+        registered_target_ids=M3_REGISTERED_TARGET_IDS,
+        builder_source_digest=_h("reviewed-two"),
     )
     assert {resolver for _, _, resolver in rows}.isdisjoint(
         {resolver for _, _, resolver in other}
     )
-    projection = registered_b300_member_contract_projection(catalog)
+    projection = registered_b300_member_contract_projection(
+        catalog, GLM53_REGISTERED_TARGET_IDS
+    )
     atomic = next(row for row in projection if row.kind == "atomic")
     assert len(atomic.members) == 2
     assert tuple(row.slot_id for row in atomic.member_contracts) == atomic.members
     assert "contract_digest" not in atomic.to_dict()
     with pytest.raises(B300RegisteredQualificationError):
         sealed.sealed_qualification_profile_rows(
-            catalog, builder_source_digest="not-a-digest"
+            catalog,
+            registered_target_ids=M3_REGISTERED_TARGET_IDS,
+            builder_source_digest="not-a-digest",
         )
 
 
@@ -314,7 +332,9 @@ def test_predicted_digests_equal_a_real_composed_construction(
     judge = _Judge()
     selection_policy_digest = _h("selection-policy")
     rows = sealed.sealed_qualification_profile_rows(
-        catalog, builder_source_digest=block["builder_source_digest"]
+        catalog,
+        registered_target_ids=M3_REGISTERED_TARGET_IDS,
+        builder_source_digest=block["builder_source_digest"],
     )
     profiles = tuple(
         B300RegisteredProfileAuthority(
@@ -339,6 +359,7 @@ def test_predicted_digests_equal_a_real_composed_construction(
     )
     construction = B300QualificationConstructionAuthority(
         catalog=catalog,
+        registered_target_ids=M3_REGISTERED_TARGET_IDS,
         profiles=profiles,
         incumbent_stack=stack,
         incumbent_tree_digest=_h("incumbent-tree"),
@@ -364,12 +385,15 @@ def test_predicted_digests_equal_a_real_composed_construction(
     )
     assert construction.profile_registry_digest == (
         sealed.predicted_qualification_registry_digest(
-            catalog, builder_source_digest=block["builder_source_digest"]
+            catalog,
+            registered_target_ids=M3_REGISTERED_TARGET_IDS,
+            builder_source_digest=block["builder_source_digest"],
         )
     )
     assert construction.qualification_builder_digest == (
         sealed.predicted_qualification_builder_digest(
             catalog,
+            registered_target_ids=M3_REGISTERED_TARGET_IDS,
             builder_source_digest=block["builder_source_digest"],
             selection_store_digest=block["selection_store_digest"],
             resident_count_quality_builder_digest=block[
@@ -380,6 +404,7 @@ def test_predicted_digests_equal_a_real_composed_construction(
     assert construction.qualification_policy_digest == (
         sealed.predicted_qualification_policy_digest(
             catalog,
+            registered_target_ids=M3_REGISTERED_TARGET_IDS,
             builder_source_digest=block["builder_source_digest"],
             selection_store_digest=block["selection_store_digest"],
             hidden_judge_binding_digest=judge.binding.digest,
@@ -404,6 +429,7 @@ def test_predicted_policy_digest_binds_each_declared_identity() -> None:
     block = _block()
     baseline = sealed.predicted_qualification_policy_digest(
         catalog,
+        registered_target_ids=M3_REGISTERED_TARGET_IDS,
         builder_source_digest=block["builder_source_digest"],
         selection_store_digest=block["selection_store_digest"],
         hidden_judge_binding_digest=_h("binding-one"),
@@ -422,6 +448,7 @@ def test_predicted_policy_digest_binds_each_declared_identity() -> None:
         variant = sealed.predicted_qualification_policy_digest(
             catalog,
             **{
+                "registered_target_ids": M3_REGISTERED_TARGET_IDS,
                 "builder_source_digest": block["builder_source_digest"],
                 "selection_store_digest": block["selection_store_digest"],
                 "hidden_judge_binding_digest": _h("binding-one"),

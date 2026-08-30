@@ -301,7 +301,10 @@ def test_future_activation_and_collective_candidates_use_one_stable_builder(
 
     assert initial_digest == after_activation == builder.digest
     assert activation.candidate.reservation.target_id == "activation.silu_and_mul"
-    assert "collective.ar_residual_rmsnorm" in collective.candidate.reservation.target_members
+    assert collective.candidate.reservation.target_members == (
+        "collective.all_gather_into_tensor",
+        "collective.reduce_scatter_tensor",
+    )
     assert tuple(row.slot_id for row in activation_facts.variants) == (
         activation.candidate.reservation.target_members
     )

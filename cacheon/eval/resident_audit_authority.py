@@ -125,9 +125,7 @@ def resident_audit_session_plan_digest(plan: SessionExecutionPlan) -> str:
         raise ResidentAuditAuthorityError(
             "resident audit plan is not exact and armed"
         )
-    return canonical_digest(
-        RESIDENT_AUDIT_PLAN_SCHEMA,
-        {
+    payload = {
             "audit_policy": plan.audit_policy.digest,
             "conditioning_count": plan.conditioning_count,
             "discovery_overlay_identity": (
@@ -141,8 +139,18 @@ def resident_audit_session_plan_digest(plan: SessionExecutionPlan) -> str:
             "temperature": format(plan.temperature, ".17g"),
             "top_logprobs_num": plan.top_logprobs_num,
             "warmup_count": plan.warmup_count,
-        },
-    )
+        }
+    if plan.batch_max_new_tokens or plan.quality_max_new_tokens is not None:
+        payload["batch_request_geometry"] = [
+            [tokens, prompt_tokens]
+            for tokens, prompt_tokens in zip(
+                plan.batch_max_new_tokens,
+                plan.batch_expected_prompt_tokens,
+                strict=True,
+            )
+        ]
+        payload["quality_max_new_tokens"] = plan.quality_tokens_per_prompt
+    return canonical_digest(RESIDENT_AUDIT_PLAN_SCHEMA, payload)
 
 
 @dataclass(frozen=True)
@@ -301,6 +309,9 @@ class ResidentAuditExecutionAuthority:
             max_new_tokens=max_new_tokens,
             top_logprobs_num=top_logprobs_num,
             audit_policy=audit_policy,
+            batch_max_new_tokens=(),
+            batch_expected_prompt_tokens=(),
+            quality_max_new_tokens=None,
         )
         allocation = resident_audit_allocation_digest(
             charged_binding,

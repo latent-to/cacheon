@@ -20,8 +20,6 @@ from cacheon.stack_plan import (
 )
 from cacheon.target_catalog import (
     FEATURE_ENTRY,
-    MOE_EPILOGUE_ATOMIC_TARGET,
-    MOE_EPILOGUE_MEMBERS,
     TargetCatalog,
     TargetKind,
     TargetSpec,
@@ -114,8 +112,6 @@ def _plan(
     [
         (None, ROUTED, ()),
         (ROUTED, ROUTED, ()),
-        (None, MOE_EPILOGUE_ATOMIC_TARGET, ()),
-        (MOE_EPILOGUE_ATOMIC_TARGET, MOE_EPILOGUE_ATOMIC_TARGET, ()),
     ],
 )
 def test_registered_stock_and_same_target_transitions(
@@ -158,61 +154,6 @@ def test_planning_rejects_a_catalog_outside_the_frozen_stack_context():
             incumbent,
             _ref(catalog, ROUTED, "replacement"),
             narrow,
-            context,
-        )
-
-
-def test_atomic_transition_displaces_all_active_members_as_one_delta():
-    catalog = default_target_catalog()
-    context = _context(
-        catalog, (*MOE_EPILOGUE_MEMBERS, MOE_EPILOGUE_ATOMIC_TARGET)
-    )
-    members = {
-        target: _ref(catalog, target, f"member:{target}")
-        for target in MOE_EPILOGUE_MEMBERS
-    }
-    incumbent = _stack(catalog, members)
-
-    arm = _plan(
-        incumbent,
-        _ref(catalog, MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-        catalog,
-        context,
-    )
-
-    assert tuple(ref.target_id for ref in arm.transition.displaced) == tuple(
-        sorted(MOE_EPILOGUE_MEMBERS)
-    )
-    assert arm.transition.prior is None
-    assert set(arm.candidate.entries) == {MOE_EPILOGUE_ATOMIC_TARGET}
-    assert set(incumbent.entries) == set(MOE_EPILOGUE_MEMBERS)
-    assert plan_candidate_stack(
-        incumbent,
-        arm.transition.replacement,
-        catalog=catalog,
-        expected_context=context,
-    ).digest == arm.candidate.digest
-
-
-def test_atomic_incumbent_cannot_be_implicitly_decomposed_to_singleton():
-    catalog = default_target_catalog()
-    context = _context(
-        catalog, (MOE_EPILOGUE_ATOMIC_TARGET, MOE_EPILOGUE_MEMBERS[0])
-    )
-    incumbent = _stack(
-        catalog,
-        {
-            MOE_EPILOGUE_ATOMIC_TARGET: _ref(
-                catalog, MOE_EPILOGUE_ATOMIC_TARGET, "atomic"
-            )
-        },
-    )
-
-    with pytest.raises(StackPlanError, match="cannot implicitly decompose"):
-        _plan(
-            incumbent,
-            _ref(catalog, MOE_EPILOGUE_MEMBERS[0], "member"),
-            catalog,
             context,
         )
 

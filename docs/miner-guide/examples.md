@@ -19,6 +19,9 @@ resolution. Before adapting one for submission, add the appropriate
 | [`miner_moe_fused_routed_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_moe_fused_routed_torch) | fat MoE boundary: faithful routing head plus experts plus combine | dense reference-style code, not a quantized fast path |
 | [`miner_moe_fused_experts_reduce_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_moe_fused_experts_reduce_torch) | distributed MoE entry that owns its trailing reduction | needs multi-rank verification for the real contract |
 | [`miner_allreduce_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_allreduce_torch) | simplest collective ABI using the supplied group | correctness example, not a competitive collective algorithm |
+| [`miner_dense_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_dense_torch) | GLM BF16 dense `prepare` plus output-buffer entry | faithful local GEMM, not a speed winner |
+| [`miner_fused_add_rmsnorm_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_fused_add_rmsnorm_torch) | fused residual ownership and RMSNorm output ABI | faithful PyTorch control, not a fused fast path |
+| [`miner_dp_attention_exchange_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_dp_attention_exchange_torch) | both members of the atomic DP-attention exchange target | needs four-rank verification; engine still owns attention and KV policy |
 
 Start with `miner_silu_torch` for the workflow in
 [Your first component bundle](your-first-kernel.md). For a new target, use the
@@ -42,13 +45,10 @@ submission — widening the catalog is a reviewed validator-side change.
 
 ## Identity fixtures are not kernels
 
-Two test fixtures are useful for inspecting modern manifest structure:
+One test fixture is useful for inspecting modern singleton manifest structure:
 
 - [`stack_norm_singleton`](https://github.com/latent-to/cacheon/tree/main/tests/fixtures/stack_norm_singleton)
-  shows explicit singleton competition identity and capability metadata;
-- [`stack_fused_epilogue_atomic`](https://github.com/latent-to/cacheon/tree/main/tests/fixtures/stack_fused_epilogue_atomic)
-  shows explicit atomic identity, member rows, declared CUDA source, dependency
-  patch, and reviewed rebuild steps.
+  shows explicit singleton competition identity and capability metadata.
 
 They test intake, identity, and publication machinery. Their callable/native
 bodies are deliberately minimal and may not implement the live slot ABI. Do not

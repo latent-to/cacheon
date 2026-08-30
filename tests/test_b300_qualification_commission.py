@@ -27,7 +27,6 @@ from cacheon.eval.b300_qualification_lanes import (
     B300QualificationLanePair,
     B300QualificationLanePolicy,
 )
-from cacheon.eval.b300_registered_qualification import REGISTERED_B300_TARGET_IDS
 from cacheon.eval.b300_sealed_qualification_commission import (
     QUALIFICATION_DEADLINE_MAXIMUM_SECONDS,
 )
@@ -35,6 +34,7 @@ from cacheon.eval.calibration import CalibrationEvidenceSet, derive_calibration_
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import (
+    M3_REGISTERED_TARGET_IDS,
     StubHiddenJudge as _Judge,
     gpu as _gpu,
     qualification_capabilities as _capabilities,
@@ -198,17 +198,23 @@ def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> N
             _h(f"resolver:{target_id}"),
             lambda _candidate, _prepared: object(),
         )
-        for target_id in REGISTERED_B300_TARGET_IDS
+        for target_id in M3_REGISTERED_TARGET_IDS
     )
 
-    assert tuple(commission._require_complete_factory_profiles(profiles)) == (
-        REGISTERED_B300_TARGET_IDS
+    assert tuple(
+        commission._require_complete_factory_profiles(
+            profiles, M3_REGISTERED_TARGET_IDS
+        )
+    ) == (
+        M3_REGISTERED_TARGET_IDS
     )
     with pytest.raises(
         commission.B300QualificationCommissionError,
         match="full catalog",
     ):
-        commission._require_complete_factory_profiles(profiles[:-1])
+        commission._require_complete_factory_profiles(
+            profiles[:-1], M3_REGISTERED_TARGET_IDS
+        )
 
 
 def test_lane_policies_reopen_exact_canonical_pair() -> None:
@@ -465,6 +471,23 @@ def test_compose_rejects_a_session_that_differs_from_the_declared_cell() -> None
         commission._require_cell_conformance(
             inputs, policy, session, {"min_windows": 3}
         )
+
+    mixed = Workload(
+        _h("mixed"),
+        "seed-v1",
+        (
+            WorkloadCell("s8", 8192, 1024, 2, 2),
+            WorkloadCell("l65", 65536, 4096, 1, 3),
+        ),
+    )
+    mixed_inputs = SimpleNamespace(
+        workload=mixed,
+        prompt_batches=(("a", "b"), ("c", "d"), ("e",), ("f",), ("g",), ("h",)),
+        prompt_batch_cells=("s8", "s8", "s8", "l65", "l65", "l65"),
+    )
+    commission._require_cell_conformance(
+        mixed_inputs, policy, {"warmup_count": 1}, {"min_windows": 5}
+    )
 
 
 def test_qualification_swap_root_is_runtime_traversable(tmp_path: Path) -> None:

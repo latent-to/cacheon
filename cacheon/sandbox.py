@@ -319,7 +319,6 @@ def scan_tree(
     root: str | Path,
     *,
     declared_cuda_sources: "frozenset[Path] | set[Path] | None" = None,
-    declared_dep_patches: "frozenset[Path] | set[Path] | None" = None,
 ) -> ScanResult:
     """Recursively scan EVERY ``.py`` under a bundle root — the vendored-tree guard.
 
@@ -350,8 +349,7 @@ def scan_tree(
     """
     root = Path(root)
     declared = frozenset(p.resolve() for p in (declared_cuda_sources or ()))
-    declared_patches = frozenset(p.resolve() for p in (declared_dep_patches or ()))
-    strict = declared_cuda_sources is not None or declared_dep_patches is not None
+    strict = declared_cuda_sources is not None
     out: list[str] = []
     for p in sorted(root.rglob("*")):
         if "__pycache__" in p.parts:
@@ -389,14 +387,8 @@ def scan_tree(
                 out.append(f"{rel}: .cu/.cuh file not declared in manifest cuda_sources")
             continue  # no manifest context (old call sites) -> preserve prior silent-skip
         if p.suffix in (".patch", ".diff"):
-            # Sanctioned dep-patch tier: a DECLARED text unified diff was already
-            # structurally validated at manifest load (cacheon/deppatch.py) and is applied
-            # only by the one reviewed patcher against an arena allowlist. An UNDECLARED
-            # patch file has no sanctioned reader — reject under a manifest, skip without.
-            if p.resolve() in declared_patches:
-                continue
             if strict:
-                out.append(f"{rel}: .patch/.diff file not declared in manifest dep_patches")
+                out.append(f"{rel}: .patch/.diff files are unsupported")
             continue
         if strict:
             if _is_benign_metadata(rel):
@@ -458,4 +450,3 @@ def load_entry(source_path: str | Path, entry: str) -> Callable:
     ``load_module`` once + ``callable_from`` — repeated ``load_entry`` calls re-execute
     the module body into separate instances (see ``load_module``)."""
     return callable_from(load_module(source_path), entry)
-

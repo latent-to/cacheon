@@ -28,7 +28,6 @@ from cacheon.engine_tree import (
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationCohort,
     B300RegisteredProfileAuthority,
-    REGISTERED_B300_TARGET_IDS,
     registered_b300_target_ids,
 )
 from cacheon.eval.calibration import (
@@ -85,10 +84,6 @@ from cacheon.stack_plan import MarginalArmPlan, plan_candidate_stack, plan_margi
 from cacheon.target_catalog import TargetCatalog, TargetKind
 
 
-# Compatibility only: this historical public name now denotes the complete
-# registered B300 catalog, including atomic targets.  Product coverage uses the
-# canonical name above.
-ORDINARY_B300_TARGET_IDS = REGISTERED_B300_TARGET_IDS
 POLICY_SCHEMA = "cacheon.eval.b300-registered-qualification-policy.v2"
 FACTORY_SCHEMA = "cacheon.eval.b300-registered-qualification-factory.v2"
 RESOLVER_SCHEMA = "cacheon.eval.b300-registered-profile-resolver.v2"
@@ -292,25 +287,22 @@ class B300RegisteredTargetProjection:
 
 def registered_b300_member_contract_projection(
     catalog: TargetCatalog,
+    target_ids: tuple[str, ...],
 ) -> tuple[B300RegisteredTargetProjection, ...]:
-    """Project the complete registered catalog into ordered graph authorities."""
+    """Project one arena's registered targets into ordered graph authorities."""
 
     if type(catalog) is not TargetCatalog:
         raise B300RegisteredQualificationError(
             "qualification target catalog is not exact"
         )
     try:
-        observed_ids = registered_b300_target_ids(catalog)
+        observed_ids = registered_b300_target_ids(catalog, target_ids)
     except (TypeError, ValueError) as exc:
         raise B300RegisteredQualificationError(
             f"registered B300 target catalog is malformed: {exc}"
         ) from None
-    if observed_ids != REGISTERED_B300_TARGET_IDS:
-        raise B300RegisteredQualificationError(
-            "registered B300 target catalog does not have exact coverage"
-        )
     projection = []
-    for target_id in REGISTERED_B300_TARGET_IDS:
+    for target_id in observed_ids:
         spec = catalog.require(target_id)
         member_rows = []
         for member_id in spec.members:
@@ -371,6 +363,7 @@ class B300RegisteredQualificationPolicy:
     """Candidate-independent policy for the exact registered target catalog."""
 
     catalog_digest: str
+    model_profile_key: str
     target_spec_digests: tuple[tuple[str, str], ...]
     target_contract_projection: tuple[B300RegisteredTargetProjection, ...]
     verification_policy_digest: str
@@ -391,15 +384,22 @@ class B300RegisteredQualificationPolicy:
         object.__setattr__(
             self, "catalog_digest", _digest(self.catalog_digest, "catalog digest")
         )
+        object.__setattr__(
+            self,
+            "model_profile_key",
+            _identifier(self.model_profile_key, "model profile key"),
+        )
         rows = tuple(self.target_spec_digests)
         projection = tuple(self.target_contract_projection)
+        registered_ids = tuple(target for target, _ in rows)
         if (
             type(self.target_spec_digests) is not tuple
-            or tuple(target for target, _ in rows) != REGISTERED_B300_TARGET_IDS
+            or not registered_ids
+            or registered_ids != tuple(sorted(set(registered_ids)))
             or len({target for target, _ in rows}) != len(rows)
             or type(self.target_contract_projection) is not tuple
             or any(type(row) is not B300RegisteredTargetProjection for row in projection)
-            or tuple(row.target_id for row in projection) != REGISTERED_B300_TARGET_IDS
+            or tuple(row.target_id for row in projection) != registered_ids
             or tuple((row.target_id, row.target_spec_digest) for row in projection)
             != rows
         ):
@@ -474,6 +474,8 @@ class B300RegisteredQualificationPolicy:
         cls,
         catalog: TargetCatalog,
         *,
+        registered_target_ids: tuple[str, ...],
+        model_profile_key: str,
         verification_policy_digest: str,
         nll_tail_threshold: str,
         tokens_per_prompt: int,
@@ -492,10 +494,13 @@ class B300RegisteredQualificationPolicy:
             raise B300RegisteredQualificationError(
                 "qualification target catalog is not exact"
             )
-        projection = registered_b300_member_contract_projection(catalog)
+        projection = registered_b300_member_contract_projection(
+            catalog, registered_target_ids
+        )
         rows = tuple((row.target_id, row.target_spec_digest) for row in projection)
         return cls(
             catalog.digest,
+            model_profile_key,
             rows,
             projection,
             verification_policy_digest,
@@ -520,14 +525,16 @@ class B300RegisteredQualificationPolicy:
             )
         observed = tuple(
             (target, catalog.target_spec_digest(target))
-            for target in REGISTERED_B300_TARGET_IDS
+            for target in self.registered_target_ids
         )
         if observed != self.target_spec_digests:
             raise B300RegisteredQualificationError(
                 "registered target specifications are stale"
             )
         if (
-            registered_b300_member_contract_projection(catalog)
+            registered_b300_member_contract_projection(
+                catalog, self.registered_target_ids
+            )
             != self.target_contract_projection
         ):
             raise B300RegisteredQualificationError(
@@ -544,6 +551,7 @@ class B300RegisteredQualificationPolicy:
             "hidden_task_policy_digest": self.hidden_task_policy_digest,
             "hidden_tasks_per_prompt": self.hidden_tasks_per_prompt,
             "hidden_tasks_required": self.hidden_tasks_required,
+            "model_profile_key": self.model_profile_key,
             "nll_tail_threshold": self.nll_tail_threshold,
             "select_count": self.select_count,
             "support_policy_digest": self.support_policy_digest,
@@ -555,6 +563,10 @@ class B300RegisteredQualificationPolicy:
             "topk_width": self.topk_width,
             "verification_policy_digest": self.verification_policy_digest,
         }
+
+    @property
+    def registered_target_ids(self) -> tuple[str, ...]:
+        return tuple(target for target, _ in self.target_spec_digests)
 
     @property
     def digest(self) -> str:
@@ -616,7 +628,7 @@ class B300FocusedGraphFacts:
 
 CandidateBindingBuilder = Callable[[MaterializedEngineTree], TrustedLaunchBinding]
 GraphFactsBuilder = Callable[
-    [ArenaCandidateBinding, PreparedCandidateRuntime], B300FocusedGraphFacts
+    [ArenaCandidateBinding, PreparedCandidateRuntime, str], B300FocusedGraphFacts
 ]
 
 
@@ -819,7 +831,7 @@ class B300RegisteredQualificationInputs:
                 )
         if (
             self.policy.tokens_per_prompt
-            != self.baseline_session_plan.max_new_tokens
+            != self.baseline_session_plan.quality_tokens_per_prompt
             or self.policy.topk_width
             != self.baseline_session_plan.top_logprobs_num
         ):

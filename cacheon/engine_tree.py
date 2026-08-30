@@ -31,7 +31,6 @@ from cacheon.artifact_provider import (
     ArtifactProviderPolicyError,
 )
 from cacheon.bundle_hash import content_hash
-from cacheon.deppatch import parse_patch_text
 from cacheon.manifest import ABI_VERSION, Manifest, OpEntry, load_manifest
 from cacheon.rebuild import RebuildPlan, parse_rebuild_plan
 from cacheon.stack_identity import (
@@ -46,7 +45,6 @@ _FILE_MODE = 0o444
 _DIR_MODE = 0o755
 _INTERNAL_BUNDLE_ID = "cacheon-materialized-v1"
 _REBUILD_ORDER = {
-    "cacheon/patchers/apply_dep_patch.py": 0,
     "cacheon/patchers/build_cuda_ext.py": 1,
     "cacheon/patchers/build_cute_cubin.py": 2,
 }
@@ -106,7 +104,6 @@ class InspectedContribution:
     python_files: tuple[str, ...]
     metadata: tuple[tuple[str, bytes], ...]
     cuda_files: tuple[str, ...]
-    patch_files: tuple[str, ...]
 
 
 def _logical_path(value: str, *, field: str) -> str:
@@ -798,10 +795,7 @@ def _rebuild_identity_data(plan: RebuildPlan | None) -> dict[str, object]:
 
 
 def _rebuild_features(plan: RebuildPlan | None) -> tuple[str, ...]:
-    from cacheon.target_catalog import (
-        FEATURE_REBUILD_APPLY_DEP_PATCH,
-        FEATURE_REBUILD_BUILD_CUDA_EXT,
-    )
+    from cacheon.target_catalog import FEATURE_REBUILD_BUILD_CUDA_EXT
 
     features: list[str] = []
     for step in () if plan is None else plan.steps:
@@ -810,8 +804,6 @@ def _rebuild_features(plan: RebuildPlan | None) -> tuple[str, ...]:
         )
         if artifact_feature is not None:
             features.append(artifact_feature)
-        elif step.patcher_id == "cacheon.apply-dep-patch.v1":
-            features.append(FEATURE_REBUILD_APPLY_DEP_PATCH)
         elif step.patcher_id == "cacheon.build-cuda-ext.v1":
             features.append(FEATURE_REBUILD_BUILD_CUDA_EXT)
         else:
@@ -1003,9 +995,6 @@ def _inspect_contribution(
         })
     )
     _validate_cuda_closure(root, cuda_files)
-    patch_files = tuple(
-        sorted(_logical_path(row.path, field="dependency patch") for row in manifest.dep_patches)
-    )
     python_files = _python_closure(
         root,
         tuple(op.source for op in manifest.ops),
@@ -1018,7 +1007,6 @@ def _inspect_contribution(
     for role, paths in (
         ("python", python_files),
         ("cuda", cuda_files),
-        ("dep_patch", patch_files),
     ):
         for relative in paths:
             raw = _stable_read(root, relative)
@@ -1031,10 +1019,6 @@ def _inspect_contribution(
                     "size": len(raw),
                 }
             )
-    patch_declarations = [
-        {"path": row.path, "target": row.target}
-        for row in sorted(manifest.dep_patches, key=lambda item: (item.target, item.path))
-    ]
     selected = {
         "abi_version": manifest.abi_version,
         "files": sorted(file_rows, key=lambda row: (str(row["role"]), str(row["path"]))),
@@ -1044,7 +1028,9 @@ def _inspect_contribution(
             _op_identity(manifest, op)
             for op in sorted(manifest.ops, key=lambda item: (item.slot, item.variant))
         ],
-        "patches": patch_declarations,
+        # Kept empty in the identity projection so no-patch bundle digests remain
+        # stable across retirement of the dependency-patch feature.
+        "patches": [],
         "rebuild": _rebuild_identity_data(plan),
     }
     selected_payload_digest = canonical_digest(
@@ -1073,7 +1059,6 @@ def _inspect_contribution(
         python_files=python_files,
         metadata=tuple(sorted(metadata_by_path.items())),
         cuda_files=cuda_files,
-        patch_files=patch_files,
     )
 
 
@@ -1388,8 +1373,7 @@ def _contribution_files(
     inspection: InspectedContribution,
     *,
     delta_digest: str,
-    patch_destinations: set[tuple[str, str]],
-) -> tuple[dict[str, bytes], list[dict[str, object]], list[dict[str, str]], list[dict[str, object]]]:
+) -> tuple[dict[str, bytes], list[dict[str, object]], list[dict[str, object]]]:
     prefix = f"cacheon_c_{delta_digest}"
     files: dict[str, bytes] = {}
     module_names = {
@@ -1491,24 +1475,6 @@ def _contribution_files(
         metadata_paths[relative] = output
         _put_file(files, output, data)
 
-    patch_paths: dict[str, str] = {}
-    patches_by_path = {row.path: row for row in inspection.manifest.dep_patches}
-    patch_rows: list[dict[str, str]] = []
-    for relative in inspection.patch_files:
-        declaration = patches_by_path[relative]
-        raw = _stable_read(inspection.root, relative)
-        for file_patch in parse_patch_text(raw.decode("utf-8")):
-            key = (declaration.target, file_patch.path)
-            if key in patch_destinations:
-                raise EngineTreeError(
-                    f"dependency patch destination collision: {declaration.target}:{file_patch.path}"
-                )
-            patch_destinations.add(key)
-        output = f"patches/{_generated_name(prefix, relative, suffix=PurePosixPath(relative).suffix)}"
-        patch_paths[relative] = output
-        _put_file(files, output, raw)
-        patch_rows.append({"path": output, "target": declaration.target})
-
     op_rows: list[dict[str, object]] = []
     for op in sorted(inspection.manifest.ops, key=lambda row: (row.slot, row.variant)):
         row = _runtime_op_identity(inspection.manifest, op)
@@ -1516,7 +1482,7 @@ def _contribution_files(
         row["metadata"] = metadata_paths.get(op.metadata) if op.metadata else None
         row["cuda_sources"] = [native_paths[path] for path in row["cuda_sources"]]
         op_rows.append(row)
-    return files, op_rows, patch_rows, _rebuild_rows(inspection.rebuild_plan)
+    return files, op_rows, _rebuild_rows(inspection.rebuild_plan)
 
 
 def _toml_string(value: str) -> str:
@@ -1551,24 +1517,12 @@ def _toml_value(value: object) -> str:
     raise EngineTreeError(f"runtime manifest contains an unsupported TOML value: {value!r}")
 
 
-def _runtime_manifest(
-    ops: list[dict[str, object]],
-    patches: list[dict[str, str]],
-) -> bytes:
+def _runtime_manifest(ops: list[dict[str, object]]) -> bytes:
     lines = [
         f"bundle_id = {_toml_string(_INTERNAL_BUNDLE_ID)}",
         f"abi_version = {_toml_string(ABI_VERSION)}",
         "",
     ]
-    for patch in sorted(patches, key=lambda row: (row["target"], row["path"])):
-        lines.extend(
-            [
-                "[[dep_patches]]",
-                f"target = {_toml_string(patch['target'])}",
-                f"path = {_toml_string(patch['path'])}",
-                "",
-            ]
-        )
     for op in ops:
         lines.append("[[ops]]")
         for key in ("slot", "variant", "source", "entry"):
@@ -2126,9 +2080,7 @@ def materialize_engine_tree(
     ordered_targets = catalog.ordered_active_targets(entries)
     files: dict[str, bytes] = {}
     op_rows: list[dict[str, object]] = []
-    patch_rows: list[dict[str, str]] = []
     rebuild_by_path: dict[str, dict[str, object]] = {}
-    patch_destinations: set[tuple[str, str]] = set()
     contribution_rows: list[dict[str, object]] = []
 
     for target_id in ordered_targets:
@@ -2183,17 +2135,15 @@ def materialize_engine_tree(
             if inspection.selected_delta_digest != ref.selected_delta_digest:
                 raise EngineTreeError(f"selected delta digest mismatch for {target_id!r}")
 
-            contributed, contribution_ops, contribution_patches, contribution_rebuild = (
+            contributed, contribution_ops, contribution_rebuild = (
                 _contribution_files(
                     inspection,
                     delta_digest=ref.selected_delta_digest,
-                    patch_destinations=patch_destinations,
                 )
             )
             for relative, data in contributed.items():
                 _put_file(files, relative, data)
             op_rows.extend(contribution_ops)
-            patch_rows.extend(contribution_patches)
             for row in contribution_rebuild:
                 path_value = row.get("path")
                 if not isinstance(path_value, str):
@@ -2217,7 +2167,7 @@ def materialize_engine_tree(
     runtime_manifest: str | None = None
     if entries:
         runtime_manifest = "manifest.toml"
-        _put_file(files, runtime_manifest, _runtime_manifest(op_rows, patch_rows))
+        _put_file(files, runtime_manifest, _runtime_manifest(op_rows))
         rebuild = _runtime_rebuild(list(rebuild_by_path.values()))
         if rebuild is not None:
             _put_file(files, "rebuild.json", rebuild)

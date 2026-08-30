@@ -318,9 +318,7 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
         manifest_gates.append(
             {name: os.environ.get(name) for name in gate_names}
         )
-        return SimpleNamespace(
-            ops=(SimpleNamespace(setup=None),), dep_patches=()
-        )
+        return SimpleNamespace(ops=(SimpleNamespace(setup=None),))
 
     monkeypatch.setattr(manifest_module, "load_manifest", load_manifest)
 

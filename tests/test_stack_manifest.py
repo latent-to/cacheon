@@ -42,7 +42,7 @@ def _evidence(domain: str, digest: str) -> EvidenceArtifactRef:
 
 
 TARGET_A = "attention.msa_prefill_block_score"
-TARGET_B = "collective.moe_epilogue.v1"
+TARGET_B = "collective.dp_attention_exchange.v1"
 
 
 def _catalog(*, marker: str = "base") -> dict[str, object]:

@@ -151,6 +151,36 @@ This is pure RMSNorm. The slot does not grant ownership of a residual add.
     `RMSNorm.forward_cuda` callsite. This section defines the ABI, but miners
     must not pay for or submit `norm.rmsnorm` to the current mainnet arena.
 
+## Block slots
+
+### `linear.dense`
+
+```python
+def prepare(weight):
+    # weight: (N, K)
+    return build_layout(weight)
+
+def dense(x, prepared, out):
+    # x: (M, K); out: (M, N)
+    ...
+```
+
+This boundary owns one unquantized local GEMM. Bias and any surrounding
+row/column-parallel communication remain engine-owned.
+
+### `norm.fused_add_rmsnorm`
+
+```python
+def fused_add_rmsnorm(x, residual, weight, eps, out_norm, out_residual):
+    # out_residual = (x + residual) rounded to the input dtype
+    # out_norm = rmsnorm(out_residual, weight, eps)
+    ...
+```
+
+Both outputs are validator-allocated and must be filled. The registered
+reference preserves the input-dtype residual-add rounding before the fp32
+variance reduction.
+
 ## Prepare/forward MoE slots
 
 `prepare` runs at load time and may build the representation consumed by the
@@ -189,6 +219,23 @@ part of the result the kernel must preserve.
 
 `moe.fused_experts` produces the local expert result. The enclosing trusted path
 retains ownership of any later collective.
+
+`moe.fused_routed_experts` owns the routing head as well as expert execution and
+the weighted combine:
+
+```python
+def prepare(w13, w2, topk, routed_scaling):
+    return build_layout(w13, w2, topk, routed_scaling)
+
+def fused_routed_experts(
+    x, router_logits, correction_bias, prepared, out
+):
+    ...
+```
+
+Selection uses `topk(sigmoid(router_logits) + correction_bias)`. Combine weights
+come from the unbiased sigmoid scores, are renormalized, and are multiplied by
+the registered routed scaling factor.
 
 `moe.fused_experts_reduce` owns that trailing reduction and therefore receives a
 process group:
@@ -229,6 +276,26 @@ def all_reduce(x, out, group):
     out.copy_(tmp)
 ```
 
+### `collective.all_gather_into_tensor`
+
+```python
+def all_gather_into_tensor(x, out, group):
+    # x: (M, H); out: (world*M, H), in rank order
+    ...
+```
+
+### `collective.reduce_scatter_tensor`
+
+```python
+def reduce_scatter_tensor(x, out, group):
+    # x: (world*M, H); out: this rank's SUM-reduced (M, H) shard
+    ...
+```
+
+GLM-5.3 rewards these two callables together through the atomic
+`collective.dp_attention_exchange.v1` target. A bundle for that target must
+implement both members.
+
 ### `collective.ar_residual_rmsnorm`
 
 ```python
@@ -243,44 +310,15 @@ def ar_residual_rmsnorm(
 Both outputs must be filled. `x` differs by rank; `residual` and `weight` are
 replicated inputs.
 
-### `collective.moe_finalize_ar_rmsnorm`
-
-```python
-def moe_finalize_ar_rmsnorm(
-    gemm_out,
-    row_map,
-    scales,
-    residual,
-    weight,
-    eps,
-    out_norm,
-    out_residual,
-    group,
-):
-    ...
-```
-
-This deep boundary performs four operations as one semantic unit:
-
-1. gather pre-finalize GEMM rows using K-major `row_map`;
-2. scale and sum the expert contributions;
-3. all-reduce the local partials;
-4. add the residual and apply RMSNorm.
-
-`gemm_out` has shape `(T_exp*K, H)`, `row_map` has shape `(T_exp*K)`, and
-`scales` has shape `(T_exp, K)`. The live batch may be head-trimmed with
-`T <= T_exp`. The deep producer export required to reach this seam is governed
-by target and [dependency-patch](dep-patches.md) policy.
-
 ## Correctness is target-owned
 
 The validator computes trusted references and applies the target contract. The
 current catalog uses:
 
 - elementwise tolerance for numerically equivalent op kernels;
-- `matched_ratio` for attention, MoE, and collectives whose legitimate reduction
-  order can change rounding;
-- per-row `topk_overlap` for MSA score-derived or direct block selections.
+- `matched_ratio` for dense, routed MoE, fused norm, and collectives whose
+  legitimate reduction order can change rounding; and
+- cosine similarity for the low-bit MiniMax-M3 expert boundaries.
 
 Tolerance, ratio, overlap, reference, and model binding are not miner-selected
 manifest values. Passing local `verify` demonstrates compatibility with its
@@ -293,9 +331,7 @@ The comparators reflect the semantic output of each boundary:
   operation;
 - **matched ratio or cosine** permits the bounded rounding/reduction effects expected of
   a low-bit or reordered implementation without allowing the miner to choose its own
-  tolerance; and
-- **top-k overlap** grades the block sets consumed downstream, because raw
-  score equality and index ordering are not the semantic requirement.
+  tolerance.
 
 Slot verification and end-to-end quality answer different questions. A per-call error can
 fit a slot tolerance yet compound across layers, so qualification still uses candidate-

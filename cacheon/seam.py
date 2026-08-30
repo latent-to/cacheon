@@ -263,12 +263,6 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
     # re-executes instead of aliasing a previous miner's module.
     for name in [k for k in list(sys.modules) if k.startswith("cacheon_kernel_")]:
         sys.modules.pop(name, None)
-    try:
-        from cacheon import moe_export
-
-        moe_export.reset()
-    except Exception:  # noqa: BLE001 - deep-seam state reset is best-effort here
-        logger.exception("cacheon: moe_export reset failed during resident swap")
     result: dict[str, object] = {"bundle": bundle or "", "slots": []}
     if bundle:
         from cacheon.manifest import load_manifest
@@ -277,13 +271,6 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
         if any(op.aot_exports for op in manifest.ops):
             raise RuntimeError(
                 "direct device-artifact bundles are not swappable in the screen tier"
-            )
-        if getattr(manifest, "dep_patches", None):
-            # A dep-patched tree changes the pinned flashinfer csrc through a
-            # prebuild overlay; a live engine cannot adopt that, so such
-            # bundles must run through a dedicated launch instead.
-            raise RuntimeError(
-                "dep-patched bundles are not swappable in the screen tier"
             )
         if any(op.cuda_sources for op in manifest.ops):
             raise RuntimeError(
@@ -360,10 +347,8 @@ def _load_candidate_bundle_locked(
             if release_required:
                 _release_abort("bundle registered no slots")
             raise RuntimeError("bundle registered no slots")
-        # Registry-conditional adapters (defer_gate/moe_export install only once
-        # the deep slot is registered) saw an empty registry on every pre-load
-        # activate() pass. Retry them NOW rather than hoping a later watched
-        # module import re-triggers activate() after this load.
+        # Retry adapters after bundle registration so any registry-conditional
+        # integration sees the active slot set without relying on a later import.
         _install_adapters(release_required)
     except Exception as exc:  # noqa: BLE001 - a bad bundle must not wedge the engine
         _bundle_pending = None
@@ -456,18 +441,16 @@ def _load_bundle_into_registry(bundle: str) -> None:
         )
     # Recursive vendored-tree guard: a bundle can carry a whole vendored library; every .py
     # must clear the policy scan, not just the declared entries. Fail closed (load nothing).
-    # Pass the manifest's declared cuda_sources + dep_patches so the runtime load
-    # enforces the SAME strict allowlist as the CLI scan (undeclared non-.py files
-    # reject here too).
-    from cacheon.manifest import all_declared_cuda_sources, all_declared_dep_patches
+    # Pass declared CUDA sources so runtime load enforces the same strict allowlist
+    # as intake; undeclared non-Python files reject here too.
+    from cacheon.manifest import all_declared_cuda_sources
 
     tree = scan_tree(bundle,
-                     declared_cuda_sources=all_declared_cuda_sources(bundle, manifest),
-                     declared_dep_patches=all_declared_dep_patches(bundle, manifest))
+                     declared_cuda_sources=all_declared_cuda_sources(bundle, manifest))
     if not tree.ok:
         logger.warning("cacheon: skip bundle %s, recursive scan failed: %s", bundle, tree.violations)
         return
-    # The reviewed patchers' artifacts (compiled CUDA exts, dep overlays) must exist in
+    # The reviewed patchers' compiled CUDA artifacts must exist in
     # THIS process: sglang runs the model in spawned scheduler ranks, and the driver's
     # sys.modules preloads do not survive the spawn. Cache-hit fast after the trusted
     # prebuild phase built once. (2026-07-07: without this the engine

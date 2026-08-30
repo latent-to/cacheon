@@ -1019,8 +1019,7 @@ def container_build() -> Path:
         plan = parse_rebuild_plan(CONTAINER_TREE)
         artifact_descriptors = _artifact_provider_descriptors(manifest, plan)
         requires_rebuild = bool(
-            manifest.dep_patches
-            or all_declared_cuda_sources(CONTAINER_TREE, manifest)
+            all_declared_cuda_sources(CONTAINER_TREE, manifest)
             or artifact_descriptors
         )
     compile_profile_provider = _compile_profile_provider(artifact_descriptors)

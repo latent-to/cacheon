@@ -1,13 +1,8 @@
 """Wire the Cacheon dispatcher into SGLang's SiluAndMul seam.
 
-WHY PATCH THE CLASS METHOD (and not register_oot_forward):
-``SiluAndMul`` subclasses ``MultiPlatformOp``, whose ``dispatch_forward()`` only
-consults the out-of-tree registry when ``current_platform.is_out_of_tree()`` is
-True — which is False on a normal CUDA validator. On CUDA it binds
-``self.forward_cuda`` at ``__init__``. So the robust, platform-independent seam
-is to replace the *class* method ``SiluAndMul.forward_cuda`` (and
-``forward_native`` for CPU dry-runs) BEFORE the model is constructed; each
-instance then binds our dispatcher when it is created.
+``SiluAndMul`` subclasses ``BaseFusedOp``, which memoizes a bound forward method.
+Replace the class methods ``forward_cuda`` and ``forward_native`` before model
+construction so each instance resolves the validator-owned dispatcher.
 
 This keeps the seam validator-owned and singular: exactly one function, holding
 the captured baseline for fallback, is installed at one place.

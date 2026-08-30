@@ -598,12 +598,6 @@ def _engine_session(
     from cacheon.eval.engine_worker import isolated_engine_session
 
     bundle_path = str(tree_root) if active else ""
-    if manifest is not None and manifest.dep_patches and not os.environ.get(
-        "FLASHINFER_WORKSPACE_BASE", ""
-    ):
-        raise SessionWorkerError(
-            "dep-patched tree lacks its sealed runtime workspace"
-        )
     with isolated_engine_session(
         cfg,
         bundle_path=bundle_path,

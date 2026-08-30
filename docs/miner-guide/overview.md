@@ -71,7 +71,8 @@ An **atomic target** is one registered target whose delta necessarily spans
 multiple slots. It is not “two entries in one bundle” by itself. The catalog
 must explicitly register the combined semantics and say which singleton
 targets it displaces. The current catalog includes one such target,
-`collective.moe_epilogue.v1`, over two collective seams.
+`collective.dp_attention_exchange.v1`, over the all-gather and reduce-scatter
+collective seams.
 
 The manifest requests a target; it does not define one. For a competitive
 bundle, declare the request explicitly:
@@ -166,8 +167,7 @@ Use the technical guide in this order:
 6. [Submitting](submitting.md) — copy-paste chain-submit sequence, including eval-cost
 7. [Diagnostics](diagnostics.md)
 
-Read [Override points](override-points.md) and [Dependency patches](dep-patches.md)
-only when the registered target requires them.
+Read [Override points](override-points.md) only when the registered target requires one.
 
 At the end of the sequence you should be able to answer, with concrete identities:
 

@@ -32,7 +32,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "golden_consensus_vectors.json"
 
 _STACK_FIXTURES = (
-    "tests/fixtures/stack_fused_epilogue_atomic",
     "tests/fixtures/stack_norm_singleton",
 )
 

@@ -57,8 +57,6 @@ FEATURE_CUDA_SOURCES = "cuda_sources"
 FEATURE_AOT_CUTE_OBJECT = CUTE_CUBIN_MANIFEST_FEATURE
 FEATURE_REBUILD_BUILD_CUDA_EXT = "rebuild:build_cuda_ext"
 FEATURE_REBUILD_BUILD_CUTE_AOT = CUTE_CUBIN_REBUILD_FEATURE
-FEATURE_REBUILD_APPLY_DEP_PATCH = "rebuild:apply_dep_patch"
-FEATURE_DEP_PATCH_FLASHINFER = "dep_patch:flashinfer"
 
 _ARTIFACT_PROVIDER_TARGET_FEATURES = frozenset(
     feature
@@ -75,8 +73,6 @@ KNOWN_CONTRIBUTION_FEATURES = frozenset(
         FEATURE_OVERRIDE,
         FEATURE_CUDA_SOURCES,
         FEATURE_REBUILD_BUILD_CUDA_EXT,
-        FEATURE_REBUILD_APPLY_DEP_PATCH,
-        FEATURE_DEP_PATCH_FLASHINFER,
     }
 ) | _ARTIFACT_PROVIDER_TARGET_FEATURES
 
@@ -90,10 +86,6 @@ _STANDARD_COMPONENT_FEATURES = frozenset(
         FEATURE_REBUILD_BUILD_CUDA_EXT,
     }
 ) | _ARTIFACT_PROVIDER_TARGET_FEATURES
-_FLASHINFER_FEATURES = frozenset(
-    {FEATURE_DEP_PATCH_FLASHINFER, FEATURE_REBUILD_APPLY_DEP_PATCH}
-)
-
 _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CATALOG_SCHEMA_VERSION = 1
@@ -444,7 +436,6 @@ def manifest_declared_features(manifest: Manifest) -> frozenset[str]:
         features.update(f"op_extra:{key}" for key in op.extra)
     if any(count > 1 for count in counts.values()):
         features.add(FEATURE_VARIANTS)
-    features.update(f"dep_patch:{patch.target}" for patch in manifest.dep_patches)
     return frozenset(features)
 
 
@@ -453,18 +444,6 @@ def _validate_complete_feature_evidence(
 ) -> None:
     """Validate trusted external build evidence for static targets."""
 
-    patches = {feature for feature in features if feature.startswith("dep_patch:")}
-    applies_patch = FEATURE_REBUILD_APPLY_DEP_PATCH in features
-    if patches and not applies_patch:
-        raise TargetResolutionError(
-            "complete feature evidence has a dependency patch without "
-            "rebuild:apply_dep_patch"
-        )
-    if applies_patch and not patches:
-        raise TargetResolutionError(
-            "complete feature evidence selects rebuild:apply_dep_patch "
-            "without a declared dependency patch"
-        )
     has_cuda = FEATURE_CUDA_SOURCES in features
     builds_cuda = FEATURE_REBUILD_BUILD_CUDA_EXT in features
     if has_cuda and not builds_cuda:
@@ -1149,25 +1128,28 @@ class TargetCatalog:
 # live SlotSpec has exactly one singleton target and vice versa.
 SINGLETON_TARGET_IDS = (
     "activation.silu_and_mul",
+    "collective.all_gather_into_tensor",
     "collective.all_reduce",
     "collective.ar_residual_rmsnorm",
-    "collective.moe_finalize_ar_rmsnorm",
+    "collective.reduce_scatter_tensor",
+    "linear.dense",
     "moe.fused_experts",
     "moe.fused_experts_reduce",
     "moe.fused_routed_experts",
+    "norm.fused_add_rmsnorm",
     "norm.rmsnorm",
-)
-
-MOE_EPILOGUE_ATOMIC_TARGET = "collective.moe_epilogue.v1"
-MOE_EPILOGUE_MEMBERS = (
-    "collective.ar_residual_rmsnorm",
-    "collective.moe_finalize_ar_rmsnorm",
 )
 
 _STANDARD_TOLERANCES = (
     ToleranceContractRef("bfloat16", "0.02", "0.02"),
     ToleranceContractRef("float16", "0.01", "0.01"),
     ToleranceContractRef("float32", "0.00001", "0.00001"),
+)
+
+DP_ATTENTION_EXCHANGE_TARGET = "collective.dp_attention_exchange.v1"
+DP_ATTENTION_EXCHANGE_MEMBERS = (
+    "collective.all_gather_into_tensor",
+    "collective.reduce_scatter_tensor",
 )
 
 
@@ -1231,6 +1213,32 @@ _SINGLETON_CONTRACTS = {
         binding_family_id="sglang.collective.all_reduce.v1",
         correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
     ),
+    "collective.all_gather_into_tensor": _contract_ref(
+        "collective.all_gather_into_tensor",
+        kind="collective",
+        entry="all_gather_into_tensor",
+        prepare=None,
+        graph_dynamic_inputs=("x",),
+        input_abi_id="collective.all_gather_into_tensor.input.v1",
+        output_abi_id="collective.all_gather_into_tensor.output.v1",
+        reference_id="collective.all_gather_into_tensor.reference.v1",
+        verification_profile_id="collective.all_gather_into_tensor.verify.v1",
+        binding_family_id="sglang.collective.dp-attention-exchange.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
+    ),
+    "collective.reduce_scatter_tensor": _contract_ref(
+        "collective.reduce_scatter_tensor",
+        kind="collective",
+        entry="reduce_scatter_tensor",
+        prepare=None,
+        graph_dynamic_inputs=("x",),
+        input_abi_id="collective.reduce_scatter_tensor.input.v1",
+        output_abi_id="collective.reduce_scatter_tensor.output.v1",
+        reference_id="collective.reduce_scatter_tensor.reference.v1",
+        verification_profile_id="collective.reduce_scatter_tensor.verify.v1",
+        binding_family_id="sglang.collective.dp-attention-exchange.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
+    ),
     "collective.ar_residual_rmsnorm": _contract_ref(
         "collective.ar_residual_rmsnorm",
         kind="collective",
@@ -1244,17 +1252,17 @@ _SINGLETON_CONTRACTS = {
         binding_family_id="sglang.collective.ar-fusion.v1",
         correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
     ),
-    "collective.moe_finalize_ar_rmsnorm": _contract_ref(
-        "collective.moe_finalize_ar_rmsnorm",
-        kind="collective",
-        entry="moe_finalize_ar_rmsnorm",
-        prepare=None,
-        graph_dynamic_inputs=("gemm_out", "row_map", "scales", "residual"),
-        input_abi_id="collective.moe_finalize_ar_rmsnorm.input.v1",
-        output_abi_id="collective.moe_finalize_ar_rmsnorm.output.v1",
-        reference_id="collective.moe_finalize_ar_rmsnorm.reference.v1",
-        verification_profile_id="collective.moe_finalize_ar_rmsnorm.verify.v1",
-        binding_family_id="sglang.collective.moe-finalize.v1",
+    "linear.dense": _contract_ref(
+        "linear.dense",
+        kind="block",
+        entry="dense",
+        prepare="prepare",
+        graph_dynamic_inputs=("x",),
+        input_abi_id="linear.dense.weight-out-in.input.v1",
+        output_abi_id="linear.dense.output.v1",
+        reference_id="linear.dense.reference.v1",
+        verification_profile_id="linear.dense.verify.v1",
+        binding_family_id="sglang.linear.unquantized.v1",
         correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
     ),
     "moe.fused_experts": _contract_ref(
@@ -1311,6 +1319,19 @@ _SINGLETON_CONTRACTS = {
         binding_family_id="sglang.norm.rmsnorm.v1",
         correctness=CorrectnessContractRef(),
     ),
+    "norm.fused_add_rmsnorm": _contract_ref(
+        "norm.fused_add_rmsnorm",
+        kind="block",
+        entry="fused_add_rmsnorm",
+        prepare=None,
+        graph_dynamic_inputs=("x", "residual"),
+        input_abi_id="norm.fused_add_rmsnorm.input.v1",
+        output_abi_id="norm.fused_add_rmsnorm.output.v1",
+        reference_id="norm.fused_add_rmsnorm.reference.v1",
+        verification_profile_id="norm.fused_add_rmsnorm.verify.v1",
+        binding_family_id="sglang.norm.rmsnorm.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
+    ),
 }
 
 
@@ -1321,8 +1342,6 @@ def default_target_catalog() -> TargetCatalog:
     for target_id in SINGLETON_TARGET_IDS:
         compatible = moe_pair - {target_id} if target_id in moe_pair else frozenset()
         features = _STANDARD_COMPONENT_FEATURES
-        if target_id == "collective.moe_finalize_ar_rmsnorm":
-            features = features | _FLASHINFER_FEATURES
         if target_id in moe_pair:
             features = features - _ARTIFACT_PROVIDER_TARGET_FEATURES
         specs.append(
@@ -1337,14 +1356,14 @@ def default_target_catalog() -> TargetCatalog:
         )
     specs.append(
         TargetSpec(
-            target_id=MOE_EPILOGUE_ATOMIC_TARGET,
+            target_id=DP_ATTENTION_EXCHANGE_TARGET,
             kind=TargetKind.ATOMIC,
-            members=MOE_EPILOGUE_MEMBERS,
-            displaces=frozenset(MOE_EPILOGUE_MEMBERS),
-            allowed_features=frozenset(
-                _STANDARD_COMPONENT_FEATURES | _FLASHINFER_FEATURES
+            members=DP_ATTENTION_EXCHANGE_MEMBERS,
+            displaces=frozenset(DP_ATTENTION_EXCHANGE_MEMBERS),
+            allowed_features=_STANDARD_COMPONENT_FEATURES,
+            atomic_semantics_id=(
+                "collective.dp_attention_exchange.v1.atomic-semantics.v1"
             ),
-            atomic_semantics_id="collective.moe_epilogue.v1.atomic-semantics.v1",
         )
     )
     moe_rule = CompositionRule(

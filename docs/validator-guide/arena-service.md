@@ -40,10 +40,12 @@ each cell, the engine-observed input tokens per request, the exact output
 budget, the timed-wave concurrency, and the number of timed reads, alongside
 the prompt-corpus digest and seed scheme. The declaration is not a separate
 description of intent — the sealed prompt batches are validated against the
-cell before anything commissions, the engine configuration (context length,
-admission width, cache policy) derives from the cell, and a qualification
-session whose output budget or read count differs from the cell cannot
-commission. A tensor-parallel size larger than the bound GPU count is
+declared cell before anything commissions, the engine configuration (context
+length, admission width, cache policy) derives from the full cell set, and a
+qualification session whose per-batch output budget or read count differs from
+that set cannot commission. Mixed-cell v9 scoring uses total timed output tokens
+over the complete host-observed mixture makespan; the individual batch windows
+remain evidence. A tensor-parallel size larger than the bound GPU count is
 rejected. What the manifest declares is therefore what the engine runs.
 
 This prevents a candidate, operator typo, or later configuration drift from
@@ -51,11 +53,18 @@ quietly changing the workload represented by a result. Whether the declared
 cells predict production serving well remains a governance and measurement
 responsibility.
 
-The manifest also seals `closed_targets`: registered families the commissioned
-cells cannot measure. The list is data from the sealed commissioning inputs,
-validated against the target catalog — never a hardcoded list in evaluator
-code. Intake parks proposals for closed targets without charging them; see
+The sealed commissioning input names the arena's small `registered_targets`
+set. Commissioning validates it against the cross-arena catalog and derives the
+complete `closed_targets` complement embedded in the manifest; adding a target
+to another arena therefore cannot silently change this arena's qualification
+identity. Intake parks proposals for closed targets without charging them; see
 [Why submissions fail](../miner-guide/why-submissions-fail.md).
+
+The same input binds `model_profile_key` and the model/runtime portion of the
+engine configuration. Cell-dependent context length and request width,
+graph/eager mode, target-derived seam bindings, and the watchdog remain
+validator-derived. A model rotation changes the sealed arena data instead of a
+hardcoded evaluator branch.
 
 ## Non-crownable screens
 
@@ -234,9 +243,9 @@ Commission the composition in four stages:
    record; do not populate digests from human labels.
 2. Run each non-crown screen against known faithful, known broken, timeout, and provider-
    error fixtures, retaining evidence for all grades.
-3. Run isolated qualification controls that demonstrate current v7 B/C/[B′]
-   and v8 B/C/B′ ordering on their respective substrates, serialized physical
-   lanes, audit/T stage exits, cleanup, evidence reopen, and
+3. Run isolated qualification controls that demonstrate current v7 B/C/[B′],
+   v8 B/C/B′, and mixed-cell v9 B/C/B′ ordering on their respective substrates,
+   serialized physical lanes, audit/T stage exits, cleanup, evidence reopen, and
    `PASS`/`FAIL`/`NO_DECISION` separation.
 4. Inject the registry into a one-pass controller, then test restart during primary
    screen, reproduction screen, and qualification before enabling daemon mode.

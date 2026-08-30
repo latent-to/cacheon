@@ -20,19 +20,38 @@ The authoritative sources are
 
 ## Current slot catalog
 
-There are 8 semantic slots. `entry` below means the callable named by your
+There are 11 semantic slots. `entry` below means the callable named by your
 manifest; it does not require the Python function itself to be named `entry`.
 
 | Slot | Kind | Required call boundary | What the validator retains |
 |---|---|---|---|
 | `activation.silu_and_mul` | op | `entry(x, out)` | MLP activation output |
-| `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
-| `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
-| `moe.fused_routed_experts` | block | `prepare(w13, w2, topk, routed_scaling)` plus `entry(x, router_logits, correction_bias, prepared, out)` | routed, combined expert result; the implementation owns the routing head |
-| `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
+| `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | rank-ordered gathered tensor |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | sum across the supplied process group |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | reduced residual and normalized output |
-| `collective.moe_finalize_ar_rmsnorm` | collective | `entry(gemm_out, row_map, scales, residual, weight, eps, out_norm, out_residual, group)` | finalized/reduced residual and normalized output |
+| `collective.reduce_scatter_tensor` | collective | `entry(x, out, group)` | this rank's SUM-reduced shard |
+| `linear.dense` | block | `prepare(weight)` plus `entry(x, prepared, out)` | local dense output; row/column-parallel communication stays outside |
+| `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
+| `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
+| `moe.fused_routed_experts` | block | `prepare(w13, w2, topk, routed_scaling)` plus `entry(x, router_logits, correction_bias, prepared, out)` | routed, combined expert result; the implementation owns the routing head |
+| `norm.fused_add_rmsnorm` | block | `entry(x, residual, weight, eps, out_norm, out_residual)` | dtype-rounded residual and normalized output |
+| `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
+
+## Current GLM-5.3 availability
+
+The full GLM-5.3 arena seals exactly five reward targets:
+
+- `moe.fused_routed_experts`;
+- `linear.dense`;
+- `norm.fused_add_rmsnorm`;
+- `collective.all_reduce`; and
+- atomic `collective.dp_attention_exchange.v1`, whose required members are
+  `collective.all_gather_into_tensor` and `collective.reduce_scatter_tensor`.
+
+The pure SiLU and RMSNorm pointwise slots are deliberately not separate GLM
+reward lanes: their measured work is claimable inside the wider fused targets.
+Paged/radix KV-cache reads and writes, batching, speculative decoding, and
+other inference-service policy remain engine-owned and are not slots.
 
 ## Current MiniMax-M3 availability
 
@@ -50,15 +69,17 @@ submission in the current MiniMax-M3 mainnet arena**:
   outer-reduction proof.
 
 Do not pay for or submit those targets; intake parks them without judgement
-and the payment is not consumed. Every other registered target remains open.
+and the payment is not consumed. The remaining MiniMax-M3 targets are
+`moe.fused_experts`, `collective.all_reduce`, and
+`collective.ar_residual_rmsnorm`.
 
 Closure removes only the standalone lane. The same computation remains fully
 claimable **inside open targets**: activation belongs to the
 `moe.fused_experts` boundary (the validator-owned per-model table carries the
-swigluoai parameters for exactly that), normalization belongs to the two fused
-collective boundaries, and a fused kernel is judged only by the contract of
-the target it names — never by what it absorbs internally. See the slot
-contract's closure section.
+swigluoai parameters for exactly that), normalization belongs to the fused
+`collective.ar_residual_rmsnorm` boundary, and a fused kernel is judged only by
+the contract of the target it names — never by what it absorbs internally. See
+the slot contract's closure section.
 
 Registration and installation remain different facts: the catalog can register
 a slot before the pinned runtime binds a live adapter for it.
@@ -73,7 +94,7 @@ See [Kernel ABI](kernel-abi.md) for tensor semantics and
 ## Singleton targets
 
 The current default target catalog registers one singleton target for each of
-the 8 slots. Its target ID is the slot ID. A normal proposal therefore names
+the 11 slots. Its target ID is the slot ID. A normal proposal therefore names
 the slot target explicitly:
 
 ```toml
@@ -92,14 +113,14 @@ The default catalog also registers:
 
 | Target | Mode | Members | Displaces |
 |---|---|---|---|
-| `collective.moe_epilogue.v1` | `atomic` | `collective.ar_residual_rmsnorm`, `collective.moe_finalize_ar_rmsnorm` | both corresponding singleton targets |
+| `collective.dp_attention_exchange.v1` | `atomic` | `collective.all_gather_into_tensor`, `collective.reduce_scatter_tensor` | both corresponding singleton targets |
 
 Use an atomic target only when the optimization's semantics genuinely require
 the coupled boundary and your bundle implements all registered members:
 
 ```toml
 [competition]
-target = "collective.moe_epilogue.v1"
+target = "collective.dp_attention_exchange.v1"
 mode = "atomic"
 ```
 
@@ -156,7 +177,7 @@ third option, and unregistered work is not submittable.
 | fuse SiLU and multiply for a particular token range | `activation.silu_and_mul` singleton with a constrained variant | both operations and the output are already inside one slot |
 | add a residual connection to pure RMSNorm | not `norm.rmsnorm`; use a matching registered collective boundary only if its full semantics apply, otherwise not submittable | the singleton RMSNorm contract explicitly does not own residual addition |
 | replace local expert compute and its trailing reduction as one implementation | `moe.fused_experts_reduce` | this slot, unlike `moe.fused_experts`, owns the supplied-group reduction |
-| jointly alter the shallow and deep MoE collective epilogues | `collective.moe_epilogue.v1`, implementing both members | the catalog already registers and prices the coupled overlap unit |
+| jointly optimize GLM DP-attention exchange | `collective.dp_attention_exchange.v1`, implementing both members | the target owns the measured gather/scatter exchange as one reward unit |
 | patch scheduler batching or invent a new attention seam | not submittable | engine control flow lies outside every component callable ABI |
 
 This exercise prevents two common errors. Choosing a boundary that is too narrow makes

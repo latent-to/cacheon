@@ -2283,6 +2283,28 @@ COLLECTIVE_ALL_REDUCE_CALL_ABI = SlotCallABI(
     call_args=("input.x", "output.out", "group.current"),
 )
 
+COLLECTIVE_ALL_GATHER_CALL_ABI = SlotCallABI(
+    slot="collective.all_gather_into_tensor",
+    resources=(
+        SlotResource("input.x", "tensor"),
+        SlotResource("output.out", "tensor", access="write"),
+        *_GROUP_RESOURCES,
+        _STREAM_RESOURCE,
+    ),
+    call_args=("input.x", "output.out", "group.current"),
+)
+
+COLLECTIVE_REDUCE_SCATTER_CALL_ABI = SlotCallABI(
+    slot="collective.reduce_scatter_tensor",
+    resources=(
+        SlotResource("input.x", "tensor"),
+        SlotResource("output.out", "tensor", access="write"),
+        *_GROUP_RESOURCES,
+        _STREAM_RESOURCE,
+    ),
+    call_args=("input.x", "output.out", "group.current"),
+)
+
 COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI = SlotCallABI(
     slot="collective.ar_residual_rmsnorm",
     resources=(
@@ -2308,12 +2330,10 @@ COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI = SlotCallABI(
     ),
 )
 
-COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI = SlotCallABI(
-    slot="collective.moe_finalize_ar_rmsnorm",
+FUSED_ADD_RMSNORM_CALL_ABI = SlotCallABI(
+    slot="norm.fused_add_rmsnorm",
     resources=(
-        SlotResource("input.gemm_out", "tensor"),
-        SlotResource("input.row_map", "tensor"),
-        SlotResource("input.scales", "tensor"),
+        SlotResource("input.x", "tensor"),
         SlotResource("input.residual", "tensor"),
         SlotResource("input.weight", "tensor"),
         SlotResource(
@@ -2321,19 +2341,15 @@ COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI = SlotCallABI(
         ),
         SlotResource("output.out_norm", "tensor", access="write"),
         SlotResource("output.out_residual", "tensor", access="write"),
-        *_GROUP_RESOURCES,
         _STREAM_RESOURCE,
     ),
     call_args=(
-        "input.gemm_out",
-        "input.row_map",
-        "input.scales",
+        "input.x",
         "input.residual",
         "input.weight",
         "input.eps",
         "output.out_norm",
         "output.out_residual",
-        "group.current",
     ),
 )
 
@@ -2344,8 +2360,10 @@ SLOT_CALL_ABIS: Mapping[str, SlotCallABI] = MappingProxyType(
             SILU_AND_MUL_CALL_ABI,
             RMSNORM_CALL_ABI,
             COLLECTIVE_ALL_REDUCE_CALL_ABI,
+            COLLECTIVE_ALL_GATHER_CALL_ABI,
+            COLLECTIVE_REDUCE_SCATTER_CALL_ABI,
             COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
-            COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
+            FUSED_ADD_RMSNORM_CALL_ABI,
         )
     }
 )
@@ -2366,8 +2384,10 @@ __all__ = [
     "ArtifactShapeExtent",
     "ArtifactShapeFactor",
     "COLLECTIVE_ALL_REDUCE_CALL_ABI",
+    "COLLECTIVE_ALL_GATHER_CALL_ABI",
+    "COLLECTIVE_REDUCE_SCATTER_CALL_ABI",
     "COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI",
-    "COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI",
+    "FUSED_ADD_RMSNORM_CALL_ABI",
     "RMSNORM_CALL_ABI",
     "SLOT_CALL_ABIS",
     "SILU_AND_MUL_CALL_ABI",

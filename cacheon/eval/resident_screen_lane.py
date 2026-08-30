@@ -144,8 +144,6 @@ def screen_swappability(manifest: Manifest) -> str | None:
         raise ResidentScreenLaneError("swappability requires a typed manifest")
     if any(op.aot_exports for op in manifest.ops):
         return "aot device artifacts are not swappable in the screen tier"
-    if manifest.dep_patches:
-        return "dep-patched bundles are not swappable in the screen tier"
     if any(op.cuda_sources for op in manifest.ops):
         # Native products are built for a dedicated candidate launch.
         return "native-rebuild bundles are not swappable in the screen tier"

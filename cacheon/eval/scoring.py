@@ -52,17 +52,34 @@ def marginal_workload_digest(plan: object) -> str:
     from cacheon.stack_identity import canonical_digest
     if type(plan) is not SessionExecutionPlan:
         raise RawSpeedEvidenceError("workload plan must be exact typed evidence")
+    payload = {
+        "conditioning_count": plan.conditioning_count,
+        "engine_config_digest": plan.expected_engine_config_digest,
+        "expected_prompt_tokens": plan.expected_prompt_tokens,
+        "max_new_tokens": plan.max_new_tokens,
+        "prompt_batches": plan.prompt_batches,
+        "temperature": format(plan.temperature, ".17g"),
+        "top_logprobs_num": plan.top_logprobs_num,
+        "warmup_count": plan.warmup_count,
+    }
+    if not plan.batch_max_new_tokens and plan.quality_max_new_tokens is None:
+        # Retained one-shape evidence keeps its exact v2 identity.
+        return canonical_digest(
+            "cacheon.qualification.marginal-workload.v2", payload
+        )
     return canonical_digest(
-        "cacheon.qualification.marginal-workload.v2",
+        "cacheon.qualification.marginal-workload.v3",
         {
-            "conditioning_count": plan.conditioning_count,
-            "engine_config_digest": plan.expected_engine_config_digest,
-            "expected_prompt_tokens": plan.expected_prompt_tokens,
-            "max_new_tokens": plan.max_new_tokens,
-            "prompt_batches": plan.prompt_batches,
-            "temperature": format(plan.temperature, ".17g"),
-            "top_logprobs_num": plan.top_logprobs_num,
-            "warmup_count": plan.warmup_count,
+            **payload,
+            "batch_request_geometry": [
+                [tokens, prompt_tokens]
+                for tokens, prompt_tokens in zip(
+                    plan.batch_max_new_tokens,
+                    plan.batch_expected_prompt_tokens,
+                    strict=True,
+                )
+            ],
+            "quality_max_new_tokens": plan.quality_tokens_per_prompt,
         },
     )
 

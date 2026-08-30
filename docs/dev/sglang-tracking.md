@@ -2,7 +2,7 @@
 
 Cacheon competes against and integrates with an exact SGLang runtime. The pin is
 part of evaluation and release identity, not a loose minimum version. The
-source pin is `0.5.13.post1` in
+source pin is `0.5.18` in
 [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py).
 
 A green static seam canary establishes import and chokepoint compatibility only. A
@@ -49,10 +49,11 @@ checks for the most consequential surfaces:
 | Upstream surface | Why Cacheon needs it | What movement can break |
 |---|---|---|
 | `SiluAndMul` and `RMSNorm` | Narrow component call sites | Argument order, residual semantics, fallback routing |
-| `flash_decode_with_gqa_share_sparse` | MiniMax-M3 graph-native sparse-attend insertion before projection/sampling | Paged-cache ABI, selected-block format, graph behavior |
-| `MiniMaxSparseAttnBackend.__init__` | Decode-only audit routing; MSA prefill remains live | `_use_msa_decode` and `_msa_owns_decode` fields |
 | `FusedMoE.forward_impl` | MoE waist that survives piecewise capture | Expert inputs, routing outputs, reduction ownership |
+| GLM dense linear call sites | Validator-owned projection boundary | Quantized-weight layout, row geometry, and return type |
+| `fused_add_rmsnorm` | Residual-plus-norm boundary | In-place residual ownership and tuple semantics |
 | `GroupCoordinator.all_reduce` | Validator-owned TP collective boundary | Process-group ownership and all-rank behavior |
+| DP-attention all-gather/reduce-scatter | Atomic exchange boundary | Coordinator selection, split sizes, and graph behavior |
 | `Engine.generate` logprob API | Trusted KL/quality observation | Top-logprob collection and sealed trajectory schema |
 | `ServerArgs` fields | Deterministic engine launch policy | Model, graph, memory, seed, backend, and logging controls |
 | Blessed native base | FlashInfer/CUTLASS/Triton kernel surface | JIT products, numerics, throughput, validator agreement |

@@ -333,7 +333,6 @@ class TestResidentScreenLane:
 def _bundle_tree(
     tmp_path,
     *,
-    dep_patch: bool = False,
     cuda_sources: bool = False,
     setup: bool = False,
 ):
@@ -345,17 +344,6 @@ def _bundle_tree(
         "bundle_id = 'screen-test-bundle'",
         "abi_version = 'cacheon-op-abi-v0'",
     ]
-    if dep_patch:
-        patches = source / "patches"
-        patches.mkdir()
-        (patches / "x.patch").write_text(
-            "--- a/f.cu\n+++ b/f.cu\n@@ -1,1 +1,1 @@\n-old\n+new\n"
-        )
-        lines += [
-            "[[dep_patches]]",
-            "target = 'flashinfer'",
-            "path = 'patches/x.patch'",
-        ]
     lines += [
         "[[ops]]",
         f"slot = '{SLOT}'",
@@ -380,11 +368,9 @@ def _bundle_tree(
 
 def _binding(
     tmp_path,
-    *,
-    dep_patch: bool = False,
     **bundle_options,
 ) -> ArenaCandidateBinding:
-    source = _bundle_tree(tmp_path, dep_patch=dep_patch, **bundle_options)
+    source = _bundle_tree(tmp_path, **bundle_options)
     committed = content_hash(source)
     publication = publish_worker_bundle(source, tmp_path / "publications", committed)
     reservation = QualificationReservation(
@@ -406,10 +392,6 @@ class TestScreenSwappability:
     def test_pure_source_bundle_is_swappable(self, tmp_path) -> None:
         manifest = load_manifest(_bundle_tree(tmp_path))
         assert screen_swappability(manifest) is None
-
-    def test_dep_patched_bundle_is_not_swappable(self, tmp_path) -> None:
-        manifest = load_manifest(_bundle_tree(tmp_path, dep_patch=True))
-        assert "dep-patched" in screen_swappability(manifest)
 
     def test_aot_bundle_is_not_swappable(self, tmp_path) -> None:
         manifest = load_manifest(_bundle_tree(tmp_path))
@@ -569,13 +551,8 @@ class TestResidentServingScreenStage:
         assert factory.calls == 1
         lane.close()
 
-    @pytest.mark.parametrize(
-        "bundle_options", [{"dep_patch": True}, {"cuda_sources": True}]
-    )
-    def test_unswappable_bundle_gets_waiver_pass(
-        self, tmp_path, bundle_options
-    ) -> None:
-        binding = _binding(tmp_path, **bundle_options)
+    def test_unswappable_bundle_gets_waiver_pass(self, tmp_path) -> None:
+        binding = _binding(tmp_path, cuda_sources=True)
         factory = FakeLifetimeFactory(
             lambda _n: FakeResidentSession(100.0, {DIGEST_A: 112.0})
         )

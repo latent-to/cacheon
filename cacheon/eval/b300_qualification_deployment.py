@@ -61,55 +61,45 @@ from cacheon.eval.b300_resident_pair_factory import (
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.stack_plan import MarginalArmPlan
-from cacheon.target_catalog import TargetCatalog, default_target_catalog
+from cacheon.target_catalog import TargetCatalog
 
 
-# The B300 (MiniMax-M3) arena's registered subset, pinned explicitly. The target
-# catalog is the cross-arena vocabulary and grows on rotation; an arena's
-# registered set is arena data and must NOT auto-derive from it — otherwise a
-# new arena's slot (e.g. the GLM fat MoE slot) silently joins the live M3
-# qualification identity the moment its catalog row lands.
-_B300_ARENA_TARGET_IDS = (
-    "activation.silu_and_mul",
-    "collective.all_reduce",
-    "collective.ar_residual_rmsnorm",
-    "collective.moe_epilogue.v1",
-    "collective.moe_finalize_ar_rmsnorm",
-    "moe.fused_experts",
-    "moe.fused_experts_reduce",
-    "norm.rmsnorm",
-)
-
-
-def registered_b300_target_ids(catalog: TargetCatalog) -> tuple[str, ...]:
-    """Return the B300 arena's registered IDs, validated against one catalog."""
+def registered_b300_target_ids(
+    catalog: TargetCatalog,
+    target_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Validate one commissioned arena's registered IDs against the catalog."""
 
     if type(catalog) is not TargetCatalog:
         raise TypeError("registered B300 catalog is not exact")
+    if (
+        type(target_ids) is not tuple
+        or not target_ids
+        or any(type(target) is not str for target in target_ids)
+        or target_ids != tuple(sorted(set(target_ids)))
+    ):
+        raise ValueError("registered B300 target IDs are not canonical")
     rows = catalog.snapshot().get("targets")
-    target_ids = (
+    catalog_ids = (
         tuple(row.get("target_id") for row in rows)
         if isinstance(rows, list) and all(type(row) is dict for row in rows)
         else ()
     )
-    checked = tuple(row for row in target_ids if isinstance(row, str))
+    checked = tuple(row for row in catalog_ids if isinstance(row, str))
     if (
         not checked
-        or checked != target_ids
+        or checked != catalog_ids
         or checked != tuple(sorted(set(checked)))
     ):
         raise ValueError("registered B300 catalog target rows are not canonical")
-    missing = tuple(
-        target for target in _B300_ARENA_TARGET_IDS if target not in checked
-    )
+    missing = tuple(target for target in target_ids if target not in checked)
     if missing:
         raise ValueError(
             f"registered B300 targets missing from the catalog: {missing!r}"
         )
-    return _B300_ARENA_TARGET_IDS
+    return target_ids
 
 
-REGISTERED_B300_TARGET_IDS = registered_b300_target_ids(default_target_catalog())
 QUALIFICATION_SPEED_EVIDENCE_POLICY = (
     "resident-v3-one-candidate-registered-target.v2"
 )
@@ -298,6 +288,7 @@ class B300QualificationConstructionAuthority:
     """
 
     catalog: TargetCatalog
+    registered_target_ids: tuple[str, ...]
     profiles: tuple[B300RegisteredProfileAuthority, ...]
     incumbent_stack: EvaluationStackManifest
     incumbent_tree_digest: str
@@ -323,15 +314,23 @@ class B300QualificationConstructionAuthority:
                 "qualification target catalog is not exact"
             )
         rows = tuple(self.profiles)
+        typed_profiles = all(
+            type(row) is B300RegisteredProfileAuthority for row in rows
+        )
+        profile_target_ids = (
+            tuple(row.target_id for row in rows) if typed_profiles else ()
+        )
         try:
-            catalog_target_ids = registered_b300_target_ids(self.catalog)
+            expected_target_ids = registered_b300_target_ids(
+                self.catalog, self.registered_target_ids
+            )
         except (TypeError, ValueError):
-            catalog_target_ids = ()
+            expected_target_ids = ()
         if (
             type(self.profiles) is not tuple
-            or any(type(row) is not B300RegisteredProfileAuthority for row in rows)
-            or catalog_target_ids != REGISTERED_B300_TARGET_IDS
-            or tuple(row.target_id for row in rows) != REGISTERED_B300_TARGET_IDS
+            or not typed_profiles
+            or not expected_target_ids
+            or profile_target_ids != expected_target_ids
         ):
             raise B300QualificationDeploymentError(
                 "registered qualification profiles do not exactly cover the catalog"
@@ -342,7 +341,9 @@ class B300QualificationConstructionAuthority:
                 registered_b300_profile_resolver_digest,
             )
 
-            projection = registered_b300_member_contract_projection(self.catalog)
+            projection = registered_b300_member_contract_projection(
+                self.catalog, expected_target_ids
+            )
             expected_profiles = tuple(
                 (
                     target.target_id,
@@ -1039,7 +1040,6 @@ __all__ = [
     "CONSTRUCTION_SCHEMA",
     "POLICY_SCHEMA",
     "QUALIFICATION_SPEED_EVIDENCE_POLICY",
-    "REGISTERED_B300_TARGET_IDS",
     "REGISTRY_SCHEMA",
     "SELECTION_REFERENCE_SCHEMA",
     "compose_b300_qualification_deployment",

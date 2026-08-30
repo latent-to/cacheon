@@ -155,8 +155,6 @@ do not rank candidates by `max_abs` in isolation.
 
 For all-close contracts, one outlier is enough to fail even if the printed ratio is near
 one. For matched-ratio contracts, the target-owned minimum ratio decides the result. For
-MSA, `overlap` is agreement between trusted and candidate-induced top-k block sets, so
-large raw score differences can be irrelevant while one ranking mistake can matter. For
 low-bit cosine profiles, direction and any configured norm guard matter more than a
 single maximum element error.
 

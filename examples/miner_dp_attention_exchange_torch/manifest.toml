@@ -1,0 +1,22 @@
+bundle_id = "example-dp-attention-exchange-torch"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "collective.dp_attention_exchange.v1"
+mode = "atomic"
+
+[[ops]]
+slot = "collective.all_gather_into_tensor"
+source = "kernels/exchange.py"
+entry = "all_gather_into_tensor"
+dtypes = ["bfloat16"]
+architectures = ["sm103"]
+metadata = "metadata/all_gather.json"
+
+[[ops]]
+slot = "collective.reduce_scatter_tensor"
+source = "kernels/exchange.py"
+entry = "reduce_scatter_tensor"
+dtypes = ["bfloat16"]
+architectures = ["sm103"]
+metadata = "metadata/reduce_scatter.json"

@@ -20,6 +20,24 @@ from cacheon.eval.oci_prebuild import OCIPrebuildPolicy
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 
 
+M3_REGISTERED_TARGET_IDS = (
+    "activation.silu_and_mul",
+    "collective.all_reduce",
+    "collective.ar_residual_rmsnorm",
+    "moe.fused_experts",
+    "moe.fused_experts_reduce",
+    "norm.rmsnorm",
+)
+
+GLM53_REGISTERED_TARGET_IDS = (
+    "collective.all_reduce",
+    "collective.dp_attention_exchange.v1",
+    "linear.dense",
+    "moe.fused_routed_experts",
+    "norm.fused_add_rmsnorm",
+)
+
+
 def sha(label: str) -> str:
     """A deterministic stand-in digest, named by what it stands for."""
 

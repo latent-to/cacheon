@@ -74,7 +74,9 @@ selects a speed substrate from the candidate's manifest features. Hot-swappable
 candidates use speed policy v7 on two disjoint standing TP lanes: serialized B/C,
 with B′ only when the first comparison cannot decide. Non-swappable candidates
 use v8's separate baseline and candidate engine processes and always collect
-B/C/B′. The candidate then runs in a separate eager, untimed audit role A, and
+B/C/B′. Mixed-cell arenas use the same two-process B/C/B′ schedule under v9,
+which grades total timed tokens over the complete sealed mixture. The candidate
+then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
 trust domain. C′/B″ are historical v2–v5 evidence shapes, not current reads.
 
@@ -139,7 +141,11 @@ The validator-owned target catalog defines what can receive ordinary attribution
 
 Miner packaging and manifest row order do not define economic scope. A bundle that explicitly claims a registered target but does not resolve to its exact members and allowed features fails resolution rather than falling through to an unregistered identity.
 
-The registered catalog contains every singleton slot and the atomic `collective.moe_epilogue.v1` target. The atomic target owns both `collective.ar_residual_rmsnorm` and `collective.moe_finalize_ar_rmsnorm`, and explicitly displaces the corresponding singleton targets while active. The live policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
+The registered catalog contains every singleton slot and the atomic
+`collective.dp_attention_exchange.v1` target. The atomic target owns both
+`collective.all_gather_into_tensor` and `collective.reduce_scatter_tensor`, and
+explicitly displaces the corresponding singleton targets while active. The live
+policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## Unregistered work
 

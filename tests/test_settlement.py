@@ -24,12 +24,7 @@ from cacheon.stack_manifest import (
     ProposalContributionRef,
 )
 from cacheon.stack_plan import plan_marginal_arm
-from cacheon.target_catalog import (
-    MOE_EPILOGUE_ATOMIC_TARGET,
-    MOE_EPILOGUE_MEMBERS,
-    TargetCatalog,
-    default_target_catalog,
-)
+from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
 ROUTED = "moe.fused_routed_experts"
@@ -357,10 +352,9 @@ def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
 def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> None:
     # These bytes include the current target-catalog digest. Catalog changes are
     # reviewed target identity epochs; the settlement schema remains unchanged.
-    # Epoch 2026-08-30: the moe.fused_routed_experts row landed and the four
-    # retired M3 attention targets (sdpa, decode, routed_block_score,
-    # routed_prefill_block_score) left the catalog, moving its digest. Historical
-    # records are unaffected — they embed their own catalog snapshot/digest.
+    # Epoch 2026-08-30: the GLM routed-MoE and fused-add-norm rows landed while
+    # the retired M3 attention and deep-finalize targets left the catalog.
+    # Historical records are unaffected: they embed their own catalog snapshot.
     catalog = default_target_catalog()
     candidate = _candidate(
         _stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a"
@@ -368,10 +362,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "30117ac73f9040b8a1cc04dfb95507fb751bc3063a07ff09284f4ddf24d249b3"
+        "5ea6d3658be9e7c6505c19d23d1b197e4be3cba58fd3116f35400c46a8fecac3"
     )
     assert candidate.digest == (
-        "174c39bf7744b08087b92c1d179f12cfb55deac1a7a875bc35db89159f0b772f"
+        "f36c2f50aacaf1d29517d7010aef13fae2eb73bdb5bfe5e733f8aeae45b6d8e1"
     )
 
 
@@ -633,7 +627,7 @@ def test_nonoverlapping_loser_is_held_for_requalification() -> None:
     assert hold.reason == "incumbent_advanced"
 
 
-def test_replacement_retires_prior_and_atomic_transition_neutralizes_displaced() -> None:
+def test_replacement_retires_prior() -> None:
     catalog = default_target_catalog()
     prior = _ref(catalog, ROUTED, "prior")
     incumbent = _stack(catalog, {ROUTED: prior})
@@ -647,28 +641,6 @@ def test_replacement_retires_prior_and_atomic_transition_neutralizes_displaced()
     assert SettlementEventType.RETIREMENT in {
         row.event_type for row in replaced.events
     }
-
-    singleton_entries = {
-        member: _ref(catalog, member, f"prior:{member}")
-        for member in MOE_EPILOGUE_MEMBERS
-    }
-    atomic_incumbent = _stack(catalog, singleton_entries)
-    atomic = _candidate(
-        atomic_incumbent,
-        _ref(catalog, MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-        catalog,
-        label="atomic",
-    )
-    transitioned = plan_settlement(
-        (atomic,), current_manifest=atomic_incumbent,
-        current_tree_digest=_h("incumbent-tree"),
-    )
-    neutralized = {
-        row.target_id
-        for row in transitioned.events
-        if row.event_type is SettlementEventType.NEUTRALIZATION
-    }
-    assert neutralized == set(MOE_EPILOGUE_MEMBERS)
 
 
 def test_duplicate_reservation_is_rejected() -> None:

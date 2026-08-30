@@ -8,6 +8,15 @@ Passing tests, completing an empirical qualification, activating an incentive
 policy, publishing weights, and producing a deployable engine release are
 different events. Evidence for one does not authorize another.
 
+The GLM-5.3 branch moved the source compatibility target to SGLang `0.5.18` on
+2026-08-30. Exact-image 8xB300 controls now establish full-model generation,
+all-rank seam activation, graph capture, deliberately broken and faithful
+bundle behavior, and one complete mixed-cell B/C/B′ arena read. They do not
+establish a winning miner implementation, independently reproduced PASS pair,
+commissioned mainnet cutover, or deployable Engine release. The dated source
+snapshot below records the earlier `0.5.13.post1` repository state and is kept
+unchanged as historical evidence.
+
 ## Source snapshot
 
 Snapshot date: **2026-08-19**
@@ -156,26 +165,28 @@ does not establish that a paid OCI lifetime has mounted or executed that model.
 
 ### Slots, targets, and direct artifacts
 
-The executable catalog contains 8 slots and one registered atomic target:
+The executable catalog contains 11 slots and one registered atomic target:
 
 | Kind | Registered identifiers |
 |---|---|
 | Op | `activation.silu_and_mul`, `norm.rmsnorm` |
-| Block | `moe.fused_experts`, `moe.fused_routed_experts` |
-| Collective | `moe.fused_experts_reduce`, `collective.all_reduce`, `collective.ar_residual_rmsnorm`, `collective.moe_finalize_ar_rmsnorm` |
-| Atomic target | `collective.moe_epilogue.v1` over the two MoE epilogue collective members |
+| Block | `linear.dense`, `moe.fused_experts`, `moe.fused_routed_experts`, `norm.fused_add_rmsnorm` |
+| Collective | `collective.all_gather_into_tensor`, `collective.all_reduce`, `collective.ar_residual_rmsnorm`, `collective.reduce_scatter_tensor`, `moe.fused_experts_reduce` |
+| Atomic target | `collective.dp_attention_exchange.v1` over all-gather and reduce-scatter |
 
 On 2026-08-30 the four M3 attention slots (`attention.sdpa`,
 `attention.decode`, `attention.msa_block_score`,
 `attention.msa_prefill_block_score`), their seam adapters, ABIs, catalog rows,
 example bundles, and the MSA verification-probe synthesis were retired from the
 tree as part of the generic slot-contract work; `moe.fused_routed_experts` (the
-fat routed-MoE boundary) was registered in the same change. This is a reviewed
-target identity epoch: catalog and settlement digests moved, and the B300
-arena's registered set is now pinned arena data rather than derived from the
-cross-arena catalog. Historical evaluation records embed their own catalog
-snapshots and are unaffected. The deployed M3 lane runs from its pinned source
-trees and is unaffected by repository-side retirement.
+fat routed-MoE boundary), `linear.dense`, `norm.fused_add_rmsnorm`, and the two
+DP-attention exchange members were registered in the same change. The obsolete
+deep-finalize/atomic-MoE-epilogue and dependency-patch surfaces were removed.
+This is a reviewed target identity epoch: catalog and settlement digests moved,
+and each arena's registered set is now pinned arena data rather than derived
+from the cross-arena catalog. Historical evaluation records embed their own
+catalog snapshots and are unaffected. The deployed M3 lane runs from its pinned
+source trees and is unaffected by repository-side retirement.
 
 The table records contracts, not deployment availability. As of 2026-08-30,
 three targets are unavailable in the MiniMax-M3 arena: `norm.rmsnorm`
@@ -187,6 +198,35 @@ outer-reduction proof). Their computation stays claimable inside open fused
 targets; closure keys on the submitted target name only. The miner-facing
 notice is
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+
+The full GLM-5.3 arena instead registers exactly
+`moe.fused_routed_experts`, `linear.dense`, `norm.fused_add_rmsnorm`,
+`collective.all_reduce`, and atomic
+`collective.dp_attention_exchange.v1`. Pure pointwise activation/norm and
+engine-owned KV-cache, batching, radix, and speculative-decoding policy are not
+separate GLM reward lanes.
+
+On 2026-08-30 the exact `0.5.18` CUDA-13 image, full
+`incoai/GLM-5.3-NVFP4` checkpoint, and two physical TP4 lanes exercised all
+five registered targets (six callable seams because the atomic DP-attention
+target binds both all-gather and reduce-scatter). Component controls retained
+captured all-rank receipts and included a routed-MoE negative control that
+changed model-visible output, excluding silent stock substitution.
+
+The concluding mixed-cell control consumed three 128-request
+8,192-input/1,024-output batches and three 24-request
+65,536-input/4,096-output batches. It completed all 18 B/C/B′ response
+artifacts, passed the sealed numeric quality judge, and recorded exactly 226
+captured `moe.fused_routed_experts` calls on each of ranks 0–3. The faithful
+stock-equivalent candidate measured 1.0013560726x against a 1.0102795639x bar,
+so its terminal decision was correctly `FAIL`; a faithful bundle is an
+execution control, not a fabricated speed winner. The canonical acceptance
+summary digest is
+`d5ce302b5b2fb85b6c01a5a556b29bb08e3a8b8edb91d25072fd7587392fa40d`.
+This establishes exact-runtime off-chain arena execution and fail-closed speed
+grading for the exercised target. It does not substitute for a production
+commissioned qualification, a miner speed PASS, reproduction, settlement, or
+mainnet activation.
 
 The closed direct-artifact registry has one crownable provider,
 `cutlass.cute.cubin.v1`. Candidate compiler-factory code runs in a GPU-hidden,
@@ -232,24 +272,26 @@ mixture (decode 256-token/concurrency-32 plus long-prefill 8,192-token) that
 no execution path consumed, while the scored session actually ran the sealed
 corpus's short prompts (40–230 actual input tokens, median 74) at 256 output
 tokens. Retained mainnet evidence surfaced the split on 2026-08-21. Current
-source removes the mixture schema entirely: the sealed prompt authority
-declares the exact scored workload cell (engine-observed input tokens, output
-budget, concurrency, timed reads), the manifest embeds that declaration, the
-sealed batches are validated against the cell at parse, the engine
-configuration (context length, admission width, radix-cache disable) derives
-from the cell, and commissioning fails closed on any session/policy mismatch.
-The declared and consumed workloads are projections of one object and cannot
-diverge. Each read's evidence additionally carries the engine-observed prompt
-token count per request, validated against the cell at the protocol boundary;
-a mismatch or missing count is an infrastructure fault, never a candidate
-verdict.
+source consumes one or more exact cells directly from the sealed prompt
+authority. `prompt_batch_cells` binds every batch to its engine-observed input
+tokens, output budget, concurrency, and timed-read count; the session sends that
+request-local geometry, and commissioning rejects missing, extra, or reordered
+cell coverage. Engine context length and admission width derive from the full
+cell set. Single-cell authorities preserve their historical workload digest;
+mixed authorities bind the ordered geometry in v3. Each read's evidence carries
+the engine-observed prompt token count per request, validated against its own
+cell at the protocol boundary. A mismatch or missing count is infrastructure,
+never a candidate verdict.
 
-### Sealed family closure (2026-08-21)
+### Sealed arena target set (updated 2026-08-30)
 
-An `ArenaServiceManifest` seals `closed_targets`: registered families its
-commissioned workload cannot measure, taken from the sealed commissioning
-inputs and validated against the target catalog. Intake parks a proposal for
-a closed target at the fingerprint step with reason
+The commissioning input names a sorted `registered_targets` set. The evaluator
+validates it against the cross-arena catalog and seals its complete complement
+as `ArenaServiceManifest.closed_targets`; there is no import-time MiniMax-M3
+target constant. The same sealed input now supplies the model-profile key and
+model/runtime engine settings, while per-cell and per-target launch fields are
+derived by the evaluator. Intake parks a proposal for a closed target at the
+fingerprint step with reason
 `target_unavailable:<target>` and decision `NO_DECISION` — replay never
 echoes it — and releases the cited eval-cost payment pointer or admission
 credit in the same transaction. Before this, a closed family could only be
@@ -331,6 +373,14 @@ the same swappability predicate the worker routes execution on. The commissioned
 provider policy is unchanged and continues to serve every swappable candidate;
 only the read order differs, and every calibrated threshold is the sealed one.
 
+Mixed-cell arenas use resident speed policy **version 9** on the same
+two-process B/C/B′ substrate. A median of heterogeneous per-batch rates would
+erase the minority cell, so v9 grades total timed output tokens over the full
+host-observed mixture makespan while retaining the individual windows as raw
+evidence. Hidden quality draws only from batches with the sealed quality-cell
+output budget; every cell's outputs remain trajectory-bound. Single-cell M3
+authorities keep their prior policy and digest shape.
+
 Since **2026-08-10** measurement-reuse identity is controller-blind: the
 calibration context binds `ReferenceManifest.measured_digest` and no longer
 carries a controller distribution digest, and raw quality bindings match the
@@ -344,7 +394,7 @@ eleven-field context shape do not parse under this contract and are resealed
 from their durable inputs, not re-measured.
 
 Since **2026-08-21**, commissioning refuses a resident-speed `min_windows`
-floor above the workload cell's timed reads: an unsatisfiable evidence floor
+floor above the workload's total timed reads: an unsatisfiable evidence floor
 is a commissioning error, not a runtime refusal discovered after a measured
 run. A proposed policy-only calibration relabel was removed before deployment:
 the nested reference identity still changed with the arena, and downstream
@@ -372,8 +422,9 @@ terminating arithmetic. Bracket drift therefore resolves to a decision at
 the initial grade instead of escalating or re-queueing. Sealed version-4
 evidence continues to regrade under bookend invariance without the
 exclusion. The 2026-08-10 commission selected version 5 prospectively at that
-time; current swappable work selects v7 and current non-swappable work selects
-v8. Already sealed providers and evidence keep their original policy identity.
+time; current swappable work selects v7, single-cell non-swappable work selects
+v8, and mixed-cell work selects v9. Already sealed providers and evidence keep
+their original policy identity.
 
 Production providers previously selected qualification policy version 3:
 

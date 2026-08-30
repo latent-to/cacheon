@@ -47,7 +47,7 @@ Adding a slot is a validator action (a code change here), never a miner action.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
 import torch
@@ -55,16 +55,27 @@ import torch.nn.functional as F
 
 from cacheon.artifact_abi import (
     COLLECTIVE_ALL_REDUCE_CALL_ABI,
+    COLLECTIVE_ALL_GATHER_CALL_ABI,
     COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
-    COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
+    COLLECTIVE_REDUCE_SCATTER_CALL_ABI,
+    FUSED_ADD_RMSNORM_CALL_ABI,
     RMSNORM_CALL_ABI,
     SILU_AND_MUL_CALL_ABI,
     SlotCallABI,
 )
 from cacheon.moe_nvfp4_contract import (
-    prepare_args_from_inputs as _moe_prepare_args_from_inputs,
     prepare_args_from_layer as _moe_prepare_args_from_layer,
-    verification_inputs as _moe_nvfp4_verification_inputs,
+)
+from cacheon.dense_contract import dense_reference, make_dense_inputs
+from cacheon.collective_exchange_contract import (
+    all_gather_reference,
+    make_all_gather_inputs,
+    make_reduce_scatter_inputs,
+    reduce_scatter_reference,
+)
+from cacheon.norm_contract import (
+    fused_add_rmsnorm_reference,
+    make_fused_add_rmsnorm_inputs,
 )
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 
@@ -191,6 +202,9 @@ class SlotSpec:
     # outputs, one per ``out_shapes`` entry. None -> the reference is the sum itself and
     # the slot has exactly one output (the pre-existing all-reduce contract).
     collective_finish: Optional[Callable] = None
+    # Collectives whose reference is not an all-reduce may provide the complete
+    # distributed oracle directly: (inputs, group, rank, world_size) -> outputs.
+    collective_reference: Optional[Callable] = None
     # Per-slot end-to-end KL gate, calibrated to THIS slot's intrinsic noise floor (the
     # generic 5e-3 default is tuned for elementwise ops; attention sits ~6e-3 vs flash's
     # reordered softmax, so a flat 5e-3 false-fails a faithful attention kernel — README
@@ -610,6 +624,66 @@ COLLECTIVE_ALL_REDUCE = SlotSpec(
 )
 
 
+COLLECTIVE_ALL_GATHER = SlotSpec(
+    name="collective.all_gather_into_tensor",
+    entry="all_gather_into_tensor",
+    summary=(
+        "equal-size tensor all-gather along dim 0: each rank contributes x:(M,H), "
+        "entry(x, out, group) fills out:(world*M,H) in rank order."
+    ),
+    kind="collective",
+    make_inputs=make_all_gather_inputs,
+    out_shapes=lambda i: [
+        (i["x"].shape[0] * int(i["world_size"]), i["x"].shape[1])
+    ],
+    invoke_reference=lambda i: [i["x"]],
+    invoke_entry=lambda entry, i, outs, prepared: entry(
+        i["x"], outs[0], i.get("__group__")
+    ),
+    graph_dynamic_inputs=("x",),
+    invoke_collective=lambda entry, i, out, group, prepared: entry(i["x"], out, group),
+    collective_reference=all_gather_reference,
+    shapes=(
+        {"num_tokens": 1, "hidden": 6144},
+        {"num_tokens": 8, "hidden": 6144},
+        {"num_tokens": 32, "hidden": 6144},
+    ),
+    correctness=Correctness("matched_ratio", min_ratio=0.99),
+    tolerances=_BF16_TOL,
+    call_abi=COLLECTIVE_ALL_GATHER_CALL_ABI,
+)
+
+
+COLLECTIVE_REDUCE_SCATTER = SlotSpec(
+    name="collective.reduce_scatter_tensor",
+    entry="reduce_scatter_tensor",
+    summary=(
+        "equal-size SUM reduce-scatter along dim 0: each rank contributes "
+        "x:(world*M,H), entry(x, out, group) fills this rank's out:(M,H)."
+    ),
+    kind="collective",
+    make_inputs=make_reduce_scatter_inputs,
+    out_shapes=lambda i: [
+        (i["x"].shape[0] // int(i["world_size"]), i["x"].shape[1])
+    ],
+    invoke_reference=lambda i: [i["x"]],
+    invoke_entry=lambda entry, i, outs, prepared: entry(
+        i["x"], outs[0], i.get("__group__")
+    ),
+    graph_dynamic_inputs=("x",),
+    invoke_collective=lambda entry, i, out, group, prepared: entry(i["x"], out, group),
+    collective_reference=reduce_scatter_reference,
+    shapes=(
+        {"num_tokens": 1, "hidden": 6144},
+        {"num_tokens": 8, "hidden": 6144},
+        {"num_tokens": 32, "hidden": 6144},
+    ),
+    correctness=Correctness("matched_ratio", min_ratio=0.99),
+    tolerances=_BF16_TOL,
+    call_abi=COLLECTIVE_REDUCE_SCATTER_CALL_ABI,
+)
+
+
 # ---------------------------------------------------------------------------
 # Slot (COLLECTIVE): collective.ar_residual_rmsnorm   (the decode-epilogue waist)
 #   Per rank: x:(M,H) is that rank's LOCAL partial (e.g. the un-reduced MoE/MLP output);
@@ -704,100 +778,60 @@ COLLECTIVE_AR_RESIDUAL_RMSNORM = SlotSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slot (collective): collective.moe_finalize_ar_rmsnorm — the DEEP fused-epilogue
-# waist: MoE finalize (gather permuted gemm2 rows, scale, sum over experts-per-token)
-# + all-reduce + residual-add + RMSNorm in ONE kernel. This is the fe_export deep
-# seam's kernel contract: the producer dep-patch exports flashinfer's pre-finalize
-# pointers (gemm_output / row_map / scales) instead of launching the standalone
-# finalize kernel, and the deferred-AR call site consumes them here — killing a
-# ~17us/layer latency-bound kernel + a full [T,H] round-trip at decode.
-#
-# Verifiable WITHOUT flashinfer: the validator seeds synthetic pre-finalize tensors
-# per rank, and finalize is LINEAR, so finalize-then-AR == AR-then-finalize:
-# collective_partial = trusted fp32 LOCAL finalize per rank, verify sums across
-# ranks, collective_finish = the same trusted add+norm as the shallow slot.
-#
-# ABI (matches fe_export.h, 2026-07-02 campaign):
-#   gemm_out [T_exp*K, H]  per-rank partial (unfused gemm2 output, permuted rows)
-#   row_map  [T_exp*K] i32 REPLICATED, K-MAJOR: slot (t, k) lives at t + k*T_exp
-#   scales   [T_exp, K] f32 REPLICATED, T-MAJOR
-#   residual [T, H], weight [H]  replicated; T <= T_exp (CUDA-graph batch padding:
-#   the consume call may HEAD-TRIM — same data_ptr, offset-0 slice).
-# ---------------------------------------------------------------------------
-
-
-def _moe_fin_inputs(*, num_tokens: int, exp_tokens: int, topk: int, hidden: int,
-                    dtype: torch.dtype, device: str, seed: int,
-                    rank: int = 0, world_size: int = 1) -> dict:
-    # gemm_out differs per rank (TP-sharded gemm2 emits per-rank partials the reduce
-    # sums); routing (row_map/scales) and residual/weight are REPLICATED model/router
-    # state -> seeded WITHOUT rank. Same replication-split discipline as the shallow
-    # slot. num_tokens is jittered by verify; exp_tokens is clamped to keep T <= T_exp.
-    exp_tokens = max(exp_tokens, num_tokens)
-    rows = exp_tokens * topk
-    gx = torch.Generator(device=device).manual_seed(seed + 1_000_003 * rank)
-    gs = torch.Generator(device=device).manual_seed(seed)
-    gemm_out = (torch.randn(rows, hidden, generator=gx, device=device,
-                            dtype=torch.float32) * 0.1).to(dtype)
-    row_map = torch.randperm(rows, generator=gs, device=device).to(torch.int32)
-    scales = (torch.rand(exp_tokens, topk, generator=gs, device=device,
-                         dtype=torch.float32) + 0.1) / topk
-    residual = (torch.randn(num_tokens, hidden, generator=gs, device=device,
-                            dtype=torch.float32) * 0.1).to(dtype)
-    weight = (torch.rand(hidden, generator=gs, device=device,
-                         dtype=torch.float32) * 0.5 + 0.75).to(dtype)
-    return {"gemm_out": gemm_out, "row_map": row_map, "scales": scales,
-            "residual": residual, "weight": weight, "eps": 1e-6}
-
-
-def _moe_fin_local_finalize(inputs: dict, prepared=None) -> "torch.Tensor":
-    # Trusted fp32 LOCAL finalize (this rank's partial): for token t,
-    # acc[t] = sum_k scales[t,k] * gemm_out[row_map[t + k*T_exp]]; head-trim to T.
-    t = inputs["residual"].shape[0]
-    t_exp, k = inputs["scales"].shape
-    per_k = inputs["gemm_out"].float()[inputs["row_map"].long().view(k, t_exp)]
-    acc = (per_k * inputs["scales"].float().t().unsqueeze(-1)).sum(dim=0)
-    return acc[:t]
-
-
-COLLECTIVE_MOE_FINALIZE_AR_RMSNORM = SlotSpec(
-    name="collective.moe_finalize_ar_rmsnorm",
-    entry="moe_finalize_ar_rmsnorm",
+FUSED_ADD_RMSNORM = SlotSpec(
+    name="norm.fused_add_rmsnorm",
+    entry="fused_add_rmsnorm",
     summary=(
-        "DEEP fused MoE epilogue (the fe_export contract): finalize (gather permuted "
-        "gemm2 rows via K-MAJOR row_map, scale by T-MAJOR scales, sum over K) + "
-        "all-reduce + residual-add + RMSNorm, one kernel. gemm_out:(T_exp*K,H) per-rank "
-        "partial; row_map/scales/residual/weight replicated; T<=T_exp (graph padding "
-        "head-trim). entry(gemm_out, row_map, scales, residual, weight, eps, out_norm, "
-        "out_residual, group). Validator owns both outputs + the group; verified "
-        "DISTRIBUTED without flashinfer — finalize is linear, so the reference is "
-        "trusted fp32 local finalize per rank -> cross-rank sum -> add+norm."
+        "fused residual add + RMSNorm at SGLang's RMSNorm.forward_cuda waist: "
+        "entry(x, residual, weight, eps, out_norm, out_residual). The validator "
+        "owns both outputs; the residual add rounds in the input dtype before "
+        "the fp32 variance reduction."
     ),
-    kind="collective",
-    make_inputs=_moe_fin_inputs,
-    out_shapes=lambda i: [tuple(i["residual"].shape), tuple(i["residual"].shape)],
-    invoke_reference=lambda i: _ar_norm_reference_from_sum(
-        i, _moe_fin_local_finalize(i), None),
+    kind="block",
+    make_inputs=make_fused_add_rmsnorm_inputs,
+    out_shapes=lambda i: [tuple(i["x"].shape), tuple(i["x"].shape)],
+    invoke_reference=fused_add_rmsnorm_reference,
     invoke_entry=lambda entry, i, outs, prepared: entry(
-        i["gemm_out"], i["row_map"], i["scales"], i["residual"], i["weight"], i["eps"],
-        outs[0], outs[1], i.get("__group__")),
-    graph_dynamic_inputs=("gemm_out", "row_map", "scales", "residual"),
-    collective_partial=_moe_fin_local_finalize,
-    invoke_collective=lambda entry, i, outs, group, prepared: entry(
-        i["gemm_out"], i["row_map"], i["scales"], i["residual"], i["weight"], i["eps"],
-        outs[0], outs[1], group),
-    collective_finish=_ar_norm_reference_from_sum,
+        i["x"], i["residual"], i["weight"], i["eps"], outs[0], outs[1]
+    ),
+    graph_dynamic_inputs=("x", "residual"),
     shapes=(
-        # K=5 = M3 (top4 + fused shared expert). Head-trim (T < T_exp) exercised in the
-        # 1st/3rd shapes; num_tokens jitters per run, exp_tokens clamps to stay >= T.
-        {"num_tokens": 8, "exp_tokens": 16, "topk": 5, "hidden": 4096},
-        {"num_tokens": 64, "exp_tokens": 64, "topk": 5, "hidden": 6144},
-        {"num_tokens": 224, "exp_tokens": 256, "topk": 5, "hidden": 6144},
+        {"num_tokens": 8, "hidden": 6144},
+        {"num_tokens": 32, "hidden": 6144},
+        {"num_tokens": 128, "hidden": 6144},
+        {"num_tokens": 4096, "hidden": 6144},
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
-    call_abi=COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
+    call_abi=FUSED_ADD_RMSNORM_CALL_ABI,
+)
+
+
+DENSE_LINEAR = SlotSpec(
+    name="linear.dense",
+    entry="dense",
+    prepare="prepare",
+    summary=(
+        "unquantized local dense GEMM with validator-owned output: "
+        "prepare(weight[N,K]) -> prepared; entry(x[M,K], prepared, out[M,N]). "
+        "Bias and the surrounding row/column-parallel communication stay outside "
+        "the slot."
+    ),
+    kind="block",
+    make_inputs=make_dense_inputs,
+    out_shapes=lambda i: [(i["x"].shape[0], i["weight"].shape[0])],
+    invoke_reference=dense_reference,
+    invoke_prepare=lambda prepare_fn, i: prepare_fn(i["weight"]),
+    prepare_from_layer=lambda layer: (layer.weight.data,),
+    invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], prepared, outs[0]),
+    graph_dynamic_inputs=("x",),
+    shapes=(
+        {"num_tokens": 8, "input_dim": 256, "output_dim": 384},
+        {"num_tokens": 32, "input_dim": 512, "output_dim": 256},
+        {"num_tokens": 128, "input_dim": 384, "output_dim": 512},
+    ),
+    correctness=Correctness("matched_ratio", min_ratio=0.99),
+    tolerances=_BF16_TOL,
 )
 
 
@@ -863,9 +897,12 @@ SLOTS: dict[str, SlotSpec] = {
     MOE_FUSED_EXPERTS.name: MOE_FUSED_EXPERTS,
     MOE_FUSED_ROUTED_EXPERTS.name: MOE_FUSED_ROUTED_EXPERTS,
     MOE_FUSED_EXPERTS_REDUCE.name: MOE_FUSED_EXPERTS_REDUCE,
+    DENSE_LINEAR.name: DENSE_LINEAR,
     COLLECTIVE_ALL_REDUCE.name: COLLECTIVE_ALL_REDUCE,
+    COLLECTIVE_ALL_GATHER.name: COLLECTIVE_ALL_GATHER,
+    COLLECTIVE_REDUCE_SCATTER.name: COLLECTIVE_REDUCE_SCATTER,
     COLLECTIVE_AR_RESIDUAL_RMSNORM.name: COLLECTIVE_AR_RESIDUAL_RMSNORM,
-    COLLECTIVE_MOE_FINALIZE_AR_RMSNORM.name: COLLECTIVE_MOE_FINALIZE_AR_RMSNORM,
+    FUSED_ADD_RMSNORM.name: FUSED_ADD_RMSNORM,
 }
 
 
@@ -903,7 +940,7 @@ class SlotProfile:
     to the model's real activation; ``correctness`` (optional) swaps the op-sanity metric
     (e.g. cosine for a low-bit kernel). None fields keep the generic slot default.
 
-    Every model fact a slot needs lives HERE, not in specialize_slot branches: the
+    Every model fact a slot needs lives in ``cacheon.model_profiles``: the
     verification ``shapes`` (per-rank shards, at the arena TP), the fused-shared-expert
     count (0 when the arena serves shared experts unfused — read it from the live
     server_args, not the checkpoint), and the routed-weight scale the synthetic routing
@@ -917,215 +954,22 @@ class SlotProfile:
     routed_weight_scale: float = 1.0
 
 
-_MOE_SLOTS = ("moe.fused_experts", "moe.fused_experts_reduce")
-_ROUTED_MOE_SLOTS = ("moe.fused_routed_experts",)
-
-
 def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
-    """Return a copy of ``slot`` retargeted by a validator ``profile``. Only rebinds the
-    pieces the profile changes (the activation-bearing references + the correctness policy);
-    everything else — inputs, shapes, seam wiring — is untouched. The module-level slot
-    singletons are never mutated, so ``get_slot`` stays generic."""
-    repl: dict = {}
-    if profile.quant == "nvfp4" and profile.shapes is None:
-        raise ValueError(
-            f"profile for {slot.name!r} sets quant={profile.quant!r} but no shapes; "
-            "a quantized profile must carry the arena's per-rank verification shapes"
-        )
-    if slot.name in _ROUTED_MOE_SLOTS:
-        routed_act = profile.activation
+    from cacheon.model_profiles import specialize_slot as _specialize_slot
 
-        def _routed_ref(i, _act=routed_act):
-            return [_routed_moe_reference(i, _act)]
-
-        repl["invoke_reference"] = _routed_ref
-        if profile.quant == "nvfp4":
-            make_dense_routed = slot.make_inputs
-            routed_fused = profile.num_fused_shared_experts
-
-            def _routed_quant_inputs(**kwargs):
-                dense = make_dense_routed(**kwargs)
-                dense.update(
-                    __moe_tp_size__=int(kwargs.get("world_size", 4)),
-                    __moe_ep_size__=1,
-                    __moe_ep_rank__=0,
-                    __moe_reduce_results__=False,
-                    __moe_num_fused_shared_experts__=routed_fused,
-                    __moe_activation__=routed_act.kind,
-                )
-                return _moe_nvfp4_verification_inputs(dense)
-
-            repl["make_inputs"] = _routed_quant_inputs
-            repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
-                *_moe_prepare_args_from_inputs(i), i["topk"], i["routed_scaling"]
-            )
-            repl["call_abi"] = None
-    if slot.name in _MOE_SLOTS:
-        act = profile.activation
-
-        def _ref(i, _act=act):
-            return [_moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"], _act)]
-
-        repl["invoke_reference"] = _ref
-        if slot.collective_partial is not None:  # the reduce block's distributed reference
-            def _partial(i, prepared, _act=act):
-                return _moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"], _act).float()
-
-            repl["collective_partial"] = _partial
-    if profile.correctness is not None:
-        repl["correctness"] = profile.correctness
-    if slot.name in _MOE_SLOTS and profile.quant == "nvfp4":
-        make_dense_inputs = slot.make_inputs
-        fused = profile.num_fused_shared_experts
-        scale = profile.routed_weight_scale
-        act_kind = profile.activation.kind
-
-        def _quant_inputs(**kwargs):
-            dense = make_dense_inputs(**kwargs)
-            tokens, top_k = dense["topk_ids"].shape
-            experts = dense["w13"].shape[0]
-            routed_k = top_k - fused
-            generator = torch.Generator(device=kwargs["device"]).manual_seed(
-                int(kwargs["seed"]) + 17_171
-            )
-            # Distinct-expert routing draw (real routers never repeat an expert per
-            # token, unlike the generic randint inputs). When the arena fuses shared
-            # experts, the last `fused` expert ids are the shared ones by convention
-            # and always ride with weight 1.0; `fused == 0` is a pure routed draw.
-            routed = torch.rand(
-                tokens, experts - fused, generator=generator, device=kwargs["device"]
-            ).topk(routed_k, dim=-1).indices.to(torch.int32)
-            scores = torch.rand(
-                tokens, routed_k, generator=generator, device=kwargs["device"]
-            )
-            routed_weights = scale * scores / scores.sum(-1, keepdim=True)
-            if fused:
-                shared_ids = (
-                    torch.arange(
-                        experts - fused, experts,
-                        device=kwargs["device"], dtype=torch.int32,
-                    )
-                    .expand(tokens, fused)
-                )
-                dense["topk_ids"] = torch.cat((routed, shared_ids), dim=-1)
-                dense["topk_weights"] = torch.cat(
-                    (routed_weights, torch.ones_like(scores[:, :fused])), dim=-1
-                )
-            else:
-                dense["topk_ids"] = routed
-                dense["topk_weights"] = routed_weights
-            dense.update(
-                __moe_tp_size__=int(kwargs.get("world_size", 4)),
-                __moe_ep_size__=1,
-                __moe_ep_rank__=0,
-                __moe_reduce_results__=False,
-                __moe_num_fused_shared_experts__=fused,
-                __moe_activation__=act_kind,
-            )
-            return _moe_nvfp4_verification_inputs(dense)
-
-        repl["make_inputs"] = _quant_inputs
-        repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
-            *_moe_prepare_args_from_inputs(i)
-        )
-        repl["call_abi"] = None
-    if profile.shapes is not None:
-        repl["shapes"] = profile.shapes
-    return replace(slot, **repl) if repl else slot
-
-
-_M3_MOE_PROFILE = SlotProfile(
-    activation=Activation("swigluoai", alpha=1.702, limit=7.0),
-    # Low-bit (NVFP4) experts: gate on cosine vs the same-function fp32 reference.
-    # min_cosine = the measured NVFP4 representational floor (0.9958 at M3 shape,
-    # m3_swigluoai_gate.py) with headroom; plain-SiLU scores 0.45 and is rejected.
-    # No norm guard yet (max_rel_norm_err uncalibrated — TODO measure the floor).
-    correctness=Correctness("cosine", min_cosine=0.985),
-)
-_M3_MOE_NVFP4_PROFILE = replace(
-    _M3_MOE_PROFILE,
-    quant="nvfp4",
-    # Per-rank shards at the M3 arena's TP4 (moe_intermediate 3072 / 4). M3 serves
-    # the shared expert FUSED into the routed kernel: 128 routed + 1 shared = 129,
-    # top-4 routed + 1 = 5, routed weights scaled 2x.
-    shapes=(
-        {"num_tokens": 1, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
-        {"num_tokens": 8, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
-        {"num_tokens": 32, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
-    ),
-    num_fused_shared_experts=1,
-    routed_weight_scale=2.0,
-)
-
-_GLM53_MOE_NVFP4_PROFILE = SlotProfile(
-    # GLM-5.3 experts are plain SiLU (config hidden_act=silu) — the Activation()
-    # default. Shapes receipted from the served config + server_args 2026-08-30:
-    # 256 routed experts, top-8, hidden 6144, moe_intermediate 2048 -> 512/rank at
-    # the arena's TP4. The served path runs disable_shared_experts_fusion=True
-    # (shared expert is unquantized and separate), so num_fused_shared_experts=0
-    # and num_experts is 256, NOT 257 — read from the live engine, not the plan.
-    # routed_weight_scale mirrors routed_scaling_factor=2.5 (norm_topk_prob=True).
-    # correctness: measured at THIS shape by glm53_nvfp4_gate.py (2026-08-30,
-    # E=256/inter 512/top-8/silu, M=2048): block floor with the served fp4xfp4
-    # intermediate requant = cosine 0.9959 / rel_norm_err 0.0012; bar = floor
-    # minus margin. The norm guard is load-bearing: cosine is scale-invariant,
-    # and a kernel that drops routed_scaling ties the cosine floor exactly
-    # (rejected only via rel_norm 0.60). Controls: swigluoai-act 0.44,
-    # shuffled-routing 0.04, both cosine-rejected.
-    correctness=Correctness("cosine", min_cosine=0.985, max_rel_norm_err=0.05),
-    quant="nvfp4",
-    shapes=(
-        {"num_tokens": 1, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
-        {"num_tokens": 8, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
-        {"num_tokens": 32, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
-        {"num_tokens": 128, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
-    ),
-    num_fused_shared_experts=0,
-    routed_weight_scale=2.5,
-)
-
-_GLM53_ROUTED_MOE_PROFILE = replace(
-    _GLM53_MOE_NVFP4_PROFILE,
-    # The fat slot owns the routing head too, so routed_scaling (2.5) is part of
-    # the CONTRACT the miner implements, carried per shape into make_inputs.
-    shapes=tuple(
-        {**s, "routed_scaling": 2.5}
-        for s in _GLM53_MOE_NVFP4_PROFILE.shapes
-    ),
-)
-
-# model key (as a miner may declare it / as the validator keys its served model) -> {slot: profile}
-MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
-    "MiniMax-M3": {
-        # BOTH experts slots run the same swigluoai experts on M3 — the reduce-owning
-        # block (the overlap target) just also owns the trailing all-reduce, and
-        # specialize_slot retargets its distributed reference (collective_partial) too.
-        # Registering only the plain slot would verify an M3 reduce kernel against a
-        # SiLU reference and false-fail every honest submission.
-        "moe.fused_experts": _M3_MOE_NVFP4_PROFILE,
-        "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
-    },
-    "GLM-5.3": {
-        "moe.fused_experts": _GLM53_MOE_NVFP4_PROFILE,
-        "moe.fused_experts_reduce": _GLM53_MOE_NVFP4_PROFILE,
-        "moe.fused_routed_experts": _GLM53_ROUTED_MOE_PROFILE,
-    },
-}
-# NVFP4 builds carry a "-NVFP4" suffix in their declared model id; alias them.
-MODEL_PROFILES["MiniMax-M3-NVFP4"] = MODEL_PROFILES["MiniMax-M3"]
-MODEL_PROFILES["GLM-5.3-NVFP4"] = MODEL_PROFILES["GLM-5.3"]
+    return _specialize_slot(slot, profile)
 
 
 def model_profile(model_key: Optional[str], slot_name: str) -> Optional[SlotProfile]:
-    if not model_key:
-        return None
-    return MODEL_PROFILES.get(model_key, {}).get(slot_name)
+    from cacheon.model_profiles import model_profile as _model_profile
+
+    return _model_profile(model_key, slot_name)
 
 
 def slot_for_model(slot_name: str, model_key: Optional[str] = None) -> SlotSpec:
     """``get_slot`` + the validator's per-model specialization. With no model key (or no
     registered profile) this is exactly ``get_slot`` — the generic slot — so existing
     callers and bundles are unchanged."""
-    slot = get_slot(slot_name)
-    prof = model_profile(model_key, slot_name)
-    return specialize_slot(slot, prof) if prof else slot
+    from cacheon.model_profiles import slot_for_model as _slot_for_model
+
+    return _slot_for_model(slot_name, model_key)

@@ -61,7 +61,7 @@ ROOT = Path(__file__).parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
 SILU = ROOT / "examples" / "miner_silu_torch"
 SINGLETON = FIXTURES / "stack_norm_singleton"
-FUSED = FIXTURES / "stack_fused_epilogue_atomic"
+FUSED = ROOT / "examples" / "miner_dp_attention_exchange_torch"
 
 
 def _digest(label: str) -> str:

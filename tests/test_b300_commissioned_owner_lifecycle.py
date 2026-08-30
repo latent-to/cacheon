@@ -49,9 +49,6 @@ from cacheon.eval.b300_qualification_deployment import (
     compose_b300_qualification_deployment,
 )
 from cacheon.eval.b300_screen_qualification_bridge import QUALIFICATION_EXECUTOR_ID
-from cacheon.eval.b300_registered_qualification_inputs import (
-    registered_b300_member_contract_projection,
-)
 from cacheon.eval.evidence_store import publish_evidence
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
@@ -65,7 +62,7 @@ from cacheon.target_catalog import default_target_catalog
 
 RMSNORM_TARGET = "norm.rmsnorm"
 ALL_REDUCE = "collective.all_reduce"
-ATOMIC_EPILOGUE = "collective.moe_epilogue.v1"
+FUSED_EXPERTS = "moe.fused_experts"
 
 
 def _h(label: str) -> str:
@@ -461,7 +458,7 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
     assert set(manager_calls.values()) == {1}
 
 
-def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
+def test_one_owner_routes_heterogeneous_singletons(
     owner: _OwnerHarness,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -495,7 +492,7 @@ def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
     )
     products: list[RemoteQualificationProduct] = []
     requests = []
-    targets = (RMSNORM_TARGET, ALL_REDUCE, ATOMIC_EPILOGUE)
+    targets = (RMSNORM_TARGET, ALL_REDUCE, FUSED_EXPERTS)
     for index, target_id in enumerate(targets, start=10):
         candidate = (
             first
@@ -535,17 +532,9 @@ def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
         ALL_REDUCE,
     )
 
-    atomic = products[2].authority_manifest.reservations[0]
-    projection = next(
-        row
-        for row in registered_b300_member_contract_projection(
-            default_target_catalog()
-        )
-        if row.target_id == ATOMIC_EPILOGUE
+    assert products[2].authority_manifest.reservations[0].target_members == (
+        FUSED_EXPERTS,
     )
-    assert atomic.target_members == projection.members
-    assert len(projection.members) == len(projection.member_contracts) == 2
-    assert tuple(row.slot_id for row in projection.member_contracts) == atomic.target_members
 
     production_source = inspect.getsource(
         qualification_module.B300RemoteQualificationAdapter.run

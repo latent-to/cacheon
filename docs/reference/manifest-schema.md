@@ -55,7 +55,6 @@ Paths are relative to the bundle and must resolve to regular contained files.
 | `abi_version` | yes | New bundles must emit `cacheon-op-abi-v0`; the reader also accepts the exact hash-bound pre-cutover spelling described below |
 | `[competition]` | recommended | Explicit requested target and `slot`/`atomic` mode |
 | `[[ops]]` | yes | One or more implementation rows |
-| `[[dep_patches]]` | no | Declared text patches for a validator-approved dependency lane |
 
 New bundles must use `cacheon-op-abi-v0`. Validators also retain one narrowly
 scoped reader-only compatibility spelling, `optima-op-abi-v0`, for finalized
@@ -286,20 +285,7 @@ part of the ABI.
 See [Sealed direct artifacts](../architecture/direct-artifacts.md) for build,
 admission, evidence, identity, and support boundaries.
 
-## Dependency patches
-
-```toml
-[[dep_patches]]
-target = "flashinfer"
-path = "patches/change.patch"
-```
-
-Only UTF-8 `.patch`/`.diff` files are structurally accepted. Binary, rename,
-and deletion patches are refused. Admission still requires a target that
-permits the observed dependency-patch feature and a validator-reviewed applier
-with a bounded destination policy.
-
-CUDA source declarations behave similarly. Listing `.cu`/`.cuh` paths makes
+Listing `.cu`/`.cuh` paths makes
 them inspectable inputs to the sanctioned build lane; it is not permission to
 ship a prebuilt binary or execute an arbitrary compiler command. Rebuild
 operations come from reviewed validator policy.

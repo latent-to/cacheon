@@ -49,9 +49,10 @@ from cacheon.stack_plan import RollbackPlan, plan_candidate_stack, plan_marginal
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
+ROOT = Path(__file__).parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
 SINGLETON = FIXTURES / "stack_norm_singleton"
-FUSED = FIXTURES / "stack_fused_epilogue_atomic"
+FUSED = ROOT / "examples" / "miner_dp_attention_exchange_torch"
 
 
 def _digest(label: str) -> str:
@@ -162,6 +163,12 @@ def _write_moe_fixture(root: Path, target: str, entry: str) -> Path:
         'cuda_sources = ["kernels/fused_epilogue_sm103.cu"]\n'
     )
     return root
+
+
+def _native_fixture(tmp_path: Path) -> Path:
+    return _write_moe_fixture(
+        tmp_path / "source", "moe.fused_experts", "fused_experts"
+    )
 
 
 def _materialize(stack, context, catalog, resolver, destination, **kwargs):
@@ -292,9 +299,7 @@ def test_overlapping_variant_domains_reject_before_ref_identity(tmp_path: Path) 
         inspect_contribution(source, catalog=default_target_catalog())
 
 
-def test_atomic_materialization_namespaces_native_patch_and_rebuild(
-    tmp_path: Path,
-) -> None:
+def test_atomic_materialization_namespaces_both_members(tmp_path: Path) -> None:
     source_hash = content_hash(FUSED)
     source_modes = {
         path.relative_to(FUSED): path.stat().st_mode
@@ -307,27 +312,13 @@ def test_atomic_materialization_namespaces_native_patch_and_rebuild(
 
     manifest = load_manifest(result.root)
     assert {op.slot for op in manifest.ops} == {
-        "collective.ar_residual_rmsnorm",
-        "collective.moe_finalize_ar_rmsnorm",
+        "collective.all_gather_into_tensor",
+        "collective.reduce_scatter_tensor",
     }
-    assert len(manifest.dep_patches) == 1
     assert all(op.source.startswith("entries/cacheon_c_") for op in manifest.ops)
-    assert all(op.cuda_sources[0].startswith("cuda/cacheon_c_") for op in manifest.ops)
     source = (result.root / manifest.ops[0].source).read_text()
     assert "from cacheon_c_" in source
-    assert "import fused_epilogue_sm103" not in source
-    assert json.loads((result.root / "rebuild.json").read_text()) == {
-        "steps": [
-            {
-                "path": "cacheon/patchers/apply_dep_patch.py",
-                "type": "repo_python",
-            },
-            {
-                "path": "cacheon/patchers/build_cuda_ext.py",
-                "type": "repo_python",
-            },
-        ]
-    }
+    assert not (result.root / "rebuild.json").exists()
     assert content_hash(FUSED) == source_hash
     assert source_modes == {
         path.relative_to(FUSED): path.stat().st_mode
@@ -802,7 +793,7 @@ def test_imported_local_inputs_enter_selected_identity(tmp_path: Path) -> None:
 
 
 def test_native_from_import_is_rewritten(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     kernel = source / "kernels" / "fused_epilogue.py"
     kernel.write_text(
         "from fused_epilogue_sm103 import ar_residual_rmsnorm as native_ar\n"
@@ -1002,11 +993,11 @@ def test_unresolved_or_partial_local_imports_fail_closed(
 def test_partial_declared_native_import_fails_closed(
     tmp_path: Path, source_text: str,
 ) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     (source / "kernels" / "fused_epilogue.py").write_text(
         source_text
-        + "def ar_residual_rmsnorm(*args):\n    return None\n"
-        + "def moe_finalize_ar_rmsnorm(*args):\n    return None\n"
+        + "def prepare(*args):\n    return None\n"
+        + "def fused_experts(*args):\n    return None\n"
     )
     with pytest.raises(EngineTreeError, match="partially local"):
         inspect_contribution(source, catalog=default_target_catalog())
@@ -1035,14 +1026,14 @@ def test_bare_namespace_and_nonidentifier_module_paths_fail_closed(tmp_path: Pat
 
 
 def test_python_native_name_collision_fails_during_inspection(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     (source / "fused_epilogue_sm103.py").write_text("collision = True\n")
     with pytest.raises(EngineTreeError, match="both local Python and declared native"):
         inspect_contribution(source, catalog=default_target_catalog())
 
 
 def test_ambiguous_declared_native_stems_fail_closed(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     duplicate = source / "other" / "fused_epilogue_sm103.cu"
     duplicate.parent.mkdir()
     shutil.copy2(source / "kernels" / "fused_epilogue_sm103.cu", duplicate)
@@ -1065,7 +1056,7 @@ def test_nonregular_source_tree_entries_fail_closed(tmp_path: Path) -> None:
 def test_declared_cuda_headers_enter_identity_and_undeclared_headers_reject(
     tmp_path: Path,
 ) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, '#include "helper.cuh" /* selected */\n')
     (source / "kernels" / "helper.cuh").write_text("#define HELPER 1\n")
     with pytest.raises(EngineTreeError, match="undeclared local input"):
@@ -1077,14 +1068,14 @@ def test_declared_cuda_headers_enter_identity_and_undeclared_headers_reject(
 
 
 def test_dynamic_cuda_include_directives_fail_closed(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, '#define HEADER "unbound.cuh"\n#include HEADER\n')
     with pytest.raises(EngineTreeError, match="dynamic include"):
         inspect_contribution(source, catalog=default_target_catalog())
 
 
 def test_literal_cuda_includes_allow_comment_only_suffixes(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     cuda = source / "kernels" / "fused_epilogue_sm103.cu"
     cuda.write_text(
         cuda.read_text().replace(
@@ -1097,14 +1088,14 @@ def test_literal_cuda_includes_allow_comment_only_suffixes(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("header", ["/tmp/unbound.cuh", "../../unbound.cuh"])
 def test_unsafe_system_cuda_includes_fail_closed(tmp_path: Path, header: str) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, f"#include <{header}>\n")
     with pytest.raises(EngineTreeError, match="unsafe system include"):
         inspect_contribution(source, catalog=default_target_catalog())
 
 
 def test_missing_quoted_cuda_include_cannot_escape_dependency_roots(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, '#include "../unbound.cuh"\n')
     with pytest.raises(EngineTreeError, match="unsafe dependency include"):
         inspect_contribution(source, catalog=default_target_catalog())
@@ -1120,14 +1111,14 @@ def test_missing_quoted_cuda_include_cannot_escape_dependency_roots(tmp_path: Pa
 def test_alternate_cuda_include_directives_fail_closed(
     tmp_path: Path, directive: str
 ) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, directive + "\n")
     with pytest.raises(EngineTreeError, match="unsupported include"):
         inspect_contribution(source, catalog=default_target_catalog())
 
 
 def test_line_spliced_cuda_include_is_still_validated(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, '#inc\\\nlude "/tmp/unbound.cuh"\n')
     with pytest.raises(EngineTreeError, match="safe relative path"):
         inspect_contribution(source, catalog=default_target_catalog())
@@ -1231,11 +1222,8 @@ def test_packaging_order_ids_and_json_whitespace_do_not_choose_namespace(
     prefix, first_op, second_op = manifest.read_text().split("[[ops]]")
     manifest.write_text(
         (prefix + "[[ops]]" + second_op + "[[ops]]" + first_op)
-        .replace("fixture-fused-epilogue-atomic", "ignored-packaging-id")
+        .replace("fixture-dp-exchange-atomic", "ignored-packaging-id")
     )
-    rebuild = json.loads((reordered / "rebuild.json").read_text())
-    rebuild["steps"].reverse()
-    (reordered / "rebuild.json").write_text(json.dumps(rebuild, separators=(",", ":")))
     for metadata_path in (reordered / "metadata").glob("*.json"):
         metadata = json.loads(metadata_path.read_text())
         metadata_path.write_text(json.dumps(metadata, indent=6) + "\n")
@@ -1252,65 +1240,34 @@ def test_packaging_order_ids_and_json_whitespace_do_not_choose_namespace(
 
 @pytest.mark.parametrize(
     "input_class",
-    ["op", "metadata", "python", "cuda", "header", "patch"],
+    ["op", "metadata", "python"],
 )
 def test_every_selected_executable_input_class_rotates_delta(
     tmp_path: Path, input_class: str
 ) -> None:
     source = _copy(tmp_path, FUSED)
-    if input_class == "header":
-        header = source / "kernels" / "helper.cuh"
-        header.write_text("#define VALUE 1\n")
-        _cuda_prepend(source, '#include "helper.cuh"\n')
-        _declare_cuda(source, "kernels/helper.cuh")
     before = inspect_contribution(source, catalog=default_target_catalog())
 
     if input_class == "op":
         manifest = source / "manifest.toml"
         manifest.write_text(
             manifest.read_text().replace(
-                'entry = "ar_residual_rmsnorm"',
-                'entry = "ar_residual_rmsnorm_v2"',
+                'entry = "all_gather_into_tensor"',
+                'entry = "all_gather_into_tensor_v2"',
                 1,
             )
         )
     elif input_class == "metadata":
-        path = source / "metadata" / "ar_norm.json"
+        path = source / "metadata" / "all_gather.json"
         metadata = json.loads(path.read_text())
-        metadata["max_num_tokens"] = 999
+        metadata["architectures"].append("sm100")
         path.write_text(json.dumps(metadata))
-    elif input_class == "python":
-        path = source / "kernels" / "fused_epilogue.py"
-        path.write_text(path.read_text() + "\n# selected source revision\n")
-    elif input_class == "cuda":
-        path = source / "kernels" / "fused_epilogue_sm103.cu"
-        path.write_text(path.read_text() + "\n// selected CUDA revision\n")
-    elif input_class == "header":
-        path = source / "kernels" / "helper.cuh"
-        path.write_text("#define VALUE 2\n")
     else:
-        path = source / "patches" / "flashinfer.patch"
-        path.write_text(path.read_text().replace("export_prefinalize", "export_prefinalize_v2"))
+        path = source / "kernels" / "exchange.py"
+        path.write_text(path.read_text() + "\n# selected source revision\n")
 
     after = inspect_contribution(source, catalog=default_target_catalog())
     assert after.selected_payload_digest != before.selected_payload_digest
-    assert after.selected_delta_digest != before.selected_delta_digest
-
-
-def test_registered_patcher_source_identity_rotates_selected_delta(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    patchers = repo / "cacheon" / "patchers"
-    patchers.mkdir(parents=True)
-    real_patchers = Path(engine_tree.__file__).parent / "patchers"
-    for name in ("apply_dep_patch.py", "build_cuda_ext.py"):
-        shutil.copy2(real_patchers / name, patchers / name)
-    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
-    before = inspect_contribution(FUSED, catalog=default_target_catalog())
-    builder = patchers / "build_cuda_ext.py"
-    builder.write_text(builder.read_text() + "\n# reviewed patcher revision\n")
-    after = inspect_contribution(FUSED, catalog=default_target_catalog())
     assert after.selected_delta_digest != before.selected_delta_digest
 
 
@@ -1398,34 +1355,18 @@ def test_failed_preinstall_verification_leaves_no_destination(
 def test_runtime_rebuild_order_is_global_not_contribution_order() -> None:
     raw = engine_tree._runtime_rebuild(
         [
+            {"type": "repo_python", "path": "cacheon/patchers/build_cute_cubin.py"},
             {"type": "repo_python", "path": "cacheon/patchers/build_cuda_ext.py"},
-            {"type": "repo_python", "path": "cacheon/patchers/apply_dep_patch.py"},
         ]
     )
     assert raw is not None
     assert [row["path"] for row in json.loads(raw)["steps"]] == [
-        "cacheon/patchers/apply_dep_patch.py",
         "cacheon/patchers/build_cuda_ext.py",
+        "cacheon/patchers/build_cute_cubin.py",
     ]
 
 
-def test_dependency_patch_destinations_cannot_overlap_by_order() -> None:
-    inspected = inspect_contribution(FUSED, catalog=default_target_catalog())
-    destinations: set[tuple[str, str]] = set()
-    engine_tree._contribution_files(
-        inspected,
-        delta_digest=inspected.selected_delta_digest,
-        patch_destinations=destinations,
-    )
-    with pytest.raises(EngineTreeError, match="patch destination collision"):
-        engine_tree._contribution_files(
-            inspected,
-            delta_digest=_digest("other-delta"),
-            patch_destinations=destinations,
-        )
-
-
-@pytest.mark.parametrize("fixture", [SINGLETON, FUSED], ids=["norm-singleton", "atomic-fused"])
+@pytest.mark.parametrize("fixture", [SINGLETON, FUSED], ids=["norm-singleton", "atomic-dp"])
 def test_fixture_materialization_binds_marginal_arm_and_exact_rollback(
     tmp_path: Path, fixture: Path,
 ) -> None:

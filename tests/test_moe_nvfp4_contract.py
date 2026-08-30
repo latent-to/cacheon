@@ -24,7 +24,7 @@ from cacheon.verify import verify_entry  # noqa: E402
 SHAPE = {"num_tokens": 4, "num_experts": 4, "hidden": 64, "inter": 64, "topk": 2}
 WEIGHT_FIELDS = (
     "w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale",
-    "g1_alphas", "g2_alphas", "w13_input_scale_quant",
+    "g1_scale_c", "g1_alphas", "g2_alphas", "w13_input_scale_quant",
     "w2_input_scale_quant", "intermediate_size_per_partition",
 )
 

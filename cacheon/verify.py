@@ -930,10 +930,7 @@ def _verification_call_descriptor(
     fields = {"dtype": _name(dtype), "architecture": resolved_arch}
     if primary is not None and primary.dim() > 0:
         fields["last_dim"] = int(primary.shape[-1])
-        if slot.name in {
-            "collective.ar_residual_rmsnorm",
-            "collective.moe_finalize_ar_rmsnorm",
-        }:
+        if slot.name == "collective.ar_residual_rmsnorm":
             fields["num_tokens"] = int(primary.shape[0])
     return CallDescriptor(fields)
 

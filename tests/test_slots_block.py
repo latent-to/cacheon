@@ -24,6 +24,10 @@ ROUTED_MOE_BUNDLE = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py
 def test_slot_kind_discriminator():
     assert get_slot("moe.fused_experts").kind == "block"
     assert get_slot("moe.fused_routed_experts").kind == "block"
+    assert get_slot("linear.dense").kind == "block"
+    assert get_slot("collective.all_gather_into_tensor").kind == "collective"
+    assert get_slot("collective.reduce_scatter_tensor").kind == "collective"
+    assert get_slot("norm.fused_add_rmsnorm").kind == "block"
     assert get_slot("activation.silu_and_mul").kind == "op"
     assert get_slot("norm.rmsnorm").kind == "op"
 
@@ -38,6 +42,24 @@ def test_moe_prepare_forward_passes_correctness_cpu():
     assert result.passed, "\n".join(
         f"{r.shape}: ratio={r.pass_ratio} {r.detail}" for r in result.shape_results
     )
+
+
+def test_dense_prepare_forward_passes_correctness_cpu():
+    def prepare(weight):
+        return weight
+
+    def dense(x, weight, out):
+        torch.mm(x, weight.t(), out=out)
+
+    result = verify_entry(
+        get_slot("linear.dense"),
+        dense,
+        prepare=prepare,
+        dtype=torch.float32,
+        device="cpu",
+        seed=0,
+    )
+    assert result.passed
 
 
 def test_moe_broken_prepare_fails_cpu():
@@ -117,6 +139,25 @@ def test_silu_op_still_verifies_under_generalized_spec():
     assert result.passed
 
 
+def test_fused_add_rmsnorm_block_verifies_both_outputs():
+    def fused(x, residual, weight, eps, out_norm, out_residual):
+        out_residual.copy_(x + residual)
+        fp32 = out_residual.float()
+        variance = fp32.square().mean(-1, keepdim=True)
+        out_norm.copy_(
+            (fp32 * torch.rsqrt(variance + eps) * weight.float()).to(x.dtype)
+        )
+
+    result = verify_entry(
+        get_slot("norm.fused_add_rmsnorm"),
+        fused,
+        dtype=torch.float32,
+        device="cpu",
+        seed=0,
+    )
+    assert result.passed
+
+
 def test_matched_ratio_is_active_only_for_the_block_slot():
     # The op slots keep all-close; the block slots use matched_ratio. This guards
     # against accidentally loosening the op gates when the abstraction was generalized.
@@ -124,3 +165,5 @@ def test_matched_ratio_is_active_only_for_the_block_slot():
     assert get_slot("norm.rmsnorm").correctness.mode == "allclose"
     assert get_slot("moe.fused_experts").correctness.mode == "matched_ratio"
     assert get_slot("moe.fused_routed_experts").correctness.mode == "matched_ratio"
+    assert get_slot("linear.dense").correctness.mode == "matched_ratio"
+    assert get_slot("norm.fused_add_rmsnorm").correctness.mode == "matched_ratio"

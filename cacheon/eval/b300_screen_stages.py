@@ -89,7 +89,6 @@ from cacheon.manifest import (
     Manifest,
     ManifestError,
     all_declared_cuda_sources,
-    all_declared_dep_patches,
     load_manifest,
 )
 from cacheon.rebuild import RebuildError
@@ -320,12 +319,7 @@ def _validate_static_candidate(
             raise _CandidateStaticFailure("candidate Python is not UTF-8") from exc
     inspected = inspect_contribution(root, catalog=catalog)
     declared_cuda = all_declared_cuda_sources(root, manifest)
-    declared_patches = all_declared_dep_patches(root, manifest)
-    scan = scan_tree(
-        root,
-        declared_cuda_sources=declared_cuda,
-        declared_dep_patches=declared_patches,
-    )
+    scan = scan_tree(root, declared_cuda_sources=declared_cuda)
     if not scan.ok:
         raise _CandidateStaticFailure("recursive candidate policy rejected bytes")
     reservation = candidate.reservation
@@ -583,9 +577,7 @@ def _session_plan_digest(plan: SessionExecutionPlan) -> str:
         [hashlib.sha256(prompt.encode("utf-8")).hexdigest() for prompt in batch]
         for batch in plan.prompt_batches
     ]
-    return canonical_digest(
-        "cacheon.eval.b300-screen-session-plan.v1",
-        {
+    payload = {
             "audit_policy_digest": (
                 None if plan.audit_policy is None else plan.audit_policy.digest
             ),
@@ -601,8 +593,18 @@ def _session_plan_digest(plan: SessionExecutionPlan) -> str:
             "temperature": format(plan.temperature, ".17g"),
             "top_logprobs_num": plan.top_logprobs_num,
             "warmup_count": plan.warmup_count,
-        },
-    )
+        }
+    if plan.batch_max_new_tokens or plan.quality_max_new_tokens is not None:
+        payload["batch_request_geometry"] = [
+            [tokens, prompt_tokens]
+            for tokens, prompt_tokens in zip(
+                plan.batch_max_new_tokens,
+                plan.batch_expected_prompt_tokens,
+                strict=True,
+            )
+        ]
+        payload["quality_max_new_tokens"] = plan.quality_tokens_per_prompt
+    return canonical_digest("cacheon.eval.b300-screen-session-plan.v1", payload)
 
 
 def _same_launch_except_engine_config(

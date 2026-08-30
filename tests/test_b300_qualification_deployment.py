@@ -45,6 +45,7 @@ from cacheon.eval.b300_registered_qualification_inputs import (
 from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
 )
+from tests.support.b300 import M3_REGISTERED_TARGET_IDS
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.oci_backend import (
     OCIBackendConfig,
@@ -119,7 +120,13 @@ def _incumbent(runtime: ArenaRuntimeIdentity, arena_digest: str):
     )
 
 
-def _profiles(catalog, builder_source: str, resolvers=None):
+def _profiles(
+    catalog,
+    builder_source: str,
+    resolvers=None,
+    *,
+    registered_target_ids=M3_REGISTERED_TARGET_IDS,
+):
     by_target = {} if resolvers is None else resolvers
     return tuple(
         deployment.B300RegisteredProfileAuthority(
@@ -131,7 +138,9 @@ def _profiles(catalog, builder_source: str, resolvers=None):
             ),
             by_target.get(target.target_id, lambda _candidate, _prepared: object()),
         )
-        for target in registered_b300_member_contract_projection(catalog)
+        for target in registered_b300_member_contract_projection(
+            catalog, registered_target_ids
+        )
     )
 
 
@@ -142,6 +151,7 @@ def _construction(tmp_path: Path, runtime: ArenaRuntimeIdentity):
     count_quality = authority_fixtures._resident_count_quality(catalog, evidence_root)
     return deployment.B300QualificationConstructionAuthority(
         catalog=catalog,
+        registered_target_ids=M3_REGISTERED_TARGET_IDS,
         profiles=_profiles(catalog, builder_source),
         incumbent_stack=incumbent,
         incumbent_tree_digest=_h("incumbent-tree"),
@@ -525,10 +535,8 @@ def test_registered_target_and_canonical_evidence_root_are_fail_closed(
     construction = _construction(tmp_path, _runtime())
 
     assert construction.profile_for("moe.fused_experts").target_id == "moe.fused_experts"
-    assert (
-        construction.profile_for("collective.moe_epilogue.v1").target_id
-        == "collective.moe_epilogue.v1"
-    )
+    with pytest.raises(deployment.B300QualificationDeploymentError, match="unsupported"):
+        construction.profile_for("collective.dp_attention_exchange.v1")
     with pytest.raises(deployment.B300QualificationDeploymentError, match="unsupported"):
         construction.profile_for("unknown.registered.target")
     with pytest.raises(
@@ -602,7 +610,13 @@ def _registered_construction(harness, value, secret: bytes):
     )
     return deployment.B300QualificationConstructionAuthority(
         catalog=harness.inputs.catalog,
-        profiles=_profiles(harness.inputs.catalog, builder_source, resolvers),
+        registered_target_ids=harness.policy.registered_target_ids,
+        profiles=_profiles(
+            harness.inputs.catalog,
+            builder_source,
+            resolvers,
+            registered_target_ids=harness.policy.registered_target_ids,
+        ),
         incumbent_stack=harness.inputs.incumbent_stack,
         incumbent_tree_digest=value.prepared.incumbent_binding.tree.tree_digest,
         pristine_stack=harness.inputs.pristine_stack,
@@ -738,7 +752,7 @@ def test_deployment_accepts_atomic_registered_plan_on_both_retained_stages(
     )
 
     assert accepted is value
-    assert cohort.candidate.reservation.target_id == "collective.moe_epilogue.v1"
+    assert cohort.candidate.reservation.target_id == "collective.dp_attention_exchange.v1"
     assert tuple(
         row.slot_id for row in accepted.candidates[0].graph_requirement.binding.members
     ) == cohort.candidate.reservation.target_members

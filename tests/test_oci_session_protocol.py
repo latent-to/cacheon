@@ -150,17 +150,20 @@ def test_engine_config_is_exact_immutable_and_digest_stable() -> None:
     assert len(config.digest) == 64
 
 
-def test_seam_binding_table_is_closed_and_deep_epilogue_shares_arfusion() -> None:
+def test_seam_binding_table_is_closed() -> None:
     assert dict(SEAM_BINDING_ENV_GATES) == {
         "arfusion": "CACHEON_ARFUSION_SEAM",
         "collective": "CACHEON_COLLECTIVE_SEAM",
+        "dense": "CACHEON_DENSE_SEAM",
         "moe": "CACHEON_MOE_SEAM",
     }
     bindings = {binding.binding_id: binding for binding in SEAM_BINDINGS}
-    assert bindings["arfusion"].adapters == (
-        "arfusion",
-        "defer_gate",
-        "moe_export",
+    assert bindings["arfusion"].adapters == ("arfusion",)
+    assert bindings["moe"].adapters == (
+        "moe",
+        "moe_deferred",
+        "moe_deferred_finalize",
+        "moe_reduce",
     )
     for binding in SEAM_BINDINGS:
         adapter_rows = tuple(
@@ -180,11 +183,13 @@ def test_seam_bindings_normalize_and_emit_complete_explicit_environment() -> Non
     assert seam_binding_environment(selected) == {
         "CACHEON_ARFUSION_SEAM": "1",
         "CACHEON_COLLECTIVE_SEAM": "0",
+        "CACHEON_DENSE_SEAM": "0",
         "CACHEON_MOE_SEAM": "1",
     }
     assert seam_binding_environment(()) == {
         "CACHEON_ARFUSION_SEAM": "0",
         "CACHEON_COLLECTIVE_SEAM": "0",
+        "CACHEON_DENSE_SEAM": "0",
         "CACHEON_MOE_SEAM": "0",
     }
 

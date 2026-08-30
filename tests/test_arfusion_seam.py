@@ -187,17 +187,12 @@ def test_dispatcher_autotuner_stays_stock_before_selection(monkeypatch, _fake_gr
     import cacheon.dispatch as dispatch
 
     monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
-    monkeypatch.setattr(dispatch._moe_export, "flashinfer_tuning", lambda: True)
+    monkeypatch.setattr(dispatch, "_flashinfer_tuning", lambda: True)
     reg = _registry()
     monkeypatch.setattr(
         reg,
         "select",
         lambda *args, **kwargs: pytest.fail("autotuning reached miner selection"),
-    )
-    monkeypatch.setattr(
-        dispatch._moe_export,
-        "has_pends",
-        lambda: pytest.fail("autotuning reached deep consume"),
     )
     calls = []
     d = make_arfusion_dispatcher(_baseline_recorder(calls), registry=reg)

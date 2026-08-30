@@ -17,7 +17,6 @@ from cacheon.eval.b300_qualification_deployment import (
 )
 from cacheon.eval.b300_registered_qualification_inputs import _COMMISSION_SEAL
 from cacheon.eval.b300_registered_qualification import (
-    REGISTERED_B300_TARGET_IDS,
     B300RegisteredQualificationError,
     B300RegisteredQualificationInputs,
     B300RegisteredQualificationPolicy,
@@ -173,11 +172,12 @@ def _tracked_deadline_provider(
 
 def _require_complete_factory_profiles(
     profiles: object,
+    registered_target_ids: tuple[str, ...],
 ) -> dict[str, B300RegisteredProfileAuthority]:
     if (
         type(profiles) is not tuple
         or any(type(row) is not B300RegisteredProfileAuthority for row in profiles)
-        or tuple(row.target_id for row in profiles) != REGISTERED_B300_TARGET_IDS
+        or tuple(row.target_id for row in profiles) != registered_target_ids
     ):
         raise B300QualificationCommissionError(
             "registered qualification factory does not cover the full catalog"
@@ -368,6 +368,8 @@ def compose_commissioned_qualifications(
     try:
         policy = B300RegisteredQualificationPolicy.seal(
             catalog,
+            registered_target_ids=inputs.registered_target_ids,
+            model_profile_key=inputs.model_profile_key,
             verification_policy_digest=block["verification_policy_digest"],
             nll_tail_threshold=policy_block["nll_tail_threshold"],
             tokens_per_prompt=policy_block["tokens_per_prompt"],
@@ -444,12 +446,28 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
     construction and must die here, not forty minutes into a measured run.
     """
 
-    cell = screen_deployment._scored_cell(inputs.workload)
+    quality_cell = screen_deployment._scored_cell(inputs.workload)
+    batch_cells = getattr(
+        inputs,
+        "prompt_batch_cells",
+        (quality_cell.cell_id,) * len(inputs.prompt_batches),
+    )
+    expected_counts = {
+        cell.cell_id: cell.timed_reads
+        + (session_block["warmup_count"] if cell is quality_cell else 0)
+        for cell in inputs.workload.cells
+    }
+    observed_counts = {
+        cell.cell_id: batch_cells.count(cell.cell_id)
+        for cell in inputs.workload.cells
+    }
     if (
-        policy.tokens_per_prompt != cell.output_tokens
-        or len(inputs.prompt_batches)
-        != session_block["warmup_count"] + cell.timed_reads
-        or speed_block["min_windows"] > cell.timed_reads
+        policy.tokens_per_prompt != quality_cell.output_tokens
+        or type(batch_cells) is not tuple
+        or len(batch_cells) != len(inputs.prompt_batches)
+        or observed_counts != expected_counts
+        or speed_block["min_windows"]
+        > sum(cell.timed_reads for cell in inputs.workload.cells)
     ):
         raise B300QualificationCommissionError(
             "sealed session does not conform to the declared workload cell"
@@ -502,10 +520,12 @@ def _compose_locked(
         )
     )
     engine_config = screen_deployment._engine_config(
+        inputs.engine_template,
         target_members,
-        screen_deployment._scored_cell(inputs.workload),
+        inputs.workload.cells,
         disable_cuda_graph=False,
     )
+    dp_size = screen_deployment._data_parallel_size(engine_config)
     baseline_hardware = LogicalHardwareSpec(
         visible_gpu_count=screen_deployment.GPU_COUNT,
         architecture=screen_deployment.ARCHITECTURE,
@@ -513,7 +533,7 @@ def _compose_locked(
         topology_digest=inputs.topology_digest,
         tp_size=screen_deployment.TP_SIZE,
         ep_size=1,
-        dp_size=1,
+        dp_size=dp_size,
         device_policy_digest=candidate_executor.device_policy.policy_sha256,
     )
     baseline_physical = PhysicalHardwareBinding(
@@ -526,7 +546,7 @@ def _compose_locked(
         topology_digest=inputs.topology_digest,
         tp_size=screen_deployment.TP_SIZE,
         ep_size=1,
-        dp_size=1,
+        dp_size=dp_size,
         device_policy_digest=candidate_executor.device_policy.policy_sha256,
     )
     incumbent_native = screen_deployment._native_build(
@@ -579,6 +599,10 @@ def _compose_locked(
         physical_hardware=baseline_physical,
     )
     pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
+    quality_cell = screen_deployment._scored_cell(inputs.workload)
+    cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
+    batch_cells = tuple(inputs.prompt_batch_cells)
+    mixed_cells = len(inputs.workload.cells) > 1
     baseline_session_plan = SessionExecutionPlan(
         launch_digest=incumbent_launch.digest,
         expected_engine_config_digest=engine_config.digest,
@@ -592,9 +616,18 @@ def _compose_locked(
         max_new_tokens=policy.tokens_per_prompt,
         top_logprobs_num=policy.topk_width,
         temperature=float(session_block["temperature"]),
-        expected_prompt_tokens=screen_deployment._scored_cell(
-            inputs.workload
-        ).input_tokens,
+        expected_prompt_tokens=quality_cell.input_tokens,
+        batch_max_new_tokens=(
+            tuple(cells_by_id[cell_id].output_tokens for cell_id in batch_cells)
+            if mixed_cells
+            else ()
+        ),
+        batch_expected_prompt_tokens=(
+            tuple(cells_by_id[cell_id].input_tokens for cell_id in batch_cells)
+            if mixed_cells
+            else ()
+        ),
+        quality_max_new_tokens=(quality_cell.output_tokens if mixed_cells else None),
     )
     pristine_launch, pristine_session_plan = _pristine_reference_authority(
         incumbent_launch,
@@ -754,7 +787,7 @@ def _compose_locked(
         # a swap, which handed the candidate role a measured advantage on
         # identical work; every v7 gate is `>=`, so it inherits v6 grading
         # unchanged and adds only the symmetric swap.
-        version=7,
+        version=9 if mixed_cells else 7,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),
@@ -889,7 +922,9 @@ def _compose_locked(
             f"registered qualification factory failed to compose: {exc}"
         ) from None
 
-    factory_rows = _require_complete_factory_profiles(factory.profiles)
+    factory_rows = _require_complete_factory_profiles(
+        factory.profiles, inputs.registered_target_ids
+    )
     profiles = tuple(
         B300RegisteredProfileAuthority(
             target_id,
@@ -900,12 +935,14 @@ def _compose_locked(
         for target_id, spec_digest, resolver_digest in (
             sealed_qualification_profile_rows(
                 catalog,
+                registered_target_ids=inputs.registered_target_ids,
                 builder_source_digest=block["builder_source_digest"],
             )
         )
     )
     construction = B300QualificationConstructionAuthority(
         catalog=catalog,
+        registered_target_ids=inputs.registered_target_ids,
         profiles=profiles,
         incumbent_stack=incumbent,
         incumbent_tree_digest=incumbent_tree.tree_digest,

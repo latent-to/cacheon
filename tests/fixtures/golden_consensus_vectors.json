@@ -5,12 +5,17 @@
       "Linux x86_64 (two-B200 validator host), CPython 3.12, 2026-08-09",
       "macOS arm64, CPython 3.11, 2026-08-23 (two example bundles repinned)",
       "Linux x86_64 (eight-B300 pod), CPython 3.12, 2026-08-23 (cross-check)",
-      "macOS arm64, CPython 3.11, 2026-08-30 (identity epoch: M3 attention bundles retired, routed MoE bundle pinned, singleton fixture repointed at norm.rmsnorm; every carried-over tree's digest unchanged; Linux cross-check pending)"
+      "macOS arm64, CPython 3.11, 2026-08-30 (identity epoch: M3 attention bundles retired, routed MoE bundle pinned, singleton fixture repointed at norm.rmsnorm; every carried-over tree's digest unchanged)",
+      "macOS arm64, CPython 3.10, 2026-08-30 (three GLM starter bundles pinned)",
+      "Linux x86_64 (eight-B300 pod), CPython 3.12, 2026-08-30 (cross-check of the new GLM bundles and current atomic/singleton fixtures)"
     ],
     "contract": "content_hash(tree) for every committed example bundle and stack fixture; see tests/test_golden_consensus_vectors.py"
   },
   "content_hashes": {
     "examples/miner_allreduce_torch": "e17a2f17833f7b59c7f1f27684773bb5d9210296304e51ebbf1707b7355e7c68",
+    "examples/miner_dense_torch": "d200501fa0a2af77f396965fb47a384d370e868276c95d6a05b4690b68eb7722",
+    "examples/miner_dp_attention_exchange_torch": "3ccc5695615698c3a1493fc24cb7ebb1b18d26df79f1219b3c46ed7f7e7d1dda",
+    "examples/miner_fused_add_rmsnorm_torch": "197db8d56d530dc5a33e39c8a26dcd5915c72ae52d907f75320e53bf7a749107",
     "examples/miner_moe_fused_experts_reduce_torch": "edf967fe578becaece04c26ece0777fd4e9f600577a1bc34d975d94f0bde248b",
     "examples/miner_moe_fused_experts_torch": "5376645cb576601d279ab30c890c519dccb72db980e547df531dd21b36d162be",
     "examples/miner_moe_fused_routed_torch": "cfb8212c4ec64ea1b0a3100b4912d2b8af54d03f9e442bf3d934eafc3766a6e0",
@@ -22,7 +27,6 @@
     "examples/miner_silu_sparse": "8ceb1a7e48f3b207ab1503826ac6b073343e5c36170b1b556f718c4b92358891",
     "examples/miner_silu_torch": "3d518dda8356bddd8c18fc2d3d02465a044135caee04853609ccdcb6c35c44db",
     "examples/miner_silu_triton": "b94303ed254f96cb09c5c65e410b76a5b32d04b2d5d6251bca741db36fa5c92e",
-    "tests/fixtures/stack_fused_epilogue_atomic": "da41654eb467be71245fc5a2a9d5c14e364d5a95653c42f0ad31b94e6d9e9ad0",
     "tests/fixtures/stack_norm_singleton": "7a87ddf2a4d03ea4b5f4c9fffc16354a0cefed1b36f00c8db3e694e1573ff80c"
   }
 }

@@ -16,7 +16,7 @@ NVFP4_GATE_UP_LAYOUT = "gate_up"
 NVFP4_INTERLEAVED_LAYOUT = "up_gate_interleaved_64+sf_swizzled_128x4"
 _NVFP4_TENSORS = (
     "w13_weight", "w2_weight", "w13_blockscale_swizzled",
-    "w2_blockscale_swizzled", "g1_alphas", "g2_alphas",
+    "w2_blockscale_swizzled", "g1_scale_c", "g1_alphas", "g2_alphas",
     "w13_input_scale_quant", "w2_input_scale_quant",
 )
 
@@ -142,6 +142,7 @@ def _layer_view(
     experts = int(w13.shape[0])
     g1 = _value(source, "g1_alphas")
     g2 = _value(source, "g2_alphas")
+    g1_scale_c = _value(source, "g1_scale_c")
     a1 = _value(source, "w13_input_scale_quant")
     a2 = _value(source, "w2_input_scale_quant")
     intermediate = int(_value(source, "intermediate_size_per_partition"))
@@ -152,7 +153,7 @@ def _layer_view(
         w13_weight=w13, w2_weight=w2,
         w13_weight_scale=w13_sf, w2_weight_scale=w2_sf,
         w13_blockscale_swizzled=w13_sf, w2_blockscale_swizzled=w2_sf,
-        g1_alphas=g1, g2_alphas=g2,
+        g1_scale_c=g1_scale_c, g1_alphas=g1, g2_alphas=g2,
         w13_input_scale_quant=a1, w2_input_scale_quant=a2,
         fc1_input_dequant=a1.float().reciprocal(), fc1_dequant=g1,
         fc2_quant=a2, fc2_dequant=g2,
@@ -232,6 +233,7 @@ def verification_inputs(dense: Mapping[str, object]) -> dict[str, object]:
         "w13_weight_scale": codec.swizzle_blockscale(w13_sf),
         "w2_weight_scale": codec.swizzle_blockscale(w2_sf),
         "g1_alphas": ones,
+        "g1_scale_c": ones.clone(),
         "g2_alphas": ones.clone(),
         "w13_input_scale_quant": ones.clone(),
         "w2_input_scale_quant": ones.clone(),

@@ -7,7 +7,11 @@ import pytest
 torch = pytest.importorskip("torch")
 
 import cacheon.dispatch as dispatch  # noqa: E402
-from cacheon.dispatch import make_moe_dispatcher  # noqa: E402
+from cacheon.dispatch import (  # noqa: E402
+    make_moe_deferred_dispatcher,
+    make_moe_deferred_finalize_dispatcher,
+    make_moe_dispatcher,
+)
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
 from cacheon.sandbox import load_entry  # noqa: E402
 from cacheon.slots import get_slot  # noqa: E402
@@ -166,7 +170,7 @@ def _routed_topk_output(inputs, **overrides):
         routed_scaling_factor=inputs["routed_scaling"],
         scoring_func="sigmoid",
         renormalize=True,
-        apply_routed_scaling_factor_on_output=False,
+        apply_routed_scaling_factor_on_output=True,
         custom_routing_function=None,
         num_fused_shared_experts=0,
         use_grouped_topk=False,
@@ -216,7 +220,7 @@ def test_routed_moe_dispatches_on_bypassed_routing(monkeypatch):
 
 def test_routed_moe_out_of_contract_config_stays_stock(monkeypatch):
     # A routing config outside the slot's fixed head (softmax scoring, grouped
-    # selection, output-side scaling, fused shared experts) must serve stock —
+    # selection, missing output-side scaling, fused shared experts) must serve stock —
     # the dispatcher never approximates routing semantics.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _routed_inputs()
@@ -228,7 +232,7 @@ def test_routed_moe_out_of_contract_config_stays_stock(monkeypatch):
     layer = _fake_layer(inputs)
     for bad in (
         {"scoring_func": "softmax"},
-        {"apply_routed_scaling_factor_on_output": True},
+        {"apply_routed_scaling_factor_on_output": False},
         {"num_fused_shared_experts": 1},
         {"use_grouped_topk": True, "num_expert_group": 4, "topk_group": 2},
         {"renormalize": False},
@@ -236,6 +240,27 @@ def test_routed_moe_out_of_contract_config_stays_stock(monkeypatch):
     ):
         out = dispatched(layer, inputs["x"], _routed_topk_output(inputs, **bad))
         assert out is _BASELINE, f"config {bad} must stay stock"
+
+
+def test_routed_moe_deferred_path_joins_stock_shared_output(monkeypatch):
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    inputs = _routed_inputs()
+    entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    prepare = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+    deferred = make_moe_deferred_dispatcher(
+        _baseline_forward, registry=_routed_registry(entry, prepare)
+    )
+    finalize = make_moe_deferred_finalize_dispatcher(
+        lambda value, shared: (value, shared)
+    )
+
+    routed = get_slot("moe.fused_routed_experts").invoke_reference(inputs)[0]
+    shared = torch.randn_like(routed)
+    pending = deferred(
+        _fake_layer(inputs), inputs["x"], _routed_topk_output(inputs)
+    )
+    out = finalize(pending, shared)
+    assert _matched_ratio(out, routed + shared) == 1.0
 
 
 def test_routed_moe_prepare_receives_routing_config(monkeypatch):
@@ -318,20 +343,34 @@ def test_install_patches_forward_impl(monkeypatch):
     def forward_impl(self, hidden_states, topk_output):     # the waist — must be patched
         return ("impl", hidden_states)
 
+    def forward_deferred_finalize(self, hidden_states, topk_output):
+        return ("deferred", hidden_states)
+
+    def finalize_deferred(value, shared):
+        return (value, shared)
+
     class FakeFusedMoE:
         pass
 
     FakeFusedMoE.forward = forward
     FakeFusedMoE.forward_impl = forward_impl
+    FakeFusedMoE.forward_deferred_finalize = forward_deferred_finalize
     mod = ModuleType(sglang_moe._MODULE)
     mod.FusedMoE = FakeFusedMoE
+    finalizer_mod = ModuleType(sglang_moe._FINALIZER_MODULE)
+    setattr(finalizer_mod, sglang_moe._FINALIZER_FUNC, finalize_deferred)
     monkeypatch.setitem(sys.modules, sglang_moe._MODULE, mod)
+    monkeypatch.setitem(sys.modules, sglang_moe._FINALIZER_MODULE, finalizer_mod)
 
-    orig_forward, orig_impl = FakeFusedMoE.forward, FakeFusedMoE.forward_impl
+    orig_forward = FakeFusedMoE.forward
+    orig_impl = FakeFusedMoE.forward_impl
+    orig_deferred = FakeFusedMoE.forward_deferred_finalize
     try:
         sglang_moe.install()
         assert sglang_moe.is_installed()
         assert FakeFusedMoE.forward_impl is not orig_impl          # patched
+        assert FakeFusedMoE.forward_deferred_finalize is not orig_deferred
+        assert getattr(finalizer_mod, sglang_moe._FINALIZER_FUNC) is not finalize_deferred
         assert FakeFusedMoE.forward is orig_forward                # router untouched
         assert FakeFusedMoE._cacheon_orig_forward_impl is orig_impl  # captured for fallback/uninstall
         sglang_moe.install()  # idempotent
@@ -339,6 +378,8 @@ def test_install_patches_forward_impl(monkeypatch):
     finally:
         sglang_moe.uninstall()
     assert FakeFusedMoE.forward_impl is orig_impl
+    assert FakeFusedMoE.forward_deferred_finalize is orig_deferred
+    assert getattr(finalizer_mod, sglang_moe._FINALIZER_FUNC) is finalize_deferred
     assert not sglang_moe.is_installed()
 
 

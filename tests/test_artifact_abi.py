@@ -19,16 +19,21 @@ from cacheon.artifact_abi import (
 
 _EXPECTED_CALL_ARGS = {
     "activation.silu_and_mul": ("input.x", "output.out"),
+    "collective.all_gather_into_tensor": (
+        "input.x", "output.out", "group.current",
+    ),
     "norm.rmsnorm": ("input.x", "input.weight", "output.out", "input.eps"),
+    "norm.fused_add_rmsnorm": (
+        "input.x", "input.residual", "input.weight", "input.eps",
+        "output.out_norm", "output.out_residual",
+    ),
     "collective.all_reduce": ("input.x", "output.out", "group.current"),
     "collective.ar_residual_rmsnorm": (
         "input.x", "input.residual", "input.weight", "input.eps",
         "output.out_norm", "output.out_residual", "group.current",
     ),
-    "collective.moe_finalize_ar_rmsnorm": (
-        "input.gemm_out", "input.row_map", "input.scales", "input.residual",
-        "input.weight", "input.eps", "output.out_norm", "output.out_residual",
-        "group.current",
+    "collective.reduce_scatter_tensor": (
+        "input.x", "output.out", "group.current",
     ),
 }
 
@@ -91,6 +96,7 @@ def test_every_native_slot_has_one_shared_validator_owned_call_abi():
     from cacheon.slots import SLOTS
 
     unsupported = {
+        "linear.dense",
         "moe.fused_experts",
         "moe.fused_experts_reduce",
         "moe.fused_routed_experts",
@@ -106,9 +112,10 @@ def test_every_native_slot_has_one_shared_validator_owned_call_abi():
 
 def test_collective_boundaries_are_explicit_not_folded_into_run():
     for slot_name in (
+        "collective.all_gather_into_tensor",
         "collective.all_reduce",
         "collective.ar_residual_rmsnorm",
-        "collective.moe_finalize_ar_rmsnorm",
+        "collective.reduce_scatter_tensor",
     ):
         abi = SLOT_CALL_ABIS[slot_name]
         group = abi.by_name["group.current"]

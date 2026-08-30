@@ -157,6 +157,45 @@ def test_allreduce_faithful_passes_gloo_cpu():
     assert all(row.case_descriptor is not None for row in res.shape_results)
 
 
+@pytest.mark.parametrize(
+    "slot_name,entry_name,body",
+    (
+        (
+            "collective.all_gather_into_tensor",
+            "all_gather_into_tensor",
+            "dist.all_gather_into_tensor(out, x, group=group)",
+        ),
+        (
+            "collective.reduce_scatter_tensor",
+            "reduce_scatter_tensor",
+            "dist.reduce_scatter_tensor(out, x, group=group)",
+        ),
+    ),
+)
+def test_dp_exchange_faithful_passes_gloo_cpu(
+    tmp_path, slot_name, entry_name, body
+):
+    source = tmp_path / f"{entry_name}.py"
+    source.write_text(
+        "import torch.distributed as dist\n"
+        f"def {entry_name}(x, out, group=None):\n"
+        f"    {body}\n"
+    )
+    result = verify_collective(
+        get_slot(slot_name),
+        str(source),
+        entry_name,
+        world_size=2,
+        backend="gloo",
+        device="cpu",
+        shapes=SMALL_SHAPES,
+        seed=0,
+    )
+    assert result.passed, "\n".join(
+        f"{row.shape}: {row.detail}" for row in result.shape_results
+    )
+
+
 def test_collective_cpu_verify_does_not_claim_graph_proof():
     res = _verify()
     assert res.passed

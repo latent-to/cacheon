@@ -212,6 +212,25 @@ def test_capture_is_recorded_when_the_entry_runs_inside_a_graph(receipt_dir):
     assert row["calls"] == 4 and row["captured"] is True
 
 
+def test_first_completed_receipt_survives_without_exit_flush(receipt_dir):
+    """A killed scheduler still preserves its first invocation/capture fact."""
+
+    receipts.set_graph_probe(lambda: True)
+    receipts.completed("norm.rmsnorm")
+    row = receipts.collect(receipt_dir, "completed")[0]
+    assert row["calls"] == 1 and row["captured"] is True
+
+
+def test_capture_transition_rewrites_eager_receipt_before_exit(receipt_dir):
+    capturing = iter((False, True))
+    receipts.set_graph_probe(lambda: next(capturing, True))
+    receipts.completed("norm.rmsnorm")
+    assert receipts.collect(receipt_dir, "completed")[0]["captured"] is False
+    receipts.completed("norm.rmsnorm")
+    row = receipts.collect(receipt_dir, "completed")[0]
+    assert row["calls"] == 2 and row["captured"] is True
+
+
 def test_a_candidate_skipped_at_capture_is_visible_as_such(receipt_dir):
     # The phantom pass: not graph-safe, so capture bakes stock and every replay
     # serves stock — while `completed` was already written during eager warmup.
@@ -324,9 +343,6 @@ def test_scheduler_bundle_rebuild_phase_matches_launch_authority(
     monkeypatch.setattr(
         manifest, "all_declared_cuda_sources", lambda _bundle, _manifest: ()
     )
-    monkeypatch.setattr(
-        manifest, "all_declared_dep_patches", lambda _bundle, _manifest: ()
-    )
     monkeypatch.setattr(sandbox, "scan_tree", lambda *_args, **_kwargs: CleanTree())
     monkeypatch.setattr(
         rebuild,
@@ -370,7 +386,6 @@ def test_scheduler_rejects_partial_native_artifact_authority(
 
     monkeypatch.setattr(manifest, "load_manifest", lambda _bundle: EmptyManifest())
     monkeypatch.setattr(manifest, "all_declared_cuda_sources", lambda *_args: ())
-    monkeypatch.setattr(manifest, "all_declared_dep_patches", lambda *_args: ())
     monkeypatch.setattr(sandbox, "scan_tree", lambda *_args, **_kwargs: CleanTree())
     for name in ("CACHEON_ENGINE_WORKER", "CACHEON_PREBUILT_ARTIFACTS"):
         monkeypatch.delenv(name, raising=False)

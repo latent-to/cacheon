@@ -46,7 +46,7 @@ from cacheon.eval.qualification_intake import (
     QualificationPlanFactory,
 )
 from tests.test_b300_qualification_graph_gate import _factory
-from tests.test_marginal_runtime import FUSED
+from tests.test_b300_registered_qualification import _candidate_source
 from tests.test_qualification_graph_exit import _plan
 
 
@@ -256,11 +256,24 @@ def test_native_rebuild_uses_dedicated_candidate_launch(
     executor_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    native = _candidate_source(tmp_path / "native-source")
+    (native / "kernels" / "native.cu").write_text(
+        'extern "C" __global__ void noop() {}\n'
+    )
+    manifest = (native / "manifest.toml").read_text()
+    (native / "manifest.toml").write_text(
+        manifest.rstrip("\n") + '\ncuda_sources = ["kernels/native.cu"]\n'
+    )
+    (native / "rebuild.json").write_text(
+        '{"steps":[{"type":"repo_python","path":"build_cuda_ext.py"}]}\n'
+    )
+    for path in sorted(native.rglob("*")):
+        path.chmod(0o700 if path.is_dir() else 0o600)
     case = _case(
         tmp_path,
         executor_factory,
         failure=False,
-        source_fixture=FUSED,
+        source_fixture=native,
     )
     _install_plan(case, monkeypatch)
     intake_calls = []

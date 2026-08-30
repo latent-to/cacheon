@@ -23,7 +23,11 @@ from cacheon.eval.oci_backend import runtime_identity_from_preflight
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from cacheon.target_catalog import default_target_catalog
-from tests.support.b300 import gpu as _gpu
+from tests.support.b300 import (
+    GLM53_REGISTERED_TARGET_IDS,
+    M3_REGISTERED_TARGET_IDS,
+    gpu as _gpu,
+)
 from tests.support.preflight import preflight_receipt
 
 
@@ -48,6 +52,28 @@ def _preflight() -> RuntimePreflightReceipt:
     )
 
 
+def _m3_engine_config() -> dict[str, object]:
+    return {
+        "attention_backend": None,
+        "deterministic": False,
+        "disable_custom_all_reduce": True,
+        "dtype": "bfloat16",
+        "engine_kwargs": {
+            "chunked_prefill_size": 4096,
+            "cuda_graph_backend_prefill": "disabled",
+            "disable_radix_cache": True,
+            "kv_cache_dtype": "auto",
+            "page_size": 128,
+            "quantization": "modelopt_fp4",
+            "trust_remote_code": True,
+        },
+        "log_level": "error",
+        "mem_fraction_static": 0.70,
+        "moe_runner_backend": "flashinfer_cutlass",
+        "tp_size": 4,
+    }
+
+
 def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...], dict[str, object]]:
     tmp_path.chmod(0o700)
     model = tmp_path / "model"
@@ -67,10 +93,12 @@ def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...]
     prompt = tmp_path / "prompt-authority.json"
     prompt_value = {
         "accepted_token_subsequences": [],
-        "closed_targets": ["moe.fused_experts_reduce"],
+        "registered_targets": list(M3_REGISTERED_TARGET_IDS),
         "hidden_corpus_commitment": _h("hidden-corpus"),
         "hidden_judge_digest": _h("hidden-judge"),
         "hidden_task_policy_digest": _h("hidden-task-policy"),
+        "engine_config": _m3_engine_config(),
+        "model_profile_key": "MiniMax-M3",
         "prompt_batches": [["one"], ["two"], ["three"]],
         "prompt_seed_scheme": "sealed-prompts-v1",
         "schema": "cacheon-private-prompt-authority-v1",
@@ -402,14 +430,65 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
 
 def test_graph_engine_config_derives_from_the_declared_cell() -> None:
     cell = WorkloadCell("s8", 8192, 1024, 64, 8)
-    eager = deployment._engine_config(("msa",), cell, disable_cuda_graph=True)
-    graph = deployment._engine_config(("msa",), cell, disable_cuda_graph=False)
+    template = deployment._engine_template(
+        {"engine_config": _m3_engine_config()}
+    )
+    eager = deployment._engine_config(
+        template, ("msa",), cell, disable_cuda_graph=True
+    )
+    graph = deployment._engine_config(
+        template, ("msa",), cell, disable_cuda_graph=False
+    )
     assert "watchdog_timeout" not in eager.engine_kwargs
     assert graph.engine_kwargs["watchdog_timeout"] == 1800
     for config in (eager, graph):
         assert config.engine_kwargs["context_length"] == 8192 + 1024 + 128
         assert config.engine_kwargs["disable_radix_cache"] is True
         assert config.max_running_requests == 64
+
+
+def test_glm_engine_profile_is_data_not_an_evaluator_branch() -> None:
+    glm = _m3_engine_config()
+    glm.update(
+        engine_kwargs={
+            "chunked_prefill_size": 16384,
+            "disable_radix_cache": True,
+            "dp_size": 4,
+            "enable_dp_attention": True,
+            "kv_cache_dtype": "auto",
+            "quantization": "modelopt_fp4",
+            "trust_remote_code": True,
+        },
+        mem_fraction_static=0.80,
+        moe_runner_backend=None,
+    )
+    template = deployment._engine_template({"engine_config": glm})
+    cell = WorkloadCell("l65", 65536, 4096, 24, 3)
+    config = deployment._engine_config(
+        template,
+        ("moe.fused_routed_experts",),
+        cell,
+        disable_cuda_graph=False,
+    )
+
+    assert config.engine_kwargs["enable_dp_attention"] is True
+    assert config.engine_kwargs["dp_size"] == 4
+    assert config.engine_kwargs["chunked_prefill_size"] == 16384
+    assert config.engine_kwargs["context_length"] == 65536 + 4096 + 128
+    assert config.moe_runner_backend is None
+    assert deployment._data_parallel_size(config) == 4
+
+    mixed = deployment._engine_config(
+        template,
+        ("moe.fused_routed_experts",),
+        (
+            WorkloadCell("s8", 8192, 1024, 128, 2),
+            WorkloadCell("l65", 65536, 4096, 24, 3),
+        ),
+        disable_cuda_graph=False,
+    )
+    assert mixed.max_running_requests == 128
+    assert mixed.engine_kwargs["context_length"] == 65536 + 4096 + 128
 
 
 def test_workload_parser_seals_cell_against_batches() -> None:
@@ -434,27 +513,66 @@ def test_workload_parser_seals_cell_against_batches() -> None:
     with pytest.raises(deployment.B300ScreenDeploymentError, match="closed"):
         deployment._workload(widened, batches, _h("corpus"))
 
+    mixed_prompt = {
+        "prompt_seed_scheme": "sealed-prompts-v1",
+        "workload_cells": [
+            {
+                "cell_id": "s8",
+                "concurrency": 2,
+                "input_tokens": 8192,
+                "output_tokens": 1024,
+                "timed_reads": 2,
+            },
+            {
+                "cell_id": "l65",
+                "concurrency": 1,
+                "input_tokens": 65536,
+                "output_tokens": 4096,
+                "timed_reads": 3,
+            },
+        ],
+        "prompt_batch_cells": ["s8", "s8", "l65", "l65", "l65"],
+    }
+    mixed_batches = (("a", "b"), ("c", "d"), ("e",), ("f",), ("g",))
+    mixed = deployment._workload(mixed_prompt, mixed_batches, _h("corpus"))
+    assert tuple(cell.cell_id for cell in mixed.cells) == ("s8", "l65")
+    assert deployment._prompt_batch_cells(
+        mixed_prompt, mixed_batches, mixed
+    ) == ("s8", "s8", "l65", "l65", "l65")
 
-def test_closed_targets_are_sealed_registered_data() -> None:
+
+def test_registered_targets_are_sealed_arena_data() -> None:
     from cacheon.target_catalog import default_target_catalog
 
     catalog = default_target_catalog()
-    prompt = {
-        "closed_targets": ["moe.fused_experts_reduce", "norm.rmsnorm"]
-    }
-    assert deployment._closed_targets(prompt, catalog) == (
-        "moe.fused_experts_reduce",
-        "norm.rmsnorm",
+    registered, closed = deployment._target_partition(
+        {"registered_targets": list(M3_REGISTERED_TARGET_IDS)}, catalog
+    )
+    assert registered == M3_REGISTERED_TARGET_IDS
+    assert set(closed).isdisjoint(M3_REGISTERED_TARGET_IDS)
+    assert set(closed) | set(M3_REGISTERED_TARGET_IDS) == set(
+        row["target_id"] for row in catalog.snapshot()["targets"]
+    )
+
+    glm_registered, glm_closed = deployment._target_partition(
+        {"registered_targets": list(GLM53_REGISTERED_TARGET_IDS)}, catalog
+    )
+    assert glm_registered == GLM53_REGISTERED_TARGET_IDS
+    assert set(glm_closed).isdisjoint(GLM53_REGISTERED_TARGET_IDS)
+    assert set(glm_closed) | set(GLM53_REGISTERED_TARGET_IDS) == set(
+        row["target_id"] for row in catalog.snapshot()["targets"]
     )
     with pytest.raises(
         deployment.B300ScreenDeploymentError, match="not registered"
     ):
-        deployment._closed_targets({"closed_targets": ["made.up_target"]}, catalog)
+        deployment._target_partition(
+            {"registered_targets": ["made.up_target"]}, catalog
+        )
     # An authority that omits the field fails commissioning closed.
     with pytest.raises(
         deployment.B300ScreenDeploymentError, match="list of strings"
     ):
-        deployment._closed_targets({}, catalog)
+        deployment._target_partition({}, catalog)
 
 
 def test_resident_intake_is_traversable_by_non_owner(tmp_path: Path) -> None:
