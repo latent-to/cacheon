@@ -43,6 +43,7 @@ from cacheon.verification_outcomes import (  # noqa: E402
 )
 
 ALLREDUCE_BUNDLE = "examples/miner_allreduce_torch/kernels/all_reduce.py"
+DP_EXCHANGE_BUNDLE = "examples/miner_dp_attention_exchange_torch/kernels/exchange.py"
 SMALL_SHAPES = [{"num_tokens": 2, "hidden": 8}]
 
 
@@ -158,32 +159,17 @@ def test_allreduce_faithful_passes_gloo_cpu():
 
 
 @pytest.mark.parametrize(
-    "slot_name,entry_name,body",
+    "slot_name,entry_name",
     (
-        (
-            "collective.all_gather_into_tensor",
-            "all_gather_into_tensor",
-            "dist.all_gather_into_tensor(out, x, group=group)",
-        ),
-        (
-            "collective.reduce_scatter_tensor",
-            "reduce_scatter_tensor",
-            "dist.reduce_scatter_tensor(out, x, group=group)",
-        ),
+        ("collective.all_gather_into_tensor", "all_gather_into_tensor"),
+        ("collective.reduce_scatter_tensor", "reduce_scatter_tensor"),
     ),
 )
-def test_dp_exchange_faithful_passes_gloo_cpu(
-    tmp_path, slot_name, entry_name, body
-):
-    source = tmp_path / f"{entry_name}.py"
-    source.write_text(
-        "import torch.distributed as dist\n"
-        f"def {entry_name}(x, out, group=None):\n"
-        f"    {body}\n"
-    )
+def test_dp_exchange_faithful_passes_gloo_cpu(monkeypatch, slot_name, entry_name):
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     result = verify_collective(
         get_slot(slot_name),
-        str(source),
+        DP_EXCHANGE_BUNDLE,
         entry_name,
         world_size=2,
         backend="gloo",

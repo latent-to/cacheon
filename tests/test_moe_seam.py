@@ -14,7 +14,7 @@ from cacheon.dispatch import (  # noqa: E402
 )
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
 from cacheon.sandbox import load_entry  # noqa: E402
-from cacheon.slots import get_slot  # noqa: E402
+from cacheon.slots import get_slot, slot_for_model  # noqa: E402
 
 MOE_BUNDLE = "examples/miner_moe_fused_experts_torch/kernels/moe.py"
 _BASELINE = object()  # sentinel: the dispatcher returns this iff it fell back
@@ -29,7 +29,7 @@ def _baseline_forward(self, hidden_states, topk_output):
     return _BASELINE
 
 
-class _Param:  # mimics torch.nn.Parameter's .data access the seam uses
+class _Param:
     def __init__(self, t):
         self.data = t
 
@@ -48,14 +48,12 @@ def _fake_layer(inputs, *, moe_tp_size=1, moe_ep_size=1, reduce_results=False, *
 
 
 def _standard_topk_output(inputs):
-    # Duck-typed StandardTopKOutput: carries explicit topk tensors.
     return SimpleNamespace(
         topk_ids=inputs["topk_ids"], topk_weights=inputs["topk_weights"], router_logits=None
     )
 
 
 def _bypassed_topk_output():
-    # BypassedTopKOutput has no topk_ids/topk_weights (routing not materialized).
     return SimpleNamespace(hidden_states=None, router_logits=None, topk_config=None)
 
 
@@ -102,7 +100,6 @@ def test_seam_routes_to_kernel_and_matches_reference(monkeypatch):
 
 
 def test_disabled_when_env_flag_unset(monkeypatch):
-    # Opt-in: with CACHEON_MOE_SEAM unset the seam is inert (trusts the baseline).
     monkeypatch.delenv("CACHEON_MOE_SEAM", raising=False)
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
@@ -131,7 +128,6 @@ def test_prepare_runs_once_and_is_memoized(monkeypatch):
 
 
 def test_expert_parallel_falls_back(monkeypatch):
-    # EP>1 adds an all-to-all the (M,H)->(M,H) contract doesn't model -> trust baseline.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
@@ -142,7 +138,6 @@ def test_expert_parallel_falls_back(monkeypatch):
 
 
 def test_bypassed_routing_falls_back(monkeypatch):
-    # Routing not materialized (no topk tensors) -> conservative fallback (no re-routing).
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
@@ -155,15 +150,29 @@ ROUTED_MOE_BUNDLE = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py
 
 
 def _routed_inputs(seed=0):
-    slot = get_slot("moe.fused_routed_experts")
-    shape = {"num_tokens": 16, "num_experts": 8, "hidden": 256, "inter": 128,
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
+    shape = {"num_tokens": 4, "num_experts": 4, "hidden": 64, "inter": 64,
              "topk": 2, "routed_scaling": 2.5}
     return slot.make_inputs(**shape, dtype=torch.float32, device="cpu", seed=seed)
 
 
+def _routed_layer(inputs):
+    fields = {name: inputs[name] for name in (
+        "w13_weight_scale", "w2_weight_scale", "g1_scale_c", "g1_alphas",
+        "g2_alphas", "w13_input_scale_quant", "w2_input_scale_quant",
+    )}
+    return SimpleNamespace(
+        w13_weight=_Param(inputs["w13_weight"]),
+        w2_weight=_Param(inputs["w2_weight"]),
+        w13_blockscale_swizzled=inputs["w13_weight_scale"],
+        w2_blockscale_swizzled=inputs["w2_weight_scale"],
+        intermediate_size_per_partition=inputs["intermediate_size_per_partition"],
+        moe_tp_size=4, moe_ep_size=1, reduce_results=False,
+        num_fused_shared_experts=0, **fields,
+    )
+
+
 def _routed_topk_output(inputs, **overrides):
-    # Duck-typed BypassedTopKOutput + TopKConfig at the pin: routing NOT
-    # materialized; the config carries the routing head's parameters.
     cfg = dict(
         top_k=inputs["topk"],
         correction_bias=inputs["correction_bias"],
@@ -193,7 +202,9 @@ def _routed_registry(entry, prepare):
             bundle_id="test-routed",
             entry=entry,
             prepare=prepare,
-            eligibility=Eligibility(dtypes=frozenset({"float32"})),
+            eligibility=Eligibility(
+                dtypes=frozenset({"float32"}), quant=frozenset({"nvfp4"})
+            ),
         )
     )
     reg.enable()
@@ -201,10 +212,9 @@ def _routed_registry(entry, prepare):
 
 
 def test_routed_moe_dispatches_on_bypassed_routing(monkeypatch):
-    # The fat slot binds where the thin one cannot: router LOGITS at the seam.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _routed_inputs()
-    slot = get_slot("moe.fused_routed_experts")
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
     reference = slot.invoke_reference(inputs)[0]
 
     entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
@@ -212,16 +222,13 @@ def test_routed_moe_dispatches_on_bypassed_routing(monkeypatch):
     dispatched = make_moe_dispatcher(
         _baseline_forward, registry=_routed_registry(entry, prepare)
     )
-    out = dispatched(_fake_layer(inputs), inputs["x"], _routed_topk_output(inputs))
+    out = dispatched(_routed_layer(inputs), inputs["x"], _routed_topk_output(inputs))
     assert out is not _BASELINE, "fat slot should have routed to the miner kernel"
     assert tuple(out.shape) == (inputs["x"].shape[0], inputs["x"].shape[1])
     assert _matched_ratio(out, reference) >= slot.correctness.min_ratio
 
 
 def test_routed_moe_out_of_contract_config_stays_stock(monkeypatch):
-    # A routing config outside the slot's fixed head (softmax scoring, grouped
-    # selection, missing output-side scaling, fused shared experts) must serve stock —
-    # the dispatcher never approximates routing semantics.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _routed_inputs()
     entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
@@ -229,7 +236,7 @@ def test_routed_moe_out_of_contract_config_stays_stock(monkeypatch):
     dispatched = make_moe_dispatcher(
         _baseline_forward, registry=_routed_registry(entry, prepare)
     )
-    layer = _fake_layer(inputs)
+    layer = _routed_layer(inputs)
     for bad in (
         {"scoring_func": "softmax"},
         {"apply_routed_scaling_factor_on_output": False},
@@ -254,18 +261,18 @@ def test_routed_moe_deferred_path_joins_stock_shared_output(monkeypatch):
         lambda value, shared: (value, shared)
     )
 
-    routed = get_slot("moe.fused_routed_experts").invoke_reference(inputs)[0]
+    routed = slot_for_model(
+        "moe.fused_routed_experts", "GLM-5.3-NVFP4"
+    ).invoke_reference(inputs)[0]
     shared = torch.randn_like(routed)
     pending = deferred(
-        _fake_layer(inputs), inputs["x"], _routed_topk_output(inputs)
+        _routed_layer(inputs), inputs["x"], _routed_topk_output(inputs)
     )
     out = finalize(pending, shared)
     assert _matched_ratio(out, routed + shared) == 1.0
 
 
 def test_routed_moe_prepare_receives_routing_config(monkeypatch):
-    # prepare gets (w13, w2, top_k, routed_scaling) — the static routing config
-    # from the live TopKConfig — and is memoized per layer like the thin slot.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _routed_inputs()
     base_prepare = load_entry(ROUTED_MOE_BUNDLE, "prepare")
@@ -279,7 +286,7 @@ def test_routed_moe_prepare_receives_routing_config(monkeypatch):
     dispatched = make_moe_dispatcher(
         _baseline_forward, registry=_routed_registry(entry, spying_prepare)
     )
-    layer = _fake_layer(inputs)
+    layer = _routed_layer(inputs)
     topk_output = _routed_topk_output(inputs)
     dispatched(layer, inputs["x"], topk_output)
     dispatched(layer, inputs["x"], topk_output)
@@ -296,8 +303,6 @@ def test_missing_prepare_aborts_selected_candidate(monkeypatch):
 
 
 def test_dense_layer_skips_quant_only_kernel(monkeypatch):
-    # The other direction: a DENSE layer must NOT run a quant-only kernel (it expects
-    # scales that aren't there) -> fall back.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
@@ -308,7 +313,6 @@ def test_dense_layer_skips_quant_only_kernel(monkeypatch):
 
 
 def test_non_2d_hidden_states_falls_back(monkeypatch):
-    # The (M,H)->(M,H) contract assumes flattened 2D tokens; anything else -> baseline.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")

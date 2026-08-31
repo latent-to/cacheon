@@ -1,13 +1,4 @@
-"""Wire the Cacheon dispatcher into SGLang's RMSNorm seam.
-
-Same approach as the SiluAndMul seam: replace ``BaseFusedOp`` class methods
-``forward_cuda`` / ``forward_native`` before the model is built, so the resolved
-method routes to an eligible miner kernel or the captured baseline.
-
-RMSNorm is universal (every transformer layer), so this is the slot that fires on
-models like GPT-OSS whose activation is fused into the MoE kernel and therefore
-doesn't go through SiluAndMul.
-"""
+"""Bind registered RMSNorm contracts before SGLang resolves the layer methods."""
 
 from __future__ import annotations
 

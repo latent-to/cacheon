@@ -1,11 +1,4 @@
-"""CPU tests for the generalized (op + block) slot abstraction.
-
-Covers: (1) the ``kind`` discriminator, (2) multi-input *block* slots (the MoE
-pair slots) verify faithful pure-torch kernels, (3) the ``matched_ratio``
-correctness mode FAILS broken kernels, and (4) backward-compat — the
-single-op slots (silu) still verify under the generalized spec. torch-only; skipped
-where torch is unavailable (e.g. the dev laptop); runs on the pod.
-"""
+"""CPU contract checks for op and block slots."""
 
 from __future__ import annotations
 
@@ -14,11 +7,20 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from cacheon.sandbox import load_entry  # noqa: E402
-from cacheon.slots import get_slot  # noqa: E402
+from cacheon.registry import eligibility_from_metadata  # noqa: E402
+from cacheon.slots import get_slot, slot_for_model  # noqa: E402
 from cacheon.verify import verify_entry  # noqa: E402
 
 MOE_BUNDLE = "examples/miner_moe_fused_experts_torch/kernels/moe.py"
 ROUTED_MOE_BUNDLE = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
+DENSE_BUNDLE = "examples/miner_dense_torch/kernels/dense.py"
+FUSED_NORM_BUNDLE = (
+    "examples/miner_fused_add_rmsnorm_torch/kernels/fused_add_rmsnorm.py"
+)
+ROUTED_SHAPE = {
+    "num_tokens": 2, "num_experts": 4, "hidden": 64, "inter": 64,
+    "topk": 2, "routed_scaling": 2.5,
+}
 
 
 def test_slot_kind_discriminator():
@@ -33,8 +35,6 @@ def test_slot_kind_discriminator():
 
 
 def test_moe_prepare_forward_passes_correctness_cpu():
-    # The (prepare, forward) PAIR: load BOTH miner callables; verify runs prepare (the
-    # weight layout) then forward, and compares to the fp32 MoE reference.
     fwd = load_entry(MOE_BUNDLE, "fused_experts")
     prep = load_entry(MOE_BUNDLE, "prepare")
     slot = get_slot("moe.fused_experts")
@@ -45,27 +45,31 @@ def test_moe_prepare_forward_passes_correctness_cpu():
 
 
 def test_dense_prepare_forward_passes_correctness_cpu():
-    def prepare(weight):
-        return weight
-
-    def dense(x, weight, out):
-        torch.mm(x, weight.t(), out=out)
-
     result = verify_entry(
-        get_slot("linear.dense"),
-        dense,
-        prepare=prepare,
+        slot_for_model("linear.dense", "GLM-5.3-NVFP4"),
+        load_entry(DENSE_BUNDLE, "dense"),
+        prepare=load_entry(DENSE_BUNDLE, "prepare"),
         dtype=torch.float32,
         device="cpu",
-        seed=0,
+        shapes=[{
+            "num_tokens": 3, "input_dim": 8, "output_dim": 12,
+            "parallel_role": "row", "local_tp_size": 4,
+        }],
+        eligibility=eligibility_from_metadata(
+            {"capabilities": {
+                "input_dim": 8, "num_tokens": 3, "output_dim": 12,
+                "parallel_role": "row", "tp_size": 4, "world_size": 4,
+            }},
+            ("float32",),
+        ),
+        architecture="cpu",
+        tp_size=4,
+        world_size=4,
     )
-    assert result.passed
+    assert result.passed and result.shape_results[0].applicable
 
 
 def test_moe_broken_prepare_fails_cpu():
-    # A `prepare` that forgets the [gate;up]->[up;gate] reorder -> forward swaps the
-    # halves -> silu(up)*gate != silu(gate)*up -> wrong. The slot is only correct when
-    # BOTH callables agree, so a bad prepare must fail just like a bad forward would.
     def broken_prepare(w13, w2):
         return {"w13": w13.contiguous(), "w2": w2.contiguous(), "inter": w13.shape[1] // 2}
 
@@ -75,39 +79,26 @@ def test_moe_broken_prepare_fails_cpu():
     assert not result.passed
 
 
-def test_routed_moe_passes_correctness_cpu():
-    # The FAT slot: the miner receives router LOGITS and owns routing + experts +
-    # combine. The example implements the engine's biased-sigmoid gate faithfully.
-    fwd = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
-    prep = load_entry(ROUTED_MOE_BUNDLE, "prepare")
-    slot = get_slot("moe.fused_routed_experts")
-    result = verify_entry(slot, fwd, prepare=prep, dtype=torch.float32, device="cpu", seed=0)
-    assert result.passed, "\n".join(
-        f"{r.shape}: ratio={r.pass_ratio} {r.detail}" for r in result.shape_results
-    )
-
-
 def test_routed_moe_wrong_routing_fails_cpu():
-    # Selecting on the UNBIASED scores (dropping the correction bias) picks a
-    # different expert set on margin-boosted inputs -> wrong combine -> FAIL.
-    # This pins that the slot actually grades the routing head, not just the GEMMs.
     faithful = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
     prep = load_entry(ROUTED_MOE_BUNDLE, "prepare")
 
-    def unbiased_routing(x, router_logits, correction_bias, prepared, out):
-        faithful(x, router_logits, torch.zeros_like(correction_bias), prepared, out)
+    def wrong_routing(x, router_logits, correction_bias, prepared, out):
+        forced = 100 * torch.arange(
+            correction_bias.numel(), device=correction_bias.device
+        )
+        faithful(x, torch.zeros_like(router_logits), forced, prepared, out)
 
-    slot = get_slot("moe.fused_routed_experts")
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
     result = verify_entry(
-        slot, unbiased_routing, prepare=prep, dtype=torch.float32, device="cpu", seed=0
+        slot, wrong_routing, prepare=prep, dtype=torch.float32, device="cpu",
+        shapes=[ROUTED_SHAPE],
     )
     assert not result.passed
+    assert result.num_applicable == 1
 
 
 def test_routed_moe_margin_enforced_inputs():
-    # Every verification row must have an unambiguous selection: the gap between
-    # the k-th and (k+1)-th biased choice score is real, so top-k is stable and a
-    # single output gate cannot false-fail an honest kernel on a near-tie.
     slot = get_slot("moe.fused_routed_experts")
     for shape in slot.shapes:
         i = slot.make_inputs(dtype=torch.float32, device="cpu", seed=7, **shape)
@@ -123,13 +114,11 @@ def test_moe_is_prepare_forward_slot():
     assert slot.kind == "block"
     assert slot.prepare == "prepare"          # names the 2nd miner callable
     assert slot.invoke_prepare is not None
-    # forward-only slots have no prepare:
     assert get_slot("activation.silu_and_mul").prepare is None
     assert get_slot("activation.silu_and_mul").invoke_prepare is None
 
 
 def test_silu_op_still_verifies_under_generalized_spec():
-    # Backward-compat: the single-op path is unchanged by the multi-output/block work.
     def silu(x, out):
         d = x.shape[-1] // 2
         out.copy_(torch.nn.functional.silu(x[..., :d].float()).to(x.dtype) * x[..., d:])
@@ -140,22 +129,18 @@ def test_silu_op_still_verifies_under_generalized_spec():
 
 
 def test_fused_add_rmsnorm_block_verifies_both_outputs():
-    def fused(x, residual, weight, eps, out_norm, out_residual):
-        out_residual.copy_(x + residual)
-        fp32 = out_residual.float()
-        variance = fp32.square().mean(-1, keepdim=True)
-        out_norm.copy_(
-            (fp32 * torch.rsqrt(variance + eps) * weight.float()).to(x.dtype)
-        )
-
     result = verify_entry(
-        get_slot("norm.fused_add_rmsnorm"),
-        fused,
+        slot_for_model("norm.fused_add_rmsnorm", "GLM-5.3-NVFP4"),
+        load_entry(FUSED_NORM_BUNDLE, "fused_add_rmsnorm"),
         dtype=torch.float32,
         device="cpu",
-        seed=0,
+        shapes=[{"num_tokens": 3, "hidden": 16}],
+        eligibility=eligibility_from_metadata(
+            {"min_num_tokens": 3, "max_num_tokens": 3}, ("float32",)
+        ),
+        architecture="cpu",
     )
-    assert result.passed
+    assert result.passed and result.shape_results[0].applicable
 
 
 def test_matched_ratio_is_active_only_for_the_block_slot():

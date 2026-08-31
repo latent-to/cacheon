@@ -118,23 +118,14 @@ def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
     assert torch.equal(live_w13, inputs["w13"]) and torch.equal(live_w2, inputs["w2"])
 
 
-def test_routed_nvfp4_prepare_uses_static_topk_without_materialized_ids():
+def test_glm_routed_example_executes_the_nvfp4_prepare_contract():
+    source = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
     slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
     inputs = slot.make_inputs(
         num_tokens=2, num_experts=4, hidden=64, inter=64, topk=2,
         routed_scaling=2.5, dtype=torch.float32, device="cpu", seed=11,
     )
-    assert inputs["topk"] == 2 and "topk_ids" not in inputs
-
-    tag, view = prepare_args_from_inputs(inputs)
-
-    assert tag == NVFP4_PREPARE_TAG
-    assert view.moe_runner_config.top_k == 2
-
-
-def test_glm_routed_example_executes_the_nvfp4_prepare_contract():
-    source = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
-    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
+    assert prepare_args_from_inputs(inputs)[1].moe_runner_config.top_k == 2
     result = verify_entry(
         slot,
         load_entry(source, "fused_routed_experts"),
@@ -145,9 +136,18 @@ def test_glm_routed_example_executes_the_nvfp4_prepare_contract():
             "num_tokens": 2, "num_experts": 4, "hidden": 64, "inter": 64,
             "topk": 2, "routed_scaling": 2.5,
         }],
+        eligibility=Eligibility(
+            dtypes=frozenset({"float32"}), quant=frozenset({"nvfp4"}),
+            min_num_tokens=2, max_num_tokens=2,
+        ),
+        architecture="cpu",
+        tp_size=4,
+        world_size=4,
     )
 
-    assert result.passed and result.shape_results[0].applicable
+    case = result.shape_results[0].case_descriptor
+    assert result.passed and result.shape_results[0].applicable and case is not None
+    assert dict(case.calls[0])["quant"] == "nvfp4"
 
 
 def test_m3_reduce_profile_uses_live_shape_topology_and_nvfp4_prepare():

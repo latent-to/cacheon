@@ -1,27 +1,8 @@
-"""Op-correctness — the cheap gate before any end-to-end eval.
+"""Per-slot correctness and CUDA-graph gate before full-model qualification.
 
-Given a slot and a miner ``entry`` callable, generate deterministic inputs over the
-slot's standard shapes, run the miner kernel and the trusted *high-precision*
-reference, and compare under the slot's ``Correctness`` policy:
-
-* ``allclose`` — every element within ``atol + rtol*|e|`` (numerically-equivalent
-  ops, e.g. a faster silu).
-* ``matched_ratio`` — at least ``min_ratio`` of elements within that bound (kernels
-  that legitimately differ from the reference: attention's reordered softmax, fp8,
-  MLA weight absorption). The reference is always high-precision ground truth, never
-  the stock kernel — so a faster *and slightly different* kernel can still pass.
-
-Multi-output slots (blocks) are supported: the validator allocates one ``out`` per
-declared output shape and the miner fills them.
-
-This is the per-op analogue of a unit test: necessary but NOT sufficient — small
-per-op errors that pass here can compound into large end-to-end KL, which is why the
-pipeline still runs the end-to-end gate. To stop a kernel from special-casing the fixed
-verification inputs, the input VALUES vary with ``seed`` and, when ``jitter_seed`` is
-set (the CLI path does this per run), the COUNT dimensions (num_tokens / batch / ctx)
-are perturbed too — so a kernel can't hard-code the exact verify shapes. Feature dims
-(hidden / head_dim) are left intact since kernels legitimately specialize on them; the
-end-to-end gate on fresh prompts is the backstop against shape-branching there.
+The validator owns inputs, outputs, high-precision references, shape jitter, and
+comparators. Passing is necessary but never replaces the fresh-prompt end-to-end
+gate, where locally acceptable numerical differences can compound.
 """
 
 from __future__ import annotations
@@ -33,8 +14,8 @@ from typing import Callable, Optional, Protocol
 import torch
 
 from cacheon.capabilities import CONTEXT_FIELDS, CallDescriptor
+from cacheon.model_profiles import verification_call_descriptor
 from cacheon.registry import Eligibility
-from cacheon.moe_nvfp4_contract import call_descriptor as moe_call_descriptor
 from cacheon.slots import SlotSpec
 from cacheon.tensor_spec import (
     allocate_output_spec,
@@ -592,9 +573,8 @@ def verify_entry(
     )
     case_world_size = world_size if world_size is not None else (tp_size or 1)
     case_tp_size = tp_size if tp_size is not None else case_world_size
-    case_architecture = (
-        architecture or _device_architecture(device) or torch.device(device).type
-    )
+    descriptor_architecture = architecture or _device_architecture(device)
+    case_architecture = descriptor_architecture or torch.device(device).type
 
     def sealed_call(descriptor: CallDescriptor) -> CallDescriptor:
         return descriptor.with_updates(
@@ -618,16 +598,14 @@ def verify_entry(
     ):
         shape = jittered_shape
         inputs = slot.make_inputs(dtype=dtype, device=device, seed=seed + i, **shape)
-        descriptor = _verification_call_descriptor(
+        descriptor = verification_call_descriptor(
             slot,
             inputs,
-            dtype=dtype,
-            device=device,
-            architecture=architecture,
+            dtype_name=_name(dtype),
+            architecture=descriptor_architecture,
             tp_size=tp_size,
             world_size=world_size,
             graph_mode=verification_graph_mode,
-            model_key=model_key,
         )
         if eligibility is not None:
             match = eligibility.match(descriptor)
@@ -644,16 +622,14 @@ def verify_entry(
                     seed=seed + i,
                     **catalog_shape,
                 )
-                catalog_descriptor = _verification_call_descriptor(
+                catalog_descriptor = verification_call_descriptor(
                     slot,
                     catalog_inputs,
-                    dtype=dtype,
-                    device=device,
-                    architecture=architecture,
+                    dtype_name=_name(dtype),
+                    architecture=descriptor_architecture,
                     tp_size=tp_size,
                     world_size=world_size,
                     graph_mode=verification_graph_mode,
-                    model_key=model_key,
                 )
                 catalog_match = eligibility.match(catalog_descriptor)
                 if catalog_match.accepted:
@@ -882,57 +858,6 @@ def verify_entry(
         domain_coverage_complete=domain_coverage_complete,
         domain_coverage_detail=domain_coverage_detail,
     )
-
-
-def _verification_call_descriptor(
-    slot: SlotSpec,
-    inputs: dict,
-    *,
-    dtype: torch.dtype,
-    device: str,
-    architecture: Optional[str],
-    tp_size: Optional[int],
-    world_size: Optional[int],
-    graph_mode: str,
-    model_key: Optional[str],
-) -> CallDescriptor:
-    """Build the same canonical call description as a live arena binding.
-
-    Fields are semantic and therefore never guessed from vaguely similar tensor
-    names.  A slot needs an explicit validator mapping before miners can constrain
-    its richer dimensions.
-    """
-
-    resolved_arch = architecture or _device_architecture(device)
-    if slot.name == "moe.fused_experts" and {
-        "x", "topk_ids", "w13", "w2",
-    } <= set(inputs):
-        quant = str(inputs.get("__moe_quant__", "dense"))
-        return moe_call_descriptor(
-            inputs["x"],
-            inputs["topk_ids"],
-            architecture=resolved_arch,
-            graph_mode=graph_mode,
-            quant=quant,
-            num_experts=int(inputs["w13"].shape[0]),
-            intermediate_dim=int(inputs["w2"].shape[-1]),
-            tp_size=tp_size,
-            world_size=world_size,
-        )
-    primary = next(
-        (
-            inputs[name]
-            for name in ("x", "q", "input", "input_tensor", "residual", "gemm_out")
-            if name in inputs and torch.is_tensor(inputs[name])
-        ),
-        None,
-    )
-    fields = {"dtype": _name(dtype), "architecture": resolved_arch}
-    if primary is not None and primary.dim() > 0:
-        fields["last_dim"] = int(primary.shape[-1])
-        if slot.name == "collective.ar_residual_rmsnorm":
-            fields["num_tokens"] = int(primary.shape[0])
-    return CallDescriptor(fields)
 
 
 def _device_architecture(device: str) -> Optional[str]:

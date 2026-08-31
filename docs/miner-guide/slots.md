@@ -39,19 +39,18 @@ manifest; it does not require the Python function itself to be named `entry`.
 
 ## Current GLM-5.3 availability
 
-The full GLM-5.3 arena seals exactly five reward targets:
+The GLM-5.3 arena seals `moe.fused_routed_experts`, `linear.dense`,
+`norm.fused_add_rmsnorm`, `collective.all_reduce`, and atomic
+`collective.dp_attention_exchange.v1` (all-gather plus reduce-scatter).
 
-- `moe.fused_routed_experts`;
-- `linear.dense`;
-- `norm.fused_add_rmsnorm`;
-- `collective.all_reduce`; and
-- atomic `collective.dp_attention_exchange.v1`, whose required members are
-  `collective.all_gather_into_tensor` and `collective.reduce_scatter_tensor`.
+Pure SiLU/RMSNorm remain claimable inside wider fused targets, not separate GLM
+lanes. KV-cache, radix, batching, and speculative policy remain engine-owned.
 
-The pure SiLU and RMSNorm pointwise slots are deliberately not separate GLM
-reward lanes: their measured work is claimable inside the wider fused targets.
-Paged/radix KV-cache reads and writes, batching, speculative decoding, and
-other inference-service policy remain engine-owned and are not slots.
+Sealed profiles replace generic shapes with local `6/32/4096`, TP-gathered
+`24/128/16384`, prefill all-reduce `(16384, 6144)`, and decode DP-exchange
+`(6, 6144)/(32, 6144)`. Dense also binds dimensions, role, and local TP.
+Routed MoE uses bounded exact-geometry probes; mixed-cell qualification covers
+its full prefill path.
 
 ## Current MiniMax-M3 availability
 
@@ -68,18 +67,14 @@ submission in the current MiniMax-M3 mainnet arena**:
 - `moe.fused_experts_reduce`: sealed closed pending its full-engine
   outer-reduction proof.
 
-Do not pay for or submit those targets; intake parks them without judgement
-and the payment is not consumed. The remaining MiniMax-M3 targets are
-`moe.fused_experts`, `collective.all_reduce`, and
+Do not pay for those targets; intake parks them without consuming payment. The
+remaining M3 targets are `moe.fused_experts`, `collective.all_reduce`, and
 `collective.ar_residual_rmsnorm`.
 
-Closure removes only the standalone lane. The same computation remains fully
-claimable **inside open targets**: activation belongs to the
-`moe.fused_experts` boundary (the validator-owned per-model table carries the
-swigluoai parameters for exactly that), normalization belongs to the fused
-`collective.ar_residual_rmsnorm` boundary, and a fused kernel is judged only by
-the contract of the target it names — never by what it absorbs internally. See
-the slot contract's closure section.
+Closure removes only the standalone lane. Activation remains claimable inside
+`moe.fused_experts`, normalization inside `collective.ar_residual_rmsnorm`, and
+a fused kernel is judged only by its named target contract. See the slot
+contract's closure section.
 
 Registration and installation remain different facts: the catalog can register
 a slot before the pinned runtime binds a live adapter for it.

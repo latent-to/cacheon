@@ -14,7 +14,9 @@ def make_dense_inputs(
     dtype: torch.dtype,
     device: str,
     seed: int,
-) -> dict[str, torch.Tensor]:
+    parallel_role: str = "replicated",
+    local_tp_size: int = 1,
+) -> dict[str, object]:
     generator = torch.Generator(device=device).manual_seed(seed)
     x = torch.randn(
         num_tokens,
@@ -30,7 +32,12 @@ def make_dense_inputs(
         device=device,
         dtype=torch.float32,
     ).to(dtype)
-    return {"x": x, "weight": weight}
+    return {
+        "x": x,
+        "weight": weight,
+        "parallel_role": parallel_role,
+        "local_tp_size": local_tp_size,
+    }
 
 
 def dense_reference(inputs: dict[str, torch.Tensor]) -> list[torch.Tensor]:

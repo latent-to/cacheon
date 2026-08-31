@@ -15,7 +15,6 @@ from cacheon.stack_plan import (
     RollbackPlan,
     StackPlanError,
     StaleStackPlanError,
-    plan_candidate_stack,
     plan_marginal_arm,
 )
 from cacheon.target_catalog import (

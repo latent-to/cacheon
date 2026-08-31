@@ -1,18 +1,4 @@
-"""Wire the Cacheon dispatcher into SGLang's tensor-parallel all-reduce — the comms waist.
-
-A TP model spends 30–40%+ of decode in the cross-GPU all-reduce
-(``GroupCoordinator.all_reduce`` in ``sglang.srt.distributed.parallel_state`` — the
-chokepoint every TP reduce funnels through, regardless of which backend, custom/NCCL,
-actually runs). This seam patches that one method, so a miner can submit a
-lower-latency or compute-overlapped reduce while the validator keeps the output buffer,
-the process group, the model, and the sampler. The reduce stays mid-network — there is
-no final output to substitute.
-
-This is a COLLECTIVE slot: the kernel is handed the process group (a wider capability
-than the op/block "fill a tensor" contract), so it is verified DISTRIBUTED
-(cacheon.verify_collective) and the end-to-end gate is mandatory. See
-docs/architecture/slot-contract.md.
-"""
+"""Bind registered collectives to SGLang's public and opaque runtime bodies."""
 
 from __future__ import annotations
 

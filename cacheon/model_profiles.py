@@ -7,8 +7,11 @@ from typing import Optional
 
 import torch
 
+from cacheon.capabilities import CallDescriptor
 from cacheon.moe_nvfp4_contract import (
+    call_descriptor as _moe_call_descriptor,
     prepare_args_from_inputs as _moe_prepare_args_from_inputs,
+    routed_call_descriptor as _routed_moe_call_descriptor,
     verification_inputs as _moe_nvfp4_verification_inputs,
 )
 from cacheon.slots import (
@@ -161,6 +164,7 @@ _GLM53_MOE_NVFP4_PROFILE = SlotProfile(
     shapes=(
         {"num_tokens": 1, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
         {"num_tokens": 8, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
+        {"num_tokens": 24, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
         {"num_tokens": 32, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
         {"num_tokens": 128, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
     ),
@@ -176,18 +180,32 @@ _GLM53_ROUTED_MOE_PROFILE = replace(
     ),
 )
 
+
 _GLM53_DENSE_PROFILE = SlotProfile(
-    shapes=(
-        {"num_tokens": 1, "input_dim": 6144, "output_dim": 2624},
-        {"num_tokens": 32, "input_dim": 2048, "output_dim": 16384},
-        {"num_tokens": 32, "input_dim": 16384, "output_dim": 6144},
-        {"num_tokens": 32, "input_dim": 6144, "output_dim": 6144},
-        {"num_tokens": 32, "input_dim": 3072, "output_dim": 6144},
-        {"num_tokens": 32, "input_dim": 6144, "output_dim": 1024},
-        {"num_tokens": 32, "input_dim": 512, "output_dim": 6144},
-        {"num_tokens": 4096, "input_dim": 6144, "output_dim": 2624},
+    shapes=tuple(
+        {"num_tokens": m, "input_dim": k, "output_dim": n,
+         "parallel_role": role, "local_tp_size": tp}
+        for tokens, tp, matrices in (
+            ((32, 4096), 1, ((6144, 2624, "replicated"),)),
+            ((6, 32, 4096), 1, ((2048, 16384, "column"), (16384, 6144, "row"),
+                                (2048, 4096, "replicated"), (6144, 160, "replicated"))),
+            ((24, 128, 16384), 4, ((6144, 6144, "column"), (3072, 6144, "row"),
+                                    (6144, 1024, "column"), (512, 6144, "row"))),
+        )
+        for m in tokens for k, n, role in matrices
     ),
 )
+
+_GLM53_NORM_PROFILE = SlotProfile(shapes=tuple(
+    {"num_tokens": tokens, "hidden": 6144}
+    for tokens in (6, 24, 32, 128, 4096, 16384)
+))
+_GLM53_ALL_REDUCE_PROFILE = SlotProfile(
+    shapes=({"num_tokens": 16384, "hidden": 6144},),
+)
+_GLM53_DP_EXCHANGE_PROFILE = SlotProfile(shapes=tuple(
+    {"num_tokens": tokens, "hidden": 6144} for tokens in (6, 32)
+))
 
 MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
     "MiniMax-M3": {
@@ -195,10 +213,12 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
         "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
     },
     "GLM-5.3": {
+        "collective.all_gather_into_tensor": _GLM53_DP_EXCHANGE_PROFILE,
+        "collective.all_reduce": _GLM53_ALL_REDUCE_PROFILE,
+        "collective.reduce_scatter_tensor": _GLM53_DP_EXCHANGE_PROFILE,
         "linear.dense": _GLM53_DENSE_PROFILE,
-        "moe.fused_experts": _GLM53_MOE_NVFP4_PROFILE,
-        "moe.fused_experts_reduce": _GLM53_MOE_NVFP4_PROFILE,
         "moe.fused_routed_experts": _GLM53_ROUTED_MOE_PROFILE,
+        "norm.fused_add_rmsnorm": _GLM53_NORM_PROFILE,
     },
 }
 MODEL_PROFILES["MiniMax-M3-NVFP4"] = MODEL_PROFILES["MiniMax-M3"]
@@ -215,3 +235,51 @@ def slot_for_model(slot_name: str, model_key: Optional[str] = None) -> SlotSpec:
     slot = get_slot(slot_name)
     profile = model_profile(model_key, slot_name)
     return specialize_slot(slot, profile) if profile else slot
+
+
+def verification_call_descriptor(
+    slot: SlotSpec,
+    inputs: dict,
+    *,
+    dtype_name: str,
+    architecture: Optional[str],
+    graph_mode: str,
+    tp_size: Optional[int],
+    world_size: Optional[int],
+) -> CallDescriptor:
+    """Project validator inputs into the same fields as the live slot seam."""
+    if slot.name == "moe.fused_experts":
+        return _moe_call_descriptor(
+            inputs["x"], inputs["topk_ids"], architecture=architecture,
+            graph_mode=graph_mode, quant=str(inputs.get("__moe_quant__", "dense")),
+            num_experts=int(inputs["w13"].shape[0]),
+            intermediate_dim=int(inputs["w2"].shape[-1]),
+            tp_size=tp_size, world_size=world_size,
+        )
+    if slot.name == "moe.fused_routed_experts":
+        return _routed_moe_call_descriptor(
+            inputs["x"], top_k=int(inputs["topk"]), architecture=architecture,
+            graph_mode=graph_mode, quant=str(inputs.get("__moe_quant__", "dense")),
+            num_experts=int(inputs["w13"].shape[0]),
+            intermediate_dim=int(inputs["w2"].shape[-1]),
+            tp_size=tp_size, world_size=world_size,
+        )
+    if slot.name == "linear.dense":
+        x, weight = inputs["x"], inputs["weight"]
+        return CallDescriptor(
+            architecture=architecture, dtype=dtype_name, graph_mode=graph_mode,
+            input_dim=int(weight.shape[1]), last_dim=int(x.shape[-1]),
+            layout="weight_out_in_row_major", num_tokens=int(x.shape[0]),
+            output_dim=int(weight.shape[0]),
+            parallel_role=str(inputs.get("parallel_role", "replicated")),
+            quant="dense", tp_size=int(inputs.get("local_tp_size", tp_size or 1)),
+            world_size=int(world_size or tp_size or 1),
+        )
+    primary = next((inputs[name] for name in (
+        "x", "q", "input", "input_tensor", "residual", "gemm_out"
+    ) if name in inputs and torch.is_tensor(inputs[name])), None)
+    fields = {"dtype": dtype_name, "architecture": architecture}
+    if primary is not None and primary.dim() > 0:
+        fields.update(last_dim=int(primary.shape[-1]),
+                      num_tokens=int(primary.numel() // primary.shape[-1]))
+    return CallDescriptor(fields)

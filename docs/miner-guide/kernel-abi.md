@@ -196,36 +196,27 @@ def fused_experts(x, topk_ids, topk_weights, prepared, out):
     ...
 ```
 
-For NVFP4 model profiles, `prepare` instead receives the exact tagged form
-below from both verification and live dispatch:
+NVFP4 verification and live dispatch use the same tagged prepare form:
 
 ```python
 prepare("nvfp4_layer", weights)
 ```
 
-`weights` is a validator-owned view, not the SGLang layer. It exposes packed
-`uint8` E2M1 `w13_weight`/`w2_weight`, swizzled E4M3 weight scales,
-`g1_alphas`/`g2_alphas`, inverse activation scales, intermediate size, group
-size 16, and the logical ModelOpt `gate_up` layout. `prepare` may repack that
-view into any candidate-owned backend layout. The
-validator derives each weight's outer scale as `g*_alpha * a*_inv` and
-dequantizes independently for its fp32 reference.
+`weights` is a validator-owned view—not the SGLang layer—with packed `uint8`
+E2M1 weights, swizzled E4M3 scales, `g1_alphas`/`g2_alphas`, inverse activation
+scales, intermediate size, group size 16, and ModelOpt `gate_up` layout.
+Candidates may repack it; the validator dequantizes an independent fp32 oracle.
 
-The GLM-5.3 routed slot appends its static routing configuration to the same
-weight form:
+GLM-5.3 appends its static routing configuration:
 
 ```python
 prepare("nvfp4_layer", weights, topk, routed_scaling)
 ```
 
-`topk_weights` contains validator-supplied raw positive FP32 routing multipliers.
-They are not promised to be probabilities: do not assume that a row sums to one,
-or that its only value is `1.0` when `K == 1`. SGLang configurations that do not
-renormalize routing, or that apply a routed scaling factor, make those distinctions
-part of the result the kernel must preserve.
+`topk_weights` contains raw positive FP32 multipliers, not promised
+probabilities. Preserve non-unit row sums, including when `K == 1`.
 
-`moe.fused_experts` produces the local expert result. The enclosing trusted path
-retains ownership of any later collective.
+`moe.fused_experts` is local; the trusted path owns any later collective.
 
 `moe.fused_routed_experts` owns the routing head as well as expert execution and
 the weighted combine:

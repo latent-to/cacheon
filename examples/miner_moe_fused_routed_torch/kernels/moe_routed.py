@@ -15,14 +15,13 @@ import torch
 import torch.nn.functional as F
 
 
-def prepare(w13, w2, topk, routed_scaling):
+def prepare(tag, view, topk, routed_scaling):
     """Runs ONCE at load: decode weights, lay them out, seal routing config."""
-    if isinstance(w13, str):
-        if w13 != "nvfp4_layer":
-            raise ValueError(f"unknown routed-MoE prepare tag: {w13!r}")
-        from cacheon.moe_nvfp4_contract import dequantize_prepare_args
+    if tag != "nvfp4_layer":
+        raise ValueError(f"routed-MoE starter requires NVFP4 weights, got {tag!r}")
+    from cacheon.moe_nvfp4_contract import dequantize_prepare_args
 
-        w13, w2 = dequantize_prepare_args((w13, w2))
+    w13, w2 = dequantize_prepare_args((tag, view))
     I = w13.shape[1] // 2
     w13_up_gate = torch.cat([w13[:, I:], w13[:, :I]], dim=1).contiguous()
     return {

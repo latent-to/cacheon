@@ -9,6 +9,10 @@
 bundle_id = "example-moe-fused-routed-torch"
 abi_version = "cacheon-op-abi-v0"
 
+[competition]
+target = "moe.fused_routed_experts"
+mode = "slot"
+
 [[ops]]
 slot = "moe.fused_routed_experts"
 source = "kernels/moe_routed.py"

@@ -228,12 +228,18 @@ def test_tracked_examples_preserve_legacy_or_name_modern_target_identity():
     manifests = sorted(examples.glob("*/manifest.toml"))
     assert manifests
     explicit = {
+        "miner_allreduce_torch": CompetitionEntry(
+            "collective.all_reduce", "slot"
+        ),
         "miner_dense_torch": CompetitionEntry("linear.dense", "slot"),
         "miner_dp_attention_exchange_torch": CompetitionEntry(
             "collective.dp_attention_exchange.v1", "atomic"
         ),
         "miner_fused_add_rmsnorm_torch": CompetitionEntry(
             "norm.fused_add_rmsnorm", "slot"
+        ),
+        "miner_moe_fused_routed_torch": CompetitionEntry(
+            "moe.fused_routed_experts", "slot"
         ),
     }
     for path in manifests:

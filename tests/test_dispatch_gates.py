@@ -47,14 +47,15 @@ def _rms_registry():
     return reg
 
 
-def _fused_rms_registry():
-    def entry(x, residual, weight, eps, out_norm, out_residual):
-        out_residual.copy_(x + residual)
-        fp32 = out_residual.float()
-        variance = fp32.square().mean(-1, keepdim=True)
-        out_norm.copy_(
-            (fp32 * torch.rsqrt(variance + eps) * weight.float()).to(x.dtype)
-        )
+def _fused_rms_registry(entry=None):
+    if entry is None:
+        def entry(x, residual, weight, eps, out_norm, out_residual):
+            out_residual.copy_(x + residual)
+            fp32 = out_residual.float()
+            variance = fp32.square().mean(-1, keepdim=True)
+            out_norm.copy_(
+                (fp32 * torch.rsqrt(variance + eps) * weight.float()).to(x.dtype)
+            )
 
     reg = KernelRegistry()
     reg.register(
@@ -93,6 +94,17 @@ def test_rmsnorm_residual_layer_routes_to_fused_kernel():
         {"x": x, "residual": residual, "weight": torch.ones(16), "eps": 1e-6}
     )
     assert torch.allclose(out, expected[0])
+
+
+def test_fused_rmsnorm_candidate_error_is_not_stock_fallback():
+    def broken(*_args):
+        raise RuntimeError("fused norm candidate failed")
+
+    dispatched = make_rmsnorm_dispatcher(
+        lambda *_args: _BASELINE, registry=_fused_rms_registry(broken)
+    )
+    with pytest.raises(RuntimeError, match="fused norm candidate failed"):
+        dispatched(_rms_self(), torch.randn(4, 16), torch.randn(4, 16))
 
 
 def test_rmsnorm_forwards_v0518_quant_linear_to_stock():
