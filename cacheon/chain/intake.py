@@ -1910,6 +1910,33 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             primary = SettlementQualification.from_dict(
                                 json.loads(retained[0]["qualification_json"])
                             )
+                            if primary.digest != retained[0]["qualification_digest"]:
+                                raise IntakeError(
+                                    "primary settlement qualification is corrupt"
+                                )
+                            from cacheon.chain.commission_pass_carry import (
+                                carry_primary_pass_forward,
+                            )
+                            carried = carry_primary_pass_forward(primary, qualification)
+                            if carried != primary:
+                                encoded = json.dumps(
+                                    carried.to_dict(), separators=(",", ":"), sort_keys=True
+                                )
+                                changed = self._db.execute(
+                                    "UPDATE settlement_qualifications SET "
+                                    "qualification_digest=?,qualification_json=? WHERE "
+                                    "reservation_id=? AND reproduction_index=0 AND "
+                                    "qualification_digest=?",
+                                    (
+                                        carried.digest, encoded, reservation_id,
+                                        primary.digest,
+                                    ),
+                                )
+                                if changed.rowcount != 1:
+                                    raise IntakeError(
+                                        "primary settlement carry-forward changed"
+                                    )
+                                primary = carried
                             candidate = SettlementCandidate.from_reproductions(
                                 primary, qualification
                             )
@@ -1917,8 +1944,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             raise IntakeError(
                                 f"independent reproduction is inconsistent: {exc}"
                             ) from None
-                        if primary.digest != retained[0]["qualification_digest"]:
-                            raise IntakeError("primary settlement qualification is corrupt")
                         candidate_json = json.dumps(
                             candidate.to_dict(), separators=(",", ":"), sort_keys=True
                         )

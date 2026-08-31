@@ -29,6 +29,11 @@ lock file.
 The attempts must use distinct qualification authority and evidence. The candidate's
 settlement speedup is the lower of the two measured speedups.
 
+A completed PASS carries across a source-only recommission when runtime, engine,
+catalog, incumbent entries, candidate entries, selected delta, and speed policy are
+unchanged. The prior measurement and authority remain intact while only the new
+commission-derived arena, stack/tree, and physical-lane labels are adopted.
+
 Each production version-3 attempt runs its sealed speed subpolicy — current v7
 resident B/C with conditional B′ or current v8 two-process B/C/B′ — followed by
 registered eager audit A and pristine T when required. For reproduction, the
