@@ -403,7 +403,7 @@ def _runtime_policy(preflight: RuntimePreflightReceipt) -> OCIRuntimeResourcePol
         tmpfs_bytes=16 << 30,
         shm_bytes=128 << 30,
         init_timeout_seconds=1_800.0,
-        batch_timeout_seconds=1_800.0,
+        batch_timeout_seconds=600.0,
         container_python=preflight.python_executable,
     )
 
