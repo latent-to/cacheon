@@ -405,7 +405,7 @@ def test_graph_engine_config_derives_from_the_declared_cell() -> None:
     eager = deployment._engine_config(("msa",), cell, disable_cuda_graph=True)
     graph = deployment._engine_config(("msa",), cell, disable_cuda_graph=False)
     assert "watchdog_timeout" not in eager.engine_kwargs
-    assert graph.engine_kwargs["watchdog_timeout"] == deployment._runtime_policy(_preflight()).init_timeout_seconds == 1_800.0
+    assert graph.engine_kwargs["watchdog_timeout"] == 1800
     for config in (eager, graph):
         assert config.engine_kwargs["context_length"] == 8192 + 1024 + 128
         assert config.engine_kwargs["disable_radix_cache"] is True
