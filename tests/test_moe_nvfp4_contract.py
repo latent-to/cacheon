@@ -118,6 +118,38 @@ def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
     assert torch.equal(live_w13, inputs["w13"]) and torch.equal(live_w2, inputs["w2"])
 
 
+def test_routed_nvfp4_prepare_uses_static_topk_without_materialized_ids():
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
+    inputs = slot.make_inputs(
+        num_tokens=2, num_experts=4, hidden=64, inter=64, topk=2,
+        routed_scaling=2.5, dtype=torch.float32, device="cpu", seed=11,
+    )
+    assert inputs["topk"] == 2 and "topk_ids" not in inputs
+
+    tag, view = prepare_args_from_inputs(inputs)
+
+    assert tag == NVFP4_PREPARE_TAG
+    assert view.moe_runner_config.top_k == 2
+
+
+def test_glm_routed_example_executes_the_nvfp4_prepare_contract():
+    source = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
+    result = verify_entry(
+        slot,
+        load_entry(source, "fused_routed_experts"),
+        prepare=load_entry(source, "prepare"),
+        dtype=torch.float32,
+        device="cpu",
+        shapes=[{
+            "num_tokens": 2, "num_experts": 4, "hidden": 64, "inter": 64,
+            "topk": 2, "routed_scaling": 2.5,
+        }],
+    )
+
+    assert result.passed and result.shape_results[0].applicable
+
+
 def test_m3_reduce_profile_uses_live_shape_topology_and_nvfp4_prepare():
     slot = slot_for_model("moe.fused_experts_reduce", "MiniMax-M3-NVFP4")
     assert slot.call_abi is None

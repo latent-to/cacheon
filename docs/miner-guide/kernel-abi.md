@@ -196,8 +196,8 @@ def fused_experts(x, topk_ids, topk_weights, prepared, out):
     ...
 ```
 
-For the MiniMax-M3 NVFP4 profile, `prepare` instead receives the exact tagged
-form below from both verification and live dispatch:
+For NVFP4 model profiles, `prepare` instead receives the exact tagged form
+below from both verification and live dispatch:
 
 ```python
 prepare("nvfp4_layer", weights)
@@ -210,6 +210,13 @@ size 16, and the logical ModelOpt `gate_up` layout. `prepare` may repack that
 view into any candidate-owned backend layout. The
 validator derives each weight's outer scale as `g*_alpha * a*_inv` and
 dequantizes independently for its fp32 reference.
+
+The GLM-5.3 routed slot appends its static routing configuration to the same
+weight form:
+
+```python
+prepare("nvfp4_layer", weights, topk, routed_scaling)
+```
 
 `topk_weights` contains validator-supplied raw positive FP32 routing multipliers.
 They are not promised to be probabilities: do not assume that a row sums to one,

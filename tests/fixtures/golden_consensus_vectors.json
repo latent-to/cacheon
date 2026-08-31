@@ -7,7 +7,8 @@
       "Linux x86_64 (eight-B300 pod), CPython 3.12, 2026-08-23 (cross-check)",
       "macOS arm64, CPython 3.11, 2026-08-30 (identity epoch: M3 attention bundles retired, routed MoE bundle pinned, singleton fixture repointed at norm.rmsnorm; every carried-over tree's digest unchanged)",
       "macOS arm64, CPython 3.10, 2026-08-30 (three GLM starter bundles pinned)",
-      "Linux x86_64 (eight-B300 pod), CPython 3.12, 2026-08-30 (cross-check of the new GLM bundles and current atomic/singleton fixtures)"
+      "Linux x86_64 (eight-B300 pod), CPython 3.12, 2026-08-30 (cross-check of the new GLM bundles and current atomic/singleton fixtures)",
+      "macOS arm64 CPython 3.10/3.11 + Linux x86_64 CPython 3.12, 2026-08-31 (routed-MoE starter NVFP4 prepare-contract repair)"
     ],
     "contract": "content_hash(tree) for every committed example bundle and stack fixture; see tests/test_golden_consensus_vectors.py"
   },
@@ -18,7 +19,7 @@
     "examples/miner_fused_add_rmsnorm_torch": "197db8d56d530dc5a33e39c8a26dcd5915c72ae52d907f75320e53bf7a749107",
     "examples/miner_moe_fused_experts_reduce_torch": "edf967fe578becaece04c26ece0777fd4e9f600577a1bc34d975d94f0bde248b",
     "examples/miner_moe_fused_experts_torch": "5376645cb576601d279ab30c890c519dccb72db980e547df531dd21b36d162be",
-    "examples/miner_moe_fused_routed_torch": "cfb8212c4ec64ea1b0a3100b4912d2b8af54d03f9e442bf3d934eafc3766a6e0",
+    "examples/miner_moe_fused_routed_torch": "a7749fa227e0c28e27a2b0f959d47b49142f65a6f68359795e60914a73cfff5e",
     "examples/miner_rmsnorm_broken": "9d3c91f9eeed12832a78706aab5e2990cf6a997889e12801aa8837de2e581a99",
     "examples/miner_rmsnorm_triton": "7d2415ec527ed3d5b81622d4fb0d9ccdfc8736fef72c35c6fc3495efefb79eb9",
     "examples/miner_setup_demo": "f05d468b64f0b76b7b0f5b83337da0ebe3a4d48417179495524cdb11ef16ebc7",
