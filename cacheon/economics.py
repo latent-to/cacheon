@@ -19,8 +19,14 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
 POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "cacheon.emissions.v1"
+POLICY_VERSION = "cacheon.emissions.v1.1"
 WEIGHT_PPM = 1_000_000
+# A target crowned across several arena generations is one lineage. The most
+# recently crowned claim is the serving champion and takes at least this share
+# of the lineage's pooled credit; displaced crowns share the remainder and keep
+# decaying. Consensus-critical: changing this constant changes every published
+# vector, so it rides POLICY_VERSION.
+CHAMPION_FLOOR_PPM = 800_000
 _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
 _HOTKEY = re.compile(r"[^\s]{1,256}\Z")
 
@@ -117,12 +123,11 @@ class MetagraphMember:
 
 
 @dataclass(frozen=True)
-class RewardProjectionContext:
-    """Current control-plane and metagraph authority bound into the vector."""
+class GlobalRewardProjectionContext:
+    """Chain authority shared by every arena in one global projection."""
 
     chain_scope_digest: str
     validator_hotkey: str
-    stack_generation: int
     current_block: int
     current_block_hash: str
     metagraph_members: tuple[MetagraphMember, ...]
@@ -134,7 +139,6 @@ class RewardProjectionContext:
             _digest(self.chain_scope_digest, "chain_scope_digest"),
         )
         object.__setattr__(self, "validator_hotkey", _hotkey(self.validator_hotkey))
-        _integer(self.stack_generation, "stack_generation")
         _integer(self.current_block, "current_block")
         if (
             not isinstance(self.current_block_hash, str)
@@ -154,61 +158,6 @@ class RewardProjectionContext:
         if self.validator_hotkey not in {row.hotkey for row in members}:
             raise EconomicsError("validator is absent from the current metagraph")
         object.__setattr__(self, "metagraph_members", members)
-
-    @property
-    def eligible_hotkeys(self) -> frozenset[str]:
-        return frozenset(row.hotkey for row in self.metagraph_members)
-
-    @property
-    def metagraph_digest(self) -> str:
-        return canonical_digest(
-            "cacheon.economics.metagraph-membership",
-            {
-                "block": self.current_block,
-                "block_hash": self.current_block_hash,
-                "chain_scope_digest": self.chain_scope_digest,
-                "members": [row.to_dict() for row in self.metagraph_members],
-            },
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "chain_scope_digest": self.chain_scope_digest,
-            "current_block": self.current_block,
-            "current_block_hash": self.current_block_hash,
-            "metagraph_digest": self.metagraph_digest,
-            "metagraph_members": [row.to_dict() for row in self.metagraph_members],
-            "stack_generation": self.stack_generation,
-            "validator_hotkey": self.validator_hotkey,
-        }
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest("cacheon.economics.projection-context", self.to_dict())
-
-
-@dataclass(frozen=True)
-class GlobalRewardProjectionContext:
-    """Chain authority shared by every arena in one global projection."""
-
-    chain_scope_digest: str
-    validator_hotkey: str
-    current_block: int
-    current_block_hash: str
-    metagraph_members: tuple[MetagraphMember, ...]
-
-    def __post_init__(self) -> None:
-        single = RewardProjectionContext(
-            self.chain_scope_digest,
-            self.validator_hotkey,
-            0,
-            self.current_block,
-            self.current_block_hash,
-            self.metagraph_members,
-        )
-        object.__setattr__(self, "chain_scope_digest", single.chain_scope_digest)
-        object.__setattr__(self, "validator_hotkey", single.validator_hotkey)
-        object.__setattr__(self, "metagraph_members", single.metagraph_members)
 
     @property
     def eligible_hotkeys(self) -> frozenset[str]:
@@ -437,61 +386,6 @@ class HotkeyWeight:
 
 
 @dataclass(frozen=True)
-class RewardProjection:
-    policy_digest: str
-    catalog_digest: str
-    evaluation_stack_digest: str
-    context: RewardProjectionContext
-    standing: tuple[StandingFamilyCredit, ...]
-    discovery: tuple[DiscoveryBountyCredit, ...]
-    expired_discovery_claims: tuple[str, ...]
-    weights: tuple[HotkeyWeight, ...]
-
-    def __post_init__(self) -> None:
-        for field in ("policy_digest", "catalog_digest", "evaluation_stack_digest"):
-            object.__setattr__(self, field, _digest(getattr(self, field), field))
-        if type(self.context) is not RewardProjectionContext:
-            raise EconomicsError("reward projection context is not exactly typed")
-        if any(type(row) is not StandingFamilyCredit for row in self.standing):
-            raise EconomicsError("standing credits are not exactly typed")
-        if any(type(row) is not DiscoveryBountyCredit for row in self.discovery):
-            raise EconomicsError("discovery credits are not exactly typed")
-        if any(type(row) is not HotkeyWeight for row in self.weights):
-            raise EconomicsError("hotkey weights are not exactly typed")
-        if (
-            tuple((row.arena_digest, row.target_id) for row in self.standing)
-            != tuple(sorted((row.arena_digest, row.target_id) for row in self.standing))
-            or tuple(row.hotkey for row in self.weights)
-            != tuple(sorted(row.hotkey for row in self.weights))
-            or len({row.hotkey for row in self.weights}) != len(self.weights)
-            or sum(row.weight_ppm for row in self.weights) != WEIGHT_PPM
-        ):
-            raise EconomicsError("reward projection is not canonical or normalized")
-        for digest in self.expired_discovery_claims:
-            _digest(digest, "expired discovery claim")
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "catalog_digest": self.catalog_digest,
-            "context": self.context.to_dict(),
-            "discovery": [row.to_dict() for row in self.discovery],
-            "evaluation_stack_digest": self.evaluation_stack_digest,
-            "expired_discovery_claims": list(self.expired_discovery_claims),
-            "policy_digest": self.policy_digest,
-            "standing": [row.to_dict() for row in self.standing],
-            "weights": [row.to_dict() for row in self.weights],
-        }
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest("cacheon.economics.reward-projection", self.to_dict())
-
-    @property
-    def weights_by_hotkey(self) -> Mapping[str, int]:
-        return {row.hotkey: row.weight_ppm for row in self.weights}
-
-
-@dataclass(frozen=True)
 class GlobalRewardProjection:
     policy_digest: str
     context: GlobalRewardProjectionContext
@@ -559,13 +453,71 @@ def _allocate_pool(credits: Mapping[str, int], pool: int) -> dict[str, int]:
     return result
 
 
+def _champion_floor_credits(
+    rows: list[tuple[str, StandingRewardClaim, int]],
+) -> list[tuple[str, StandingRewardClaim, int]]:
+    """Guarantee the newest crown of each target lineage the champion floor.
+
+    Rows are ``(arena_digest, claim, decayed credit)``. Claims sharing a
+    ``target_id`` across arena generations form one lineage; the most recently
+    crowned claim is the serving champion. When its natural decayed credit
+    falls below ``CHAMPION_FLOOR_PPM`` of the lineage's pooled credit, it is
+    raised to exactly that floor and the displaced crowns split the remainder
+    in proportion to their own decayed credits. The lineage's pooled credit is
+    never changed — only its split moves.
+    """
+
+    by_target: dict[str, list[int]] = {}
+    for index, (_, claim, _) in enumerate(rows):
+        by_target.setdefault(claim.target_id, []).append(index)
+    result = list(rows)
+    for indexes in by_target.values():
+        if len(indexes) < 2:
+            continue
+        total = sum(rows[index][2] for index in indexes)
+        if total <= 0:
+            continue
+        champion = max(
+            indexes,
+            key=lambda index: (rows[index][1].crowned_block, rows[index][1].digest),
+        )
+        floor = total * CHAMPION_FLOOR_PPM // WEIGHT_PPM
+        if rows[champion][2] >= floor:
+            continue
+        tail = [index for index in indexes if index != champion]
+        tail_total = sum(rows[index][2] for index in tail)
+        remaining = total - floor
+        shares: dict[int, int] = {}
+        remainders = []
+        for index in tail:
+            quotient, remainder = divmod(rows[index][2] * remaining, tail_total)
+            shares[index] = quotient
+            remainders.append((remainder, rows[index][1].digest, index))
+        missing = remaining - sum(shares.values())
+        for _remainder, _digest, index in sorted(
+            remainders, key=lambda row: (-row[0], row[1])
+        )[:missing]:
+            shares[index] += 1
+        arena_digest, claim, _ = rows[champion]
+        result[champion] = (arena_digest, claim, floor)
+        for index, credit in shares.items():
+            arena_digest, claim, _ = rows[index]
+            result[index] = (arena_digest, claim, credit)
+    return result
+
+
 def project_global_rewards(
     policy: EmissionsPolicyManifest,
     context: GlobalRewardProjectionContext,
     arenas: Iterable[ArenaRewardAuthority],
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
 ) -> GlobalRewardProjection:
-    """Pool every registered arena before producing one indivisible vector."""
+    """Pool every registered arena before producing one indivisible vector.
+
+    Credit is decayed marginal improvement per claim, then reallocated within
+    each target lineage so the newest crown holds the champion floor
+    (``CHAMPION_FLOOR_PPM``) before hotkey pooling and normalization.
+    """
 
     if type(policy) is not EmissionsPolicyManifest:
         raise EconomicsError("policy is not exactly typed")
@@ -578,8 +530,7 @@ def project_global_rewards(
         raise EconomicsError("global projection contains duplicate arenas")
     authorities = tuple(sorted(authorities, key=lambda row: row.arena_digest))
     eligible = context.eligible_hotkeys
-    family_credits: list[StandingFamilyCredit] = []
-    standing_by_hotkey: dict[str, int] = {}
+    credit_rows: list[tuple[str, StandingRewardClaim, int]] = []
     for authority in authorities:
         catalog, stack = authority.catalog, authority.stack
         if stack.catalog_digest != catalog.digest or stack.catalog_snapshot != catalog.snapshot():
@@ -606,28 +557,37 @@ def project_global_rewards(
                 or claim.contribution_digest != contribution.digest
             ):
                 raise EconomicsError(f"standing claim for {target_id!r} is stale or incompatible")
-            credit = claim.credit_at(context.current_block, policy)
-            family_credits.append(
-                StandingFamilyCredit(
+            credit_rows.append(
+                (
                     stack.arena_digest,
-                    claim.family_id,
-                    target_id,
-                    claim.digest,
-                    claim.hotkey,
-                    credit,
+                    claim,
+                    claim.credit_at(context.current_block, policy),
                 )
             )
-            # Keep the claim and family audit on the original miner. If they
-            # left the metagraph, burn this tick's allocated share to the
-            # validator rather than hold the vector or re-slice other families.
-            recipient = (
-                claim.hotkey
-                if claim.hotkey in eligible
-                else context.validator_hotkey
+    family_credits: list[StandingFamilyCredit] = []
+    standing_by_hotkey: dict[str, int] = {}
+    for arena_digest, claim, credit in _champion_floor_credits(credit_rows):
+        family_credits.append(
+            StandingFamilyCredit(
+                arena_digest,
+                claim.family_id,
+                claim.target_id,
+                claim.digest,
+                claim.hotkey,
+                credit,
             )
-            standing_by_hotkey[recipient] = (
-                standing_by_hotkey.get(recipient, 0) + credit
-            )
+        )
+        # Keep the claim and family audit on the original miner. If they
+        # left the metagraph, burn this tick's allocated share to the
+        # validator rather than hold the vector or re-slice other families.
+        recipient = (
+            claim.hotkey
+            if claim.hotkey in eligible
+            else context.validator_hotkey
+        )
+        standing_by_hotkey[recipient] = (
+            standing_by_hotkey.get(recipient, 0) + credit
+        )
     if not any(standing_by_hotkey.values()):
         raise EconomicsError("all standing crown credit has decayed to zero")
 
@@ -681,43 +641,6 @@ def project_global_rewards(
     )
 
 
-def project_rewards(
-    policy: EmissionsPolicyManifest,
-    catalog: TargetCatalog,
-    stack: EvaluationStackManifest,
-    context: RewardProjectionContext,
-    standing_claims: Iterable[StandingRewardClaim],
-    discovery_claims: Iterable[DiscoveryBountyClaim] = (),
-) -> RewardProjection:
-    """Compatibility wrapper for a single arena; production uses the global API."""
-
-    if type(context) is not RewardProjectionContext:
-        raise EconomicsError("projection context is not exactly typed")
-    authority = ArenaRewardAuthority(
-        catalog, stack, context.stack_generation, tuple(standing_claims)
-    )
-    global_context = GlobalRewardProjectionContext(
-        context.chain_scope_digest,
-        context.validator_hotkey,
-        context.current_block,
-        context.current_block_hash,
-        context.metagraph_members,
-    )
-    result = project_global_rewards(
-        policy, global_context, (authority,), discovery_claims
-    )
-    return RewardProjection(
-        result.policy_digest,
-        catalog.digest,
-        stack.digest,
-        context,
-        result.standing,
-        result.discovery,
-        result.expired_discovery_claims,
-        result.weights,
-    )
-
-
 __all__ = [
     "ArenaRewardAuthority",
     "DiscoveryBountyClaim",
@@ -729,10 +652,7 @@ __all__ = [
     "MetagraphMember",
     "POLICY_SCHEMA_VERSION",
     "POLICY_VERSION",
-    "RewardProjection",
-    "RewardProjectionContext",
     "StandingRewardClaim",
     "WEIGHT_PPM",
     "project_global_rewards",
-    "project_rewards",
 ]

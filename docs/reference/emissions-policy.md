@@ -35,6 +35,19 @@ improvement = speedup_ppm - 1_000_000
 credit      = floor(improvement * h / (h + a))
 ```
 
+A target crowned across several arena generations is one lineage. The most
+recently crowned claim is the serving champion: when its natural decayed credit
+falls below 80% (`CHAMPION_FLOOR_PPM`) of the lineage's pooled credit, it is
+raised to exactly that floor and the displaced crowns split the remainder in
+proportion to their own decayed credits. The lineage's pooled credit never
+changes — only its split moves, so displacing the champion immediately takes
+the dominant share regardless of how the margins compare, while displaced
+crowns keep a decaying minority tail instead of dropping to zero. This rule
+ships as `policy_version` `cacheon.emissions.v1.1` (the claim model remains the
+legacy V1 generation); the policy digest changes with it, so the bound
+`emissions_policy_digest` in intake metadata must be rotated deliberately when
+deploying.
+
 Retirement or neutralization removes standing credit. A stale, incompatible,
 missing, or unreopenable active crown holds the complete projection; its share is
 not silently redistributed. An active claimant absent from the bound metagraph

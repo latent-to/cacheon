@@ -228,6 +228,17 @@ grading for the exercised target. It does not substitute for a production
 commissioned qualification, a miner speed PASS, reproduction, settlement, or
 mainnet activation.
 
+The same artifacts fix the arena's measured wall-clock envelope: warm engine
+start to first batch took 196 seconds, and the steady sealed windows took 66
+seconds (short cell) and 122 seconds (long cell). The screen deployment's
+1,800-second initialization and batch ceilings — raised on 2026-08-31 after a
+healthy four-rank MiniMax-M3 graph capture and its first production batch each
+outran the prior 900/600-second values — cover these measured windows with
+better than nine-fold start and ten-fold first-batch margin. On the same day
+the deployed validator lineage (settlement on every pass, the champion-floor
+projection, and both ceiling raises) merged into the GLM branch, so one source
+now carries both the mixed-cell arena and live mainnet behavior.
+
 The closed direct-artifact registry has one crownable provider,
 `cutlass.cute.cubin.v1`. Candidate compiler-factory code runs in a GPU-hidden,
 no-network child and may publish one sealed CUBIN. Validator code owns ABI
@@ -549,6 +560,13 @@ second sealed config. At each refresh it reads finalized authority and pushes
 either the live V1 offer or the explicitly configured crownless burn offer to
 the gateway; it never signs. Configuration must name `enable_weights` and
 `weights_stage_config` consistently or startup fails closed.
+
+Since 2026-08-30 the projection applies the champion floor
+(`cacheon.emissions.v1.1`): within one target lineage the most recently
+crowned claim takes at least 80% of the lineage's pooled credit and displaced
+crowns split the remainder by their own decayed credits. The policy digest
+changed with the version bump, so deployment rotates the bound
+`emissions_policy_digest` in intake metadata as a deliberate operator step.
 
 When a valid active claimant is absent from the current metagraph, that
 family's allocated ppm is sent to the validator hotkey for the tick rather than

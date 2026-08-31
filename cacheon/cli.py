@@ -1819,7 +1819,7 @@ def cmd_chain_validate(
         for reservation, why in res.rejected.items():
             print(f"  rejected {reservation[:16]}… {why}")
         if args.intake_only:
-            print("qualification/settlement: disabled by --intake-only")
+            print("local qualification: disabled by --intake-only")
     return 0
 
 
@@ -2990,7 +2990,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--netuid", type=int, required=True)
     sp.add_argument("--network", required=True)
     sp.add_argument("--intake-only", action="store_true",
-                    help="explicitly disable qualification, settlement, signing, and weights")
+                    help="explicitly disable local qualification, signing, and weights; "
+                         "settlement of already-retained PASS pairs still runs")
     sp.add_argument("--arena-id", default=None,
                     help="validator-owned registered arena selected from injected services")
     sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")

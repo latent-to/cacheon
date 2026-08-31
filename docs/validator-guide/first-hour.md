@@ -141,7 +141,9 @@ cacheon chain-validate \
 
 This command reads finalized history, reserves new arrivals, performs HTTPS fetch and
 hash verification, and publishes safe immutable copies. It does not need a wallet and
-cannot qualify or settle while `--intake-only` is set. Eval-cost admission defaults
+cannot run local qualification while `--intake-only` is set; settlement of PASS pairs
+already retained in the store still runs on every pass, because the remote-worker
+deployment relies on this loop to crown without operator hands. Eval-cost admission defaults
 off; set `--eval-cost-tao-rao 1000000000` only when the operator requires the
 published 1 TAO transfer.
 
@@ -155,7 +157,8 @@ Interpret the one-pass summary by stage:
 | `copies` | Later authoritative submitted-delta copies demoted against an earlier miner |
 | `rejected` | Terminal attributable intake failures |
 | `held` | Work requiring operator or bounded retry disposition |
-| `screens`, `decisions`, `settlements` | Disabled in intake-only mode |
+| `screens`, `decisions` | Disabled in intake-only mode |
+| `settlements` | Committed settlement leases; runs in every mode over retained PASS pairs |
 
 Run the identical command a second time. With no newly finalized reveals, it should not
 refetch or republish the same arrival. That checks the finalized cursor and idempotent
