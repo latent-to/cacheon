@@ -653,6 +653,7 @@ class PersistentAdapterProcess:
             "state": "epoch_failed",
         }
         if control == epoch_failed:
+            self.close()
             return "adapter_epoch_failed"
         timed_out = int(time.time()) >= deadline
         return "adapter_timeout" if timed_out else "adapter_exit_nonzero"
@@ -974,7 +975,8 @@ def pod_serve(
                         os.replace(job_root, completed)
                     append_event(paths.root, "adapter_finished", request_id=request_id)
                     if (
-                        adapter_process.consecutive_failures
+                        not adapter_process.alive
+                        or adapter_process.consecutive_failures
                         >= MAX_CONSECUTIVE_ADAPTER_FAILURES
                     ):
                         cooldown_seconds = adapter_cooldown(
