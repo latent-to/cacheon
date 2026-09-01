@@ -11,7 +11,6 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"/>
 <style>
 :root {
-  /* cacheon.ai brand palette */
   color-scheme: dark;
   --bg: #030405; --panel: #09090b; --panel2: #10141b; --line: #1e2330;
   --fg: #fff; --muted: #8f99a8; --accent: #2dd4bf;
@@ -441,7 +440,7 @@ async function viewWinners() {
     <td>${hc.registered
         ? `<span class="pill ok">uid ${hc.uid}</span>
            <div class="small">${hc.emission_tao_per_day != null ? hc.emission_tao_per_day.toFixed(4) + " τ/day" : "—"}</div>
-           <div class="muted small">incentive ${hc.incentive != null ? hc.incentive.toFixed(4) : "—"}</div>`
+           <div class="muted small">incentive ${hc.incentive != null ? (hc.incentive * 100).toFixed(2) + "%" : "—"}</div>`
         : '<span class="pill bad">deregistered</span>'}</td>
   </tr>`;});
   return `
