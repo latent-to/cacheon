@@ -761,7 +761,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError(
                 f"debt publication schema cannot open: {exc}"
             ) from None
-
     def _bind_scope(self) -> None:
         encoded = json.dumps(self.scope.to_dict(), separators=(",", ":"), sort_keys=True)
         row = self._db.execute(
@@ -1910,6 +1909,33 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             primary = SettlementQualification.from_dict(
                                 json.loads(retained[0]["qualification_json"])
                             )
+                            if primary.digest != retained[0]["qualification_digest"]:
+                                raise IntakeError(
+                                    "primary settlement qualification is corrupt"
+                                )
+                            from cacheon.chain.commission_pass_carry import (
+                                carry_primary_pass_forward,
+                            )
+                            carried = carry_primary_pass_forward(primary, qualification)
+                            if carried != primary:
+                                encoded = json.dumps(
+                                    carried.to_dict(), separators=(",", ":"), sort_keys=True
+                                )
+                                changed = self._db.execute(
+                                    "UPDATE settlement_qualifications SET "
+                                    "qualification_digest=?,qualification_json=? WHERE "
+                                    "reservation_id=? AND reproduction_index=0 AND "
+                                    "qualification_digest=?",
+                                    (
+                                        carried.digest, encoded, reservation_id,
+                                        primary.digest,
+                                    ),
+                                )
+                                if changed.rowcount != 1:
+                                    raise IntakeError(
+                                        "primary settlement carry-forward changed"
+                                    )
+                                primary = carried
                             candidate = SettlementCandidate.from_reproductions(
                                 primary, qualification
                             )
@@ -1917,8 +1943,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             raise IntakeError(
                                 f"independent reproduction is inconsistent: {exc}"
                             ) from None
-                        if primary.digest != retained[0]["qualification_digest"]:
-                            raise IntakeError("primary settlement qualification is corrupt")
                         candidate_json = json.dumps(
                             candidate.to_dict(), separators=(",", ":"), sort_keys=True
                         )
@@ -2607,6 +2631,51 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             discovery.append(claim)
         return tuple(standing), tuple(discovery)
 
+    def passed_reward_claims(self) -> tuple[object, ...]:
+        """Derive one reward claim per distinct retained two-PASS contribution."""
+
+        from cacheon.economics import StandingRewardClaim, WEIGHT_PPM
+
+        claims = []
+        seen: set[tuple[str, str, str]] = set()
+        rows = self._db.execute(
+            "SELECT sc.* FROM settlement_candidates sc "
+            "JOIN reservations r USING(reservation_id) "
+            "WHERE r.status='qualified' AND r.decision='PASS' "
+            "AND sc.status!='duplicate_proposal' "
+            "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
+        )
+        for row in rows:
+            candidate = self._settlement_candidate(row)
+            if candidate.candidate_manifest is None:
+                continue  # discovery PASSes use the bounded discovery pool
+            contribution = candidate.candidate_manifest.entries[candidate.target_id]
+            key = (candidate.arena_digest, candidate.target_id, contribution.digest)
+            if key in seen:
+                continue
+            evidence = self.reopen_settlement_evidence(candidate)
+            retained = row["settlement_evidence_digest"]
+            if retained and retained != evidence.digest:
+                raise IntakeError("PASS candidate differs from retained evidence")
+            claims.append(
+                StandingRewardClaim(
+                    candidate.arena_digest,
+                    candidate.target_id,
+                    contribution.target_spec_digest,
+                    contribution.digest,
+                    candidate.hotkey,
+                    int(
+                        (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
+                            rounding=ROUND_FLOOR
+                        )
+                    ),
+                    candidate.finalized_block,
+                    evidence.digest,
+                )
+            )
+            seen.add(key)
+        return tuple(claims)
+
     def reopen_active_crown(
         self, arena_digest: str, target_id: str
     ) -> CrownedSettlement:
@@ -2697,8 +2766,12 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("active reward claim differs from reopened settlement evidence")
         return receipt
 
-    def _bind_emissions_policy(self, policy_digest: str) -> None:
+    def _bind_emissions_policy(self, policy) -> None:
+        policy_digest = policy.digest
         require_sha256_hex(policy_digest, field="policy_digest")
+        legacy = policy.to_dict()
+        legacy["policy_version"] = "cacheon.emissions.v1.1"
+        predecessor = canonical_digest("cacheon.economics.policy", legacy)
         with self._transaction():
             row = self._db.execute(
                 "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
@@ -2706,6 +2779,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             if row is None:
                 self._db.execute(
                     "INSERT INTO metadata(key,value) VALUES('emissions_policy_digest',?)",
+                    (policy_digest,),
+                )
+            elif row["value"] == predecessor:
+                self._db.execute(
+                    "UPDATE metadata SET value=? WHERE key='emissions_policy_digest'",
                     (policy_digest,),
                 )
             elif row["value"] != policy_digest:
@@ -2741,6 +2819,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("weight projection authority is malformed")
         standing, discovery = self.active_reward_claims()
+        earning = self.passed_reward_claims()
         by_arena: dict[str, list[object]] = {}
         for claim in standing:
             by_arena.setdefault(claim.arena_digest, []).append(claim)
@@ -2776,14 +2855,14 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
             )
         projection = project_global_rewards(
-            policy, context, tuple(authorities), discovery
+            policy, context, tuple(authorities), earning, discovery
         )
-        self._bind_emissions_policy(policy.digest)
+        self._bind_emissions_policy(policy)
         evidence = tuple(
             sorted(
                 {
                     claim.retained_evidence_digest
-                    for claim in (*standing, *discovery)
+                    for claim in (*standing, *earning, *discovery)
                 }
             )
         )
@@ -2870,7 +2949,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 "validator_hotkey": context.validator_hotkey,
             },
         )
-        self._bind_emissions_policy(policy.digest)
+        self._bind_emissions_policy(policy)
         return WeightProjection(
             context.chain_scope_digest,
             netuid,
@@ -2972,7 +3051,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 "validator_hotkey": context.validator_hotkey,
             },
         )
-        self._bind_emissions_policy(policy.digest)
+        self._bind_emissions_policy(policy)
         return WeightProjection(
             context.chain_scope_digest,
             netuid,
@@ -3428,6 +3507,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             ).fetchone()["n"]
             status = (
                 "reproduction_pending" if reproductions == 1
+                else "promoted" if row.screen_status == "promote"
                 else "published" if row.publication_digest
                 else "transport_retry"
             )

@@ -22,48 +22,37 @@ durable evidence remain reopenable from Git history and the reserved schema.
 
 ## Legacy V1
 
-Every active registered target defines one reward family. A singleton target owns
-one slot. An atomic target owns its complete member set and suppresses explicitly
-overlapping singleton families while active. Packaging, integration, and release
-records do not create additional reward families.
+Every independently reproduced registered PASS earns from its retained
+qualification pair, whether settlement crowned or held it. A later crown changes
+the evaluation baseline but does not erase, rerun, or retire an earlier PASS.
+Duplicate packaging of the same contribution earns once.
 
-For a retained crown with `speedup_ppm > 1_000_000`, age `a`, and policy
-half-life `h`, standing credit is:
+For speedup `s > 1`, finalized submission block `b`, the preceding distinct PASS
+block `p` in the same arena (or `b` for the first), current block `n`, half-life
+`h`, and fixed stall scale `1,800` blocks:
 
 ```text
-improvement = speedup_ppm - 1_000_000
-credit      = floor(improvement * h / (h + a))
+credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - b) / h) × 10^12)
 ```
 
-A target crowned across several arena generations is one lineage. The most
-recently crowned claim is the serving champion: when its natural decayed credit
-falls below 80% (`CHAMPION_FLOOR_PPM`) of the lineage's pooled credit, it is
-raised to exactly that floor and the displaced crowns split the remainder in
-proportion to their own decayed credits. The lineage's pooled credit never
-changes — only its split moves, so displacing the champion immediately takes
-the dominant share regardless of how the margins compare, while displaced
-crowns keep a decaying minority tail instead of dropping to zero. This rule
-ships as `policy_version` `cacheon.emissions.v1.1` (the claim model remains the
-legacy V1 generation); the policy digest changes with it, so the bound
-`emissions_policy_digest` in intake metadata must be rotated deliberately when
-deploying.
+Submission time, not evaluation completion time, controls age and stall credit.
+Logarithmic units make compounded gains path-independent. Policy version
+`cacheon.emissions.v1.3` replaces the v1.1 champion floor; an existing v1.1
+binding moves forward automatically only when all numeric policy fields match.
 
-Retirement or neutralization removes standing credit. A stale, incompatible,
-missing, or unreopenable active crown holds the complete projection; its share is
-not silently redistributed. An active claimant absent from the bound metagraph
-does not hold the vector: that family's allocated standing or live-discovery
-share is published to the validator hotkey for this tick. Other families keep the
-ppm they would have received if the claimant were still registered. If the
-hotkey returns, the next projection pays it again at the then-current decayed
-credit.
+The active standing claim still validates the current evaluation stack. Reward
+history is derived from existing settlement candidates and their two retained
+PASS records; there is no parallel accepted-history table. Missing or corrupt
+evidence holds the projection. If a claimant leaves the metagraph, its share
+goes to the validator for that tick and returns if the claimant re-registers.
 
 A discovery qualification can create one non-renewable bounded claim. It does not
 install an evaluation-stack contribution or create a standing family. Duplicate
 packaging, promotion, integration, or release cannot renew that claim.
 
-The V1 projector reopens every active stack and claim, binds exact finalized chain
-scope and metagraph membership, aggregates credit by hotkey, and normalizes one
-positive integer-ppm vector totaling 1,000,000.
+The projector reopens every PASS pair, active stack, standing claim, and discovery
+claim, binds finalized chain scope and membership, aggregates by hotkey, and
+normalizes one positive integer-ppm vector totaling 1,000,000.
 
 ### All-uncrowned bootstrap
 
@@ -117,22 +106,6 @@ cacheon set-weights \
   --wallet default \
   --hotkey validator \
   --dry-run
-```
-
-```bash
-cacheon set-weights \
-  --burn-to-subnet-owner \
-  --netuid <NETUID> \
-  --network <NETWORK_OR_WSS_URL> \
-  --intake-db chain_intake/intake.sqlite3 \
-  --half-life-blocks <BLOCKS> \
-  --discovery-lifetime-blocks <BLOCKS> \
-  --discovery-pool-ppm <PPM> \
-  --refresh-blocks <BLOCKS> \
-  --wallet default \
-  --hotkey validator \
-  --watch \
-  --interval <SECONDS>
 ```
 
 Resolution uses the finalized metagraph RuntimeAPI fields `owner_coldkey`,

@@ -171,3 +171,20 @@ def test_generic_release_is_legal_before_publication() -> None:
         reason="operator_gave_up",
     )
     assert valid_evaluation_recovery_event_transition(prepared, released_prepared)
+
+
+def test_completed_result_reopens_after_incumbent_changes() -> None:
+    held = _event(
+        revision=4,
+        event_type=RecoveryEventType.HELD,
+        phase=RecoveryPhase.HELD,
+        plan=True,
+        reason="transport_hold:incumbent_changed",
+    )
+    result = _event(
+        revision=5,
+        event_type=RecoveryEventType.RESULT_READY,
+        phase=RecoveryPhase.RESULT_READY,
+        plan=True,
+    )
+    assert valid_evaluation_recovery_event_transition(held, result)

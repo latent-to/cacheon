@@ -36,7 +36,7 @@ from cacheon.settlement import (
     SettlementCandidate, SettlementEventType, SettlementQualification,
     plan_settlement,
 )
-from cacheon.stack_identity import sha256_hex
+from cacheon.stack_identity import canonical_digest, sha256_hex
 from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
@@ -1101,6 +1101,24 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
             reopened.reopen_active_crown(candidate.arena_digest, candidate.target_id)
 
 
+def test_retained_pass_is_rewarded_even_when_settlement_holds_it(tmp_path):
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        evidence = store.reopen_settlement_evidence(candidate)
+        store._db.execute(
+            "UPDATE settlement_candidates SET status='held',reason='incumbent_advanced',"
+            "settlement_evidence_digest=? WHERE reservation_id=?",
+            (evidence.digest, candidate.reservation_digest),
+        )
+        claims = store.passed_reward_claims()
+        assert len(claims) == 1
+        assert claims[0].hotkey == candidate.hotkey
+        assert claims[0].retained_evidence_digest == evidence.digest
+
+    with _store(tmp_path) as reopened:
+        assert reopened.passed_reward_claims() == claims
+
+
 def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp_path):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store)
@@ -1131,6 +1149,12 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
                 netuid=SCOPE.netuid,
             )
         assert _policy_metadata(store) is None
+        legacy = POLICY.to_dict()
+        legacy["policy_version"] = "cacheon.emissions.v1.1"
+        store._db.execute(
+            "INSERT INTO metadata(key,value) VALUES('emissions_policy_digest',?)",
+            (canonical_digest("cacheon.economics.policy", legacy),),
+        )
         projection = store.build_weight_projection(
             policy=POLICY,
             context=context,
@@ -1139,6 +1163,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
         )
         assert projection.crown_count == 1
         assert projection.weights_ppm == (("miner", 1_000_000),)
+        assert _policy_metadata(store)["value"] == POLICY.digest
         pending = WeightPublicationRecord(
             projection.digest,
             "pending",
@@ -1487,15 +1512,15 @@ def test_sqlite_weight_journal_reopen_rejects_corrupt_head_projection(tmp_path):
 
 
 def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
-    """No automatic path reopens a hold: a rerun costs a full GPU evaluation.
-
-    A qualification hold means the stage burned a run and produced no verdict.
-    Re-running it changes nothing the validator can observe, so the row stays
-    held until a person has looked at why.
-    """
+    """A released qualification hold resumes after its retained screen."""
 
     with _store(tmp_path) as store:
         row = _reserve_one(store)
+        _publish(
+            store, row.reservation_id, _fingerprint("target.a", "slot.a"),
+            digest="d" * 64, root="/published/a",
+        )
+        _promote(store, row.reservation_id)
         store.mark_held(
             row.reservation_id, "remote_qualification_hold:legacy_no_decision"
         )
@@ -1504,6 +1529,7 @@ def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
         assert not hasattr(store, "mark_hold_retry_exhausted")
         assert store.get(row.reservation_id).status == "held"
 
-        assert store.release_hold(
+        released = store.release_hold(
             row.reservation_id, reason="operator fixed the cause"
-        ).status != "held"
+        )
+        assert (released.status, released.screen_status) == ("promoted", "promote")

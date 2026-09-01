@@ -888,16 +888,6 @@ class RecoverableQualificationDispatcher:
                 plan.request_id,
                 "qualification returned another payload type",
             )
-        if (
-            product.incumbent_stack != self.qualification_incumbent_stack
-            or product.incumbent_tree_digest
-            != self.qualification_incumbent_tree_digest
-        ):
-            raise QualificationRecoveryHold(
-                "incumbent_changed",
-                plan.request_id,
-                "remote qualification changed the CPU-owned incumbent",
-            )
         return product
 
     @staticmethod
@@ -964,11 +954,6 @@ class RecoverableQualificationDispatcher:
                 AUTHORITY_CHANGED_HOLD_REASON,
                 ORPHANED_CARRIER_HOLD_REASON,
             ):
-                # All three reasons mean the retained request is durably dead --
-                # parked before infrastructure results became requeue-class,
-                # sealed against an authority that no longer verifies, or left
-                # with a result whose carrier is gone and can never deliver it.
-                # Retire the dead request and requeue it the same bounded way.
                 return self._requeue_infrastructure(
                     recovery,
                     _infrastructure_requeue_signal("worker_infrastructure_result"),

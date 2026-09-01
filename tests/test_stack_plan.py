@@ -111,6 +111,7 @@ def _plan(
     [
         (None, ROUTED, ()),
         (ROUTED, ROUTED, ()),
+        ("moe.fused_experts", "moe.fused_experts_reduce", ("moe.fused_experts",)),
     ],
 )
 def test_registered_stock_and_same_target_transitions(

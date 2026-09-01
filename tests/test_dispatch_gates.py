@@ -1,12 +1,4 @@
-"""Dispatcher conservatism gates: paths whose semantics the slot contracts don't
-model must fall back to the trusted baseline instead of silently computing the
-wrong thing (and framing an honest kernel for the resulting KL failure).
-
-Pins two of them:
-* rmsnorm: ``variance_size_override`` / ``cast_x_before_out_mul`` / ``fp32_residual`` -> baseline;
-* moe.fused_experts_reduce: a TP layer with ``reduce_results=False`` defers its reduce
-  downstream, so the reduce-OWNING kernel must not run (it would insert an extra reduce).
-"""
+"""Dispatcher gates for unmodelled RMSNorm and deferred MoE-reduce semantics."""
 
 from __future__ import annotations
 
@@ -157,14 +149,19 @@ def _moe_layer(inputs, *, moe_tp_size, reduce_results):
 
 
 def _moe_reduce_registry(calls):
+    def prepare(_w13, _w2):
+        with torch.inference_mode():
+            return torch.zeros(1)
+
     def entry(x, topk_ids, topk_weights, prepared, out, group=None):
-        calls.append("fired")
+        calls.append(torch.is_inference_mode_enabled())
+        prepared.zero_()
         out.zero_()
 
     reg = KernelRegistry()
     reg.register(KernelImpl(
         slot="moe.fused_experts_reduce", bundle_id="t", entry=entry,
-        prepare=lambda w13, w2: (w13, w2),
+        prepare=prepare,
         eligibility=Eligibility(dtypes=frozenset({"float32"})),
     ))
     reg.enable()
@@ -240,4 +237,4 @@ def test_reduce_owning_kernel_runs_when_layer_reduces(monkeypatch):
     topk = SimpleNamespace(topk_ids=inputs["topk_ids"], topk_weights=inputs["topk_weights"])
     layer = _moe_layer(inputs, moe_tp_size=2, reduce_results=True)
     out = dispatched(layer, inputs["x"], topk)
-    assert out is not _BASELINE and calls == ["fired"]
+    assert out is not _BASELINE and calls == [True]

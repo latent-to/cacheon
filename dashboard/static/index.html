@@ -11,7 +11,6 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"/>
 <style>
 :root {
-  /* cacheon.ai brand palette */
   color-scheme: dark;
   --bg: #030405; --panel: #09090b; --panel2: #10141b; --line: #1e2330;
   --fg: #fff; --muted: #8f99a8; --accent: #2dd4bf;
@@ -207,7 +206,7 @@ const STATUS_TONE = {
   reserved: "mute", deferred: "mute", fetching: "info", transport_retry: "warn",
   held: "warn", no_decision: "warn", failed: "bad", expired: "mute",
   active: "ok", completed: "ok", released: "mute", inactive: "warn",
-  confirmed: "ok", pending: "info",
+  confirmed: "ok", pending: "info", earning: "ok",
 };
 const pill = (s) => `<span class="pill ${STATUS_TONE[s] || "mute"}">${esc(s || "—")}</span>`;
 
@@ -432,23 +431,32 @@ async function viewWinners() {
     const hc = w.hotkey_chain || {};
     return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
     <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div></td>
-    <td>${w.improvement_pct != null ? `<b style="color:var(--accent)">+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
-        <div class="muted small">${w.speedup ? w.speedup.toFixed(5) + "× primary" : ""}
+    <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
+        <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
         ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
+    <td>${w.cumulative_improvement_pct_over_sglang != null
+        ? `<b style="color:var(--accent)">+${w.cumulative_improvement_pct_over_sglang.toFixed(2)}%</b>` : "—"}
+        <div class="muted small">${w.cumulative_speedup_over_sglang
+          ? w.cumulative_speedup_over_sglang.toFixed(5) + "× SGLang" : ""}</div>
+        <div class="muted small">${w.tokens_per_second != null
+          ? w.tokens_per_second.toFixed(1) + " tok/s"
+          : ""}${w.sglang_tokens_per_second != null
+          ? " · " + w.sglang_tokens_per_second.toFixed(1) + " tok/s SGLang"
+          : ""}</div></td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
-    <td>${fmtTime(w.crowned)}<div class="muted small">block ${blockLink(w.crowned, w.crowned_links)}</div></td>
-    <td>${pill(w.reward_claim_status)}</td>
+    <td>${fmtTime(w.passed)}<div class="muted small">block ${blockLink(w.passed, w.passed_links)}</div></td>
+    <td>${pill(w.reward_claim_status)} ${pill(w.settlement_status)}</td>
     <td>${hc.registered
         ? `<span class="pill ok">uid ${hc.uid}</span>
-           <div class="small">${hc.emission_tao_per_day != null ? hc.emission_tao_per_day.toFixed(4) + " τ/day" : "—"}</div>
-           <div class="muted small">incentive ${hc.incentive != null ? hc.incentive.toFixed(4) : "—"}</div>`
+           <div class="small">${hc.emission_alpha_per_day != null ? hc.emission_alpha_per_day.toFixed(4) + " " + esc(d.emission_symbol) + "/day" : "—"}</div>
+           <div class="muted small">incentive ${hc.incentive != null ? (hc.incentive * 100).toFixed(2) + "%" : "—"}</div>`
         : '<span class="pill bad">deregistered</span>'}</td>
   </tr>`;});
   return `
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
-    <h2>Crowned improvements</h2>
-    ${table(["Improved op","Improvement","Winner hotkey","Crowned","Reward claim","On-chain now (emission)"],
-      rows, "No crowned winners yet.")}`;
+    <h2>Retained PASS rewards</h2>
+    ${table(["Improved op","Vs incumbent","Vs SGLang","Miner hotkey","PASS confirmed","Reward","On-chain now (emission)"],
+      rows, "No retained PASS rewards yet.")}`;
 }
 
 async function viewMiners() {
@@ -465,7 +473,7 @@ async function viewMiners() {
     <td>${m.paid || 0}</td>
     <td>${fmtTime(m.first_seen)}</td>
     <td>${fmtTime(m.last_seen)}</td>
-    <td>${m.emission_tao_per_day != null ? m.emission_tao_per_day.toFixed(4) + " τ/d" : "—"}</td>
+    <td>${m.emission_alpha_per_day != null ? m.emission_alpha_per_day.toFixed(4) + " " + esc(d.emission_symbol) + "/d" : "—"}</td>
   </tr>`);
   return `<h2>Miners (by hotkey)</h2>
     ${table(["Hotkey","Registered","Subs","Crowns","Qualified","Active","Held","Failed / expired","Paid fees","First seen","Last seen","Emission"],

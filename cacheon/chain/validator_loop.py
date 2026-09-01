@@ -627,16 +627,14 @@ def run_pass(
                     (row.reservation_digest, row.decision.value)
                     for row in batch.outcomes
                 )
-        # Settlement is store-only work with no arena-service dependency: the
-        # remote-worker deployment runs this loop with service=None, and a
-        # retained PASS pair must still crown there without operator hands.
-        result.settlements.update(
-            _settle_pending(
-                store,
-                current_block=result.finalized_block,
-                finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
+        if not intake_only:
+            result.settlements.update(
+                _settle_pending(
+                    store,
+                    current_block=result.finalized_block,
+                    finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
+                )
             )
-        )
         result.rejected.update(
             (row.reservation_id, row.reason)
             for row in inserted

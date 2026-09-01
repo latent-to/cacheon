@@ -209,6 +209,13 @@ separate GLM reward lanes.
 On 2026-09-01 target-catalog v2 removed MoE `first_applicable` after a narrow
 candidate was shadowed. Overlap is now exclusive; B300 recommission remains required.
 
+On 2026-09-02 the deployed validator lineage through 2026-09-01 (completed
+verdicts preserved across a crown, settlement owned by the standing supervisor,
+screen results preserved across restart, retained-PASS reward merging) merged
+into the GLM branch. Its separate reduce-first planner patch was superseded by
+target-catalog v2 rather than merged; the GLM branch remains the single source
+for the next commission.
+
 On 2026-08-30 the exact `0.5.18` CUDA-13 image, full
 `incoai/GLM-5.3-NVFP4` checkpoint, and two physical TP4 lanes exercised all
 five registered targets (six callable seams because the atomic DP-attention
@@ -564,12 +571,11 @@ either the live V1 offer or the explicitly configured crownless burn offer to
 the gateway; it never signs. Configuration must name `enable_weights` and
 `weights_stage_config` consistently or startup fails closed.
 
-Since 2026-08-30 the projection applies the champion floor
-(`cacheon.emissions.v1.1`): within one target lineage the most recently
-crowned claim takes at least 80% of the lineage's pooled credit and displaced
-crowns split the remainder by their own decayed credits. The policy digest
-changed with the version bump, so deployment rotates the bound
-`emissions_policy_digest` in intake metadata as a deliberate operator step.
+The current `cacheon.emissions.v1.3` projection rewards every distinct retained
+two-PASS contribution, including settlement holds. Credit uses logarithmic
+speedup, submission-time stall bonus, and exponential decay; a later crown does
+not erase or rerun an earlier PASS. Matching v1.1 policy bindings advance
+automatically, while any numeric policy change remains refused.
 
 When a valid active claimant is absent from the current metagraph, that
 family's allocated ppm is sent to the validator hotkey for the tick rather than

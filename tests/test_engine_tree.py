@@ -409,6 +409,53 @@ def test_independent_contributions_compose_without_source_name_collisions(
                 sys.modules.pop(name, None)
 
 
+def test_plain_experts_candidate_cannot_retain_shadowing_reduce_route(
+    tmp_path: Path,
+) -> None:
+    experts = _write_moe_fixture(
+        tmp_path / "experts", "moe.fused_experts", "fused_experts"
+    )
+    reduce = _write_moe_fixture(
+        tmp_path / "reduce", "moe.fused_experts_reduce", "fused_experts_reduce"
+    )
+    catalog = default_target_catalog()
+    context = _evaluation_context(catalog)
+    experts_ref = _proposal_ref(experts, catalog)
+    reduce_ref = _proposal_ref(reduce, catalog)
+    incumbent = _evaluation_stack(catalog, context, reduce_ref)
+
+    candidate = plan_candidate_stack(
+        incumbent,
+        experts_ref,
+        catalog=catalog,
+        expected_context=context,
+    )
+    arm = plan_marginal_arm(
+        incumbent,
+        experts_ref,
+        catalog=catalog,
+        incumbent_tree_digest=_digest("incumbent-tree"),
+        candidate_tree_digest=_digest("candidate-tree"),
+        expected_context=context,
+    )
+    materialized = _materialize(
+        candidate,
+        context,
+        catalog,
+        _sources((experts_ref, experts), (reduce_ref, reduce)),
+        tmp_path / "candidate-engine",
+    )
+    manifest = load_manifest(materialized.root)
+
+    assert tuple(incumbent.entries) == ("moe.fused_experts_reduce",)
+    assert tuple(candidate.entries) == ("moe.fused_experts",)
+    assert tuple(ref.target_id for ref in arm.transition.displaced) == (
+        "moe.fused_experts_reduce",
+    )
+    assert [op.slot for op in manifest.ops] == ["moe.fused_experts"]
+    assert all("fused_experts_reduce" not in row.path for row in materialized.files)
+
+
 def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

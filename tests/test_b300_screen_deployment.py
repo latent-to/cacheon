@@ -224,6 +224,7 @@ def test_materialize_and_replay_exact_service_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths, gpus, ready = _case(tmp_path)
+    assert deployment._device_policy(gpus[:4]).drain_timeout_s == 300.0
     result = deployment.materialize_b300_screen_identities(
         **paths,
         gpu_provisioner=lambda selected, *, deadline: gpus,
@@ -439,8 +440,10 @@ def test_graph_engine_config_derives_from_the_declared_cell() -> None:
     graph = deployment._engine_config(
         template, ("msa",), cell, disable_cuda_graph=False
     )
+    runtime = deployment._runtime_policy(_preflight())
     assert "watchdog_timeout" not in eager.engine_kwargs
-    assert graph.engine_kwargs["watchdog_timeout"] == deployment._runtime_policy(_preflight()).init_timeout_seconds == deployment._runtime_policy(_preflight()).batch_timeout_seconds == 1_800.0
+    assert (runtime.init_timeout_seconds, runtime.batch_timeout_seconds) == (1800, 1800)
+    assert graph.engine_kwargs["watchdog_timeout"] == runtime.batch_timeout_seconds
     for config in (eager, graph):
         assert config.engine_kwargs["context_length"] == 8192 + 1024 + 128
         assert config.engine_kwargs["disable_radix_cache"] is True

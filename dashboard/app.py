@@ -36,6 +36,11 @@ from dashboard.receipts import (
     qualification_speed,
     screen_stages,
 )
+from dashboard.winners import (
+    conservative_candidate_tokens_per_second,
+    cumulative_crown_speedups,
+    estimated_sglang_tokens_per_second,
+)
 
 # ---------------------------------------------------------------- config ---
 
@@ -344,16 +349,21 @@ class Enrichment:
             sub = bt.Subtensor(network=NETWORK)
             self._subtensor = sub
         mg = sub.metagraph(NETUID)
+        # Emission is denominated in the subnet's own alpha token, not TAO. The
+        # symbol is whatever this netuid registered on chain; the local
+        # bittensor unit table can disagree, so never render it from there.
+        symbol = (self.metagraph or {}).get("emission_symbol") \
+            or str(sub.subnet(NETUID).symbol)
         hotkeys: dict[str, Any] = {}
         for uid in range(len(mg.hotkeys)):
             emission_tempo = float(mg.emission[uid])
             hotkeys[str(mg.hotkeys[uid])] = {
                 "uid": uid,
                 "coldkey": str(mg.coldkeys[uid]),
-                "stake_tao": float(mg.S[uid]),
+                "stake_alpha": float(mg.S[uid]),
                 "incentive": float(mg.incentive[uid]),
-                "emission_tao_per_tempo": emission_tempo,
-                "emission_tao_per_day": emission_tempo * (86400 / (TEMPO_BLOCKS * BLOCK_SECONDS)),
+                "emission_alpha_per_tempo": emission_tempo,
+                "emission_alpha_per_day": emission_tempo * (86400 / (TEMPO_BLOCKS * BLOCK_SECONDS)),
                 "active": bool(mg.active[uid]),
                 "validator_permit": bool(mg.validator_permit[uid]),
             }
@@ -367,6 +377,7 @@ class Enrichment:
             "block": int(mg.block),
             "n": len(mg.hotkeys),
             "owner_coldkey": owner,
+            "emission_symbol": symbol,
             "hotkeys": hotkeys,
         }
         self._kv_set("metagraph", self.metagraph)
@@ -397,6 +408,10 @@ def links_for_address(addr: str) -> dict[str, str]:
 def with_time(block: int) -> dict[str, Any]:
     bt = ENRICHER.block_time(block)
     return {"block": block, "time_unix": bt["unix"], "time_estimated": bt["estimated"]}
+
+
+def emission_symbol() -> str:
+    return str((ENRICHER.metagraph or {}).get("emission_symbol") or "")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -1003,49 +1018,62 @@ def payments() -> dict[str, Any]:
 @app.get("/api/winners")
 def winners() -> dict[str, Any]:
     con = intake_conn()
-    cutoff = cutoff_block(con)
-    claims = rows(con, """
-        SELECT arena_id, target_id, claim_digest, claim_json, status, event_id
-        FROM standing_reward_claims
-    """)
-    crowned = rows(con, """
+    passed = rows(con, """
         SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
-               r.hotkey, r.block AS submission_block, r.content_hash
+               r.hotkey, r.block AS submission_block, r.content_hash,
+               max(q.retained_block) AS passed_block
         FROM settlement_candidates sc
         JOIN reservations r ON r.reservation_id = sc.reservation_id
-        WHERE sc.status = 'crowned' AND r.block >= ?
-    """, (cutoff,))
+        JOIN settlement_qualifications q ON q.reservation_id = sc.reservation_id
+        WHERE r.status='qualified' AND r.decision='PASS'
+          AND sc.status!='duplicate_proposal'
+        GROUP BY sc.reservation_id
+    """)
     crown_events = rows(con, """
-        SELECT e.event_json
+        SELECT e.sequence, e.reservation_id, e.target_id, sc.candidate_json
         FROM settlement_events e
-        JOIN reservations r ON r.reservation_id = e.reservation_id
-        WHERE e.event_type = 'CROWN' AND r.block >= ?
+        JOIN settlement_candidates sc ON sc.reservation_id = e.reservation_id
+        WHERE e.event_type = 'CROWN'
         ORDER BY e.sequence
-    """, (cutoff,))
+    """)
+    evidence_roots = qualification_evidence_roots(
+        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA)
+    speeds_by_reservation: dict[str, list[object]] = {}
+    if passed:
+        marks = ",".join("?" for _ in passed)
+        for disposition in rows(con, f"""
+            SELECT reservation_id, attempt_ref_json FROM qualification_dispositions
+            WHERE decision='PASS' AND reservation_id IN ({marks})
+            ORDER BY reservation_id, attempt_index
+        """, tuple(row["reservation_id"] for row in passed)):
+            speed = qualification_speed(
+                disposition["attempt_ref_json"], evidence_roots)
+            if speed is None:
+                continue
+            speeds_by_reservation.setdefault(
+                disposition["reservation_id"], []).append(speed)
     con.close()
-
-    claim_by_target: dict[str, dict[str, Any]] = {}
-    for c in claims:
-        cj = json.loads(c["claim_json"] or "{}")
-        claim_by_target[cj.get("target_id") or c["target_id"]] = {
-            "status": c["status"], "json": cj}
+    cumulative_by_reservation = cumulative_crown_speedups(crown_events)
 
     items = []
-    for row in crowned:
+    for row in passed:
         cj = json.loads(row["candidate_json"] or "{}")
         primary = cj.get("primary") or {}
         repro = cj.get("reproduction") or {}
         target = primary.get("target_id") or cj.get("target_id") or ""
-        claim = claim_by_target.get(target) or {}
-        claim_json = claim.get("json") or {}
-        speedup = safe_float(primary.get("speedup"))
-        speedup_ppm = claim_json.get("speedup_ppm")
-        if speedup is None and speedup_ppm:
-            speedup = speedup_ppm / 1e6
+        speeds = tuple(filter(None, (
+            safe_float(primary.get("speedup")),
+            safe_float(repro.get("speedup")),
+        )))
+        speedup = min(speeds) if speeds else None
+        cumulative = cumulative_by_reservation.get(row["reservation_id"])
+        candidate_tps = conservative_candidate_tokens_per_second(
+            speeds_by_reservation.get(row["reservation_id"], []))
+        sglang_tps = estimated_sglang_tokens_per_second(
+            candidate_tps, cumulative)
         hotkey = row["hotkey"]
         hk = ENRICHER.hotkey_info(hotkey)
-        crowned_block = int(claim_json.get("crowned_block")
-                            or cj.get("finalized_block") or 0)
+        passed_block = max(int(row["passed_block"] or 0), int(row["submission_block"]))
         items.append({
             "reservation_id": row["reservation_id"],
             "hotkey": hotkey,
@@ -1054,27 +1082,38 @@ def winners() -> dict[str, Any]:
             "target_summary": target_summary(target),
             "speedup": speedup,
             "improvement_pct": (speedup - 1) * 100 if speedup else None,
+            "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
-            "crowned": with_time(crowned_block),
-            "crowned_links": links_for_block(crowned_block),
+            "cumulative_speedup_over_sglang": (
+                float(cumulative) if cumulative is not None else None),
+            "cumulative_improvement_pct_over_sglang": (
+                float((cumulative - 1) * 100) if cumulative is not None else None),
+            "tokens_per_second": (
+                round(float(candidate_tps), 1)
+                if candidate_tps is not None else None),
+            "sglang_tokens_per_second": (
+                round(float(sglang_tps), 1) if sglang_tps is not None else None),
+            "passed": with_time(passed_block),
+            "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
-            "reward_claim_status": claim.get("status") or "none",
+            "reward_claim_status": "earning",
+            "settlement_status": row["status"],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
                 "uid": hk.get("uid"),
                 "coldkey": hk.get("coldkey"),
-                "emission_tao_per_day": hk.get("emission_tao_per_day"),
+                "emission_alpha_per_day": hk.get("emission_alpha_per_day"),
                 "incentive": hk.get("incentive"),
-                "stake_tao": hk.get("stake_tao"),
+                "stake_alpha": hk.get("stake_alpha"),
                 "metagraph_block": hk.get("metagraph_block"),
             },
         })
-    items.sort(key=lambda x: x["crowned"]["block"] or 0, reverse=True)
+    items.sort(key=lambda x: x["passed"]["block"] or 0, reverse=True)
     return {
         "items": items,
-        "crown_events_total": len(crown_events),
-        "note": ("Reward claims marked 'inactive' are recorded but not yet paying: "
-                 "miner incentive has not been switched on in published weights."),
+        "emission_symbol": emission_symbol(),
+        "pass_total": len(items),
+        "note": "Every retained two-PASS contribution earns; crown and hold only describe settlement.",
     }
 
 
@@ -1116,9 +1155,9 @@ def miners() -> dict[str, Any]:
             "last_seen": with_time(int(m["last_block"])),
             "registered": hk.get("registered", False),
             "uid": hk.get("uid"),
-            "emission_tao_per_day": hk.get("emission_tao_per_day"),
+            "emission_alpha_per_day": hk.get("emission_alpha_per_day"),
         })
-    return {"items": items}
+    return {"items": items, "emission_symbol": emission_symbol()}
 
 
 @app.get("/api/events")

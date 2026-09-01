@@ -359,7 +359,10 @@ def valid_evaluation_recovery_event_transition(
             and previous.phase is RecoveryPhase.HELD
             and (
                 previous.reason.startswith("remote_qualification_hold:")
-                or previous.reason == "post_publication_no_decision"
+                or previous.reason in {
+                    "post_publication_no_decision",
+                    "transport_hold:incumbent_changed",
+                }
             )
             and event.resolution is RecoveryResolution.UNRESOLVED
         )

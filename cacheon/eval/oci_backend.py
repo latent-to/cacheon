@@ -97,50 +97,31 @@ CONTAINER_ARTIFACT_BASE = "/cacheon/native-artifacts"
 CONTAINER_CACHE = "/cacheon/runtime-cache"
 
 
-def _seed_runtime_cache(
+_SEED_CACHE_FAMILIES = frozenset(
+    {
+        "cuda",
+        "flashinfer",
+        "home",
+        "huggingface",
+        "sglang",
+        "torch-extensions",
+        "torchinductor",
+        "triton",
+        "triton-home",
+        "xdg",
+    }
+)
+
+
+def _copy_seed_tree(
     seed_root: Path,
-    cache_root: Path,
+    target_root: Path,
     *,
     uid: int,
     gid: int,
     max_bytes: int,
-) -> None:
-    """Install the sealed FMHA cache into the path consumed by MInfer.
-
-    Every lease mounts an empty tmpfs cache, so each boot recompiles runtime
-    JIT artifacts; concurrent TP ranks then race the same output path and a
-    torn write kills the session (observed 2026-08-10: four ranks sharing one
-    HOME half-wrote the minfer fmha_sm100 plan .so — "file too short").
-    Seeding the cache from a validator-owned tree removes the compile
-    entirely. The supplied root begins with ``plan/`` and the compiled
-    variants; MInfer consumes it below ``HOME/.cache/minfer/fmha_sm100``.
-    Keeping the installed tree read-only prevents ranks from falling back to
-    concurrent publication in the shared cache. A planless or file-free seed
-    is refused here, at lease time: sealing it read-only anyway makes the
-    first JIT compile kill the session mid-evaluation (observed 2026-08-13:
-    an empty seed sealed 0o555 crashed lane-b on ``mkdir .../plan``).
-    """
-    if (
-        not seed_root.is_absolute()
-        or seed_root.is_symlink()
-        or not seed_root.is_dir()
-    ):
-        raise OCIBackendError("runtime seed root is not a trusted directory")
-    plan_root = seed_root / "plan"
-    if plan_root.is_symlink() or not plan_root.is_dir():
-        raise OCIBackendError("runtime seed tree lacks its plan/ subtree")
-    target_root = cache_root / "home" / ".cache" / "minfer" / "fmha_sm100"
-    if target_root.exists() or target_root.is_symlink():
-        raise OCIBackendError("fresh runtime cache already holds FMHA state")
-    for parent in (
-        cache_root / "home",
-        cache_root / "home" / ".cache",
-        cache_root / "home" / ".cache" / "minfer",
-    ):
-        parent.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(parent, 0o700)
-        os.chown(parent, uid, gid)
-    target_root.mkdir(mode=0o700)
+    file_mode: int,
+) -> list[Path]:
     copied = 0
     copied_files = 0
     copied_directories = [target_root]
@@ -160,14 +141,93 @@ def _seed_runtime_cache(
         if copied > max_bytes:
             raise OCIBackendError("runtime seed tree exceeds the cache budget")
         shutil.copyfile(row, target)
-        os.chmod(target, 0o444)
+        os.chmod(target, file_mode)
         os.chown(target, uid, gid)
     if copied_files == 0:
         raise OCIBackendError("runtime seed tree holds no files")
-    for target in sorted(
-        copied_directories, key=lambda path: len(path.parts), reverse=True
+    return copied_directories
+
+
+def _seed_runtime_cache(
+    seed_root: Path,
+    cache_root: Path,
+    *,
+    uid: int,
+    gid: int,
+    max_bytes: int,
+) -> None:
+    """Install a validator-provisioned warm cache into the fresh lease tmpfs.
+
+    Every lease mounts an empty tmpfs cache, so each boot recompiles runtime
+    JIT artifacts. Two seed shapes are accepted.
+
+    A root holding ``plan/`` is the sealed MInfer FMHA tree consumed below
+    ``HOME/.cache/minfer/fmha_sm100``. Concurrent TP ranks racing that
+    compile tore a half-written plan ``.so`` ("file too short", observed
+    2026-08-10), so the installed subtree is sealed read-only; an empty seed
+    sealed read-only crashes the first compile instead (observed 2026-08-13),
+    so a file-free seed is refused here, at lease time.
+
+    Any other root must hold only known cache families at its top level and
+    is installed whole at the cache root, writable for the runtime identity.
+    These caches key entries by content digests, so warm entries satisfy only
+    the exact identity they were captured from; lookups that miss still
+    compile and publish beside the seeded entries. Without this shape the
+    composed incumbent's first batch re-rolled a torch-compile storm on every
+    cold lease, outran the 1,800-second batch ceiling, and ended every screen
+    ``adapter_epoch_failed`` with no verdict (observed 2026-08-31).
+    """
+    if (
+        not seed_root.is_absolute()
+        or seed_root.is_symlink()
+        or not seed_root.is_dir()
     ):
-        os.chmod(target, 0o555)
+        raise OCIBackendError("runtime seed root is not a trusted directory")
+    plan_root = seed_root / "plan"
+    if plan_root.is_symlink():
+        raise OCIBackendError("runtime seed tree holds a symlink")
+    if plan_root.is_dir():
+        target_root = cache_root / "home" / ".cache" / "minfer" / "fmha_sm100"
+        if target_root.exists() or target_root.is_symlink():
+            raise OCIBackendError("fresh runtime cache already holds FMHA state")
+        for parent in (
+            cache_root / "home",
+            cache_root / "home" / ".cache",
+            cache_root / "home" / ".cache" / "minfer",
+        ):
+            parent.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(parent, 0o700)
+            os.chown(parent, uid, gid)
+        target_root.mkdir(mode=0o700)
+        copied_directories = _copy_seed_tree(
+            seed_root,
+            target_root,
+            uid=uid,
+            gid=gid,
+            max_bytes=max_bytes,
+            file_mode=0o444,
+        )
+        for target in sorted(
+            copied_directories, key=lambda path: len(path.parts), reverse=True
+        ):
+            os.chmod(target, 0o555)
+        return
+    families = {row.name for row in seed_root.iterdir()}
+    if not families:
+        raise OCIBackendError("runtime seed tree holds no cache families")
+    unknown = families - _SEED_CACHE_FAMILIES
+    if unknown:
+        raise OCIBackendError(
+            f"runtime seed tree holds unknown cache families: {sorted(unknown)!r}"
+        )
+    _copy_seed_tree(
+        seed_root,
+        cache_root,
+        uid=uid,
+        gid=gid,
+        max_bytes=max_bytes,
+        file_mode=0o644,
+    )
 CONTAINER_ENGINE_WORKER_POLICY = (
     "/usr/local/lib/python3.12/dist-packages/cacheon/eval/engine_worker.py"
 )

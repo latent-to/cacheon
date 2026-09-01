@@ -139,13 +139,11 @@ cacheon chain-validate \
   --once
 ```
 
-This command reads finalized history, reserves new arrivals, performs HTTPS fetch and
-hash verification, and publishes safe immutable copies. It does not need a wallet and
-cannot run local qualification while `--intake-only` is set; settlement of PASS pairs
-already retained in the store still runs on every pass, because the remote-worker
-deployment relies on this loop to crown without operator hands. Eval-cost admission defaults
-off; set `--eval-cost-tao-rao 1000000000` only when the operator requires the
-published 1 TAO transfer.
+This command reads finalized history, reserves arrivals, verifies bundle hashes, and
+publishes immutable copies. It needs no wallet and cannot qualify or settle while
+`--intake-only` is set; the commissioned standing supervisor owns those stages.
+Eval-cost admission defaults off; set `--eval-cost-tao-rao 1000000000` only when
+the operator requires the published 1 TAO transfer.
 
 Interpret the one-pass summary by stage:
 
