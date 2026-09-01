@@ -36,6 +36,11 @@ from dashboard.receipts import (
     qualification_speed,
     screen_stages,
 )
+from dashboard.winners import (
+    conservative_candidate_tokens_per_second,
+    cumulative_crown_speedups,
+    estimated_sglang_tokens_per_second,
+)
 
 # ---------------------------------------------------------------- config ---
 
@@ -1014,7 +1019,31 @@ def winners() -> dict[str, Any]:
           AND sc.status!='duplicate_proposal'
         GROUP BY sc.reservation_id
     """)
+    crown_events = rows(con, """
+        SELECT e.sequence, e.reservation_id, e.target_id, sc.candidate_json
+        FROM settlement_events e
+        JOIN settlement_candidates sc ON sc.reservation_id = e.reservation_id
+        WHERE e.event_type = 'CROWN'
+        ORDER BY e.sequence
+    """)
+    evidence_roots = qualification_evidence_roots(
+        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA)
+    speeds_by_reservation: dict[str, list[object]] = {}
+    if passed:
+        marks = ",".join("?" for _ in passed)
+        for disposition in rows(con, f"""
+            SELECT reservation_id, attempt_ref_json FROM qualification_dispositions
+            WHERE decision='PASS' AND reservation_id IN ({marks})
+            ORDER BY reservation_id, attempt_index
+        """, tuple(row["reservation_id"] for row in passed)):
+            speed = qualification_speed(
+                disposition["attempt_ref_json"], evidence_roots)
+            if speed is None:
+                continue
+            speeds_by_reservation.setdefault(
+                disposition["reservation_id"], []).append(speed)
     con.close()
+    cumulative_by_reservation = cumulative_crown_speedups(crown_events)
 
     items = []
     for row in passed:
@@ -1027,6 +1056,11 @@ def winners() -> dict[str, Any]:
             safe_float(repro.get("speedup")),
         )))
         speedup = min(speeds) if speeds else None
+        cumulative = cumulative_by_reservation.get(row["reservation_id"])
+        candidate_tps = conservative_candidate_tokens_per_second(
+            speeds_by_reservation.get(row["reservation_id"], []))
+        sglang_tps = estimated_sglang_tokens_per_second(
+            candidate_tps, cumulative)
         hotkey = row["hotkey"]
         hk = ENRICHER.hotkey_info(hotkey)
         passed_block = max(int(row["passed_block"] or 0), int(row["submission_block"]))
@@ -1040,6 +1074,15 @@ def winners() -> dict[str, Any]:
             "improvement_pct": (speedup - 1) * 100 if speedup else None,
             "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
+            "cumulative_speedup_over_sglang": (
+                float(cumulative) if cumulative is not None else None),
+            "cumulative_improvement_pct_over_sglang": (
+                float((cumulative - 1) * 100) if cumulative is not None else None),
+            "tokens_per_second": (
+                round(float(candidate_tps), 1)
+                if candidate_tps is not None else None),
+            "sglang_tokens_per_second": (
+                round(float(sglang_tps), 1) if sglang_tps is not None else None),
             "passed": with_time(passed_block),
             "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),

@@ -431,9 +431,18 @@ async function viewWinners() {
     const hc = w.hotkey_chain || {};
     return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
     <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div></td>
-    <td>${w.improvement_pct != null ? `<b style="color:var(--accent)">+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
+    <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
         <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
         ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
+    <td>${w.cumulative_improvement_pct_over_sglang != null
+        ? `<b style="color:var(--accent)">+${w.cumulative_improvement_pct_over_sglang.toFixed(2)}%</b>` : "—"}
+        <div class="muted small">${w.cumulative_speedup_over_sglang
+          ? w.cumulative_speedup_over_sglang.toFixed(5) + "× SGLang" : ""}</div>
+        <div class="muted small">${w.tokens_per_second != null
+          ? w.tokens_per_second.toFixed(1) + " tok/s"
+          : ""}${w.sglang_tokens_per_second != null
+          ? " · " + w.sglang_tokens_per_second.toFixed(1) + " tok/s SGLang"
+          : ""}</div></td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
     <td>${fmtTime(w.passed)}<div class="muted small">block ${blockLink(w.passed, w.passed_links)}</div></td>
     <td>${pill(w.reward_claim_status)} ${pill(w.settlement_status)}</td>
@@ -446,7 +455,7 @@ async function viewWinners() {
   return `
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
     <h2>Retained PASS rewards</h2>
-    ${table(["Improved op","Conservative improvement","Miner hotkey","PASS confirmed","Reward","On-chain now (emission)"],
+    ${table(["Improved op","Vs incumbent","Vs SGLang","Miner hotkey","PASS confirmed","Reward","On-chain now (emission)"],
       rows, "No retained PASS rewards yet.")}`;
 }
 
