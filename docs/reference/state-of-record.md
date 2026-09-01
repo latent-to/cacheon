@@ -214,7 +214,12 @@ verdicts preserved across a crown, settlement owned by the standing supervisor,
 screen results preserved across restart, retained-PASS reward merging) merged
 into the GLM branch. Its separate reduce-first planner patch was superseded by
 target-catalog v2 rather than merged; the GLM branch remains the single source
-for the next commission.
+for the next commission. The same day the recoverable qualification dispatcher
+began installing or verifying the commissioned incumbent against the durable
+evaluation stack before any claim: a commission pinned to a superseded baseline
+fails before a lease or GPU request exists, and a new arena such as GLM-5.3
+receives its genesis stack row from its first commissioned claim instead of
+failing at its first PASS commit.
 
 On 2026-08-30 the exact `0.5.18` CUDA-13 image, full
 `incoai/GLM-5.3-NVFP4` checkpoint, and two physical TP4 lanes exercised all
