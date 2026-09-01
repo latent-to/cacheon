@@ -40,6 +40,40 @@ def _wallet_from_args(args: argparse.Namespace):
     return bt.Wallet(**kwargs)
 
 
+def _emissions_policy_from_args(args: argparse.Namespace):
+    from cacheon.economics import EmissionsPolicyManifest
+
+    return EmissionsPolicyManifest(
+        args.half_life_blocks,
+        args.discovery_lifetime_blocks,
+        args.discovery_pool_ppm,
+        args.time_multiplier_scale_blocks,
+        excluded_hotkeys=tuple(getattr(args, "exclude_hotkey", None) or ()),
+        excluded_claim_digests=tuple(getattr(args, "exclude_claim_digest", None) or ()),
+    )
+
+
+def _add_emissions_exclusion_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--exclude-hotkey",
+        action="append",
+        default=None,
+        help=(
+            "omit this miner from the next weight projection and renormalize remaining "
+            "credit; repeatable; does not unseat the evaluation incumbent"
+        ),
+    )
+    parser.add_argument(
+        "--exclude-claim-digest",
+        action="append",
+        default=None,
+        help=(
+            "omit this accepted-claim digest from the next weight projection and "
+            "renormalize remaining credit; repeatable; the digest must still reopen"
+        ),
+    )
+
+
 def cmd_slots(_: argparse.Namespace) -> int:
     from cacheon.slots import SLOTS, list_slots
 
@@ -107,7 +141,6 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
         resume_weight_projection,
     )
     from cacheon.economics import (
-        EmissionsPolicyManifest,
         GlobalRewardProjectionContext,
         MetagraphMember,
     )
@@ -134,6 +167,7 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
         ("half_life_blocks", "--half-life-blocks"),
         ("discovery_lifetime_blocks", "--discovery-lifetime-blocks"),
         ("discovery_pool_ppm", "--discovery-pool-ppm"),
+        ("time_multiplier_scale_blocks", "--time-multiplier-scale-blocks"),
         ("refresh_blocks", "--refresh-blocks"),
     ):
         if getattr(args, name, None) is None:
@@ -175,11 +209,7 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
         raise WeightPublicationError(
             "signer hotkey is not registered on the burn projection metagraph"
         )
-    policy = EmissionsPolicyManifest(
-        args.half_life_blocks,
-        args.discovery_lifetime_blocks,
-        args.discovery_pool_ppm,
-    )
+    policy = _emissions_policy_from_args(args)
     context = GlobalRewardProjectionContext(
         scope.digest,
         validator_hotkey,
@@ -294,7 +324,6 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         resume_weight_projection,
     )
     from cacheon.economics import (
-        EmissionsPolicyManifest,
         GlobalRewardProjectionContext,
         MetagraphMember,
     )
@@ -316,6 +345,7 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         ("half_life_blocks", "--half-life-blocks"),
         ("discovery_lifetime_blocks", "--discovery-lifetime-blocks"),
         ("discovery_pool_ppm", "--discovery-pool-ppm"),
+        ("time_multiplier_scale_blocks", "--time-multiplier-scale-blocks"),
         ("refresh_blocks", "--refresh-blocks"),
     ):
         if getattr(args, name, None) is None:
@@ -334,11 +364,7 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         wallet = None if args.release_hold else public_wallet
     subtensor = _connect_chain_from_args(args)
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
-    policy = EmissionsPolicyManifest(
-        args.half_life_blocks,
-        args.discovery_lifetime_blocks,
-        args.discovery_pool_ppm,
-    )
+    policy = _emissions_policy_from_args(args)
     with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
         if head_only:
             journal = SQLiteWeightPublicationJournal.reopen_from_head(store)
@@ -1203,7 +1229,6 @@ def cmd_push_weight_offer(args: argparse.Namespace) -> int:
         write_current_weight_offer,
     )
     from cacheon.economics import (
-        EmissionsPolicyManifest,
         GlobalRewardProjectionContext,
         MetagraphMember,
     )
@@ -1246,16 +1271,14 @@ def cmd_push_weight_offer(args: argparse.Namespace) -> int:
             args.half_life_blocks is None
             or args.discovery_lifetime_blocks is None
             or args.discovery_pool_ppm is None
+            or args.time_multiplier_scale_blocks is None
         ):
             raise SystemExit(
                 "legacy V1 push requires --half-life-blocks, "
-                "--discovery-lifetime-blocks, and --discovery-pool-ppm"
+                "--discovery-lifetime-blocks, --discovery-pool-ppm, "
+                "and --time-multiplier-scale-blocks"
             )
-        policy = EmissionsPolicyManifest(
-            args.half_life_blocks,
-            args.discovery_lifetime_blocks,
-            args.discovery_pool_ppm,
-        )
+        policy = _emissions_policy_from_args(args)
         metagraph = chain.fetch_metagraph(subtensor, args.netuid)
         context = GlobalRewardProjectionContext(
             scope.digest,
@@ -2377,6 +2400,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="discovery pool share in ppm (required)",
     )
     sp.add_argument(
+        "--time-multiplier-scale-blocks",
+        type=int,
+        default=None,
+        help="arena stall bonus scale in blocks (required; 1800 = six hours)",
+    )
+    _add_emissions_exclusion_flags(sp)
+    sp.add_argument(
         "--refresh-blocks",
         type=int,
         default=None,
@@ -2629,6 +2659,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--half-life-blocks", type=int, default=None)
     sp.add_argument("--discovery-lifetime-blocks", type=int, default=None)
     sp.add_argument("--discovery-pool-ppm", type=int, default=None)
+    sp.add_argument("--time-multiplier-scale-blocks", type=int, default=None)
+    _add_emissions_exclusion_flags(sp)
     sp.add_argument(
         "--burn-hotkey",
         default="",

@@ -644,6 +644,14 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 event_id TEXT NOT NULL,
                 PRIMARY KEY(arena_id, target_id)
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS accepted_reward_claims (
+                claim_digest TEXT PRIMARY KEY,
+                arena_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                crowned_block INTEGER NOT NULL,
+                claim_json TEXT NOT NULL,
+                event_id TEXT NOT NULL
+            ) STRICT;
             CREATE TABLE IF NOT EXISTS discovery_bounty_claims (
                 claim_digest TEXT PRIMARY KEY,
                 proposal_digest TEXT NOT NULL UNIQUE,
@@ -745,7 +753,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 "(SELECT reservation_id FROM settlement_candidates)"
             )
             self._db.execute("UPDATE metadata SET value='3' WHERE key='schema'")
-        elif schema["value"] not in {"3", "4", "5", "6"}:
+        elif schema["value"] not in {"3", "4", "5", "6", "7"}:
             raise IntakeError("intake database schema is unsupported")
         try:
             migrate_schema3_to4(self._db)
@@ -761,6 +769,89 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError(
                 f"debt publication schema cannot open: {exc}"
             ) from None
+        self._migrate_schema6_to7()
+
+    def _migrate_schema6_to7(self) -> None:
+        """Append-only accepted-CROWN history; seed only currently active standing."""
+
+        from cacheon.economics import AcceptedRewardClaim, StandingRewardClaim
+
+        schema = self._db.execute(
+            "SELECT value FROM metadata WHERE key='schema'"
+        ).fetchone()
+        if schema is None:
+            raise IntakeError("intake database schema is missing")
+        if schema["value"] == "7":
+            self._verify_accepted_reward_history_schema()
+            return
+        if schema["value"] not in {"5", "6"}:
+            raise IntakeError("accepted-reward history migration requires intake schema 5 or 6")
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS accepted_reward_claims ("
+            "claim_digest TEXT PRIMARY KEY,"
+            "arena_id TEXT NOT NULL,"
+            "target_id TEXT NOT NULL,"
+            "crowned_block INTEGER NOT NULL,"
+            "claim_json TEXT NOT NULL,"
+            "event_id TEXT NOT NULL"
+            ") STRICT"
+        )
+        for action in ("UPDATE", "DELETE"):
+            self._db.execute(
+                f"CREATE TRIGGER IF NOT EXISTS accepted_reward_claims_reject_{action.lower()} "
+                f"BEFORE {action} ON accepted_reward_claims BEGIN SELECT "
+                "RAISE(ABORT,'accepted reward claims are immutable'); END"
+            )
+        for row in self._db.execute(
+            "SELECT claim_digest,claim_json,event_id FROM standing_reward_claims "
+            "WHERE status='active'"
+        ):
+            try:
+                standing = StandingRewardClaim.from_dict(json.loads(row["claim_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise IntakeError(
+                    f"standing reward claim is corrupt during history seed: {exc}"
+                ) from None
+            if standing.digest != row["claim_digest"]:
+                raise IntakeError("standing reward claim digest differs during history seed")
+            accepted = AcceptedRewardClaim.from_standing(standing)
+            encoded = json.dumps(accepted.to_dict(), separators=(",", ":"), sort_keys=True)
+            self._db.execute(
+                "INSERT OR IGNORE INTO accepted_reward_claims("
+                "claim_digest,arena_id,target_id,crowned_block,claim_json,event_id) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    accepted.digest,
+                    accepted.arena_digest,
+                    accepted.target_id,
+                    accepted.crowned_block,
+                    encoded,
+                    row["event_id"],
+                ),
+            )
+        self._db.execute(
+            "UPDATE metadata SET value='7' WHERE key='schema' AND value IN ('5','6')"
+        )
+        self._verify_accepted_reward_history_schema()
+
+    def _verify_accepted_reward_history_schema(self) -> None:
+        row = self._db.execute(
+            "SELECT strict FROM pragma_table_list WHERE name='accepted_reward_claims'"
+        ).fetchone()
+        columns = {
+            item["name"]
+            for item in self._db.execute("PRAGMA table_info(accepted_reward_claims)")
+        }
+        expected = {
+            "claim_digest",
+            "arena_id",
+            "target_id",
+            "crowned_block",
+            "claim_json",
+            "event_id",
+        }
+        if row is None or row["strict"] != 1 or columns != expected:
+            raise IntakeError("accepted reward claim schema differs")
 
     def _bind_scope(self) -> None:
         encoded = json.dumps(self.scope.to_dict(), separators=(",", ":"), sort_keys=True)
@@ -2397,7 +2488,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
     ) -> EvaluationStackState:
         """Atomically commit one independently planned retained-evidence disposition."""
 
-        from cacheon.economics import StandingRewardClaim, WEIGHT_PPM
+        from cacheon.economics import AcceptedRewardClaim, StandingRewardClaim, WEIGHT_PPM
         from cacheon.settlement import (
             SettlementEvidence,
             SettlementEventType,
@@ -2527,6 +2618,24 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         candidate.finalized_block,
                         evidence_by_candidate[candidate.digest].digest,
                     )
+                    prior = self._db.execute(
+                        "SELECT crowned_block FROM accepted_reward_claims "
+                        "WHERE arena_id=? ORDER BY crowned_block DESC, claim_digest DESC "
+                        "LIMIT 1",
+                        (candidate.arena_digest,),
+                    ).fetchone()
+                    predecessor_block = (
+                        int(prior["crowned_block"])
+                        if prior is not None
+                        else claim.crowned_block
+                    )
+                    if predecessor_block > claim.crowned_block:
+                        raise IntakeError(
+                            "accepted crown predates the arena stall clock"
+                        )
+                    accepted = AcceptedRewardClaim.from_standing(
+                        claim, predecessor_block
+                    )
                     self._db.execute(
                         "INSERT INTO standing_reward_claims(arena_id,target_id,claim_digest,"
                         "claim_json,status,event_id) VALUES(?,?,?,?, 'active',?) "
@@ -2538,6 +2647,21 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             candidate.target_id,
                             claim.digest,
                             json.dumps(claim.to_dict(), separators=(",", ":"), sort_keys=True),
+                            event.digest,
+                        ),
+                    )
+                    self._db.execute(
+                        "INSERT INTO accepted_reward_claims("
+                        "claim_digest,arena_id,target_id,crowned_block,claim_json,event_id) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (
+                            accepted.digest,
+                            accepted.arena_digest,
+                            accepted.target_id,
+                            accepted.crowned_block,
+                            json.dumps(
+                                accepted.to_dict(), separators=(",", ":"), sort_keys=True
+                            ),
                             event.digest,
                         ),
                     )
@@ -2631,6 +2755,25 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 raise IntakeError("discovery reward claim digest differs")
             discovery.append(claim)
         return tuple(standing), tuple(discovery)
+
+    def accepted_reward_claims(self) -> tuple[object, ...]:
+        """Reopen every retained accepted-CROWN history row, or fail as one unit."""
+
+        from cacheon.economics import AcceptedRewardClaim
+
+        claims = []
+        for row in self._db.execute(
+            "SELECT claim_digest,claim_json FROM accepted_reward_claims "
+            "ORDER BY arena_id,target_id,crowned_block,claim_digest"
+        ):
+            try:
+                claim = AcceptedRewardClaim.from_dict(json.loads(row["claim_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise IntakeError(f"accepted reward claim is corrupt: {exc}") from None
+            if claim.digest != row["claim_digest"]:
+                raise IntakeError("accepted reward claim digest differs")
+            claims.append(claim)
+        return tuple(claims)
 
     def reopen_active_crown(
         self, arena_digest: str, target_id: str
@@ -2766,6 +2909,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("weight projection authority is malformed")
         standing, discovery = self.active_reward_claims()
+        earning = self.accepted_reward_claims()
         by_arena: dict[str, list[object]] = {}
         for claim in standing:
             by_arena.setdefault(claim.arena_digest, []).append(claim)
@@ -2782,6 +2926,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         if active_ids - set(catalogs):
             raise IntakeError("reward catalogs do not cover every crowned evaluation arena")
         for claim in standing:
+            self._reopen_claim_evidence(claim.retained_evidence_digest, "crowned")
+        for claim in earning:
             self._reopen_claim_evidence(claim.retained_evidence_digest, "crowned")
         for claim in discovery:
             self._reopen_claim_evidence(
@@ -2801,14 +2947,14 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
             )
         projection = project_global_rewards(
-            policy, context, tuple(authorities), discovery
+            policy, context, tuple(authorities), earning, discovery
         )
         self._bind_emissions_policy(policy.digest)
         evidence = tuple(
             sorted(
                 {
                     claim.retained_evidence_digest
-                    for claim in (*standing, *discovery)
+                    for claim in (*standing, *earning, *discovery)
                 }
             )
         )

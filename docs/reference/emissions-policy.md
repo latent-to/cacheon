@@ -22,40 +22,57 @@ durable evidence remain reopenable from Git history and the reserved schema.
 
 ## Legacy V1
 
-Every active registered target defines one reward family. A singleton target owns
-one slot. An atomic target owns its complete member set and suppresses explicitly
-overlapping singleton families while active. Packaging, integration, and release
-records do not create additional reward families.
+Every registered target still defines one current evaluation family: the active
+standing claim is the incumbent used by settlement and promotion. Reward credit is
+no longer taken only from that incumbent. Every accepted `CROWN` is appended to an
+immutable history and keeps earning a decaying share.
 
-For a retained crown with `speedup_ppm > 1_000_000`, age `a`, and policy
-half-life `h`, standing credit is:
+For a retained accepted crown with `speedup_ppm > 1_000_000`, predecessor block
+`p` (the previous accepted crown in that arena, or this crown's own
+`crowned_block` if it is first), age `a`, stall scale `s`, and half-life `h`:
 
 ```text
-improvement = speedup_ppm - 1_000_000
-credit      = floor(improvement * h / (h + a))
+units      = ln(speedup_ppm / 1_000_000)
+elapsed    = crowned_block - p
+M          = 1 + sqrt(elapsed / s)
+credit     = floor(units × M × 2^(-a / h) × 10^12)
 ```
 
-A target crowned across several arena generations is one lineage. The most
-recently crowned claim is the serving champion: when its natural decayed credit
-falls below 80% (`CHAMPION_FLOOR_PPM`) of the lineage's pooled credit, it is
-raised to exactly that floor and the displaced crowns split the remainder in
-proportion to their own decayed credits. The lineage's pooled credit never
-changes — only its split moves, so displacing the champion immediately takes
-the dominant share regardless of how the margins compare, while displaced
-crowns keep a decaying minority tail instead of dropping to zero. This rule
-ships as `policy_version` `cacheon.emissions.v1.1` (the claim model remains the
-legacy V1 generation); the policy digest changes with it, so the bound
-`emissions_policy_digest` in intake metadata must be rotated deliberately when
-deploying.
+`crowned_block` and `p` are finalized proposal submission blocks, so validator
+evaluation delay cannot inflate the stall bounty. The first accepted crown in an
+arena uses `M = 1`. Later accepted crowns in the same arena reset that arena's
+clock for the next contribution; discovery bounties do not. Compounded
+multiplicative gains are path-independent because the units are logarithmic.
 
-Retirement or neutralization removes standing credit. A stale, incompatible,
-missing, or unreopenable active crown holds the complete projection; its share is
-not silently redistributed. An active claimant absent from the bound metagraph
-does not hold the vector: that family's allocated standing or live-discovery
-share is published to the validator hotkey for this tick. Other families keep the
-ppm they would have received if the claimant were still registered. If the
-hotkey returns, the next projection pays it again at the then-current decayed
-credit.
+Accepted history is not retired when a later crown replaces the evaluation
+incumbent. All positive decayed scores are pooled globally, summed by hotkey,
+and normalized exactly to 1,000,000 ppm. There is no 80% champion floor. This
+rule ships as `policy_version` `cacheon.emissions.v1.3` (the claim model remains
+the legacy V1 generation). The policy digest includes
+`time_multiplier_scale_blocks` plus optional `excluded_hotkeys` and
+`excluded_claim_digests`; the bound `emissions_policy_digest` in intake
+metadata must be rotated deliberately when deploying. Old publication journals
+remain reopenable but refuse mixed old/new policy authority.
+
+Retirement or neutralization removes only the current-stack standing claim. A
+stale, incompatible, missing, or unreopenable accepted or standing crown holds
+the complete projection; its share is not silently redistributed. An active
+claimant absent from the bound metagraph does not hold the vector: that
+family's allocated standing or live-discovery share is published to the
+validator hotkey for this tick. Other families keep the ppm they would have
+received if the claimant were still registered. If the hotkey returns, the next
+projection pays it again at the then-current decayed credit.
+
+Operator exclusions are different from that burn. `--exclude-hotkey` and
+`--exclude-claim-digest` (and the matching sealed weights-stage lists) omit the
+named miner or accepted-history row from credit, then renormalize the remaining
+positive standing and live-discovery credit as if the excluded rows were never
+in the pool. The evaluation incumbent and retained evidence still reopen; a
+drop from weights does not unseat the kernel. An excluded claim digest that is
+not among retained accepted crowns, or an exclusion that leaves no positive
+standing credit, fails closed. Changing exclusions rotates `policy.digest` and
+requires the same deliberate `emissions_policy_digest` metadata rotation as any
+other policy change.
 
 A discovery qualification can create one non-renewable bounded claim. It does not
 install an evaluation-stack contribution or create a standing family. Duplicate
@@ -80,6 +97,7 @@ cacheon set-weights \
   --half-life-blocks <BLOCKS> \
   --discovery-lifetime-blocks <BLOCKS> \
   --discovery-pool-ppm <PPM> \
+  --time-multiplier-scale-blocks 1800 \
   --refresh-blocks <BLOCKS> \
   --burn-hotkey <REGISTERED_BURN_HOTKEY> \
   --dry-run
@@ -113,6 +131,7 @@ cacheon set-weights \
   --half-life-blocks <BLOCKS> \
   --discovery-lifetime-blocks <BLOCKS> \
   --discovery-pool-ppm <PPM> \
+  --time-multiplier-scale-blocks 1800 \
   --refresh-blocks <BLOCKS> \
   --wallet default \
   --hotkey validator \
@@ -128,6 +147,7 @@ cacheon set-weights \
   --half-life-blocks <BLOCKS> \
   --discovery-lifetime-blocks <BLOCKS> \
   --discovery-pool-ppm <PPM> \
+  --time-multiplier-scale-blocks 1800 \
   --refresh-blocks <BLOCKS> \
   --wallet default \
   --hotkey validator \

@@ -24,7 +24,7 @@ from cacheon.stack_identity import canonical_digest, sha256_hex
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
-POLICY = EmissionsPolicyManifest(100, 20, 100_000)
+POLICY = EmissionsPolicyManifest(100, 20, 100_000, 1_800)
 
 
 def _h(label: str) -> str:
@@ -94,6 +94,7 @@ def _args(path, **updates) -> argparse.Namespace:
         "half_life_blocks": 100,
         "discovery_lifetime_blocks": 20,
         "discovery_pool_ppm": 100_000,
+        "time_multiplier_scale_blocks": 1_800,
         "refresh_blocks": 20,
         "release_hold": "",
         "burn_hotkey": "",
@@ -822,3 +823,19 @@ def test_normal_set_weights_still_requires_policy_flags(tmp_path):
                 dry_run=True,
             )
         )
+
+
+def test_emissions_policy_from_args_canonicalizes_exclusions() -> None:
+    policy = cli._emissions_policy_from_args(
+        argparse.Namespace(
+            half_life_blocks=100,
+            discovery_lifetime_blocks=20,
+            discovery_pool_ppm=100_000,
+            time_multiplier_scale_blocks=1_800,
+            exclude_hotkey=["bob", "alice"],
+            exclude_claim_digest=["b" * 64, "a" * 64],
+        )
+    )
+    assert policy.excluded_hotkeys == ("alice", "bob")
+    assert policy.excluded_claim_digests == ("a" * 64, "b" * 64)
+    assert policy.policy_version == "cacheon.emissions.v1.3"

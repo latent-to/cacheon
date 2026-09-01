@@ -284,7 +284,7 @@ def migrate_schema3_to4(db: sqlite3.Connection) -> None:
         raise FiniteDebtStoreError("intake schema metadata is absent")
     # Schema 5 is an additive composition extension.  Reopening it must still
     # verify every schema-4 authority table before the schema-5 verifier runs.
-    if schema["value"] in {str(_FINITE_DEBT_SCHEMA_VERSION), "5", "6"}:
+    if schema["value"] in {str(_FINITE_DEBT_SCHEMA_VERSION), "5", "6", "7"}:
         _verify_finite_debt_schema(db)
         return
     if schema["value"] != "3":
@@ -568,7 +568,7 @@ def migrate_schema4_to5(db: sqlite3.Connection) -> None:
     schema = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
     if schema is None:
         raise IncentiveCompositionStoreError("intake schema metadata is absent")
-    if schema["value"] in {str(_COMPOSITION_SCHEMA_VERSION), "6"}:
+    if schema["value"] in {str(_COMPOSITION_SCHEMA_VERSION), "6", "7"}:
         _verify_composition_schema(db)
         return
     if schema["value"] != "4":

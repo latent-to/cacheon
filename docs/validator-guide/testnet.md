@@ -196,6 +196,7 @@ cacheon set-weights \
   --half-life-blocks <BLOCKS> \
   --discovery-lifetime-blocks <BLOCKS> \
   --discovery-pool-ppm <PPM> \
+  --time-multiplier-scale-blocks 1800 \
   --refresh-blocks <BLOCKS> \
   --dry-run
 ```

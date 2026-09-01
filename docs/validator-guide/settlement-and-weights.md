@@ -132,18 +132,21 @@ Every active registered target defines one family. A singleton target owns its s
 atomic target owns its complete member set and suppresses explicitly overlapping
 singleton families while active.
 
-Credit comes from marginal improvement accepted by a two-PASS pair satisfying
-the seven digest-distinctness checks. The exact conversion to integer policy
-units, the standing-decay equation, and the champion floor that pays the most
-recently crowned claim of a target lineage at least 80% of the lineage's pooled
-credit are defined in [Legacy V1](../reference/emissions-policy.md#legacy-v1).
+Credit comes from log-relative measured improvement of a two-PASS pair
+satisfying the seven digest-distinctness checks. Exact conversion to integer
+policy units, the arena stall multiplier, exponential decay, and the
+append-only accepted-CROWN history are defined in
+[Legacy V1](../reference/emissions-policy.md#legacy-v1).
 
-Retired or neutralized contributions receive no standing credit. Engine-stack
-packaging, integration, and release do not create additional reward families.
-Settlement initializes the standing claim's `crowned_block` from the proposal's
-finalized submission block, not from settlement time, so delayed qualification
-does not reset reward age. Discovery claims use the same finalized submission
-block as `awarded_block` for their bounded lifetime.
+The current standing claim remains the evaluation incumbent used by settlement
+and promotion. Accepted history is not retired with that incumbent: earlier
+accepted crowns keep a decaying share. Engine-stack packaging, integration, and
+release do not create additional reward families. Settlement initializes both
+the standing claim's `crowned_block` and the frozen stall predecessor from the
+proposal's finalized submission block, not from settlement time, so delayed
+qualification does not reset reward age or inflate the stall bounty. Discovery
+claims use the same finalized submission block as `awarded_block` for their
+bounded lifetime and do not reset the arena clock.
 
 ## Legacy V1 discovery bounties
 
@@ -154,8 +157,8 @@ promotion, integration, or release cannot renew the same bounty.
 
 ## Legacy V1 global projection
 
-The reward builder reopens every active arena stack and every required standing claim,
-then binds:
+The reward builder reopens every active arena stack, every required standing
+claim, and every accepted-CROWN history row, then binds:
 
 - chain genesis scope and netuid;
 - validator hotkey;
@@ -183,11 +186,17 @@ exact vector readback.
 Projection is global across every retained crowned arena, not “one `set-weights` call per
 target.” Generation-zero staging arenas do not enter the reward projection, and an active
 claim naming one fails closed. The builder requires catalog coverage for every crowned
-evaluation stack, reopens the evidence behind every active standing and discovery claim,
-binds the emissions-policy digest on first successful construction, and refuses a later
-policy change against the same authority. Numeric policy arguments are required
-operator/validator-set configuration; they are not hidden defaults or empirically
-calibrated by the code.
+evaluation stack, reopens the evidence behind every standing, accepted-history, and
+discovery claim, binds the emissions-policy digest on first successful construction, and
+refuses a later policy change against the same authority. Numeric policy arguments are
+required operator/validator-set configuration; they are not hidden defaults or empirically
+calibrated by the code. Deployed scale is 1,800 blocks (six hours) and half-life is
+100,800 blocks (fourteen days); those values are a reviewed activation artifact.
+Repeatable `--exclude-hotkey` / `--exclude-claim-digest` (and the sealed
+`excluded_hotkeys` / `excluded_claim_digests` lists) drop named miners or accepted
+crowns from the next projection and renormalize remaining credit. That is not a
+metagraph-absence burn and does not remove the kernel from the evaluation stack.
+Changing exclusions is a policy-digest rotation.
 
 ## Dry run
 
@@ -203,6 +212,7 @@ cacheon set-weights \
   --half-life-blocks <BLOCKS> \
   --discovery-lifetime-blocks <BLOCKS> \
   --discovery-pool-ppm <PPM> \
+  --time-multiplier-scale-blocks 1800 \
   --refresh-blocks <BLOCKS> \
   --dry-run
 ```
@@ -258,6 +268,7 @@ cacheon set-weights \
   --half-life-blocks <BLOCKS> \
   --discovery-lifetime-blocks <BLOCKS> \
   --discovery-pool-ppm <PPM> \
+  --time-multiplier-scale-blocks 1800 \
   --refresh-blocks <BLOCKS> \
   --wallet default \
   --hotkey validator \
@@ -330,6 +341,7 @@ cacheon set-weights \
   --half-life-blocks <BLOCKS> \
   --discovery-lifetime-blocks <BLOCKS> \
   --discovery-pool-ppm <PPM> \
+  --time-multiplier-scale-blocks 1800 \
   --refresh-blocks <BLOCKS> \
   --release-hold "reviewed reason"
 ```
@@ -403,7 +415,8 @@ cacheon push-weight-offer \
   --attribution-hotkey <PLACEHOLDER_SS58> \
   --half-life-blocks <BLOCKS> \
   --discovery-lifetime-blocks <BLOCKS> \
-  --discovery-pool-ppm <PPM>
+  --discovery-pool-ppm <PPM> \
+  --time-multiplier-scale-blocks 1800
 
 # signer validators: GET + on-chain publish
 cacheon follow-weights \

@@ -320,6 +320,8 @@ def test_enabled_weights_is_actually_wired_into_the_supervisor(
                 "burn_hotkey": "",
                 "discovery_lifetime_blocks": 2160,
                 "discovery_pool_ppm": 100_000,
+                "excluded_claim_digests": [],
+                "excluded_hotkeys": [],
                 "fallback_endpoint": "wss://archive-backup.example.invalid",
                 "half_life_blocks": 7200,
                 "network": "wss://archive.example.invalid",
@@ -327,6 +329,7 @@ def test_enabled_weights_is_actually_wired_into_the_supervisor(
                 "push_url": "http://127.0.0.1:8080",
                 "refresh_blocks": 600,
                 "schema": WEIGHTS_CONFIG_SCHEMA,
+                "time_multiplier_scale_blocks": 1800,
             }
         )
         + b"\n",
@@ -440,6 +443,9 @@ def test_weights_stage_chooses_burn_or_real_projection_from_store_state(
         half_life_blocks=7200,
         discovery_lifetime_blocks=2160,
         discovery_pool_ppm=100_000,
+        time_multiplier_scale_blocks=1800,
+        excluded_hotkeys=(),
+        excluded_claim_digests=(),
         refresh_blocks=600,
         burn_hotkey=burn_hotkey,
     )

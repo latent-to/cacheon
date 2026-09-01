@@ -5,7 +5,9 @@ from dataclasses import replace
 import pytest
 
 from cacheon.economics import (
+    AcceptedRewardClaim,
     ArenaRewardAuthority,
+    CREDIT_SCALE,
     DiscoveryBountyClaim,
     EconomicsError,
     EmissionsPolicyManifest,
@@ -13,7 +15,10 @@ from cacheon.economics import (
     MetagraphMember,
     StandingRewardClaim,
     WEIGHT_PPM,
+    decay_factor,
+    improvement_units,
     project_global_rewards,
+    time_multiplier,
 )
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest, ProposalContributionRef
@@ -26,6 +31,9 @@ from cacheon.target_catalog import (
     TargetSpec,
     ToleranceContractRef,
 )
+
+
+from decimal import ROUND_FLOOR, Decimal
 
 
 def _d(char: str) -> str:
@@ -116,11 +124,15 @@ def _global_context(block: int = 200, members=None):
     )
 
 
-def _project(policy, catalog, stack, context, standing, discovery=(), generation=7):
+def _project(policy, catalog, stack, context, standing, discovery=(), generation=7, earning=None):
+    standing_t = tuple(standing)
+    if earning is None:
+        earning = tuple(AcceptedRewardClaim.from_standing(row) for row in standing_t)
     return project_global_rewards(
         policy,
         context,
-        (ArenaRewardAuthority(catalog, stack, generation, tuple(standing)),),
+        (ArenaRewardAuthority(catalog, stack, generation, standing_t),),
+        earning,
         discovery,
     )
 
@@ -130,9 +142,38 @@ def _policy(**kwargs):
         half_life_blocks=100,
         discovery_lifetime_blocks=50,
         discovery_pool_ppm=200_000,
+        time_multiplier_scale_blocks=1_800,
     )
     values.update(kwargs)
     return EmissionsPolicyManifest(**values)
+
+
+def _floor(value: Decimal) -> int:
+    return int(value.to_integral_value(rounding=ROUND_FLOOR))
+
+
+def _allocate(credits: dict[str, int], pool: int) -> dict[str, int]:
+    positive = {hotkey: credit for hotkey, credit in credits.items() if credit > 0}
+    total = sum(positive.values())
+    result: dict[str, int] = {}
+    remainders = []
+    for hotkey in sorted(positive):
+        quotient, remainder = divmod(positive[hotkey] * pool, total)
+        result[hotkey] = quotient
+        remainders.append((remainder, hotkey))
+    missing = pool - sum(result.values())
+    for _remainder, hotkey in sorted(remainders, key=lambda row: (-row[0], row[1]))[
+        :missing
+    ]:
+        result[hotkey] += 1
+    return result
+
+
+def _accepted(stack, target, hotkey, speedup_ppm, crowned_block=100, evidence="4", predecessor_block=None):
+    return AcceptedRewardClaim.from_standing(
+        _claim(stack, target, hotkey, speedup_ppm, crowned_block, evidence),
+        predecessor_block,
+    )
 
 
 def _claim(stack, target, hotkey, speedup_ppm, crowned_block=100, evidence="4"):
@@ -147,6 +188,22 @@ def _claim(stack, target, hotkey, speedup_ppm, crowned_block=100, evidence="4"):
         crowned_block,
         _d(evidence),
     )
+
+
+def _expected_standing_weights(policy, context, claims, pool=WEIGHT_PPM):
+    credits: dict[str, int] = {}
+    for row in claims:
+        claim = (
+            row
+            if type(row) is AcceptedRewardClaim
+            else AcceptedRewardClaim.from_standing(row)
+        )
+        if policy.excludes_accepted(claim):
+            continue
+        credits[claim.hotkey] = credits.get(claim.hotkey, 0) + claim.credit_at(
+            context.current_block, policy
+        )
+    return _allocate(credits, pool)
 
 
 def _discovery(hotkey="carol", units=1, block=180, proposal="5", evidence="6"):
@@ -167,33 +224,77 @@ def test_policy_is_exact_versioned_content_addressed_data() -> None:
             EmissionsPolicyManifest.from_dict(value)
     with pytest.raises(EconomicsError, match="standing reward"):
         _policy(discovery_pool_ppm=WEIGHT_PPM)
+    assert replace(policy, time_multiplier_scale_blocks=1_801).digest != policy.digest
+    assert replace(policy, excluded_hotkeys=("alice",)).digest != policy.digest
+    assert replace(policy, excluded_claim_digests=(_d("1"),)).digest != policy.digest
+    assert policy.policy_version == "cacheon.emissions.v1.3"
 
 
-def test_reciprocal_decay_uses_exact_integer_floor_and_half_life() -> None:
+def test_log_relative_units_are_path_independent() -> None:
+    compounded = improvement_units(1_210_000)
+    sequential = improvement_units(1_100_000) + improvement_units(1_100_000)
+    assert abs(compounded - sequential) * Decimal(CREDIT_SCALE) < Decimal(1)
+    assert _floor(compounded * Decimal(CREDIT_SCALE)) == _floor(
+        sequential * Decimal(CREDIT_SCALE)
+    )
+
+
+def test_first_crown_time_multiplier_is_one() -> None:
     catalog = _catalog()
     stack = _stack(catalog, ("slot.a",))
-    claim = _claim(stack, "slot.a", "alice", 1_100_001)
-    assert claim.credit_at(100, _policy()) == 100_001
-    assert claim.credit_at(200, _policy()) == 50_000
-    assert claim.credit_at(201, _policy()) == 49_751
+    claim = _accepted(stack, "slot.a", "alice", 1_100_000, predecessor_block=100)
+    policy = _policy()
+    expected = _floor(improvement_units(1_100_000) * Decimal(CREDIT_SCALE))
+    assert claim.elapsed_blocks() == 0
+    assert time_multiplier(0, policy.time_multiplier_scale_blocks) == Decimal(1)
+    assert claim.credit_at(100, policy) == expected
+
+
+def test_stall_multiplier_follows_square_root() -> None:
+    scale = 1_800
+    assert time_multiplier(0, scale) == Decimal(1)
+    assert time_multiplier(scale, scale) == Decimal(2)
+    assert time_multiplier(4 * scale, scale) == Decimal(3)
+    catalog = _catalog()
+    stack = _stack(catalog, ("slot.a",))
+    claim = _accepted(
+        stack, "slot.a", "alice", 1_100_000, crowned_block=1_900, predecessor_block=100
+    )
+    policy = _policy()
+    expected = _floor(
+        improvement_units(1_100_000) * Decimal(2) * Decimal(CREDIT_SCALE)
+    )
+    assert claim.credit_at(1_900, policy) == expected
+
+
+def test_exponential_decay_uses_exact_half_life() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog, ("slot.a",))
+    claim = _accepted(stack, "slot.a", "alice", 1_100_001)
+    policy = _policy()
+    start = claim.credit_at(100, policy)
+    half = claim.credit_at(200, policy)
+    assert start == _floor(improvement_units(1_100_001) * Decimal(CREDIT_SCALE))
+    assert half == _floor(
+        improvement_units(1_100_001) * decay_factor(100, 100) * Decimal(CREDIT_SCALE)
+    )
+    assert decay_factor(100_800, 100_800) == Decimal("0.5")
     with pytest.raises(EconomicsError, match="newer"):
-        claim.credit_at(99, _policy())
+        claim.credit_at(99, policy)
 
 
 def test_standing_projection_is_relative_grouped_and_exactly_normalized() -> None:
     catalog = _catalog()
     stack = _stack(catalog)
-    result = _project(
-        _policy(),
-        catalog,
-        stack,
-        _global_context(),
-        (
-            _claim(stack, "slot.a", "alice", 1_100_000),
-            _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
-        ),
+    policy = _policy()
+    context = _global_context()
+    standing = (
+        _claim(stack, "slot.a", "alice", 1_100_000),
+        _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
     )
-    assert result.weights_by_hotkey == {"alice": 333_333, "bob": 666_667}
+    result = _project(policy, catalog, stack, context, standing)
+    assert result.weights_by_hotkey == _expected_standing_weights(policy, context, standing)
+    assert result.weights_by_hotkey["alice"] < result.weights_by_hotkey["bob"]
     assert sum(result.weights_by_hotkey.values()) == WEIGHT_PPM
     assert len(result.standing) == 2
     assert result.discovery == ()
@@ -275,29 +376,32 @@ def test_missing_live_hotkey_burns_its_share_to_the_validator() -> None:
 def test_present_families_keep_their_ppm_when_an_absent_share_is_burned() -> None:
     catalog = _catalog()
     stack = _stack(catalog)
+    policy = _policy()
+    context = _global_context()
     alice = _claim(stack, "slot.a", "alice", 1_100_000)
-    present = _project(
-        _policy(),
-        catalog,
-        stack,
-        _global_context(),
-        (alice, _claim(stack, "slot.b", "bob", 1_200_000, evidence="7")),
-    )
+    bob = _claim(stack, "slot.b", "bob", 1_200_000, evidence="7")
+    present = _project(policy, catalog, stack, context, (alice, bob))
     burned = _project(
-        _policy(),
+        policy,
         catalog,
         stack,
-        _global_context(),
+        context,
         (alice, _claim(stack, "slot.b", "ghost", 1_200_000, evidence="7")),
     )
-    assert present.weights_by_hotkey == {"alice": 333_333, "bob": 666_667}
-    assert burned.weights_by_hotkey == {"alice": 333_333, "validator": 666_667}
+    expected = _expected_standing_weights(policy, context, (alice, bob))
+    assert present.weights_by_hotkey == expected
+    assert burned.weights_by_hotkey == {
+        "alice": expected["alice"],
+        "validator": expected["bob"],
+    }
     assert burned.standing[1].hotkey == "ghost"
 
 
 def test_missing_live_discovery_hotkey_burns_only_its_bounty_share() -> None:
     catalog = _catalog()
     stack = _stack(catalog)
+    policy = _policy()
+    context = _global_context()
     standing = (
         _claim(stack, "slot.a", "alice", 1_100_000),
         _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
@@ -306,12 +410,12 @@ def test_missing_live_discovery_hotkey_burns_only_its_bounty_share() -> None:
         _discovery("carol", 1, proposal="5", evidence="6"),
         _discovery("ghost", 3, proposal="8", evidence="9"),
     )
-    result = _project(
-        _policy(), catalog, stack, _global_context(), standing, discoveries
+    result = _project(policy, catalog, stack, context, standing, discoveries)
+    standing_weights = _expected_standing_weights(
+        policy, context, standing, WEIGHT_PPM - policy.discovery_pool_ppm
     )
     assert result.weights_by_hotkey == {
-        "alice": 266_667,
-        "bob": 533_333,
+        **standing_weights,
         "carol": 50_000,
         "validator": 150_000,
     }
@@ -321,6 +425,8 @@ def test_missing_live_discovery_hotkey_burns_only_its_bounty_share() -> None:
 def test_live_discovery_claims_share_only_the_bounded_pool() -> None:
     catalog = _catalog()
     stack = _stack(catalog)
+    policy = _policy()
+    context = _global_context()
     standing = (
         _claim(stack, "slot.a", "alice", 1_100_000),
         _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
@@ -329,12 +435,12 @@ def test_live_discovery_claims_share_only_the_bounded_pool() -> None:
         _discovery("carol", 1, proposal="5", evidence="6"),
         _discovery("dave", 3, proposal="8", evidence="9"),
     )
-    result = _project(
-        _policy(), catalog, stack, _global_context(), standing, discoveries
+    result = _project(policy, catalog, stack, context, standing, discoveries)
+    standing_weights = _expected_standing_weights(
+        policy, context, standing, WEIGHT_PPM - policy.discovery_pool_ppm
     )
     assert result.weights_by_hotkey == {
-        "alice": 266_667,
-        "bob": 533_333,
+        **standing_weights,
         "carol": 50_000,
         "dave": 150_000,
     }
@@ -430,10 +536,22 @@ def test_claim_round_trip_and_zero_evidence_are_strict() -> None:
     discovery = _discovery()
     assert StandingRewardClaim.from_dict(standing.to_dict()) == standing
     assert DiscoveryBountyClaim.from_dict(discovery.to_dict()) == discovery
+    accepted = AcceptedRewardClaim.from_standing(standing)
+    assert AcceptedRewardClaim.from_dict(accepted.to_dict()) == accepted
     with pytest.raises(EconomicsError, match="all-zero"):
         replace(standing, retained_evidence_digest="0" * 64)
     with pytest.raises(EconomicsError, match="fields"):
         StandingRewardClaim.from_dict({**standing.to_dict(), "extra": 1})
+    with pytest.raises(EconomicsError, match="fields"):
+        AcceptedRewardClaim.from_dict({**accepted.to_dict(), "extra": 1})
+
+
+def _genesis(authorities):
+    return tuple(
+        AcceptedRewardClaim.from_standing(claim)
+        for authority in authorities
+        for claim in authority.standing_claims
+    )
 
 
 def test_global_projection_pools_families_before_one_normalization() -> None:
@@ -457,18 +575,14 @@ def test_global_projection_pools_families_before_one_normalization() -> None:
             ),
         ),
     )
+    policy = _policy()
+    context = _global_context()
+    earning = _genesis(authorities)
     result = project_global_rewards(
-        _policy(), _global_context(), reversed(authorities)
+        policy, context, reversed(authorities), earning
     )
-    # Credits at block 200: alice 50_000, bob 200_000 (undecayed), carol
-    # 100_000. Bob holds exactly the 80% champion floor of the slot.a lineage
-    # (200_000 of 250_000), so no reallocation moves; pooling normalizes
-    # 50:200:100 over 350_000.
-    assert result.weights_by_hotkey == {
-        "alice": 142_857,
-        "bob": 571_429,
-        "carol": 285_714,
-    }
+    expected = _expected_standing_weights(policy, context, earning)
+    assert result.weights_by_hotkey == expected
     assert len(result.arena_authority_digests) == 2
     assert len({row.family_id for row in result.standing}) == 3
 
@@ -490,7 +604,12 @@ def test_any_invalid_arena_holds_the_complete_global_vector() -> None:
         (_claim(second, "slot.a", "bob", 1_200_000),),
     )
     with pytest.raises(EconomicsError, match="every active target"):
-        project_global_rewards(_policy(), _global_context(), (valid, incomplete))
+        project_global_rewards(
+            _policy(),
+            _global_context(),
+            (valid, incomplete),
+            _genesis((valid, incomplete)),
+        )
 
 
 def test_same_target_in_two_arenas_has_distinct_reward_family_identity() -> None:
@@ -500,38 +619,186 @@ def test_same_target_in_two_arenas_has_distinct_reward_family_identity() -> None
     left = _claim(first, "slot.a", "alice", 1_100_000)
     right = _claim(second, "slot.a", "bob", 1_100_000, 200, evidence="7")
     assert left.family_id != right.family_id
-    result = project_global_rewards(
-        _policy(),
-        _global_context(),
-        (
-            ArenaRewardAuthority(catalog, first, 1, (left,)),
-            ArenaRewardAuthority(catalog, second, 2, (right,)),
-        ),
+    policy = _policy()
+    context = _global_context()
+    authorities = (
+        ArenaRewardAuthority(catalog, first, 1, (left,)),
+        ArenaRewardAuthority(catalog, second, 2, (right,)),
     )
-    # One lineage: bob's newer crown (credit 100_000) is below the 80% floor
-    # of the pooled 150_000, so it is raised to 120_000 and alice's displaced
-    # crown keeps the 30_000 remainder.
-    assert result.weights_by_hotkey == {"alice": 200_000, "bob": 800_000}
+    earning = _genesis(authorities)
+    result = project_global_rewards(policy, context, authorities, earning)
+    expected = _expected_standing_weights(policy, context, earning)
+    assert result.weights_by_hotkey == expected
+    assert expected["alice"] != 200_000
+    assert expected["bob"] != 800_000
 
 
-def test_champion_floor_pays_the_newest_crown_of_a_lineage_dominantly() -> None:
+def test_historical_accepted_claims_keep_decaying_tails_without_champion_floor() -> None:
     catalog = _catalog()
-    first = _stack(catalog, ("slot.a",), arena="c")
-    second = _stack(catalog, ("slot.a",), arena="f")
-    displaced = _claim(first, "slot.a", "alice", 1_100_000)
-    champion = _claim(second, "slot.a", "bob", 1_150_000, 200, evidence="7")
-    result = project_global_rewards(
-        _policy(),
-        _global_context(),
-        (
-            ArenaRewardAuthority(catalog, first, 1, (displaced,)),
-            ArenaRewardAuthority(catalog, second, 2, (champion,)),
-        ),
+    stack = _stack(catalog, ("slot.a",))
+    incumbent = _claim(stack, "slot.a", "bob", 1_150_000, 200, evidence="7")
+    prior = AcceptedRewardClaim(
+        stack.arena_digest,
+        "slot.a",
+        incumbent.target_spec_digest,
+        _d("9"),
+        "alice",
+        1_100_000,
+        100,
+        100,
+        _d("4"),
     )
-    # The displaced crown's decayed credit (50_000) plus the champion's
-    # undecayed 150_000 pool to 200_000; the newer, smaller-margin crown is
-    # raised to the 160_000 floor and the displaced crown keeps 40_000. The
-    # lineage's pooled credit is unchanged — only the split moves.
+    current = AcceptedRewardClaim.from_standing(incumbent, predecessor_block=100)
+    policy = _policy()
+    context = _global_context()
+    result = _project(
+        policy,
+        catalog,
+        stack,
+        context,
+        (incumbent,),
+        earning=(prior, current),
+    )
+    expected = _expected_standing_weights(policy, context, (prior, current))
+    assert result.weights_by_hotkey == expected
     by_hotkey = {row.hotkey: row.credit for row in result.standing}
-    assert by_hotkey == {"alice": 40_000, "bob": 160_000}
-    assert result.weights_by_hotkey == {"alice": 200_000, "bob": 800_000}
+    total = sum(by_hotkey.values())
+    assert by_hotkey["bob"] * 5 < total * 4
+    assert len(result.standing) == 2
+
+
+def test_arena_stall_clock_resets_from_the_previous_accepted_crown() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog)
+    first = _accepted(
+        stack, "slot.a", "alice", 1_100_000, crowned_block=1_900, predecessor_block=1_900
+    )
+    second = _accepted(
+        stack,
+        "slot.b",
+        "bob",
+        1_100_000,
+        crowned_block=1_900,
+        evidence="7",
+        predecessor_block=100,
+    )
+    policy = _policy()
+    assert first.elapsed_blocks() == 0
+    assert second.elapsed_blocks() == 1_800
+    standing = (
+        _claim(stack, "slot.a", "alice", 1_100_000, 1_900),
+        _claim(stack, "slot.b", "bob", 1_100_000, 1_900, evidence="7"),
+    )
+    result = _project(
+        policy,
+        catalog,
+        stack,
+        _global_context(1_900),
+        standing,
+        earning=(first, second),
+    )
+    units = improvement_units(1_100_000)
+    by_target = {row.target_id: row.credit for row in result.standing}
+    assert by_target["slot.a"] == _floor(units * Decimal(CREDIT_SCALE))
+    assert by_target["slot.b"] == _floor(units * Decimal(2) * Decimal(CREDIT_SCALE))
+    assert sum(result.weights_by_hotkey.values()) == WEIGHT_PPM
+
+
+def test_excluded_hotkey_is_omitted_and_remaining_credit_renormalizes() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog)
+    standing = (
+        _claim(stack, "slot.a", "alice", 1_100_000),
+        _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
+    )
+    alice = AcceptedRewardClaim.from_standing(standing[0])
+    bob = AcceptedRewardClaim.from_standing(standing[1])
+    policy = _policy(excluded_hotkeys=("alice",))
+    context = _global_context()
+    result = _project(policy, catalog, stack, context, standing, earning=(alice, bob))
+    assert result.weights_by_hotkey == {"bob": WEIGHT_PPM}
+    assert {row.hotkey for row in result.standing} == {"bob"}
+    assert sum(result.weights_by_hotkey.values()) == WEIGHT_PPM
+
+
+def test_excluded_claim_digest_omits_one_crown_without_dropping_the_miner() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog, ("slot.a",))
+    incumbent = _claim(stack, "slot.a", "bob", 1_150_000, 200, evidence="7")
+    prior = AcceptedRewardClaim(
+        stack.arena_digest,
+        "slot.a",
+        incumbent.target_spec_digest,
+        _d("9"),
+        "alice",
+        1_100_000,
+        100,
+        100,
+        _d("4"),
+    )
+    current = AcceptedRewardClaim.from_standing(incumbent, predecessor_block=100)
+    policy = _policy(excluded_claim_digests=(prior.digest,))
+    context = _global_context()
+    result = _project(
+        policy,
+        catalog,
+        stack,
+        context,
+        (incumbent,),
+        earning=(prior, current),
+    )
+    assert result.weights_by_hotkey == {"bob": WEIGHT_PPM}
+    assert [row.claim_digest for row in result.standing] == [current.digest]
+
+
+def test_unknown_excluded_claim_digest_fails_closed() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog, ("slot.a",))
+    standing = (_claim(stack, "slot.a", "alice", 1_100_000),)
+    with pytest.raises(EconomicsError, match="excluded claim digest"):
+        _project(
+            _policy(excluded_claim_digests=(_d("f"),)),
+            catalog,
+            stack,
+            _global_context(),
+            standing,
+        )
+
+
+def test_excluding_every_earning_claim_fails_closed() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog, ("slot.a",))
+    standing = (_claim(stack, "slot.a", "alice", 1_100_000),)
+    with pytest.raises(EconomicsError, match="been excluded"):
+        _project(
+            _policy(excluded_hotkeys=("alice",)),
+            catalog,
+            stack,
+            _global_context(),
+            standing,
+        )
+
+
+def test_excluded_discovery_hotkey_does_not_consume_the_discovery_pool() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog)
+    policy = _policy(excluded_hotkeys=("carol",))
+    context = _global_context()
+    standing = (
+        _claim(stack, "slot.a", "alice", 1_100_000),
+        _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
+    )
+    discoveries = (
+        _discovery("carol", 1, proposal="5", evidence="6"),
+        _discovery("dave", 3, proposal="8", evidence="9"),
+    )
+    result = _project(policy, catalog, stack, context, standing, discoveries)
+    standing_weights = _expected_standing_weights(
+        policy, context, standing, WEIGHT_PPM - policy.discovery_pool_ppm
+    )
+    assert result.weights_by_hotkey == {
+        **standing_weights,
+        "dave": policy.discovery_pool_ppm,
+    }
+    assert [row.hotkey for row in result.discovery] == ["dave"]
+

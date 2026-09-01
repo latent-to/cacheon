@@ -368,8 +368,10 @@ absolute path to a second sealed, closed, owner-controlled file with schema
 `wss://`), `push_url` (`http(s)` serve-weights offer endpoint),
 `push_credentials` (owner-only path to the push credential set),
 `attribution_hotkey`, `half_life_blocks`, `discovery_lifetime_blocks`,
-`discovery_pool_ppm`, `refresh_blocks`, and `burn_hotkey`. Every
-`refresh_blocks` the stage reads the finalized head and metagraph, reopens the
+`discovery_pool_ppm`, `time_multiplier_scale_blocks`, `excluded_hotkeys`,
+`excluded_claim_digests`, `refresh_blocks`, and `burn_hotkey`. Empty exclusion
+lists are required when nobody is dropped. Every `refresh_blocks` the stage
+reads the finalized head and metagraph, reopens the
 intake store, and pushes the current V1 offer: the real projection whenever an
 active reward claim, a crowned arena, or an activated composition exists;
 otherwise the full-pool burn offer to `burn_hotkey` when that field is set, or

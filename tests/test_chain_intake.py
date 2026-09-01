@@ -55,7 +55,7 @@ ATTEMPT = EvidenceArtifactRef(
     "application/json",
     "cacheon.qualification.cohort-attempt.v1",
 )
-POLICY = EmissionsPolicyManifest(100, 20, 100_000)
+POLICY = EmissionsPolicyManifest(100, 20, 100_000, 1_800)
 
 
 def _arrival(index: int, *, hotkey: str = "miner", block: int = 10) -> FinalizedArrival:
@@ -1139,6 +1139,9 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
         )
         assert projection.crown_count == 1
         assert projection.weights_ppm == (("miner", 1_000_000),)
+        history = store.accepted_reward_claims()
+        assert len(history) == 1
+        assert history[0].predecessor_block == history[0].crowned_block
         pending = WeightPublicationRecord(
             projection.digest,
             "pending",
@@ -1183,7 +1186,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
         )
         with pytest.raises(IntakeError, match="emissions policy"):
             store.build_weight_projection(
-                policy=EmissionsPolicyManifest(101, 20, 100_000),
+                policy=EmissionsPolicyManifest(101, 20, 100_000, 1_800),
                 context=context,
                 catalogs={candidate.arena_digest: catalog},
                 netuid=SCOPE.netuid,
@@ -1507,3 +1510,100 @@ def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
         assert store.release_hold(
             row.reservation_id, reason="operator fixed the cause"
         ).status != "held"
+
+
+def test_new_intake_databases_open_on_schema_7_with_immutable_history(tmp_path):
+    from cacheon.economics import AcceptedRewardClaim
+
+    with _store(tmp_path) as store:
+        schema = store._db.execute(
+            "SELECT value FROM metadata WHERE key='schema'"
+        ).fetchone()
+        assert schema["value"] == "7"
+        assert store.accepted_reward_claims() == ()
+        standing = StandingRewardClaim(
+            "c" * 64,
+            "slot.a",
+            "d" * 64,
+            "e" * 64,
+            "miner",
+            1_100_000,
+            42,
+            "f" * 64,
+        )
+        accepted = AcceptedRewardClaim.from_standing(standing)
+        store._db.execute(
+            "INSERT INTO accepted_reward_claims("
+            "claim_digest,arena_id,target_id,crowned_block,claim_json,event_id) "
+            "VALUES(?,?,?,?,?,?)",
+            (
+                accepted.digest,
+                accepted.arena_digest,
+                accepted.target_id,
+                accepted.crowned_block,
+                json.dumps(accepted.to_dict(), separators=(",", ":"), sort_keys=True),
+                "a" * 64,
+            ),
+        )
+        with pytest.raises(Exception, match="immutable"):
+            store._db.execute(
+                "UPDATE accepted_reward_claims SET event_id=? WHERE claim_digest=?",
+                ("b" * 64, accepted.digest),
+            )
+        with pytest.raises(Exception, match="immutable"):
+            store._db.execute(
+                "DELETE FROM accepted_reward_claims WHERE claim_digest=?",
+                (accepted.digest,),
+            )
+
+
+def test_schema7_seeds_only_active_standing_as_genesis_history(tmp_path):
+    from cacheon.economics import AcceptedRewardClaim
+
+    with _store(tmp_path) as store:
+        standing = StandingRewardClaim(
+            "c" * 64,
+            "slot.a",
+            "d" * 64,
+            "e" * 64,
+            "miner",
+            1_100_000,
+            42,
+            "f" * 64,
+        )
+        store._db.execute(
+            "INSERT INTO standing_reward_claims(arena_id,target_id,claim_digest,"
+            "claim_json,status,event_id) VALUES(?,?,?,?, 'active',?)",
+            (
+                standing.arena_digest,
+                standing.target_id,
+                standing.digest,
+                json.dumps(standing.to_dict(), separators=(",", ":"), sort_keys=True),
+                "a" * 64,
+            ),
+        )
+        store._db.execute(
+            "INSERT INTO standing_reward_claims(arena_id,target_id,claim_digest,"
+            "claim_json,status,event_id) VALUES(?,?,?,?, 'inactive',?)",
+            (
+                standing.arena_digest,
+                "slot.retired",
+                "b" * 64,
+                json.dumps({**standing.to_dict(), "target_id": "slot.retired"}, separators=(",", ":"), sort_keys=True),
+                "b" * 64,
+            ),
+        )
+        store._db.execute("UPDATE metadata SET value='6' WHERE key='schema'")
+        store._db.commit()
+
+    with _store(tmp_path) as store:
+        schema = store._db.execute(
+            "SELECT value FROM metadata WHERE key='schema'"
+        ).fetchone()
+        assert schema["value"] == "7"
+        history = store.accepted_reward_claims()
+        assert len(history) == 1
+        genesis = AcceptedRewardClaim.from_standing(standing)
+        assert history[0] == genesis
+        assert history[0].predecessor_block == 42
+

@@ -432,9 +432,19 @@ async function viewWinners() {
     const hc = w.hotkey_chain || {};
     return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
     <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div></td>
-    <td>${w.improvement_pct != null ? `<b style="color:var(--accent)">+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
+    <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
         <div class="muted small">${w.speedup ? w.speedup.toFixed(5) + "× primary" : ""}
-        ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
+        ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div>
+        <div class="muted small">${w.settled_speedup ? w.settled_speedup.toFixed(5) + "× settled" : ""}</div></td>
+    <td>${w.cumulative_improvement_pct_over_sglang != null
+        ? `<b style="color:var(--accent)">+${w.cumulative_improvement_pct_over_sglang.toFixed(2)}%</b>` : "—"}
+        <div class="muted small">${w.cumulative_speedup_over_sglang
+          ? w.cumulative_speedup_over_sglang.toFixed(5) + "× SGLang" : ""}</div>
+        <div class="muted small">${w.tokens_per_second != null
+          ? w.tokens_per_second.toFixed(1) + " tok/s"
+          : ""}${w.sglang_tokens_per_second != null
+          ? " · " + w.sglang_tokens_per_second.toFixed(1) + " tok/s SGLang"
+          : ""}</div></td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
     <td>${fmtTime(w.crowned)}<div class="muted small">block ${blockLink(w.crowned, w.crowned_links)}</div></td>
     <td>${pill(w.reward_claim_status)}</td>
@@ -447,7 +457,7 @@ async function viewWinners() {
   return `
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
     <h2>Crowned improvements</h2>
-    ${table(["Improved op","Improvement","Winner hotkey","Crowned","Reward claim","On-chain now (emission)"],
+    ${table(["Improved op","Vs incumbent","Vs SGLang","Winner hotkey","Crowned","Reward claim","On-chain now (emission)"],
       rows, "No crowned winners yet.")}`;
 }
 

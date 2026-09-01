@@ -24,6 +24,8 @@ _WEIGHTS_CONFIG_FIELDS = frozenset(
         "burn_hotkey",
         "discovery_lifetime_blocks",
         "discovery_pool_ppm",
+        "excluded_claim_digests",
+        "excluded_hotkeys",
         "fallback_endpoint",
         "half_life_blocks",
         "network",
@@ -31,6 +33,7 @@ _WEIGHTS_CONFIG_FIELDS = frozenset(
         "push_url",
         "refresh_blocks",
         "schema",
+        "time_multiplier_scale_blocks",
     }
 )
 
@@ -47,6 +50,9 @@ class WeightsStageConfig:
     half_life_blocks: int
     discovery_lifetime_blocks: int
     discovery_pool_ppm: int
+    time_multiplier_scale_blocks: int
+    excluded_hotkeys: tuple[str, ...]
+    excluded_claim_digests: tuple[str, ...]
     refresh_blocks: int
     # All-uncrowned fallback target. When the intake store holds no economic
     # authority (no active claim, no crowned arena, no activated composition)
@@ -75,6 +81,7 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
         _closed_config,
         _positive_int,
     )
+    from cacheon.economics import EconomicsError, EmissionsPolicyManifest
 
     config_path = _absolute_path(os.fspath(path), "weights_stage_config")
     _authority_file(config_path, "weights stage config")
@@ -114,25 +121,51 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
         raise StandingCpuSupervisorError("weights burn_hotkey is malformed")
     credentials_path = _absolute_path(row["push_credentials"], "weights push_credentials")
     _authority_file(credentials_path, "weights push credentials", secret=True)
+    half_life_blocks = _positive_int(
+        row["half_life_blocks"], "weights half_life_blocks", maximum=10_000_000
+    )
+    discovery_lifetime_blocks = _positive_int(
+        row["discovery_lifetime_blocks"],
+        "weights discovery_lifetime_blocks",
+        maximum=10_000_000,
+    )
+    discovery_pool_ppm = (
+        _positive_int(
+            row["discovery_pool_ppm"], "weights discovery_pool_ppm", maximum=999_999
+        )
+        if row["discovery_pool_ppm"] != 0
+        else 0
+    )
+    time_multiplier_scale_blocks = _positive_int(
+        row["time_multiplier_scale_blocks"],
+        "weights time_multiplier_scale_blocks",
+        maximum=10_000_000,
+    )
+    try:
+        policy = EmissionsPolicyManifest(
+            half_life_blocks,
+            discovery_lifetime_blocks,
+            discovery_pool_ppm,
+            time_multiplier_scale_blocks,
+            excluded_hotkeys=row["excluded_hotkeys"],
+            excluded_claim_digests=row["excluded_claim_digests"],
+        )
+    except EconomicsError as exc:
+        raise StandingCpuSupervisorError(
+            f"weights emissions policy is malformed: {exc}"
+        ) from None
     return WeightsStageConfig(
         network=network,
         fallback_endpoint=fallback_endpoint,
         push_url=push_url,
         push_credentials=credentials_path,
         attribution_hotkey=attribution,
-        half_life_blocks=_positive_int(
-            row["half_life_blocks"], "weights half_life_blocks", maximum=10_000_000
-        ),
-        discovery_lifetime_blocks=_positive_int(
-            row["discovery_lifetime_blocks"],
-            "weights discovery_lifetime_blocks",
-            maximum=10_000_000,
-        ),
-        discovery_pool_ppm=_positive_int(
-            row["discovery_pool_ppm"], "weights discovery_pool_ppm", maximum=999_999
-        )
-        if row["discovery_pool_ppm"] != 0
-        else 0,
+        half_life_blocks=half_life_blocks,
+        discovery_lifetime_blocks=discovery_lifetime_blocks,
+        discovery_pool_ppm=discovery_pool_ppm,
+        time_multiplier_scale_blocks=time_multiplier_scale_blocks,
+        excluded_hotkeys=policy.excluded_hotkeys,
+        excluded_claim_digests=policy.excluded_claim_digests,
         refresh_blocks=_positive_int(
             row["refresh_blocks"], "weights refresh_blocks", maximum=86_400
         ),
@@ -181,6 +214,9 @@ def compose_weight_offer_push(
         stage.half_life_blocks,
         stage.discovery_lifetime_blocks,
         stage.discovery_pool_ppm,
+        stage.time_multiplier_scale_blocks,
+        excluded_hotkeys=stage.excluded_hotkeys,
+        excluded_claim_digests=stage.excluded_claim_digests,
     )
     last_push_block = 0
     netuid = int(scope.netuid)

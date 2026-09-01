@@ -36,6 +36,12 @@ from dashboard.receipts import (
     qualification_speed,
     screen_stages,
 )
+from dashboard.winners import (
+    conservative_candidate_tokens_per_second,
+    cumulative_crown_speedups,
+    estimated_sglang_tokens_per_second,
+    settled_speedup,
+)
 
 # ---------------------------------------------------------------- config ---
 
@@ -1009,26 +1015,46 @@ def winners() -> dict[str, Any]:
         FROM standing_reward_claims
     """)
     crowned = rows(con, """
-        SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
+        SELECT sc.reservation_id, sc.arena_id, sc.status, sc.reason, sc.candidate_json,
                r.hotkey, r.block AS submission_block, r.content_hash
         FROM settlement_candidates sc
         JOIN reservations r ON r.reservation_id = sc.reservation_id
         WHERE sc.status = 'crowned' AND r.block >= ?
     """, (cutoff,))
     crown_events = rows(con, """
-        SELECT e.event_json
+        SELECT e.sequence, e.reservation_id, e.arena_id, e.target_id,
+               sc.candidate_json
         FROM settlement_events e
-        JOIN reservations r ON r.reservation_id = e.reservation_id
-        WHERE e.event_type = 'CROWN' AND r.block >= ?
+        JOIN settlement_candidates sc ON sc.reservation_id = e.reservation_id
+        WHERE e.event_type = 'CROWN'
         ORDER BY e.sequence
-    """, (cutoff,))
+    """)
+    evidence_roots = qualification_evidence_roots(
+        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA)
+    speeds_by_reservation: dict[str, list[object]] = {}
+    if crowned:
+        marks = ",".join("?" for _ in crowned)
+        for disposition in rows(con, f"""
+            SELECT reservation_id, attempt_ref_json FROM qualification_dispositions
+            WHERE decision='PASS' AND reservation_id IN ({marks})
+            ORDER BY reservation_id, attempt_index
+        """, tuple(row["reservation_id"] for row in crowned)):
+            speed = qualification_speed(
+                disposition["attempt_ref_json"], evidence_roots)
+            if speed is None:
+                continue
+            speeds_by_reservation.setdefault(
+                disposition["reservation_id"], []
+            ).append(speed)
     con.close()
 
-    claim_by_target: dict[str, dict[str, Any]] = {}
+    claim_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for c in claims:
         cj = json.loads(c["claim_json"] or "{}")
-        claim_by_target[cj.get("target_id") or c["target_id"]] = {
+        key = (c["arena_id"], cj.get("target_id") or c["target_id"])
+        claim_by_key[key] = {
             "status": c["status"], "json": cj}
+    cumulative_by_reservation = cumulative_crown_speedups(crown_events)
 
     items = []
     for row in crowned:
@@ -1036,9 +1062,17 @@ def winners() -> dict[str, Any]:
         primary = cj.get("primary") or {}
         repro = cj.get("reproduction") or {}
         target = primary.get("target_id") or cj.get("target_id") or ""
-        claim = claim_by_target.get(target) or {}
+        claim = claim_by_key.get((row["arena_id"], target)) or {}
         claim_json = claim.get("json") or {}
         speedup = safe_float(primary.get("speedup"))
+        settled = settled_speedup(cj)
+        cumulative = cumulative_by_reservation.get(row["reservation_id"])
+        candidate_tps = conservative_candidate_tokens_per_second(
+            speeds_by_reservation.get(row["reservation_id"], [])
+        )
+        sglang_tps = estimated_sglang_tokens_per_second(
+            candidate_tps, cumulative
+        )
         speedup_ppm = claim_json.get("speedup_ppm")
         if speedup is None and speedup_ppm:
             speedup = speedup_ppm / 1e6
@@ -1055,6 +1089,25 @@ def winners() -> dict[str, Any]:
             "speedup": speedup,
             "improvement_pct": (speedup - 1) * 100 if speedup else None,
             "speedup_reproduction": safe_float(repro.get("speedup")),
+            "settled_speedup": float(settled) if settled is not None else None,
+            "cumulative_speedup_over_sglang": (
+                float(cumulative) if cumulative is not None else None
+            ),
+            "cumulative_improvement_pct_over_sglang": (
+                float((cumulative - 1) * 100)
+                if cumulative is not None
+                else None
+            ),
+            "tokens_per_second": (
+                round(float(candidate_tps), 1)
+                if candidate_tps is not None
+                else None
+            ),
+            "sglang_tokens_per_second": (
+                round(float(sglang_tps), 1)
+                if sglang_tps is not None
+                else None
+            ),
             "crowned": with_time(crowned_block),
             "crowned_links": links_for_block(crowned_block),
             "submitted": with_time(int(row["submission_block"])),
@@ -1072,7 +1125,7 @@ def winners() -> dict[str, Any]:
     items.sort(key=lambda x: x["crowned"]["block"] or 0, reverse=True)
     return {
         "items": items,
-        "crown_events_total": len(crown_events),
+        "crown_events_total": len(items),
         "note": ("Reward claims marked 'inactive' are recorded but not yet paying: "
                  "miner incentive has not been switched on in published weights."),
     }

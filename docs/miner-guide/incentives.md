@@ -71,8 +71,9 @@ The stages have different meanings:
 | Qualified | A fresh independently bound attempt reproduced the result | No reward yet; settlement is still pending |
 | Crown settled | Settlement selected the proposal and recorded its crown and reward claim together | The claim is eligible under the active policy |
 | Weight publication confirmed | The intended recipients and weight values were read back from finalized chain state within the verifier tolerance | Cacheon's projection is realized; token income remains network-dependent |
-| Crown retired or neutralized | The standing claim is no longer active | V1 standing credit stops |
+| Crown retired or neutralized | The standing claim is no longer the evaluation incumbent | The accepted history row keeps earning its decaying share |
 | Active claimant is absent from the metagraph | The claim stays active; that tick's allocated share cannot be paid to the miner | That family's ppm is burned to the validator hotkey; other families keep their ppm |
+| Operator excludes a hotkey or accepted-claim digest | The claim and kernel stay on the evaluation stack if they are the incumbent; excluded rows earn no weight | Remaining credit is renormalized as if those rows were never in the pool |
 | Evidence cannot reopen | Reward authority cannot be projected safely | Publication is held; the missing share is not redistributed |
 
 Passing twice makes a proposal eligible for settlement; it does not guarantee a
@@ -144,7 +145,7 @@ cadence.
 
 | Policy | Plain-English model | Current status |
 |---|---|---|
-| **Legacy V1 standing rewards** | The current crown for each active target receives standing credit based on its reproduced improvement. That credit decays with age and is normalized relative to all other live claims. | Implemented and exercised end to end on testnet; this does not establish mainnet economics. Check the operator announcement for the deployment you intend to join. |
+| **Legacy V1 standing rewards** | Each accepted crown earns log-relative improvement credit, scaled by how long the arena stalled, then decays exponentially. Older accepted crowns keep a decaying share. | Implemented; check the operator announcement for the deployment you intend to join. |
 | **V2 finite debt** | An eligible post-activation crown receives a bounded claim that is paid down over later confirmed epochs. A later crown does not erase the unpaid balance, but the old crown receives no perpetual royalty. | Design retained; the implementation was extracted from the tree on 2026-08-09 and would return as a new reviewed change. It creates no claim and pays nothing today. |
 
 Only legacy V1 can publish weights. Do not estimate a current reward with the
@@ -155,23 +156,31 @@ V2 creates no claim and pays no principal.
 
 V1 is relative rather than fixed:
 
-1. A settled crown creates one active standing claim for its registered target.
-2. The claim's starting credit comes from the conservative improvement above the
-   previous incumbent, not from total code size or effort.
-3. Credit decays with claim age. Age starts at the proposal's finalized
-   submission block, so qualification or settlement delay does not restart the
-   clock.
-4. The projector reopens every live claim, aggregates credit by miner hotkey,
-   and normalizes all eligible credit into one 1,000,000-part weight vector.
-5. A separate signer journals, submits, reads back, and confirms that vector.
-6. A later crown for the same target retires the previous standing claim.
+1. A settled crown creates one active standing claim for its registered target
+   and appends an accepted-history claim that continues to earn.
+2. Starting units are `ln(settled speedup)`, so two successive 1.1× gains score
+   the same as one 1.21× gain.
+3. At acceptance the claim also freezes `1 + sqrt(blocks since the previous
+   accepted crown in that arena / scale)`. The first crown in an arena has
+   multiplier 1. Age starts at the proposal's finalized submission block, so
+   qualification delay does not restart the clock or inflate the stall bounty.
+4. Credit then decays as `2^(-age / half-life)` (fourteen-day half-life when
+   `half-life-blocks` is 100,800).
+5. The projector reopens every accepted-history claim plus live discovery
+   claims, aggregates credit by miner hotkey, and normalizes all eligible
+   credit into one 1,000,000-part weight vector.
+6. A separate signer journals, submits, reads back, and confirms that vector.
+7. A later crown for the same target replaces the evaluation incumbent but does
+   not zero the previous accepted contribution.
 
 If live legacy discovery claims exist, they share a separately configured,
 bounded discovery pool; otherwise that capacity remains with standing claims.
 An invalid target set or missing evidence prevents the complete projection. An
 active claimant absent from the metagraph does not: that family's allocated
 share is burned to the validator hotkey for the tick, and other families keep
-the ppm they would have received. Submission or readback failure leaves
+the ppm they would have received. An operator exclusion of a hotkey or accepted
+claim is the opposite redistribution: remaining miners are rescored as if the
+excluded rows were never in the pool. Submission or readback failure leaves
 publication pending or held.
 
 ### A simplified V1 example
@@ -179,12 +188,13 @@ publication pending or held.
 Suppose a candidate records `1.040x` in its first passing attempt and `1.034x`
 in independent reproduction. Settlement can use at most `1.034x`.
 
-Under V1, the `3.4%` marginal improvement becomes the input to the claim's
-standing-credit calculation. It does **not** mean the miner receives 3.4% of
-tokens or alpha. The final Cacheon weight share depends on that claim's age,
-every other live standing claim, any live discovery pool, claimant eligibility,
-and successful publication. If a later accepted contribution replaces this
-crown, its V1 standing credit ends.
+Under V1, `ln(1.034)` is the improvement unit, then scaled by the arena stall
+multiplier frozen at acceptance and by exponential age decay. It does **not**
+mean the miner receives 3.4% of tokens or alpha. The final Cacheon weight share
+depends on that claim's age, every other accepted-history claim, any live
+discovery pool, claimant eligibility, and successful publication. A later
+accepted contribution replaces the evaluation incumbent but the earlier
+accepted claim keeps a decaying share.
 
 The exact integer formula, flooring order, failure rules, and operator commands
 are in [Legacy V1 emissions policy](../reference/emissions-policy.md#legacy-v1).

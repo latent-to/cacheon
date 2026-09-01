@@ -532,6 +532,9 @@ python -m cacheon.cli set-weights \
   --half-life-blocks <blocks> \
   --discovery-lifetime-blocks <blocks> \
   --discovery-pool-ppm <ppm> \
+  --time-multiplier-scale-blocks <blocks> \
+  [--exclude-hotkey <ss58>] \
+  [--exclude-claim-digest <sha256>] \
   --refresh-blocks <blocks> \
   --dry-run
 ```
@@ -543,7 +546,9 @@ projected UID/weight vector or the complete projection inputs. A live reconcilia
 journals intent before submission and confirms it only through later chain observation.
 `--release-hold REASON` appends an audited release of the held publication and does not
 submit. `--reconcile-only --validator-hotkey <hotkey>` confirms or releases without
-constructing a signer.
+constructing a signer. Repeatable `--exclude-hotkey` and `--exclude-claim-digest`
+omit those miners or accepted-history rows from credit and renormalize remaining
+weight; they rotate the policy digest and do not unseat the evaluation incumbent.
 
 `--burn-hotkey <hotkey>` is available only while retained authority is completely
 uncrowned and has no active reward claim or V2 composition. It projects the complete pool
@@ -575,7 +580,7 @@ python -m cacheon.cli set-weights \
   --network <network> --netuid <netuid> \
   --intake-db chain_intake/intake.sqlite3 \
   --half-life-blocks <blocks> --discovery-lifetime-blocks <blocks> \
-  --discovery-pool-ppm <ppm> --refresh-blocks <blocks> \
+  --discovery-pool-ppm <ppm> --time-multiplier-scale-blocks <blocks> --refresh-blocks <blocks> \
   --wallet default --hotkey validator \
   [--wallet-path <wallets-root>] \
   --dry-run
@@ -587,7 +592,7 @@ python -m cacheon.cli set-weights \
   --network <network> --netuid <netuid> \
   --intake-db chain_intake/intake.sqlite3 \
   --half-life-blocks <blocks> --discovery-lifetime-blocks <blocks> \
-  --discovery-pool-ppm <ppm> --refresh-blocks <blocks> \
+  --discovery-pool-ppm <ppm> --time-multiplier-scale-blocks <blocks> --refresh-blocks <blocks> \
   --wallet default --hotkey validator \
   [--wallet-path <wallets-root>] \
   --watch --interval 60
@@ -647,7 +652,10 @@ python -m cacheon.cli push-weight-offer \
   --attribution-hotkey <placeholder-ss58> \
   --half-life-blocks <blocks> \
   --discovery-lifetime-blocks <blocks> \
-  --discovery-pool-ppm <ppm>
+  --discovery-pool-ppm <ppm> \
+  --time-multiplier-scale-blocks <blocks> \
+  [--exclude-hotkey <ss58>] \
+  [--exclude-claim-digest <sha256>]
 
 python -m cacheon.cli follow-weights \
   --url http://weights-gateway:8080 \
