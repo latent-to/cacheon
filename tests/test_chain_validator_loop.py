@@ -617,6 +617,30 @@ def test_once_mode_propagates_validator_fault(monkeypatch, tmp_path):
         )
 
 
+def test_intake_only_pass_still_settles_retained_pairs(tmp_path, monkeypatch):
+    """The production deployment runs --intake-only; settlement must run there.
+
+    The remote-worker pipeline retains PASS pairs into this store and has no
+    other settlement authority: nesting the settle call under the local arena
+    service left every retained winner pending until an operator crowned it by
+    hand. The wiring, not the settlement internals, is what this pins.
+    """
+
+    calls = []
+
+    def recorder(store, *, current_block, finalized_block_provider):
+        calls.append(current_block)
+        return {"lease-digest": "plan-digest"}
+
+    monkeypatch.setattr(loop, "_settle_pending", recorder)
+    snapshot = _snapshot([])
+    result, _fetches, _options = _run(
+        tmp_path, monkeypatch, snapshot, {}, intake_only=True
+    )
+    assert calls == [snapshot.finalized_block]
+    assert result.settlements == {"lease-digest": "plan-digest"}
+
+
 def test_settlement_refreshes_stale_pass_height_before_leasing():
     class Store:
         lease_blocks = []
