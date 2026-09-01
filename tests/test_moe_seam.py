@@ -108,6 +108,23 @@ def test_disabled_when_env_flag_unset(monkeypatch):
     assert dispatched(_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs)) is _BASELINE
 
 
+def test_topology_authority_is_required_only_for_an_active_moe_candidate(monkeypatch):
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    def missing_topology():
+        raise RuntimeError("missing topology")
+
+    inputs = _inputs()
+    call = (_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs))
+    monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", missing_topology)
+
+    assert make_moe_dispatcher(_baseline_forward, registry=KernelRegistry())(*call) is _BASELINE
+    with pytest.raises(RuntimeError, match="missing topology"):
+        make_moe_dispatcher(
+            _baseline_forward,
+            registry=_registry(lambda *_args: None, lambda w13, w2: (w13, w2)),
+        )(*call)
+
+
 def test_prepare_runs_once_and_is_memoized(monkeypatch):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()

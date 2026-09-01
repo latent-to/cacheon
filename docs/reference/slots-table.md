@@ -138,8 +138,8 @@ qualifying execution receipt.
 
 Slots define execution ABIs. Targets define reward identities. Most targets
 map one-to-one to slots, but the target catalog also contains the atomic
-`collective.dp_attention_exchange.v1` target and a composition rule for the
-two MoE expert targets. See [Target catalog](target-catalog.md).
+`collective.dp_attention_exchange.v1` target and explicit exclusion between
+overlapping wide and narrow targets. See [Target catalog](target-catalog.md).
 
 For the invariant waist behind every slot, read
 [Target and slot contract](../architecture/slot-contract.md).

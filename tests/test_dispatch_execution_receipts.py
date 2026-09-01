@@ -271,6 +271,10 @@ def test_compiled_exchange_runtime_bodies_route_candidates(
     assert wrapped(coordinator, output, torch.randn(input_rows, 4)) is None
     assert events == [slot]
 
+    broken = factory(lambda *_args: "stock", registry=_registry(slot, _boom))
+    with pytest.raises(RuntimeError, match="candidate path failed"):
+        broken(coordinator, torch.empty(output_rows, 4), torch.randn(input_rows, 4))
+
 
 def _fusion_baseline(x, residual, *_args, **_kwargs):
     return "stock", x + residual

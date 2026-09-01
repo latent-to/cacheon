@@ -97,7 +97,7 @@ The target catalog determines the transition:
 
 - a singleton replaces one slot target;
 - an atomic target replaces its registered member set and displaces the overlapping singleton targets;
-- compatible targets use explicit validator-owned composition precedence;
+- conflicting targets are removed before the candidate tree is materialized;
 - required targets and displacement closures are validated before planning;
 - unregistered work fails resolution rather than being disguised as a singleton.
 
@@ -288,7 +288,7 @@ There is no supported arrow from a mutable miner URL, chain record, or evaluatio
 - [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — strict manifest and contribution-reference types
 - [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) — marginal arms, cohorts, transitions, and rollback
 - [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic source materialization and integration promotion
-- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — singleton, atomic, overlap, and composition policy
+- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — singleton, atomic, displacement, and conflict policy
 - [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_identity.py) — canonical direct-artifact execution identity
 - [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_provider.py) — closed provider registry included in catalog identity
 - [`eval/reference_quality.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_quality.py) — pristine reference quality products

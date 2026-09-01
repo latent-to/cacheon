@@ -345,26 +345,26 @@ def test_independent_contributions_compose_without_source_name_collisions(
     experts = _write_moe_fixture(
         tmp_path / "experts", "moe.fused_experts", "fused_experts"
     )
-    reduce = _write_moe_fixture(
-        tmp_path / "reduce", "moe.fused_experts_reduce", "fused_experts_reduce"
+    dense = _write_moe_fixture(
+        tmp_path / "dense", "linear.dense", "dense"
     )
     catalog = default_target_catalog()
     context = _evaluation_context(catalog)
     experts_ref = _proposal_ref(experts, catalog)
-    reduce_ref = _proposal_ref(reduce, catalog)
-    stack = _evaluation_stack(catalog, context, experts_ref, reduce_ref)
+    dense_ref = _proposal_ref(dense, catalog)
+    stack = _evaluation_stack(catalog, context, experts_ref, dense_ref)
 
     result = _materialize(
         stack,
         context,
         catalog,
-        _sources((experts_ref, experts), (reduce_ref, reduce)),
+        _sources((experts_ref, experts), (dense_ref, dense)),
         tmp_path / "engine",
     )
 
     manifest = load_manifest(result.root)
     assert [op.slot for op in manifest.ops] == [
-        "moe.fused_experts_reduce",
+        "linear.dense",
         "moe.fused_experts",
     ]
     assert manifest.ops[0].source != manifest.ops[1].source

@@ -352,8 +352,8 @@ def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
 def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> None:
     # These bytes include the current target-catalog digest. Catalog changes are
     # reviewed target identity epochs; the settlement schema remains unchanged.
-    # Epoch 2026-08-30: the GLM routed-MoE and fused-add-norm rows landed while
-    # the retired M3 attention and deep-finalize targets left the catalog.
+    # Epoch 2026-09-01: priority fallback composition was replaced by explicit
+    # target conflict/displacement and symmetric challenger transitions.
     # Historical records are unaffected: they embed their own catalog snapshot.
     catalog = default_target_catalog()
     candidate = _candidate(
@@ -362,10 +362,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "5ea6d3658be9e7c6505c19d23d1b197e4be3cba58fd3116f35400c46a8fecac3"
+        "6c2e5607fa03a7fbc501914c8727f61bebaa52cf5444430120cd2632ec75de2c"
     )
     assert candidate.digest == (
-        "f36c2f50aacaf1d29517d7010aef13fae2eb73bdb5bfe5e733f8aeae45b6d8e1"
+        "87535e2c6c4a9861d32d6468771875946cdd1aca75b10654a51a68b30ae6f980"
     )
 
 

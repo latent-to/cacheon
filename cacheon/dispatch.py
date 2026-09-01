@@ -406,7 +406,10 @@ def make_moe_dispatcher(
     def dispatched(self, hidden_states, topk_output, pre_quant_input=None):
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return stock(self, hidden_states, topk_output, pre_quant_input)
-        if _moe_seam_active():
+        active_moe = registry.active and any(
+            registry.variants(slot) for slot in (*slots, _ROUTED_MOE_SLOT)
+        )
+        if _moe_seam_active() and active_moe:
             if not (_moe_supported(self) and hidden_states.dim() == 2):
                 pass
             else:
@@ -432,6 +435,8 @@ def make_moe_dispatcher(
                 else:
                     x = hidden_states
                     for slot in slots:
+                        if not registry.variants(slot):
+                            continue
                         reduce_slot = slot.endswith(".fused_experts_reduce")
                         group = None
                         descriptor = None
@@ -616,6 +621,8 @@ def make_moe_deferred_dispatcher(
             return baseline_forward(self, hidden_states, topk_output)
         if (
             _moe_seam_active()
+            and registry.active
+            and registry.variants(_ROUTED_MOE_SLOT)
             and _moe_supported(self)
             and hidden_states.dim() == 2
         ):
@@ -995,8 +1002,8 @@ def _run_moe_kernel(
         contract, allocation, tensor_inputs, input_bindings, like=x
     )
     if getattr(self, "reduce_results", False) and getattr(self, "moe_tp_size", 1) > 1:
-        # Sum this rank's partial expert output across the TP group (raises if the
-        # collective is unavailable -> caller falls back to the trusted baseline).
+        # Sum this rank's partial expert output across the TP group. A missing
+        # collective is terminal after candidate selection.
         from sglang.srt.distributed.communication_op import tensor_model_parallel_all_reduce
 
         out = tensor_model_parallel_all_reduce(out)
@@ -1013,19 +1020,23 @@ def _tp_device_group():
     try:
         from sglang.srt.distributed.parallel_state import get_tp_group
 
-        return getattr(get_tp_group(), "device_group", None)
-    except Exception:  # noqa: BLE001 - no exact group authority -> stock
-        return None
+        group = getattr(get_tp_group(), "device_group", None)
+    except Exception as exc:  # noqa: BLE001 - preserve pinned-runtime cause
+        raise RuntimeError("selected MoE target cannot resolve its TP group") from exc
+    if group is None:
+        raise RuntimeError("selected MoE target resolved no TP device group")
+    return group
 
 
-def _moe_data_parallel_world_size() -> Optional[int]:
-    """Return Sglang's authoritative MoE-DP size, or ``None`` if unknown.
+def _moe_data_parallel_world_size() -> int:
+    """Return SGLang's authoritative MoE-DP size or fail the active target.
 
     ``FusedMoE.forward_impl`` surrounds its local expert core with dispatcher
     dispatch/combine when MoE data parallelism is active.  Cacheon's current
     ``(M,H)->(M,H)`` expert contracts replace that whole method but do not model
     those operations, so a layer attribute or environment hint cannot authorize
-    the route.  Missing or drifted runtime authority therefore means stock.
+    the route. Missing or drifted pinned-runtime authority is terminal; serving
+    stock would turn an active candidate into a phantom comparison.
     """
 
     try:
@@ -1034,10 +1045,12 @@ def _moe_data_parallel_world_size() -> Optional[int]:
         )
 
         size = get_moe_data_parallel_world_size()
-    except Exception:  # noqa: BLE001 - missing/uninitialized authority -> stock
-        return None
+    except Exception as exc:  # noqa: BLE001 - preserve pinned-runtime cause
+        raise RuntimeError(
+            "selected MoE target cannot resolve MoE-DP topology"
+        ) from exc
     if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-        return None
+        raise RuntimeError("selected MoE target received invalid MoE-DP topology")
     return size
 
 

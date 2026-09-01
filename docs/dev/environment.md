@@ -125,7 +125,7 @@ hardware campaign.
 |---|---|---|
 | Manifest or bundle hashing | static/manifest and target-catalog tests | example bundles and full suite |
 | Slot ABI or verification | slot, tensor, and verifier tests | graph replay and the supported GPU matrix |
-| Target overlap/composition | target catalog and stack planning | settlement and emissions projection |
+| Target displacement/conflict | target catalog and stack planning | settlement and emissions projection |
 | Intake or retry state | chain intake and validator-loop tests | restart, evidence, and weight reconciliation |
 | Integration or Engine tree | stack manifest and Engine-tree tests | materialization and reopen verification |
 

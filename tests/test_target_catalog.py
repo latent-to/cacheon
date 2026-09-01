@@ -18,7 +18,6 @@ from cacheon.manifest import (
     load_manifest,
 )
 from cacheon.target_catalog import (
-    CompositionRule,
     CorrectnessContractRef,
     FEATURE_CUDA_SOURCES,
     FEATURE_ENTRY,
@@ -40,7 +39,6 @@ from cacheon.target_catalog import (
     resolve_intake_target,
     resolve_target,
 )
-from cacheon.stack_identity import canonical_digest
 
 
 SILU = "activation.silu_and_mul"
@@ -100,7 +98,7 @@ def _slot_spec(
     target_id: str,
     *,
     displaces: frozenset[str] = frozenset(),
-    compatible_with: frozenset[str] = frozenset(),
+    conflicts_with: frozenset[str] = frozenset(),
     requires: frozenset[str] = frozenset(),
     features: frozenset[str] = frozenset({FEATURE_ENTRY}),
 ) -> TargetSpec:
@@ -109,7 +107,7 @@ def _slot_spec(
         kind=TargetKind.SLOT,
         members=(target_id,),
         displaces=displaces,
-        compatible_with=compatible_with,
+        conflicts_with=conflicts_with,
         requires=requires,
         allowed_features=features,
         contract_ref=TargetContractRef(
@@ -143,21 +141,6 @@ def _atomic_spec(
         displaces=frozenset(members) if displaces is None else displaces,
         allowed_features=frozenset({FEATURE_ENTRY}),
         atomic_semantics_id=f"{target_id}.semantics.v1",
-    )
-
-
-def _composition(*target_ids: str, precedence: tuple[str, ...] | None = None):
-    targets = tuple(sorted(target_ids))
-    return CompositionRule(
-        schema_version=1,
-        rule_id="rule." + ".".join(target.removeprefix("slot.") for target in targets),
-        target_ids=targets,
-        precedence=precedence or targets,
-        mode="first_applicable",
-        binding_family_id="test.binding.v1",
-        binding_contract_digest=canonical_digest(
-            "test.binding", {"targets": list(targets)}
-        ),
     )
 
 
@@ -465,7 +448,7 @@ def test_catalog_snapshot_and_digests_are_canonical_complete_and_immutable():
         "kind",
         "members",
         "displaces",
-        "compatible_with",
+        "conflicts_with",
         "requires",
         "allowed_features",
         "contract_ref",
@@ -524,7 +507,7 @@ def test_requires_means_an_active_contribution_and_is_acyclic():
                 _slot_spec("slot.b", requires=frozenset({"slot.a"})),
             ]
         )
-    with pytest.raises(TargetCatalogError, match="requires targets it displaces"):
+    with pytest.raises(TargetCatalogError, match="requires mutually exclusive"):
         TargetCatalog(
             [
                 _slot_spec(
@@ -564,44 +547,6 @@ def test_requires_means_an_active_contribution_and_is_acyclic():
 def test_transitive_dependency_displacement_contradictions_reject(specs, message):
     with pytest.raises(TargetCatalogError, match=message):
         TargetCatalog(specs)
-
-
-def test_compatible_targets_require_explicit_rule_and_use_its_precedence():
-    a = _slot_spec("slot.a", compatible_with=frozenset({"slot.b"}))
-    b = _slot_spec("slot.b", compatible_with=frozenset({"slot.a"}))
-    with pytest.raises(TargetCatalogError, match="require a CompositionRule"):
-        TargetCatalog([a, b])
-
-    rule = _composition("slot.a", "slot.b", precedence=("slot.b", "slot.a"))
-    catalog = TargetCatalog([a, b], composition_rules=(rule,))
-    assert catalog.composition_rule("slot.a", "slot.b") == rule
-    assert catalog.ordered_active_targets(("slot.a", "slot.b")) == (
-        "slot.b",
-        "slot.a",
-    )
-
-
-def test_composition_rules_are_pairwise_until_multiway_semantics_exist():
-    with pytest.raises(TargetCatalogError, match="exactly two"):
-        CompositionRule(
-            schema_version=1,
-            rule_id="test.three-way.v1",
-            target_ids=("slot.a", "slot.b", "slot.c"),
-            precedence=("slot.a", "slot.b", "slot.c"),
-            mode="first_applicable",
-            binding_family_id="test.binding.v1",
-            binding_contract_digest=canonical_digest(
-                "test.binding", {"targets": ["slot.a", "slot.b", "slot.c"]}
-            ),
-        )
-
-
-def test_default_moe_composition_is_reduce_first_and_digest_bound():
-    catalog = default_target_catalog()
-    rule = catalog.composition_rule("moe.fused_experts", "moe.fused_experts_reduce")
-    assert rule.mode == "first_applicable"
-    assert rule.precedence == ("moe.fused_experts_reduce", "moe.fused_experts")
-    assert len(rule.binding_contract_digest) == 64
 
 
 @pytest.mark.parametrize(
@@ -681,66 +626,37 @@ def test_partial_atomic_overlap_rejects_without_member_ownership_semantics():
     with pytest.raises(TargetCatalogError, match="share members.*explicit"):
         TargetCatalog([*singletons, atomic_ab, atomic_bc])
 
-    atomic_ab = replace(
-        atomic_ab, compatible_with=frozenset({"atomic.bc"})
-    )
-    atomic_bc = replace(
-        atomic_bc, compatible_with=frozenset({"atomic.ab"})
-    )
-    with pytest.raises(TargetCatalogError, match="do not define member ownership"):
-        TargetCatalog(
-            [*singletons, atomic_ab, atomic_bc],
-            composition_rules=(_composition("atomic.ab", "atomic.bc"),),
-        )
+    atomic_ab = replace(atomic_ab, conflicts_with=frozenset({"atomic.bc"}))
+    atomic_bc = replace(atomic_bc, conflicts_with=frozenset({"atomic.ab"}))
+    catalog = TargetCatalog([*singletons, atomic_ab, atomic_bc])
+    with pytest.raises(TargetResolutionError, match="conflicts"):
+        catalog.validate_active_targets(("atomic.ab", "atomic.bc"))
 
 
-def test_catalog_rejects_global_composition_precedence_cycles():
-    specs = [
-        _slot_spec(
-            f"slot.{name}",
-            compatible_with=frozenset(
-                f"slot.{other}" for other in "abc" if other != name
-            ),
-        )
-        for name in "abc"
-    ]
-    rules = (
-        _composition("slot.a", "slot.b", precedence=("slot.a", "slot.b")),
-        _composition("slot.b", "slot.c", precedence=("slot.b", "slot.c")),
-        _composition("slot.a", "slot.c", precedence=("slot.c", "slot.a")),
-    )
-    with pytest.raises(TargetCatalogError, match="precedence contains a cycle"):
-        TargetCatalog(specs, composition_rules=rules)
-
-
-def test_schema_versions_are_type_exact_and_rule_sequences_are_not_strings():
+def test_schema_versions_are_type_exact():
     contract = default_target_catalog().require(SILU).contract_ref
     assert contract is not None
     with pytest.raises(TargetCatalogError, match="schema_version"):
         replace(contract, schema_version=True)
-    with pytest.raises(TargetCatalogError, match="schema_version"):
-        replace(_composition("slot.a", "slot.b"), schema_version=True)
-    with pytest.raises(TargetCatalogError, match="must be sequences"):
-        replace(_composition("slot.a", "slot.b"), target_ids="ab")
 
 
-def test_compatible_overlap_must_be_symmetric_and_not_displaced():
+def test_conflict_must_be_symmetric_and_not_displaced():
     with pytest.raises(TargetCatalogError, match="must be symmetric"):
         TargetCatalog(
             [
-                _slot_spec("slot.a", compatible_with=frozenset({"slot.b"})),
+                _slot_spec("slot.a", conflicts_with=frozenset({"slot.b"})),
                 _slot_spec("slot.b"),
             ]
         )
-    with pytest.raises(TargetCatalogError, match="both displaces and is compatible"):
+    with pytest.raises(TargetCatalogError, match="both displaces and conflicts"):
         TargetCatalog(
             [
                 _slot_spec(
                     "slot.a",
                     displaces=frozenset({"slot.b"}),
-                    compatible_with=frozenset({"slot.b"}),
+                    conflicts_with=frozenset({"slot.b"}),
                 ),
-                _slot_spec("slot.b", compatible_with=frozenset({"slot.a"})),
+                _slot_spec("slot.b", conflicts_with=frozenset({"slot.a"})),
             ]
         )
 
@@ -766,19 +682,23 @@ def test_catalog_registration_order_does_not_change_resolution():
     assert first.require("slot.b") == second.require("slot.b") == b
 
 
-def test_default_displacement_and_compatible_overlap_are_explicit():
+def test_default_displacement_and_conflicts_are_explicit():
     catalog = default_target_catalog()
 
-    assert catalog.require("moe.fused_experts").compatible_with == frozenset(
+    assert catalog.require("moe.fused_experts_reduce").displaces == frozenset(
+        {"moe.fused_experts"}
+    )
+    assert catalog.require("moe.fused_routed_experts").conflicts_with == frozenset(
         {"moe.fused_experts_reduce"}
     )
+    with pytest.raises(TargetResolutionError, match="displaces"):
+        catalog.validate_active_targets(
+            ("moe.fused_experts", "moe.fused_experts_reduce")
+        )
     assert all(
         not any(feature.startswith("aot:") for feature in catalog.require(slot).allowed_features)
         for slot in ("moe.fused_experts", "moe.fused_experts_reduce")
     )
-    assert catalog.validate_active_targets(
-        ["moe.fused_experts", "moe.fused_experts_reduce"]
-    ) == ("moe.fused_experts", "moe.fused_experts_reduce")
     with pytest.raises(TargetResolutionError, match="must be strings"):
         catalog.validate_active_targets((["unhashable"],))  # type: ignore[list-item]
 

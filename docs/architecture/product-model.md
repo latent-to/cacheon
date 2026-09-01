@@ -137,7 +137,7 @@ The validator-owned target catalog defines what can receive ordinary attribution
 - singleton members or the explicit members of an atomic target;
 - the frozen slot contract digest;
 - permitted contribution features;
-- overlap, displacement, requirements, and composition precedence.
+- overlap, displacement, conflicts, and requirements.
 
 Miner packaging and manifest row order do not define economic scope. A bundle that explicitly claims a registered target but does not resolve to its exact members and allowed features fails resolution rather than falling through to an unregistered identity.
 

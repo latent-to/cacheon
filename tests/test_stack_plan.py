@@ -142,11 +142,37 @@ def test_registered_stock_and_same_target_transitions(
     assert arm.transition.prior is entries.get(replacement_target)
 
 
+def test_subset_challenger_replaces_wide_incumbent_instead_of_being_shadowed():
+    catalog = default_target_catalog()
+    for wide, narrow in (
+        ("moe.fused_experts_reduce", "moe.fused_experts"),
+        ("norm.fused_add_rmsnorm", "norm.rmsnorm"),
+        ("collective.ar_residual_rmsnorm", "collective.all_reduce"),
+    ):
+        incumbent = _stack(catalog, {wide: _ref(catalog, wide, "wide")})
+        arm = _plan(
+            incumbent,
+            _ref(catalog, narrow, "narrow"),
+            catalog,
+            _context(catalog, (wide, narrow)),
+        )
+        assert tuple(row.target_id for row in arm.transition.displaced) == (wide,)
+        assert set(arm.candidate.entries) == {narrow}
+
+
 def test_planning_rejects_a_catalog_outside_the_frozen_stack_context():
     catalog = default_target_catalog()
     context = _context(catalog, (ROUTED,))
     incumbent = _stack(catalog)
-    narrow = TargetCatalog((catalog.require(ROUTED),))
+    narrow = TargetCatalog(
+        (
+            replace(
+                catalog.require(ROUTED),
+                displaces=frozenset(),
+                conflicts_with=frozenset(),
+            ),
+        )
+    )
 
     with pytest.raises(StackPlanError, match="catalog does not match"):
         _plan(
@@ -174,6 +200,32 @@ def _dependency_catalog() -> tuple[TargetCatalog, str]:
         ),
     ]
     return TargetCatalog(specs), atomic_id
+
+
+def test_atomic_and_member_challengers_remove_every_overlapping_incumbent():
+    catalog, atomic_id = _dependency_catalog()
+    atomic_incumbent = _stack(
+        catalog, {atomic_id: _ref(catalog, atomic_id, "atomic incumbent")}
+    )
+    for challenger in (SILU, ALLREDUCE):
+        arm = _plan(
+            atomic_incumbent,
+            _ref(catalog, challenger, f"challenger:{challenger}"),
+            catalog,
+            _context(catalog, (atomic_id, challenger)),
+        )
+        assert tuple(row.target_id for row in arm.transition.displaced) == (atomic_id,)
+        assert set(arm.candidate.entries) == {challenger}
+
+    members = {target: _ref(catalog, target, target) for target in (SILU, ALLREDUCE)}
+    arm = _plan(
+        _stack(catalog, members),
+        _ref(catalog, atomic_id, "atomic challenger"),
+        catalog,
+        _context(catalog, (atomic_id, SILU, ALLREDUCE)),
+    )
+    assert {row.target_id for row in arm.transition.displaced} == set(members)
+    assert set(arm.candidate.entries) == {atomic_id}
 
 
 def test_stock_does_not_satisfy_active_only_dependency():

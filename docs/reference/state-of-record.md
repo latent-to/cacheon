@@ -206,6 +206,9 @@ The full GLM-5.3 arena instead registers exactly
 engine-owned KV-cache, batching, radix, and speculative-decoding policy are not
 separate GLM reward lanes.
 
+On 2026-09-01 target-catalog v2 removed MoE `first_applicable` after a narrow
+candidate was shadowed. Overlap is now exclusive; B300 recommission remains required.
+
 On 2026-08-30 the exact `0.5.18` CUDA-13 image, full
 `incoai/GLM-5.3-NVFP4` checkpoint, and two physical TP4 lanes exercised all
 five registered targets (six callable seams because the atomic DP-attention

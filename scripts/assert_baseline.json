@@ -186,7 +186,7 @@
 "tests/test_strict.py": 30,
 "tests/test_submit_dry_run.py": 22,
 "tests/test_subnet_owner_burn.py": 20,
-"tests/test_target_catalog.py": 100,
+"tests/test_target_catalog.py": 91,
 "tests/test_target_unavailable.py": 11,
 "tests/test_tensor_spec.py": 16,
 "tests/test_tokenizer_identity.py": 12,

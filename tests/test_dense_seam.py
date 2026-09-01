@@ -90,3 +90,5 @@ def test_dense_adapter_candidate_error_is_not_stock_fallback(monkeypatch, layer)
     dense_seam.install(_registry(broken))
     with pytest.raises(RuntimeError, match="dense candidate failed"):
         _Method().apply(layer, torch.randn(3, 5))
+    with pytest.raises(RuntimeError, match="dense candidate failed"):
+        _Method().apply_into(layer, torch.randn(3, 5), torch.empty(3, 7))

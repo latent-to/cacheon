@@ -142,15 +142,16 @@ def _make_apply_into(baseline, stock_apply, registry: KernelRegistry):
     def apply_into(self, layer, x, output, bias=None):
         if _dynamo_compiling():
             return baseline(self, layer, x, output, bias)
-        selected = _select(layer, x, bias, registry)
         expected = (x.shape[0], layer.weight.shape[0])
         if (
-            selected is None
-            or tuple(output.shape) != expected
+            tuple(output.shape) != expected
             or output.dtype != x.dtype
             or output.device != x.device
             or not output.is_contiguous()
         ):
+            return baseline(self, layer, x, output, bias)
+        selected = _select(layer, x, bias, registry)
+        if selected is None:
             return baseline(self, layer, x, output, bias)
         impl, _, prepared = selected
         audit = _audit.sampled()

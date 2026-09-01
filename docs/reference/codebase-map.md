@@ -38,7 +38,7 @@ sealed native publication is bound to the reviewed integrated source.
 | Bundle parsing and path rules | [`manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/manifest.py) |
 | Slot ABI and trusted references | [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) |
 | Arena-specific slot shapes and correctness floors | [`model_profiles.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_profiles.py) |
-| Target identity and composition | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
+| Target identity and exclusion | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
 | Typed tensor/output boundary | [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py) |
 | Static policy | [`sandbox.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py) |
 | Tracing-JIT admission | [`dsl_jit_policy.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dsl_jit_policy.py) |

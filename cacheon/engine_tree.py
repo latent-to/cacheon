@@ -2077,7 +2077,7 @@ def materialize_engine_tree(
     entries = stack.entries
     destination_path = Path(destination)
     destination_resolved = destination_path.resolve(strict=False)
-    ordered_targets = catalog.ordered_active_targets(entries)
+    ordered_targets = catalog.validate_active_targets(entries)
     files: dict[str, bytes] = {}
     op_rows: list[dict[str, object]] = []
     rebuild_by_path: dict[str, dict[str, object]] = {}

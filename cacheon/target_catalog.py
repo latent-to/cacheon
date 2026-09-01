@@ -37,7 +37,6 @@ _TARGET_CONTRACT_DOMAIN = "cacheon.target-contract"
 _TARGET_CATALOG_DOMAIN = "cacheon.target-catalog"
 _ATOMIC_TARGET_CONTRACT_DOMAIN = "cacheon.atomic-target-contract"
 _TARGET_SPEC_DOMAIN = "cacheon.target-spec"
-_BINDING_CONTRACT_DOMAIN = "cacheon.binding-contract"
 
 
 class TargetKind(str, Enum):
@@ -88,8 +87,8 @@ _STANDARD_COMPONENT_FEATURES = frozenset(
 ) | _ARTIFACT_PROVIDER_TARGET_FEATURES
 _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_CATALOG_SCHEMA_VERSION = 1
-_CATALOG_POLICY_VERSION = "target-catalog.v1"
+_CATALOG_SCHEMA_VERSION = 2
+_CATALOG_POLICY_VERSION = "target-catalog.v2"
 
 
 class TargetCatalogError(ValueError):
@@ -269,79 +268,21 @@ class TargetContractRef:
 
 
 @dataclass(frozen=True)
-class CompositionRule:
-    schema_version: int
-    rule_id: str
-    target_ids: tuple[str, ...]
-    precedence: tuple[str, ...]
-    mode: str
-    binding_family_id: str
-    binding_contract_digest: str
-
-    def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version != 1:
-            raise TargetCatalogError("composition rule schema_version must be 1")
-        if isinstance(self.target_ids, (str, bytes)) or isinstance(
-            self.precedence, (str, bytes)
-        ):
-            raise TargetCatalogError(
-                "composition rule targets and precedence must be sequences"
-            )
-        _simple_id(self.rule_id, field="composition rule_id")
-        targets = tuple(self.target_ids)
-        precedence = tuple(self.precedence)
-        if len(targets) != 2 or targets != tuple(sorted(targets)):
-            raise TargetCatalogError(
-                "composition rule target_ids must contain exactly two sorted IDs"
-            )
-        if len(set(targets)) != len(targets):
-            raise TargetCatalogError("composition rule target_ids contain duplicates")
-        for target_id in targets:
-            _simple_id(target_id, field="composition target_id")
-        if len(precedence) != len(targets) or set(precedence) != set(targets):
-            raise TargetCatalogError(
-                "composition rule precedence must order the exact target_ids"
-            )
-        if self.mode != "first_applicable":
-            raise TargetCatalogError("first_applicable is the only composition mode")
-        _simple_id(self.binding_family_id, field="composition binding_family_id")
-        if not isinstance(self.binding_contract_digest, str) or not _SHA256_RE.fullmatch(
-            self.binding_contract_digest
-        ):
-            raise TargetCatalogError(
-                "composition binding_contract_digest must be lowercase SHA-256"
-            )
-        object.__setattr__(self, "target_ids", targets)
-        object.__setattr__(self, "precedence", precedence)
-
-    def snapshot(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "rule_id": self.rule_id,
-            "target_ids": list(self.target_ids),
-            "precedence": list(self.precedence),
-            "mode": self.mode,
-            "binding_family_id": self.binding_family_id,
-            "binding_contract_digest": self.binding_contract_digest,
-        }
-
-
-@dataclass(frozen=True)
 class TargetSpec:
     """One validator-owned reward-unit identity.
 
     ``members`` are canonical semantic slot IDs, not manifest rows; variants of
-    one slot never add members.  ``displaces`` is directional and represents a
-    mutually exclusive registered target.  ``compatible_with`` records a known
-    semantic overlap that the validator binding deliberately composes (for
-    example the ordered MoE reduce-owning/plain fallback pair).
+    one slot never add members. ``displaces`` is directional ownership by a
+    wider target. ``conflicts_with`` is symmetric non-composable overlap. A
+    candidate transition removes either relation before materialization; live
+    dispatch order never decides which economic target executes.
     """
 
     target_id: str
     kind: TargetKind
     members: tuple[str, ...]
     displaces: frozenset[str] = frozenset()
-    compatible_with: frozenset[str] = frozenset()
+    conflicts_with: frozenset[str] = frozenset()
     requires: frozenset[str] = frozenset()
     allowed_features: frozenset[str] = frozenset({FEATURE_ENTRY})
     contract_ref: TargetContractRef | None = None
@@ -352,8 +293,8 @@ class TargetSpec:
             object.__setattr__(self, "members", tuple(self.members))
         if not isinstance(self.displaces, str):
             object.__setattr__(self, "displaces", frozenset(self.displaces))
-        if not isinstance(self.compatible_with, str):
-            object.__setattr__(self, "compatible_with", frozenset(self.compatible_with))
+        if not isinstance(self.conflicts_with, str):
+            object.__setattr__(self, "conflicts_with", frozenset(self.conflicts_with))
         if not isinstance(self.requires, str):
             object.__setattr__(self, "requires", frozenset(self.requires))
         if not isinstance(self.allowed_features, str):
@@ -497,12 +438,7 @@ def _validate_complete_feature_evidence(
 class TargetCatalog:
     """Immutable, deterministic validator policy for registered targets."""
 
-    def __init__(
-        self,
-        specs: Iterable[TargetSpec],
-        *,
-        composition_rules: Iterable[CompositionRule] = (),
-    ):
+    def __init__(self, specs: Iterable[TargetSpec]):
         if isinstance(specs, (str, bytes, Mapping)):
             raise TargetCatalogError("target specs must be an iterable of TargetSpec")
         rows = tuple(specs)
@@ -599,7 +535,7 @@ class TargetCatalog:
         for spec in by_id.values():
             for relation_name, related in (
                 ("displaces", spec.displaces),
-                ("compatible_with", spec.compatible_with),
+                ("conflicts_with", spec.conflicts_with),
                 ("requires", spec.requires),
             ):
                 if isinstance(related, str):
@@ -616,17 +552,19 @@ class TargetCatalog:
                         f"target {spec.target_id!r} {relation_name} unknown targets "
                         f"{tuple(sorted(unknown))!r}"
                     )
-            overlap = spec.displaces & spec.compatible_with
+            overlap = spec.displaces & spec.conflicts_with
             if overlap:
                 raise TargetCatalogError(
-                    f"target {spec.target_id!r} both displaces and is compatible with "
+                    f"target {spec.target_id!r} both displaces and conflicts with "
                     f"{tuple(sorted(overlap))!r}"
                 )
-            required_displaced = spec.requires & spec.displaces
-            if required_displaced:
+            impossible_requirements = spec.requires & (
+                spec.displaces | spec.conflicts_with
+            )
+            if impossible_requirements:
                 raise TargetCatalogError(
-                    f"target {spec.target_id!r} requires targets it displaces "
-                    f"{tuple(sorted(required_displaced))!r}"
+                    f"target {spec.target_id!r} requires mutually exclusive targets "
+                    f"{tuple(sorted(impossible_requirements))!r}"
                 )
 
             if spec.kind is TargetKind.ATOMIC:
@@ -650,10 +588,10 @@ class TargetCatalog:
                     )
 
         for spec in by_id.values():
-            for other_id in spec.compatible_with:
-                if spec.target_id not in by_id[other_id].compatible_with:
+            for other_id in spec.conflicts_with:
+                if spec.target_id not in by_id[other_id].conflicts_with:
                     raise TargetCatalogError(
-                        "compatible overlap must be symmetric: "
+                        "target conflict must be symmetric: "
                         f"{spec.target_id!r} -> {other_id!r}"
                     )
                 if (
@@ -662,27 +600,22 @@ class TargetCatalog:
                 ):
                     raise TargetCatalogError(
                         f"targets {spec.target_id!r} and {other_id!r} cannot be both "
-                        "compatible and displaced"
+                        "conflicting and displaced"
                     )
 
         for left, right in combinations(by_id.values(), 2):
             shared = set(left.members) & set(right.members)
             if not shared:
                 continue
-            if right.target_id in left.compatible_with:
-                raise TargetCatalogError(
-                    f"targets {left.target_id!r} and {right.target_id!r} share members "
-                    "but first_applicable rules do not define member ownership"
-                )
             related = (
                 right.target_id in left.displaces
                 or left.target_id in right.displaces
+                or right.target_id in left.conflicts_with
             )
             if not related:
                 raise TargetCatalogError(
                     f"targets {left.target_id!r} and {right.target_id!r} share "
-                    f"members {tuple(sorted(shared))!r} without explicit "
-                    "displacement or compatible overlap"
+                    f"members {tuple(sorted(shared))!r} without explicit exclusion"
                 )
 
         self._validate_relation_dag(by_id, relation="displaces")
@@ -727,94 +660,11 @@ class TargetCatalog:
                     f"{tuple(sorted(reverse))!r}"
                 )
 
-        rules = tuple(composition_rules)
-        if not all(isinstance(rule, CompositionRule) for rule in rules):
-            raise TargetCatalogError("composition_rules must contain CompositionRule rows")
-        by_rule_id: dict[str, CompositionRule] = {}
-        by_rule_targets: dict[tuple[str, ...], CompositionRule] = {}
-        by_rule_pair: dict[tuple[str, str], CompositionRule] = {}
-        for rule in rules:
-            if rule.rule_id in by_rule_id:
-                raise TargetCatalogError(f"duplicate composition rule ID {rule.rule_id!r}")
-            if rule.target_ids in by_rule_targets:
-                raise TargetCatalogError(
-                    f"duplicate composition rule targets {rule.target_ids!r}"
-                )
-            unknown = set(rule.target_ids) - set(by_id)
-            if unknown:
-                raise TargetCatalogError(
-                    f"composition rule {rule.rule_id!r} names unknown targets "
-                    f"{tuple(sorted(unknown))!r}"
-                )
-            for left, right in combinations(rule.target_ids, 2):
-                if (
-                    right not in by_id[left].compatible_with
-                    or left not in by_id[right].compatible_with
-                ):
-                    raise TargetCatalogError(
-                        f"composition rule {rule.rule_id!r} targets must be "
-                        "explicitly compatible"
-                    )
-                pair = (left, right)
-                previous = by_rule_pair.get(pair)
-                if previous is not None:
-                    raise TargetCatalogError(
-                        f"compatible target pair {pair!r} is covered by multiple "
-                        f"composition rules {previous.rule_id!r}, {rule.rule_id!r}"
-                    )
-                by_rule_pair[pair] = rule
-            for target_id in rule.target_ids:
-                contract = by_id[target_id].contract_ref
-                if (
-                    contract is not None
-                    and contract.binding_family_id != rule.binding_family_id
-                ):
-                    raise TargetCatalogError(
-                        f"composition rule {rule.rule_id!r} binding family does not "
-                        f"match target {target_id!r}"
-                    )
-            by_rule_id[rule.rule_id] = rule
-            by_rule_targets[rule.target_ids] = rule
-
-        for left, right in combinations(sorted(by_id), 2):
-            compatible = right in by_id[left].compatible_with
-            rule = by_rule_pair.get((left, right))
-            if compatible and rule is None:
-                raise TargetCatalogError(
-                    f"compatible targets {(left, right)!r} require a CompositionRule"
-                )
-            if not compatible and rule is not None:
-                raise TargetCatalogError(
-                    f"composition rule {rule.rule_id!r} has no compatible target pair"
-                )
-
-        outgoing: dict[str, set[str]] = {target_id: set() for target_id in by_id}
-        incoming: dict[str, int] = {target_id: 0 for target_id in by_id}
-        for rule in rules:
-            for earlier, later in zip(rule.precedence, rule.precedence[1:]):
-                if later not in outgoing[earlier]:
-                    outgoing[earlier].add(later)
-                    incoming[later] += 1
-        ready = [target_id for target_id, count in incoming.items() if count == 0]
-        visited = 0
-        while ready:
-            current = ready.pop()
-            visited += 1
-            for child in outgoing[current]:
-                incoming[child] -= 1
-                if incoming[child] == 0:
-                    ready.append(child)
-        if visited != len(by_id):
-            raise TargetCatalogError("composition precedence contains a cycle")
-
         ordered = dict(sorted(by_id.items()))
         self._by_id = ordered
         self._by_members = {
             members: ordered[target_id] for members, target_id in member_sets.items()
         }
-        self._composition_by_id = dict(sorted(by_rule_id.items()))
-        self._composition_by_targets = by_rule_targets
-        self._composition_by_pair = by_rule_pair
         self._displacement_closures = displacement_closures
         self._requirement_closures = requirement_closures
         self._target_snapshots = {
@@ -830,10 +680,6 @@ class TargetCatalog:
             "artifact_provider_registry": ARTIFACT_PROVIDERS.snapshot(),
             "artifact_provider_registry_digest": ARTIFACT_PROVIDERS.digest,
             "targets": [self._target_snapshots[target_id] for target_id in ordered],
-            "composition_rules": [
-                self._composition_by_id[rule_id].snapshot()
-                for rule_id in self._composition_by_id
-            ],
         }
         self._digest = canonical_digest(_TARGET_CATALOG_DOMAIN, self._snapshot)
 
@@ -866,7 +712,7 @@ class TargetCatalog:
             "kind": spec.kind.value,
             "members": list(spec.members),
             "displaces": sorted(spec.displaces),
-            "compatible_with": sorted(spec.compatible_with),
+            "conflicts_with": sorted(spec.conflicts_with),
             "requires": sorted(spec.requires),
             "allowed_features": sorted(spec.allowed_features),
         }
@@ -931,49 +777,6 @@ class TargetCatalog:
         self.require(target_id)
         return self._requirement_closures[target_id]
 
-    def composition_rule(self, left: str, right: str) -> CompositionRule:
-        targets = tuple(sorted((left, right)))
-        if len(set(targets)) != 2:
-            raise TargetResolutionError("composition requires two distinct target IDs")
-        self.require(left)
-        self.require(right)
-        try:
-            return self._composition_by_pair[targets]
-        except KeyError:
-            raise TargetResolutionError(
-                f"targets {targets!r} have no registered composition rule"
-            ) from None
-
-    def ordered_active_targets(self, target_ids: Iterable[str]) -> tuple[str, ...]:
-        """Order active rows with validator-owned composition precedence."""
-        active = self.validate_active_targets(target_ids)
-        active_set = set(active)
-        outgoing: dict[str, set[str]] = {target_id: set() for target_id in active}
-        incoming: dict[str, int] = {target_id: 0 for target_id in active}
-        for rule in self._composition_by_id.values():
-            precedence = tuple(
-                target_id for target_id in rule.precedence if target_id in active_set
-            )
-            if len(precedence) < 2:
-                continue
-            for earlier, later in zip(precedence, precedence[1:]):
-                if later not in outgoing[earlier]:
-                    outgoing[earlier].add(later)
-                    incoming[later] += 1
-        ready = sorted(target_id for target_id, count in incoming.items() if count == 0)
-        ordered: list[str] = []
-        while ready:
-            current = ready.pop(0)
-            ordered.append(current)
-            for child in sorted(outgoing[current]):
-                incoming[child] -= 1
-                if incoming[child] == 0:
-                    ready.append(child)
-                    ready.sort()
-        if len(ordered) != len(active):
-            raise TargetResolutionError("active composition precedence contains a cycle")
-        return tuple(ordered)
-
     def validate_active_targets(self, target_ids: Iterable[str]) -> tuple[str, ...]:
         if isinstance(target_ids, (str, bytes)):
             raise TargetResolutionError("active target IDs must be an iterable")
@@ -990,6 +793,12 @@ class TargetCatalog:
             if conflicts:
                 raise TargetResolutionError(
                     f"active target {target_id!r} displaces "
+                    f"{tuple(sorted(conflicts))!r}"
+                )
+            conflicts = self.require(target_id).conflicts_with & active_set
+            if conflicts:
+                raise TargetResolutionError(
+                    f"active target {target_id!r} conflicts with "
                     f"{tuple(sorted(conflicts))!r}"
                 )
             missing = self.requires_closure(target_id) - active_set
@@ -1337,19 +1146,33 @@ _SINGLETON_CONTRACTS = {
 
 @lru_cache(maxsize=1)
 def default_target_catalog() -> TargetCatalog:
-    moe_pair = frozenset({"moe.fused_experts", "moe.fused_experts_reduce"})
+    displacements = {
+        "collective.ar_residual_rmsnorm": frozenset(
+            {
+                "collective.all_reduce",
+                "norm.fused_add_rmsnorm",
+            }
+        ),
+        "moe.fused_experts_reduce": frozenset({"moe.fused_experts"}),
+        "moe.fused_routed_experts": frozenset({"moe.fused_experts"}),
+        "norm.fused_add_rmsnorm": frozenset({"norm.rmsnorm"}),
+    }
+    conflicts = {
+        "moe.fused_experts_reduce": frozenset({"moe.fused_routed_experts"}),
+        "moe.fused_routed_experts": frozenset({"moe.fused_experts_reduce"}),
+    }
     specs: list[TargetSpec] = []
     for target_id in SINGLETON_TARGET_IDS:
-        compatible = moe_pair - {target_id} if target_id in moe_pair else frozenset()
         features = _STANDARD_COMPONENT_FEATURES
-        if target_id in moe_pair:
+        if target_id in {"moe.fused_experts", "moe.fused_experts_reduce"}:
             features = features - _ARTIFACT_PROVIDER_TARGET_FEATURES
         specs.append(
             TargetSpec(
                 target_id=target_id,
                 kind=TargetKind.SLOT,
                 members=(target_id,),
-                compatible_with=compatible,
+                displaces=displacements.get(target_id, frozenset()),
+                conflicts_with=conflicts.get(target_id, frozenset()),
                 allowed_features=features,
                 contract_ref=_SINGLETON_CONTRACTS[target_id],
             )
@@ -1366,24 +1189,7 @@ def default_target_catalog() -> TargetCatalog:
             ),
         )
     )
-    moe_rule = CompositionRule(
-        schema_version=1,
-        rule_id="sglang.moe.reduce-first.v1",
-        target_ids=tuple(sorted(moe_pair)),
-        precedence=("moe.fused_experts_reduce", "moe.fused_experts"),
-        mode="first_applicable",
-        binding_family_id="sglang.moe.fused-experts.dispatch.v1",
-        binding_contract_digest=canonical_digest(
-            _BINDING_CONTRACT_DOMAIN,
-            {
-                "schema_version": 1,
-                "binding_family_id": "sglang.moe.fused-experts.dispatch.v1",
-                "precedence": ["moe.fused_experts_reduce", "moe.fused_experts"],
-                "mode": "first_applicable",
-            },
-        ),
-    )
-    return TargetCatalog(specs, composition_rules=(moe_rule,))
+    return TargetCatalog(specs)
 
 
 def resolve_target(

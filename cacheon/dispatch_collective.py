@@ -49,6 +49,20 @@ def _selection(coordinator, input_, output, slot, registry):
         or getattr(coordinator, "world_size", size) != size
     ):
         return None
+    if (
+        slot == "collective.all_gather_into_tensor"
+        and (
+            output.shape[0] != input_.shape[0] * size
+            or output.shape[1:] != input_.shape[1:]
+        )
+    ) or (
+        slot == "collective.reduce_scatter_tensor"
+        and (
+            input_.shape[0] != output.shape[0] * size
+            or input_.shape[1:] != output.shape[1:]
+        )
+    ):
+        return None
     descriptor = _collective_call_descriptor(output, group_size=size)
     impl = registry.select(slot, descriptor).impl
     return None if impl is None else (impl, group, size, descriptor)
@@ -74,9 +88,7 @@ def make_all_gather_dispatcher(
         selected = _selection(self, input_, output, slot, registry)
         if selected is None:
             return baseline(self, output, input_)
-        impl, group, size, descriptor = selected
-        if output.shape[0] != input_.shape[0] * size or output.shape[1:] != input_.shape[1:]:
-            return baseline(self, output, input_)
+        impl, group, _, descriptor = selected
         if registry.select(slot, descriptor).impl is not impl:
             raise RuntimeError("all-gather selection changed before commit")
         audit = not _in_cuda_graph() and _audit.sampled()
@@ -108,9 +120,7 @@ def make_reduce_scatter_dispatcher(
         selected = _selection(self, input_, output, slot, registry)
         if selected is None:
             return baseline(self, output, input_)
-        impl, group, size, descriptor = selected
-        if input_.shape[0] != output.shape[0] * size or input_.shape[1:] != output.shape[1:]:
-            return baseline(self, output, input_)
+        impl, group, _, descriptor = selected
         if registry.select(slot, descriptor).impl is not impl:
             raise RuntimeError("reduce-scatter selection changed before commit")
         audit = not _in_cuda_graph() and _audit.sampled()

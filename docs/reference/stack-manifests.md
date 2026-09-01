@@ -159,7 +159,7 @@ selected crowned payload under the current contract.
   cannot reinterpret an older direct-artifact contribution.
 - Entry keys must equal each reference's target ID.
 - Target-spec digests must match the bound catalog context.
-- Active-target composition and displacement are revalidated.
+- Active-target displacement and conflicts are revalidated.
 - Serialized ordering is canonical before a digest or signature is computed.
 
 ## Common rejection cases
@@ -171,7 +171,7 @@ selected crowned payload under the current contract.
 | Artifact-provider registry or registry digest differs | Native admission/build/load policy belongs to another catalog authority |
 | Entry key differs from `ref.target_id` | The mapping tries to relabel a contribution |
 | Target-spec digest differs | Qualification used another semantic contract |
-| Overlapping active targets | Catalog displacement/composition was not applied canonically |
+| Overlapping active targets | Catalog displacement/conflict exclusion was not applied canonically |
 | Proposal reference in a release manifest | Hostile evaluation content crossed the serving boundary |
 | Integration record missing or mismatched | Reviewed-source authority is incomplete |
 | Runtime/base/arena context mismatch | The stack is being reopened under a different environment |

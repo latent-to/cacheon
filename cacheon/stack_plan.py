@@ -23,7 +23,7 @@ from cacheon._strict import require_digest
 
 
 _PLAN_SCHEMA_VERSION = 1
-_PLAN_POLICY_VERSION = "stack-plan.v1"
+_PLAN_POLICY_VERSION = "stack-plan.v2"
 
 
 class StackPlanError(ValueError):
@@ -316,22 +316,25 @@ def _candidate_transition(
         remove: tuple[str, ...] = ()
         displaced: tuple[ContributionRef, ...] = ()
     else:
-        # Directional displacement cannot be inverted.  In particular, an
-        # atomic incumbent is never decomposed by proposing one member.
-        blockers = tuple(
+        # A candidate arm must not retain any incumbent capable of owning the
+        # candidate's live region. This is symmetric at evaluation time even
+        # when catalog width is directional: a narrow challenger removes a
+        # wide incumbent for the comparison; the validator-owned base engine
+        # supplies computation outside the narrow target.
+        # Otherwise runtime priority can time only the incumbent under the
+        # candidate label.
+        candidate_displaces = catalog.displacement_closure(target_id)
+        target_conflicts = catalog.require(target_id).conflicts_with
+        remove = tuple(
             sorted(
                 active_id
                 for active_id in active
-                if target_id in catalog.displacement_closure(active_id)
+                if (
+                    active_id in candidate_displaces
+                    or target_id in catalog.displacement_closure(active_id)
+                    or active_id in target_conflicts
+                )
             )
-        )
-        if blockers:
-            raise StackPlanError(
-                f"target {target_id!r} cannot implicitly decompose active "
-                f"targets {blockers!r}"
-            )
-        remove = tuple(
-            sorted(set(active) & set(catalog.displacement_closure(target_id)))
         )
         displaced = tuple(active[target] for target in remove)
 

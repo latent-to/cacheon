@@ -199,7 +199,7 @@ profiling autotuner tactics, both the deep MoE producer seam and its fused-epilo
 consumer use the stock path. Candidate code cannot affect tactic selection, and those
 calls do not establish candidate firing evidence.
 
-## Atomic targets and composition
+## Atomic targets and exclusion
 
 A slot is a semantic ABI; a reward target is an economic identity. Most current targets are one-to-one singleton projections of slots, but the catalog can register an atomic target spanning multiple slots.
 
@@ -208,7 +208,7 @@ A slot is a semantic ABI; a reward target is an economic identity. Most current 
 - `collective.all_gather_into_tensor`;
 - `collective.reduce_scatter_tensor`.
 
-The catalog explicitly records displacement of the corresponding singleton targets. It also defines first-applicable precedence for the compatible `moe.fused_experts_reduce` and `moe.fused_experts` targets. Packaging order never decides overlap or ownership.
+The catalog explicitly records displacement of the corresponding singleton targets. Wider or conflicting targets cannot coexist at one live boundary: candidate planning removes the incumbent owner before materialization, in either transition direction. Packaging order and runtime first-match behavior never decide overlap or ownership.
 
 See [Product model](product-model.md) and [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
@@ -267,7 +267,7 @@ the following:
   verifier-only until one exists?
 - Do strict-mode receipts and end-to-end qualification prove that the candidate path fired
   without fallback?
-- Has the target catalog encoded overlap, displacement, requirements, and composition
+- Has the target catalog encoded overlap, displacement, requirements, and exclusion
   rather than relying on bundle order?
 
 Passing a unit test without these properties is not sufficient to extend the narrow waist.
