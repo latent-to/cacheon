@@ -271,18 +271,9 @@ def test_all_non_crown_screens_promote_in_fixed_order(tmp_path: Path) -> None:
     )
 
 
-def test_a_stage_that_did_not_decide_parks_the_candidate_instead_of_passing_it(
+def test_a_stage_that_did_not_decide_retries_once_without_passing_it(
     tmp_path: Path,
 ) -> None:
-    """A gate that did not run cannot be spent as if it had passed.
-
-    Promoting on a waived stage puts a candidate in front of the GPU on the
-    strength of a check nobody performed, and the waiver digest replaced the
-    stage's own evidence digest, so afterwards nothing said which gate was
-    skipped. Both ambiguity and overrun now stop the screen at HOLD, keeping
-    the real evidence digest, and an operator releases it.
-    """
-
     binding = _binding(tmp_path / "fail")
     provider = _Provider({"abi": (ScreenGrade.FAIL, 10)})
     receipt = ArenaService(_manifest(), provider).screen(binding)
@@ -293,11 +284,11 @@ def test_a_stage_that_did_not_decide_parks_the_candidate_instead_of_passing_it(
     over_binding = _binding(tmp_path / "overrun", attempt=1)
     timeout = _Provider({"build": (ScreenGrade.PASS, 1_001)})
     overrun = ArenaService(_manifest(), timeout).screen(over_binding)
-    assert overrun.decision is PromotionDecision.HOLD
+    assert overrun.decision is PromotionDecision.RETRY
     assert tuple(row.stage for row in overrun.results) == ("static", "build")
     assert overrun.results[-1].grade is ScreenGrade.NO_DECISION
 
-    # A stage that could not decide is the same: park, do not promote.
+    # The second inconclusive attempt exhausts the bounded retry.
     unavailable = _Provider({"build": (ScreenGrade.NO_DECISION, 10)})
     held = ArenaService(_manifest(), unavailable).screen(
         _binding(tmp_path / "hold", attempt=2)

@@ -669,13 +669,9 @@ class ArenaService:
                 decision = PromotionDecision.REJECT
                 break
             if result.grade is ScreenGrade.NO_DECISION:
-                # A stage that did not decide must never be converted into a
-                # PASS. Waiving it promoted a candidate on a gate that had not
-                # actually run -- and it erased the stage's own evidence digest
-                # behind a waiver digest, so nobody could see which gate was
-                # skipped or why. Park it instead: an operator releases the
-                # hold once they have looked at the cause.
-                decision = PromotionDecision.HOLD
+                decision = self.retry_disposition(
+                    "screen", attempt=candidate.screen_attempt
+                )
                 break
         return ArenaScreenReceipt(
             self.identity,
