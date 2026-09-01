@@ -1003,7 +1003,6 @@ def payments() -> dict[str, Any]:
 @app.get("/api/winners")
 def winners() -> dict[str, Any]:
     con = intake_conn()
-    cutoff = cutoff_block(con)
     passed = rows(con, """
         SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
                r.hotkey, r.block AS submission_block, r.content_hash,
@@ -1012,9 +1011,9 @@ def winners() -> dict[str, Any]:
         JOIN reservations r ON r.reservation_id = sc.reservation_id
         JOIN settlement_qualifications q ON q.reservation_id = sc.reservation_id
         WHERE r.status='qualified' AND r.decision='PASS'
-          AND sc.status!='duplicate_proposal' AND r.block >= ?
+          AND sc.status!='duplicate_proposal'
         GROUP BY sc.reservation_id
-    """, (cutoff,))
+    """)
     con.close()
 
     items = []
