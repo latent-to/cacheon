@@ -377,7 +377,7 @@ def test_held_qualification_does_not_starve_screen_progress() -> None:
     assert status.hold_reason == "transport_hold:worker_infrastructure_result"
 
 
-def test_optional_settlement_stage_runs_only_when_upstream_idle() -> None:
+def test_settlement_runs_before_new_qualification_and_requires_commission() -> None:
     order: list[str] = []
 
     def settle():
@@ -394,9 +394,13 @@ def test_optional_settlement_stage_runs_only_when_upstream_idle() -> None:
         qualification_once=lambda: order.append("qualification") or None,
         settle_once=settle,
         clock=_Clock(),
-    ).tick()
-    assert order == ["qualification", "screen", "settlement"]
-    assert status.phase is SupervisorPhase.SETTLEMENT
+    )
+    assert status.tick().phase is SupervisorPhase.SETTLEMENT
+    assert order == ["settlement"]
+    held = status.tick()
+    assert held.phase is SupervisorPhase.HOLD
+    assert held.hold_reason == "baseline_commission_required"
+    assert order == ["settlement"]
 
 
 def test_untyped_stage_product_is_rejected() -> None:

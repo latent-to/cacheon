@@ -867,7 +867,7 @@ def test_remote_commit_reopens_complete_cpu_inventory_before_any_mutation(
             store.evaluation_stack(service.identity)
 
 
-def test_remote_commit_rejects_wrong_incumbent_and_existing_tree_atomically(
+def test_remote_commit_accepts_completed_result_after_tree_advances(
     tmp_path: Path,
 ) -> None:
     provider = _Provider()
@@ -921,27 +921,28 @@ def test_remote_commit_rejects_wrong_incumbent_and_existing_tree_atomically(
             evidence_inventory=(attempt_ref,),
         )
 
-    with pytest.raises(EvaluationCoordinatorError, match="durable lease"):
-        coordinator.commit_remote_qualification_result(
-            claim,
-            authority_manifest=authority,
-            incumbent_stack=incumbent,
-            incumbent_tree_digest=_h("wrong-tree"),
-            batch=batch,
-            envelope=envelope,
-            evidence_root=root,
-            evidence_inventory=(attempt_ref,),
-        )
+    result = coordinator.commit_remote_qualification_result(
+        claim,
+        authority_manifest=authority,
+        incumbent_stack=incumbent,
+        incumbent_tree_digest=_h("prior-tree"),
+        batch=batch,
+        envelope=envelope,
+        evidence_root=root,
+        evidence_inventory=(attempt_ref,),
+    )
 
     with _store(tmp_path) as store:
         retained = store.get(ids[0])
         stack = store.evaluation_stack(service.identity)
         dispositions = store.qualification_dispositions(ids[0])
         active = store.active_evaluation_leases()
-    assert retained.status == "promoted"
+    assert result == (retained,)
+    assert retained.status == "failed"
     assert stack.tree_digest == _h("authoritative-tree")
-    assert dispositions == ()
-    assert active == (claim.lease,)
+    assert len(dispositions) == 1
+    assert dispositions[0]["decision"] == "FAIL"
+    assert active == ()
 
 
 @pytest.mark.parametrize("lane", ["", "reproduction"])

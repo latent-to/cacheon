@@ -971,7 +971,7 @@ def test_expired_prepared_recovery_holds_before_transport_when_renewal_denied(
     ]
 
 
-def test_dispatcher_holds_when_product_incumbent_differs_from_cpu_owned(
+def test_completed_product_survives_later_incumbent_change(
     tmp_path: Path,
 ) -> None:
     fixtures = _fixtures()
@@ -987,9 +987,14 @@ def test_dispatcher_holds_when_product_incumbent_differs_from_cpu_owned(
         ),
         qualification_incumbent_tree_digest=authority.fixtures._h("other-tree"),
     )
+    with _store(authority) as store:
+        store._db.execute(
+            "UPDATE evaluation_stacks SET generation=1,tree_digest=? WHERE arena_id=?",
+            (authority.fixtures._h("other-tree"), authority.service.identity),
+        )
     outcome = dispatcher.dispatch_once()
-    assert type(outcome) is RecoverableQualificationHold
-    assert "incumbent_changed" in outcome.reason
+    assert type(outcome).__name__ == "EvaluationRun"
+    assert outcome.payload.outcomes[0].decision is QualificationDecision.FAIL
 
 
 def test_completed_no_decision_hold_stays_parked_while_members_are_active(

@@ -191,6 +191,7 @@ class StandingCpuSupervisor:
     stall_timeout_s: float = 3_600.0
     _status: SupervisorStatus = field(init=False, repr=False)
     _last_tick_progressed: bool = field(init=False, repr=False)
+    _commission_required: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not callable(self.screen_once):
@@ -214,6 +215,7 @@ class StandingCpuSupervisor:
             last_progress_unix=float(self.clock()),
         )
         self._last_tick_progressed = False
+        self._commission_required = False
 
     def status(self) -> SupervisorStatus:
         return self._status
@@ -345,26 +347,22 @@ class StandingCpuSupervisor:
         return self._normalize(stage, raw)
 
     def tick(self) -> SupervisorStatus:
-        """Advance at most one unit of work, preferring protected qualification resume.
+        """Advance one unit, settling before a new qualification may claim."""
 
-        Order:
-        1. qualification (resume same-request recovery before claiming new screen work)
-        2. screen FIFO
-        3. optional settlement / weights stages (later handoff gates)
-
-        A HOLD or REQUEUE is not a unit of work and must not consume the tick:
-        one durably held qualification would otherwise starve every later
-        stage (observed on mainnet 2026-08-10 — screens stalled behind a held
-        recovery). The first non-progressing result is surfaced only when no
-        stage progresses, and holds never reset the stall clock.
-        """
-
-        # Qualification first: recover active protected leases after restart.
+        if self._commission_required:
+            return self._observe(
+                SupervisorStageResult(
+                    stage="settlement",
+                    progressed=False,
+                    disposition="commission_required",
+                    hold_reason="baseline_commission_required",
+                )
+            )
         deferred: SupervisorStageResult | None = None
         for stage, callback in (
+            ("settlement", self.settle_once),
             ("qualification", self.qualification_once),
             ("screen", self.screen_once),
-            ("settlement", self.settle_once),
             ("weights", self.weights_once),
         ):
             if callback is None:
@@ -373,6 +371,8 @@ class StandingCpuSupervisor:
             if result is None:
                 continue
             if result.progressed:
+                if stage == "settlement":
+                    self._commission_required = True
                 return self._observe(result)
             if deferred is None:
                 deferred = result
