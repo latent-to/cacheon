@@ -86,6 +86,19 @@ def test_winners_view_labels_relative_and_sglang_columns() -> None:
     assert "sglang_tokens_per_second" in html
 
 
+def test_emission_columns_render_the_chain_alpha_symbol_not_tao() -> None:
+    html = (
+        Path(__file__).parents[1] / "dashboard" / "static" / "index.html"
+    ).read_text()
+
+    assert "emission_alpha_per_day" in html
+    assert "emission_tao_per_day" not in html
+    assert 'esc(d.emission_symbol) + "/day"' in html
+    assert 'esc(d.emission_symbol) + "/d"' in html
+    assert "τ/day" not in html
+    assert "τ/d" not in html
+
+
 def test_conservative_candidate_tokens_per_second_uses_slower_pass() -> None:
     speeds = [
         {"lanes": [{"role": "B", "tokens_per_second": 1900.0},

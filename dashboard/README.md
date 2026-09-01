@@ -80,6 +80,13 @@ stdout into the retained stderr stream, so miner prints and crash diagnostics ar
 both present. Section headers state byte counts, hashes, and whether the 16 MiB
 stream bound truncated the output.
 
+Metagraph emission is denominated in the subnet's own alpha token, so
+`/api/winners` and `/api/miners` report `emission_alpha_per_day` beside an
+`emission_symbol` read from the netuid's on-chain symbol (`ㄷ` for netuid 14).
+The installed bittensor unit table can disagree with the chain, so the UI
+renders the served symbol and never a local one. Only the 1 τ eval-cost fee is
+in TAO.
+
 `/api/winners` reports each contribution twice over: `improvement_pct` is the
 conservative gain over the incumbent it displaced, while
 `cumulative_speedup_over_sglang` compounds the settled gains of a target's

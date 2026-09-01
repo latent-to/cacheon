@@ -349,16 +349,21 @@ class Enrichment:
             sub = bt.Subtensor(network=NETWORK)
             self._subtensor = sub
         mg = sub.metagraph(NETUID)
+        # Emission is denominated in the subnet's own alpha token, not TAO. The
+        # symbol is whatever this netuid registered on chain; the local
+        # bittensor unit table can disagree, so never render it from there.
+        symbol = (self.metagraph or {}).get("emission_symbol") \
+            or str(sub.subnet(NETUID).symbol)
         hotkeys: dict[str, Any] = {}
         for uid in range(len(mg.hotkeys)):
             emission_tempo = float(mg.emission[uid])
             hotkeys[str(mg.hotkeys[uid])] = {
                 "uid": uid,
                 "coldkey": str(mg.coldkeys[uid]),
-                "stake_tao": float(mg.S[uid]),
+                "stake_alpha": float(mg.S[uid]),
                 "incentive": float(mg.incentive[uid]),
-                "emission_tao_per_tempo": emission_tempo,
-                "emission_tao_per_day": emission_tempo * (86400 / (TEMPO_BLOCKS * BLOCK_SECONDS)),
+                "emission_alpha_per_tempo": emission_tempo,
+                "emission_alpha_per_day": emission_tempo * (86400 / (TEMPO_BLOCKS * BLOCK_SECONDS)),
                 "active": bool(mg.active[uid]),
                 "validator_permit": bool(mg.validator_permit[uid]),
             }
@@ -372,6 +377,7 @@ class Enrichment:
             "block": int(mg.block),
             "n": len(mg.hotkeys),
             "owner_coldkey": owner,
+            "emission_symbol": symbol,
             "hotkeys": hotkeys,
         }
         self._kv_set("metagraph", self.metagraph)
@@ -402,6 +408,10 @@ def links_for_address(addr: str) -> dict[str, str]:
 def with_time(block: int) -> dict[str, Any]:
     bt = ENRICHER.block_time(block)
     return {"block": block, "time_unix": bt["unix"], "time_estimated": bt["estimated"]}
+
+
+def emission_symbol() -> str:
+    return str((ENRICHER.metagraph or {}).get("emission_symbol") or "")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -1092,15 +1102,16 @@ def winners() -> dict[str, Any]:
                 "registered": hk.get("registered", False),
                 "uid": hk.get("uid"),
                 "coldkey": hk.get("coldkey"),
-                "emission_tao_per_day": hk.get("emission_tao_per_day"),
+                "emission_alpha_per_day": hk.get("emission_alpha_per_day"),
                 "incentive": hk.get("incentive"),
-                "stake_tao": hk.get("stake_tao"),
+                "stake_alpha": hk.get("stake_alpha"),
                 "metagraph_block": hk.get("metagraph_block"),
             },
         })
     items.sort(key=lambda x: x["passed"]["block"] or 0, reverse=True)
     return {
         "items": items,
+        "emission_symbol": emission_symbol(),
         "pass_total": len(items),
         "note": "Every retained two-PASS contribution earns; crown and hold only describe settlement.",
     }
@@ -1144,9 +1155,9 @@ def miners() -> dict[str, Any]:
             "last_seen": with_time(int(m["last_block"])),
             "registered": hk.get("registered", False),
             "uid": hk.get("uid"),
-            "emission_tao_per_day": hk.get("emission_tao_per_day"),
+            "emission_alpha_per_day": hk.get("emission_alpha_per_day"),
         })
-    return {"items": items}
+    return {"items": items, "emission_symbol": emission_symbol()}
 
 
 @app.get("/api/events")

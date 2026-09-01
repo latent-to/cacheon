@@ -448,7 +448,7 @@ async function viewWinners() {
     <td>${pill(w.reward_claim_status)} ${pill(w.settlement_status)}</td>
     <td>${hc.registered
         ? `<span class="pill ok">uid ${hc.uid}</span>
-           <div class="small">${hc.emission_tao_per_day != null ? hc.emission_tao_per_day.toFixed(4) + " τ/day" : "—"}</div>
+           <div class="small">${hc.emission_alpha_per_day != null ? hc.emission_alpha_per_day.toFixed(4) + " " + esc(d.emission_symbol) + "/day" : "—"}</div>
            <div class="muted small">incentive ${hc.incentive != null ? (hc.incentive * 100).toFixed(2) + "%" : "—"}</div>`
         : '<span class="pill bad">deregistered</span>'}</td>
   </tr>`;});
@@ -473,7 +473,7 @@ async function viewMiners() {
     <td>${m.paid || 0}</td>
     <td>${fmtTime(m.first_seen)}</td>
     <td>${fmtTime(m.last_seen)}</td>
-    <td>${m.emission_tao_per_day != null ? m.emission_tao_per_day.toFixed(4) + " τ/d" : "—"}</td>
+    <td>${m.emission_alpha_per_day != null ? m.emission_alpha_per_day.toFixed(4) + " " + esc(d.emission_symbol) + "/d" : "—"}</td>
   </tr>`);
   return `<h2>Miners (by hotkey)</h2>
     ${table(["Hotkey","Registered","Subs","Crowns","Qualified","Active","Held","Failed / expired","Paid fees","First seen","Last seen","Emission"],
