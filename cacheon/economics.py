@@ -1,10 +1,4 @@
-"""Pure, content-addressed emissions projection.
-
-This module owns no chain client, wallet, database, or settlement transition.  It
-accepts only crowns whose retained evidence has already been reopened by the
-settlement authority and either returns one complete integer weight projection or
-fails without a partial vector.
-"""
+"""Pure, content-addressed emissions projection over reopened PASS evidence."""
 
 from __future__ import annotations
 
@@ -30,9 +24,7 @@ _HOTKEY = re.compile(r"[^\s]{1,256}\Z")
 
 
 class EconomicsError(ValueError):
-    """The policy, authority, or complete reward projection is invalid."""
-
-
+    pass
 def _digest(value: object, field: str) -> str:
     return require_digest(value, field=field, error=EconomicsError)
 
@@ -55,8 +47,6 @@ def _strict(value: object, fields: set[str], name: str) -> dict[str, object]:
 
 @dataclass(frozen=True)
 class EmissionsPolicyManifest:
-    """Validator-consensus parameters for one deterministic reward policy."""
-
     half_life_blocks: int
     discovery_lifetime_blocks: int
     discovery_pool_ppm: int
@@ -190,8 +180,6 @@ class GlobalRewardProjectionContext:
 
 @dataclass(frozen=True)
 class StandingRewardClaim:
-    """One retained two-PASS reward; active rows also identify the current crown."""
-
     arena_digest: str
     target_id: str
     target_spec_digest: str
@@ -423,9 +411,11 @@ class GlobalRewardProjection:
             raise EconomicsError("global standing families are not canonical")
         if tuple(row.hotkey for row in self.weights) != tuple(sorted(row.hotkey for row in self.weights)):
             raise EconomicsError("global weights are not canonical")
-        if len({row.hotkey for row in self.weights}) != len(self.weights) or sum(
-            row.weight_ppm for row in self.weights
-        ) != WEIGHT_PPM:
+        if (
+            len({row.hotkey for row in self.weights}) != len(self.weights)
+            or any(row.weight_ppm <= 0 for row in self.weights)
+            or sum(row.weight_ppm for row in self.weights) != WEIGHT_PPM
+        ):
             raise EconomicsError("global weights are not exactly normalized")
 
     def to_dict(self) -> dict[str, object]:
@@ -474,13 +464,7 @@ def project_global_rewards(
     earning_claims: Iterable[StandingRewardClaim],
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
 ) -> GlobalRewardProjection:
-    """Pool every retained two-PASS contribution before one indivisible vector.
-
-    Each PASS freezes log-relative speedup units and the arena stall
-    multiplier at the proposal's finalized submission block. Credit then decays
-    exponentially with age. Discovery bounties stay in a separate pool and do
-    not reset the arena clock. Absent-hotkey share burns to the validator.
-    """
+    """Pool every retained two-PASS contribution before one indivisible vector."""
 
     if type(policy) is not EmissionsPolicyManifest:
         raise EconomicsError("policy is not exactly typed")
@@ -562,9 +546,6 @@ def project_global_rewards(
                 credit,
             )
         )
-        # Keep the claim and family audit on the original miner. If they
-        # left the metagraph, burn this tick's allocated share to the
-        # validator rather than hold the vector or re-slice other families.
         recipient = (
             claim.hotkey
             if claim.hotkey in eligible
@@ -613,7 +594,9 @@ def project_global_rewards(
         for hotkey, value in _allocate_pool(discovery_by_hotkey, discovery_pool).items():
             combined[hotkey] = combined.get(hotkey, 0) + value
     weights = tuple(
-        HotkeyWeight(hotkey, combined[hotkey]) for hotkey in sorted(combined)
+        HotkeyWeight(hotkey, combined[hotkey])
+        for hotkey in sorted(combined)
+        if combined[hotkey] > 0
     )
     return GlobalRewardProjection(
         policy.digest,

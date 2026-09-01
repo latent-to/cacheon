@@ -405,6 +405,18 @@ def test_empty_stack_zero_credit_and_future_bounty_fail_closed() -> None:
         )
 
 
+def test_sub_ppm_credit_is_retained_but_not_published_as_zero() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog)
+    claims = (
+        _claim(stack, "slot.a", "alice", 1_000_001, crowned_block=100),
+        _claim(stack, "slot.b", "bob", 1_200_000, crowned_block=1_600, evidence="7"),
+    )
+    result = _project(_policy(), catalog, stack, _global_context(1_600), claims)
+    assert len(result.standing) == 2
+    assert result.weights_by_hotkey == {"bob": WEIGHT_PPM}
+
+
 def test_claim_round_trip_and_zero_evidence_are_strict() -> None:
     catalog = _catalog()
     stack = _stack(catalog, ("slot.a",))
