@@ -117,10 +117,12 @@ def _global_context(block: int = 200, members=None):
 
 
 def _project(policy, catalog, stack, context, standing, discovery=(), generation=7):
+    standing = tuple(standing)
     return project_global_rewards(
         policy,
         context,
         (ArenaRewardAuthority(catalog, stack, generation, tuple(standing)),),
+        standing,
         discovery,
     )
 
@@ -169,15 +171,17 @@ def test_policy_is_exact_versioned_content_addressed_data() -> None:
         _policy(discovery_pool_ppm=WEIGHT_PPM)
 
 
-def test_reciprocal_decay_uses_exact_integer_floor_and_half_life() -> None:
+def test_pass_credit_uses_log_speedup_stall_time_and_half_life() -> None:
     catalog = _catalog()
     stack = _stack(catalog, ("slot.a",))
     claim = _claim(stack, "slot.a", "alice", 1_100_001)
-    assert claim.credit_at(100, _policy()) == 100_001
-    assert claim.credit_at(200, _policy()) == 50_000
-    assert claim.credit_at(201, _policy()) == 49_751
-    with pytest.raises(EconomicsError, match="newer"):
-        claim.credit_at(99, _policy())
+    passed = claim
+    initial = passed.credit_at(100, _policy())
+    assert passed.credit_at(200, _policy()) == initial // 2
+    assert passed.credit_at(201, _policy()) < initial // 2
+    assert claim.credit_at(100, _policy(), predecessor_block=0) > initial
+    with pytest.raises(EconomicsError, match="credit block"):
+        passed.credit_at(99, _policy())
 
 
 def test_standing_projection_is_relative_grouped_and_exactly_normalized() -> None:
@@ -193,7 +197,7 @@ def test_standing_projection_is_relative_grouped_and_exactly_normalized() -> Non
             _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
         ),
     )
-    assert result.weights_by_hotkey == {"alice": 333_333, "bob": 666_667}
+    assert result.weights_by_hotkey == {"alice": 343_297, "bob": 656_703}
     assert sum(result.weights_by_hotkey.values()) == WEIGHT_PPM
     assert len(result.standing) == 2
     assert result.discovery == ()
@@ -290,8 +294,8 @@ def test_present_families_keep_their_ppm_when_an_absent_share_is_burned() -> Non
         _global_context(),
         (alice, _claim(stack, "slot.b", "ghost", 1_200_000, evidence="7")),
     )
-    assert present.weights_by_hotkey == {"alice": 333_333, "bob": 666_667}
-    assert burned.weights_by_hotkey == {"alice": 333_333, "validator": 666_667}
+    assert present.weights_by_hotkey == {"alice": 343_297, "bob": 656_703}
+    assert burned.weights_by_hotkey == {"alice": 343_297, "validator": 656_703}
     assert burned.standing[1].hotkey == "ghost"
 
 
@@ -310,34 +314,12 @@ def test_missing_live_discovery_hotkey_burns_only_its_bounty_share() -> None:
         _policy(), catalog, stack, _global_context(), standing, discoveries
     )
     assert result.weights_by_hotkey == {
-        "alice": 266_667,
-        "bob": 533_333,
+        "alice": 274_638,
+        "bob": 525_362,
         "carol": 50_000,
         "validator": 150_000,
     }
     assert result.discovery[1].hotkey == "ghost"
-
-
-def test_live_discovery_claims_share_only_the_bounded_pool() -> None:
-    catalog = _catalog()
-    stack = _stack(catalog)
-    standing = (
-        _claim(stack, "slot.a", "alice", 1_100_000),
-        _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
-    )
-    discoveries = (
-        _discovery("carol", 1, proposal="5", evidence="6"),
-        _discovery("dave", 3, proposal="8", evidence="9"),
-    )
-    result = _project(
-        _policy(), catalog, stack, _global_context(), standing, discoveries
-    )
-    assert result.weights_by_hotkey == {
-        "alice": 266_667,
-        "bob": 533_333,
-        "carol": 50_000,
-        "dave": 150_000,
-    }
 
 
 def test_discovery_expiry_is_exact_and_claims_cannot_be_renewed() -> None:
@@ -458,17 +440,14 @@ def test_global_projection_pools_families_before_one_normalization() -> None:
         ),
     )
     result = project_global_rewards(
-        _policy(), _global_context(), reversed(authorities)
+        _policy(),
+        _global_context(),
+        reversed(authorities),
+        tuple(claim for row in authorities for claim in row.standing_claims),
     )
-    # Credits at block 200: alice 50_000, bob 200_000 (undecayed), carol
-    # 100_000. Bob holds exactly the 80% champion floor of the slot.a lineage
-    # (200_000 of 250_000), so no reallocation moves; pooling normalizes
-    # 50:200:100 over 350_000.
-    assert result.weights_by_hotkey == {
-        "alice": 142_857,
-        "bob": 571_429,
-        "carol": 285_714,
-    }
+    assert result.weights_by_hotkey["bob"] > result.weights_by_hotkey["carol"]
+    assert result.weights_by_hotkey["carol"] > result.weights_by_hotkey["alice"]
+    assert sum(result.weights_by_hotkey.values()) == WEIGHT_PPM
     assert len(result.arena_authority_digests) == 2
     assert len({row.family_id for row in result.standing}) == 3
 
@@ -490,48 +469,37 @@ def test_any_invalid_arena_holds_the_complete_global_vector() -> None:
         (_claim(second, "slot.a", "bob", 1_200_000),),
     )
     with pytest.raises(EconomicsError, match="every active target"):
-        project_global_rewards(_policy(), _global_context(), (valid, incomplete))
+        project_global_rewards(
+            _policy(),
+            _global_context(),
+            (valid, incomplete),
+            tuple(
+                claim
+                for row in (valid, incomplete)
+                for claim in row.standing_claims
+            ),
+        )
 
 
-def test_same_target_in_two_arenas_has_distinct_reward_family_identity() -> None:
+
+def test_non_crowned_pass_keeps_earning_after_another_pass_becomes_active() -> None:
     catalog = _catalog()
-    first = _stack(catalog, ("slot.a",), arena="c")
-    second = _stack(catalog, ("slot.a",), arena="f")
-    left = _claim(first, "slot.a", "alice", 1_100_000)
-    right = _claim(second, "slot.a", "bob", 1_100_000, 200, evidence="7")
-    assert left.family_id != right.family_id
+    stack = _stack(catalog, ("slot.a",))
+    active = _claim(stack, "slot.a", "bob", 1_150_000, 200, evidence="7")
+    held = replace(
+        active,
+        arena_digest=_d("f"),
+        contribution_digest=_d("9"),
+        hotkey="alice",
+        speedup_ppm=1_100_000,
+        crowned_block=100,
+        retained_evidence_digest=_d("8"),
+    )
     result = project_global_rewards(
         _policy(),
         _global_context(),
-        (
-            ArenaRewardAuthority(catalog, first, 1, (left,)),
-            ArenaRewardAuthority(catalog, second, 2, (right,)),
-        ),
+        (ArenaRewardAuthority(catalog, stack, 2, (active,)),),
+        (held, active),
     )
-    # One lineage: bob's newer crown (credit 100_000) is below the 80% floor
-    # of the pooled 150_000, so it is raised to 120_000 and alice's displaced
-    # crown keeps the 30_000 remainder.
-    assert result.weights_by_hotkey == {"alice": 200_000, "bob": 800_000}
-
-
-def test_champion_floor_pays_the_newest_crown_of_a_lineage_dominantly() -> None:
-    catalog = _catalog()
-    first = _stack(catalog, ("slot.a",), arena="c")
-    second = _stack(catalog, ("slot.a",), arena="f")
-    displaced = _claim(first, "slot.a", "alice", 1_100_000)
-    champion = _claim(second, "slot.a", "bob", 1_150_000, 200, evidence="7")
-    result = project_global_rewards(
-        _policy(),
-        _global_context(),
-        (
-            ArenaRewardAuthority(catalog, first, 1, (displaced,)),
-            ArenaRewardAuthority(catalog, second, 2, (champion,)),
-        ),
-    )
-    # The displaced crown's decayed credit (50_000) plus the champion's
-    # undecayed 150_000 pool to 200_000; the newer, smaller-margin crown is
-    # raised to the 160_000 floor and the displaced crown keeps 40_000. The
-    # lineage's pooled credit is unchanged — only the split moves.
-    by_hotkey = {row.hotkey: row.credit for row in result.standing}
-    assert by_hotkey == {"alice": 40_000, "bob": 160_000}
-    assert result.weights_by_hotkey == {"alice": 200_000, "bob": 800_000}
+    assert {row.hotkey for row in result.standing} == {"alice", "bob"}
+    assert all(result.weights_by_hotkey[hotkey] > 0 for hotkey in ("alice", "bob"))

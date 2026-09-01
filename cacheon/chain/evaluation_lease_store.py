@@ -624,7 +624,7 @@ class EvaluationLeaseStoreMixin:
                         )
                     )
                     or (
-                        event.event_type in {"completed", "released"}
+                        event.event_type == "released"
                         and event.finalized_block >= event.expires_block
                     )
                     or (
@@ -847,8 +847,8 @@ class EvaluationLeaseStoreMixin:
         that transition and lease completion.  Completion requires exactly one
         new stage disposition for every ordered member and no dispositions for
         rows outside the cohort, so acknowledging an empty, partial, or widened
-        result is impossible. A stale generation, owner, heartbeat object, or
-        deadline is rejected before any reservation mutation.
+        result is impossible. A completion may win after its deadline only
+        while its exact lease remains active; expiry or reclaim wins its CAS.
         """
 
         if type(lease) is not EvaluationLease:
@@ -868,7 +868,7 @@ class EvaluationLeaseStoreMixin:
                 raise _intake_error(
                     "protected evaluation result requires recovery renewal"
                 )
-        elif self._durably_expire_exact_evaluation_lease_if_due(
+        elif lease.stage != "screen" and self._durably_expire_exact_evaluation_lease_if_due(
             lease, current_block
         ):
             raise _intake_error("evaluation result arrived after lease expiry")

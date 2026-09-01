@@ -207,7 +207,7 @@ const STATUS_TONE = {
   reserved: "mute", deferred: "mute", fetching: "info", transport_retry: "warn",
   held: "warn", no_decision: "warn", failed: "bad", expired: "mute",
   active: "ok", completed: "ok", released: "mute", inactive: "warn",
-  confirmed: "ok", pending: "info",
+  confirmed: "ok", pending: "info", earning: "ok",
 };
 const pill = (s) => `<span class="pill ${STATUS_TONE[s] || "mute"}">${esc(s || "—")}</span>`;
 
@@ -433,11 +433,11 @@ async function viewWinners() {
     return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
     <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div></td>
     <td>${w.improvement_pct != null ? `<b style="color:var(--accent)">+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
-        <div class="muted small">${w.speedup ? w.speedup.toFixed(5) + "× primary" : ""}
+        <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
         ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
-    <td>${fmtTime(w.crowned)}<div class="muted small">block ${blockLink(w.crowned, w.crowned_links)}</div></td>
-    <td>${pill(w.reward_claim_status)}</td>
+    <td>${fmtTime(w.passed)}<div class="muted small">block ${blockLink(w.passed, w.passed_links)}</div></td>
+    <td>${pill(w.reward_claim_status)} ${pill(w.settlement_status)}</td>
     <td>${hc.registered
         ? `<span class="pill ok">uid ${hc.uid}</span>
            <div class="small">${hc.emission_tao_per_day != null ? hc.emission_tao_per_day.toFixed(4) + " τ/day" : "—"}</div>
@@ -446,9 +446,9 @@ async function viewWinners() {
   </tr>`;});
   return `
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
-    <h2>Crowned improvements</h2>
-    ${table(["Improved op","Improvement","Winner hotkey","Crowned","Reward claim","On-chain now (emission)"],
-      rows, "No crowned winners yet.")}`;
+    <h2>Retained PASS rewards</h2>
+    ${table(["Improved op","Conservative improvement","Miner hotkey","PASS confirmed","Reward","On-chain now (emission)"],
+      rows, "No retained PASS rewards yet.")}`;
 }
 
 async function viewMiners() {

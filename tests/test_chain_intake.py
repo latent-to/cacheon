@@ -36,7 +36,7 @@ from cacheon.settlement import (
     SettlementCandidate, SettlementEventType, SettlementQualification,
     plan_settlement,
 )
-from cacheon.stack_identity import sha256_hex
+from cacheon.stack_identity import canonical_digest, sha256_hex
 from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
@@ -1101,6 +1101,24 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
             reopened.reopen_active_crown(candidate.arena_digest, candidate.target_id)
 
 
+def test_retained_pass_is_rewarded_even_when_settlement_holds_it(tmp_path):
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        evidence = store.reopen_settlement_evidence(candidate)
+        store._db.execute(
+            "UPDATE settlement_candidates SET status='held',reason='incumbent_advanced',"
+            "settlement_evidence_digest=? WHERE reservation_id=?",
+            (evidence.digest, candidate.reservation_digest),
+        )
+        claims = store.passed_reward_claims()
+        assert len(claims) == 1
+        assert claims[0].hotkey == candidate.hotkey
+        assert claims[0].retained_evidence_digest == evidence.digest
+
+    with _store(tmp_path) as reopened:
+        assert reopened.passed_reward_claims() == claims
+
+
 def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp_path):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store)
@@ -1131,6 +1149,12 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
                 netuid=SCOPE.netuid,
             )
         assert _policy_metadata(store) is None
+        legacy = POLICY.to_dict()
+        legacy["policy_version"] = "cacheon.emissions.v1.1"
+        store._db.execute(
+            "INSERT INTO metadata(key,value) VALUES('emissions_policy_digest',?)",
+            (canonical_digest("cacheon.economics.policy", legacy),),
+        )
         projection = store.build_weight_projection(
             policy=POLICY,
             context=context,
@@ -1139,6 +1163,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
         )
         assert projection.crown_count == 1
         assert projection.weights_ppm == (("miner", 1_000_000),)
+        assert _policy_metadata(store)["value"] == POLICY.digest
         pending = WeightPublicationRecord(
             projection.digest,
             "pending",

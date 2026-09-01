@@ -26,7 +26,7 @@ already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
 | Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (1 τ each): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
-| Winners | Crowned improvements: which op was improved (short summary), speedup %, when, reward-claim status, whether hotkey is still registered + current emission |
+| Winners | Every retained two-PASS improvement, conservative speedup, settlement status, and current miner emission |
 | Miners | Per-hotkey leaderboard: submissions, crowns, qualified/failed, fees paid, registration + emission |
 | Timeline | Settlement events (CROWN/ADOPTION/HOLD/…) and weight publications journal |
 | System | DB/chain/process/heartbeat health, intake lag |

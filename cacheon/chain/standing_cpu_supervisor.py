@@ -403,8 +403,7 @@ class StandingCpuSupervisor:
 
 def settlement_stage(
     *,
-    store_factory: Callable[[], Any],
-    current_block: Callable[[], int],
+    open_store: Callable[[], tuple[Any, tuple[int, str]]],
     finalized_block_provider: Callable[[], int | tuple[int, str]],
 ) -> Callable[[], SupervisorStageResult | None]:
     """Wrap ``validator_loop._settle_pending`` as one injectable supervisor stage."""
@@ -412,14 +411,17 @@ def settlement_stage(
     def once() -> SupervisorStageResult | None:
         from cacheon.chain.validator_loop import _settle_pending
 
-        with store_factory() as store:
+        store, point = open_store()
+        try:
             if not store.has_pending_settlement():
                 return None
             committed = _settle_pending(
                 store,
-                current_block=int(current_block()),
+                current_block=point[0],
                 finalized_block_provider=finalized_block_provider,
             )
+        finally:
+            store.close()
         if not committed:
             return None
         lease_id = next(iter(committed))
@@ -466,7 +468,7 @@ def run_forever(
     restart_initial_backoff_s: float = 1.0,
     restart_max_backoff_s: float = 60.0,
 ) -> None:
-    """Run supervisor ticks until ``stop`` is set; rebuild after stage failures."""
+    """Run until stopped; a stage exception exits before another paid dispatch."""
 
     if type(supervisor) is not StandingCpuSupervisor or not isinstance(
         stop, threading.Event
@@ -492,12 +494,7 @@ def run_forever(
             )
             if on_status is not None:
                 on_status(supervisor.status())
-            if waiter(backoff):
-                break
-            backoff = min(float(restart_max_backoff_s), backoff * 2.0)
-            # Surface the failure without inventing a reclaim/retry disposition.
-            del exc
-            continue
+            raise
         if on_status is not None:
             on_status(status)
         if status.phase is SupervisorPhase.IDLE:
@@ -759,13 +756,7 @@ def build_standing_supervisor(
         # never sits in the screen/qualification path.
         subtensor = chain.connect(config.settlement_network, retry_forever=True)
         settle_once = settlement_stage(
-            store_factory=partial(
-                RecoverableFinalizedIntakeStore,
-                screen_config.intake_db,
-                screen_config.policy,
-                scope=screen_config.scope,
-            ),
-            current_block=lambda: chain.read_finalized_head(subtensor)[0],
+            open_store=screen_dispatcher.coordinator._open_at_durable_cursor,
             finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
         )
 

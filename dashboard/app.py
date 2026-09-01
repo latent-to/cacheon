@@ -1004,48 +1004,33 @@ def payments() -> dict[str, Any]:
 def winners() -> dict[str, Any]:
     con = intake_conn()
     cutoff = cutoff_block(con)
-    claims = rows(con, """
-        SELECT arena_id, target_id, claim_digest, claim_json, status, event_id
-        FROM standing_reward_claims
-    """)
-    crowned = rows(con, """
+    passed = rows(con, """
         SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
-               r.hotkey, r.block AS submission_block, r.content_hash
+               r.hotkey, r.block AS submission_block, r.content_hash,
+               max(q.retained_block) AS passed_block
         FROM settlement_candidates sc
         JOIN reservations r ON r.reservation_id = sc.reservation_id
-        WHERE sc.status = 'crowned' AND r.block >= ?
-    """, (cutoff,))
-    crown_events = rows(con, """
-        SELECT e.event_json
-        FROM settlement_events e
-        JOIN reservations r ON r.reservation_id = e.reservation_id
-        WHERE e.event_type = 'CROWN' AND r.block >= ?
-        ORDER BY e.sequence
+        JOIN settlement_qualifications q ON q.reservation_id = sc.reservation_id
+        WHERE r.status='qualified' AND r.decision='PASS'
+          AND sc.status!='duplicate_proposal' AND r.block >= ?
+        GROUP BY sc.reservation_id
     """, (cutoff,))
     con.close()
 
-    claim_by_target: dict[str, dict[str, Any]] = {}
-    for c in claims:
-        cj = json.loads(c["claim_json"] or "{}")
-        claim_by_target[cj.get("target_id") or c["target_id"]] = {
-            "status": c["status"], "json": cj}
-
     items = []
-    for row in crowned:
+    for row in passed:
         cj = json.loads(row["candidate_json"] or "{}")
         primary = cj.get("primary") or {}
         repro = cj.get("reproduction") or {}
         target = primary.get("target_id") or cj.get("target_id") or ""
-        claim = claim_by_target.get(target) or {}
-        claim_json = claim.get("json") or {}
-        speedup = safe_float(primary.get("speedup"))
-        speedup_ppm = claim_json.get("speedup_ppm")
-        if speedup is None and speedup_ppm:
-            speedup = speedup_ppm / 1e6
+        speeds = tuple(filter(None, (
+            safe_float(primary.get("speedup")),
+            safe_float(repro.get("speedup")),
+        )))
+        speedup = min(speeds) if speeds else None
         hotkey = row["hotkey"]
         hk = ENRICHER.hotkey_info(hotkey)
-        crowned_block = int(claim_json.get("crowned_block")
-                            or cj.get("finalized_block") or 0)
+        passed_block = max(int(row["passed_block"] or 0), int(row["submission_block"]))
         items.append({
             "reservation_id": row["reservation_id"],
             "hotkey": hotkey,
@@ -1054,11 +1039,13 @@ def winners() -> dict[str, Any]:
             "target_summary": target_summary(target),
             "speedup": speedup,
             "improvement_pct": (speedup - 1) * 100 if speedup else None,
+            "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
-            "crowned": with_time(crowned_block),
-            "crowned_links": links_for_block(crowned_block),
+            "passed": with_time(passed_block),
+            "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
-            "reward_claim_status": claim.get("status") or "none",
+            "reward_claim_status": "earning",
+            "settlement_status": row["status"],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
                 "uid": hk.get("uid"),
@@ -1069,12 +1056,11 @@ def winners() -> dict[str, Any]:
                 "metagraph_block": hk.get("metagraph_block"),
             },
         })
-    items.sort(key=lambda x: x["crowned"]["block"] or 0, reverse=True)
+    items.sort(key=lambda x: x["passed"]["block"] or 0, reverse=True)
     return {
         "items": items,
-        "crown_events_total": len(crown_events),
-        "note": ("Reward claims marked 'inactive' are recorded but not yet paying: "
-                 "miner incentive has not been switched on in published weights."),
+        "pass_total": len(items),
+        "note": "Every retained two-PASS contribution earns; crown and hold only describe settlement.",
     }
 
 

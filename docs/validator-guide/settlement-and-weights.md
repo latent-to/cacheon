@@ -126,24 +126,18 @@ The event journal is append-only and digest chained. Event types have distinct j
 Do not infer event meaning from a miner bundle name or the final row status. Reopen the
 event, candidate pair, evidence receipt, and resulting stack state as one authority.
 
-## Legacy V1 standing reward families
+## Legacy V1 PASS rewards
 
-Every active registered target defines one family. A singleton target owns its slot; an
-atomic target owns its complete member set and suppresses explicitly overlapping
-singleton families while active.
+Every distinct registered contribution with two independently bound PASSes earns,
+including a settlement `HOLD`. Crown changes never invalidate or rerun completed
+PASS/FAIL results. The projector derives this history from retained settlement
+candidates and qualification evidence rather than a second reward table.
 
-Credit comes from marginal improvement accepted by a two-PASS pair satisfying
-the seven digest-distinctness checks. The exact conversion to integer policy
-units, the standing-decay equation, and the champion floor that pays the most
-recently crowned claim of a target lineage at least 80% of the lineage's pooled
-credit are defined in [Legacy V1](../reference/emissions-policy.md#legacy-v1).
-
-Retired or neutralized contributions receive no standing credit. Engine-stack
-packaging, integration, and release do not create additional reward families.
-Settlement initializes the standing claim's `crowned_block` from the proposal's
-finalized submission block, not from settlement time, so delayed qualification
-does not reset reward age. Discovery claims use the same finalized submission
-block as `awarded_block` for their bounded lifetime.
+Credit uses logarithmic speedup, a submission-time stall multiplier, and
+exponential half-life decay as defined in
+[Legacy V1](../reference/emissions-policy.md#legacy-v1). The existing
+`crowned_block` wire field carries the finalized submission block for compatibility;
+evaluation delay cannot reset reward age. Duplicate packaging earns once.
 
 ## Legacy V1 discovery bounties
 
@@ -154,8 +148,8 @@ promotion, integration, or release cannot renew the same bounty.
 
 ## Legacy V1 global projection
 
-The reward builder reopens every active arena stack and every required standing claim,
-then binds:
+The reward builder reopens every retained PASS pair plus the active stacks and
+standing claims, then binds:
 
 - chain genesis scope and netuid;
 - validator hotkey;
@@ -166,11 +160,9 @@ then binds:
 - an exact, positive integer-ppm vector satisfying the normative
   [Legacy V1](../reference/emissions-policy.md#legacy-v1) total.
 
-If an active family is stale, incompatible, missing, or unreopenable, the complete
-projection is held. Its share is never silently redistributed. If the claimant
-hotkey is absent from the bound metagraph, that family's allocated share is
-published to the validator hotkey for this tick; other families keep the ppm they
-would have received if the claimant were still registered.
+Missing or corrupt PASS/standing evidence holds the complete projection. An absent
+claimant's share goes to the validator for that tick and returns if the claimant
+re-registers.
 
 Projection starts from an exact finalized metagraph context. Immediately before signing,
 the reconciler refreshes finalized authority. A later finalized height is acceptable only
@@ -180,14 +172,11 @@ and retains a hold. The journal still represents several finalized reads rather 
 atomic substrate transaction, so confirmation depends on the retained chronology and
 exact vector readback.
 
-Projection is global across every retained crowned arena, not “one `set-weights` call per
-target.” Generation-zero staging arenas do not enter the reward projection, and an active
-claim naming one fails closed. The builder requires catalog coverage for every crowned
-evaluation stack, reopens the evidence behind every active standing and discovery claim,
-binds the emissions-policy digest on first successful construction, and refuses a later
-policy change against the same authority. Numeric policy arguments are required
-operator/validator-set configuration; they are not hidden defaults or empirically
-calibrated by the code.
+Projection is global, not one `set-weights` call per target. Generation-zero arenas
+may contribute retained PASS history but do not become active stack authorities. The
+builder requires catalog coverage for every crowned stack and binds the policy digest.
+The v1.1 binding advances to v1.3 only with identical numeric policy fields; unrelated
+policy changes remain refused.
 
 ## Dry run
 

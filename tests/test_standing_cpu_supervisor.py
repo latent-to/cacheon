@@ -254,11 +254,8 @@ def test_run_forever_prints_exact_stage_error(capsys) -> None:
         clock=_Clock(),
     )
 
-    def wait(_seconds: float) -> bool:
-        stop.set()
-        return True
-
-    run_forever(supervisor, stop, wait=wait)
+    with pytest.raises(StandingCpuSupervisorError, match="exact boom"):
+        run_forever(supervisor, stop)
     assert (
         "STANDING-CPU-SUPERVISOR-STAGE-ERROR: stage 'qualification' failed "
         "closed without a typed disposition: TimeoutError: exact boom"
@@ -414,14 +411,11 @@ def test_untyped_stage_product_is_rejected() -> None:
 
 def test_settlement_and_weights_stages_wire_into_supervisor() -> None:
     class _Store:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
         def has_pending_settlement(self):
             return True
+
+        def close(self):
+            pass
 
     committed = {"lease": _d("settlement-plan")}
 
@@ -431,8 +425,7 @@ def test_settlement_and_weights_stages_wire_into_supervisor() -> None:
     validator_loop._settle_pending = lambda store, **kwargs: committed
     try:
         settle = settlement_stage(
-            store_factory=_Store,
-            current_block=lambda: 100,
+            open_store=lambda: (_Store(), (100, _d("finalized"))),
             finalized_block_provider=lambda: 100,
         )
         status = StandingCpuSupervisor(
