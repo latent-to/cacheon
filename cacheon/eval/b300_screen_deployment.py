@@ -1,14 +1,4 @@
-"""Commission one sealed B300/TP4 screen worker from pod-owned authorities.
-
-This is deployment composition, not a generic plugin interface.  It accepts a
-fixed set of validator-owned JSON authorities, provisions exactly the selected
-four-GPU lane, emits three canonical artifacts at fixed names, and later
-reconstructs the same in-process service for the authenticated pod adapter.
-
-Candidate data cannot select a Python module, class, command, argument, engine
-option, host path, or output path through this module.  The only executable
-authorities are the concrete Cacheon adapters assembled below.
-"""
+"""Commission the sealed B300/TP4 screen worker from pod-owned authorities."""
 
 from __future__ import annotations
 
@@ -385,7 +375,6 @@ def _device_policy(gpus: tuple[GPUConfiguration, ...]) -> DeviceStatePolicy:
         required_consecutive_idle_samples=2,
         poll_interval_s=0.05,
         ready_poll_interval_s=0.05,
-        drain_timeout_s=180.0,
         maximum_samples=1024,
     )
 

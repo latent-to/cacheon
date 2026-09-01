@@ -196,6 +196,7 @@ def test_materialize_and_replay_exact_service_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths, gpus, ready = _case(tmp_path)
+    assert deployment._device_policy(gpus[:4]).drain_timeout_s == 300.0
     result = deployment.materialize_b300_screen_identities(
         **paths,
         gpu_provisioner=lambda selected, *, deadline: gpus,
