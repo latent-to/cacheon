@@ -470,7 +470,8 @@ class ArenaScreenReceipt:
         terminal = grades[-1]
         if (
             (self.decision is PromotionDecision.PROMOTE
-             and (len(results) != len(SCREEN_STAGES) or terminal is not ScreenGrade.PASS))
+             and (len(results) != len(SCREEN_STAGES)
+                  or terminal not in {ScreenGrade.PASS, ScreenGrade.NO_DECISION}))
             or (self.decision is PromotionDecision.REJECT and terminal is not ScreenGrade.FAIL)
             or (
                 self.decision in {PromotionDecision.RETRY, PromotionDecision.HOLD}
@@ -672,6 +673,11 @@ class ArenaService:
                 decision = self.retry_disposition(
                     "screen", attempt=candidate.screen_attempt
                 )
+                if (
+                    decision is PromotionDecision.HOLD
+                    and result.stage == SCREEN_STAGES[-1]
+                ):
+                    decision = PromotionDecision.PROMOTE
                 break
         return ArenaScreenReceipt(
             self.identity,

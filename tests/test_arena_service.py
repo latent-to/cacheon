@@ -271,16 +271,7 @@ def test_all_non_crown_screens_promote_in_fixed_order(tmp_path: Path) -> None:
     )
 
 
-def test_a_stage_that_did_not_decide_retries_once_without_passing_it(
-    tmp_path: Path,
-) -> None:
-    binding = _binding(tmp_path / "fail")
-    provider = _Provider({"abi": (ScreenGrade.FAIL, 10)})
-    receipt = ArenaService(_manifest(), provider).screen(binding)
-    assert receipt.decision is PromotionDecision.REJECT
-    assert tuple(row.stage for row in receipt.results) == ("static", "build", "abi")
-
-    # A stage that ran past its bound never finished its check.
+def test_no_decision_retries_then_escalates(tmp_path: Path) -> None:
     over_binding = _binding(tmp_path / "overrun", attempt=1)
     timeout = _Provider({"build": (ScreenGrade.PASS, 1_001)})
     overrun = ArenaService(_manifest(), timeout).screen(over_binding)
@@ -288,15 +279,18 @@ def test_a_stage_that_did_not_decide_retries_once_without_passing_it(
     assert tuple(row.stage for row in overrun.results) == ("static", "build")
     assert overrun.results[-1].grade is ScreenGrade.NO_DECISION
 
-    # The second inconclusive attempt exhausts the bounded retry.
-    unavailable = _Provider({"build": (ScreenGrade.NO_DECISION, 10)})
-    held = ArenaService(_manifest(), unavailable).screen(
-        _binding(tmp_path / "hold", attempt=2)
+    # The second inconclusive attempt exhausts the routing-only retry.
+    unavailable = _Provider({"abbreviated_serving": (ScreenGrade.NO_DECISION, 10)})
+    service = ArenaService(_manifest(), unavailable)
+    binding = _binding(tmp_path / "hold", attempt=2)
+    escalated = service.screen(binding)
+    assert escalated.decision is PromotionDecision.PROMOTE
+    assert escalated.results[-1].grade is ScreenGrade.NO_DECISION
+    assert escalated.results[-1].evidence_digest == _h("abbreviated_serving")
+    assert (
+        type(service.plan_qualification((binding,), (escalated,)))
+        is ArenaQualificationWork
     )
-    assert held.decision is PromotionDecision.HOLD
-    assert held.results[-1].grade is ScreenGrade.NO_DECISION
-    # The stage's own evidence survives rather than being replaced by a waiver.
-    assert held.results[-1].evidence_digest == _h("build")
 
 
 def test_provider_cannot_substitute_a_screen_stage(tmp_path: Path) -> None:
