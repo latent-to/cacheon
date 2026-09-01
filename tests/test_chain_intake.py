@@ -1512,15 +1512,15 @@ def test_sqlite_weight_journal_reopen_rejects_corrupt_head_projection(tmp_path):
 
 
 def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
-    """No automatic path reopens a hold: a rerun costs a full GPU evaluation.
-
-    A qualification hold means the stage burned a run and produced no verdict.
-    Re-running it changes nothing the validator can observe, so the row stays
-    held until a person has looked at why.
-    """
+    """A released qualification hold resumes after its retained screen."""
 
     with _store(tmp_path) as store:
         row = _reserve_one(store)
+        _publish(
+            store, row.reservation_id, _fingerprint("target.a", "slot.a"),
+            digest="d" * 64, root="/published/a",
+        )
+        _promote(store, row.reservation_id)
         store.mark_held(
             row.reservation_id, "remote_qualification_hold:legacy_no_decision"
         )
@@ -1529,6 +1529,7 @@ def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
         assert not hasattr(store, "mark_hold_retry_exhausted")
         assert store.get(row.reservation_id).status == "held"
 
-        assert store.release_hold(
+        released = store.release_hold(
             row.reservation_id, reason="operator fixed the cause"
-        ).status != "held"
+        )
+        assert (released.status, released.screen_status) == ("promoted", "promote")

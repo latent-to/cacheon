@@ -3507,6 +3507,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             ).fetchone()["n"]
             status = (
                 "reproduction_pending" if reproductions == 1
+                else "promoted" if row.screen_status == "promote"
                 else "published" if row.publication_digest
                 else "transport_retry"
             )
