@@ -219,6 +219,20 @@ not safely hot-swappable. They receive a typed screen waiver and proceed to
 dedicated qualification. A waiver and a screen promotion are routing products,
 not qualification evidence.
 
+### Candidate time budget in the resident screen (2026-09-02)
+
+Each candidate read in the resident screen is bounded by
+`max(300 s, 10 × the latest stock read)` on the same engine and prompts
+(`ScreenPolicy.candidate_time_multiple`, `candidate_time_floor_s`). A read
+that outlives its budget is raised as a candidate failure and graded as a
+terminal screen FAIL with a receipt reason starting `candidate_timeout:`.
+The session's absolute batch timeout is unchanged and still classifies as
+infrastructure when it fires outside a candidate read. Motivation: on
+2026-09-02 a mainnet `moe.fused_experts` bundle whose prefill path was a
+per-expert Python dequantization loop ran for the whole 1800 s batch timeout
+twice, surfaced as `remote_screen_infrastructure`, re-held, and burned the
+release cap; four ranks were stack-dumped mid-read to attribute it.
+
 ### One workload authority (2026-08-21)
 
 Until 2026-08-21 the manifest declared a hand-written two-regime workload

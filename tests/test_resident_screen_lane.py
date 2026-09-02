@@ -90,7 +90,7 @@ class FakeResidentSession:
             1,
         )
 
-    def execute_batch(self, prompts, *, canary: bool = False):
+    def execute_batch(self, prompts, *, canary: bool = False, timeout_s=None):
         assert not canary or self.active is None
         tokens = 1000
         if self.active is None:
@@ -136,7 +136,7 @@ class BlockingResidentSession(FakeResidentSession):
         self.release = release
         self.entered = threading.Event()
 
-    def execute_batch(self, prompts, *, canary: bool = False):
+    def execute_batch(self, prompts, *, canary: bool = False, timeout_s=None):
         self.entered.set()
         assert self.release.wait(timeout=5.0)
         return super().execute_batch(prompts, canary=canary)
