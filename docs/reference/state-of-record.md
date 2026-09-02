@@ -231,7 +231,21 @@ infrastructure when it fires outside a candidate read. Motivation: on
 2026-09-02 a mainnet `moe.fused_experts` bundle whose prefill path was a
 per-expert Python dequantization loop ran for the whole 1800 s batch timeout
 twice, surfaced as `remote_screen_infrastructure`, re-held, and burned the
-release cap; four ranks were stack-dumped mid-read to attribute it.
+release cap; four ranks were stack-dumped mid-read to attribute it. Proven on
+the mainnet pod the same day under release `3d27775e`: that bundle reached a
+terminal FAIL in 10 min 21 s with reason
+`candidate_timeout: candidate read exceeded 364s (10x the 36.4s stock read,
+floor 300s)`, and the standing owner moved to the next reservation.
+
+### Isolated eager screen mode deleted (2026-09-02)
+
+`B300BuildABIGraphScreenAdapter` no longer carries an `isolated` execution
+mode. The per-candidate eager and graph OCI sessions, their slot-audit witness
+and graph observation evidence, and the eager half of `B300ScreenExecutionPlan`
+were deleted; the ABI and graph rows are always resident carrier deferrals.
+No commissioned deployment had selected the isolated mode since the resident
+lane was registered. The coordinator identity digest keeps the literal
+`execution_mode: resident`, so sealed screen deployments replay unchanged.
 
 ### One workload authority (2026-08-21)
 

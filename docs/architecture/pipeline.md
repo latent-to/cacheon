@@ -125,12 +125,12 @@ to route work: a promising result advances to qualification and a clearly uncomp
 stable result may be rejected under the registered screen policy. It cannot create a
 qualification PASS, crown, settlement speedup, or reward claim.
 
-For a standing resident worker, the ordered ABI and graph screen rows can be explicit
-carrier deferrals: the build product is reopened in those positions, while the subsequent
-resident swap acknowledgement and read perform the actual all-rank registration and graph
-recapture without unloading the stock model. Those deferrals must never be interpreted as
-qualification correctness evidence. The isolated qualification audit and numerical judge
-remain mandatory before a candidate can PASS or crown.
+The ordered ABI and graph screen rows are carrier deferrals: the build product is reopened
+in those positions, while the subsequent resident swap acknowledgement and read perform the
+actual all-rank registration and graph recapture without unloading the stock model. The
+earlier per-candidate eager/graph engine mode for those rows was deleted on 2026-09-02.
+Those deferrals must never be interpreted as qualification correctness evidence. The
+isolated qualification audit and numerical judge remain mandatory before a PASS or crown.
 
 Some contribution classes cannot satisfy the hot-swap contract. Direct AOT artifacts,
 dependency patches, native rebuilds, and setup hooks receive an explicit screen waiver
