@@ -37,6 +37,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-snapshot-verify` | validator | recovery verification | Download and semantically reopen one snapshot, optionally into fresh staging |
 | `chain-archive-schema3-hold` | validator | durable state transition | Terminally archive one exact legacy schema-3 reproduction hold |
 | `chain-release-hold` | validator | durable state transition | Return one held or no-decision reservation to its queue under a stated reason |
+| `chain-incumbent-authority` | validator operator | commission input | Write the next commission's incumbent authority (the settled crown's stack plus its retained bundle bytes) from the durable store |
 | `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation, or run the subnet-owner burn bypass |
 | `mint-push-credentials` | operator | weight-share push auth | Create/rotate HMAC secrets for eval → serve-weights |
 | `mint-weight-gateway` | operator | weight-share deploy | Create a dedicated HTTP authority wallet (and optional push credentials) for serve-weights |
@@ -506,6 +507,31 @@ python -m cacheon.cli chain-archive-schema3-hold \
 This is a terminal, evidence-preserving disposition for one exact legacy
 schema-3 single-PASS hold. It does not qualify, reproduce, release, crown, or
 publish weights. Current-schema work must use the normal authority path.
+
+### `chain-incumbent-authority`
+
+```bash
+python -m cacheon.cli chain-incumbent-authority \
+  --network <network> --netuid <netuid> \
+  --intake-db chain_intake/intake.sqlite3 \
+  --output /absolute/new/incumbent-authority
+```
+
+Writes the directory the next commission measures against, from the store
+rather than from an operator: `incumbent-stack.json` is the byte-for-byte
+durable evaluation stack of the arena named by the newest `STACK_TRANSITION`
+settlement event (the settled crown), `sources/<artifact_digest>/` is a
+read-only copy of each proposal entry's bundle reopened from the reservation
+publication the intake retained at admission, and `incumbent-authority.json`
+records the arena, generation, stack and tree digests, transition event,
+settlement sequence, and every source's reservation and publication digest.
+The output must not exist; the directory is built beside it and renamed into
+place only after every copy re-hashes to its crowned artifact digest. A store
+without a settled crown, a stack still at genesis, an integrated entry, a
+missing or tampered publication, or any non-regular file refuses before
+writing. The command opens the store exclusively, so the intake must be
+stopped for its few seconds, exactly like `chain-release-hold`. It never
+signs, settles, crowns, or touches the pod.
 
 ### `chain-release-hold`
 
