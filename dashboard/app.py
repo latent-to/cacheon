@@ -1096,7 +1096,15 @@ def winners() -> dict[str, Any]:
             "passed": with_time(passed_block),
             "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
-            "reward_claim_status": "earning",
+            "reward_claim_status": (
+                "earning"
+                if row["status"] == "crowned"
+                else (
+                    "awaiting_settlement"
+                    if row["status"] in {"pending", "leased"}
+                    else "stale"
+                )
+            ),
             "settlement_status": row["status"],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
@@ -1113,7 +1121,10 @@ def winners() -> dict[str, Any]:
         "items": items,
         "emission_symbol": emission_symbol(),
         "pass_total": len(items),
-        "note": "Every retained two-PASS contribution earns; crown and hold only describe settlement.",
+        "note": (
+            "Only settled CROWN contributions earn. Pending pairs await settlement; "
+            "held measurements are stale and must be recomputed after recommission."
+        ),
     }
 
 

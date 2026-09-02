@@ -126,12 +126,18 @@ The event journal is append-only and digest chained. Event types have distinct j
 Do not infer event meaning from a miner bundle name or the final row status. Reopen the
 event, candidate pair, evidence receipt, and resulting stack state as one authority.
 
-## Legacy V1 PASS rewards
+## Legacy V1 CROWN rewards
 
-Every distinct registered contribution with two independently bound PASSes earns,
-including a settlement `HOLD`. Crown changes never invalidate or rerun completed
-PASS/FAIL results. The projector derives this history from retained settlement
-candidates and qualification evidence rather than a second reward table.
+Two independently bound PASSes make a contribution eligible for settlement; they
+do not make it an earning claim. Only the settlement `CROWN` earns. When that
+transition advances the incumbent, other unresolved qualification products bound
+to the superseded stack become stale. The replacement commission archives and
+requeues those products before claiming new work. Compatible non-crown screen
+receipts remain available, while qualification is repeated against the new
+baseline. A completed remote product that was retained across the boundary is
+released through a digest-bound stale-incumbent recovery event before it can be
+imported. The projector derives crown history from retained settlement candidates
+and qualification evidence rather than a second reward table.
 
 Credit uses logarithmic speedup, a submission-time stall multiplier, and
 exponential half-life decay as defined in
@@ -148,8 +154,8 @@ promotion, integration, or release cannot renew the same bounty.
 
 ## Legacy V1 global projection
 
-The reward builder reopens every retained PASS pair plus the active stacks and
-standing claims, then binds:
+The reward builder reopens every retained crowned PASS pair plus the active stacks
+and standing claims, then binds:
 
 - chain genesis scope and netuid;
 - validator hotkey;

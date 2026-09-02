@@ -972,7 +972,7 @@ def test_expired_prepared_recovery_holds_before_transport_when_renewal_denied(
     ]
 
 
-def test_completed_product_survives_later_incumbent_change(
+def test_completed_product_is_requeued_after_incumbent_change(
     tmp_path: Path,
 ) -> None:
     fixtures = _fixtures()
@@ -994,8 +994,12 @@ def test_completed_product_survives_later_incumbent_change(
             (authority.fixtures._h("other-tree"), authority.service.identity),
         )
     outcome = dispatcher.dispatch_once()
-    assert type(outcome).__name__ == "EvaluationRun"
-    assert outcome.payload.outcomes[0].decision is QualificationDecision.FAIL
+    assert type(outcome).__name__ == "RecoverableQualificationRequeue"
+    assert outcome.outcome.decision == "NO_DECISION"
+    assert outcome.outcome.failure_code == "incumbent_changed"
+    with _store(authority) as store:
+        assert store.pending_qualification_recovery() is None
+        assert store.promoted()
 
 
 def test_first_claim_installs_the_commissioned_genesis_incumbent(

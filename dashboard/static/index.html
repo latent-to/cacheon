@@ -207,6 +207,7 @@ const STATUS_TONE = {
   held: "warn", no_decision: "warn", failed: "bad", expired: "mute",
   active: "ok", completed: "ok", released: "mute", inactive: "warn",
   confirmed: "ok", pending: "info", earning: "ok",
+  awaiting_settlement: "info", stale: "warn",
 };
 const pill = (s) => `<span class="pill ${STATUS_TONE[s] || "mute"}">${esc(s || "—")}</span>`;
 

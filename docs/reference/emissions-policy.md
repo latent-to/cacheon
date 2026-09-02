@@ -22,9 +22,10 @@ durable evidence remain reopenable from Git history and the reserved schema.
 
 ## Legacy V1
 
-Every independently reproduced registered PASS earns from its retained
-qualification pair, whether settlement crowned or held it. A later crown changes
-the evaluation baseline but does not erase, rerun, or retire an earlier PASS.
+Every independently reproduced registered PASS is eligible for settlement, but
+only a settled `CROWN` earns from its retained qualification pair. A later crown
+changes the evaluation baseline; unresolved measurements against the superseded
+baseline are archived and rerun after the replacement commission.
 Duplicate packaging of the same contribution earns once.
 
 For speedup `s > 1`, finalized submission block `b`, the preceding distinct PASS
@@ -37,8 +38,10 @@ credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - b) / h) × 10^12)
 
 Submission time, not evaluation completion time, controls age and stall credit.
 Logarithmic units make compounded gains path-independent. Policy version
-`cacheon.emissions.v1.3` replaces the v1.1 champion floor; an existing v1.1
-binding moves forward automatically only when all numeric policy fields match.
+`cacheon.emissions.v1.4` makes settlement `CROWN` the earning boundary and
+replaces v1.3's retained two-PASS eligibility. Existing v1.1 or v1.3 bindings
+move forward only when all numeric policy fields match and the operator
+explicitly deploys the v1.4 producer.
 
 The active standing claim still validates the current evaluation stack. Reward
 history is derived from existing settlement candidates and their two retained
@@ -50,9 +53,9 @@ A discovery qualification can create one non-renewable bounded claim. It does no
 install an evaluation-stack contribution or create a standing family. Duplicate
 packaging, promotion, integration, or release cannot renew that claim.
 
-The projector reopens every PASS pair, active stack, standing claim, and discovery
-claim, binds finalized chain scope and membership, aggregates by hotkey, and
-normalizes one positive integer-ppm vector totaling 1,000,000.
+The projector reopens every crowned PASS pair, active stack, standing claim, and
+discovery claim, binds finalized chain scope and membership, aggregates by hotkey,
+and normalizes one positive integer-ppm vector totaling 1,000,000.
 
 ### All-uncrowned bootstrap
 

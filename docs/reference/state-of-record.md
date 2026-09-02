@@ -543,11 +543,17 @@ either the live V1 offer or the explicitly configured crownless burn offer to
 the gateway; it never signs. Configuration must name `enable_weights` and
 `weights_stage_config` consistently or startup fails closed.
 
-The current `cacheon.emissions.v1.3` projection rewards every distinct retained
-two-PASS contribution, including settlement holds. Credit uses logarithmic
-speedup, submission-time stall bonus, and exponential decay; a later crown does
-not erase or rerun an earlier PASS. Matching v1.1 policy bindings advance
-automatically, while any numeric policy change remains refused.
+The current `cacheon.emissions.v1.4` projection rewards every distinct settled
+`CROWN` contribution. A two-PASS pair is not yet earning authority: settlement
+selects one winner for the incumbent, and measurements held by that transition
+are stale. After the winner is manually commissioned, the qualification
+dispatcher archives those stale products and requeues their reservations against
+the new baseline while preserving a compatible promoted screen. A retained
+remote qualification product naming the old stack is released through a
+digest-bound recovery transition instead of being imported. Credit uses
+logarithmic speedup, submission-time stall bonus, and exponential decay.
+Matching v1.1 policy bindings advance automatically, while any numeric policy
+change remains refused.
 
 When a valid active claimant is absent from the current metagraph, that
 family's allocated ppm is sent to the validator hotkey for the tick rather than

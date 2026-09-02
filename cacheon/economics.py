@@ -14,7 +14,7 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
 POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "cacheon.emissions.v1.3"
+POLICY_VERSION = "cacheon.emissions.v1.4"
 WEIGHT_PPM = 1_000_000
 CREDIT_SCALE = 1_000_000_000_000
 STALL_SCALE_BLOCKS = 1_800
@@ -464,7 +464,7 @@ def project_global_rewards(
     earning_claims: Iterable[StandingRewardClaim],
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
 ) -> GlobalRewardProjection:
-    """Pool every retained two-PASS contribution before one indivisible vector."""
+    """Pool the store-selected earning claims before one indivisible vector."""
 
     if type(policy) is not EmissionsPolicyManifest:
         raise EconomicsError("policy is not exactly typed")
