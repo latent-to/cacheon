@@ -397,9 +397,33 @@ class RecoverableQualificationDispatcher:
             store.close()
             raise
 
+    def _bind_commissioned_incumbent(
+        self, store: RecoverableFinalizedIntakeStore
+    ) -> None:
+        """Install or verify the commissioned incumbent before any claim.
+
+        The store installs one genesis incumbent per arena, reopens identical
+        state, and refuses a different one. A commission pinned to a superseded
+        baseline therefore fails here, before a lease, request, publication, or
+        GPU action exists, rather than at settlement after the paid run; a new
+        arena receives its durable stack row from its first commissioned claim.
+        """
+
+        try:
+            store.initialize_evaluation_stack(
+                self.qualification_incumbent_stack,
+                tree_digest=self.qualification_incumbent_tree_digest,
+            )
+        except IntakeError as exc:
+            raise RecoverableQualificationDispatcherError(
+                "commissioned qualification incumbent differs from the durable "
+                f"evaluation stack; recommission before dispatching: {exc}"
+            ) from exc
+
     def _claim_or_reopen(self) -> _RecoveryClaim | None:
         store, point = self._open_store()
         try:
+            self._bind_commissioned_incumbent(store)
             recovery = store.pending_qualification_recovery()
             if recovery is None:
                 recovery = store.claim_recoverable_qualification(

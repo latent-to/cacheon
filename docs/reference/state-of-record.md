@@ -182,6 +182,16 @@ notice is
 `attention.msa_block_score` binds the pinned `_decode_score_kernel`; candidate
 code fills paged per-index-head scores while stock code retains top-k and attend.
 
+On 2026-09-02 the recoverable qualification dispatcher began installing or
+verifying the commissioned incumbent against the durable evaluation stack
+before any claim: a commission pinned to a superseded baseline fails before a
+lease or GPU request exists, and a new arena receives its genesis stack row
+from its first commissioned claim instead of failing at its first PASS commit.
+The gap was reached on mainnet the same day: reservation `69f50573` passed
+qualification at 1.0827x on the recommissioned arena, and the standing owner
+rejected the result with "evaluation stack is not initialized" because no
+remote-path caller had created the arena's row since `e1c77204`.
+
 The closed direct-artifact registry has one crownable provider,
 `cutlass.cute.cubin.v1`. Candidate compiler-factory code runs in a GPU-hidden,
 no-network child and may publish one sealed CUBIN. Validator code owns ABI
