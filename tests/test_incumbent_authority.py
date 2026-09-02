@@ -16,7 +16,7 @@ from cacheon.arena_service import (
     ScreenGrade,
     ScreenStageResult,
 )
-from cacheon.bundle_hash import committed_content_hash, content_hash
+from cacheon.bundle_hash import CARRIER_RECEIPT_NAME, content_hash
 from cacheon.chain.incumbent_authority import (
     AUTHORITY_SCHEMA,
     RECEIPT_FILE,
@@ -281,8 +281,10 @@ def test_authority_is_written_from_the_settled_crown_and_its_retained_bytes(
     assert receipt["schema"] == AUTHORITY_SCHEMA
     assert receipt["stack_sha256"] == sha256_hex(stack_bytes)
     copied = output / SOURCES_DIR / committed
-    assert committed_content_hash(copied) == committed
-    assert (copied / ".cacheon-native-artifact.json").is_file()
+    # The engine hashes every file of a staged incumbent source, so the copy
+    # holds the miner's committed bytes and not the carrier receipt.
+    assert content_hash(copied) == committed
+    assert not (copied / CARRIER_RECEIPT_NAME).exists()
     assert (copied / "manifest.toml").is_file()
     for path in (output, output / SOURCES_DIR, copied):
         assert stat.S_IMODE(path.stat().st_mode) == 0o555
