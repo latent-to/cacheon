@@ -16,9 +16,11 @@ from cacheon.eval.oci_outer_session import (
     OuterSessionInfrastructureError,
     require_decode_dominant_plan,
 )
+from cacheon.eval.continuation_codec import ContinuationCodec
 from cacheon.eval.scoring import (
     ChargedExecutionRate,
     RawSpeedEvidenceError,
+    SpeedupVerdict,
     relative_spread,
     score_speedup,
 )
@@ -75,7 +77,10 @@ def test_single_baseline_cannot_be_confident():
     v = score_speedup([100.0], 130.0)
     assert not v.confident
     assert not v.passed_speedup
+    assert v.noise == 0.0
     assert "single baseline" in v.detail
+    codec = ContinuationCodec((SpeedupVerdict,))
+    assert codec.decode(codec.encode(v)) == v
 
 
 def test_min_margin_floor_applies_on_a_perfectly_stable_box():
