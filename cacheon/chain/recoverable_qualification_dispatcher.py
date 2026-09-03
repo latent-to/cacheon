@@ -163,6 +163,29 @@ class CompletedQualificationHold:
 
 
 @dataclass(frozen=True)
+class QualificationCommissionRequired:
+    """The FIFO cursor reached work bound to a different baseline segment."""
+
+    commissioned_stack_digest: str
+    required_stack_digest: str
+    required_tree_digest: str
+
+    def __post_init__(self) -> None:
+        require_sha256_hex(
+            self.commissioned_stack_digest,
+            field="commissioned qualification stack digest",
+        )
+        require_sha256_hex(
+            self.required_stack_digest,
+            field="required qualification stack digest",
+        )
+        require_sha256_hex(
+            self.required_tree_digest,
+            field="required qualification tree digest",
+        )
+
+
+@dataclass(frozen=True)
 class RecoverableQualificationRequeue:
     """One typed NO_DECISION + REQUEUE from an authenticated pre-resident
     refusal, an unproven worker result, or a stale-incumbent product."""
@@ -411,38 +434,57 @@ class RecoverableQualificationDispatcher:
         store: RecoverableFinalizedIntakeStore,
         *,
         current_block: int,
-    ) -> None:
-        """Install or verify the commissioned incumbent before any claim.
+    ) -> QualificationCommissionRequired | None:
+        """Install genesis or verify the FIFO segment before any claim.
 
-        The store installs one genesis incumbent per arena, reopens identical
-        state, and refuses a different one. A commission pinned to a superseded
-        baseline therefore fails here, before a lease, request, publication, or
-        GPU action exists, rather than at settlement after the paid run. Once a
-        new commission matches the settled stack, unresolved measurements against
-        the superseded baseline are archived and requeued before any new claim.
+        Settlement may advance durable lineage while older reservations remain
+        queued. Those reservations retain their exact baseline segment and run
+        under the still-resident commission. No completed evidence is erased.
+        Once FIFO reaches a segment with a different stack, return a typed
+        commission boundary before a lease, request, publication, or GPU action.
         """
 
         try:
-            store.initialize_evaluation_stack(
-                self.qualification_incumbent_stack,
-                tree_digest=self.qualification_incumbent_tree_digest,
-            )
-            store.requeue_stale_baseline_evaluations(
-                self.qualification_incumbent_stack,
-                tree_digest=self.qualification_incumbent_tree_digest,
-                service_digest=self.coordinator.service.identity,
-                current_block=current_block,
-            )
+            try:
+                store.evaluation_stack(
+                    self.qualification_incumbent_stack.arena_digest
+                )
+            except IntakeError as exc:
+                if str(exc) != "evaluation stack is not initialized":
+                    raise
+                store.initialize_evaluation_stack(
+                    self.qualification_incumbent_stack,
+                    tree_digest=self.qualification_incumbent_tree_digest,
+                )
+            store.backfill_reservation_baseline_segments()
+            required = store.qualification_queue_baseline()
         except IntakeError as exc:
             raise RecoverableQualificationDispatcherError(
-                "commissioned qualification incumbent differs from the durable "
-                f"evaluation stack; recommission before dispatching: {exc}"
+                f"qualification baseline queue authority is invalid: {exc}"
             ) from exc
+        if required is None:
+            return None
+        if (
+            required.manifest.digest == self.qualification_incumbent_stack.digest
+            and required.tree_digest == self.qualification_incumbent_tree_digest
+        ):
+            return None
+        return QualificationCommissionRequired(
+            self.qualification_incumbent_stack.digest,
+            required.manifest.digest,
+            required.tree_digest,
+        )
 
-    def _claim_or_reopen(self) -> _RecoveryClaim | None:
+    def _claim_or_reopen(
+        self,
+    ) -> _RecoveryClaim | QualificationCommissionRequired | None:
         store, point = self._open_store()
         try:
-            self._bind_commissioned_incumbent(store, current_block=point[0])
+            boundary = self._bind_commissioned_incumbent(
+                store, current_block=point[0]
+            )
+            if boundary is not None:
+                return boundary
             recovery = store.pending_qualification_recovery()
             if recovery is None:
                 recovery = store.claim_recoverable_qualification(
@@ -1009,6 +1051,7 @@ class RecoverableQualificationDispatcher:
         self,
     ) -> (
         EvaluationRun
+        | QualificationCommissionRequired
         | RecoverableQualificationHold
         | CompletedQualificationHold
         | RecoverableQualificationRequeue
@@ -1020,6 +1063,8 @@ class RecoverableQualificationDispatcher:
         selected = self._claim_or_reopen()
         if selected is None:
             return None
+        if type(selected) is QualificationCommissionRequired:
+            return selected
         recovery, claim = selected.recovery, selected.claim
         if recovery.phase is RecoveryPhase.HELD:
             if recovery.reason.startswith("remote_qualification_hold:"):
@@ -1166,6 +1211,7 @@ class RecoverableQualificationDispatcher:
 
 __all__ = [
     "CompletedQualificationHold",
+    "QualificationCommissionRequired",
     "RecoverableQualificationDispatcher",
     "RecoverableQualificationDispatcherError",
     "RecoverableQualificationHold",

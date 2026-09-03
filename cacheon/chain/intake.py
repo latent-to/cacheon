@@ -691,6 +691,17 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 stack_json TEXT NOT NULL,
                 transition_event_id TEXT NOT NULL
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS reservation_baseline_segments (
+                reservation_id TEXT PRIMARY KEY REFERENCES reservations(reservation_id),
+                arena_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation>=0),
+                stack_digest TEXT NOT NULL,
+                tree_digest TEXT NOT NULL,
+                stack_json TEXT NOT NULL,
+                transition_event_id TEXT NOT NULL,
+                binding_reason TEXT NOT NULL
+                    CHECK(length(binding_reason) BETWEEN 1 AND 128)
+            ) STRICT;
             CREATE TABLE IF NOT EXISTS standing_reward_claims (
                 arena_id TEXT NOT NULL,
                 target_id TEXT NOT NULL,
@@ -1494,6 +1505,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             row = self.get(reservation_id)
             if row.status not in {"published", "reproduction_pending"}:
                 raise IntakeError("only screenable intake may begin arena screening")
+            stack = self._unambiguous_evaluation_stack(service_digest)
+            if stack is not None:
+                self._bind_reservation_baseline_segment(
+                    reservation_id, stack, reason="begin_screen"
+                )
             lane = (
                 "reproduction" if row.status == "reproduction_pending" else "primary"
             )
@@ -2139,6 +2155,208 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("genesis qualification names another incumbent")
 
+    @staticmethod
+    def _encoded_stack_manifest(state: EvaluationStackState) -> str:
+        return json.dumps(
+            state.manifest.to_dict(), separators=(",", ":"), sort_keys=True
+        )
+
+    def _evaluation_stack_state_from_row(
+        self, row: sqlite3.Row, *, context: str
+    ) -> EvaluationStackState:
+        from cacheon.stack_manifest import EvaluationStackManifest
+
+        try:
+            manifest = EvaluationStackManifest.from_dict(json.loads(row["stack_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise IntakeError(f"{context} is corrupt: {exc}") from None
+        state = EvaluationStackState(
+            row["arena_id"],
+            row["generation"],
+            manifest,
+            row["tree_digest"],
+            row["transition_event_id"],
+        )
+        if (
+            manifest.digest != row["stack_digest"]
+            or self._encoded_stack_manifest(state) != row["stack_json"]
+        ):
+            raise IntakeError(f"{context} digest differs from stored bytes")
+        return state
+
+    def _unambiguous_evaluation_stack(
+        self, arena_or_service_digest: str
+    ) -> EvaluationStackState | None:
+        exact = self._db.execute(
+            "SELECT * FROM evaluation_stacks WHERE arena_id=?",
+            (arena_or_service_digest,),
+        ).fetchone()
+        if exact is not None:
+            return self._evaluation_stack_state_from_row(
+                exact, context="evaluation stack state"
+            )
+        rows = tuple(self._db.execute("SELECT * FROM evaluation_stacks ORDER BY arena_id"))
+        if len(rows) != 1:
+            return None
+        return self._evaluation_stack_state_from_row(
+            rows[0], context="evaluation stack state"
+        )
+
+    def _bind_reservation_baseline_segment(
+        self,
+        reservation_id: str,
+        state: EvaluationStackState,
+        *,
+        reason: str,
+    ) -> None:
+        if (
+            type(state) is not EvaluationStackState
+            or not isinstance(reason, str)
+            or not reason
+            or len(reason) > 128
+        ):
+            raise IntakeError("reservation baseline binding is malformed")
+        self._db.execute(
+            "INSERT OR IGNORE INTO reservation_baseline_segments("
+            "reservation_id,arena_id,generation,stack_digest,tree_digest,stack_json,"
+            "transition_event_id,binding_reason) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                reservation_id,
+                state.arena_digest,
+                state.generation,
+                state.manifest.digest,
+                state.tree_digest,
+                self._encoded_stack_manifest(state),
+                state.transition_event_id,
+                reason,
+            ),
+        )
+
+    def _bind_unbound_queue_to_stack(
+        self, state: EvaluationStackState, *, reason: str
+    ) -> None:
+        stack_count = self._db.execute(
+            "SELECT COUNT(*) AS n FROM evaluation_stacks"
+        ).fetchone()["n"]
+        active_marks = ",".join("?" for _ in _ACTIVE)
+        if stack_count == 1:
+            authority = "(r.arena_service_digest=? OR r.arena_service_digest='')"
+        else:
+            authority = "r.arena_service_digest=?"
+        rows = tuple(
+            self._db.execute(
+                "SELECT r.reservation_id FROM reservations AS r WHERE "
+                f"r.status IN ({active_marks}) AND {authority} AND NOT EXISTS ("
+                "SELECT 1 FROM reservation_baseline_segments AS b "
+                "WHERE b.reservation_id=r.reservation_id)",
+                (*_ACTIVE, state.arena_digest),
+            )
+        )
+        for row in rows:
+            self._bind_reservation_baseline_segment(
+                row["reservation_id"], state, reason=reason
+            )
+
+    def backfill_reservation_baseline_segments(self) -> tuple[str, ...]:
+        """Bind pre-upgrade queue rows to the stack active when they arrived.
+
+        Each CROWN snapshots every reservation already present. The first
+        target-lineage transition containing a reservation therefore identifies
+        the exact incumbent segment that must drain it. Rows arriving after the
+        latest transition bind to the current durable stack.
+        """
+
+        from cacheon.settlement import SettlementCandidate
+
+        bound: list[str] = []
+        active_marks = ",".join("?" for _ in _ACTIVE)
+        with self._transaction():
+            pending = tuple(
+                self._db.execute(
+                    "SELECT r.reservation_id,r.target_id,r.arena_service_digest "
+                    "FROM reservations AS r WHERE "
+                    f"r.status IN ({active_marks}) AND NOT EXISTS (SELECT 1 FROM "
+                    "reservation_baseline_segments AS b WHERE "
+                    "b.reservation_id=r.reservation_id) "
+                    "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,"
+                    "r.content_hash",
+                    _ACTIVE,
+                )
+            )
+            for reservation in pending:
+                transition = self._db.execute(
+                    "SELECT n.arena_id,se.sequence,se.reservation_id AS winner_id "
+                    "FROM target_lineage_pretransition_reservations AS p "
+                    "JOIN target_lineage_nodes AS n "
+                    "ON n.transition_event_id=p.transition_event_id "
+                    "JOIN settlement_events AS se "
+                    "ON se.event_id=n.transition_event_id "
+                    "WHERE p.reservation_id=? "
+                    "ORDER BY se.sequence LIMIT 1",
+                    (reservation["reservation_id"],),
+                ).fetchone()
+                if transition is None:
+                    state = self._unambiguous_evaluation_stack(
+                        reservation["arena_service_digest"]
+                    )
+                    reason = "backfill_current_stack"
+                else:
+                    candidate_row = self._db.execute(
+                        "SELECT * FROM settlement_candidates WHERE reservation_id=?",
+                        (transition["winner_id"],),
+                    ).fetchone()
+                    if candidate_row is None:
+                        raise IntakeError(
+                            "baseline segment backfill lost its crown candidate"
+                        )
+                    candidate = self._settlement_candidate(candidate_row)
+                    if (
+                        type(candidate) is not SettlementCandidate
+                        or candidate.arena_digest != transition["arena_id"]
+                    ):
+                        raise IntakeError(
+                            "baseline segment backfill candidate is malformed"
+                        )
+                    previous = self._db.execute(
+                        "SELECT event_id FROM settlement_events WHERE arena_id=? "
+                        "AND event_type='STACK_TRANSITION' AND sequence<? "
+                        "ORDER BY sequence DESC LIMIT 1",
+                        (transition["arena_id"], transition["sequence"]),
+                    ).fetchone()
+                    generation = self._db.execute(
+                        "SELECT COUNT(*) AS n FROM settlement_events "
+                        "WHERE arena_id=? AND event_type='STACK_TRANSITION' "
+                        "AND sequence<?",
+                        (transition["arena_id"], transition["sequence"]),
+                    ).fetchone()["n"]
+                    event_id = (
+                        previous["event_id"]
+                        if previous is not None
+                        else canonical_digest(
+                            _EVALUATION_STACK_GENESIS_DOMAIN,
+                            {
+                                "arena_digest": candidate.arena_digest,
+                                "stack_digest": candidate.incumbent_manifest.digest,
+                                "tree_digest": candidate.incumbent_tree_digest,
+                            },
+                        )
+                    )
+                    state = EvaluationStackState(
+                        candidate.arena_digest,
+                        generation,
+                        candidate.incumbent_manifest,
+                        candidate.incumbent_tree_digest,
+                        event_id,
+                    )
+                    reason = "backfill_pretransition_stack"
+                if state is None:
+                    continue
+                self._bind_reservation_baseline_segment(
+                    reservation["reservation_id"], state, reason=reason
+                )
+                bound.append(reservation["reservation_id"])
+        return tuple(bound)
+
     def initialize_evaluation_stack(
         self,
         manifest: EvaluationStackManifest,
@@ -2149,6 +2367,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
 
         with self._transaction():
             self._initialize_evaluation_stack_row(manifest, tree_digest=tree_digest)
+            state = self.evaluation_stack(manifest.arena_digest)
+            self._bind_unbound_queue_to_stack(state, reason="initialize_stack")
         state = self.evaluation_stack(manifest.arena_digest)
         if (
             state.manifest.digest != manifest.digest
@@ -2165,232 +2385,22 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         service_digest: str,
         current_block: int,
     ) -> tuple[str, ...]:
-        """Archive and requeue unresolved measurements against an old incumbent.
+        """Compatibility no-op: baseline transitions never erase evaluation evidence.
 
-        Settlement advances durable stack authority before the replacement worker
-        is commissioned.  The first dispatcher for that commissioned stack calls
-        this method before claiming work.  Qualification evidence is baseline
-        relative, so unresolved primary/pair products against the previous stack
-        are archived and restarted from qualification.  A promoted screen may be
-        reused only when it belongs to the still-live arena service identity.
-
-        Crowned history is never requeued.  A held settlement candidate is
-        eligible only when its latest digest-bound event records a known
-        old-baseline disposition.  This intentionally repairs older unresolved
-        holds too: every non-crown measurement against the superseded stack is
-        stale, not only the candidates in the most recent settlement cohort.
+        Kept temporarily for older operator integrations. Queue-segment binding
+        now drains work under its assigned incumbent and requests recommission
+        at the next segment, so no caller may archive or restart completed work.
         """
 
-        from cacheon.settlement import SettlementEvent, SettlementQualification
         from cacheon.stack_manifest import EvaluationStackManifest
 
         if type(manifest) is not EvaluationStackManifest:
             raise IntakeError("commissioned evaluation stack is not exactly typed")
-        tree = require_sha256_hex(tree_digest, field="commissioned tree digest")
-        service = require_sha256_hex(service_digest, field="arena service digest")
+        require_sha256_hex(tree_digest, field="commissioned tree digest")
+        require_sha256_hex(service_digest, field="arena service digest")
         if type(current_block) is not int or current_block < 0:
             raise IntakeError("baseline requeue block is malformed")
-
-        requeued: list[str] = []
-        with self._transaction():
-            state = self.evaluation_stack(manifest.arena_digest)
-            if (
-                state.manifest.digest != manifest.digest
-                or state.tree_digest != tree
-            ):
-                raise IntakeError(
-                    "commissioned baseline differs from durable evaluation stack"
-                )
-            if state.generation == 0:
-                return ()
-            transition = self._db.execute(
-                "SELECT sequence,event_json FROM settlement_events WHERE event_id=? "
-                "AND event_type='STACK_TRANSITION'",
-                (state.transition_event_id,),
-            ).fetchone()
-            if transition is None:
-                raise IntakeError("evaluation stack transition event is missing")
-            try:
-                transition_event = SettlementEvent.from_dict(
-                    json.loads(transition["event_json"])
-                )
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise IntakeError(
-                    f"evaluation stack transition event is corrupt: {exc}"
-                ) from None
-            if (
-                transition_event.digest != state.transition_event_id
-                or transition_event.to_stack_digest != manifest.digest
-                or transition_event.to_tree_digest != tree
-            ):
-                raise IntakeError("evaluation stack transition differs from state")
-            reservation_ids = tuple(
-                row["reservation_id"]
-                for row in self._db.execute(
-                    "SELECT DISTINCT sq.reservation_id FROM settlement_qualifications sq "
-                    "JOIN reservations r USING(reservation_id) "
-                    "WHERE r.status IN ('reproduction_pending','qualified','held',"
-                    "'no_decision') ORDER BY sq.reservation_id"
-                )
-            )
-            for reservation_id in reservation_ids:
-                qualification_rows = tuple(
-                    dict(row)
-                    for row in self._db.execute(
-                        "SELECT * FROM settlement_qualifications "
-                        "WHERE reservation_id=? ORDER BY reproduction_index",
-                        (reservation_id,),
-                    )
-                )
-                if not qualification_rows:
-                    continue
-                try:
-                    qualifications = tuple(
-                        SettlementQualification.from_dict(
-                            json.loads(row["qualification_json"])
-                        )
-                        for row in qualification_rows
-                    )
-                except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                    raise IntakeError(
-                        f"stale baseline qualification is corrupt: {exc}"
-                    ) from None
-                if (
-                    any(row.lane != "registered" for row in qualifications)
-                    or any(
-                        row.incumbent_stack_digest == manifest.digest
-                        and row.incumbent_tree_digest == tree
-                        for row in qualifications
-                    )
-                ):
-                    continue
-                candidate = self._db.execute(
-                    "SELECT * FROM settlement_candidates WHERE reservation_id=?",
-                    (reservation_id,),
-                ).fetchone()
-                candidate_row = {} if candidate is None else dict(candidate)
-                if candidate is not None:
-                    if candidate["status"] == "crowned":
-                        continue
-                    if candidate["status"] == "held":
-                        retained_hold = self._db.execute(
-                            "SELECT event_id,event_json FROM settlement_events "
-                            "WHERE reservation_id=? AND event_type='HOLD' "
-                            "ORDER BY sequence DESC LIMIT 1",
-                            (reservation_id,),
-                        ).fetchone()
-                        if retained_hold is None:
-                            raise IntakeError(
-                                "held stale-baseline candidate has no HOLD event"
-                            )
-                        try:
-                            hold = SettlementEvent.from_dict(
-                                json.loads(retained_hold["event_json"])
-                            )
-                        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                            raise IntakeError(
-                                f"settlement HOLD event is corrupt: {exc}"
-                            ) from None
-                        if (
-                            hold.digest != retained_hold["event_id"]
-                            or hold.candidate_digest != candidate["candidate_digest"]
-                        ):
-                            raise IntakeError(
-                                "held stale-baseline candidate differs from HOLD event"
-                            )
-                        if hold.reason not in {
-                            "conflict_lost",
-                            "incumbent_advanced",
-                            "stale_incumbent",
-                        }:
-                            continue
-                    if candidate["status"] not in {"pending", "leased", "held"}:
-                        continue
-                recovery_schema = self._db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' "
-                    "AND name='evaluation_recoveries'"
-                ).fetchone()
-                unresolved = (
-                    None
-                    if recovery_schema is None
-                    else self._db.execute(
-                        "SELECT 1 FROM evaluation_recoveries er JOIN "
-                        "evaluation_lease_members em USING(lease_id) "
-                        "WHERE em.reservation_id=? AND er.resolution='' LIMIT 1",
-                        (reservation_id,),
-                    ).fetchone()
-                )
-                if unresolved is not None:
-                    continue
-
-                archive = {
-                    "archived_block": current_block,
-                    "candidate_row": candidate_row,
-                    "previous_stack_digest": qualifications[0].incumbent_stack_digest,
-                    "previous_tree_digest": qualifications[0].incumbent_tree_digest,
-                    "qualification_rows": qualification_rows,
-                    "reservation_id": reservation_id,
-                    "transition_event_id": state.transition_event_id,
-                }
-                archive_digest = canonical_digest(
-                    "cacheon.chain.stale-baseline-evaluation.v1", archive
-                )
-                self._db.execute(
-                    "INSERT INTO stale_baseline_evaluations("
-                    "archive_digest,reservation_id,transition_event_id,"
-                    "previous_stack_digest,previous_tree_digest,"
-                    "qualification_rows_json,candidate_row_json,archived_block"
-                    ") VALUES(?,?,?,?,?,?,?,?)",
-                    (
-                        archive_digest,
-                        reservation_id,
-                        state.transition_event_id,
-                        qualifications[0].incumbent_stack_digest,
-                        qualifications[0].incumbent_tree_digest,
-                        json.dumps(
-                            qualification_rows, separators=(",", ":"), sort_keys=True
-                        ),
-                        json.dumps(
-                            candidate_row, separators=(",", ":"), sort_keys=True
-                        ),
-                        current_block,
-                    ),
-                )
-                self._db.execute(
-                    "DELETE FROM settlement_candidates WHERE reservation_id=?",
-                    (reservation_id,),
-                )
-                self._db.execute(
-                    "DELETE FROM settlement_qualifications WHERE reservation_id=?",
-                    (reservation_id,),
-                )
-                retained_screen = self._db.execute(
-                    "SELECT service_digest,decision FROM arena_screen_dispositions "
-                    "WHERE reservation_id=? "
-                    "ORDER BY attempt_index DESC LIMIT 1",
-                    (reservation_id,),
-                ).fetchone()
-                promoted = (
-                    retained_screen is not None
-                    and retained_screen["service_digest"] == service
-                    and retained_screen["decision"] == "promote"
-                )
-                self._db.execute(
-                    "UPDATE reservations SET status=?,decision='',"
-                    "reason='baseline_advanced_recompute',"
-                    "qualification_authority_digest='',"
-                    "qualification_authority_json='',qualification_evidence_digest='',"
-                    "arena_service_digest=?,screen_lane='primary',screen_status=?,"
-                    "retry_group_digest='',retry_position=0 WHERE reservation_id=?",
-                    (
-                        "promoted" if promoted else "published",
-                        service if promoted else "",
-                        "promote" if promoted else "",
-                        reservation_id,
-                    ),
-                )
-                requeued.append(reservation_id)
-        return tuple(requeued)
+        return ()
 
     def latest_stack_transition(self) -> tuple[int, str] | None:
         """The newest settled crown as (settlement sequence, arena digest)."""
@@ -2705,23 +2715,43 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         return candidate
 
     def evaluation_stack(self, arena_digest: str) -> EvaluationStackState:
-        from cacheon.stack_manifest import EvaluationStackManifest
-
         require_sha256_hex(arena_digest, field="arena_digest")
         row = self._db.execute(
             "SELECT * FROM evaluation_stacks WHERE arena_id=?", (arena_digest,)
         ).fetchone()
         if row is None:
             raise IntakeError("evaluation stack is not initialized")
-        try:
-            manifest = EvaluationStackManifest.from_dict(json.loads(row["stack_json"]))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise IntakeError(f"evaluation stack state is corrupt: {exc}") from None
-        if manifest.digest != row["stack_digest"]:
-            raise IntakeError("evaluation stack digest differs from stored bytes")
-        return EvaluationStackState(
-            row["arena_id"], row["generation"], manifest, row["tree_digest"],
-            row["transition_event_id"],
+        return self._evaluation_stack_state_from_row(
+            row, context="evaluation stack state"
+        )
+
+    def reservation_baseline_segment(
+        self, reservation_id: str
+    ) -> EvaluationStackState | None:
+        require_sha256_hex(reservation_id, field="reservation_id")
+        row = self._db.execute(
+            "SELECT * FROM reservation_baseline_segments WHERE reservation_id=?",
+            (reservation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._evaluation_stack_state_from_row(
+            row, context="reservation baseline segment"
+        )
+
+    def qualification_queue_baseline(self) -> EvaluationStackState | None:
+        active_marks = ",".join("?" for _ in _ACTIVE)
+        row = self._db.execute(
+            "SELECT b.* FROM reservations AS r LEFT JOIN "
+            "reservation_baseline_segments AS b USING(reservation_id) "
+            f"WHERE r.status IN ({active_marks}) ORDER BY r.block,r.event_index,"
+            "r.event_subindex,r.hotkey,r.content_hash LIMIT 1",
+            _ACTIVE,
+        ).fetchone()
+        if row is None or row["arena_id"] is None:
+            return None
+        return self._evaluation_stack_state_from_row(
+            row, context="qualification queue baseline"
         )
 
     @staticmethod
@@ -3270,6 +3300,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
 
             if commit_plan.transition is not None:
+                self._bind_unbound_queue_to_stack(
+                    lease.stack, reason="settlement_transition"
+                )
                 manifest = commit_plan.transition.manifest
                 encoded = json.dumps(
                     manifest.to_dict(), separators=(",", ":"), sort_keys=True

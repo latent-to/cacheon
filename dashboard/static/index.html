@@ -211,7 +211,8 @@ const STATUS_TONE = {
 };
 const pill = (s) => `<span class="pill ${STATUS_TONE[s] || "mute"}">${esc(s || "—")}</span>`;
 function baselineSummary(b) {
-  if (!b || !b.evaluated) return '<span class="pill mute">not measured</span>';
+  if (!b || (!b.evaluated && !b.assigned))
+    return '<span class="pill mute">not assigned</span>';
   const labels = {
     current_tip: ["current tip", "ok"],
     ancestor: ["ancestor", "warn"],
@@ -225,7 +226,10 @@ function baselineSummary(b) {
   const threshold = b.relationship === "ancestor" && b.threshold_speedup != null
     ? `<div class="muted small">must beat ${Number(b.threshold_speedup).toFixed(6)}×</div>`
     : "";
-  return `<span class="pill ${tone}">${esc(label)}</span><div class="small">${artifact}</div>${threshold}`;
+  const queued = b.assigned && !b.evaluated
+    ? '<span class="pill info">queued baseline</span> '
+    : "";
+  return `${queued}<span class="pill ${tone}">${esc(label)}</span><div class="small">${artifact}</div>${threshold}`;
 }
 
 async function api(path) {
@@ -449,6 +453,7 @@ async function viewWinners() {
   const rows = d.items.map((w) => {
     const hc = w.hotkey_chain || {};
     return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
+    <td><code title="${esc(w.reservation_id)}">${esc(short(w.reservation_id, 12))}</code></td>
     <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div></td>
     <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
         <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
@@ -474,7 +479,7 @@ async function viewWinners() {
   return `
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
     <h2>Retained PASS rewards</h2>
-    ${table(["Improved op","Vs incumbent","Vs SGLang","Miner hotkey","PASS confirmed","Reward","On-chain now (emission)"],
+    ${table(["Reservation","Improved op","Vs incumbent","Vs SGLang","Miner hotkey","PASS confirmed","Reward","On-chain now (emission)"],
       rows, "No retained PASS rewards yet.")}`;
 }
 
@@ -574,11 +579,12 @@ window.openDetail = async (rid) => {
     <div class="card">
       <dl class="kv" style="margin:0">
         ${kv("Relationship", baselineSummary(baseline))}
-        ${kv("Evaluated artifact", baseline.evaluated
+        ${kv(baseline.evaluated ? "Evaluated artifact" : "Assigned artifact",
+          baseline.evaluated || baseline.assigned
           ? (baseline.artifact_digest
               ? `<code>${esc(baseline.artifact_digest)}</code>`
               : "<code>base engine</code>")
-          : '<span class="muted">Not measured yet</span>')}
+          : '<span class="muted">Not assigned yet</span>')}
         ${kv("Current tip", baseline.current_tip_artifact_digest
           ? `<code>${esc(baseline.current_tip_artifact_digest)}</code>`
           : "—")}

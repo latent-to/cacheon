@@ -589,9 +589,12 @@ def submission_baseline(
         (reservation_id,),
     ).fetchone()
     raw: dict[str, Any] = {}
+    evaluated = False
+    assigned = False
     if candidate is not None:
         doc = json.loads(candidate["candidate_json"] or "{}")
         raw = doc.get("primary") or doc
+        evaluated = True
     else:
         qualification = con.execute(
             "SELECT qualification_json FROM settlement_qualifications "
@@ -600,10 +603,30 @@ def submission_baseline(
         ).fetchone()
         if qualification is not None:
             raw = json.loads(qualification["qualification_json"] or "{}")
+            evaluated = True
+        elif con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='reservation_baseline_segments'"
+        ).fetchone() is not None:
+            segment = con.execute(
+                "SELECT arena_id,stack_digest,tree_digest,stack_json "
+                "FROM reservation_baseline_segments WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone()
+            if segment is not None:
+                manifest = json.loads(segment["stack_json"])
+                raw = {
+                    "arena_digest": segment["arena_id"],
+                    "incumbent_manifest": manifest,
+                    "incumbent_stack_digest": segment["stack_digest"],
+                    "incumbent_tree_digest": segment["tree_digest"],
+                }
+                assigned = True
 
     if not raw:
         return {
             "evaluated": False,
+            "assigned": False,
             "relationship": "not_evaluated",
             "artifact_digest": "",
             "current_tip_artifact_digest": "",
@@ -614,7 +637,8 @@ def submission_baseline(
     entry = (manifest.get("entries") or {}).get(target_id) or {}
     baseline_artifact = entry.get("artifact_digest") or ""
     result: dict[str, Any] = {
-        "evaluated": True,
+        "evaluated": evaluated,
+        "assigned": assigned,
         "relationship": "no_active_tip",
         "artifact_digest": baseline_artifact,
         "stack_digest": raw.get("incumbent_stack_digest") or manifest.get("digest") or "",

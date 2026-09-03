@@ -1084,6 +1084,93 @@ def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_
         assert copied.status == "failed" and copied.decision == "FAIL"
 
 
+def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
+    path = tmp_path / "private" / "intake.sqlite3"
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        old_stack = store.evaluation_stack(candidate.arena_digest)
+
+        old_rows = _reserve(
+            store,
+            (
+                _arrival(20, hotkey="old-a"),
+                _arrival(21, hotkey="old-b"),
+            ),
+        )
+        for index, row in enumerate(old_rows):
+            _publish(
+                store,
+                row.reservation_id,
+                _fingerprint(f"old.target.{index}", f"old.slot.{index}"),
+                digest=_h(f"old-publication:{index}"),
+                root=f"/published/old-{index}",
+            )
+        _promote(store, old_rows[1].reservation_id)
+
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        plan, evidence = _settlement_plan(store, lease)
+        new_stack = store.commit_settlement(
+            lease, plan, evidence, current_block=11
+        )
+        assert new_stack.generation == old_stack.generation + 1
+        assert all(
+            store.reservation_baseline_segment(row.reservation_id) == old_stack
+            for row in old_rows
+        )
+
+        # Learning the service after the transition cannot rewrite the old
+        # reservation's durable baseline.
+        _promote(store, old_rows[0].reservation_id)
+        assert (
+            store.reservation_baseline_segment(old_rows[0].reservation_id)
+            == old_stack
+        )
+
+        new_row = _reserve_one(store, index=22, hotkey="new", block=12)
+        _publish(
+            store,
+            new_row.reservation_id,
+            _fingerprint("new.target", "new.slot"),
+            digest=_h("new-publication"),
+            root="/published/new",
+        )
+        _promote(store, new_row.reservation_id)
+        assert store.reservation_baseline_segment(new_row.reservation_id) == new_stack
+
+        # A database commissioned before segment persistence reconstructs the
+        # old/new boundary from the CROWN reservation snapshot without reruns.
+        store._db.execute("DELETE FROM reservation_baseline_segments")
+        assert set(store.backfill_reservation_baseline_segments()) == {
+            *(row.reservation_id for row in old_rows),
+            new_row.reservation_id,
+        }
+        assert all(
+            store.reservation_baseline_segment(row.reservation_id) == old_stack
+            for row in old_rows
+        )
+        assert store.reservation_baseline_segment(new_row.reservation_id) == new_stack
+        assert store.qualification_queue_baseline() == old_stack
+        assert store.preview_evaluation_claim(
+            stage="qualification", max_members=8
+        ) == tuple(row.reservation_id for row in old_rows)
+
+        store._db.executemany(
+            "UPDATE reservations SET status='failed',decision='FAIL',reason='test' "
+            "WHERE reservation_id=?",
+            ((row.reservation_id,) for row in old_rows),
+        )
+        assert store.qualification_queue_baseline() == new_stack
+        assert store.preview_evaluation_claim(
+            stage="qualification", max_members=8
+        ) == (new_row.reservation_id,)
+
+    with FinalizedIntakeStore(path, IntakePolicy(), scope=SCOPE) as reopened:
+        assert reopened.reservation_baseline_segment(old_rows[0].reservation_id) == old_stack
+        assert reopened.reservation_baseline_segment(new_row.reservation_id) == new_stack
+        assert reopened.qualification_queue_baseline() == new_stack
+
+
 def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_path):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store)
@@ -1141,7 +1228,7 @@ def test_only_crowned_pass_is_rewarded_when_settlement_holds_it(tmp_path):
         assert reopened.passed_reward_claims() == ()
 
 
-def test_recommission_requeues_current_loser_without_discarding_screen(tmp_path):
+def test_recommission_preserves_current_loser_evidence_without_requeue(tmp_path):
     with _store(tmp_path) as store:
         winner = _qualified_settlement_candidate(
             store,
@@ -1166,21 +1253,16 @@ def test_recommission_requeues_current_loser_without_discarding_screen(tmp_path)
 
         assert plan.winner_candidate_digest == winner.digest
         assert store.passed_reward_claims()[0].hotkey == winner.hotkey
-        requeued = store.requeue_stale_baseline_evaluations(
+        assert store.requeue_stale_baseline_evaluations(
             current.manifest,
             tree_digest=current.tree_digest,
             service_digest=_h("service"),
             current_block=12,
-        )
-        assert requeued == (loser.reservation_digest,)
+        ) == ()
 
-        reset = store.get(loser.reservation_digest)
-        assert reset.status == "promoted"
-        assert reset.screen_status == "promote"
-        assert reset.reason == "baseline_advanced_recompute"
-        assert store.latest_promoted_screen(loser.reservation_digest).service_digest == (
-            _h("service")
-        )
+        retained = store.get(loser.reservation_digest)
+        assert retained.status == "qualified"
+        assert retained.screen_status == "promote"
         assert store._db.execute(
             "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
             "WHERE reservation_id=?",
@@ -1190,21 +1272,15 @@ def test_recommission_requeues_current_loser_without_discarding_screen(tmp_path)
             "SELECT COUNT(*) AS n FROM settlement_qualifications "
             "WHERE reservation_id=?",
             (loser.reservation_digest,),
-        ).fetchone()["n"] == 0
+        ).fetchone()["n"] == 2
         assert store._db.execute(
-            "SELECT 1 FROM settlement_candidates WHERE reservation_id=?",
+            "SELECT status FROM settlement_candidates WHERE reservation_id=?",
+            (loser.reservation_digest,),
+        ).fetchone()["status"] == "held"
+        assert store._db.execute(
+            "SELECT 1 FROM stale_baseline_evaluations WHERE reservation_id=?",
             (loser.reservation_digest,),
         ).fetchone() is None
-        archive = store._db.execute(
-            "SELECT candidate_row_json,qualification_rows_json "
-            "FROM stale_baseline_evaluations WHERE reservation_id=?",
-            (loser.reservation_digest,),
-        ).fetchone()
-        assert archive is not None
-        assert json.loads(archive["candidate_row_json"])["candidate_digest"] == (
-            loser.digest
-        )
-        assert len(json.loads(archive["qualification_rows_json"])) == 2
 
         # The crown remains authoritative, and reopening the same commission is
         # idempotent rather than erasing settled history.
@@ -1515,7 +1591,7 @@ def test_faster_stale_sibling_submitted_after_transition_is_held(tmp_path):
         assert status == "held"
 
 
-def test_recommission_requeues_later_stale_incumbent_hold(tmp_path):
+def test_recommission_preserves_later_stale_incumbent_hold(tmp_path):
     with _store(tmp_path) as store:
         winner = _qualified_settlement_candidate(store, marker="winner")
         assert isinstance(winner, SettlementCandidate)
@@ -1546,8 +1622,17 @@ def test_recommission_requeues_later_stale_incumbent_hold(tmp_path):
             tree_digest=current.tree_digest,
             service_digest=_h("service"),
             current_block=13,
-        ) == (stale.reservation_digest,)
-        assert store.get(stale.reservation_digest).status == "promoted"
+        ) == ()
+        assert store.get(stale.reservation_digest).status == "qualified"
+        assert store._db.execute(
+            "SELECT status FROM settlement_candidates WHERE reservation_id=?",
+            (stale.reservation_digest,),
+        ).fetchone()["status"] == "held"
+        assert store._db.execute(
+            "SELECT COUNT(*) AS n FROM settlement_qualifications "
+            "WHERE reservation_id=?",
+            (stale.reservation_digest,),
+        ).fetchone()["n"] == 2
 
 
 def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp_path):

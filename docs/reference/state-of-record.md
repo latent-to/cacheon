@@ -184,9 +184,12 @@ code fills paged per-index-head scores while stock code retains top-k and attend
 
 On 2026-09-02 the recoverable qualification dispatcher began installing or
 verifying the commissioned incumbent against the durable evaluation stack
-before any claim: a commission pinned to a superseded baseline fails before a
-lease or GPU request exists, and a new arena receives its genesis stack row
-from its first commissioned claim instead of failing at its first PASS commit.
+before any claim. On 2026-09-03 this became queue-segment-aware: reservations
+persist the exact stack assigned to their FIFO segment, an old resident may
+drain its already-bound segment after settlement advances durable lineage, and
+a different commissioned stack is requested before the first lease in the next
+segment. A new arena still receives its genesis stack row from its first
+commissioned claim instead of failing at its first PASS commit.
 The gap was reached on mainnet the same day: reservation `69f50573` passed
 qualification at 1.0827x on the recommissioned arena, and the standing owner
 rejected the result with "evaluation stack is not initialized" because no
@@ -545,12 +548,14 @@ the gateway; it never signs. Configuration must name `enable_weights` and
 
 The current `cacheon.emissions.v1.4` projection rewards every distinct settled
 `CROWN` contribution. A two-PASS pair is not yet earning authority: settlement
-selects one winner for the incumbent, and measurements held by that transition
-are stale. After the winner is manually commissioned, the qualification
-dispatcher archives those stale products and requeues their reservations against
-the new baseline while preserving a compatible promoted screen. A retained
-remote qualification product naming the old stack is released through a
-digest-bound recovery transition instead of being imported. Credit uses
+selects one winner for the incumbent. A stack transition does not invalidate,
+archive, or requeue completed qualification evidence. The old resident drains
+the contiguous FIFO segment already assigned to it; screening may continue
+because it is baseline-independent. Qualification holds for manual
+recommissioning only when the queue cursor reaches a segment assigned to a
+different stack. A retained remote qualification product that differs from its
+own assigned stack is released through a digest-bound recovery transition
+instead of being imported. Credit uses
 logarithmic speedup, submission-time stall bonus, and exponential decay.
 Matching v1.1 policy bindings advance automatically, while any numeric policy
 change remains refused.

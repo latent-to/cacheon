@@ -105,8 +105,9 @@ the current tip. For example, with `A -> B -> C`, a candidate `D` measured on A 
 D is the next baseline and the old `B -> C` branch remains auditable history.
 
 A later reservation against an old ancestor, a candidate based on an artifact outside the
-active lineage, or a score at/below the composed threshold is held `stale_incumbent` and
-requeued by the next commission.
+active lineage, or a score at/below the composed threshold is held `stale_incumbent`.
+Retained qualification evidence is not deleted or recomputed merely because the active
+tip advanced.
 
 Each CROWN snapshots the reservation IDs present in intake; this is the temporal authority
 for the exception and avoids ambiguous same-block comparisons. Stores that settled before
@@ -155,14 +156,22 @@ event, candidate pair, evidence receipt, and resulting stack state as one author
 
 Two independently bound PASSes make a contribution eligible for settlement; they
 do not make it an earning claim. Only the settlement `CROWN` earns. When that
-transition advances the incumbent, other unresolved qualification products bound
-to the superseded stack become stale. The replacement commission archives and
-requeues those products before claiming new work. Compatible non-crown screen
-receipts remain available, while qualification is repeated against the new
-baseline. A completed remote product that was retained across the boundary is
-released through a digest-bound stale-incumbent recovery event before it can be
-imported. The projector derives crown history from retained settlement candidates
-and qualification evidence rather than a second reward table.
+transition advances the incumbent, existing reservations keep their durable queue
+baseline. Qualification drains the contiguous old-baseline segment in finalized
+arrival order under the still-resident commission. Settlement may use the
+pre-transition ancestor rule above, but it never erases a completed evaluation just
+because the tip changed.
+
+The evaluator requests recommission only when the oldest active queue segment is
+bound to a different stack. The boundary is checked before a qualification lease,
+request publication, or GPU action. Screening can continue because it is not
+baseline-relative. After recommissioning, the next segment runs against its own
+persisted stack; one qualification cohort can never mix stack segments. A completed
+remote product that differs from the baseline assigned to its own lease is still
+released through a digest-bound stale-incumbent recovery event because that is an
+execution-authority mismatch, not a normal queue transition. The projector derives
+crown history from retained settlement candidates and qualification evidence rather
+than a second reward table.
 
 Credit uses logarithmic speedup, a submission-time stall multiplier, and
 exponential half-life decay as defined in
@@ -498,7 +507,7 @@ retained design intent and the reserved durable schema are described in
 | Condition | Safe outcome | Recovery |
 |---|---|---|
 | Earlier overlapping reservation unresolved | Candidate remains settlement-pending | Resolve earlier finalized work; do not reorder or delete it |
-| Candidate names old incumbent | `HOLD` event / stale-incumbent disposition | A fresh qualification must target the current stack |
+| Candidate names old incumbent | `HOLD` event / stale-incumbent disposition | Keep its retained evidence; do not rerun it solely because the tip advanced |
 | Lease expires or store/journal head advances | Commit aborts; expired lease returns pending | Reopen authority and obtain a new lease generation |
 | Either PASS evidence root cannot reopen | No settlement and no reward projection | Restore exact content-addressed bytes or retain hold |
 | Transaction fails mid-plan | SQLite rollback; no partial events/claims/stack | Diagnose, then rerun against unchanged authority |
@@ -512,7 +521,7 @@ retained design intent and the reserved durable schema are described in
 | Weighted recipient UID changes before or after signing | Submission aborts or retained publication is held | Reopen exact finalized metagraph authority; never confirm against reassigned UIDs |
 | Held reservation has no disposition | It remains durable and may block later work until explicit disposition or eligible finalized-block SLA expiry | Preserve and monitor it; use audited `release_hold` or minimum-age `expire` when operator action is required, never silent deletion |
 | Arena must be retired as an authority domain | No generic transition is available | Define and implement a reviewed typed arena-retirement policy before changing economic authority |
-| Candidate from another arena names an ancestor of the current tip | Eligible only if already present when lineage left that ancestor and strictly faster than the composed ancestor-to-tip threshold | Seed lineage history; otherwise the candidate is held `stale_incumbent` and requeued |
+| Candidate from another arena names an ancestor of the current tip | Eligible only if already present when lineage left that ancestor and strictly faster than the composed ancestor-to-tip threshold | Seed lineage history; otherwise the candidate is held `stale_incumbent` with its original evidence retained |
 
 The journal and settlement tables are evidence. Back them up with SQLite-aware tooling,
 monitor WAL/disk health, and test restoration with evidence roots present. Never repair an

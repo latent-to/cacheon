@@ -27,6 +27,8 @@ from cacheon.eval.qualification_intake import (
     QualificationRetryPlan,
 )
 from cacheon.stack_identity import sha256_hex
+from cacheon.stack_manifest import EvaluationStackManifest
+from cacheon.target_catalog import default_target_catalog
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 14)
@@ -49,11 +51,24 @@ def _arrival(index: int, *, block: int = 10, hotkey: str | None = None):
 
 
 def _store(tmp_path, **policy) -> FinalizedIntakeStore:
-    return FinalizedIntakeStore(
+    store = FinalizedIntakeStore(
         tmp_path / "private" / "intake.sqlite3",
         IntakePolicy(**policy),
         scope=SCOPE,
     )
+    catalog = default_target_catalog()
+    store.initialize_evaluation_stack(
+        EvaluationStackManifest(
+            runtime_digest=_h("runtime"),
+            base_engine_digest=_h("base"),
+            arena_digest=_h("service"),
+            catalog_snapshot=catalog.snapshot(),
+            catalog_digest=catalog.digest,
+            entries={},
+        ),
+        tree_digest=_h("tree"),
+    )
+    return store
 
 
 def _advance(store: FinalizedIntakeStore, block: int) -> None:
