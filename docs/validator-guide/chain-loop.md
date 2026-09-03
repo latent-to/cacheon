@@ -323,7 +323,12 @@ supervises one persistent pod adapter per epoch and parks the epoch on its
 first command-level adapter failure rather than restarting into an unproven
 resident model. Transport, pod, and adapter failures surface as
 infrastructure `no_decision` records that release the durable lease without
-consuming an evaluation attempt.
+consuming an evaluation attempt; the standing supervisor records that release
+as a `released` disposition and continues to the next unit rather than
+exiting. After every completed qualification the pod adapter retires itself
+behind the durable result, exactly as it does behind a latched resident
+screen, so the next screen boots a fresh adapter on idle GPUs instead of
+waiting on the qualification's lane containers.
 
 The tracked B300 adapter has two closed construction modes. Screen-only mode
 executes through the commissioned screen deployment and refuses qualification

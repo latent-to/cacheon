@@ -15,6 +15,7 @@ from cacheon.chain.recoverable_qualification_dispatcher import (
     RecoverableQualificationHold,
     RecoverableQualificationRequeue,
 )
+from cacheon.chain.remote_qualification_evidence import RemoteEvaluationReleased
 from cacheon.chain.standing_cpu_supervisor import (
     StandingCpuSupervisor,
     StandingCpuSupervisorError,
@@ -167,6 +168,28 @@ def test_exception_fails_closed_without_mapping_to_requeue() -> None:
         supervisor.tick()
     assert supervisor.status().phase is SupervisorPhase.FAILED
     assert supervisor.status().last_disposition == "stage_error"
+
+
+def test_committed_infrastructure_release_is_recorded_and_the_loop_continues() -> None:
+    """A lease the dispatcher already released is a disposition, not a crash."""
+
+    lease_id = _d("released-lease")
+    calls: list[str] = []
+
+    def screen():
+        calls.append("screen")
+        if len(calls) == 1:
+            raise RemoteEvaluationReleased(lease_id, "remote_screen_infrastructure")
+        return None
+
+    supervisor = StandingCpuSupervisor(
+        screen_once=screen, qualification_once=None, clock=_Clock()
+    )
+    status = supervisor.tick()
+    assert status.phase is SupervisorPhase.SCREEN
+    assert (status.last_disposition, status.lease_id) == ("released", lease_id)
+    assert supervisor.tick().phase is SupervisorPhase.IDLE
+    assert calls == ["screen", "screen"]
 
 
 def test_run_forever_resumes_same_request_across_restart() -> None:

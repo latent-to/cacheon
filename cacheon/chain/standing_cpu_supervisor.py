@@ -327,10 +327,24 @@ class StandingCpuSupervisor:
         )
 
     def _run_stage(self, stage: str, callback: Callable[[], Any]) -> SupervisorStageResult | None:
+        from cacheon.chain.remote_qualification_evidence import RemoteEvaluationReleased
+
         try:
             raw = callback()
         except StandingCpuSupervisorError:
             raise
+        except RemoteEvaluationReleased as exc:
+            # The dispatcher committed the lease release with its typed reason
+            # (release-cap accounting included) before raising.  That is a
+            # durable disposition, not an invented one: record it and keep
+            # serving (2026-09-02/03: each screen infrastructure release ended
+            # the process instead).
+            return SupervisorStageResult(
+                stage=stage,
+                progressed=True,
+                disposition="released",
+                lease_id=exc.lease_id,
+            )
         except Exception as exc:
             # Never invent COMPLETE/REQUEUE/HOLD from exception class alone.
             self._last_tick_progressed = False
