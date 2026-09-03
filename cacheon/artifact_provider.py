@@ -170,10 +170,6 @@ class ArtifactProviderDescriptor:
     def manifest_feature(self) -> str:
         return f"aot:{self.provider_id}"
 
-    @property
-    def bringup_only(self) -> bool:
-        return not self.authoritative
-
     def snapshot(self) -> dict[str, object]:
         return {
             "artifact_kind": self.artifact_kind.value,
@@ -278,13 +274,6 @@ class ArtifactProviderRegistry:
         if not isinstance(patcher_id, str):
             return None
         return self._patcher_features.get(patcher_id)
-
-    def providers_for_rebuild_feature(
-        self, rebuild_feature: object
-    ) -> frozenset[str]:
-        if not isinstance(rebuild_feature, str):
-            return frozenset()
-        return self._providers_by_rebuild_feature.get(rebuild_feature, frozenset())
 
     def require_crownable(
         self, provider_ids: Iterable[str], *, context: str

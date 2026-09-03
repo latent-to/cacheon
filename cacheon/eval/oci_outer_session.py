@@ -492,10 +492,6 @@ class SessionExecutionEvidence:
     audit_policy_digest: str | None = None
 
     @property
-    def conditioning_interval_seconds(self) -> float:
-        return self.first_timed_completed_at - self.conditioning_started_at
-
-    @property
     def audit_receipts(self) -> tuple[AuditReceiptFacts, ...]:
         return self.batches[-1].audit_receipts if self.batches else ()
 

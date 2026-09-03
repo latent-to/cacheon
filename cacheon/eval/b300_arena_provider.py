@@ -66,8 +66,6 @@ _NON_SERVING_STAGES = SCREEN_STAGES[:-1]
 _SERVING_STAGE = SCREEN_STAGES[-1]
 
 
-
-
 def _resource_ids(value: object, field: str, *, allow_empty: bool) -> tuple[str, ...]:
     if type(value) is not tuple:
         raise B300ArenaProviderError(f"{field} must be an exact tuple")
@@ -637,11 +635,6 @@ class B300ArenaServiceProvider:
         self._resident_teardown_failed = False
         self._closed = False
         self._lock = threading.RLock()
-
-    @property
-    def resident_screen_active(self) -> bool:
-        with self._lock:
-            return self._resident_lifetime is not None and not self._resident_failed
 
     @property
     def resident_screen_latched(self) -> bool:

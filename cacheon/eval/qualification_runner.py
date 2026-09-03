@@ -2254,10 +2254,6 @@ class CohortQualificationAttempt:
         })  # type: ignore[arg-type]
 
     @property
-    def reference_plan_digest(self) -> str:
-        return self.reference_execution.plan_digest
-
-    @property
     def reference_session_digest(self) -> str:
         return self.reference_execution.session_digest
 

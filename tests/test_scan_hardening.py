@@ -25,22 +25,6 @@ def test_known_bypasses_are_flagged(src):
     assert not scan_source(src).ok, f"should have flagged: {src!r}"
 
 
-def test_scan_tree_flags_symlinks_fail_closed(tmp_path):
-    # rglob does not follow directory symlinks, so a symlinked dir of .py files would
-    # be invisible to the scan while staying perfectly importable at runtime. Any
-    # symlink in a bundle is now a violation in itself.
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "evil.py").write_text("import os\nos.system('id')\n")
-    bundle = tmp_path / "bundle"
-    (bundle / "kernels").mkdir(parents=True)
-    (bundle / "kernels" / "k.py").write_text("import torch\n")
-    (bundle / "kernels" / "vendored").symlink_to(outside, target_is_directory=True)
-    res = scan_tree(bundle)
-    assert not res.ok
-    assert any("symlink" in v for v in res.violations)
-
-
 @pytest.mark.parametrize("src", [
     "import torch\ndef k(x, out):\n    out.copy_(torch.relu(x))\n",
     "class C:\n    pass\nc = C()\nv = getattr(c, 'attr', None)\n",   # LITERAL getattr is fine

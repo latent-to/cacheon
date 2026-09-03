@@ -213,12 +213,6 @@ class CallDescriptor(Mapping[str, CapabilityScalar]):
         object.__setattr__(self, "_items", tuple(sorted(merged.items())))
 
     @classmethod
-    def from_mapping(
-        cls, values: Mapping[str, Any] | None = None, /, **fields: Any
-    ) -> "CallDescriptor":
-        return cls(values, **fields)
-
-    @classmethod
     def from_legacy(
         cls,
         *,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -27,7 +26,6 @@ from cacheon.stack_manifest import (
     ReleaseStackContext,
     StackManifestError,
     contribution_ref_from_dict,
-    stack_manifest_from_dict,
 )
 
 
@@ -248,9 +246,6 @@ def test_evaluation_manifest_is_canonical_immutable_and_round_trips() -> None:
     assert left == right
     assert left.digest == right.digest
     assert list(left.entries) == sorted((TARGET_A, TARGET_B))
-    assert stack_manifest_from_dict(left.to_dict()) == left
-    encoded = canonical_json_bytes(left.to_dict())
-    assert stack_manifest_from_dict(json.loads(encoded)) == left
 
     with pytest.raises(TypeError):
         left.entries[TARGET_A] = integrated  # type: ignore[index]
@@ -367,7 +362,6 @@ def test_release_is_integrated_only_round_trips_and_has_no_arena() -> None:
     assert "arena_digest" not in release.to_dict()
     assert not hasattr(release, "with_contribution")
     assert EngineReleaseManifest.from_dict(release.to_dict()) == release
-    assert stack_manifest_from_dict(release.to_dict()) == release
     assert release.validate_against(context) is None
 
     with pytest.raises(StackManifestError, match="integrated contributions only"):

@@ -73,10 +73,6 @@ def normalized_source(source: str) -> str:
     return ast.unparse(ast.fix_missing_locations(tree))
 
 
-def source_fingerprint(source: str) -> str:
-    return hashlib.sha256(normalized_source(source).encode("utf-8")).hexdigest()
-
-
 class _Skeletonize(ast.NodeTransformer):
     """Blank identifier NAMES and constant VALUES, keeping call/attribute structure.
 
@@ -104,11 +100,6 @@ def structural_source(source: str) -> str:
     _strip_docstrings(tree)
     tree = _Skeletonize().visit(tree)
     return ast.unparse(ast.fix_missing_locations(tree))
-
-
-def structural_fingerprint(source: str) -> str:
-    """Advisory near-copy signal robust to variable renames AND constant tweaks."""
-    return hashlib.sha256(structural_source(source).encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------

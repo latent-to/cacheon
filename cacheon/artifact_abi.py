@@ -1039,36 +1039,10 @@ class ArtifactBinding:
         return sum(leaf.dynamic for leaf in _walk_aggregate_nodes(self.components))
 
     @property
-    def integer_range(self) -> tuple[int, int] | None:
-        if self.kind == "scalar" and self.cast in _INTEGER_TYPES:
-            return integer_cast_bounds(self.cast)
-        return None
-
-    @property
     def aggregate_leaves(self) -> tuple[ArtifactAggregateComponent, ...]:
         if self.kind != "aggregate":
             return ()
         return _walk_aggregate_nodes(self.components)
-
-    @property
-    def native_projection(self) -> tuple[object, ...]:
-        """Canonical flattened native signature consumed by artifact ABI gates.
-
-        The semantic aggregate class/tree and pointer provenance remain in the
-        full binding row.  This projection describes only what the compiled
-        header can prove at the native call boundary.
-        """
-
-        if self.kind == "aggregate":
-            return ("aggregate", self.component_cast, self.dynamic_arity)
-        if self.kind == "scalar":
-            native_cast = {"bool": "u8", "tf32": "f32"}.get(self.cast, self.cast)
-            return ("scalar", native_cast)
-        if self.kind == "pointer":
-            return ("pointer", None)
-        if self.kind == "opaque":
-            return ("pointer", None)
-        return (self.kind, None)
 
     def to_dict(self) -> dict[str, object]:
         row: dict[str, object] = {

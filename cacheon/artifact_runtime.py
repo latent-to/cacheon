@@ -165,16 +165,6 @@ class ArtifactAllocationBudget:
         self._bytes = 0
         self._keys = 0
 
-    @property
-    def allocated_bytes(self) -> int:
-        with self._lock:
-            return self._bytes
-
-    @property
-    def allocated_keys(self) -> int:
-        with self._lock:
-            return self._keys
-
     def reserve(
         self,
         owner: object,
@@ -892,14 +882,6 @@ class ArtifactRuntimeEntry:
     @property
     def plans(self) -> tuple[str, ...]:
         return tuple(plan.name for plan in self._plans)
-
-    @property
-    def allocated_bytes(self) -> int:
-        return self._allocated_bytes
-
-    @property
-    def allocated_keys(self) -> int:
-        return self._allocated_keys
 
     def _base_frame(
         self, names: tuple[str, ...], args: tuple[object, ...]

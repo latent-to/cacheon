@@ -234,10 +234,6 @@ class AOTExport:
     # carry a callback, launcher, or candidate host executable.
     device_plan: DeviceLaunchPlan | None = None
 
-    @property
-    def specialization_map(self) -> Mapping[str, bool | int | float | str]:
-        return dict(self.specializes)
-
 
 @dataclass(frozen=True)
 class OpEntry:

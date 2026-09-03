@@ -1033,18 +1033,3 @@ class EngineReleaseManifest:
             raise StackManifestError("release integration-record coverage differs")
         for target, ref in self.entries.items():
             checked[target].require_ref(ref)
-
-
-def stack_manifest_from_dict(
-    value: object,
-) -> EvaluationStackManifest | EngineReleaseManifest:
-    if not isinstance(value, Mapping):
-        raise StackManifestError("stack manifest must be an object")
-    kind = value.get("type")
-    if kind == "evaluation_stack":
-        return EvaluationStackManifest.from_dict(value)
-    if kind == "engine_release":
-        return EngineReleaseManifest.from_dict(value)
-    raise StackManifestError(
-        "stack manifest requires type 'evaluation_stack' or 'engine_release'"
-    )

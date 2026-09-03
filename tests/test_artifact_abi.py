@@ -169,10 +169,6 @@ def test_tensor_projection_matrix_covers_descriptor_pointer_and_metadata():
         role="run", bindings=bindings, specializes={}, prelaunch=()
     )
 
-    assert bindings[0].native_projection == ("pointer", None)
-    assert bindings[1].native_projection == ("scalar", "i32")
-    assert bindings[1].integer_range == (-(1 << 31), (1 << 31) - 1)
-
 
 def test_tensor_projection_matrix_rejects_implicit_or_ill_typed_coercions():
     with pytest.raises(ArtifactABIError, match="not allowed for slot resource"):
@@ -247,7 +243,6 @@ def test_bounded_nested_aggregate_projection_covers_cute_algebra_values():
         prelaunch=(),
     )
     assert aggregate.dynamic_arity == 3
-    assert aggregate.native_projection == ("aggregate", "i64", 3)
     assert aggregate.to_dict()["components"][1][0] == {"static": 128}
 
 
