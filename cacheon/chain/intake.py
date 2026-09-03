@@ -1659,41 +1659,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         bound = self.policy.max_cohort if limit is None else limit
         if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
             raise IntakeError("promoted cohort limit is invalid")
-        first = self._db.execute(
-            "SELECT retry_group_digest,screen_lane FROM reservations AS r "
-            "WHERE status='promoted' AND NOT EXISTS (SELECT 1 FROM "
-            "evaluation_lease_members AS em WHERE em.reservation_id=r.reservation_id "
-            "AND em.active=1) ORDER BY "
-            "CASE screen_lane WHEN 'reproduction' THEN 0 ELSE 1 END,"
-            "block,event_index,event_subindex,hotkey,content_hash LIMIT 1"
-        ).fetchone()
-        if first is None:
-            return ()
-        if first["screen_lane"] == "reproduction":
-            rows = self._db.execute(
-                "SELECT r.* FROM reservations AS r WHERE status='promoted' "
-                "AND screen_lane='reproduction' AND NOT EXISTS (SELECT 1 FROM "
-                "evaluation_lease_members AS em WHERE em.reservation_id=r.reservation_id "
-                "AND em.active=1) ORDER BY block,event_index,"
-                "event_subindex,hotkey,content_hash LIMIT 1"
-            )
-        elif first["retry_group_digest"]:
-            rows = self._db.execute(
-                "SELECT r.* FROM reservations AS r WHERE status='promoted' "
-                "AND retry_group_digest=? AND NOT EXISTS (SELECT 1 FROM "
-                "evaluation_lease_members AS em WHERE em.reservation_id=r.reservation_id "
-                "AND em.active=1) ORDER BY retry_position LIMIT ?",
-                (first["retry_group_digest"], bound),
-            )
-        else:
-            rows = self._db.execute(
-                "SELECT r.* FROM reservations AS r WHERE status='promoted' "
-                "AND screen_lane='primary' AND retry_group_digest='' AND NOT EXISTS "
-                "(SELECT 1 FROM evaluation_lease_members AS em WHERE "
-                "em.reservation_id=r.reservation_id AND em.active=1) ORDER BY "
-                "block,event_index,event_subindex,hotkey,content_hash LIMIT ?",
-                (bound,),
-            )
+        rows = self._select_evaluation_rows("qualification", bound)
         return tuple(self._row(row) for row in rows)
 
     def settlement_blockers(self, reservation_id: str) -> tuple[IntakeReservation, ...]:
@@ -2216,21 +2182,57 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             or len(reason) > 128
         ):
             raise IntakeError("reservation baseline binding is malformed")
-        self._db.execute(
-            "INSERT OR IGNORE INTO reservation_baseline_segments("
-            "reservation_id,arena_id,generation,stack_digest,tree_digest,stack_json,"
-            "transition_event_id,binding_reason) VALUES(?,?,?,?,?,?,?,?)",
-            (
-                reservation_id,
-                state.arena_digest,
-                state.generation,
-                state.manifest.digest,
-                state.tree_digest,
-                self._encoded_stack_manifest(state),
-                state.transition_event_id,
-                reason,
-            ),
-        )
+        reservation = self._db.execute(
+            "SELECT retry_group_digest FROM reservations WHERE reservation_id=?",
+            (reservation_id,),
+        ).fetchone()
+        if reservation is None:
+            raise IntakeError("reservation baseline binding lost its reservation")
+        group = reservation["retry_group_digest"]
+        reservation_ids = (reservation_id,)
+        if group:
+            reservation_ids = tuple(
+                row["reservation_id"]
+                for row in self._db.execute(
+                    "SELECT reservation_id FROM reservations "
+                    "WHERE status='promoted' AND retry_group_digest=? "
+                    "ORDER BY retry_position",
+                    (group,),
+                )
+            )
+            existing = tuple(
+                self.reservation_baseline_segment(row_id)
+                for row_id in reservation_ids
+                if self._db.execute(
+                    "SELECT 1 FROM reservation_baseline_segments "
+                    "WHERE reservation_id=?",
+                    (row_id,),
+                ).fetchone()
+                is not None
+            )
+            if existing:
+                if any(row != existing[0] for row in existing[1:]):
+                    raise IntakeError(
+                        "qualification retry group spans baseline segments"
+                    )
+                state = existing[0]
+        for row_id in reservation_ids:
+            self._db.execute(
+                "INSERT OR IGNORE INTO reservation_baseline_segments("
+                "reservation_id,arena_id,generation,stack_digest,tree_digest,"
+                "stack_json,transition_event_id,binding_reason) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    row_id,
+                    state.arena_digest,
+                    state.generation,
+                    state.manifest.digest,
+                    state.tree_digest,
+                    self._encoded_stack_manifest(state),
+                    state.transition_event_id,
+                    reason,
+                ),
+            )
 
     def _bind_unbound_queue_to_stack(
         self, state: EvaluationStackState, *, reason: str

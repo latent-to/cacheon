@@ -1140,6 +1140,15 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
 
         # A database commissioned before segment persistence reconstructs the
         # old/new boundary from the CROWN reservation snapshot without reruns.
+        retry_group = _h("old-retry-group")
+        store._db.executemany(
+            "UPDATE reservations SET retry_group_digest=?,retry_position=? "
+            "WHERE reservation_id=?",
+            (
+                (retry_group, index, row.reservation_id)
+                for index, row in enumerate(old_rows)
+            ),
+        )
         store._db.execute("DELETE FROM reservation_baseline_segments")
         assert set(store.backfill_reservation_baseline_segments()) == {
             *(row.reservation_id for row in old_rows),
@@ -1154,6 +1163,9 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
         assert store.preview_evaluation_claim(
             stage="qualification", max_members=8
         ) == tuple(row.reservation_id for row in old_rows)
+        assert tuple(row.reservation_id for row in store.promoted()) == tuple(
+            row.reservation_id for row in old_rows
+        )
 
         store._db.executemany(
             "UPDATE reservations SET status='failed',decision='FAIL',reason='test' "
