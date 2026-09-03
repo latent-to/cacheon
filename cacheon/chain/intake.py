@@ -12,6 +12,7 @@ import fcntl
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Iterable, Mapping
 
 from cacheon.chain.reserved_schema import (
@@ -355,12 +356,30 @@ class SettlementLease:
     candidates: tuple[SettlementCandidate, ...]
     initial_event_sequence: int
     previous_event_digest: str
+    lineage_tips: Mapping[str, object] = MappingProxyType({})
+    pretransition_reservations: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
-        from cacheon.settlement import SettlementCandidate, SettlementQualification
+        from cacheon.settlement import (
+            SettlementCandidate,
+            SettlementQualification,
+            TargetLineage,
+        )
 
         for field in ("lease_id", "authority_digest"):
             require_sha256_hex(getattr(self, field), field=field)
+        tips = dict(self.lineage_tips)
+        if any(type(tip) is not TargetLineage for tip in tips.values()):
+            raise IntakeError("settlement lease lineage is not exactly typed")
+        object.__setattr__(self, "lineage_tips", MappingProxyType(tips))
+        reservations = frozenset(self.pretransition_reservations)
+        for reservation_digest in reservations:
+            require_sha256_hex(
+                reservation_digest, field="pretransition reservation"
+            )
+        object.__setattr__(
+            self, "pretransition_reservations", reservations
+        )
         if (
             type(self.generation) is not int
             or self.generation <= 0
@@ -628,6 +647,32 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 archived_block INTEGER NOT NULL CHECK(archived_block>=0),
                 UNIQUE(reservation_id, transition_event_id)
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS target_lineage_tips (
+                target_id TEXT PRIMARY KEY,
+                artifact_digest TEXT NOT NULL,
+                parent_artifact_digest TEXT NOT NULL,
+                winner_speedup TEXT NOT NULL,
+                arena_id TEXT NOT NULL,
+                stack_digest TEXT NOT NULL,
+                transition_event_id TEXT NOT NULL,
+                crowned_block INTEGER NOT NULL CHECK(crowned_block>=0)
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS target_lineage_nodes (
+                target_id TEXT NOT NULL,
+                artifact_digest TEXT NOT NULL,
+                parent_artifact_digest TEXT NOT NULL,
+                winner_speedup TEXT NOT NULL,
+                arena_id TEXT NOT NULL,
+                stack_digest TEXT NOT NULL,
+                transition_event_id TEXT NOT NULL UNIQUE,
+                crowned_block INTEGER NOT NULL CHECK(crowned_block>=0),
+                PRIMARY KEY(target_id, artifact_digest)
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS target_lineage_pretransition_reservations (
+                transition_event_id TEXT NOT NULL,
+                reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
+                PRIMARY KEY(transition_event_id, reservation_id)
+            ) STRICT;
             CREATE TABLE IF NOT EXISTS settlement_events (
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id TEXT NOT NULL UNIQUE,
@@ -732,6 +777,21 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             self._db.execute(
                 "ALTER TABLE settlement_candidates ADD COLUMN "
                 "reproduction_evidence_root TEXT NOT NULL DEFAULT ''"
+            )
+        lineage_columns = {
+            row["name"] for row in self._db.execute(
+                "PRAGMA table_info(target_lineage_tips)"
+            )
+        }
+        if "parent_artifact_digest" not in lineage_columns:
+            self._db.execute(
+                "ALTER TABLE target_lineage_tips ADD COLUMN "
+                "parent_artifact_digest TEXT NOT NULL DEFAULT ''"
+            )
+        if "winner_speedup" not in lineage_columns:
+            self._db.execute(
+                "ALTER TABLE target_lineage_tips ADD COLUMN "
+                "winner_speedup TEXT NOT NULL DEFAULT ''"
             )
         try:
             ensure_evaluation_lease_schema(self._db)
@@ -2353,6 +2413,192 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ).fetchall()
         return tuple(self.get(row["reservation_id"]) for row in rows)
 
+    def target_lineage_tips(self) -> Mapping[str, object]:
+        """Reopen each target's contiguous active root-to-tip lineage."""
+
+        from cacheon.settlement import TargetLineage, TargetLineageNode
+
+        try:
+            lineages: dict[str, TargetLineage] = {}
+            for tip in self._db.execute(
+                "SELECT target_id,artifact_digest FROM target_lineage_tips "
+                "ORDER BY target_id"
+            ):
+                nodes: list[TargetLineageNode] = []
+                artifact = tip["artifact_digest"]
+                seen: set[str] = set()
+                while artifact:
+                    if artifact in seen:
+                        raise IntakeError("target lineage contains a cycle")
+                    seen.add(artifact)
+                    row = self._db.execute(
+                        "SELECT * FROM target_lineage_nodes "
+                        "WHERE target_id=? AND artifact_digest=?",
+                        (tip["target_id"], artifact),
+                    ).fetchone()
+                    if row is None:
+                        if nodes:
+                            break
+                        raise IntakeError(
+                            "target lineage tips require a successful backfill"
+                        )
+                    nodes.append(
+                        TargetLineageNode(
+                            row["artifact_digest"],
+                            row["parent_artifact_digest"],
+                            row["winner_speedup"],
+                            row["transition_event_id"],
+                        )
+                    )
+                    artifact = row["parent_artifact_digest"]
+                lineages[tip["target_id"]] = TargetLineage(
+                    tuple(reversed(nodes))
+                )
+            return MappingProxyType(lineages)
+        except (TypeError, ValueError, IntakeError) as exc:
+            raise IntakeError(
+                f"target lineage tips require a successful backfill: {exc}"
+            ) from None
+
+    def _pretransition_reservations(
+        self,
+        candidates: Iterable[SettlementCandidate],
+        lineages: Mapping[str, object],
+    ) -> frozenset[str]:
+        eligible: set[str] = set()
+        for candidate in candidates:
+            lineage = lineages.get(candidate.target_id)
+            if lineage is None:
+                continue
+            incumbent = candidate.incumbent_manifest.entries.get(
+                candidate.target_id
+            )
+            artifact = "" if incumbent is None else incumbent.artifact_digest
+            try:
+                threshold = lineage.threshold_from(artifact)
+            except (TypeError, ValueError):
+                continue
+            if threshold is None:
+                continue
+            if self._db.execute(
+                "SELECT 1 FROM target_lineage_pretransition_reservations "
+                "WHERE transition_event_id=? AND reservation_id=?",
+                (threshold[1], candidate.reservation_digest),
+            ).fetchone() is not None:
+                eligible.add(candidate.reservation_digest)
+        return frozenset(eligible)
+
+    def backfill_target_lineage_tips(self) -> Mapping[str, object]:
+        """Seed the lineage ledger from the latest CROWN recorded per target.
+
+        Stores that settled before the ledger existed carry crowned history but
+        no tips, which would leave the fork guard inert.  Replaying the newest
+        CROWN per target reconstructs the artifact each target's lineage rests
+        on.  Idempotent: it recomputes the same rows from the same journal.
+        """
+
+        from cacheon.settlement import TargetLineageNode
+
+        with self._transaction():
+            self._db.execute("DELETE FROM target_lineage_tips")
+            self._db.execute("DELETE FROM target_lineage_nodes")
+            self._db.execute(
+                "DELETE FROM target_lineage_pretransition_reservations"
+            )
+            for row in self._db.execute(
+                "SELECT se.target_id,se.reservation_id,se.event_id,se.arena_id,"
+                "se.sequence FROM settlement_events se "
+                "WHERE se.event_type='CROWN' "
+                "ORDER BY se.sequence"
+            ).fetchall():
+                candidate_row = self._db.execute(
+                    "SELECT candidate_json,candidate_digest FROM settlement_candidates "
+                    "WHERE reservation_id=?",
+                    (row["reservation_id"],),
+                ).fetchone()
+                if candidate_row is None:
+                    raise IntakeError("crowned target has no settlement candidate")
+                candidate = self._settlement_candidate(candidate_row)
+                if candidate.candidate_manifest is None:
+                    raise IntakeError("crowned candidate lacks its stack manifest")
+                contribution = candidate.candidate_manifest.entries.get(row["target_id"])
+                if contribution is None:
+                    raise IntakeError("crowned candidate does not name its target")
+                incumbent = candidate.incumbent_manifest.entries.get(row["target_id"])
+                parent_artifact = (
+                    "" if incumbent is None else incumbent.artifact_digest
+                )
+                node = TargetLineageNode(
+                    contribution.artifact_digest,
+                    parent_artifact,
+                    candidate.speedup,
+                    row["event_id"],
+                )
+                self._db.execute(
+                    "INSERT INTO target_lineage_nodes(target_id,artifact_digest,"
+                    "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
+                    "transition_event_id,crowned_block) VALUES(?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(target_id,artifact_digest) DO UPDATE SET "
+                    "parent_artifact_digest=excluded.parent_artifact_digest,"
+                    "winner_speedup=excluded.winner_speedup,"
+                    "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
+                    "transition_event_id=excluded.transition_event_id,"
+                    "crowned_block=excluded.crowned_block",
+                    (
+                        row["target_id"],
+                        node.artifact_digest,
+                        node.parent_artifact_digest,
+                        node.winner_speedup,
+                        candidate.arena_digest,
+                        candidate.candidate_stack_digest,
+                        node.transition_event_id,
+                        candidate.finalized_block,
+                    ),
+                )
+                self._db.execute(
+                    "INSERT INTO target_lineage_tips(target_id,artifact_digest,"
+                    "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
+                    "transition_event_id,crowned_block) VALUES(?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(target_id) DO UPDATE SET "
+                    "artifact_digest=excluded.artifact_digest,"
+                    "parent_artifact_digest=excluded.parent_artifact_digest,"
+                    "winner_speedup=excluded.winner_speedup,"
+                    "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
+                    "transition_event_id=excluded.transition_event_id,"
+                    "crowned_block=excluded.crowned_block",
+                    (
+                        row["target_id"],
+                        node.artifact_digest,
+                        node.parent_artifact_digest,
+                        node.winner_speedup,
+                        candidate.arena_digest,
+                        candidate.candidate_stack_digest,
+                        node.transition_event_id,
+                        candidate.finalized_block,
+                    ),
+                )
+                # Historical journals did not record the settlement wall-clock
+                # or a reservation snapshot. Reservations no later than the
+                # winning submission are nevertheless provably pre-transition.
+                self._db.execute(
+                    "INSERT OR IGNORE INTO "
+                    "target_lineage_pretransition_reservations("
+                    "transition_event_id,reservation_id) "
+                    "SELECT ?,reservation_id FROM reservations WHERE "
+                    "block<? OR (block=? AND event_index<?) OR "
+                    "(block=? AND event_index=? AND event_subindex<=?)",
+                    (
+                        node.transition_event_id,
+                        candidate.finalized_block,
+                        candidate.finalized_block,
+                        candidate.event_index,
+                        candidate.finalized_block,
+                        candidate.event_index,
+                        candidate.event_subindex,
+                    ),
+                )
+        return self.target_lineage_tips()
+
     def evaluation_stack(self, arena_digest: str) -> EvaluationStackState:
         from cacheon.stack_manifest import EvaluationStackManifest
 
@@ -2642,6 +2888,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             if cursor.rowcount != len(ids):
                 raise IntakeError("settlement cohort changed while leasing")
             sequence, previous = self._event_head()
+            tips = self.target_lineage_tips()
+            pretransition = self._pretransition_reservations(
+                candidates, tips
+            )
         return SettlementLease(
             lease_id,
             chosen[0]["authority_digest"],
@@ -2651,6 +2901,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             candidates,
             sequence,
             previous,
+            tips,
+            pretransition,
         )
 
     def commit_settlement(
@@ -2690,6 +2942,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             current_tree_digest=lease.stack.tree_digest,
             initial_event_sequence=lease.initial_event_sequence,
             previous_event_digest=lease.previous_event_digest,
+            lineage_tips=lease.lineage_tips,
+            pretransition_reservations=lease.pretransition_reservations,
         )
         if expected.to_dict() != plan.to_dict():
             raise IntakeError("settlement plan differs from its leased authority")
@@ -2711,6 +2965,15 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 lease.initial_event_sequence, lease.previous_event_digest
             ):
                 raise IntakeError("settlement incumbent or journal advanced")
+            if dict(self.target_lineage_tips()) != dict(lease.lineage_tips):
+                raise IntakeError("target lineage advanced while evidence was open")
+            current_pretransition = self._pretransition_reservations(
+                lease.candidates, lease.lineage_tips
+            )
+            if current_pretransition != lease.pretransition_reservations:
+                raise IntakeError(
+                    "pretransition reservation authority changed while evidence was open"
+                )
             ids = tuple(row.reservation_digest for row in lease.candidates)
             cohort_ids = frozenset(ids)
             if any(
@@ -2778,6 +3041,12 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 elif event.event_type is SettlementEventType.CROWN:
                     assert candidate.candidate_manifest is not None
                     contribution = candidate.candidate_manifest.entries[candidate.target_id]
+                    incumbent = candidate.incumbent_manifest.entries.get(
+                        candidate.target_id
+                    )
+                    parent_artifact = (
+                        "" if incumbent is None else incumbent.artifact_digest
+                    )
                     speedup_ppm = int(
                         (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
                             rounding=ROUND_FLOOR
@@ -2806,6 +3075,59 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             json.dumps(claim.to_dict(), separators=(",", ":"), sort_keys=True),
                             event.digest,
                         ),
+                    )
+                    self._db.execute(
+                        "INSERT INTO target_lineage_nodes(target_id,artifact_digest,"
+                        "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
+                        "transition_event_id,crowned_block) VALUES(?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(target_id,artifact_digest) DO UPDATE SET "
+                        "parent_artifact_digest=excluded.parent_artifact_digest,"
+                        "winner_speedup=excluded.winner_speedup,"
+                        "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
+                        "transition_event_id=excluded.transition_event_id,"
+                        "crowned_block=excluded.crowned_block",
+                        (
+                            candidate.target_id,
+                            contribution.artifact_digest,
+                            parent_artifact,
+                            candidate.speedup,
+                            candidate.arena_digest,
+                            candidate.candidate_stack_digest,
+                            event.digest,
+                            current_block,
+                        ),
+                    )
+                    self._db.execute(
+                        "INSERT INTO target_lineage_tips(target_id,artifact_digest,"
+                        "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
+                        "transition_event_id,crowned_block) "
+                        "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(target_id) DO UPDATE SET "
+                        "artifact_digest=excluded.artifact_digest,"
+                        "parent_artifact_digest=excluded.parent_artifact_digest,"
+                        "winner_speedup=excluded.winner_speedup,"
+                        "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
+                        "transition_event_id=excluded.transition_event_id,"
+                        "crowned_block=excluded.crowned_block",
+                        (
+                            candidate.target_id,
+                            contribution.artifact_digest,
+                            parent_artifact,
+                            candidate.speedup,
+                            candidate.arena_digest,
+                            candidate.candidate_stack_digest,
+                            event.digest,
+                            current_block,
+                        ),
+                    )
+                    # This exact snapshot is the temporal authority for stale
+                    # sibling exceptions. A reservation inserted after this
+                    # CROWN can never qualify merely by carrying an old block.
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO "
+                        "target_lineage_pretransition_reservations("
+                        "transition_event_id,reservation_id) "
+                        "SELECT ?,reservation_id FROM reservations",
+                        (event.digest,),
                     )
                     arrival = self._db.execute(
                         "SELECT block,block_hash,event_index,event_subindex,hotkey "

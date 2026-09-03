@@ -91,6 +91,31 @@ produce bounty events without changing the stack. Among current registered candi
 the planner chooses the highest conservative speedup and uses finalized order as a stable
 tie-break.
 
+Staleness is judged per target lineage, not only against the planning arena's own stack.
+`arena_digest` is derived per commissioned baseline, so a challenger graded against a
+superseded incumbent is commissioned into a *different* arena whose own stack is that old
+baseline. The per-arena `incumbent == before` test alone therefore passes and crowns it a
+second time for one target. `target_lineage_tips` records the artifact holding each
+target's active root-to-tip lineage, each parent artifact, and each conservative winning
+speedup. A candidate measured against any ancestor remains eligible when its reservation
+was already present when the active lineage first left that ancestor and its conservative
+speedup is strictly greater than the product of every winning edge from that ancestor to
+the current tip. For example, with `A -> B -> C`, a candidate `D` measured on A must beat
+`(B/A) * (C/B)`. Equality does not pass. If D wins, the active lineage becomes `A -> D`;
+D is the next baseline and the old `B -> C` branch remains auditable history.
+
+A later reservation against an old ancestor, a candidate based on an artifact outside the
+active lineage, or a score at/below the composed threshold is held `stale_incumbent` and
+requeued by the next commission.
+
+Each CROWN snapshots the reservation IDs present in intake; this is the temporal authority
+for the exception and avoids ambiguous same-block comparisons. Stores that settled before
+this ledger existed are seeded with `backfill_target_lineage_tips`. Historical journals
+did not retain a transition-time snapshot, so the backfill conservatively marks only
+reservations no later than the winning submission itself as provably pre-transition. The
+lease's tips and eligible reservation set are rebound to durable state inside the commit
+transaction because the expected plan is recomputed from the lease's own authority.
+
 The hash-chained event journal can contain:
 
 | Event | Meaning |
@@ -487,6 +512,7 @@ retained design intent and the reserved durable schema are described in
 | Weighted recipient UID changes before or after signing | Submission aborts or retained publication is held | Reopen exact finalized metagraph authority; never confirm against reassigned UIDs |
 | Held reservation has no disposition | It remains durable and may block later work until explicit disposition or eligible finalized-block SLA expiry | Preserve and monitor it; use audited `release_hold` or minimum-age `expire` when operator action is required, never silent deletion |
 | Arena must be retired as an authority domain | No generic transition is available | Define and implement a reviewed typed arena-retirement policy before changing economic authority |
+| Candidate from another arena names an ancestor of the current tip | Eligible only if already present when lineage left that ancestor and strictly faster than the composed ancestor-to-tip threshold | Seed lineage history; otherwise the candidate is held `stale_incumbent` and requeued |
 
 The journal and settlement tables are evidence. Back them up with SQLite-aware tooling,
 monitor WAL/disk health, and test restoration with evidence roots present. Never repair an
