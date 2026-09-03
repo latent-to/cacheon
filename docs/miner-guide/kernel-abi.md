@@ -259,6 +259,10 @@ view into any candidate-owned backend layout. The
 validator derives each weight's outer scale as `g*_alpha * a*_inv` and
 dequantizes independently for its fp32 reference.
 
+`weights.moe_runner_config.top_k` is the routing width, including fused shared
+experts. Live preparation reads it from the serving layer; verification reads
+it from `topk_ids.shape[-1]`. Neither path substitutes a zero placeholder.
+
 `topk_weights` contains validator-supplied raw positive FP32 routing multipliers.
 They are not promised to be probabilities: do not assume that a row sums to one,
 or that its only value is `1.0` when `K == 1`. SGLang configurations that do not

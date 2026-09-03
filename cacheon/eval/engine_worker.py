@@ -1,9 +1,4 @@
-"""Shared engine-worker policy helpers.
-
-This module is safe for both the legacy development launcher and the isolated
-OCI worker to import.  It contains no engine construction, subprocess launch,
-or grading authority.
-"""
+"""Engine policy and construction inside the already-proven OCI worker fence."""
 
 from __future__ import annotations
 
@@ -461,6 +456,24 @@ class EngineWorkerHandle:
     collect_audit_receipts: Any
 
 
+def _engine_child_failed(signum=None, frame=None) -> None:
+    # SystemExit also escapes asyncio/uvloop signal callbacks. Ordinary
+    # exceptions are only logged there, leaving the engine call hung. Unwind
+    # through the existing rank-receipt reporter before OCI reaps the session.
+    raise SystemExit("SGLang child process failed; inspect retained rank receipts")
+
+
+def _report_running_engine_failures(engine: object) -> None:
+    manager = engine.tokenizer_manager
+
+    class ReportingSignalHandler(manager.signal_handler_class):
+        running_phase_sigquit_handler = staticmethod(_engine_child_failed)
+
+    # SGLang replaces its launch handler on the first request. Keep its SIGTERM
+    # behavior and all serving settings; only the fatal SIGQUIT path changes.
+    manager.signal_handler_class = ReportingSignalHandler
+
+
 @contextlib.contextmanager
 def _environment(**overrides: str) -> Iterator[None]:
     saved = {key: os.environ.get(key) for key in overrides}
@@ -533,6 +546,7 @@ def isolated_engine_session(
             import sglang as sgl
 
             kwargs = engine_kwargs(cfg, active=active)
+            kwargs["custom_sigquit_handler"] = _engine_child_failed
             if audit_policy is not None:
                 # This is a separate, untimed fidelity role.  Timed B/C/B' plans
                 # carry no audit policy and therefore retain their sealed graph
@@ -558,6 +572,7 @@ def isolated_engine_session(
             expected_slots: list[str] = []
             expected_members = int(kwargs.get("tp_size", 1) or 1)
             try:
+                _report_running_engine_failures(engine)
                 if active:
                     assert receipts is not None
                     active_receipts = receipts.require(

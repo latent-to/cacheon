@@ -55,6 +55,7 @@ def _live_layer(inputs, *, complete=True):
         w2_blockscale_swizzled=inputs["w2_weight_scale"],
         moe_ep_size=1, moe_tp_size=4, reduce_results=False,
         num_fused_shared_experts=1,
+        top_k=int(inputs["topk_ids"].shape[-1]),
     )
     if not complete:
         del layer.w13_blockscale_swizzled
@@ -88,9 +89,13 @@ def test_m3_nvfp4_verification_executes_the_quantized_contract(corrupt, passed):
     assert result.shape_results[0].case_descriptor.calls[0]["quant"] == "nvfp4"
 
 
-def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
-    slot = slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4")
-    inputs = slot.make_inputs(**SHAPE, dtype=torch.float32, device="cpu", seed=3)
+@pytest.mark.parametrize("target", ("moe.fused_experts", "moe.fused_experts_reduce"))
+@pytest.mark.parametrize("topk", (2, 3))
+def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema(target, topk):
+    slot = slot_for_model(target, "MiniMax-M3-NVFP4")
+    inputs = slot.make_inputs(
+        **(SHAPE | {"topk": topk}), dtype=torch.float32, device="cpu", seed=3
+    )
     layer = _live_layer(inputs)
     layer.w13_weight_scale = torch.zeros_like(inputs["w13_weight_scale"])
     layer.w2_weight_scale = torch.zeros_like(inputs["w2_weight_scale"])
@@ -98,6 +103,7 @@ def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
     live_args = prepare_args_from_layer(layer)
     assert verify_args[0] == live_args[0] == NVFP4_PREPARE_TAG
     verify_view, live_view = verify_args[1], live_args[1]
+    assert verify_view.moe_runner_config.top_k == live_view.moe_runner_config.top_k == topk
     assert (
         verify_view.moe_tp_size,
         verify_view.moe_ep_size,

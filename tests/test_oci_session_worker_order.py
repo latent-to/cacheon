@@ -271,6 +271,7 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
 
     class Engine:
         def __init__(self, **_kwargs):
+            self.tokenizer_manager = SimpleNamespace(signal_handler_class=object)
             observed.append(
                 {
                     "active": os.environ.get("CACHEON_ACTIVE"),
