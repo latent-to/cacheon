@@ -192,18 +192,6 @@ qualification at 1.0827x on the recommissioned arena, and the standing owner
 rejected the result with "evaluation stack is not initialized" because no
 remote-path caller had created the arena's row since `e1c77204`.
 
-The same day the commission's baseline directory stopped being hand-made.
-`chain-incumbent-authority` writes the incumbent authority the packet
-consumes from the store: the stack bytes of the arena named by the newest
-`STACK_TRANSITION` settlement event and each proposal entry's bundle reopened
-from the retained reservation publication. Until then the pod measured
-against whichever bundle an operator last copied (`6f82867d` since
-2026-09-01) while the durable stack already carried `59a8cf0d`, so every
-candidate after that crown, and the crown that superseded it, were scored
-against a stale baseline and `a6a7c758` settled as `HOLD stale_incumbent`.
-The rotation itself (packet, pod install, commission) is still an operator
-recipe.
-
 The closed direct-artifact registry has one crownable provider,
 `cutlass.cute.cubin.v1`. Candidate compiler-factory code runs in a GPU-hidden,
 no-network child and may publish one sealed CUBIN. Validator code owns ABI

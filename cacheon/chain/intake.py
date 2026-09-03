@@ -2086,27 +2086,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("evaluation stack is already initialized differently")
         return state
 
-    def latest_stack_transition(self) -> tuple[int, str] | None:
-        """The newest settled crown as (settlement sequence, arena digest)."""
-
-        row = self._db.execute(
-            "SELECT sequence,arena_id FROM settlement_events "
-            "WHERE event_type='STACK_TRANSITION' ORDER BY sequence DESC LIMIT 1"
-        ).fetchone()
-        return None if row is None else (int(row["sequence"]), row["arena_id"])
-
-    def qualified_publications(self, content_hash: str) -> tuple[IntakeReservation, ...]:
-        """Qualified reservations whose committed bytes are ``content_hash``, newest first."""
-
-        require_sha256_hex(content_hash, field="content_hash")
-        rows = self._db.execute(
-            "SELECT reservation_id FROM reservations WHERE content_hash=? "
-            "AND status='qualified' AND publication_root!='' "
-            "ORDER BY block DESC,event_index DESC,event_subindex DESC",
-            (content_hash,),
-        ).fetchall()
-        return tuple(self.get(row["reservation_id"]) for row in rows)
-
     def evaluation_stack(self, arena_digest: str) -> EvaluationStackState:
         from cacheon.stack_manifest import EvaluationStackManifest
 

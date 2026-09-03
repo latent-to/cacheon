@@ -1923,21 +1923,6 @@ def cmd_chain_release_hold(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_chain_incumbent_authority(args: argparse.Namespace) -> int:
-    """Write the next commission's incumbent authority from the settled crown."""
-
-    from cacheon import chain
-    from cacheon.chain.incumbent_authority import derive_incumbent_authority
-    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
-
-    subtensor = chain.connect(args.network)
-    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
-    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
-        authority = derive_incumbent_authority(store, args.output)
-    print(json.dumps(authority.to_dict(), separators=(",", ":"), sort_keys=True))
-    return 0
-
-
 def cmd_chain_archive_schema3_hold(args: argparse.Namespace) -> int:
     """Archive one legacy schema-v3 hold without loading any signer authority."""
 
@@ -3119,22 +3104,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reservation-id", required=True)
     sp.add_argument("--reason", required=True, help="bounded operator audit reason")
     sp.set_defaults(func=cmd_chain_release_hold)
-
-    sp = sub.add_parser(
-        "chain-incumbent-authority",
-        help=(
-            "operator: write the next commission's incumbent authority (the "
-            "settled crown's stack plus its retained bundle bytes) from the "
-            "durable store; never signs, settles, or crowns"
-        ),
-    )
-    sp.add_argument("--netuid", type=int, required=True)
-    sp.add_argument("--network", required=True)
-    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
-    sp.add_argument(
-        "--output", required=True, help="absolute directory that must not exist yet"
-    )
-    sp.set_defaults(func=cmd_chain_incumbent_authority)
 
     sp = sub.add_parser("chain-register",
                         help="register this hotkey on a subnet (burned_register; needs "
