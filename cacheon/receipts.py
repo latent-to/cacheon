@@ -272,7 +272,15 @@ def _write_to(root: Path, kind: str, payload: dict, *, tag: str = "") -> bool:
         root.mkdir(parents=True, exist_ok=True)
         suffix = f".{_SAFE_RE.sub('_', tag)}" if tag else ""
         p = root / f"{kind}{suffix}.{os.getpid()}.json"
-        p.write_text(json.dumps(body, sort_keys=True))
+        # The resident lane rewrites this file at every swap while the host
+        # reads it for the crossover proof; a truncating write is observable as
+        # an empty file (2026-08-27, 2026-09-03: "invalid receipt ... Expecting
+        # value" then HOLD). Replace atomically so a reader sees the previous
+        # or the new receipt, never a zero-byte one. The dot prefix keeps the
+        # temporary file outside every "<kind>*.json" collector glob.
+        tmp = root / f".{p.name}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(body, sort_keys=True))
+        os.replace(tmp, p)
         return True
     except Exception:  # noqa: BLE001
         logger.exception("cacheon: receipt write failed (kind=%s)", kind)
