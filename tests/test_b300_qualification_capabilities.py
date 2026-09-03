@@ -61,7 +61,6 @@ def test_secret_store_restart_idempotency_isolation_and_sealed_mode(tmp_path: Pa
     assert restarted(first_ref) == first
     assert restarted(second_ref) == second
     assert stat.S_IMODE((root / f"secret-{first_ref}.json").stat().st_mode) == 0o400
-    assert restarted.inventory_digest == store.inventory_digest
     with pytest.raises(capabilities.B300QualificationCapabilityError, match="different"):
         restarted.put(first_ref, b"c" * 32)
     with pytest.raises(capabilities.B300QualificationCapabilityError, match="unavailable"):

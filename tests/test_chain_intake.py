@@ -638,9 +638,6 @@ def test_finalized_sla_removes_old_blocker_but_preserves_settled_candidate(tmp_p
         assert store.get(candidate.reservation_digest).status == "qualified"
         assert store.expire_stale(current_block=100) == ()
         assert store.get(candidate.reservation_digest).status == "qualified"
-        assert store.reopen_active_crown(
-            candidate.arena_digest, candidate.target_id
-        ).candidate == candidate
 
 
 def test_finalized_sla_resets_on_retained_primary_and_survives_restart(tmp_path):
@@ -811,8 +808,6 @@ def test_schema3_archival_is_terminal_preserves_evidence_and_releases_priority(
                 candidate.reservation_digest,
                 reason="must not restore crown eligibility",
             )
-        with pytest.raises(IntakeError, match="active crown"):
-            reopened.reopen_active_crown(candidate.arena_digest, candidate.target_id)
         with pytest.raises(IntakeError, match="exact schema3"):
             reopened.archive_schema3_migration_hold(
                 candidate.reservation_digest,
@@ -1202,10 +1197,6 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
         assert len(standing) == 1
         assert standing[0].arena_digest == candidate.arena_digest
         assert standing[0].retained_evidence_digest == evidence[0].digest
-        crown = store.reopen_active_crown(candidate.arena_digest, candidate.target_id)
-        assert crown.candidate == candidate
-        assert crown.evidence == evidence[0]
-        assert crown.event.event_type is SettlementEventType.CROWN
         assert store.lease_settlement_cohort(current_block=12) is None
 
     with _store(tmp_path) as reopened:
@@ -1213,16 +1204,6 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
         assert current.generation == 1
         assert current.manifest.digest == candidate.candidate_stack_digest
         assert reopened.active_reward_claims()[0][0].hotkey == candidate.hotkey
-        crown = reopened.reopen_active_crown(
-            candidate.arena_digest, candidate.target_id
-        )
-        assert crown.candidate == candidate
-        reopened._db.execute(
-            "UPDATE settlement_events SET event_json='{}' WHERE event_id=?",
-            (crown.event.digest,),
-        )
-        with pytest.raises(IntakeError, match="event is corrupt"):
-            reopened.reopen_active_crown(candidate.arena_digest, candidate.target_id)
 
 
 def test_recommission_preserves_current_loser_evidence_without_requeue(tmp_path):

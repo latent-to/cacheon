@@ -611,34 +611,6 @@ def _resolve_candidate_tree(
     return resolved
 
 
-def _decode_canonical_json(payload: bytes) -> dict[str, object]:
-    def reject_float(_value: str) -> None:
-        raise B300ScreenStagesError("screen evidence contains a JSON float")
-
-    def pairs(rows: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in rows:
-            if key in result:
-                raise B300ScreenStagesError("screen evidence repeats a JSON key")
-            result[key] = value
-        return result
-
-    try:
-        value = json.loads(
-            payload.decode("utf-8"),
-            parse_float=reject_float,
-            parse_constant=reject_float,
-            object_pairs_hook=pairs,
-        )
-    except B300ScreenStagesError:
-        raise
-    except (UnicodeError, ValueError, RecursionError) as exc:
-        raise B300ScreenStagesError("screen evidence is malformed") from exc
-    if type(value) is not dict or canonical_json_bytes(value) != payload:
-        raise B300ScreenStagesError("screen evidence is not canonical")
-    return value
-
-
 @dataclass(frozen=True)
 class _PipelineCarrier:
     service_digest: str

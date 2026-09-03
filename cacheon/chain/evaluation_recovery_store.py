@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Iterator
 
 from cacheon.chain.evaluation_leases import EvaluationLease
 from cacheon.chain.evaluation_recovery import (
-    WORKER_PRE_RESIDENT_RELEASE_REASONS,
     EvaluationRecovery,
     EvaluationRecoveryError,
     EvaluationRecoveryEvent,
@@ -988,27 +987,6 @@ class EvaluationRecoveryStoreMixin:
                     current, current_block=current_block
                 )
         return current.lease
-
-    def release_pre_resident_recovery(
-        self,
-        recovery: EvaluationRecovery,
-        *,
-        current_block: int,
-        reason: str,
-    ) -> EvaluationLease:
-        """Atomically resolve and release only before publication is committed."""
-        if (
-            not isinstance(reason, str)
-            or not reason
-            or reason.strip() != reason
-            or len(reason) > 2_048
-            or any(ord(char) < 32 or ord(char) == 127 for char in reason)
-            or reason in WORKER_PRE_RESIDENT_RELEASE_REASONS
-            or type(recovery) is not EvaluationRecovery
-            or recovery.phase not in {RecoveryPhase.CLAIMED, RecoveryPhase.PREPARED}
-        ):
-            raise _intake_error("pre-resident recovery release is forbidden")
-        return self._release_recovery(recovery, current_block=current_block, reason=reason)
 
     def release_worker_pre_resident_recovery(
         self,
