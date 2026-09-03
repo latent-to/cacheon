@@ -25,6 +25,7 @@ from cacheon.chain.evaluation_recovery import (
     RecoveryResolution,
     evaluation_recovery_event_id,
     evaluation_recovery_id,
+    stale_incumbent_release_reason,
     valid_evaluation_recovery_event_transition,
 )
 from cacheon.chain.evaluation_recovery_plan import (
@@ -1103,6 +1104,66 @@ class EvaluationRecoveryStoreMixin:
                 RecoveryPhase.REQUEST_READY if held_migration else None
             ),
             allow_expired=held_migration,
+        )
+        self._cap_infrastructure_releases(lease)
+        return lease
+
+    def release_stale_incumbent_qualification_recovery(
+        self,
+        recovery: EvaluationRecovery,
+        *,
+        product: object,
+        live_stack: object,
+        live_tree_digest: str,
+        current_block: int,
+    ) -> EvaluationLease:
+        """Retire a completed qualification product bound to an old baseline."""
+
+        from cacheon.chain.remote_qualification_evidence import (
+            RemoteQualificationProduct,
+        )
+        from cacheon.stack_manifest import EvaluationStackManifest
+
+        if (
+            type(recovery) is not EvaluationRecovery
+            or recovery.phase
+            not in {
+                RecoveryPhase.REQUEST_READY,
+                RecoveryPhase.RESULT_READY,
+                RecoveryPhase.EVIDENCE_IMPORTED,
+            }
+            or type(product) is not RemoteQualificationProduct
+            or type(live_stack) is not EvaluationStackManifest
+        ):
+            raise _intake_error("stale-incumbent recovery release is forbidden")
+        try:
+            live_tree = require_sha256_hex(
+                live_tree_digest, field="live qualification tree digest"
+            )
+        except (TypeError, ValueError) as exc:
+            raise _intake_error("stale-incumbent recovery release is forbidden") from exc
+        if (
+            (
+                product.incumbent_stack.digest == live_stack.digest
+                and product.incumbent_tree_digest == live_tree
+            )
+            or product.incumbent_stack.catalog_digest != live_stack.catalog_digest
+            or product.incumbent_stack.arena_digest != live_stack.arena_digest
+            or product.service_digest != live_stack.arena_digest
+        ):
+            raise _intake_error("stale-incumbent recovery release is forbidden")
+        lease = self._release_recovery(
+            recovery,
+            current_block=current_block,
+            reason=stale_incumbent_release_reason(
+                product_digest=product.digest,
+                previous_stack_digest=product.incumbent_stack.digest,
+                previous_tree_digest=product.incumbent_tree_digest,
+                live_stack_digest=live_stack.digest,
+                live_tree_digest=live_tree,
+            ),
+            release_phase=RecoveryPhase.REQUEST_READY,
+            allow_expired=True,
         )
         self._cap_infrastructure_releases(lease)
         return lease

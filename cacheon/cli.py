@@ -1923,6 +1923,26 @@ def cmd_chain_release_hold(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_backfill_lineage(args: argparse.Namespace) -> int:
+    """Rebuild the per-target lineage ledger from the newest CROWN per target."""
+
+    from cacheon import chain
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+
+    subtensor = chain.connect(args.network)
+    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
+    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
+        lineages = store.backfill_target_lineage_tips()
+    for target_id, lineage in sorted(lineages.items()):
+        print(
+            f"{target_id}: tip={lineage.artifact_digest[:16]} "
+            f"parent={lineage.parent_artifact_digest[:16] or '-'} "
+            f"winner_speedup={lineage.winner_speedup} edges={len(lineage.nodes)}"
+        )
+    print(f"backfilled lineage tips for {len(lineages)} target(s)")
+    return 0
+
+
 def cmd_chain_archive_schema3_hold(args: argparse.Namespace) -> int:
     """Archive one legacy schema-v3 hold without loading any signer authority."""
 
@@ -3104,6 +3124,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reservation-id", required=True)
     sp.add_argument("--reason", required=True, help="bounded operator audit reason")
     sp.set_defaults(func=cmd_chain_release_hold)
+
+    sp = sub.add_parser(
+        "chain-backfill-lineage",
+        help=(
+            "operator: rebuild the per-target lineage ledger from the newest "
+            "CROWN per target; idempotent, never signs, settles, or crowns"
+        ),
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument("--network", required=True)
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    sp.set_defaults(func=cmd_chain_backfill_lineage)
 
     sp = sub.add_parser("chain-register",
                         help="register this hotkey on a subnet (burned_register; needs "

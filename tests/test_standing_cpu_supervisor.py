@@ -11,6 +11,7 @@ from cacheon.chain.execution_disposition import (
 )
 from cacheon.chain.evaluation_recovery import RecoveryPhase
 from cacheon.chain.recoverable_qualification_dispatcher import (
+    QualificationCommissionRequired,
     RecoverableQualificationHold,
     RecoverableQualificationRequeue,
 )
@@ -374,11 +375,16 @@ def test_held_qualification_does_not_starve_screen_progress() -> None:
     assert status.hold_reason == "transport_hold:worker_infrastructure_result"
 
 
-def test_settlement_runs_before_new_qualification_and_requires_commission() -> None:
+def test_settlement_runs_before_draining_qualification_without_forcing_commission() -> None:
     order: list[str] = []
+    unsettled = True
 
     def settle():
+        nonlocal unsettled
         order.append("settlement")
+        if not unsettled:
+            return None
+        unsettled = False
         return SupervisorStageResult(
             stage="settlement",
             progressed=True,
@@ -394,10 +400,30 @@ def test_settlement_runs_before_new_qualification_and_requires_commission() -> N
     )
     assert status.tick().phase is SupervisorPhase.SETTLEMENT
     assert order == ["settlement"]
-    held = status.tick()
-    assert held.phase is SupervisorPhase.HOLD
-    assert held.hold_reason == "baseline_commission_required"
-    assert order == ["settlement"]
+    drained = status.tick()
+    assert drained.phase is SupervisorPhase.IDLE
+    assert drained.hold_reason is None
+    assert order == ["settlement", "settlement", "qualification", "screen"]
+
+
+def test_qualification_queue_boundary_requires_commission() -> None:
+    order: list[str] = []
+    boundary = QualificationCommissionRequired(
+        _d("old-stack"),
+        _d("new-stack"),
+        _d("new-tree"),
+    )
+    status = StandingCpuSupervisor(
+        screen_once=lambda: order.append("screen") or None,
+        qualification_once=lambda: order.append("qualification") or boundary,
+        settle_once=lambda: order.append("settlement") or None,
+        clock=_Clock(),
+    ).tick()
+
+    assert status.phase is SupervisorPhase.HOLD
+    assert status.last_disposition == "commission_required"
+    assert status.hold_reason == "baseline_commission_required"
+    assert order == ["settlement", "qualification", "screen"]
 
 
 def test_untyped_stage_product_is_rejected() -> None:

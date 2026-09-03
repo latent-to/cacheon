@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
@@ -79,6 +79,94 @@ def _speedup(value: object) -> str:
     if value != canonical:
         raise SettlementError(f"speedup must use canonical decimal spelling {canonical!r}")
     return canonical
+
+
+@dataclass(frozen=True)
+class TargetLineageNode:
+    """One crowned lineage edge from a parent artifact to its winner."""
+
+    artifact_digest: str
+    parent_artifact_digest: str
+    winner_speedup: str
+    transition_event_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "artifact_digest", _digest(self.artifact_digest, "lineage tip artifact")
+        )
+        object.__setattr__(
+            self,
+            "parent_artifact_digest",
+            _digest(
+                self.parent_artifact_digest,
+                "lineage tip parent artifact",
+                optional=True,
+            ),
+        )
+        object.__setattr__(
+            self, "winner_speedup", _speedup(self.winner_speedup)
+        )
+        object.__setattr__(
+            self,
+            "transition_event_id",
+            _digest(self.transition_event_id, "lineage tip transition event"),
+        )
+
+
+@dataclass(frozen=True)
+class TargetLineage:
+    """The active root-to-tip path for one target."""
+
+    nodes: tuple[TargetLineageNode, ...]
+
+    def __post_init__(self) -> None:
+        nodes = tuple(self.nodes)
+        if (
+            not nodes
+            or any(type(node) is not TargetLineageNode for node in nodes)
+            or len({node.artifact_digest for node in nodes}) != len(nodes)
+        ):
+            raise SettlementError("target lineage nodes are malformed")
+        for parent, child in zip(nodes, nodes[1:]):
+            if child.parent_artifact_digest != parent.artifact_digest:
+                raise SettlementError("target lineage is not contiguous")
+        object.__setattr__(self, "nodes", nodes)
+
+    @property
+    def artifact_digest(self) -> str:
+        return self.nodes[-1].artifact_digest
+
+    @property
+    def winner_speedup(self) -> str:
+        return self.nodes[-1].winner_speedup
+
+    @property
+    def parent_artifact_digest(self) -> str:
+        return self.nodes[-1].parent_artifact_digest
+
+    @property
+    def transition_event_id(self) -> str:
+        return self.nodes[-1].transition_event_id
+
+    def threshold_from(self, artifact_digest: str) -> tuple[Decimal, str] | None:
+        """Return composed tip/ancestor speedup and the first transition."""
+
+        if artifact_digest == self.artifact_digest:
+            return None
+        start = next(
+            (
+                index
+                for index, node in enumerate(self.nodes)
+                if node.parent_artifact_digest == artifact_digest
+            ),
+            None,
+        )
+        if start is None:
+            raise SettlementError("candidate baseline is not in the active lineage")
+        threshold = Decimal(1)
+        for node in self.nodes[start:]:
+            threshold *= Decimal(node.winner_speedup)
+        return threshold, self.nodes[start].transition_event_id
 
 
 @dataclass(frozen=True)
@@ -1146,6 +1234,30 @@ class _Journal:
         self.sequence += 1
 
 
+def _lineage_admits_candidate(
+    candidate: SettlementCandidate,
+    lineages: Mapping[str, TargetLineage],
+    pretransition_reservations: frozenset[str],
+) -> bool:
+    """Admit the tip, or a superior ancestor fork known before divergence."""
+
+    lineage = lineages.get(candidate.target_id)
+    if lineage is None:
+        return True
+    incumbent = candidate.incumbent_manifest.entries.get(candidate.target_id)
+    incumbent_artifact = "" if incumbent is None else incumbent.artifact_digest
+    if incumbent_artifact == lineage.artifact_digest:
+        return True
+    try:
+        threshold = lineage.threshold_from(incumbent_artifact)
+    except SettlementError:
+        return False
+    assert threshold is not None
+    return candidate.reservation_digest in pretransition_reservations and (
+        Decimal(candidate.speedup) > threshold[0]
+    )
+
+
 def plan_settlement(
     candidates: Iterable[SettlementCandidate],
     *,
@@ -1153,11 +1265,29 @@ def plan_settlement(
     current_tree_digest: str,
     initial_event_sequence: int = 0,
     previous_event_digest: str = "",
+    lineage_tips: Mapping[str, TargetLineage] | None = None,
+    pretransition_reservations: frozenset[str] = frozenset(),
 ) -> SettlementPlan:
-    """Select one registered winner over one incumbent and emit a hash-chained plan."""
+    """Select one registered winner over one incumbent and emit a hash-chained plan.
+
+    A candidate against the current target tip is eligible normally. A stale
+    candidate remains eligible when its incumbent is an ancestor of the tip,
+    its reservation existed before the lineage first left that ancestor, and
+    its conservative speedup is strictly greater than the product of all
+    winning speedups from that ancestor to the current tip.
+    """
 
     if type(current_manifest) is not EvaluationStackManifest:
         raise SettlementError("current manifest is not exactly typed")
+    tips = {} if lineage_tips is None else dict(lineage_tips)
+    for target, lineage in tips.items():
+        _identifier(target, "lineage tip target")
+        if type(lineage) is not TargetLineage:
+            raise SettlementError("target lineage is not exactly typed")
+    if type(pretransition_reservations) is not frozenset:
+        raise SettlementError("pretransition reservations must be a frozenset")
+    for reservation_digest in pretransition_reservations:
+        _digest(reservation_digest, "pretransition reservation")
     before = StackArmIdentity(current_manifest.digest, current_tree_digest)
     rows = tuple(candidates)
     if any(type(row) is not SettlementCandidate for row in rows):
@@ -1168,8 +1298,15 @@ def plan_settlement(
         raise SettlementError("settlement candidates contain duplicates")
     journal = _Journal(initial_event_sequence, previous_event_digest)
 
-    current = tuple(row for row in rows if row.incumbent == before)
-    stale = sorted((row for row in rows if row.incumbent != before), key=lambda row: row.finalized_order)
+    def is_stale(row: SettlementCandidate) -> bool:
+        if row.target_id not in tips:
+            return row.incumbent != before
+        return not _lineage_admits_candidate(
+            row, tips, pretransition_reservations
+        )
+
+    current = tuple(row for row in rows if not is_stale(row))
+    stale = sorted((row for row in rows if is_stale(row)), key=lambda row: row.finalized_order)
     for row in stale:
         journal.add(
             SettlementEventType.HOLD, row, subject_digest=row.selected_delta_digest,
@@ -1201,9 +1338,20 @@ def plan_settlement(
 
     assert winner.candidate_manifest is not None
     replacement = winner.candidate_manifest.entries[winner.target_id]
+    lineage = tips.get(winner.target_id)
+    incumbent = winner.incumbent_manifest.entries.get(winner.target_id)
+    incumbent_artifact = "" if incumbent is None else incumbent.artifact_digest
+    pretransition_stale_win = (
+        lineage is not None and incumbent_artifact != lineage.artifact_digest
+    )
     journal.add(
         SettlementEventType.CROWN, winner, subject_digest=replacement.digest,
-        target_id=winner.target_id, before=before, after=before, reason="qualified_win",
+        target_id=winner.target_id, before=before, after=before,
+        reason=(
+            "qualified_pretransition_ancestor_win"
+            if pretransition_stale_win
+            else "qualified_win"
+        ),
     )
     prior = current_manifest.entries.get(winner.target_id)
     if prior is not None:
@@ -1236,5 +1384,6 @@ __all__ = [
     "SettlementEvidence", "SettlementEvent",
     "SettlementEventType", "SettlementPlan", "SettlementQualification",
     "SettlementReproductionIdentity", "StackTransitionOutput",
+    "TargetLineage", "TargetLineageNode",
     "plan_settlement",
 ]

@@ -19,10 +19,11 @@ _EVENT_DOMAIN = "cacheon.evaluation-recovery-event.v1"
 REVIEWED_LEGACY_SCREEN_ONLY_REASON_PREFIX = (
     "operator_reviewed_legacy_screen_only:v1:"
 )
+STALE_INCUMBENT_RELEASE_REASON_PREFIX = "systemic:incumbent_changed:v1:"
 
-# A post-publication release is legal only for one authenticated, closed,
-# marker-absent pre-resident refusal.  These reasons mirror the pod protocol
-# set (execution_disposition.PRE_RESIDENT_REQUEUE_FAILURES) one-for-one.
+# Worker-failure post-publication release is legal only for one authenticated,
+# closed, marker-absent pre-resident refusal. A separate digest-bound release
+# retires a valid product when its measured incumbent is no longer live.
 WORKER_PRE_RESIDENT_REASON_PREFIX = "worker_pre_resident:"
 WORKER_PRE_RESIDENT_RELEASE_REASONS = frozenset(
     {
@@ -106,6 +107,53 @@ def reviewed_legacy_screen_only_reason_digests(
     ):
         return None
     return fields[0], fields[1]
+
+
+def stale_incumbent_release_reason_digests(
+    reason: str,
+) -> tuple[str, str, str, str, str] | None:
+    """Parse the closed release identity for a stale qualification product."""
+
+    if not isinstance(reason, str) or not reason.startswith(
+        STALE_INCUMBENT_RELEASE_REASON_PREFIX
+    ):
+        return None
+    fields = reason[len(STALE_INCUMBENT_RELEASE_REASON_PREFIX) :].split(":")
+    if len(fields) != 5 or any(
+        len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+        for value in fields
+    ):
+        return None
+    return fields[0], fields[1], fields[2], fields[3], fields[4]
+
+
+def stale_incumbent_release_reason(
+    *,
+    product_digest: str,
+    previous_stack_digest: str,
+    previous_tree_digest: str,
+    live_stack_digest: str,
+    live_tree_digest: str,
+) -> str:
+    """Bind a recovery release to both stale and live incumbent identities."""
+
+    for field, value in (
+        ("stale qualification product digest", product_digest),
+        ("stale qualification incumbent stack digest", previous_stack_digest),
+        ("stale qualification incumbent tree digest", previous_tree_digest),
+        ("live qualification stack digest", live_stack_digest),
+        ("live qualification tree digest", live_tree_digest),
+    ):
+        require_sha256_hex(value, field=field)
+    return STALE_INCUMBENT_RELEASE_REASON_PREFIX + ":".join(
+        (
+            product_digest,
+            previous_stack_digest,
+            previous_tree_digest,
+            live_stack_digest,
+            live_tree_digest,
+        )
+    )
 
 
 def evaluation_recovery_id(lease: EvaluationLease) -> str:
@@ -402,6 +450,18 @@ def valid_evaluation_recovery_event_transition(
                 and event.resolution is RecoveryResolution.PRE_RESIDENT_RELEASED
                 and reviewed[0] == sha256_hex(previous.reason.encode("utf-8"))
             )
+        if stale_incumbent_release_reason_digests(event.reason) is not None:
+            return (
+                previous.resolution is RecoveryResolution.UNRESOLVED
+                and previous.phase
+                in {
+                    RecoveryPhase.REQUEST_READY,
+                    RecoveryPhase.RESULT_READY,
+                    RecoveryPhase.EVIDENCE_IMPORTED,
+                }
+                and event.phase is RecoveryPhase.REQUEST_READY
+                and event.resolution is RecoveryResolution.PRE_RESIDENT_RELEASED
+            )
         if event.reason in WORKER_PRE_RESIDENT_RELEASE_REASONS:
             phase_permitted = previous.phase is RecoveryPhase.REQUEST_READY
         else:
@@ -437,10 +497,13 @@ __all__ = [
     "RecoveryPhase",
     "RecoveryResolution",
     "REVIEWED_LEGACY_SCREEN_ONLY_REASON_PREFIX",
+    "STALE_INCUMBENT_RELEASE_REASON_PREFIX",
     "WORKER_PRE_RESIDENT_REASON_PREFIX",
     "WORKER_PRE_RESIDENT_RELEASE_REASONS",
     "evaluation_recovery_event_id",
     "evaluation_recovery_id",
     "reviewed_legacy_screen_only_reason_digests",
+    "stale_incumbent_release_reason",
+    "stale_incumbent_release_reason_digests",
     "valid_evaluation_recovery_event_transition",
 ]

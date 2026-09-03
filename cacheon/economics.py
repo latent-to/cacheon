@@ -464,7 +464,7 @@ def project_global_rewards(
     earning_claims: Iterable[StandingRewardClaim],
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
 ) -> GlobalRewardProjection:
-    """Pool every retained two-PASS contribution before one indivisible vector."""
+    """Pool the store-selected earning claims before one indivisible vector."""
 
     if type(policy) is not EmissionsPolicyManifest:
         raise EconomicsError("policy is not exactly typed")
