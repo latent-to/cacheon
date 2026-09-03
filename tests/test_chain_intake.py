@@ -273,6 +273,7 @@ def _qualified_settlement_candidate(
     check_single_pass: bool = True,
     initialize_stack: bool = True,
     arena_marker: str = "",
+    submission_block: int = 10,
 ) -> SettlementCandidate | str:
     catalog = default_target_catalog()
     target = "activation.silu_and_mul"
@@ -319,7 +320,9 @@ def _qualified_settlement_candidate(
         media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1",
     )
-    row = _reserve_one(store, index=index, hotkey="miner" + marker)
+    row = _reserve_one(
+        store, index=index, hotkey="miner" + marker, block=submission_block
+    )
     _publish(
         store,
         row.reservation_id,
@@ -1361,6 +1364,52 @@ def test_faster_pretransition_sibling_replaces_cross_arena_lineage_tip(tmp_path)
         assert new_tip.parent_artifact_digest == first_tip.parent_artifact_digest
         assert new_tip.winner_speedup == faster.speedup
         assert resulting_stack.manifest == faster.candidate_manifest
+
+
+def test_backfill_proves_reservation_before_winner_qualification_completed(
+    tmp_path,
+):
+    with _store(tmp_path) as store:
+        winner = _qualified_settlement_candidate(
+            store,
+            index=0,
+            marker="winner",
+            arena_marker="winner",
+            submission_block=10,
+            retained_block=20,
+            speedups=("1.06", "1.05"),
+        )
+        sibling = _qualified_settlement_candidate(
+            store,
+            index=1,
+            marker="sibling",
+            arena_marker="sibling",
+            submission_block=15,
+            retained_block=20,
+            speedups=("1.1", "1.09"),
+            check_single_pass=False,
+        )
+        assert isinstance(winner, SettlementCandidate)
+        assert isinstance(sibling, SettlementCandidate)
+        lease = store.lease_settlement_cohort(current_block=21)
+        assert lease is not None
+        assert lease.candidates == (winner,)
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=21)
+
+        store._db.execute("DELETE FROM target_lineage_tips")
+        store._db.execute("DELETE FROM target_lineage_nodes")
+        store._db.execute(
+            "DELETE FROM target_lineage_pretransition_reservations"
+        )
+        lineage = store.backfill_target_lineage_tips()[
+            "activation.silu_and_mul"
+        ]
+        assert store._db.execute(
+            "SELECT 1 FROM target_lineage_pretransition_reservations "
+            "WHERE transition_event_id=? AND reservation_id=?",
+            (lineage.transition_event_id, sibling.reservation_digest),
+        ).fetchone() is not None
 
 
 def test_faster_stale_sibling_submitted_after_transition_is_held(tmp_path):

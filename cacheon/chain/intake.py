@@ -2577,26 +2577,50 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         candidate.finalized_block,
                     ),
                 )
-                # Historical journals did not record the settlement wall-clock
-                # or a reservation snapshot. Reservations no later than the
-                # winning submission are nevertheless provably pre-transition.
-                self._db.execute(
-                    "INSERT OR IGNORE INTO "
-                    "target_lineage_pretransition_reservations("
-                    "transition_event_id,reservation_id) "
-                    "SELECT ?,reservation_id FROM reservations WHERE "
-                    "block<? OR (block=? AND event_index<?) OR "
-                    "(block=? AND event_index=? AND event_subindex<=?)",
-                    (
-                        node.transition_event_id,
-                        candidate.finalized_block,
-                        candidate.finalized_block,
-                        candidate.event_index,
-                        candidate.finalized_block,
-                        candidate.event_index,
-                        candidate.event_subindex,
-                    ),
-                )
+                # Historical journals did not retain the transition-time
+                # reservation snapshot. A crown cannot precede its last
+                # retained qualification product, so reservations from an
+                # earlier block than that product are provably pre-transition.
+                # Same-block arrivals remain excluded because retained_block
+                # has no event index. Legacy zero timestamps fall back to the
+                # winner's exact arrival order.
+                retained = self._db.execute(
+                    "SELECT MAX(retained_block) AS block "
+                    "FROM settlement_qualifications WHERE reservation_id=?",
+                    (candidate.reservation_digest,),
+                ).fetchone()
+                proof_block = 0 if retained is None else int(retained["block"])
+                if proof_block > 0:
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO "
+                        "target_lineage_pretransition_reservations("
+                        "transition_event_id,reservation_id) "
+                        "SELECT ?,reservation_id FROM reservations "
+                        "WHERE block<? OR reservation_id=?",
+                        (
+                            node.transition_event_id,
+                            proof_block,
+                            candidate.reservation_digest,
+                        ),
+                    )
+                else:
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO "
+                        "target_lineage_pretransition_reservations("
+                        "transition_event_id,reservation_id) "
+                        "SELECT ?,reservation_id FROM reservations WHERE "
+                        "block<? OR (block=? AND event_index<?) OR "
+                        "(block=? AND event_index=? AND event_subindex<=?)",
+                        (
+                            node.transition_event_id,
+                            candidate.finalized_block,
+                            candidate.finalized_block,
+                            candidate.event_index,
+                            candidate.finalized_block,
+                            candidate.event_index,
+                            candidate.event_subindex,
+                        ),
+                    )
         return self.target_lineage_tips()
 
     def evaluation_stack(self, arena_digest: str) -> EvaluationStackState:
