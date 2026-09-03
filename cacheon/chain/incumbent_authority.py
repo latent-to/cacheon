@@ -25,7 +25,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from cacheon.bundle_hash import CARRIER_RECEIPT_NAME, content_hash
+from cacheon.bundle_hash import committed_content_hash
 from cacheon.chain.intake import FinalizedIntakeStore, IntakeError
 from cacheon.chain.publication import (
     WorkerBundlePublicationError,
@@ -200,12 +200,6 @@ def _copy_retained_source(
             f"{source.target_id}: retained publication cannot reopen: {exc}"
         ) from exc
     shutil.copytree(publication.root, destination, symlinks=False, copy_function=shutil.copy2)
-    # The engine hashes a staged incumbent source over every file, and its
-    # publication fallback only admits a directory named by the publication
-    # address.  The retained carrier's top-level receipt is validator-owned,
-    # so the copy carries the miner's committed bytes alone.
-    destination.chmod(0o700)
-    (destination / CARRIER_RECEIPT_NAME).unlink()
     paths = sorted(destination.rglob("*"), key=lambda item: len(item.parts), reverse=True)
     for path in paths:
         if path.is_symlink() or not (path.is_file() or path.is_dir()):
@@ -214,7 +208,7 @@ def _copy_retained_source(
             )
         path.chmod(0o555 if path.is_dir() else 0o444)
     destination.chmod(0o555)
-    observed = content_hash(destination)
+    observed = committed_content_hash(destination)
     if observed != source.artifact_digest:
         raise IncumbentAuthorityError(
             f"{source.target_id}: copied bytes hash to {observed[:12]}, "
