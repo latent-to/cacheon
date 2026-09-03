@@ -37,8 +37,9 @@ credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - b) / h) × 10^12)
 
 Submission time, not evaluation completion time, controls age and stall credit.
 Logarithmic units make compounded gains path-independent. Policy version
-`cacheon.emissions.v1.3` replaces the v1.1 champion floor; an existing v1.1
-binding moves forward automatically only when all numeric policy fields match.
+`cacheon.emissions.v1.5` retains v1.3's two-PASS rule and replaces v1.4's
+CROWN-only restriction. Existing v1.1/v1.3/v1.4 bindings move forward only
+when all numeric policy fields match; the credit formula is unchanged.
 
 The active standing claim still validates the current evaluation stack. Reward
 history is derived from existing settlement candidates and their two retained

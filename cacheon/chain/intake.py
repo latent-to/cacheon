@@ -2769,9 +2769,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
     def _bind_emissions_policy(self, policy) -> None:
         policy_digest = policy.digest
         require_sha256_hex(policy_digest, field="policy_digest")
-        legacy = policy.to_dict()
-        legacy["policy_version"] = "cacheon.emissions.v1.1"
-        predecessor = canonical_digest("cacheon.economics.policy", legacy)
+        predecessors = {
+            canonical_digest("cacheon.economics.policy", policy.to_dict() | {"policy_version": version})
+            for version in ("cacheon.emissions.v1.1", "cacheon.emissions.v1.3", "cacheon.emissions.v1.4")
+        }
         with self._transaction():
             row = self._db.execute(
                 "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
@@ -2781,7 +2782,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     "INSERT INTO metadata(key,value) VALUES('emissions_policy_digest',?)",
                     (policy_digest,),
                 )
-            elif row["value"] == predecessor:
+            elif row["value"] in predecessors:
                 self._db.execute(
                     "UPDATE metadata SET value=? WHERE key='emissions_policy_digest'",
                     (policy_digest,),

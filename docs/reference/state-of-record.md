@@ -531,11 +531,14 @@ either the live V1 offer or the explicitly configured crownless burn offer to
 the gateway; it never signs. Configuration must name `enable_weights` and
 `weights_stage_config` consistently or startup fails closed.
 
-The current `cacheon.emissions.v1.3` projection rewards every distinct retained
+The current `cacheon.emissions.v1.5` projection rewards every distinct retained
 two-PASS contribution, including settlement holds. Credit uses logarithmic
 speedup, submission-time stall bonus, and exponential decay; a later crown does
-not erase or rerun an earlier PASS. Matching v1.1 policy bindings advance
-automatically, while any numeric policy change remains refused.
+not erase or rerun an earlier PASS. Matching v1.1/v1.3/v1.4 policy bindings
+advance, while any numeric policy change remains refused. This restores the
+two-PASS rule after an interim CROWN-only deployment on 2026-09-03.
+The follower also resumes its retained in-flight projection before adopting a
+fresh offer, using the same existing recovery helper as `set-weights`.
 
 When a valid active claimant is absent from the current metagraph, that
 family's allocated ppm is sent to the validator hotkey for the tick rather than

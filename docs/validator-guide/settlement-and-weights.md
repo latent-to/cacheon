@@ -175,8 +175,8 @@ exact vector readback.
 Projection is global, not one `set-weights` call per target. Generation-zero arenas
 may contribute retained PASS history but do not become active stack authorities. The
 builder requires catalog coverage for every crowned stack and binds the policy digest.
-The v1.1 binding advances to v1.3 only with identical numeric policy fields; unrelated
-policy changes remain refused.
+The v1.1/v1.3/v1.4 bindings advance to v1.5 only with identical numeric policy
+fields; unrelated policy changes remain refused.
 
 ## Dry run
 
@@ -293,18 +293,13 @@ stateDiagram-v2
 only observes it. At or after the deadline, absent matching readback becomes `held` rather
 than blindly resubmitting.
 
-On every non-dry public invocation, `set-weights` first constructs the current projection,
-then reopens the exact retained projection named by an `intent` or `pending` journal head.
-It resumes that immutable vector across later chain heads when chain scope, netuid, and
-signer authority still match; a restart cannot replace an in-flight vector merely because
-a newly computed head would produce different weights. An authority mismatch fails
-closed. A direct caller that bypasses this resume step and presents a different projection
-to the low-level reconciler receives a retained hold rather than a silent replacement.
+On every non-dry invocation, `set-weights` and `follow-weights` resume any retained
+`intent` or `pending` projection before adopting a new one. Chain scope, netuid
+and signer must still match. A refreshed offer cannot replace an in-flight vector.
+An authority mismatch or a direct low-level call bypassing resume fails closed.
 
-The reconciler can record a preexisting chain match as `confirmed` without submitting.
-Conversely, it refuses a real submission when `crown_count` is zero, when the wallet
-hotkey differs from the projection authority, or when the effective metagraph/block is
-already stale.
+The reconciler can confirm a preexisting chain match without signing. It refuses
+a real submission with zero `crown_count`, a different signer, or stale authority.
 
 If the journal is held, investigate and preserve the record. To append an audited release
 without submitting:
