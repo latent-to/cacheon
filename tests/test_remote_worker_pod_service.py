@@ -216,6 +216,39 @@ def test_dead_adapter_is_never_silently_restarted(
     assert process.start_count == 1
 
 
+def test_epoch_failure_retires_adapter_before_another_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProcess()
+    process = pod_service.PersistentAdapterProcess(
+        {}, paths=_pod_paths(tmp_path), heartbeat_seconds=5
+    )
+    process.process = fake  # type: ignore[assignment]
+    process.start_count = 1
+    request_id = "d" * 64
+    monkeypatch.setattr(
+        process,
+        "_read_control",
+        lambda **_kwargs: {
+            "request_id": request_id,
+            "schema": spool.SCHEMA_ADAPTER_CONTROL,
+            "state": "epoch_failed",
+        },
+    )
+
+    failure = process.evaluate(
+        {"request_id": request_id},
+        tmp_path / "request",
+        tmp_path / "result",
+        deadline=int(time.time()) + 60,
+    )
+
+    assert failure == "adapter_epoch_failed"
+    assert process.process is None
+    assert fake.returncode == 0
+
+
 class _ReapedDeadProcess:
     stdin = None
     stdout = None

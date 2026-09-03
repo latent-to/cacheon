@@ -1002,10 +1002,6 @@ class EvaluationCoordinator:
                     raise EvaluationCoordinatorError(
                         "qualification cohort changed before result commit"
                     )
-                store.initialize_evaluation_stack(
-                    incumbent_stack,
-                    tree_digest=tree_digest,
-                )
                 authority_digest = authority_manifest.digest
                 authority_value = authority_manifest.to_dict()
                 for row in rows:

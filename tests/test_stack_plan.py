@@ -110,25 +110,25 @@ def _plan(
 
 
 @pytest.mark.parametrize(
-    "initial_target,replacement_target,expected_removed",
+    "initial_targets,replacement_target,expected_removed",
     [
-        (None, MSA, ()),
-        (MSA, MSA, ()),
-        (None, MOE_EPILOGUE_ATOMIC_TARGET, ()),
-        (MOE_EPILOGUE_ATOMIC_TARGET, MOE_EPILOGUE_ATOMIC_TARGET, ()),
+        ((MSA,), MSA, ()),
+        ((MOE_EPILOGUE_ATOMIC_TARGET,), MOE_EPILOGUE_ATOMIC_TARGET, ()),
+        (("moe.fused_experts_reduce",), "moe.fused_experts",
+         ("moe.fused_experts_reduce",)),
+        (("moe.fused_experts",), "moe.fused_experts_reduce", ()),
+        (("moe.fused_experts", "moe.fused_experts_reduce"),
+         "moe.fused_experts", ("moe.fused_experts_reduce",)),
     ],
 )
 def test_registered_stock_and_same_target_transitions(
-    initial_target, replacement_target, expected_removed
+    initial_targets, replacement_target, expected_removed
 ):
     catalog = default_target_catalog()
-    targets = tuple(filter(None, (initial_target, replacement_target)))
+    targets = (*initial_targets, replacement_target)
     context = _context(catalog, targets)
-    entries = (
-        {}
-        if initial_target is None
-        else {initial_target: _ref(catalog, initial_target, "incumbent")}
-    )
+    entries = {target: _ref(catalog, target, f"incumbent:{target}")
+               for target in initial_targets}
     incumbent = _stack(catalog, entries)
 
     arm = _plan(
@@ -139,7 +139,9 @@ def test_registered_stock_and_same_target_transitions(
     )
 
     assert tuple(ref.target_id for ref in arm.transition.displaced) == expected_removed
-    assert set(arm.candidate.entries) == {replacement_target}
+    assert set(arm.candidate.entries) == (
+        set(initial_targets) - set(expected_removed)
+    ) | {replacement_target}
     assert arm.baseline_before == arm.baseline_after
     assert arm.baseline_before is not arm.baseline_after
     assert arm.baseline_before.stack_digest == incumbent.digest

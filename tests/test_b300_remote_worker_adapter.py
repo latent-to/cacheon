@@ -664,7 +664,7 @@ def test_adapter_request_failure_continues_on_same_runtime(
             tmp_path / f".{request_ids[1]}.1",
         ),
     }
-    runtime = object()
+    runtime = _ServingRuntime()
     seen: list[tuple[object, str]] = []
 
     monkeypatch.setattr(
@@ -686,6 +686,7 @@ def test_adapter_request_failure_continues_on_same_runtime(
     frames = tuple(json.loads(row) for row in controls.getvalue().splitlines())
 
     assert seen == [(runtime, request_ids[0]), (runtime, request_ids[1])]
+    assert runtime.closed == 0
     assert frames == (
         {"schema": spool.SCHEMA_ADAPTER_CONTROL, "state": "ready"},
         {
@@ -695,6 +696,74 @@ def test_adapter_request_failure_continues_on_same_runtime(
         },
         {
             "request_id": request_ids[1],
+            "schema": spool.SCHEMA_ADAPTER_CONTROL,
+            "state": "completed",
+        },
+    )
+
+
+class _ServingRuntime:
+    """The serve loop's view of a runtime: the latch query and close."""
+
+    def __init__(self, latch_after: str | None = None) -> None:
+        self.latch_after = latch_after
+        self.latched = False
+        self.closed = 0
+
+    def resident_screen_latched(self) -> bool:
+        return self.latched
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_latched_resident_retires_adapter_behind_completed_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _adapter_paths(tmp_path)
+    request_ids = ("5" * 64, "6" * 64)
+    frames_by_raw = {
+        b"first\n": (
+            request_ids[0],
+            tmp_path / request_ids[0],
+            tmp_path / f".{request_ids[0]}.1",
+        ),
+        b"second\n": (
+            request_ids[1],
+            tmp_path / request_ids[1],
+            tmp_path / f".{request_ids[1]}.1",
+        ),
+    }
+    runtime = _ServingRuntime()
+    seen: list[str] = []
+
+    monkeypatch.setattr(
+        adapter,
+        "validated_command_paths",
+        lambda raw, _paths: frames_by_raw[raw],
+    )
+
+    def run_with_runtime(request_dir, _result_dir, observed_runtime):
+        # A stock-canary miss completes the screen normally but latches the
+        # resident lifetime behind it.
+        seen.append(request_dir.name)
+        observed_runtime.latched = True
+
+    monkeypatch.setattr(adapter, "run_with_runtime", run_with_runtime)
+    controls = io.BytesIO()
+
+    assert adapter.serve_runtime(runtime, paths, iter(frames_by_raw), controls) == 0
+    frames = tuple(json.loads(row) for row in controls.getvalue().splitlines())
+
+    # The second frame is never consumed: the process retires after the
+    # first completed result, with its worker torn down before the frame.
+    assert seen == [request_ids[0]]
+    assert runtime.closed == 1
+    assert frames == (
+        {"schema": spool.SCHEMA_ADAPTER_CONTROL, "state": "ready"},
+        {
+            "request_id": request_ids[0],
+            "retired": True,
             "schema": spool.SCHEMA_ADAPTER_CONTROL,
             "state": "completed",
         },

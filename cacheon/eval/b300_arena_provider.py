@@ -643,6 +643,13 @@ class B300ArenaServiceProvider:
         with self._lock:
             return self._resident_lifetime is not None and not self._resident_failed
 
+    @property
+    def resident_screen_latched(self) -> bool:
+        """True once only an adapter restart can clear the resident lifetime."""
+
+        with self._lock:
+            return self._resident_failed or self._resident_teardown_failed
+
     def retire_resident_screen(self) -> None:
         """Release the retained screen lifetime before qualification owns its lane."""
 

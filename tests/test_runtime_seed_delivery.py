@@ -67,18 +67,111 @@ def test_seed_refuses_symlink_members(tmp_path):
         )
 
 
-def test_seed_refuses_planless_tree(tmp_path):
+def test_seed_refuses_planless_tree_of_unknown_entries(tmp_path):
     seed = tmp_path / "seed"
     variant = seed / "0_0_0_0_1_1_4"
     variant.mkdir(parents=True)
     (variant / "fmha_sm100.so").write_bytes(b"y" * 8)
-    with pytest.raises(OCIBackendError, match="plan/ subtree"):
+    with pytest.raises(OCIBackendError, match="unknown cache families"):
         _seed_runtime_cache(
             seed,
             _fresh_cache(tmp_path),
             uid=os.geteuid(),
             gid=os.getegid(),
             max_bytes=1 << 20,
+        )
+
+
+def _full_cache_seed(root: Path) -> Path:
+    seed = root / "full-seed"
+    (seed / "torchinductor" / "ab").mkdir(parents=True)
+    (seed / "torchinductor" / "ab" / "graph.py").write_bytes(b"g" * 32)
+    (seed / "triton").mkdir()
+    (seed / "triton" / "kernel.cubin").write_bytes(b"k" * 16)
+    (seed / "cuda").mkdir()
+    (seed / "cuda" / "compute.bin").write_bytes(b"c" * 8)
+    (seed / "xdg").mkdir()
+    return seed
+
+
+def test_full_cache_seed_installs_families_writable(tmp_path):
+    seed = _full_cache_seed(tmp_path)
+    cache = _fresh_cache(tmp_path)
+    _seed_runtime_cache(
+        seed, cache, uid=os.geteuid(), gid=os.getegid(), max_bytes=1 << 20
+    )
+    graph = cache / "torchinductor" / "ab" / "graph.py"
+    assert graph.read_bytes() == b"g" * 32
+    assert (cache / "triton" / "kernel.cubin").read_bytes() == b"k" * 16
+    assert graph.stat().st_mode & 0o777 == 0o644
+    assert graph.parent.stat().st_mode & 0o777 == 0o700
+    assert (cache / "xdg").is_dir()
+
+
+def test_full_cache_seed_refuses_unknown_family(tmp_path):
+    seed = _full_cache_seed(tmp_path)
+    evil = seed / "evil"
+    evil.mkdir()
+    (evil / "payload").write_bytes(b"z")
+    with pytest.raises(OCIBackendError, match="unknown cache families.*evil"):
+        _seed_runtime_cache(
+            seed,
+            _fresh_cache(tmp_path),
+            uid=os.geteuid(),
+            gid=os.getegid(),
+            max_bytes=1 << 20,
+        )
+
+
+def test_full_cache_seed_refuses_empty_root(tmp_path):
+    seed = tmp_path / "full-seed"
+    seed.mkdir()
+    with pytest.raises(OCIBackendError, match="no cache families"):
+        _seed_runtime_cache(
+            seed,
+            _fresh_cache(tmp_path),
+            uid=os.geteuid(),
+            gid=os.getegid(),
+            max_bytes=1 << 20,
+        )
+
+
+def test_full_cache_seed_refuses_file_free_families(tmp_path):
+    seed = tmp_path / "full-seed"
+    (seed / "xdg").mkdir(parents=True)
+    (seed / "triton-home").mkdir()
+    with pytest.raises(OCIBackendError, match="holds no files"):
+        _seed_runtime_cache(
+            seed,
+            _fresh_cache(tmp_path),
+            uid=os.geteuid(),
+            gid=os.getegid(),
+            max_bytes=1 << 20,
+        )
+
+
+def test_full_cache_seed_refuses_symlink_members(tmp_path):
+    seed = _full_cache_seed(tmp_path)
+    (seed / "triton" / "alias").symlink_to(seed / "triton" / "kernel.cubin")
+    with pytest.raises(OCIBackendError, match="symlink"):
+        _seed_runtime_cache(
+            seed,
+            _fresh_cache(tmp_path),
+            uid=os.geteuid(),
+            gid=os.getegid(),
+            max_bytes=1 << 20,
+        )
+
+
+def test_full_cache_seed_enforces_budget(tmp_path):
+    seed = _full_cache_seed(tmp_path)
+    with pytest.raises(OCIBackendError, match="cache budget"):
+        _seed_runtime_cache(
+            seed,
+            _fresh_cache(tmp_path),
+            uid=os.geteuid(),
+            gid=os.getegid(),
+            max_bytes=16,
         )
 
 

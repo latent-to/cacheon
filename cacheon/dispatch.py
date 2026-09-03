@@ -3,15 +3,8 @@
 This is the only place a miner kernel is actually invoked during serving. It is
 written so that the *validator* owns everything risky around the call:
 
-  * output allocation (shape/dtype/device/stride) — never the miner,
-  * eligibility gating via the registry,
-  * trusted stock routing before selection when the candidate is ineligible,
-  * fail-closed propagation after selection when the candidate raises,
-  * a single, auditable call into the miner ``entry(*inputs, out)``.
-
-The miner's ``entry`` therefore only ever sees already-allocated tensors and is
-expected to fill ``out``. That is the smallest host surface we can give a
-Triton/CuteDSL submission while still letting it own the actual computation.
+It owns output allocation, eligibility, routing, and the auditable candidate
+call. Miner code receives validator-allocated tensors and fills the output.
 """
 
 from __future__ import annotations
@@ -648,6 +641,7 @@ def _moe_prepared(self, impl, slot):
     return cache[key]
 
 
+@torch.inference_mode()
 def _run_moe_kernel(
     self,
     x,

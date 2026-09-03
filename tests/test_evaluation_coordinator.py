@@ -593,7 +593,7 @@ def test_ownership_opens_when_intake_advances_the_cursor_during_every_open(
         coordinator._open_at_durable_cursor()
 
 
-def test_transient_heartbeat_contention_does_not_admit_an_expired_result(
+def test_completed_result_survives_transient_heartbeat_contention(
     tmp_path: Path,
 ) -> None:
     row = _published_rows(tmp_path, 1)[0]
@@ -638,14 +638,13 @@ def test_transient_heartbeat_contention_does_not_admit_an_expired_result(
         service,
         receipt,
     )
-    with pytest.raises(EvaluationCoordinatorError, match="after lease expiry"):
-        coordinator.commit_screen_result(claim, receipt, envelope)
+    coordinator.commit_screen_result(claim, receipt, envelope)
 
     with _store(tmp_path) as store:
         retained = store.get(row.reservation_id)
         events = store.evaluation_lease_events(lease_id=lease.lease_id)
-    assert (retained.status, retained.screen_attempts) == ("published", 0)
-    assert [event.event_type for event in events] == ["claimed", "expired"]
+    assert (retained.status, retained.screen_attempts) == ("promoted", 1)
+    assert [event.event_type for event in events] == ["claimed", "completed"]
 
 
 def test_expiry_reclaims_oldest_and_cross_lease_or_stale_envelope_cannot_commit(
@@ -689,6 +688,8 @@ def test_expiry_reclaims_oldest_and_cross_lease_or_stale_envelope_cannot_commit(
         fresh_receipt,
     )
     _advance(tmp_path, cursor, BLOCK + 4)
+    replacement = coordinator.claim_screen()
+    assert replacement is not None
     with pytest.raises(EvaluationCoordinatorError, match="durable lease"):
         coordinator.commit_screen_result(reclaimed, fresh_receipt, fresh_envelope)
 
@@ -867,7 +868,7 @@ def test_remote_commit_reopens_complete_cpu_inventory_before_any_mutation(
             store.evaluation_stack(service.identity)
 
 
-def test_remote_commit_rejects_wrong_incumbent_and_existing_tree_atomically(
+def test_remote_commit_accepts_completed_result_after_tree_advances(
     tmp_path: Path,
 ) -> None:
     provider = _Provider()
@@ -921,27 +922,28 @@ def test_remote_commit_rejects_wrong_incumbent_and_existing_tree_atomically(
             evidence_inventory=(attempt_ref,),
         )
 
-    with pytest.raises(EvaluationCoordinatorError, match="durable lease"):
-        coordinator.commit_remote_qualification_result(
-            claim,
-            authority_manifest=authority,
-            incumbent_stack=incumbent,
-            incumbent_tree_digest=_h("wrong-tree"),
-            batch=batch,
-            envelope=envelope,
-            evidence_root=root,
-            evidence_inventory=(attempt_ref,),
-        )
+    result = coordinator.commit_remote_qualification_result(
+        claim,
+        authority_manifest=authority,
+        incumbent_stack=incumbent,
+        incumbent_tree_digest=_h("prior-tree"),
+        batch=batch,
+        envelope=envelope,
+        evidence_root=root,
+        evidence_inventory=(attempt_ref,),
+    )
 
     with _store(tmp_path) as store:
         retained = store.get(ids[0])
         stack = store.evaluation_stack(service.identity)
         dispositions = store.qualification_dispositions(ids[0])
         active = store.active_evaluation_leases()
-    assert retained.status == "promoted"
+    assert result == (retained,)
+    assert retained.status == "failed"
     assert stack.tree_digest == _h("authoritative-tree")
-    assert dispositions == ()
-    assert active == (claim.lease,)
+    assert len(dispositions) == 1
+    assert dispositions[0]["decision"] == "FAIL"
+    assert active == ()
 
 
 @pytest.mark.parametrize("lane", ["", "reproduction"])

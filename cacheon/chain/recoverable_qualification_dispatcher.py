@@ -397,9 +397,33 @@ class RecoverableQualificationDispatcher:
             store.close()
             raise
 
+    def _bind_commissioned_incumbent(
+        self, store: RecoverableFinalizedIntakeStore
+    ) -> None:
+        """Install or verify the commissioned incumbent before any claim.
+
+        The store installs one genesis incumbent per arena, reopens identical
+        state, and refuses a different one. A commission pinned to a superseded
+        baseline therefore fails here, before a lease, request, publication, or
+        GPU action exists, rather than at settlement after the paid run; a new
+        arena receives its durable stack row from its first commissioned claim.
+        """
+
+        try:
+            store.initialize_evaluation_stack(
+                self.qualification_incumbent_stack,
+                tree_digest=self.qualification_incumbent_tree_digest,
+            )
+        except IntakeError as exc:
+            raise RecoverableQualificationDispatcherError(
+                "commissioned qualification incumbent differs from the durable "
+                f"evaluation stack; recommission before dispatching: {exc}"
+            ) from exc
+
     def _claim_or_reopen(self) -> _RecoveryClaim | None:
         store, point = self._open_store()
         try:
+            self._bind_commissioned_incumbent(store)
             recovery = store.pending_qualification_recovery()
             if recovery is None:
                 recovery = store.claim_recoverable_qualification(
@@ -888,16 +912,6 @@ class RecoverableQualificationDispatcher:
                 plan.request_id,
                 "qualification returned another payload type",
             )
-        if (
-            product.incumbent_stack != self.qualification_incumbent_stack
-            or product.incumbent_tree_digest
-            != self.qualification_incumbent_tree_digest
-        ):
-            raise QualificationRecoveryHold(
-                "incumbent_changed",
-                plan.request_id,
-                "remote qualification changed the CPU-owned incumbent",
-            )
         return product
 
     @staticmethod
@@ -964,11 +978,6 @@ class RecoverableQualificationDispatcher:
                 AUTHORITY_CHANGED_HOLD_REASON,
                 ORPHANED_CARRIER_HOLD_REASON,
             ):
-                # All three reasons mean the retained request is durably dead --
-                # parked before infrastructure results became requeue-class,
-                # sealed against an authority that no longer verifies, or left
-                # with a result whose carrier is gone and can never deliver it.
-                # Retire the dead request and requeue it the same bounded way.
                 return self._requeue_infrastructure(
                     recovery,
                     _infrastructure_requeue_signal("worker_infrastructure_result"),

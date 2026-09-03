@@ -11,6 +11,7 @@ from cacheon.chain.execution_disposition import (
     COMPLETED_NO_DECISION_HOLD_REASON,
     ExecutionDisposition,
 )
+from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.recoverable_qualification_dispatcher import (
     CompletedQualificationHold,
@@ -971,7 +972,7 @@ def test_expired_prepared_recovery_holds_before_transport_when_renewal_denied(
     ]
 
 
-def test_dispatcher_holds_when_product_incumbent_differs_from_cpu_owned(
+def test_completed_product_survives_later_incumbent_change(
     tmp_path: Path,
 ) -> None:
     fixtures = _fixtures()
@@ -987,9 +988,58 @@ def test_dispatcher_holds_when_product_incumbent_differs_from_cpu_owned(
         ),
         qualification_incumbent_tree_digest=authority.fixtures._h("other-tree"),
     )
+    with _store(authority) as store:
+        store._db.execute(
+            "UPDATE evaluation_stacks SET generation=1,tree_digest=? WHERE arena_id=?",
+            (authority.fixtures._h("other-tree"), authority.service.identity),
+        )
     outcome = dispatcher.dispatch_once()
-    assert type(outcome) is RecoverableQualificationHold
-    assert "incumbent_changed" in outcome.reason
+    assert type(outcome).__name__ == "EvaluationRun"
+    assert outcome.payload.outcomes[0].decision is QualificationDecision.FAIL
+
+
+def test_first_claim_installs_the_commissioned_genesis_incumbent(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, complete_on_publish=True)
+    with _store(authority) as store:
+        with pytest.raises(IntakeError, match="not initialized"):
+            store.evaluation_stack(authority.service.identity)
+
+    outcome = _dispatcher(authority, transport).dispatch_once()
+
+    assert type(outcome).__name__ == "EvaluationRun"
+    with _store(authority) as store:
+        state = store.evaluation_stack(authority.service.identity)
+    assert state.generation == 0
+    assert state.manifest == authority.fixtures._incumbent(authority.service)
+    assert state.tree_digest == authority.fixtures._h("incumbent-tree")
+
+
+def test_stale_commissioned_incumbent_refuses_before_any_claim(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    with _store(authority) as store:
+        store.initialize_evaluation_stack(
+            authority.fixtures._incumbent(authority.service),
+            tree_digest=authority.fixtures._h("crowned-tree"),
+        )
+        leases_before = store.active_evaluation_leases()
+    transport = _Transport(authority, fixtures)
+
+    with pytest.raises(RecoverableQualificationDispatcherError, match="recommission"):
+        _dispatcher(authority, transport).dispatch_once()
+
+    assert (transport.plans, transport.publications) == (0, 0)
+    with _store(authority) as store:
+        assert store.active_evaluation_leases() == leases_before
+        assert store.evaluation_stack(authority.service.identity).tree_digest == (
+            authority.fixtures._h("crowned-tree")
+        )
 
 
 def test_completed_no_decision_hold_stays_parked_while_members_are_active(

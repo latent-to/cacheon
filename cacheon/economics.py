@@ -1,15 +1,10 @@
-"""Pure, content-addressed emissions projection.
-
-This module owns no chain client, wallet, database, or settlement transition.  It
-accepts only crowns whose retained evidence has already been reopened by the
-settlement authority and either returns one complete integer weight projection or
-fails without a partial vector.
-"""
+"""Pure, content-addressed emissions projection over reopened PASS evidence."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import ROUND_FLOOR, Context, Decimal, localcontext
 from typing import Iterable, Mapping
 
 from cacheon.stack_identity import canonical_digest
@@ -19,22 +14,17 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
 POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "cacheon.emissions.v1.1"
+POLICY_VERSION = "cacheon.emissions.v1.5"
 WEIGHT_PPM = 1_000_000
-# A target crowned across several arena generations is one lineage. The most
-# recently crowned claim is the serving champion and takes at least this share
-# of the lineage's pooled credit; displaced crowns share the remainder and keep
-# decaying. Consensus-critical: changing this constant changes every published
-# vector, so it rides POLICY_VERSION.
-CHAMPION_FLOOR_PPM = 800_000
+CREDIT_SCALE = 1_000_000_000_000
+STALL_SCALE_BLOCKS = 1_800
+_MATH_CONTEXT = Context(prec=50, rounding=ROUND_FLOOR)
 _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
 _HOTKEY = re.compile(r"[^\s]{1,256}\Z")
 
 
 class EconomicsError(ValueError):
-    """The policy, authority, or complete reward projection is invalid."""
-
-
+    pass
 def _digest(value: object, field: str) -> str:
     return require_digest(value, field=field, error=EconomicsError)
 
@@ -57,8 +47,6 @@ def _strict(value: object, fields: set[str], name: str) -> dict[str, object]:
 
 @dataclass(frozen=True)
 class EmissionsPolicyManifest:
-    """Validator-consensus parameters for one deterministic reward policy."""
-
     half_life_blocks: int
     discovery_lifetime_blocks: int
     discovery_pool_ppm: int
@@ -192,8 +180,6 @@ class GlobalRewardProjectionContext:
 
 @dataclass(frozen=True)
 class StandingRewardClaim:
-    """One reopened crown for one currently active registered target."""
-
     arena_digest: str
     target_id: str
     target_spec_digest: str
@@ -228,15 +214,26 @@ class StandingRewardClaim:
             },
         )
 
-    def credit_at(self, block: int, policy: EmissionsPolicyManifest) -> int:
-        _integer(block, "credit block")
-        if block < self.crowned_block:
-            raise EconomicsError("crown is newer than projection authority")
-        age = block - self.crowned_block
-        improvement = self.speedup_ppm - WEIGHT_PPM
-        return improvement * policy.half_life_blocks // (
-            policy.half_life_blocks + age
-        )
+    def credit_at(
+        self,
+        block: int,
+        policy: EmissionsPolicyManifest,
+        *,
+        predecessor_block: int | None = None,
+    ) -> int:
+        predecessor = self.crowned_block if predecessor_block is None else predecessor_block
+        _integer(block, "credit block", minimum=self.crowned_block)
+        _integer(predecessor, "predecessor_block")
+        if predecessor > self.crowned_block:
+            raise EconomicsError("reward predates its arena stall clock")
+        with localcontext(_MATH_CONTEXT):
+            credit = (
+                (Decimal(self.speedup_ppm) / WEIGHT_PPM).ln()
+                * (Decimal(1) + (Decimal(self.crowned_block - predecessor) / STALL_SCALE_BLOCKS).sqrt())
+                * Decimal(2) ** (-Decimal(block - self.crowned_block) / policy.half_life_blocks)
+                * CREDIT_SCALE
+            )
+        return int(credit.to_integral_value(rounding=ROUND_FLOOR))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -403,15 +400,22 @@ class GlobalRewardProjection:
             _digest(digest, "arena authority digest")
         if tuple(self.arena_authority_digests) != tuple(sorted(self.arena_authority_digests)):
             raise EconomicsError("arena authorities are not canonical")
-        if tuple((row.arena_digest, row.target_id) for row in self.standing) != tuple(
-            sorted((row.arena_digest, row.target_id) for row in self.standing)
+        if tuple(
+            (row.arena_digest, row.target_id, row.claim_digest) for row in self.standing
+        ) != tuple(
+            sorted(
+                (row.arena_digest, row.target_id, row.claim_digest)
+                for row in self.standing
+            )
         ):
             raise EconomicsError("global standing families are not canonical")
         if tuple(row.hotkey for row in self.weights) != tuple(sorted(row.hotkey for row in self.weights)):
             raise EconomicsError("global weights are not canonical")
-        if len({row.hotkey for row in self.weights}) != len(self.weights) or sum(
-            row.weight_ppm for row in self.weights
-        ) != WEIGHT_PPM:
+        if (
+            len({row.hotkey for row in self.weights}) != len(self.weights)
+            or any(row.weight_ppm <= 0 for row in self.weights)
+            or sum(row.weight_ppm for row in self.weights) != WEIGHT_PPM
+        ):
             raise EconomicsError("global weights are not exactly normalized")
 
     def to_dict(self) -> dict[str, object]:
@@ -453,71 +457,14 @@ def _allocate_pool(credits: Mapping[str, int], pool: int) -> dict[str, int]:
     return result
 
 
-def _champion_floor_credits(
-    rows: list[tuple[str, StandingRewardClaim, int]],
-) -> list[tuple[str, StandingRewardClaim, int]]:
-    """Guarantee the newest crown of each target lineage the champion floor.
-
-    Rows are ``(arena_digest, claim, decayed credit)``. Claims sharing a
-    ``target_id`` across arena generations form one lineage; the most recently
-    crowned claim is the serving champion. When its natural decayed credit
-    falls below ``CHAMPION_FLOOR_PPM`` of the lineage's pooled credit, it is
-    raised to exactly that floor and the displaced crowns split the remainder
-    in proportion to their own decayed credits. The lineage's pooled credit is
-    never changed — only its split moves.
-    """
-
-    by_target: dict[str, list[int]] = {}
-    for index, (_, claim, _) in enumerate(rows):
-        by_target.setdefault(claim.target_id, []).append(index)
-    result = list(rows)
-    for indexes in by_target.values():
-        if len(indexes) < 2:
-            continue
-        total = sum(rows[index][2] for index in indexes)
-        if total <= 0:
-            continue
-        champion = max(
-            indexes,
-            key=lambda index: (rows[index][1].crowned_block, rows[index][1].digest),
-        )
-        floor = total * CHAMPION_FLOOR_PPM // WEIGHT_PPM
-        if rows[champion][2] >= floor:
-            continue
-        tail = [index for index in indexes if index != champion]
-        tail_total = sum(rows[index][2] for index in tail)
-        remaining = total - floor
-        shares: dict[int, int] = {}
-        remainders = []
-        for index in tail:
-            quotient, remainder = divmod(rows[index][2] * remaining, tail_total)
-            shares[index] = quotient
-            remainders.append((remainder, rows[index][1].digest, index))
-        missing = remaining - sum(shares.values())
-        for _remainder, _digest, index in sorted(
-            remainders, key=lambda row: (-row[0], row[1])
-        )[:missing]:
-            shares[index] += 1
-        arena_digest, claim, _ = rows[champion]
-        result[champion] = (arena_digest, claim, floor)
-        for index, credit in shares.items():
-            arena_digest, claim, _ = rows[index]
-            result[index] = (arena_digest, claim, credit)
-    return result
-
-
 def project_global_rewards(
     policy: EmissionsPolicyManifest,
     context: GlobalRewardProjectionContext,
     arenas: Iterable[ArenaRewardAuthority],
+    earning_claims: Iterable[StandingRewardClaim],
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
 ) -> GlobalRewardProjection:
-    """Pool every registered arena before producing one indivisible vector.
-
-    Credit is decayed marginal improvement per claim, then reallocated within
-    each target lineage so the newest crown holds the champion floor
-    (``CHAMPION_FLOOR_PPM``) before hotkey pooling and normalization.
-    """
+    """Pool every retained two-PASS contribution before one indivisible vector."""
 
     if type(policy) is not EmissionsPolicyManifest:
         raise EconomicsError("policy is not exactly typed")
@@ -529,8 +476,18 @@ def project_global_rewards(
     if len({row.arena_digest for row in authorities}) != len(authorities):
         raise EconomicsError("global projection contains duplicate arenas")
     authorities = tuple(sorted(authorities, key=lambda row: row.arena_digest))
+    earning = tuple(earning_claims)
+    if any(type(row) is not StandingRewardClaim for row in earning):
+        raise EconomicsError("PASS reward claims are not exactly typed")
+    if len({row.digest for row in earning}) != len(earning):
+        raise EconomicsError("PASS reward claims are duplicated")
     eligible = context.eligible_hotkeys
-    credit_rows: list[tuple[str, StandingRewardClaim, int]] = []
+    standing_index: dict[tuple[str, str, str], StandingRewardClaim] = {}
+    for claim in earning:
+        key = (claim.arena_digest, claim.target_id, claim.contribution_digest)
+        if key in standing_index:
+            raise EconomicsError("PASS reward claims reuse a contribution")
+        standing_index[key] = claim
     for authority in authorities:
         catalog, stack = authority.catalog, authority.stack
         if stack.catalog_digest != catalog.digest or stack.catalog_snapshot != catalog.snapshot():
@@ -557,19 +514,31 @@ def project_global_rewards(
                 or claim.contribution_digest != contribution.digest
             ):
                 raise EconomicsError(f"standing claim for {target_id!r} is stale or incompatible")
-            credit_rows.append(
-                (
-                    stack.arena_digest,
-                    claim,
-                    claim.credit_at(context.current_block, policy),
-                )
+            history = standing_index.get(
+                (claim.arena_digest, claim.target_id, claim.contribution_digest)
             )
+            if history is None:
+                raise EconomicsError(f"standing claim for {target_id!r} has no PASS")
+            if (
+                history.hotkey != claim.hotkey
+                or history.speedup_ppm != claim.speedup_ppm
+                or history.target_spec_digest != claim.target_spec_digest
+            ):
+                raise EconomicsError(f"standing claim for {target_id!r} differs from PASS")
     family_credits: list[StandingFamilyCredit] = []
     standing_by_hotkey: dict[str, int] = {}
-    for arena_digest, claim, credit in _champion_floor_credits(credit_rows):
+    previous: dict[str, int] = {}
+    for claim in sorted(
+        earning, key=lambda row: (row.arena_digest, row.crowned_block, row.digest)
+    ):
+        predecessor = previous.get(claim.arena_digest, claim.crowned_block)
+        credit = claim.credit_at(
+            context.current_block, policy, predecessor_block=predecessor
+        )
+        previous[claim.arena_digest] = claim.crowned_block
         family_credits.append(
             StandingFamilyCredit(
-                arena_digest,
+                claim.arena_digest,
                 claim.family_id,
                 claim.target_id,
                 claim.digest,
@@ -577,9 +546,6 @@ def project_global_rewards(
                 credit,
             )
         )
-        # Keep the claim and family audit on the original miner. If they
-        # left the metagraph, burn this tick's allocated share to the
-        # validator rather than hold the vector or re-slice other families.
         recipient = (
             claim.hotkey
             if claim.hotkey in eligible
@@ -589,7 +555,7 @@ def project_global_rewards(
             standing_by_hotkey.get(recipient, 0) + credit
         )
     if not any(standing_by_hotkey.values()):
-        raise EconomicsError("all standing crown credit has decayed to zero")
+        raise EconomicsError("all PASS credit has decayed to zero")
 
     discoveries = tuple(discovery_claims)
     if any(type(row) is not DiscoveryBountyClaim for row in discoveries):
@@ -628,13 +594,20 @@ def project_global_rewards(
         for hotkey, value in _allocate_pool(discovery_by_hotkey, discovery_pool).items():
             combined[hotkey] = combined.get(hotkey, 0) + value
     weights = tuple(
-        HotkeyWeight(hotkey, combined[hotkey]) for hotkey in sorted(combined)
+        HotkeyWeight(hotkey, combined[hotkey])
+        for hotkey in sorted(combined)
+        if combined[hotkey] > 0
     )
     return GlobalRewardProjection(
         policy.digest,
         context,
         tuple(sorted(row.digest for row in authorities)),
-        tuple(family_credits),
+        tuple(
+            sorted(
+                family_credits,
+                key=lambda row: (row.arena_digest, row.target_id, row.claim_digest),
+            )
+        ),
         tuple(live),
         tuple(expired),
         weights,
@@ -643,6 +616,7 @@ def project_global_rewards(
 
 __all__ = [
     "ArenaRewardAuthority",
+    "CREDIT_SCALE",
     "DiscoveryBountyClaim",
     "EconomicsError",
     "EmissionsPolicyManifest",
@@ -652,6 +626,7 @@ __all__ = [
     "MetagraphMember",
     "POLICY_SCHEMA_VERSION",
     "POLICY_VERSION",
+    "STALL_SCALE_BLOCKS",
     "StandingRewardClaim",
     "WEIGHT_PPM",
     "project_global_rewards",

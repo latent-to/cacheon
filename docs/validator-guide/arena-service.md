@@ -68,12 +68,11 @@ Every service runs these stages in this order:
 5. `abbreviated_serving`
 
 Each stage has a timeout and emits typed evidence with one of three grades: `pass`,
-`fail`, or `no_decision`. The derived promotion result is:
+`fail`, or `no_decision`. The derived routing result is:
 
-- `promote` only after all five stages pass;
+- `promote` after five passes, or after a retried serving canary remains inconclusive;
 - `reject` after a candidate-caused failure;
-- `retry` for a bounded inconclusive attempt; or
-- `hold` after capacity or retry policy is exhausted.
+- `retry` for the first inconclusive attempt.
 
 Screens are explicitly marked `crownable: false`. A fast abbreviated-serving screen is
 an admission signal, not economic evidence, and cannot update the evaluation stack.
@@ -124,8 +123,8 @@ The controller supplies a durable queue snapshot. The service returns:
 - `queue` when work should wait without losing finalized priority; or
 - `hold` when queue depth, queue age, or cohort size has crossed an admission bound.
 
-Retry policy is applied after `NO_DECISION` evidence through the separate
-`retry_disposition()` promotion decision; it is not an input to admission.
+The first screen `NO_DECISION` retries. If the final routing-only serving canary remains
+inconclusive, its evidence advances to isolated qualification instead of a screen hold.
 
 Capacity policy must be chosen from measured operational budgets. It should include
 expected queue age, stage cost, cohort size, retries, and crown latency. Network fetch

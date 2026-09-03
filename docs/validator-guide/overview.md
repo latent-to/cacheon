@@ -236,6 +236,7 @@ Use the authority boundary to decide who absorbs a failure:
 | DNS/TLS timeout, publication storage fault, controller crash, excessive baseline drift, missing evidence authority | `NO_DECISION`, retry, or `held` | Repair validator infrastructure, then use the bounded retry/release path |
 | Queue or cohort capacity exceeded | Queue while within policy; otherwise `held` | Add capacity or review the registered bounds; never reorder by fetch completion |
 | Settlement incumbent or journal head changed | Abort/hold; no partial transaction | Reopen current authority and re-plan |
+| Commissioned qualification incumbent differs from the durable evaluation stack | Refused before any lease, request, or GPU action; no candidate signal | Recommission from the current crowned stack |
 | Weight readback missing or divergent | Publication `held` | Preserve journal, audit chain state, append an explicit release only after review |
 | Release verification or serve receipt failure | No rollout | Quarantine artifact/image; do not fall back silently to stock serving |
 

@@ -597,14 +597,19 @@ def test_canary_failure_holds_and_latches_resident_epoch(
         )
 
     monkeypatch.setattr(ResidentServingScreenStage, "run_screen", canary_failure)
+    assert not provider.resident_screen_latched
     assert provider.run_screen(
         manifest, manifest.screens.stages[-1], candidate
     ).grade is ScreenGrade.NO_DECISION
     assert (calls, resident.created, resident.closed) == (1, 1, 0)
+    # The latch is visible behind the completed result so the adapter can
+    # retire itself before the next request dies against it.
+    assert provider.resident_screen_latched
     with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
         provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
     assert (calls, resident.created, resident.closed) == (1, 1, 0)
     provider.close()
+    assert resident.closed == 1
 
 
 def test_qualification_preserves_exact_request_order_and_real_authorities(

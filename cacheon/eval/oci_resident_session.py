@@ -429,7 +429,11 @@ class ResidentOuterSession:
             self._fail(exc)
 
     def execute_batch(
-        self, prompts: Sequence[str], *, canary: bool = False
+        self,
+        prompts: Sequence[str],
+        *,
+        canary: bool = False,
+        timeout_s: float | None = None,
     ) -> ResidentBatchEvidence:
         """Execute one timed read under the currently live generation."""
 
@@ -442,6 +446,7 @@ class ResidentOuterSession:
                 self.plan.expected_prompt_tokens,
             ),
             canary=canary,
+            timeout_s=timeout_s,
         )
 
     def execute_batch_with_shape(
@@ -450,8 +455,13 @@ class ResidentOuterSession:
         *,
         shape: ResidentBatchShape,
         canary: bool = False,
+        timeout_s: float | None = None,
     ) -> ResidentBatchEvidence:
-        """Execute one read with a validated request-local generation shape."""
+        """Execute one read with a validated request-local generation shape.
+
+        ``timeout_s`` tightens this one read below the session's batch
+        timeout; it can never extend it.
+        """
 
         if not self.started or self.closed:
             raise OuterSessionInfrastructureError("session is not open")
@@ -459,6 +469,17 @@ class ResidentOuterSession:
             raise OuterSessionInfrastructureError("resident batch shape is not exact")
         if type(canary) is not bool:
             raise OuterSessionInfrastructureError("canary flag must be boolean")
+        limit = self.batch_timeout_s
+        if timeout_s is not None:
+            if (
+                isinstance(timeout_s, bool)
+                or not isinstance(timeout_s, (int, float))
+                or not 0.0 < float(timeout_s) < float("inf")
+            ):
+                raise OuterSessionInfrastructureError(
+                    "resident batch timeout is invalid"
+                )
+            limit = min(limit, float(timeout_s))
         if len(self.batch_rows) >= self.plan.max_batches:
             raise OuterSessionInfrastructureError(
                 "session exceeded its planned batch budget"
@@ -488,7 +509,7 @@ class ResidentOuterSession:
                 raise OuterSessionProtocolError(
                     "worker emitted early or duplicate output"
                 )
-            batch_deadline = self._phase_deadline(self.batch_timeout_s)
+            batch_deadline = self._phase_deadline(limit)
             request_started = _now(self.clock, previous=self.last_host_time)
             self.transport.write_frame(
                 frame_message(request.to_dict(), max_bytes=MAX_BATCH_REQUEST_BYTES),

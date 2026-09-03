@@ -753,6 +753,31 @@ class TestResidentOuterSession:
         with pytest.raises(OuterSessionInfrastructureError, match="canary"):
             session.execute_batch(("hello",), canary=True)
 
+    def test_read_timeout_only_tightens_the_batch_deadline(self) -> None:
+        from cacheon.eval.oci_outer_session import OuterSessionInfrastructureError
+
+        session = self._open()
+        deadlines: list[float] = []
+        inner = session.transport.read_evidence
+
+        def recording(request, *, deadline):
+            deadlines.append(deadline)
+            return inner(request, deadline=deadline)
+
+        session.transport.read_evidence = recording
+        session.swap(DIGEST)
+        session.execute_batch(("hello",))
+        session.execute_batch(("hello",), timeout_s=5.0)
+        session.execute_batch(("hello",), timeout_s=1_000.0)
+        plain, tight, loose = deadlines
+        # The integer clock advances a few ticks per read: the plain read keeps
+        # the 100 s batch timeout, 5 s tightens it, 1000 s cannot extend it.
+        assert plain - tight > 80
+        assert loose - plain < 20
+        for bad in (0.0, -1.0, float("nan"), float("inf"), True):
+            with pytest.raises(OuterSessionInfrastructureError, match="batch timeout"):
+                session.execute_batch(("hello",), timeout_s=bad)
+
     def test_swap_budget_is_enforced(self) -> None:
         from cacheon.eval.oci_outer_session import OuterSessionInfrastructureError
 

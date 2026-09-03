@@ -44,8 +44,9 @@ from cacheon.chain.weight_push_auth import (
 from cacheon.chain.weights import (
     WeightProjection,
     WeightPublicationError,
-    WeightPublicationJournal,
+    ReopenableWeightPublicationJournal,
     reconcile_weight_publication,
+    resume_weight_projection,
 )
 from cacheon.object_store import (
     ObjectStore,
@@ -1376,7 +1377,7 @@ def publish_followed_weights(
     subtensor,
     signer_wallet,
     offer: CurrentWeightOffer,
-    journal: WeightPublicationJournal,
+    journal: ReopenableWeightPublicationJournal,
     refresh_blocks: int,
     dry_run: bool = False,
 ):
@@ -1388,18 +1389,19 @@ def publish_followed_weights(
         follower_hotkey = signer_wallet.hotkey.ss58_address
     except AttributeError as exc:
         raise WeightShareError("follower publish requires a signer wallet") from exc
-    rebound = rebind_offer_signer(offer, follower_hotkey)
-    require_crown = rebound.projection.crown_count > 0
+    projection = rebind_offer_signer(offer, follower_hotkey).projection
+    if not dry_run:
+        projection = resume_weight_projection(projection, journal)
     return reconcile_weight_publication(
         subtensor,
         None if dry_run else signer_wallet,
-        rebound.projection,
+        projection,
         journal,
         refresh_blocks=refresh_blocks,
         dry_run=dry_run,
         allow_stale_initial=True,
         max_stale_initial_blocks=refresh_blocks,
-        require_current_crown=require_crown,
+        require_current_crown=projection.crown_count > 0,
     )
 
 

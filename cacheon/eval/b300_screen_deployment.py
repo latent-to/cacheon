@@ -1,14 +1,4 @@
-"""Commission one sealed B300/TP4 screen worker from pod-owned authorities.
-
-This is deployment composition, not a generic plugin interface.  It accepts a
-fixed set of validator-owned JSON authorities, provisions exactly the selected
-four-GPU lane, emits three canonical artifacts at fixed names, and later
-reconstructs the same in-process service for the authenticated pod adapter.
-
-Candidate data cannot select a Python module, class, command, argument, engine
-option, host path, or output path through this module.  The only executable
-authorities are the concrete Cacheon adapters assembled below.
-"""
+"""Commission the sealed B300/TP4 screen worker from pod-owned authorities."""
 
 from __future__ import annotations
 
@@ -21,7 +11,7 @@ import stat
 import time
 from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Sequence
 
 from cacheon.arena_service import (
     SCREEN_STAGES,
@@ -83,11 +73,10 @@ from cacheon.eval.oci_backend import (
     expected_runtime_preflight,
     runtime_identity_from_preflight,
 )
-from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.oci_process import OCIProcessManager
 from cacheon.eval.oci_resident_session import ResidentSessionPlan
-from cacheon.eval.oci_session_protocol import EngineSessionConfig, SlotAuditPolicy
+from cacheon.eval.oci_session_protocol import EngineSessionConfig
 from cacheon.eval.b300_screen_qualification_bridge import (
     B300ScreenQualificationBridgeError,
     derive_b300_screen_qualification,
@@ -385,7 +374,6 @@ def _device_policy(gpus: tuple[GPUConfiguration, ...]) -> DeviceStatePolicy:
         required_consecutive_idle_samples=2,
         poll_interval_s=0.05,
         ready_poll_interval_s=0.05,
-        drain_timeout_s=180.0,
         maximum_samples=1024,
     )
 
@@ -402,8 +390,8 @@ def _runtime_policy(preflight: RuntimePreflightReceipt) -> OCIRuntimeResourcePol
         cache_inodes=1_000_000,
         tmpfs_bytes=16 << 30,
         shm_bytes=128 << 30,
-        init_timeout_seconds=900.0,
-        batch_timeout_seconds=600.0,
+        init_timeout_seconds=1_800.0,
+        batch_timeout_seconds=1_800.0,
         container_python=preflight.python_executable,
     )
 
@@ -836,7 +824,6 @@ class _CommissionedScreenPlanResolver:
             model_content_digest=self.inputs.runtime.model_content_digest,
         )
         cell = _scored_cell(self.inputs.workload)
-        eager_config = _engine_config(target.members, cell, disable_cuda_graph=True)
         graph_config = _engine_config(target.members, cell, disable_cuda_graph=False)
         seccomp_digest = _file_sha256(self.executor.config.prebuild.seccomp_profile)
 
@@ -870,50 +857,7 @@ class _CommissionedScreenPlanResolver:
                 hardware=hardware,
             )
 
-        eager_launch = launch(eager_config)
         graph_launch = launch(graph_config)
-        audit = SlotAuditPolicy(
-            validator_seed=canonical_digest(
-                "cacheon.eval.b300-screen-audit-seed.v1",
-                {
-                    "candidate_digest": candidate.digest,
-                    "device_execution_sha256": self.inputs.authority_refs[
-                        "device_execution"
-                    ]["sha256"],
-                    "screen_attempt": candidate.screen_attempt,
-                    "selection_policy_digest": self.inputs.prompt_identity[
-                        "selection_policy_digest"
-                    ],
-                },
-            )[:32],
-            sample_rate_ppm=1_000_000,
-            minimum_calls=1,
-            expected_slots=target.members,
-            expected_member_count=TP_SIZE,
-        )
-        batches = self.inputs.prompt_batches[:3]
-
-        def session(
-            engine_launch: EngineLaunchSpec,
-            config: EngineSessionConfig,
-        ) -> SessionExecutionPlan:
-            return SessionExecutionPlan(
-                launch_digest=engine_launch.digest,
-                expected_engine_config_digest=config.digest,
-                engine_config=config,
-                expected_preflight=expected_runtime_preflight(
-                    engine_launch, self.inputs.preflight
-                ),
-                prompt_batches=batches,
-                warmup_count=1,
-                conditioning_count=1,
-                max_new_tokens=4,
-                top_logprobs_num=0,
-                temperature=0.0,
-                expected_prompt_tokens=cell.input_tokens,
-                audit_policy=audit,
-            )
-
         deadline = float(self.clock()) + 4 * 60 * 60
         if not math.isfinite(deadline):
             raise B300ScreenDeploymentError("screen deadline clock is invalid")
@@ -922,12 +866,9 @@ class _CommissionedScreenPlanResolver:
             candidate_digest=candidate.digest,
             screen_attempt=candidate.screen_attempt,
             selected_delta_digest=reservation.selected_delta_digest,
-            eager_launch=eager_launch,
             graph_launch=graph_launch,
             binding=binding,
             model_mount=mount,
-            eager_session=session(eager_launch, eager_config),
-            graph_session=session(graph_launch, graph_config),
             deadline=deadline,
         )
 
@@ -1122,7 +1063,6 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
         plan_resolver=resolver,
         evidence_policy_digest=inputs.evidence_policy_digest,
         evidence_root=inputs.root / "screen-evidence",
-        execution_mode="resident",
     )
     handlers = compose_b300_non_serving_screen_handlers(
         static,

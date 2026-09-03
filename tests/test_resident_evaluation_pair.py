@@ -63,7 +63,7 @@ class FakeSession:
         self.swap_receipts.append(row)
         return row
 
-    def execute_batch(self, prompts, *, canary: bool = False):
+    def execute_batch(self, prompts, *, canary: bool = False, timeout_s=None):
         assert tuple(prompts)
         assert not canary or self.active_bundle_digest is None
         if self.terminal_batch_error is not None:

@@ -26,7 +26,7 @@ already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
 | Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (1 τ each): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
-| Winners | Crowned improvements: which op was improved (short summary), speedup %, when, reward-claim status, whether hotkey is still registered + current emission |
+| Winners | Every retained two-PASS improvement: conservative speedup over the incumbent, compounded stack speedup over retained SGLang stock with a serving tok/s estimate, settlement status, and current miner emission |
 | Miners | Per-hotkey leaderboard: submissions, crowns, qualified/failed, fees paid, registration + emission |
 | Timeline | Settlement events (CROWN/ADOPTION/HOLD/…) and weight publications journal |
 | System | DB/chain/process/heartbeat health, intake lag |
@@ -79,3 +79,21 @@ worker reserves stdout for framed protocol and redirects ordinary Python/native
 stdout into the retained stderr stream, so miner prints and crash diagnostics are
 both present. Section headers state byte counts, hashes, and whether the 16 MiB
 stream bound truncated the output.
+
+Metagraph emission is denominated in the subnet's own alpha token, so
+`/api/winners` and `/api/miners` report `emission_alpha_per_day` beside an
+`emission_symbol` read from the netuid's on-chain symbol (`ㄷ` for netuid 14).
+The installed bittensor unit table can disagree with the chain, so the UI
+renders the served symbol and never a local one. Only the 1 τ eval-cost fee is
+in TAO.
+
+`/api/winners` reports each contribution twice over: `improvement_pct` is the
+conservative gain over the incumbent it displaced, while
+`cumulative_speedup_over_sglang` compounds the settled gains of a target's
+CROWN lineage in settlement-event order, so it reads as the stack's position
+against retained SGLang stock at the moment that contribution was crowned.
+`tokens_per_second` is the slower independently passing candidate lane from the
+qualification artifacts, and `sglang_tokens_per_second` divides it by the
+cumulative speedup. The SGLang-relative fields are null for a retained PASS
+that never entered the stack, and the tok/s pair is null when no local evidence
+store retains the attempt's artifact.
