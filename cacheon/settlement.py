@@ -1299,7 +1299,9 @@ def plan_settlement(
     journal = _Journal(initial_event_sequence, previous_event_digest)
 
     def is_stale(row: SettlementCandidate) -> bool:
-        return row.incumbent != before or not _lineage_admits_candidate(
+        if row.target_id not in tips:
+            return row.incumbent != before
+        return not _lineage_admits_candidate(
             row, tips, pretransition_reservations
         )
 

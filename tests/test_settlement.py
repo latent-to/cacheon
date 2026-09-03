@@ -807,6 +807,7 @@ def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> Non
         label="C",
         speedup="1.1",
     )
+    assert c.candidate_manifest is not None
     active = _lineage(b, c)
     assert active.threshold_from(a.entries[MSA].artifact_digest) == (
         Decimal("1.21"),
@@ -819,8 +820,8 @@ def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> Non
     )
     equal_plan = plan_settlement(
         (equal_d,),
-        current_manifest=a,
-        current_tree_digest=_h("incumbent-tree"),
+        current_manifest=c.candidate_manifest,
+        current_tree_digest=c.candidate_tree_digest,
         lineage_tips={MSA: active},
         pretransition_reservations=frozenset({equal_d.reservation_digest}),
     )
@@ -832,8 +833,8 @@ def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> Non
     )
     faster_plan = plan_settlement(
         (faster_d,),
-        current_manifest=a,
-        current_tree_digest=_h("incumbent-tree"),
+        current_manifest=c.candidate_manifest,
+        current_tree_digest=c.candidate_tree_digest,
         lineage_tips={MSA: active},
         pretransition_reservations=frozenset(
             {faster_d.reservation_digest}

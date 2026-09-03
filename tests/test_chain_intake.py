@@ -1412,6 +1412,68 @@ def test_backfill_proves_reservation_before_winner_qualification_completed(
         ).fetchone() is not None
 
 
+def test_corrected_backfill_reopens_legacy_stale_ancestor_hold(tmp_path):
+    with _store(tmp_path) as store:
+        winner = _qualified_settlement_candidate(
+            store,
+            index=0,
+            marker="winner",
+            arena_marker="winner",
+            submission_block=10,
+            retained_block=20,
+            speedups=("1.06", "1.05"),
+        )
+        sibling = _qualified_settlement_candidate(
+            store,
+            index=1,
+            marker="sibling",
+            arena_marker="sibling",
+            submission_block=15,
+            retained_block=20,
+            speedups=("1.1", "1.09"),
+            check_single_pass=False,
+        )
+        assert isinstance(winner, SettlementCandidate)
+        assert isinstance(sibling, SettlementCandidate)
+        winner_lease = store.lease_settlement_cohort(current_block=21)
+        assert winner_lease is not None
+        winner_plan, winner_evidence = _settlement_plan(store, winner_lease)
+        store.commit_settlement(
+            winner_lease, winner_plan, winner_evidence, current_block=21
+        )
+        lineage = store.target_lineage_tips()["activation.silu_and_mul"]
+
+        # Simulate the old deployment, which retained the stale HOLD but had
+        # no transition-time reservation authority.
+        store._db.execute(
+            "DELETE FROM target_lineage_pretransition_reservations "
+            "WHERE transition_event_id=? AND reservation_id=?",
+            (lineage.transition_event_id, sibling.reservation_digest),
+        )
+        stale_lease = store.lease_settlement_cohort(current_block=22)
+        assert stale_lease is not None
+        stale_plan, stale_evidence = _settlement_plan(store, stale_lease)
+        assert stale_plan.winner_candidate_digest == ""
+        store.commit_settlement(
+            stale_lease, stale_plan, stale_evidence, current_block=22
+        )
+
+        store.backfill_target_lineage_tips()
+        reopened = store.reopen_pretransition_ancestor_candidate(
+            sibling.reservation_digest
+        )
+        assert reopened == sibling
+        row = store._db.execute(
+            "SELECT status,reason FROM settlement_candidates "
+            "WHERE reservation_id=?",
+            (sibling.reservation_digest,),
+        ).fetchone()
+        assert dict(row) == {
+            "status": "pending",
+            "reason": "pretransition_ancestor_reopened",
+        }
+
+
 def test_faster_stale_sibling_submitted_after_transition_is_held(tmp_path):
     with _store(tmp_path) as store:
         first = _qualified_settlement_candidate(

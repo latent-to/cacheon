@@ -2623,6 +2623,87 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     )
         return self.target_lineage_tips()
 
+    def reopen_pretransition_ancestor_candidate(
+        self, reservation_id: str
+    ) -> SettlementCandidate:
+        """Reopen a legacy stale HOLD now proven eligible by lineage history."""
+
+        from cacheon.settlement import SettlementEvent
+
+        require_sha256_hex(reservation_id, field="reservation_id")
+        with self._transaction():
+            row = self._db.execute(
+                "SELECT sc.* FROM settlement_candidates sc "
+                "JOIN reservations r USING(reservation_id) "
+                "WHERE sc.reservation_id=? AND sc.status='held' "
+                "AND sc.lease_id='' AND sc.lease_expires_block=0 "
+                "AND r.status='qualified' AND r.decision='PASS'",
+                (reservation_id,),
+            ).fetchone()
+            if row is None:
+                raise IntakeError(
+                    "only a settled stale HOLD may be reopened"
+                )
+            candidate = self._settlement_candidate(row)
+            lineage = self.target_lineage_tips().get(candidate.target_id)
+            if lineage is None:
+                raise IntakeError("candidate target has no active lineage")
+            incumbent = candidate.incumbent_manifest.entries.get(
+                candidate.target_id
+            )
+            artifact = "" if incumbent is None else incumbent.artifact_digest
+            try:
+                threshold = lineage.threshold_from(artifact)
+            except (TypeError, ValueError):
+                raise IntakeError(
+                    "candidate baseline is outside the active lineage"
+                ) from None
+            if threshold is None:
+                raise IntakeError("held candidate already names the current tip")
+            if (
+                candidate.reservation_digest
+                not in self._pretransition_reservations((candidate,), {
+                    candidate.target_id: lineage
+                })
+                or Decimal(candidate.speedup) <= threshold[0]
+            ):
+                raise IntakeError(
+                    "held candidate does not clear pretransition lineage authority"
+                )
+            hold_row = self._db.execute(
+                "SELECT event_id,event_json FROM settlement_events "
+                "WHERE reservation_id=? AND event_type='HOLD' "
+                "ORDER BY sequence DESC LIMIT 1",
+                (reservation_id,),
+            ).fetchone()
+            if hold_row is None:
+                raise IntakeError("held candidate has no settlement HOLD")
+            try:
+                hold = SettlementEvent.from_dict(
+                    json.loads(hold_row["event_json"])
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise IntakeError(
+                    f"settlement HOLD event is corrupt: {exc}"
+                ) from None
+            if (
+                hold.digest != hold_row["event_id"]
+                or hold.candidate_digest != candidate.digest
+                or hold.reason != "stale_incumbent"
+            ):
+                raise IntakeError(
+                    "held candidate lacks stale-incumbent authority"
+                )
+            cursor = self._db.execute(
+                "UPDATE settlement_candidates SET status='pending',"
+                "reason='pretransition_ancestor_reopened' "
+                "WHERE reservation_id=? AND status='held'",
+                (reservation_id,),
+            )
+            if cursor.rowcount != 1:
+                raise IntakeError("held candidate changed while reopening")
+        return candidate
+
     def evaluation_stack(self, arena_digest: str) -> EvaluationStackState:
         from cacheon.stack_manifest import EvaluationStackManifest
 
