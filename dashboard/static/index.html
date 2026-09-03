@@ -210,6 +210,23 @@ const STATUS_TONE = {
   awaiting_settlement: "info", stale: "warn",
 };
 const pill = (s) => `<span class="pill ${STATUS_TONE[s] || "mute"}">${esc(s || "—")}</span>`;
+function baselineSummary(b) {
+  if (!b || !b.evaluated) return '<span class="pill mute">not measured</span>';
+  const labels = {
+    current_tip: ["current tip", "ok"],
+    ancestor: ["ancestor", "warn"],
+    outside_active_lineage: ["side branch", "bad"],
+    no_active_tip: ["no active tip", "mute"],
+  };
+  const [label, tone] = labels[b.relationship] || [b.relationship || "unknown", "mute"];
+  const artifact = b.artifact_digest
+    ? `<code title="${esc(b.artifact_digest)}">${esc(short(b.artifact_digest, 10))}</code>`
+    : '<code>base engine</code>';
+  const threshold = b.relationship === "ancestor" && b.threshold_speedup != null
+    ? `<div class="muted small">must beat ${Number(b.threshold_speedup).toFixed(6)}×</div>`
+    : "";
+  return `<span class="pill ${tone}">${esc(label)}</span><div class="small">${artifact}</div>${threshold}`;
+}
 
 async function api(path) {
   const res = await fetch(path);
@@ -361,6 +378,7 @@ async function viewSubmissions() {
     <td>${fmtTime(s.submitted)}</td>
     <td>${blockLink(s.submitted, s.block_links)}</td>
     <td>${esc(s.target_id || "—")}</td>
+    <td>${baselineSummary(s.baseline)}</td>
     <td>${s.payment
         ? `<a href="${esc(s.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(s.payment.ref)}</a>`
         : '<span class="muted">—</span>'}</td>
@@ -387,7 +405,7 @@ async function viewSubmissions() {
       <button class="btn" ${subFilters.offset + 50 < d.total ? "" : "disabled"}
         onclick="subFilters.offset+=50;refresh();">Next ›</button>
     </div>
-    ${table(["Reservation","Status","Hotkey","Submitted","Block","Target","Fee tx","Screen","Decision","Detail"],
+    ${table(["Reservation","Status","Hotkey","Submitted","Block","Target","Baseline","Fee tx","Screen","Decision","Detail"],
       rows, "No submissions match.")}`;
 }
 
@@ -550,6 +568,28 @@ window.openDetail = async (rid) => {
       ${kv("Crowned", fmtTime(d.settlement.crowned))}
       ${kv("Reason", esc(d.settlement.reason || "—"))}
     </dl>` : "";
+  const baseline = d.baseline || {};
+  const baselineCard = `
+    <h2>Evaluation baseline</h2>
+    <div class="card">
+      <dl class="kv" style="margin:0">
+        ${kv("Relationship", baselineSummary(baseline))}
+        ${kv("Evaluated artifact", baseline.evaluated
+          ? (baseline.artifact_digest
+              ? `<code>${esc(baseline.artifact_digest)}</code>`
+              : "<code>base engine</code>")
+          : '<span class="muted">Not measured yet</span>')}
+        ${kv("Current tip", baseline.current_tip_artifact_digest
+          ? `<code>${esc(baseline.current_tip_artifact_digest)}</code>`
+          : "—")}
+        ${kv("Winning threshold", baseline.relationship === "ancestor" && baseline.threshold_speedup != null
+          ? `>${Number(baseline.threshold_speedup).toFixed(9)}× from this ancestor`
+          : baseline.relationship === "current_tip" ? "ordinary marginal threshold" : "—")}
+        ${kv("Stack", baseline.stack_digest ? `<code>${esc(baseline.stack_digest)}</code>` : "—")}
+        ${kv("Tree", baseline.tree_digest ? `<code>${esc(baseline.tree_digest)}</code>` : "—")}
+        ${kv("Arena", baseline.arena_digest ? `<code>${esc(baseline.arena_digest)}</code>` : "—")}
+      </dl>
+    </div>`;
   const screens = (d.screen_attempts_history || []).map((a) =>
     `<tr><td>#${a.attempt}</td><td>${pill(a.decision)}</td><td>${esc(a.lane)}</td><td>${a.stage_count} stages</td></tr>`);
   const quals = (d.qualification_attempts || []).map((a) =>
@@ -598,6 +638,7 @@ window.openDetail = async (rid) => {
       ${kv("Transport attempts", d.transport_attempts)}
       ${kv("Admission epoch", d.admission_epoch)}
     </dl>
+    ${baselineCard}
     ${settle}
     ${screens.length ? "<h2>Screen attempts</h2>" + table(["#","Decision","Lane","Stages"], screens) : ""}
     ${quals.length ? "<h2>Qualification attempts</h2>" + table(["#","Decision","Reason"], quals) : ""}

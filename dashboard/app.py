@@ -18,6 +18,7 @@ import threading
 import time
 from collections import Counter
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -573,6 +574,115 @@ def submission_row(r: dict[str, Any]) -> dict[str, Any]:
     return sub
 
 
+def submission_baseline(
+    con: sqlite3.Connection,
+    reservation_id: str,
+    target_id: str,
+    *,
+    lineage_tables_available: bool | None = None,
+) -> dict[str, Any]:
+    """Describe the baseline used and its relationship to the active tip."""
+
+    candidate = con.execute(
+        "SELECT candidate_json FROM settlement_candidates "
+        "WHERE reservation_id=?",
+        (reservation_id,),
+    ).fetchone()
+    raw: dict[str, Any] = {}
+    if candidate is not None:
+        doc = json.loads(candidate["candidate_json"] or "{}")
+        raw = doc.get("primary") or doc
+    else:
+        qualification = con.execute(
+            "SELECT qualification_json FROM settlement_qualifications "
+            "WHERE reservation_id=? ORDER BY reproduction_index LIMIT 1",
+            (reservation_id,),
+        ).fetchone()
+        if qualification is not None:
+            raw = json.loads(qualification["qualification_json"] or "{}")
+
+    if not raw:
+        return {
+            "evaluated": False,
+            "relationship": "not_evaluated",
+            "artifact_digest": "",
+            "current_tip_artifact_digest": "",
+            "threshold_speedup": None,
+        }
+
+    manifest = raw.get("incumbent_manifest") or {}
+    entry = (manifest.get("entries") or {}).get(target_id) or {}
+    baseline_artifact = entry.get("artifact_digest") or ""
+    result: dict[str, Any] = {
+        "evaluated": True,
+        "relationship": "no_active_tip",
+        "artifact_digest": baseline_artifact,
+        "stack_digest": raw.get("incumbent_stack_digest") or manifest.get("digest") or "",
+        "tree_digest": raw.get("incumbent_tree_digest") or "",
+        "arena_digest": raw.get("arena_digest") or manifest.get("arena_digest") or "",
+        "current_tip_artifact_digest": "",
+        "threshold_speedup": None,
+    }
+    if lineage_tables_available is None:
+        tables = {
+            row["name"]
+            for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('target_lineage_tips','target_lineage_nodes')"
+            )
+        }
+        lineage_tables_available = tables == {
+            "target_lineage_tips",
+            "target_lineage_nodes",
+        }
+    if not lineage_tables_available:
+        return result
+    tip = con.execute(
+        "SELECT artifact_digest FROM target_lineage_tips WHERE target_id=?",
+        (target_id,),
+    ).fetchone()
+    if tip is None:
+        return result
+    tip_artifact = str(tip["artifact_digest"])
+    result["current_tip_artifact_digest"] = tip_artifact
+    if baseline_artifact == tip_artifact:
+        result["relationship"] = "current_tip"
+        result["threshold_speedup"] = 1.0
+        return result
+
+    nodes: list[dict[str, Any]] = []
+    artifact = tip_artifact
+    seen: set[str] = set()
+    while artifact and artifact not in seen:
+        seen.add(artifact)
+        node = con.execute(
+            "SELECT artifact_digest,parent_artifact_digest,winner_speedup "
+            "FROM target_lineage_nodes WHERE target_id=? AND artifact_digest=?",
+            (target_id, artifact),
+        ).fetchone()
+        if node is None:
+            break
+        nodes.append(dict(node))
+        artifact = str(node["parent_artifact_digest"])
+    nodes.reverse()
+    start = next(
+        (
+            index for index, node in enumerate(nodes)
+            if node["parent_artifact_digest"] == baseline_artifact
+        ),
+        None,
+    )
+    if start is None:
+        result["relationship"] = "outside_active_lineage"
+        return result
+    threshold = Decimal(1)
+    for node in nodes[start:]:
+        threshold *= Decimal(str(node["winner_speedup"]))
+    result["relationship"] = "ancestor"
+    result["threshold_speedup"] = float(threshold)
+    return result
+
+
 def safe_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -766,10 +876,22 @@ def submissions(
         ORDER BY block {'ASC' if order == 'asc' else 'DESC'}, event_index
         LIMIT ? OFFSET ?
     """, (*args, limit, offset))
+    shaped = [submission_row(r) for r in data]
+    lineage_tables = con.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN "
+        "('target_lineage_tips','target_lineage_nodes')"
+    ).fetchone()[0] == 2
+    for item in shaped:
+        item["baseline"] = submission_baseline(
+            con,
+            item["reservation_id"],
+            item["target_id"],
+            lineage_tables_available=lineage_tables,
+        )
     con.close()
     return {
         "total": total, "limit": limit, "offset": offset,
-        "items": [submission_row(r) for r in data],
+        "items": shaped,
     }
 
 
@@ -823,6 +945,7 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
             "lane": cj.get("lane"),
             "crowned": with_time(int(cj.get("finalized_block") or 0)),
         }
+    detail["baseline"] = submission_baseline(con, rid, detail["target_id"])
 
     detail["leases"] = rows(con, """
         SELECT el.lease_id, el.stage, el.state, el.generation, el.claimed_block,
