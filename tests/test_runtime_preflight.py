@@ -210,10 +210,8 @@ def run_runtime_preflight(
             clock=clock,
             process_manager=process_manager,
         )
-    assert runner is not None
-    return rp._run_runtime_preflight_unleased_for_test(
-        config, runner=runner, clock=clock
-    )
+    assert runner is not None and runner is not rp.bounded_argv_runner
+    return rp._run_runtime_preflight(config, runner=runner, clock=clock)
 
 
 def test_success_binds_image_platform_and_installed_worker_identity():

@@ -26,10 +26,6 @@ from pathlib import Path, PurePosixPath
 from typing import Iterator, Protocol
 
 from cacheon import dsl_jit_policy
-from cacheon.artifact_provider import (
-    ARTIFACT_PROVIDERS,
-    ArtifactProviderPolicyError,
-)
 from cacheon.bundle_hash import content_hash
 from cacheon.deppatch import parse_patch_text
 from cacheon.manifest import ABI_VERSION, Manifest, OpEntry, load_manifest
@@ -48,7 +44,6 @@ _INTERNAL_BUNDLE_ID = "cacheon-materialized-v1"
 _REBUILD_ORDER = {
     "cacheon/patchers/apply_dep_patch.py": 0,
     "cacheon/patchers/build_cuda_ext.py": 1,
-    "cacheon/patchers/build_cute_cubin.py": 2,
 }
 _SKIP_DIRS = frozenset({".git", "__pycache__"})
 _SKIP_SUFFIXES = frozenset({".pyc", ".pyo"})
@@ -805,12 +800,7 @@ def _rebuild_features(plan: RebuildPlan | None) -> tuple[str, ...]:
 
     features: list[str] = []
     for step in () if plan is None else plan.steps:
-        artifact_feature = ARTIFACT_PROVIDERS.build_feature_for_patcher(
-            step.patcher_id
-        )
-        if artifact_feature is not None:
-            features.append(artifact_feature)
-        elif step.patcher_id == "cacheon.apply-dep-patch.v1":
+        if step.patcher_id == "cacheon.apply-dep-patch.v1":
             features.append(FEATURE_REBUILD_APPLY_DEP_PATCH)
         elif step.patcher_id == "cacheon.build-cuda-ext.v1":
             features.append(FEATURE_REBUILD_BUILD_CUDA_EXT)
@@ -821,35 +811,8 @@ def _rebuild_features(plan: RebuildPlan | None) -> tuple[str, ...]:
     return tuple(features)
 
 
-def _manifest_artifact_provider_ids(manifest: Manifest) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                export.provider
-                for op in manifest.ops
-                for export in op.aot_exports
-            }
-        )
-    )
-
-
-def _require_crownable_artifact_providers(
-    manifest: Manifest, *, context: str
-) -> None:
-    """Reject bring-up providers before an evaluation/release tree is emitted."""
-
-    provider_ids = _manifest_artifact_provider_ids(manifest)
-    if not provider_ids:
-        return
-    try:
-        ARTIFACT_PROVIDERS.require_crownable(provider_ids, context=context)
-    except ArtifactProviderPolicyError as exc:
-        raise EngineTreeError(str(exc)) from None
-
-
 def _op_identity(manifest: Manifest, op: OpEntry) -> dict[str, object]:
     from cacheon.capabilities import canonical_value
-    from cacheon.artifact_identity import DIRECT_ARTIFACT_ENTRY
 
     if op.extra:
         raise EngineTreeError(
@@ -863,10 +826,7 @@ def _op_identity(manifest: Manifest, op: OpEntry) -> dict[str, object]:
         "base_kernel": op.base_kernel,
         "cuda_sources": sorted(set(op.cuda_sources)),
         "dtypes": sorted({str(canonical_value("dtype", value)) for value in op.dtypes}),
-        # Direct artifacts never execute ``ops.entry``.  Canonicalize the legacy
-        # required manifest field so changing a dead Python symbol cannot rotate
-        # selected-delta, engine-tree, or settlement identity.
-        "entry": DIRECT_ARTIFACT_ENTRY if op.aot_exports else op.entry,
+        "entry": op.entry,
         "metadata": op.metadata,
         "override_point": op.override_point,
         "prepare": op.prepare,
@@ -875,44 +835,13 @@ def _op_identity(manifest: Manifest, op: OpEntry) -> dict[str, object]:
         "source": op.source,
         "variant": op.variant,
     }
-    # Preserve every legacy selected-payload identity byte-for-byte.  This field
-    # exists only for the new direct-AOT lane; an unconditional empty list would
-    # rotate all canonical non-AOT contributions.
-    if op.aot_exports:
-        from cacheon.artifact_identity import (
-            ArtifactIdentityError,
-            direct_artifact_execution_identity,
-        )
-
-        try:
-            artifact_identity = direct_artifact_execution_identity(manifest, op)
-        except ArtifactIdentityError as exc:
-            raise EngineTreeError(
-                f"op {op.slot!r} artifact resources are not canonical: {exc}"
-            ) from None
-        identity["artifact_identity_schema"] = artifact_identity["schema"]
-        identity["artifact_resource_plan"] = artifact_identity[
-            "artifact_resource_plan"
-        ]
-        identity["artifact_resource_plan_sha256"] = artifact_identity[
-            "artifact_resource_plan_sha256"
-        ]
-        identity["aot_exports"] = artifact_identity["exports"]
     return identity
 
 
 def _runtime_op_identity(manifest: Manifest, op: OpEntry) -> dict[str, object]:
-    """Return one emitted runtime row with exact artifact declarations."""
+    """Return one emitted runtime row."""
 
-    row = _op_identity(manifest, op)
-    if op.aot_exports:
-        # Selected identity encodes finite floats as exact tagged strings because
-        # stack JSON forbids native floats.  Runtime TOML must retain the original
-        # scalar types consumed by specialization and prelaunch validation.
-        from cacheon.artifact_identity import direct_artifact_runtime_exports
-
-        row["aot_exports"] = direct_artifact_runtime_exports(manifest, op)
-    return row
+    return _op_identity(manifest, op)
 
 
 def _validate_variant_domains(root: Path, manifest: Manifest) -> None:
@@ -1109,247 +1038,6 @@ def _git_output(repository: Path, *arguments: str) -> bytes:
     return result.stdout
 
 
-def _review_commit_source_digest(
-    repository_root: str | Path,
-    source_root: str | Path,
-    review_commit: str,
-) -> str:
-    """Require the reviewed Git commit to contain the exact integrated source tree."""
-
-    if not isinstance(review_commit, str) or re.fullmatch(r"[0-9a-f]{40}", review_commit) is None:
-        raise EngineTreeError("integration review_commit must be a full Git SHA-1")
-    repository = _source_directory(repository_root, field="integration repository")
-    source = _source_directory(source_root, field="integrated source tree")
-    try:
-        relative_root = source.relative_to(repository)
-    except ValueError:
-        raise EngineTreeError(
-            "integrated source tree is outside the integration repository"
-        ) from None
-    observed_top = Path(
-        _git_output(repository, "rev-parse", "--show-toplevel")
-        .decode("utf-8", errors="strict")
-        .strip()
-    ).resolve(strict=True)
-    if observed_top != repository:
-        raise EngineTreeError("integration repository is not the Git worktree root")
-    resolved_commit = (
-        _git_output(repository, "rev-parse", "--verify", f"{review_commit}^{{commit}}")
-        .decode("ascii", errors="strict")
-        .strip()
-    )
-    if resolved_commit != review_commit:
-        raise EngineTreeError("integration review_commit did not resolve exactly")
-
-    relative_posix = relative_root.as_posix()
-    pathspec = ":(literal)." if relative_posix == "." else f":(literal){relative_posix}"
-    raw_rows = _git_output(
-        repository,
-        "ls-tree",
-        "-r",
-        "-z",
-        "--full-tree",
-        review_commit,
-        "--",
-        pathspec,
-    )
-    committed: list[dict[str, object]] = []
-    prefix = "" if relative_posix == "." else relative_posix + "/"
-    for raw_row in raw_rows.split(b"\0"):
-        if not raw_row:
-            continue
-        try:
-            identity, raw_path = raw_row.split(b"\t", 1)
-            mode, kind, object_id = identity.split(b" ", 2)
-            repository_path = raw_path.decode("utf-8", errors="strict")
-        except (UnicodeDecodeError, ValueError):
-            raise EngineTreeError("integration review commit tree is malformed") from None
-        if kind != b"blob" or mode not in {b"100644", b"100755"}:
-            raise EngineTreeError(
-                f"integration review commit contains unsupported entry {repository_path!r}"
-            )
-        if prefix and not repository_path.startswith(prefix):
-            raise EngineTreeError("integration review commit escaped the source subtree")
-        logical = repository_path[len(prefix):]
-        path = PurePosixPath(logical)
-        if any(part in _SKIP_DIRS for part in path.parts):
-            continue
-        if path.suffix in _SKIP_SUFFIXES or path.name.startswith("._"):
-            continue
-        logical = _logical_path(logical, field="reviewed source path")
-        payload = _git_output(repository, "cat-file", "blob", object_id.decode("ascii"))
-        committed.append(
-            {"mode": _FILE_MODE, "path": logical, "sha256": sha256_hex(payload)}
-        )
-    if not committed:
-        raise EngineTreeError("integration review commit contains no source files")
-    committed_digest = canonical_digest(
-        "cacheon.integrated-source-tree",
-        {"files": sorted(committed, key=lambda row: str(row["path"]))},
-    )
-    current_digest = integrated_source_tree_digest(source)
-    if committed_digest != current_digest:
-        raise EngineTreeError(
-            "integrated source tree differs from the integration review_commit"
-        )
-    return current_digest
-
-
-def promote_integrated_contribution(
-    *,
-    candidate: object,
-    settlement_evidence: object,
-    crown_event: object,
-    proposal: object,
-    integrated_source_root: str | Path,
-    repository_root: str | Path,
-    evidence_root: str | Path,
-    catalog: object,
-    review_commit: str,
-    review_artifacts: object,
-    reviewer: str,
-):
-    """Promote one reproduced CROWN into an exact reviewed source contribution.
-
-    This is the validator-owned construction path for ``IntegrationReviewRecord``.
-    It reopens no miner-selected authority: every economic identity arrives as an
-    already typed settlement object, while the integrated source is independently
-    inspected and required to exist byte-for-byte at ``review_commit``.
-    """
-
-    from cacheon.settlement import (
-        SettlementCandidate,
-        SettlementEvidence,
-        SettlementEvent,
-        SettlementEventType,
-    )
-    from cacheon.eval.evidence_store import EvidenceStoreError, reopen_evidence
-    from cacheon.stack_manifest import (
-        IntegrationReviewArtifacts,
-        IntegrationReviewRecord,
-        ProposalContributionRef,
-    )
-
-    if type(candidate) is not SettlementCandidate or candidate.lane != "registered":
-        raise EngineTreeError("integration promotion requires one registered candidate")
-    if type(settlement_evidence) is not SettlementEvidence:
-        raise EngineTreeError("integration promotion settlement evidence is not exactly typed")
-    expected_evidence = (
-        (settlement_evidence.candidate_digest, candidate.digest),
-        (settlement_evidence.reservation_digest, candidate.reservation_digest),
-        (
-            settlement_evidence.primary_authority_digest,
-            candidate.primary.qualification_authority_digest,
-        ),
-        (
-            settlement_evidence.primary_attempt_ref.sha256,
-            candidate.primary.qualification_attempt_digest,
-        ),
-        (
-            settlement_evidence.primary_report_digest,
-            candidate.primary.qualification_report_digest,
-        ),
-        (
-            settlement_evidence.primary_selection_evidence_digest,
-            candidate.primary.selection_evidence_digest,
-        ),
-        (
-            settlement_evidence.reproduction_authority_digest,
-            candidate.reproduction.qualification_authority_digest,
-        ),
-        (
-            settlement_evidence.reproduction_attempt_ref.sha256,
-            candidate.reproduction.qualification_attempt_digest,
-        ),
-        (
-            settlement_evidence.reproduction_report_digest,
-            candidate.reproduction.qualification_report_digest,
-        ),
-        (
-            settlement_evidence.reproduction_selection_evidence_digest,
-            candidate.reproduction.selection_evidence_digest,
-        ),
-    )
-    if any(observed != expected for observed, expected in expected_evidence):
-        raise EngineTreeError("integration promotion evidence differs from its candidate")
-    if type(proposal) is not ProposalContributionRef:
-        raise EngineTreeError("integration promotion proposal is not exactly typed")
-    if candidate.candidate_manifest is None:
-        raise EngineTreeError("integration promotion candidate lacks its exact manifest")
-    replacement = candidate.candidate_manifest.entries.get(candidate.target_id)
-    if replacement != proposal or proposal.selected_delta_digest != candidate.selected_delta_digest:
-        raise EngineTreeError("integration promotion proposal differs from the crowned delta")
-    if (
-        type(crown_event) is not SettlementEvent
-        or crown_event.event_type is not SettlementEventType.CROWN
-        or crown_event.candidate_digest != candidate.digest
-        or crown_event.subject_digest != proposal.digest
-        or crown_event.target_id != proposal.target_id
-        or crown_event.from_stack_digest != candidate.incumbent_stack_digest
-        or crown_event.from_tree_digest != candidate.incumbent_tree_digest
-        or crown_event.to_stack_digest != candidate.incumbent_stack_digest
-        or crown_event.to_tree_digest != candidate.incumbent_tree_digest
-        or crown_event.reason != "qualified_win"
-    ):
-        raise EngineTreeError("integration promotion event is not the exact candidate CROWN")
-    if type(review_artifacts) is not IntegrationReviewArtifacts:
-        raise EngineTreeError("integration promotion review artifacts are not exactly typed")
-    if (
-        review_artifacts.primary_attempt_ref != settlement_evidence.primary_attempt_ref
-        or review_artifacts.reproduction_attempt_ref
-        != settlement_evidence.reproduction_attempt_ref
-    ):
-        raise EngineTreeError("integration review artifacts differ from settlement evidence")
-    try:
-        for reference in (
-            review_artifacts.primary_attempt_ref,
-            review_artifacts.reproduction_attempt_ref,
-            review_artifacts.license_evidence_ref,
-            review_artifacts.provenance_evidence_ref,
-            review_artifacts.security_review_ref,
-            review_artifacts.compatibility_evidence_ref,
-            review_artifacts.test_evidence_ref,
-        ):
-            reopen_evidence(evidence_root, reference)
-    except EvidenceStoreError as exc:
-        raise EngineTreeError(
-            f"cannot reopen retained integration review evidence: {exc}"
-        ) from None
-
-    inspected = inspect_contribution(integrated_source_root, catalog=catalog)
-    if (
-        inspected.target_id != proposal.target_id
-        or inspected.target_spec_digest != proposal.target_spec_digest
-        or inspected.selected_payload_digest != proposal.selected_payload_digest
-        or inspected.selected_delta_digest != proposal.selected_delta_digest
-    ):
-        raise EngineTreeError("integrated source differs from the crowned proposal payload")
-    source_digest = _review_commit_source_digest(
-        repository_root, integrated_source_root, review_commit
-    )
-    return IntegrationReviewRecord(
-        target_id=proposal.target_id,
-        target_spec_digest=proposal.target_spec_digest,
-        proposal_contribution_digest=proposal.digest,
-        settlement_candidate_digest=candidate.digest,
-        settlement_evidence_digest=settlement_evidence.digest,
-        crown_event_digest=crown_event.digest,
-        primary_attempt_digest=settlement_evidence.primary_attempt_ref.sha256,
-        reproduction_attempt_digest=settlement_evidence.reproduction_attempt_ref.sha256,
-        integrated_source_tree_digest=source_digest,
-        selected_payload_digest=proposal.selected_payload_digest,
-        attribution_digest=proposal.attribution_digest,
-        license_evidence_digest=review_artifacts.license_evidence_ref.sha256,
-        provenance_evidence_digest=review_artifacts.provenance_evidence_ref.sha256,
-        security_review_digest=review_artifacts.security_review_ref.sha256,
-        compatibility_evidence_digest=review_artifacts.compatibility_evidence_ref.sha256,
-        test_evidence_digest=review_artifacts.test_evidence_ref.sha256,
-        artifacts=review_artifacts,
-        reviewer=reviewer,
-        review_commit=review_commit,
-    )
-
-
 def _put_file(files: dict[str, bytes], path: str, data: bytes) -> None:
     path = _logical_path(path, field="emitted path")
     if path in files:
@@ -1443,12 +1131,7 @@ def _contribution_files(
     for op in inspection.manifest.ops:
         required = required_entry_names.setdefault(op.source, set())
         optional = optional_entry_names.setdefault(op.source, set())
-        if op.aot_exports:
-            # A direct-AOT row is never imported in an engine worker.  Its source
-            # contributes only prebuild factories; runtime execution is constructed
-            # from the sealed declarative slot-resource projection.
-            pass
-        elif op.is_override:
+        if op.is_override:
             required.add(op.entry + "_ref")
             optional.add(op.entry)
         else:
@@ -1457,7 +1140,6 @@ def _contribution_files(
             required.add(op.prepare)
         if op.setup is not None:
             required.add(op.setup)
-        required.update(export.factory for export in op.aot_exports)
     entry_paths: dict[str, str] = {}
     for relative, required in sorted(required_entry_names.items()):
         output = f"entries/{_generated_name(prefix, relative, suffix='.py')}"
@@ -1585,201 +1267,6 @@ def _runtime_manifest(
             assert isinstance(values, list) and all(isinstance(value, str) for value in values)
             if values:
                 lines.append(f"{key} = {_toml_array(values)}")
-        aot_exports = op.get("aot_exports", [])
-        assert isinstance(aot_exports, list)
-        if aot_exports:
-            from cacheon.cute_aot import (
-                CuteAOTError,
-                reopen_artifact_resource_plan_identity,
-            )
-            from cacheon.manifest import (
-                reopen_artifact_target_authority,
-                static_artifact_target_authority,
-            )
-
-            try:
-                dispatch_slot = op["slot"]
-                assert isinstance(dispatch_slot, str)
-                authority_data = op.get("artifact_target_authority")
-                authority_digest = op.get("artifact_target_authority_sha256")
-                if authority_data is None:
-                    if authority_digest is not None:
-                        raise ValueError(
-                            "artifact target authority digest lacks its snapshot"
-                        )
-                    target_authority = static_artifact_target_authority(dispatch_slot)
-                else:
-                    target_authority = reopen_artifact_target_authority(
-                        authority_data,
-                        expected_dispatch_slot=dispatch_slot,
-                    )
-                    if authority_digest != target_authority.digest:
-                        raise ValueError("artifact target authority digest mismatch")
-                _resource_plan, resource_plan_data, _resource_plan_sha256 = (
-                    reopen_artifact_resource_plan_identity(
-                        op.get("artifact_resource_plan"),
-                        expected_slot=dispatch_slot,
-                        authority=target_authority,
-                        expected_sha256=op.get("artifact_resource_plan_sha256"),
-                    )
-                )
-            except (CuteAOTError, ValueError) as exc:
-                raise EngineTreeError(
-                    f"runtime artifact resource plan is invalid: {exc}"
-                ) from None
-            resources = resource_plan_data["resources"]
-            assert isinstance(resources, list)
-            for resource in resources:
-                assert isinstance(resource, dict)
-                expected_resource_fields = {
-                    "alignment",
-                    "dtype",
-                    "lifetime",
-                    "name",
-                    "shape",
-                }
-                resource_fields = set(resource)
-                if resource_fields not in (
-                    expected_resource_fields,
-                    expected_resource_fields | {"scope"},
-                ):
-                    raise EngineTreeError(
-                        "runtime artifact resource fields differ from the "
-                        "canonical resource-plan schema"
-                    )
-                resource_lines = [
-                    "[[ops.artifact_resources]]",
-                    f"name = {_toml_value(resource['name'])}",
-                    f"dtype = {_toml_value(resource['dtype'])}",
-                    f"alignment = {_toml_value(resource['alignment'])}",
-                    f"lifetime = {_toml_value(resource['lifetime'])}",
-                    f"shape = {_toml_value(resource['shape'])}",
-                ]
-                if "scope" in resource:
-                    resource_lines.append(
-                        f"scope = {_toml_value(resource['scope'])}"
-                    )
-                lines.extend(resource_lines)
-        for export in aot_exports:
-            assert isinstance(export, dict)
-            provider = export["provider"]
-            name = export["name"]
-            factory = export["factory"]
-            profile_inputs = export["profile_inputs"]
-            bindings = export["bindings"]
-            device_plan = export.get("device_plan")
-            plan = export["plan"]
-            prelaunch = export["prelaunch"]
-            provider_capability_requirements = export[
-                "provider_capability_requirements"
-            ]
-            role = export["role"]
-            specialization_capability_requirements = export[
-                "specialization_capability_requirements"
-            ]
-            specializes = export["specializes"]
-            step = export["step"]
-            assert isinstance(provider, str)
-            assert isinstance(name, str)
-            assert isinstance(factory, str)
-            assert isinstance(plan, str)
-            assert isinstance(role, str)
-            assert type(step) is int
-            assert isinstance(bindings, list)
-            assert isinstance(prelaunch, list)
-            assert isinstance(provider_capability_requirements, list)
-            assert isinstance(specialization_capability_requirements, list)
-            assert isinstance(specializes, dict)
-            assert isinstance(profile_inputs, list) and all(
-                isinstance(value, str) for value in profile_inputs
-            )
-            from cacheon.artifact_abi import (
-                ArtifactABIError,
-                parse_artifact_bindings,
-                parse_artifact_prelaunch,
-            )
-            from cacheon.artifact_device_launch import (
-                DeviceLaunchError,
-                DeviceLaunchPlan,
-            )
-
-            try:
-                typed_bindings = parse_artifact_bindings(
-                    bindings, field="runtime artifact bindings"
-                )
-                typed_prelaunch = parse_artifact_prelaunch(
-                    prelaunch, field="runtime artifact prelaunch"
-                )
-                typed_specializes = target_authority.call_abi.validate_plan(
-                    role=role,
-                    bindings=typed_bindings,
-                    specializes=specializes,
-                    prelaunch=typed_prelaunch,
-                    require_outputs=False,
-                    artifact_resources=_resource_plan,
-                )
-                if device_plan is not None:
-                    typed_device_plan = DeviceLaunchPlan.from_dict(device_plan)
-                    typed_device_plan.validate_bindings(
-                        typed_bindings,
-                        provider_capabilities=(
-                            ARTIFACT_PROVIDERS.require(provider).provider_capabilities
-                        ),
-                    )
-                expected_provider_requirements = [
-                    requirement.to_dict()
-                    for requirement in target_authority.call_abi.provider_capability_requirements(
-                        typed_bindings,
-                        artifact_resources=_resource_plan,
-                    )
-                ]
-                expected_specialization_requirements = [
-                    requirement.to_dict()
-                    for requirement in target_authority.call_abi.specialization_capability_requirements(
-                        typed_specializes,
-                        artifact_resources=_resource_plan,
-                    )
-                ]
-            except (
-                ArtifactABIError,
-                ArtifactProviderPolicyError,
-                DeviceLaunchError,
-                ValueError,
-            ) as exc:
-                raise EngineTreeError(
-                    f"runtime artifact launch plan is invalid: {exc}"
-                ) from None
-            if (
-                provider_capability_requirements
-                != expected_provider_requirements
-                or specialization_capability_requirements
-                != expected_specialization_requirements
-            ):
-                raise EngineTreeError(
-                    "runtime artifact capability requirements differ from "
-                    "validator reconstruction"
-                )
-            lines.extend(
-                [
-                    "[[ops.aot_exports]]",
-                    f"provider = {_toml_string(provider)}",
-                    f"name = {_toml_string(name)}",
-                    f"factory = {_toml_string(factory)}",
-                    f"profile_inputs = {_toml_array(profile_inputs)}",
-                    f"role = {_toml_string(role)}",
-                    f"plan = {_toml_string(plan)}",
-                    f"step = {step}",
-                    f"specializes = {_toml_value(specializes)}",
-                    f"prelaunch = {_toml_value(prelaunch)}",
-                    f"bindings = {_toml_value(bindings)}",
-                    "provider_capability_requirements = "
-                    f"{_toml_value(provider_capability_requirements)}",
-                    "specialization_capability_requirements = "
-                    f"{_toml_value(specialization_capability_requirements)}",
-                ]
-            )
-            if device_plan is not None:
-                lines.append(f"device_plan = {_toml_value(device_plan)}")
         lines.append("")
     return ("\n".join(lines).rstrip() + "\n").encode("utf-8")
 
@@ -2099,11 +1586,6 @@ def materialize_engine_tree(
         raise TypeError("catalog must be a TargetCatalog")
     if not isinstance(stack, (EvaluationStackManifest, EngineReleaseManifest)):
         raise TypeError("stack must be an EvaluationStackManifest or EngineReleaseManifest")
-    artifact_admission_context = (
-        "release stack admission"
-        if isinstance(stack, EngineReleaseManifest)
-        else "evaluation stack admission"
-    )
     stack.validate_against(context)
     if isinstance(stack, EngineReleaseManifest):
         if integration_records is None:
@@ -2170,10 +1652,6 @@ def materialize_engine_tree(
                 raise EngineTreeError(f"unsupported contribution ref for {target_id!r}")
 
             inspection = _inspect_contribution(staged, catalog=catalog)
-            _require_crownable_artifact_providers(
-                inspection.manifest,
-                context=artifact_admission_context,
-            )
             if inspection.target_id != target_id or ref.target_id != target_id:
                 raise EngineTreeError(f"resolved target mismatch for {target_id!r}")
             if inspection.target_spec_digest != ref.target_spec_digest:

@@ -40,6 +40,7 @@ from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMemb
 from cacheon.chain.remote_qualification_evidence import (
     _SCHEMA_VERSION,
     RemoteEvaluationDispatcherError,
+    RemoteEvaluationReleased,
     RemoteEvidenceArtifact,
     RemoteQualificationProduct,
     _digest,
@@ -1068,7 +1069,7 @@ class RemoteEvaluationDispatcher:
             raise RemoteEvaluationDispatcherError(
                 f"{reason}; durable infrastructure release also failed: {release_error}"
             ) from cause
-        raise RemoteEvaluationDispatcherError(reason) from cause
+        raise RemoteEvaluationReleased(lease.lease_id, reason) from cause
 
     def dispatch_screen_once(self) -> EvaluationRun | None:
         """Claim the exact FIFO screen row, invoke remotely, and CAS-commit."""

@@ -5,12 +5,14 @@ with one qualification request.  ``PASS`` / ``FAIL`` / ``NO_DECISION``
 describe what an evaluation said about miner work.  The two never share a
 field, and no rule here maps an infrastructure failure onto a miner ``FAIL``.
 
-``REQUEUE`` exists for exactly one shape of evidence: an authenticated,
-closed, pre-resident refusal that the pod signs with the shared worker
-credential only after proving the resident-entry marker is absent
-(``remote_worker_pod_service.require_pre_resident_failure``).  Unauthenticated
-failure results, unknown failure codes, ambiguous markers, and completed
-evidence with retained ``NO_DECISION`` outcomes never requeue.
+Worker-failure ``REQUEUE`` exists for exactly one shape of evidence: an
+authenticated, closed, pre-resident refusal that the pod signs with the shared
+worker credential only after proving the resident-entry marker is absent
+(``remote_worker_pod_service.require_pre_resident_failure``). A separate
+``incumbent_changed`` outcome retires a valid completed product whose measured
+baseline is no longer live. Unauthenticated failure results, unknown failure
+codes, ambiguous markers, and completed evidence with retained ``NO_DECISION``
+outcomes never requeue.
 """
 
 from __future__ import annotations
@@ -248,6 +250,7 @@ class ExecutionOutcome:
             (
                 self.failure_code not in PRE_RESIDENT_REQUEUE_FAILURES
                 and self.failure_code != WORKER_INFRASTRUCTURE_REQUEUE_FAILURE
+                and self.failure_code != STALE_INCUMBENT_REQUEUE_FAILURE
             )
             or self.decision != "NO_DECISION"
         ):
@@ -267,6 +270,7 @@ class ExecutionOutcome:
 # 2026-08-10). Raw worker codes outside the closed vocabularies normalize to
 # this marker in the typed outcome; the store release reason keeps the raw code.
 WORKER_INFRASTRUCTURE_REQUEUE_FAILURE = "worker_infrastructure_result"
+STALE_INCUMBENT_REQUEUE_FAILURE = "incumbent_changed"
 
 WORKER_INFRASTRUCTURE_HOLD_REASON = (
     f"transport_hold:{WORKER_INFRASTRUCTURE_REQUEUE_FAILURE}"
@@ -328,6 +332,7 @@ __all__ = [
     "AuthenticatedPreResidentRefusal",
     "AUTHORITY_CHANGED_HOLD_REASON",
     "COMPLETED_NO_DECISION_HOLD_REASON",
+    "STALE_INCUMBENT_REQUEUE_FAILURE",
     "WORKER_INFRASTRUCTURE_HOLD_REASON",
     "WORKER_INFRASTRUCTURE_REQUEUE_FAILURE",
     "ExecutionDisposition",

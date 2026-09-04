@@ -8,14 +8,9 @@ tests pin both halves: a genuine win passes, and noise alone never does.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import replace
 
 import pytest
 
-from cacheon.eval.oci_outer_session import (
-    OuterSessionInfrastructureError,
-    require_decode_dominant_plan,
-)
 from cacheon.eval.continuation_codec import ContinuationCodec
 from cacheon.eval.scoring import (
     ChargedExecutionRate,
@@ -24,8 +19,6 @@ from cacheon.eval.scoring import (
     relative_spread,
     score_speedup,
 )
-from tests.test_marginal_runtime import _case as runtime_case
-from tests.test_marginal_runtime import _prepared as prepared_runtime
 
 
 def _digest(label: str) -> str:
@@ -231,31 +224,3 @@ def test_speed_witness_shape_decides_policy_and_recomputes():
         witness.regrade(None, None, expected_policy=SpeedEvidencePolicy.repeat())
     with pytest.raises(QualificationRunnerError, match="policy differs"):
         repeat.regrade(None, None, expected_policy=SpeedEvidencePolicy.legacy())
-
-
-def test_decode_dominant_plan_gate(tmp_path):
-    case = runtime_case(tmp_path)
-    case.session = replace(
-        case.session,
-        prompt_batches=(("warmup",), ("t1",), ("t2",)),
-        max_new_tokens=10,
-        top_logprobs_num=1,
-    )
-    plan = prepared_runtime(case).baseline_session_plan
-    count_tokens = len  # chars-as-tokens keeps the gate arithmetic transparent
-    charged = plan.prompt_batches[plan.warmup_count - plan.conditioning_count :]
-    prompt_tokens = sum(len(prompt) for batch in charged for prompt in batch)
-    decode_tokens = sum(len(batch) * plan.max_new_tokens for batch in charged)
-    expected = decode_tokens / (decode_tokens + prompt_tokens)
-    share = require_decode_dominant_plan(
-        plan, count_tokens=count_tokens, min_decode_share=expected * 0.9
-    )
-    assert abs(share - expected) < 1e-12
-    with pytest.raises(OuterSessionInfrastructureError, match="prefill-heavy"):
-        require_decode_dominant_plan(plan, count_tokens=count_tokens, min_decode_share=0.99)
-    with pytest.raises(OuterSessionInfrastructureError, match="min_decode_share"):
-        require_decode_dominant_plan(plan, count_tokens=count_tokens, min_decode_share=1.0)
-    with pytest.raises(OuterSessionInfrastructureError, match="positive ints"):
-        require_decode_dominant_plan(
-            plan, count_tokens=lambda prompt: 0, min_decode_share=0.5
-        )

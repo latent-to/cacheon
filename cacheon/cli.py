@@ -390,13 +390,10 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
             else:
                 from cacheon.target_catalog import default_target_catalog
 
-                catalog = default_target_catalog()
-                states = store.evaluation_stacks()
-                catalogs = {state.arena_digest: catalog for state in states}
                 projection = store.build_weight_projection(
                     policy=policy,
                     context=context,
-                    catalogs=catalogs,
+                    catalog=default_target_catalog(),
                     netuid=args.netuid,
                 )
             journal = SQLiteWeightPublicationJournal(store, projection)
@@ -812,6 +809,47 @@ def cmd_serve_weights(args: argparse.Namespace) -> int:
     return 0
 
 
+def _watch_interval(args: argparse.Namespace) -> float:
+    interval = getattr(args, "interval", 60.0)
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, (int, float))
+        or not 1 <= float(interval) <= 86_400
+    ):
+        raise SystemExit("--interval must be between 1 and 86400 seconds")
+    return float(interval)
+
+
+def _watch(run_pass, *, interval: float, logger, what: str, on_failure=None) -> int:
+    """Repeat ``run_pass`` until it returns a terminal status, backing off on failures."""
+
+    import time
+
+    failures = 0
+    while True:
+        try:
+            status = run_pass()
+        except Exception as exc:
+            if on_failure is not None:
+                on_failure()
+            if getattr(exc, "retryable", True) is False:
+                raise
+            failures += 1
+            logger.exception("%s pass failed (%d consecutive)", what, failures)
+            if failures >= 10:
+                raise
+        else:
+            failures = 0
+            if status not in {0, 3}:
+                return status
+        time.sleep(interval * (1 + min(failures, 5)))
+
+
+# Confirmed follow-weights passes between chain-client re-dials. The client's per-block
+# caches grew about 6 MB per pass (2026-09-04: 1 GB RSS after three hours on mainnet).
+_FOLLOW_WEIGHTS_CLIENT_PASSES = 30
+
+
 def _close_chain_quietly(subtensor: object) -> None:
     """Best-effort close of a subtensor client whose connection may be dead."""
 
@@ -897,47 +935,39 @@ def cmd_follow_weights(args: argparse.Namespace) -> int:
         return _cmd_follow_weights_once(args)
     if args.dry_run:
         raise SystemExit("--watch cannot be combined with --dry-run")
-    interval = getattr(args, "interval", 60.0)
-    if (
-        isinstance(interval, bool)
-        or not isinstance(interval, (int, float))
-        or not 1 <= float(interval) <= 86_400
-    ):
-        raise SystemExit("--interval must be between 1 and 86400 seconds")
+    interval = _watch_interval(args)
 
     import logging
-    import time
 
-    logger = logging.getLogger("cacheon.chain.weight_share")
-    failures = 0
-    # One chain client for the whole watch session. Dialing a fresh client per
-    # pass leaked one websocket (and its keepalive thread) every interval; a
-    # node blip then failed all of them at once (2026-08-19: 96 keepalive
-    # tracebacks in three minutes on mainnet). Re-dial only after a failed
-    # pass, when the connection is the likeliest casualty.
+    # One chain client across passes: dialing a fresh one per pass leaked a websocket
+    # and its keepalive thread every interval (2026-08-19: 96 keepalive tracebacks in
+    # three minutes on mainnet). Re-dial after a failed pass, when the connection is
+    # the likeliest casualty, and every _FOLLOW_WEIGHTS_CLIENT_PASSES confirmed passes.
     subtensor = None
-    while True:
-        try:
-            if subtensor is None:
-                subtensor = _connect_chain_from_args(args)
-            status = _cmd_follow_weights_once(args, subtensor)
-        except Exception as exc:
-            _close_chain_quietly(subtensor)
-            subtensor = None
-            if getattr(exc, "retryable", True) is False:
-                raise
-            failures += 1
-            logger.exception(
-                "follow-weights pass failed (%d consecutive)", failures
-            )
-            if failures >= 10:
-                raise
-        else:
-            failures = 0
-            if status not in {0, 3}:
-                _close_chain_quietly(subtensor)
-                return status
-        time.sleep(float(interval) * (1 + min(failures, 5)))
+    passes = 0
+
+    def drop_client() -> None:
+        nonlocal subtensor
+        _close_chain_quietly(subtensor)
+        subtensor = None
+
+    def run_pass() -> int:
+        nonlocal subtensor, passes
+        if subtensor is None:
+            subtensor = _connect_chain_from_args(args)
+        status = _cmd_follow_weights_once(args, subtensor)
+        passes += 1
+        if status not in {0, 3} or passes % _FOLLOW_WEIGHTS_CLIENT_PASSES == 0:
+            drop_client()
+        return status
+
+    return _watch(
+        run_pass,
+        interval=interval,
+        logger=logging.getLogger("cacheon.chain.weight_share"),
+        what="follow-weights",
+        on_failure=drop_client,
+    )
 
 
 def cmd_mint_push_credentials(args: argparse.Namespace) -> int:
@@ -1279,13 +1309,10 @@ def cmd_push_weight_offer(args: argparse.Namespace) -> int:
         else:
             from cacheon.target_catalog import default_target_catalog
 
-            catalog = default_target_catalog()
-            states = store.evaluation_stacks()
-            catalogs = {state.arena_digest: catalog for state in states}
             projection = store.build_weight_projection(
                 policy=policy,
                 context=context,
-                catalogs=catalogs,
+                catalog=default_target_catalog(),
                 netuid=args.netuid,
             )
         offer = CurrentWeightOffer.from_legacy_projection(projection)
@@ -1332,36 +1359,16 @@ def cmd_set_weights(args: argparse.Namespace) -> int:
             "--watch requires the signer path and cannot be combined with "
             "--dry-run, --reconcile-only, or --release-hold"
         )
-    interval = getattr(args, "interval", 60.0)
-    if (
-        isinstance(interval, bool)
-        or not isinstance(interval, (int, float))
-        or not 1 <= float(interval) <= 86_400
-    ):
-        raise SystemExit("--interval must be between 1 and 86400 seconds")
+    interval = _watch_interval(args)
 
     import logging
-    import time
 
-    logger = logging.getLogger("cacheon.chain.weights")
-    failures = 0
-    while True:
-        try:
-            status = _cmd_set_weights_once(args)
-        except Exception as exc:
-            if getattr(exc, "retryable", True) is False:
-                raise
-            failures += 1
-            logger.exception(
-                "weight publication pass failed (%d consecutive)", failures
-            )
-            if failures >= 10:
-                raise
-        else:
-            failures = 0
-            if status not in {0, 3}:
-                return status
-        time.sleep(float(interval) * (1 + min(failures, 5)))
+    return _watch(
+        lambda: _cmd_set_weights_once(args),
+        interval=interval,
+        logger=logging.getLogger("cacheon.chain.weights"),
+        what="weight publication",
+    )
 
 
 def cmd_chain_package(args: argparse.Namespace) -> int:
@@ -1920,6 +1927,85 @@ def cmd_chain_release_hold(args: argparse.Namespace) -> int:
         f"released hold {released.reservation_id}: status={released.status} "
         f"reason={released.reason}"
     )
+    return 0
+
+
+def cmd_chain_reopen_qualification(args: argparse.Namespace) -> int:
+    """Reopen one unsettled PASS pair whose credited half read the baseline out of band."""
+
+    from cacheon import chain
+    from cacheon.chain.baseline_band import (
+        BaselineBandError,
+        qualification_evidence_roots,
+        remeasurement_evidence,
+    )
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+
+    roots = qualification_evidence_roots(
+        Path(args.evidence_state_dir),
+        tuple(Path(root) for root in args.evidence_root),
+    )
+    subtensor = chain.connect(args.network)
+    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
+    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
+        if store.remeasurement_pending(args.reservation_id):
+            # Second run on an already reopened row: repair its baseline binding.
+            row = store.get(args.reservation_id)
+            print(
+                f"{row.reservation_id} is already reopened ({row.status}, "
+                f"{row.reason}); rebinding its baseline segment"
+            )
+            if args.dry_run:
+                print("dry run: reservation left unchanged")
+                return 0
+            state = store.rebind_remeasurement_segment(args.reservation_id)
+            print(
+                "left unbound for the fresh screen to bind"
+                if state is None
+                else f"rebound to arena {state.arena_digest[:16]} "
+                f"generation {state.generation}"
+            )
+            return 0
+        try:
+            evidence = remeasurement_evidence(store, args.reservation_id, roots)
+        except BaselineBandError as exc:
+            raise SystemExit(f"remeasurement refused: {exc}") from None
+        print(evidence.describe())
+        if not evidence.out_of_band:
+            raise SystemExit(
+                "remeasurement refused: the credited half read the baseline "
+                "lane inside the arena band"
+            )
+        if args.dry_run:
+            print("dry run: reservation left unchanged")
+            return 0
+        reopened = store.reopen_for_remeasurement(
+            args.reservation_id, reason="baseline_out_of_band"
+        )
+    print(
+        f"reopened {reopened.reservation_id}: status={reopened.status} "
+        f"reason={reopened.reason}"
+    )
+    return 0
+
+
+def cmd_chain_backfill_lineage(args: argparse.Namespace) -> int:
+    """Rebuild the per-target lineage ledger from the newest CROWN per target."""
+
+    from cacheon import chain
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+
+    subtensor = chain.connect(args.network)
+    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
+    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
+        lineages = store.backfill_target_lineage_tips()
+    for target_id, lineage in sorted(lineages.items()):
+        print(
+            f"{target_id}: tip={lineage.artifact_digest[:16]} "
+            f"parent={lineage.parent_artifact_digest[:16] or '-'} "
+            f"winner_speedup={lineage.winner_speedup} edges={len(lineage.nodes)}"
+        )
+    print(f"backfilled lineage tips for {len(lineages)} target(s)")
     return 0
 
 
@@ -3104,6 +3190,45 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reservation-id", required=True)
     sp.add_argument("--reason", required=True, help="bounded operator audit reason")
     sp.set_defaults(func=cmd_chain_release_hold)
+
+    sp = sub.add_parser(
+        "chain-reopen-qualification",
+        help=(
+            "operator: return one unsettled two-PASS reservation to the screen "
+            "queue for a fresh pair when retained evidence shows its credited "
+            "half read the baseline lane under the arena band; never signs, "
+            "settles, or crowns"
+        ),
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument("--network", required=True)
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    sp.add_argument("--reservation-id", required=True)
+    sp.add_argument(
+        "--evidence-state-dir", required=True,
+        help="worker state directory holding the qualification-evidence-* stores",
+    )
+    sp.add_argument(
+        "--evidence-root", action="append", default=[],
+        help="additional evidence store root (repeatable)",
+    )
+    sp.add_argument(
+        "--dry-run", action="store_true",
+        help="print the band evidence and leave the reservation unchanged",
+    )
+    sp.set_defaults(func=cmd_chain_reopen_qualification)
+
+    sp = sub.add_parser(
+        "chain-backfill-lineage",
+        help=(
+            "operator: rebuild the per-target lineage ledger from the newest "
+            "CROWN per target; idempotent, never signs, settles, or crowns"
+        ),
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument("--network", required=True)
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    sp.set_defaults(func=cmd_chain_backfill_lineage)
 
     sp = sub.add_parser("chain-register",
                         help="register this hotkey on a subnet (burned_register; needs "

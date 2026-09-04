@@ -428,7 +428,6 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
     assert type(work) is ArenaQualificationWork
     assert builder.calls[0][0].candidates == (candidate,)
     assert owner.resident.closed == 1
-    assert not provider.resident_screen_active
     assert worker.service._provider is provider
 
     worker_close = worker.close
@@ -669,7 +668,6 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
     assert len(owner.worker_init_calls) == 2
     assert runtime.worker is owner.service.worker
     assert not owner.service.worker._closed
-    assert not owner.service.worker._provider.resident_screen_active
     assert (result_dir / "RESIDENT_ENTRY_ARMED.json").is_file()
 
     hold = resolve_infrastructure_result(

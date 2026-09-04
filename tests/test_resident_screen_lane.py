@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import threading
 
 import pytest
@@ -409,14 +408,6 @@ class TestScreenSwappability:
     def test_dep_patched_bundle_is_not_swappable(self, tmp_path) -> None:
         manifest = load_manifest(_bundle_tree(tmp_path, dep_patch=True))
         assert "dep-patched" in screen_swappability(manifest)
-
-    def test_aot_bundle_is_not_swappable(self, tmp_path) -> None:
-        manifest = load_manifest(_bundle_tree(tmp_path))
-        patched = dataclasses.replace(
-            manifest,
-            ops=(dataclasses.replace(manifest.ops[0], aot_exports=("aot",)),),
-        )
-        assert "aot" in screen_swappability(patched)
 
     @pytest.mark.parametrize(
         ("bundle_options", "reason"),

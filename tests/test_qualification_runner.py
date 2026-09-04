@@ -791,9 +791,7 @@ def _install_resident_runner_path(
         assert root is harness.value.evidence_root
         assert reference == stage_reference
         assert expected is harness.value
-        assert resident_pair_lifecycle is None or isinstance(
-            resident_pair_lifecycle, FakeResidentLifecycle
-        )
+        assert resident_pair_lifecycle is None
         assert len(published_stage_exits) == 1
         harness.calls.append("stage.reopen")
         return published_stage_exits[0]

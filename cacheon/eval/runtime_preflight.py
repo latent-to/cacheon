@@ -1068,18 +1068,6 @@ def run_runtime_preflight(
     )
 
 
-def _run_runtime_preflight_unleased_for_test(
-    config: RuntimePreflightConfig,
-    *,
-    runner: Runner,
-    clock: Callable[[], float] = time.monotonic,
-) -> RuntimePreflightReceipt:
-    """Exercise receipt validation with a scripted runner; never a production API."""
-    if runner is bounded_argv_runner:
-        raise RuntimePreflightError("unleased test preflight requires a scripted runner")
-    return _run_runtime_preflight(config, runner=runner, clock=clock)
-
-
 __all__ = [
     "CommandResult",
     "CONTAINER_RECEIPT_SCHEMA",

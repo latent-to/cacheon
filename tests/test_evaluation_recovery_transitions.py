@@ -16,6 +16,8 @@ from cacheon.chain.evaluation_recovery import (
     RecoveryPhase,
     RecoveryResolution,
     evaluation_recovery_event_id,
+    stale_incumbent_release_reason,
+    stale_incumbent_release_reason_digests,
     valid_evaluation_recovery_event_transition,
 )
 from cacheon.stack_identity import sha256_hex
@@ -77,6 +79,49 @@ def _release(
         plan=plan,
         reason=reason,
     )
+
+
+def test_stale_incumbent_release_is_digest_bound_and_post_publication_only():
+    reason = stale_incumbent_release_reason(
+        product_digest=_h("product"),
+        previous_stack_digest=_h("old-stack"),
+        previous_tree_digest=_h("old-tree"),
+        live_stack_digest=_h("new-stack"),
+        live_tree_digest=_h("new-tree"),
+    )
+    assert stale_incumbent_release_reason_digests(reason) == (
+        _h("product"),
+        _h("old-stack"),
+        _h("old-tree"),
+        _h("new-stack"),
+        _h("new-tree"),
+    )
+    assert stale_incumbent_release_reason_digests(reason + ":extra") is None
+
+    released = _release(
+        revision=4,
+        phase=RecoveryPhase.REQUEST_READY,
+        plan=True,
+        reason=reason,
+    )
+    for phase in (
+        RecoveryPhase.REQUEST_READY,
+        RecoveryPhase.RESULT_READY,
+        RecoveryPhase.EVIDENCE_IMPORTED,
+    ):
+        previous = _event(
+            revision=3,
+            event_type=RecoveryEventType(phase.value),
+            phase=phase,
+            plan=True,
+        )
+        assert valid_evaluation_recovery_event_transition(previous, released)
+    claimed = _event(
+        revision=3,
+        event_type=RecoveryEventType.CLAIMED,
+        phase=RecoveryPhase.CLAIMED,
+    )
+    assert not valid_evaluation_recovery_event_transition(claimed, released)
 
 
 def test_generic_release_is_refused_after_publication() -> None:

@@ -142,8 +142,6 @@ def screen_swappability(manifest: Manifest) -> str | None:
 
     if type(manifest) is not Manifest:
         raise ResidentScreenLaneError("swappability requires a typed manifest")
-    if any(op.aot_exports for op in manifest.ops):
-        return "aot device artifacts are not swappable in the screen tier"
     if manifest.dep_patches:
         return "dep-patched bundles are not swappable in the screen tier"
     if any(op.cuda_sources for op in manifest.ops):

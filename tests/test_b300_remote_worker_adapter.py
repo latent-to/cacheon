@@ -770,6 +770,56 @@ def test_latched_resident_retires_adapter_behind_completed_result(
     )
 
 
+def test_completed_qualification_retires_adapter_behind_its_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _adapter_paths(tmp_path)
+    request_ids = ("7" * 64, "8" * 64)
+    frames_by_raw = {
+        b"first\n": (
+            request_ids[0],
+            tmp_path / request_ids[0],
+            tmp_path / f".{request_ids[0]}.1",
+        ),
+        b"second\n": (
+            request_ids[1],
+            tmp_path / request_ids[1],
+            tmp_path / f".{request_ids[1]}.1",
+        ),
+    }
+    runtime = _ServingRuntime()
+    seen: list[str] = []
+    monkeypatch.setattr(
+        adapter,
+        "validated_command_paths",
+        lambda raw, _paths: frames_by_raw[raw],
+    )
+
+    def run_with_runtime(request_dir, _result_dir, _runtime):
+        # A qualification completes normally, but its lane containers would
+        # hold the GPUs until the next screen's idle drain timed out.
+        seen.append(request_dir.name)
+        return "qualification"
+
+    monkeypatch.setattr(adapter, "run_with_runtime", run_with_runtime)
+    controls = io.BytesIO()
+
+    assert adapter.serve_runtime(runtime, paths, iter(frames_by_raw), controls) == 0
+    frames = tuple(json.loads(row) for row in controls.getvalue().splitlines())
+
+    assert seen == [request_ids[0]]
+    assert runtime.closed == 1
+    assert frames == (
+        {"schema": spool.SCHEMA_ADAPTER_CONTROL, "state": "ready"},
+        {
+            "request_id": request_ids[0],
+            "retired": True,
+            "schema": spool.SCHEMA_ADAPTER_CONTROL,
+            "state": "completed",
+        },
+    )
+
+
 def test_adapter_epoch_failure_exits_before_next_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

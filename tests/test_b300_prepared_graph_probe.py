@@ -24,7 +24,7 @@ from cacheon.eval.b300_qualification_graph_provider import (
     B300QualificationGraphBinding,
 )
 from cacheon.capabilities import CallDescriptor
-from cacheon.manifest import AOTExport, OpEntry, load_manifest
+from cacheon.manifest import OpEntry, load_manifest
 from cacheon.verification_outcomes import (
     GraphPhaseOutcome,
     ShapeResult,
@@ -684,40 +684,6 @@ def test_internal_ordinary_seam_preserves_prepare_override_metadata_and_bundle_p
     }
     assert seen["bundle_path"] == str(root)
     assert seen["variant_name"] == "prepared"
-
-
-def test_direct_aot_row_stays_on_existing_bundle_aware_validator_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path.resolve()
-    (root / "kernel.py").write_text("def factory(): pass\n")
-    direct = OpEntry(
-        "activation.silu_and_mul",
-        "kernel.py",
-        "factory",
-        ("bfloat16",),
-        ("sm103",),
-        None,
-        variant="direct",
-        aot_exports=(AOTExport("cute_cubin", "run", "factory", (), (), (), ()),),
-    )
-    policy = PreparedGraphProbePolicy(
-        _h("direct policy"), 3, "bfloat16", "sm103", 1, 1,
-        "cuda_graph", "MiniMax-M3", 1, 2, 3,
-    )
-    seen = {}
-
-    def validator(slot, source, entry, **kwargs):
-        seen.update(slot=slot, source=source, entry=entry, **kwargs)
-        return _result(policy, slot, kwargs["variant_name"])
-
-    monkeypatch.setattr(probe, "_VERIFY_ENTRY_FROM_SOURCE", validator)
-    probe._execute_variant(root, direct, policy)
-    assert direct.aot_exports
-    assert seen["bundle_path"] == str(root)
-    assert seen["variant_name"] == "direct"
-    assert seen["prepare_name"] is None
-    assert seen["override_point"] is None
 
 
 def test_multi_variant_singleton_executes_in_sorted_authority_order(

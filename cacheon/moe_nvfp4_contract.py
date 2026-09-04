@@ -93,7 +93,9 @@ def _layer_view(
     a1 = _value(source, "w13_input_scale_quant")
     a2 = _value(source, "w2_input_scale_quant")
     intermediate = int(_value(source, "intermediate_size_per_partition"))
-    top_k = int(source["topk_ids"].shape[-1]) if isinstance(source, Mapping) else 0
+    top_k = int(
+        source["topk_ids"].shape[-1] if isinstance(source, Mapping) else _value(source, "top_k")
+    )
     tp_size = int(_context(source, "tp_size", 1))
     fused_shared = int(_context(source, "num_fused_shared_experts", 0))
     view = SimpleNamespace(

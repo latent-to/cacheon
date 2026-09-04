@@ -772,6 +772,11 @@ class EvaluationStackManifest:
         return json.loads(self._catalog_json)
 
     @property
+    def sealed_target_spec_digests(self) -> Mapping[str, str]:
+        """Target spec digests of the catalog this stack was sealed under."""
+        return MappingProxyType(dict(_catalog_spec_rows(self._catalog_json)))
+
+    @property
     def entries(self) -> Mapping[str, ContributionRef]:
         return MappingProxyType(dict(self._entries))
 
@@ -1033,18 +1038,3 @@ class EngineReleaseManifest:
             raise StackManifestError("release integration-record coverage differs")
         for target, ref in self.entries.items():
             checked[target].require_ref(ref)
-
-
-def stack_manifest_from_dict(
-    value: object,
-) -> EvaluationStackManifest | EngineReleaseManifest:
-    if not isinstance(value, Mapping):
-        raise StackManifestError("stack manifest must be an object")
-    kind = value.get("type")
-    if kind == "evaluation_stack":
-        return EvaluationStackManifest.from_dict(value)
-    if kind == "engine_release":
-        return EngineReleaseManifest.from_dict(value)
-    raise StackManifestError(
-        "stack manifest requires type 'evaluation_stack' or 'engine_release'"
-    )

@@ -298,19 +298,6 @@ class DurableSelectionSecretStore(_PrivateStore):
         with self._locked():
             return self._reopen(self._path(self.root, reference), reference)
 
-    @property
-    def inventory_digest(self) -> str:
-        with self._locked():
-            rows: list[dict[str, str]] = []
-            for path in sorted(self.root.glob("secret-*.json")):
-                reference = path.name.removeprefix("secret-").removesuffix(".json")
-                reference = _digest(reference, "selection secret filename")
-                secret = self._reopen(path, reference)
-                rows.append({"reference": reference, "secret_sha256": sha256_hex(secret)})
-            return canonical_digest(
-                "cacheon.eval.selection-secret-inventory.v1", {"records": rows}
-            )
-
 
 def _teardown_payload(value: OCIQuiescenceReceipt) -> dict[str, object]:
     return {

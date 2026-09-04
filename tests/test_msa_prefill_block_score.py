@@ -8,7 +8,6 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from cacheon.artifact_abi import MSA_PREFILL_BLOCK_SCORE_CALL_ABI  # noqa: E402
 from cacheon.capabilities import msa_prefill_call_descriptor  # noqa: E402
 from cacheon.minimax_sparse_prefill_slot import INPUT_NAMES  # noqa: E402
 from cacheon.registry import eligibility_from_metadata  # noqa: E402
@@ -155,15 +154,6 @@ def test_wrong_selection_causality_or_paging_fails(candidate):
         shapes=[shape],
     )
     assert not result.passed, format_verify(result)
-
-
-def test_call_abi_matches_python_entry_order_without_score_slab():
-    abi = MSA_PREFILL_BLOCK_SCORE_CALL_ABI
-    expected = tuple(f"input.{name}" for name in INPUT_NAMES) + ("output.topk_idx",)
-    assert SLOT.call_abi is abi and abi.call_args == expected
-    names = {resource.name for resource in abi.resources}
-    assert set(expected) <= names
-    assert "input.index_k" not in names and "output.block_scores" not in names
 
 
 def test_v2_catalog_and_verifier_descriptor_match_live_descriptor():

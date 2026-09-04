@@ -101,7 +101,7 @@ Concrete attacker stories help reviewers test the composition of controls:
 
 The candidate tries to remain ineligible or fail and rely on fallback while the server
 still answers. Pre-selection stock routing is allowed for ordinary availability.
-Direct-artifact and one-shot qualification require positive execution coverage and treat
+One-shot qualification requires positive execution coverage and treats
 selected-path fallback as invalid evidence. Pair-native hot-swap execution counts are
 minted per generation, and current source holds a leg unless every expected rank fired
 and completed the candidate under that activation generation. These receipts close

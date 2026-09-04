@@ -368,7 +368,6 @@ def test_all_five_real_screens_run_in_order_and_preserve_pass(
     assert tuple(row.stage for row in receipt.results) == SCREEN_STAGES
     assert tuple(row[1] for row in runner.calls) == SCREEN_STAGES[:-1]
     assert resident.created == 1
-    assert service._provider.resident_screen_active
     service._provider.close()
     assert resident.closed == 1
 
@@ -646,7 +645,6 @@ def test_qualification_preserves_exact_request_order_and_real_authorities(
     assert builder.calls[0][1] == {"attempt": 1}
     assert resident.created == 1
     assert resident.closed == 1
-    assert not service._provider.resident_screen_active
 
 
 def test_reordered_factory_is_refused(

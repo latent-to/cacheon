@@ -9,9 +9,10 @@ import re
 import sqlite3
 import stat
 import fcntl
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Iterable, Mapping
 
 from cacheon.chain.reserved_schema import (
@@ -65,6 +66,10 @@ _AUTOMATICALLY_EXPIRABLE = (
 )
 _AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
 _VALIDATOR_DOWNTIME_REQUEUE_REASON = "validator_downtime_requeued"
+# A retained PASS pair may be reopened for a fresh pair only for a registered
+# measurement defect; the operator command that names one must carry the
+# retained evidence for it (cacheon.chain.baseline_band).
+_REMEASUREMENT_REASONS = frozenset({"baseline_out_of_band"})
 # One refresh of the SLA anchor after a prior validator-downtime requeue
 # re-expired (operator/SLA mismatch).  A third attempt still fails closed.
 _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON = "validator_downtime_requeued_refresh"
@@ -355,12 +360,30 @@ class SettlementLease:
     candidates: tuple[SettlementCandidate, ...]
     initial_event_sequence: int
     previous_event_digest: str
+    lineage_tips: Mapping[str, object] = dc_field(default_factory=dict)
+    pretransition_reservations: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
-        from cacheon.settlement import SettlementCandidate, SettlementQualification
+        from cacheon.settlement import (
+            SettlementCandidate,
+            SettlementQualification,
+            TargetLineage,
+        )
 
         for field in ("lease_id", "authority_digest"):
             require_sha256_hex(getattr(self, field), field=field)
+        tips = dict(self.lineage_tips)
+        if any(type(tip) is not TargetLineage for tip in tips.values()):
+            raise IntakeError("settlement lease lineage is not exactly typed")
+        object.__setattr__(self, "lineage_tips", MappingProxyType(tips))
+        reservations = frozenset(self.pretransition_reservations)
+        for reservation_digest in reservations:
+            require_sha256_hex(
+                reservation_digest, field="pretransition reservation"
+            )
+        object.__setattr__(
+            self, "pretransition_reservations", reservations
+        )
         if (
             type(self.generation) is not int
             or self.generation <= 0
@@ -617,6 +640,40 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             ) STRICT;
             CREATE INDEX IF NOT EXISTS settlement_candidates_status
                 ON settlement_candidates(status, authority_digest, reservation_id);
+            CREATE TABLE IF NOT EXISTS settlement_reopenings (
+                reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
+                sequence INTEGER NOT NULL CHECK(sequence>=0),
+                reason TEXT NOT NULL,
+                candidate_json TEXT NOT NULL,
+                qualifications_json TEXT NOT NULL,
+                PRIMARY KEY(reservation_id, sequence)
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS target_lineage_tips (
+                target_id TEXT PRIMARY KEY,
+                artifact_digest TEXT NOT NULL,
+                parent_artifact_digest TEXT NOT NULL,
+                winner_speedup TEXT NOT NULL,
+                arena_id TEXT NOT NULL,
+                stack_digest TEXT NOT NULL,
+                transition_event_id TEXT NOT NULL,
+                crowned_block INTEGER NOT NULL CHECK(crowned_block>=0)
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS target_lineage_nodes (
+                target_id TEXT NOT NULL,
+                artifact_digest TEXT NOT NULL,
+                parent_artifact_digest TEXT NOT NULL,
+                winner_speedup TEXT NOT NULL,
+                arena_id TEXT NOT NULL,
+                stack_digest TEXT NOT NULL,
+                transition_event_id TEXT NOT NULL UNIQUE,
+                crowned_block INTEGER NOT NULL CHECK(crowned_block>=0),
+                PRIMARY KEY(target_id, artifact_digest)
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS target_lineage_pretransition_reservations (
+                transition_event_id TEXT NOT NULL,
+                reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
+                PRIMARY KEY(transition_event_id, reservation_id)
+            ) STRICT;
             CREATE TABLE IF NOT EXISTS settlement_events (
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id TEXT NOT NULL UNIQUE,
@@ -634,6 +691,17 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 tree_digest TEXT NOT NULL,
                 stack_json TEXT NOT NULL,
                 transition_event_id TEXT NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS reservation_baseline_segments (
+                reservation_id TEXT PRIMARY KEY REFERENCES reservations(reservation_id),
+                arena_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation>=0),
+                stack_digest TEXT NOT NULL,
+                tree_digest TEXT NOT NULL,
+                stack_json TEXT NOT NULL,
+                transition_event_id TEXT NOT NULL,
+                binding_reason TEXT NOT NULL
+                    CHECK(length(binding_reason) BETWEEN 1 AND 128)
             ) STRICT;
             CREATE TABLE IF NOT EXISTS standing_reward_claims (
                 arena_id TEXT NOT NULL,
@@ -721,6 +789,21 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             self._db.execute(
                 "ALTER TABLE settlement_candidates ADD COLUMN "
                 "reproduction_evidence_root TEXT NOT NULL DEFAULT ''"
+            )
+        lineage_columns = {
+            row["name"] for row in self._db.execute(
+                "PRAGMA table_info(target_lineage_tips)"
+            )
+        }
+        if "parent_artifact_digest" not in lineage_columns:
+            self._db.execute(
+                "ALTER TABLE target_lineage_tips ADD COLUMN "
+                "parent_artifact_digest TEXT NOT NULL DEFAULT ''"
+            )
+        if "winner_speedup" not in lineage_columns:
+            self._db.execute(
+                "ALTER TABLE target_lineage_tips ADD COLUMN "
+                "winner_speedup TEXT NOT NULL DEFAULT ''"
             )
         try:
             ensure_evaluation_lease_schema(self._db)
@@ -1423,6 +1506,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             row = self.get(reservation_id)
             if row.status not in {"published", "reproduction_pending"}:
                 raise IntakeError("only screenable intake may begin arena screening")
+            stack = self._unambiguous_evaluation_stack(service_digest)
+            if stack is not None:
+                self._bind_reservation_baseline_segment(
+                    reservation_id, stack, reason="begin_screen"
+                )
             lane = (
                 "reproduction" if row.status == "reproduction_pending" else "primary"
             )
@@ -1572,41 +1660,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         bound = self.policy.max_cohort if limit is None else limit
         if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
             raise IntakeError("promoted cohort limit is invalid")
-        first = self._db.execute(
-            "SELECT retry_group_digest,screen_lane FROM reservations AS r "
-            "WHERE status='promoted' AND NOT EXISTS (SELECT 1 FROM "
-            "evaluation_lease_members AS em WHERE em.reservation_id=r.reservation_id "
-            "AND em.active=1) ORDER BY "
-            "CASE screen_lane WHEN 'reproduction' THEN 0 ELSE 1 END,"
-            "block,event_index,event_subindex,hotkey,content_hash LIMIT 1"
-        ).fetchone()
-        if first is None:
-            return ()
-        if first["screen_lane"] == "reproduction":
-            rows = self._db.execute(
-                "SELECT r.* FROM reservations AS r WHERE status='promoted' "
-                "AND screen_lane='reproduction' AND NOT EXISTS (SELECT 1 FROM "
-                "evaluation_lease_members AS em WHERE em.reservation_id=r.reservation_id "
-                "AND em.active=1) ORDER BY block,event_index,"
-                "event_subindex,hotkey,content_hash LIMIT 1"
-            )
-        elif first["retry_group_digest"]:
-            rows = self._db.execute(
-                "SELECT r.* FROM reservations AS r WHERE status='promoted' "
-                "AND retry_group_digest=? AND NOT EXISTS (SELECT 1 FROM "
-                "evaluation_lease_members AS em WHERE em.reservation_id=r.reservation_id "
-                "AND em.active=1) ORDER BY retry_position LIMIT ?",
-                (first["retry_group_digest"], bound),
-            )
-        else:
-            rows = self._db.execute(
-                "SELECT r.* FROM reservations AS r WHERE status='promoted' "
-                "AND screen_lane='primary' AND retry_group_digest='' AND NOT EXISTS "
-                "(SELECT 1 FROM evaluation_lease_members AS em WHERE "
-                "em.reservation_id=r.reservation_id AND em.active=1) ORDER BY "
-                "block,event_index,event_subindex,hotkey,content_hash LIMIT ?",
-                (bound,),
-            )
+        rows = self._select_evaluation_rows("qualification", bound)
         return tuple(self._row(row) for row in rows)
 
     def settlement_blockers(self, reservation_id: str) -> tuple[IntakeReservation, ...]:
@@ -2068,6 +2122,244 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("genesis qualification names another incumbent")
 
+    @staticmethod
+    def _encoded_stack_manifest(state: EvaluationStackState) -> str:
+        return json.dumps(
+            state.manifest.to_dict(), separators=(",", ":"), sort_keys=True
+        )
+
+    def _evaluation_stack_state_from_row(
+        self, row: sqlite3.Row, *, context: str
+    ) -> EvaluationStackState:
+        from cacheon.stack_manifest import EvaluationStackManifest
+
+        try:
+            manifest = EvaluationStackManifest.from_dict(json.loads(row["stack_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise IntakeError(f"{context} is corrupt: {exc}") from None
+        state = EvaluationStackState(
+            row["arena_id"],
+            row["generation"],
+            manifest,
+            row["tree_digest"],
+            row["transition_event_id"],
+        )
+        if (
+            manifest.digest != row["stack_digest"]
+            or self._encoded_stack_manifest(state) != row["stack_json"]
+        ):
+            raise IntakeError(f"{context} digest differs from stored bytes")
+        return state
+
+    def _unambiguous_evaluation_stack(
+        self, arena_or_service_digest: str
+    ) -> EvaluationStackState | None:
+        exact = self._db.execute(
+            "SELECT * FROM evaluation_stacks WHERE arena_id=?",
+            (arena_or_service_digest,),
+        ).fetchone()
+        if exact is not None:
+            return self._evaluation_stack_state_from_row(
+                exact, context="evaluation stack state"
+            )
+        rows = tuple(self._db.execute("SELECT * FROM evaluation_stacks ORDER BY arena_id"))
+        if len(rows) != 1:
+            return None
+        return self._evaluation_stack_state_from_row(
+            rows[0], context="evaluation stack state"
+        )
+
+    def _bind_reservation_baseline_segment(
+        self,
+        reservation_id: str,
+        state: EvaluationStackState,
+        *,
+        reason: str,
+    ) -> None:
+        if (
+            type(state) is not EvaluationStackState
+            or not isinstance(reason, str)
+            or not reason
+            or len(reason) > 128
+        ):
+            raise IntakeError("reservation baseline binding is malformed")
+        reservation = self._db.execute(
+            "SELECT retry_group_digest FROM reservations WHERE reservation_id=?",
+            (reservation_id,),
+        ).fetchone()
+        if reservation is None:
+            raise IntakeError("reservation baseline binding lost its reservation")
+        group = reservation["retry_group_digest"]
+        reservation_ids = (reservation_id,)
+        if group:
+            reservation_ids = tuple(
+                row["reservation_id"]
+                for row in self._db.execute(
+                    "SELECT reservation_id FROM reservations "
+                    "WHERE status='promoted' AND retry_group_digest=? "
+                    "ORDER BY retry_position",
+                    (group,),
+                )
+            )
+            existing = tuple(
+                self.reservation_baseline_segment(row_id)
+                for row_id in reservation_ids
+                if self._db.execute(
+                    "SELECT 1 FROM reservation_baseline_segments "
+                    "WHERE reservation_id=?",
+                    (row_id,),
+                ).fetchone()
+                is not None
+            )
+            if existing:
+                if any(row != existing[0] for row in existing[1:]):
+                    raise IntakeError(
+                        "qualification retry group spans baseline segments"
+                    )
+                state = existing[0]
+        for row_id in reservation_ids:
+            self._db.execute(
+                "INSERT OR IGNORE INTO reservation_baseline_segments("
+                "reservation_id,arena_id,generation,stack_digest,tree_digest,"
+                "stack_json,transition_event_id,binding_reason) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    row_id,
+                    state.arena_digest,
+                    state.generation,
+                    state.manifest.digest,
+                    state.tree_digest,
+                    self._encoded_stack_manifest(state),
+                    state.transition_event_id,
+                    reason,
+                ),
+            )
+
+    def _bind_unbound_queue_to_stack(
+        self, state: EvaluationStackState, *, reason: str
+    ) -> None:
+        stack_count = self._db.execute(
+            "SELECT COUNT(*) AS n FROM evaluation_stacks"
+        ).fetchone()["n"]
+        active_marks = ",".join("?" for _ in _ACTIVE)
+        if stack_count == 1:
+            authority = "(r.arena_service_digest=? OR r.arena_service_digest='')"
+        else:
+            authority = "r.arena_service_digest=?"
+        rows = tuple(
+            self._db.execute(
+                "SELECT r.reservation_id FROM reservations AS r WHERE "
+                f"r.status IN ({active_marks}) AND {authority} AND NOT EXISTS ("
+                "SELECT 1 FROM reservation_baseline_segments AS b "
+                "WHERE b.reservation_id=r.reservation_id)",
+                (*_ACTIVE, state.arena_digest),
+            )
+        )
+        for row in rows:
+            self._bind_reservation_baseline_segment(
+                row["reservation_id"], state, reason=reason
+            )
+
+    def backfill_reservation_baseline_segments(self) -> tuple[str, ...]:
+        """Bind pre-upgrade queue rows to the stack active when they arrived.
+
+        Each CROWN snapshots every reservation already present. The first
+        target-lineage transition containing a reservation therefore identifies
+        the exact incumbent segment that must drain it. Rows arriving after the
+        latest transition bind to the current durable stack.
+        """
+
+        from cacheon.settlement import SettlementCandidate
+
+        bound: list[str] = []
+        active_marks = ",".join("?" for _ in _ACTIVE)
+        with self._transaction():
+            pending = tuple(
+                self._db.execute(
+                    "SELECT r.reservation_id,r.target_id,r.arena_service_digest "
+                    "FROM reservations AS r WHERE "
+                    f"r.status IN ({active_marks}) AND NOT EXISTS (SELECT 1 FROM "
+                    "reservation_baseline_segments AS b WHERE "
+                    "b.reservation_id=r.reservation_id) "
+                    "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,"
+                    "r.content_hash",
+                    _ACTIVE,
+                )
+            )
+            for reservation in pending:
+                transition = self._db.execute(
+                    "SELECT n.arena_id,se.sequence,se.reservation_id AS winner_id "
+                    "FROM target_lineage_pretransition_reservations AS p "
+                    "JOIN target_lineage_nodes AS n "
+                    "ON n.transition_event_id=p.transition_event_id "
+                    "JOIN settlement_events AS se "
+                    "ON se.event_id=n.transition_event_id "
+                    "WHERE p.reservation_id=? "
+                    "ORDER BY se.sequence LIMIT 1",
+                    (reservation["reservation_id"],),
+                ).fetchone()
+                if transition is None:
+                    state = self._unambiguous_evaluation_stack(
+                        reservation["arena_service_digest"]
+                    )
+                    reason = "backfill_current_stack"
+                else:
+                    candidate_row = self._db.execute(
+                        "SELECT * FROM settlement_candidates WHERE reservation_id=?",
+                        (transition["winner_id"],),
+                    ).fetchone()
+                    if candidate_row is None:
+                        raise IntakeError(
+                            "baseline segment backfill lost its crown candidate"
+                        )
+                    candidate = self._settlement_candidate(candidate_row)
+                    if (
+                        type(candidate) is not SettlementCandidate
+                        or candidate.arena_digest != transition["arena_id"]
+                    ):
+                        raise IntakeError(
+                            "baseline segment backfill candidate is malformed"
+                        )
+                    previous = self._db.execute(
+                        "SELECT event_id FROM settlement_events WHERE arena_id=? "
+                        "AND event_type='STACK_TRANSITION' AND sequence<? "
+                        "ORDER BY sequence DESC LIMIT 1",
+                        (transition["arena_id"], transition["sequence"]),
+                    ).fetchone()
+                    generation = self._db.execute(
+                        "SELECT COUNT(*) AS n FROM settlement_events "
+                        "WHERE arena_id=? AND event_type='STACK_TRANSITION' "
+                        "AND sequence<?",
+                        (transition["arena_id"], transition["sequence"]),
+                    ).fetchone()["n"]
+                    event_id = (
+                        previous["event_id"]
+                        if previous is not None
+                        else canonical_digest(
+                            _EVALUATION_STACK_GENESIS_DOMAIN,
+                            {
+                                "arena_digest": candidate.arena_digest,
+                                "stack_digest": candidate.incumbent_manifest.digest,
+                                "tree_digest": candidate.incumbent_tree_digest,
+                            },
+                        )
+                    )
+                    state = EvaluationStackState(
+                        candidate.arena_digest,
+                        generation,
+                        candidate.incumbent_manifest,
+                        candidate.incumbent_tree_digest,
+                        event_id,
+                    )
+                    reason = "backfill_pretransition_stack"
+                if state is None:
+                    continue
+                self._bind_reservation_baseline_segment(
+                    reservation["reservation_id"], state, reason=reason
+                )
+                bound.append(reservation["reservation_id"])
+        return tuple(bound)
+
     def initialize_evaluation_stack(
         self,
         manifest: EvaluationStackManifest,
@@ -2078,6 +2370,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
 
         with self._transaction():
             self._initialize_evaluation_stack_row(manifest, tree_digest=tree_digest)
+            state = self.evaluation_stack(manifest.arena_digest)
+            self._bind_unbound_queue_to_stack(state, reason="initialize_stack")
         state = self.evaluation_stack(manifest.arena_digest)
         if (
             state.manifest.digest != manifest.digest
@@ -2086,24 +2380,254 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("evaluation stack is already initialized differently")
         return state
 
-    def evaluation_stack(self, arena_digest: str) -> EvaluationStackState:
-        from cacheon.stack_manifest import EvaluationStackManifest
+    def target_lineage_tips(self) -> Mapping[str, object]:
+        """Reopen each target's contiguous active root-to-tip lineage."""
 
+        from cacheon.settlement import TargetLineage, TargetLineageNode
+
+        try:
+            lineages: dict[str, TargetLineage] = {}
+            for tip in self._db.execute(
+                "SELECT target_id,artifact_digest FROM target_lineage_tips "
+                "ORDER BY target_id"
+            ):
+                nodes: list[TargetLineageNode] = []
+                artifact = tip["artifact_digest"]
+                seen: set[str] = set()
+                while artifact:
+                    if artifact in seen:
+                        raise IntakeError("target lineage contains a cycle")
+                    seen.add(artifact)
+                    row = self._db.execute(
+                        "SELECT * FROM target_lineage_nodes "
+                        "WHERE target_id=? AND artifact_digest=?",
+                        (tip["target_id"], artifact),
+                    ).fetchone()
+                    if row is None:
+                        if nodes:
+                            break
+                        raise IntakeError(
+                            "target lineage tips require a successful backfill"
+                        )
+                    nodes.append(
+                        TargetLineageNode(
+                            row["artifact_digest"],
+                            row["parent_artifact_digest"],
+                            row["winner_speedup"],
+                            row["transition_event_id"],
+                        )
+                    )
+                    artifact = row["parent_artifact_digest"]
+                lineages[tip["target_id"]] = TargetLineage(
+                    tuple(reversed(nodes))
+                )
+            return MappingProxyType(lineages)
+        except (TypeError, ValueError, IntakeError) as exc:
+            raise IntakeError(
+                f"target lineage tips require a successful backfill: {exc}"
+            ) from None
+
+    def _pretransition_reservations(
+        self,
+        candidates: Iterable[SettlementCandidate],
+        lineages: Mapping[str, object],
+    ) -> frozenset[str]:
+        eligible: set[str] = set()
+        for candidate in candidates:
+            lineage = lineages.get(candidate.target_id)
+            if lineage is None:
+                continue
+            incumbent = candidate.incumbent_manifest.entries.get(
+                candidate.target_id
+            )
+            artifact = "" if incumbent is None else incumbent.artifact_digest
+            try:
+                threshold = lineage.threshold_from(artifact)
+            except (TypeError, ValueError):
+                continue
+            if threshold is None:
+                continue
+            if self._db.execute(
+                "SELECT 1 FROM target_lineage_pretransition_reservations "
+                "WHERE transition_event_id=? AND reservation_id=?",
+                (threshold[1], candidate.reservation_digest),
+            ).fetchone() is not None:
+                eligible.add(candidate.reservation_digest)
+        return frozenset(eligible)
+
+    def backfill_target_lineage_tips(self) -> Mapping[str, object]:
+        """Seed the lineage ledger from the latest CROWN recorded per target.
+
+        Stores that settled before the ledger existed carry crowned history but
+        no tips, which would leave the fork guard inert.  Replaying the newest
+        CROWN per target reconstructs the artifact each target's lineage rests
+        on.  Idempotent: it recomputes the same rows from the same journal.
+        """
+
+        from cacheon.settlement import TargetLineageNode
+
+        with self._transaction():
+            self._db.execute("DELETE FROM target_lineage_tips")
+            self._db.execute("DELETE FROM target_lineage_nodes")
+            self._db.execute(
+                "DELETE FROM target_lineage_pretransition_reservations"
+            )
+            for row in self._db.execute(
+                "SELECT se.target_id,se.reservation_id,se.event_id,se.arena_id,"
+                "se.sequence FROM settlement_events se "
+                "WHERE se.event_type='CROWN' "
+                "ORDER BY se.sequence"
+            ).fetchall():
+                candidate_row = self._db.execute(
+                    "SELECT candidate_json,candidate_digest FROM settlement_candidates "
+                    "WHERE reservation_id=?",
+                    (row["reservation_id"],),
+                ).fetchone()
+                if candidate_row is None:
+                    raise IntakeError("crowned target has no settlement candidate")
+                candidate = self._settlement_candidate(candidate_row)
+                if candidate.candidate_manifest is None:
+                    raise IntakeError("crowned candidate lacks its stack manifest")
+                contribution = candidate.candidate_manifest.entries.get(row["target_id"])
+                if contribution is None:
+                    raise IntakeError("crowned candidate does not name its target")
+                incumbent = candidate.incumbent_manifest.entries.get(row["target_id"])
+                parent_artifact = (
+                    "" if incumbent is None else incumbent.artifact_digest
+                )
+                node = TargetLineageNode(
+                    contribution.artifact_digest,
+                    parent_artifact,
+                    candidate.speedup,
+                    row["event_id"],
+                )
+                self._db.execute(
+                    "INSERT INTO target_lineage_nodes(target_id,artifact_digest,"
+                    "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
+                    "transition_event_id,crowned_block) VALUES(?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(target_id,artifact_digest) DO UPDATE SET "
+                    "parent_artifact_digest=excluded.parent_artifact_digest,"
+                    "winner_speedup=excluded.winner_speedup,"
+                    "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
+                    "transition_event_id=excluded.transition_event_id,"
+                    "crowned_block=excluded.crowned_block",
+                    (
+                        row["target_id"],
+                        node.artifact_digest,
+                        node.parent_artifact_digest,
+                        node.winner_speedup,
+                        candidate.arena_digest,
+                        candidate.candidate_stack_digest,
+                        node.transition_event_id,
+                        candidate.finalized_block,
+                    ),
+                )
+                self._db.execute(
+                    "INSERT INTO target_lineage_tips(target_id,artifact_digest,"
+                    "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
+                    "transition_event_id,crowned_block) VALUES(?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(target_id) DO UPDATE SET "
+                    "artifact_digest=excluded.artifact_digest,"
+                    "parent_artifact_digest=excluded.parent_artifact_digest,"
+                    "winner_speedup=excluded.winner_speedup,"
+                    "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
+                    "transition_event_id=excluded.transition_event_id,"
+                    "crowned_block=excluded.crowned_block",
+                    (
+                        row["target_id"],
+                        node.artifact_digest,
+                        node.parent_artifact_digest,
+                        node.winner_speedup,
+                        candidate.arena_digest,
+                        candidate.candidate_stack_digest,
+                        node.transition_event_id,
+                        candidate.finalized_block,
+                    ),
+                )
+                # Historical journals did not retain the transition-time
+                # reservation snapshot. A crown cannot precede its last
+                # retained qualification product, so reservations from an
+                # earlier block than that product are provably pre-transition.
+                # Same-block arrivals remain excluded because retained_block
+                # has no event index. Legacy zero timestamps fall back to the
+                # winner's exact arrival order.
+                retained = self._db.execute(
+                    "SELECT MAX(retained_block) AS block "
+                    "FROM settlement_qualifications WHERE reservation_id=?",
+                    (candidate.reservation_digest,),
+                ).fetchone()
+                proof_block = 0 if retained is None else int(retained["block"])
+                if proof_block > 0:
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO "
+                        "target_lineage_pretransition_reservations("
+                        "transition_event_id,reservation_id) "
+                        "SELECT ?,reservation_id FROM reservations "
+                        "WHERE block<? OR reservation_id=?",
+                        (
+                            node.transition_event_id,
+                            proof_block,
+                            candidate.reservation_digest,
+                        ),
+                    )
+                else:
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO "
+                        "target_lineage_pretransition_reservations("
+                        "transition_event_id,reservation_id) "
+                        "SELECT ?,reservation_id FROM reservations WHERE "
+                        "block<? OR (block=? AND event_index<?) OR "
+                        "(block=? AND event_index=? AND event_subindex<=?)",
+                        (
+                            node.transition_event_id,
+                            candidate.finalized_block,
+                            candidate.finalized_block,
+                            candidate.event_index,
+                            candidate.finalized_block,
+                            candidate.event_index,
+                            candidate.event_subindex,
+                        ),
+                    )
+        return self.target_lineage_tips()
+
+    def evaluation_stack(self, arena_digest: str) -> EvaluationStackState:
         require_sha256_hex(arena_digest, field="arena_digest")
         row = self._db.execute(
             "SELECT * FROM evaluation_stacks WHERE arena_id=?", (arena_digest,)
         ).fetchone()
         if row is None:
             raise IntakeError("evaluation stack is not initialized")
-        try:
-            manifest = EvaluationStackManifest.from_dict(json.loads(row["stack_json"]))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise IntakeError(f"evaluation stack state is corrupt: {exc}") from None
-        if manifest.digest != row["stack_digest"]:
-            raise IntakeError("evaluation stack digest differs from stored bytes")
-        return EvaluationStackState(
-            row["arena_id"], row["generation"], manifest, row["tree_digest"],
-            row["transition_event_id"],
+        return self._evaluation_stack_state_from_row(
+            row, context="evaluation stack state"
+        )
+
+    def reservation_baseline_segment(
+        self, reservation_id: str
+    ) -> EvaluationStackState | None:
+        require_sha256_hex(reservation_id, field="reservation_id")
+        row = self._db.execute(
+            "SELECT * FROM reservation_baseline_segments WHERE reservation_id=?",
+            (reservation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._evaluation_stack_state_from_row(
+            row, context="reservation baseline segment"
+        )
+
+    def qualification_queue_baseline(self) -> EvaluationStackState | None:
+        active_marks = ",".join("?" for _ in _ACTIVE)
+        row = self._db.execute(
+            "SELECT b.* FROM reservations AS r LEFT JOIN "
+            "reservation_baseline_segments AS b USING(reservation_id) "
+            f"WHERE r.status IN ({active_marks}) ORDER BY r.block,r.event_index,"
+            "r.event_subindex,r.hotkey,r.content_hash LIMIT 1",
+            _ACTIVE,
+        ).fetchone()
+        if row is None or row["arena_id"] is None:
+            return None
+        return self._evaluation_stack_state_from_row(
+            row, context="qualification queue baseline"
         )
 
     @staticmethod
@@ -2375,6 +2899,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             if cursor.rowcount != len(ids):
                 raise IntakeError("settlement cohort changed while leasing")
             sequence, previous = self._event_head()
+            tips = self.target_lineage_tips()
+            pretransition = self._pretransition_reservations(
+                candidates, tips
+            )
         return SettlementLease(
             lease_id,
             chosen[0]["authority_digest"],
@@ -2384,6 +2912,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             candidates,
             sequence,
             previous,
+            tips,
+            pretransition,
         )
 
     def commit_settlement(
@@ -2423,6 +2953,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             current_tree_digest=lease.stack.tree_digest,
             initial_event_sequence=lease.initial_event_sequence,
             previous_event_digest=lease.previous_event_digest,
+            lineage_tips=lease.lineage_tips,
+            pretransition_reservations=lease.pretransition_reservations,
         )
         if expected.to_dict() != plan.to_dict():
             raise IntakeError("settlement plan differs from its leased authority")
@@ -2444,6 +2976,15 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 lease.initial_event_sequence, lease.previous_event_digest
             ):
                 raise IntakeError("settlement incumbent or journal advanced")
+            if dict(self.target_lineage_tips()) != dict(lease.lineage_tips):
+                raise IntakeError("target lineage advanced while evidence was open")
+            current_pretransition = self._pretransition_reservations(
+                lease.candidates, lease.lineage_tips
+            )
+            if current_pretransition != lease.pretransition_reservations:
+                raise IntakeError(
+                    "pretransition reservation authority changed while evidence was open"
+                )
             ids = tuple(row.reservation_digest for row in lease.candidates)
             cohort_ids = frozenset(ids)
             if any(
@@ -2511,6 +3052,12 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 elif event.event_type is SettlementEventType.CROWN:
                     assert candidate.candidate_manifest is not None
                     contribution = candidate.candidate_manifest.entries[candidate.target_id]
+                    incumbent = candidate.incumbent_manifest.entries.get(
+                        candidate.target_id
+                    )
+                    parent_artifact = (
+                        "" if incumbent is None else incumbent.artifact_digest
+                    )
                     speedup_ppm = int(
                         (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
                             rounding=ROUND_FLOOR
@@ -2539,6 +3086,59 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             json.dumps(claim.to_dict(), separators=(",", ":"), sort_keys=True),
                             event.digest,
                         ),
+                    )
+                    self._db.execute(
+                        "INSERT INTO target_lineage_nodes(target_id,artifact_digest,"
+                        "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
+                        "transition_event_id,crowned_block) VALUES(?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(target_id,artifact_digest) DO UPDATE SET "
+                        "parent_artifact_digest=excluded.parent_artifact_digest,"
+                        "winner_speedup=excluded.winner_speedup,"
+                        "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
+                        "transition_event_id=excluded.transition_event_id,"
+                        "crowned_block=excluded.crowned_block",
+                        (
+                            candidate.target_id,
+                            contribution.artifact_digest,
+                            parent_artifact,
+                            candidate.speedup,
+                            candidate.arena_digest,
+                            candidate.candidate_stack_digest,
+                            event.digest,
+                            current_block,
+                        ),
+                    )
+                    self._db.execute(
+                        "INSERT INTO target_lineage_tips(target_id,artifact_digest,"
+                        "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
+                        "transition_event_id,crowned_block) "
+                        "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(target_id) DO UPDATE SET "
+                        "artifact_digest=excluded.artifact_digest,"
+                        "parent_artifact_digest=excluded.parent_artifact_digest,"
+                        "winner_speedup=excluded.winner_speedup,"
+                        "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
+                        "transition_event_id=excluded.transition_event_id,"
+                        "crowned_block=excluded.crowned_block",
+                        (
+                            candidate.target_id,
+                            contribution.artifact_digest,
+                            parent_artifact,
+                            candidate.speedup,
+                            candidate.arena_digest,
+                            candidate.candidate_stack_digest,
+                            event.digest,
+                            current_block,
+                        ),
+                    )
+                    # This exact snapshot is the temporal authority for stale
+                    # sibling exceptions. A reservation inserted after this
+                    # CROWN can never qualify merely by carrying an old block.
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO "
+                        "target_lineage_pretransition_reservations("
+                        "transition_event_id,reservation_id) "
+                        "SELECT ?,reservation_id FROM reservations",
+                        (event.digest,),
                     )
                     arrival = self._db.execute(
                         "SELECT block,block_hash,event_index,event_subindex,hotkey "
@@ -2576,6 +3176,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
 
             if commit_plan.transition is not None:
+                self._bind_unbound_queue_to_stack(
+                    lease.stack, reason="settlement_transition"
+                )
                 manifest = commit_plan.transition.manifest
                 encoded = json.dumps(
                     manifest.to_dict(), separators=(",", ":"), sort_keys=True
@@ -2676,81 +3279,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             seen.add(key)
         return tuple(claims)
 
-    def reopen_active_crown(
-        self, arena_digest: str, target_id: str
-    ) -> CrownedSettlement:
-        """Reopen the exact active CROWN needed by reviewed source promotion."""
-
-        from cacheon.economics import StandingRewardClaim, WEIGHT_PPM
-        from cacheon.settlement import SettlementEvent
-
-        require_sha256_hex(arena_digest, field="arena_digest")
-        if not isinstance(target_id, str) or not target_id:
-            raise IntakeError("active crown target_id is malformed")
-        claim_row = self._db.execute(
-            "SELECT claim_digest,claim_json,event_id FROM standing_reward_claims "
-            "WHERE arena_id=? AND target_id=? AND status='active'",
-            (arena_digest, target_id),
-        ).fetchone()
-        if claim_row is None:
-            raise IntakeError("active crown is not retained")
-        try:
-            claim = StandingRewardClaim.from_dict(json.loads(claim_row["claim_json"]))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise IntakeError(f"active crown claim is corrupt: {exc}") from None
-        if claim.digest != claim_row["claim_digest"]:
-            raise IntakeError("active crown claim digest differs")
-        candidate_row = self._db.execute(
-            "SELECT * FROM settlement_candidates WHERE settlement_evidence_digest=? "
-            "AND status='crowned'",
-            (claim.retained_evidence_digest,),
-        ).fetchone()
-        event_row = self._db.execute(
-            "SELECT event_digest,event_json FROM settlement_events WHERE event_id=? "
-            "AND event_type='CROWN'",
-            (claim_row["event_id"],),
-        ).fetchone()
-        if candidate_row is None or event_row is None:
-            raise IntakeError("active crown lacks retained settlement authority")
-        candidate = self._settlement_candidate(candidate_row)
-        evidence = self.reopen_settlement_evidence(candidate)
-        try:
-            event = SettlementEvent.from_dict(json.loads(event_row["event_json"]))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise IntakeError(f"active crown event is corrupt: {exc}") from None
-        replacement = (
-            None
-            if candidate.candidate_manifest is None
-            else candidate.candidate_manifest.entries.get(candidate.target_id)
-        )
-        current = self.evaluation_stack(arena_digest)
-        speedup_ppm = int(
-            (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
-                rounding=ROUND_FLOOR
-            )
-        )
-        if (
-            event.digest != event_row["event_digest"]
-            or replacement is None
-            or current.manifest.entries.get(target_id) != replacement
-            or claim.arena_digest != candidate.arena_digest
-            or claim.target_id != candidate.target_id
-            or claim.target_spec_digest != replacement.target_spec_digest
-            or claim.contribution_digest != replacement.digest
-            or claim.hotkey != candidate.hotkey
-            or claim.speedup_ppm != speedup_ppm
-            or claim.crowned_block != candidate.finalized_block
-            or claim.retained_evidence_digest != evidence.digest
-            or event.subject_digest != replacement.digest
-            or event.from_stack_digest != candidate.incumbent_stack_digest
-            or event.from_tree_digest != candidate.incumbent_tree_digest
-            or event.to_stack_digest != candidate.incumbent_stack_digest
-            or event.to_tree_digest != candidate.incumbent_tree_digest
-            or event.reason != "qualified_win"
-        ):
-            raise IntakeError("active crown differs from retained settlement authority")
-        return CrownedSettlement(candidate, evidence, event)
-
     def _reopen_claim_evidence(self, retained_digest: str, status: str):
         require_sha256_hex(retained_digest, field="retained_evidence_digest")
         row = self._db.execute(
@@ -2797,10 +3325,15 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         *,
         policy,
         context,
-        catalogs: Mapping[str, object],
+        catalog: object,
         netuid: int,
     ) -> WeightProjection:
-        """Build one global all-arena vector from the complete retained authority."""
+        """Build one global all-arena vector from the complete retained authority.
+
+        ``catalog`` is the live reward catalog; every crowned arena is projected
+        under it, and the economics fence refuses a sealed stack whose
+        reward-relevant catalog policy differs from it.
+        """
 
         from cacheon.chain.weights import WeightProjection
         from cacheon.economics import (
@@ -2814,7 +3347,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         if (
             type(policy) is not EmissionsPolicyManifest
             or type(context) is not GlobalRewardProjectionContext
-            or not isinstance(catalogs, Mapping)
+            or type(catalog) is not TargetCatalog
             or type(netuid) is not int
             or netuid < 0
         ):
@@ -2832,10 +3365,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("active reward claim belongs to an absent evaluation arena")
         if set(by_arena) - active_ids:
             raise IntakeError("active reward claim belongs to an uncrowned evaluation arena")
-        if set(catalogs) - state_ids:
-            raise IntakeError("reward catalog names an absent evaluation arena")
-        if active_ids - set(catalogs):
-            raise IntakeError("reward catalogs do not cover every crowned evaluation arena")
         for claim in standing:
             self._reopen_claim_evidence(claim.retained_evidence_digest, "crowned")
         for claim in discovery:
@@ -2844,9 +3373,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
         authorities = []
         for state in active_states:
-            catalog = catalogs[state.arena_digest]
-            if type(catalog) is not TargetCatalog:
-                raise IntakeError("reward catalog is not exactly typed")
             authorities.append(
                 ArenaRewardAuthority(
                     catalog,
@@ -3522,6 +4048,149 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 (status, reason, attempts, reservation_id),
             )
         return self.get(reservation_id)
+
+    def retained_pass_pairs(self) -> tuple[tuple[str, str, tuple[str, str], tuple[tuple[int, str], ...]], ...]:
+        """Every retained two-PASS pair: id, arena, settled half speedups, half artifact refs."""
+
+        from cacheon.settlement import SettlementCandidate
+
+        pairs = []
+        for row in self._db.execute(
+            "SELECT sc.reservation_id, sc.candidate_json FROM settlement_candidates sc "
+            "JOIN reservations r USING(reservation_id) "
+            "WHERE r.status='qualified' AND r.decision='PASS' "
+            "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
+        ):
+            candidate = SettlementCandidate.from_dict(json.loads(row["candidate_json"]))
+            refs = tuple(
+                (int(half["reproduction_index"]), half["attempt_ref_json"])
+                for half in self._db.execute(
+                    "SELECT reproduction_index, attempt_ref_json FROM "
+                    "settlement_qualifications WHERE reservation_id=? "
+                    "ORDER BY reproduction_index",
+                    (row["reservation_id"],),
+                )
+            )
+            pairs.append((
+                row["reservation_id"], candidate.arena_digest,
+                (candidate.primary.speedup, candidate.reproduction.speedup), refs,
+            ))
+        return tuple(pairs)
+
+    def reopen_for_remeasurement(
+        self, reservation_id: str, *, reason: str
+    ) -> IntakeReservation:
+        """Return one unsettled two-PASS reservation to the screen queue for a fresh pair.
+
+        The retained candidate and both qualification halves move to
+        ``settlement_reopenings`` (append-only), so the row stops earning the
+        moment it leaves ``qualified`` and re-enters intake like a new
+        submission: a fresh screen under the live service identity, a fresh
+        baseline binding to the live stack, and a fresh independent PASS pair
+        against the current incumbent. A crowned or otherwise settled candidate
+        is lineage and is refused.
+        """
+
+        if reason not in _REMEASUREMENT_REASONS:
+            raise IntakeError("remeasurement reason is not registered")
+        with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
+            row = self.get(reservation_id)
+            if row.status != "qualified" or row.decision != "PASS":
+                raise IntakeError("only a retained two-PASS reservation may be reopened")
+            if not row.publication_digest or not row.publication_root:
+                raise IntakeError("reopened reservation has no retained publication")
+            candidate = self._db.execute(
+                "SELECT * FROM settlement_candidates WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone()
+            if candidate is None or candidate["status"] != "pending":
+                raise IntakeError("only an unsettled PASS pair may be reopened")
+            halves = self._db.execute(
+                "SELECT * FROM settlement_qualifications WHERE reservation_id=? "
+                "ORDER BY reproduction_index",
+                (reservation_id,),
+            ).fetchall()
+            if len(halves) != 2:
+                raise IntakeError("reopened reservation does not retain two halves")
+            sequence = self._db.execute(
+                "SELECT COUNT(*) AS n FROM settlement_reopenings WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone()["n"]
+            encode = lambda rows: json.dumps(  # noqa: E731
+                [{key: item[key] for key in item.keys()} for item in rows],
+                separators=(",", ":"), sort_keys=True,
+            )
+            self._db.execute(
+                "INSERT INTO settlement_reopenings(reservation_id,sequence,reason,"
+                "candidate_json,qualifications_json) VALUES(?,?,?,?,?)",
+                (reservation_id, sequence, reason, encode([candidate]), encode(halves)),
+            )
+            for table in (
+                "settlement_qualifications", "settlement_candidates",
+                "reservation_baseline_segments", "reservation_sla_resets",
+            ):
+                self._db.execute(
+                    f"DELETE FROM {table} WHERE reservation_id=?", (reservation_id,)
+                )
+            # The service digest names the arena that screened the old pair.
+            # Left in place, the queue backfill would bind the row to that
+            # retired stack before its fresh screen could bind the live one.
+            self._db.execute(
+                "UPDATE reservations SET status='published',screen_lane='',"
+                "screen_status='',arena_service_digest='',decision='',reason=?,"
+                "retry_group_digest='',retry_position=0,"
+                "qualification_authority_digest='',qualification_authority_json='',"
+                "qualification_evidence_digest='' WHERE reservation_id=?",
+                (f"remeasure:{reason}", reservation_id),
+            )
+        return self.get(reservation_id)
+
+    def remeasurement_pending(self, reservation_id: str) -> bool:
+        """Whether a reopened reservation is still waiting for its fresh pair."""
+
+        row = self.get(reservation_id)
+        return (
+            row.status in {"published", "screening", "promoted"}
+            and self._db.execute(
+                "SELECT 1 FROM settlement_reopenings WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone() is not None
+            and self._db.execute(
+                "SELECT 1 FROM settlement_candidates WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone() is None
+        )
+
+    def rebind_remeasurement_segment(
+        self, reservation_id: str
+    ) -> EvaluationStackState | None:
+        """Bind a reopened row's baseline segment to the stack that re-screened it.
+
+        Idempotent repair for a reopened row the queue backfill bound to its
+        retired arrival stack. Once the fresh screen has stamped the live
+        service digest, that digest names the stack the row must drain under;
+        before the screen the row is left unbound for the screen to bind.
+        """
+
+        with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
+            if not self.remeasurement_pending(reservation_id):
+                raise IntakeError("only a reopened reservation awaiting its fresh pair may be rebound")
+            row = self.get(reservation_id)
+            self._db.execute(
+                "DELETE FROM reservation_baseline_segments WHERE reservation_id=?",
+                (reservation_id,),
+            )
+            if not row.arena_service_digest:
+                return None
+            state = self._unambiguous_evaluation_stack(row.arena_service_digest)
+            if state is None:
+                raise IntakeError("reopened reservation's screen names no evaluation stack")
+            self._bind_reservation_baseline_segment(
+                reservation_id, state, reason="remeasure_rescreen"
+            )
+        return state
 
 
 class SQLiteWeightPublicationJournal:

@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Protocol
 
-from cacheon.cute_aot import CUTE_COMPILE_PROFILE_DIGEST_ENV
 from cacheon.eval.device_state import (
     CommandRunner as DeviceCommandRunner,
     DeviceStateActiveReceipt,
@@ -764,10 +763,6 @@ def build_runtime_argv(
         "TRITON_HOME": f"{CONTAINER_CACHE}/triton-home",
         "XDG_CACHE_HOME": f"{CONTAINER_CACHE}/xdg",
     }
-    if resolved.native_compile_profile is not None:
-        environment[CUTE_COMPILE_PROFILE_DIGEST_ENV] = (
-            resolved.native_compile_profile.digest
-        )
     gpu_csv = ",".join(resolved.physical_hardware.physical_gpu_ids)
     # Docker parses --gpus with a CSV decoder. A multi-device request must be one
     # quoted CSV field even though argv is passed directly without a shell;

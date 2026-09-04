@@ -11,17 +11,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from cacheon.artifact_device_launch import (
-    DEVICE_ARTIFACT_ADMISSION_SCHEMA,
-    DEVICE_LAUNCH_PLAN_SCHEMA,
-)
-from cacheon.artifact_identity import (
-    DIRECT_ARTIFACT_ENTRY,
-    DIRECT_ARTIFACT_IDENTITY_SCHEMA,
-)
-from cacheon.artifact_provider import CUTE_CUBIN_PATCHER_ID
 from cacheon.chain.publish import DEFAULT_BUNDLE_KEY_PREFIX
-from cacheon.cuda_cubin import CUDA_CUBIN_ABI_SCHEMA, CUDA_CUBIN_CONTRACT_SCHEMA
 from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_MEDIA_TYPE,
     GRAPH_EVIDENCE_SCHEMA,
@@ -41,13 +31,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_protocol_and_runtime_abi_vocabulary_is_cacheon() -> None:
-    assert DIRECT_ARTIFACT_ENTRY == "_cacheon_direct_artifact"
-    assert DIRECT_ARTIFACT_IDENTITY_SCHEMA == "cacheon.direct-artifact-execution.v1"
-    assert CUTE_CUBIN_PATCHER_ID == "cacheon.build-cute-cubin.v1"
-    assert DEVICE_LAUNCH_PLAN_SCHEMA == "cacheon.device-launch-plan.v1"
-    assert DEVICE_ARTIFACT_ADMISSION_SCHEMA == "cacheon.device-artifact-admission.v1"
-    assert CUDA_CUBIN_ABI_SCHEMA == "cacheon.cuda-cubin-abi.v1"
-    assert CUDA_CUBIN_CONTRACT_SCHEMA == "cacheon.cuda-cubin-contract.v1"
     assert GRAPH_EVIDENCE_MEDIA_TYPE == "application/vnd.cacheon.graph-verification+json"
     assert GRAPH_EVIDENCE_SCHEMA == "cacheon.qualification.graph-raw-evidence.v1"
     assert SESSION_SCHEMA == "cacheon-isolated-engine-session-v1"
@@ -91,7 +74,6 @@ def test_serialized_native_names_and_cryptographic_salts_are_cacheon() -> None:
         encoding="utf-8"
     )
     seam = (ROOT / "cacheon" / "seam.py").read_text(encoding="utf-8")
-    cute_aot = (ROOT / "cacheon" / "cute_aot.py").read_text(encoding="utf-8")
     cuda_ext = (ROOT / "cacheon" / "patchers" / "build_cuda_ext.py").read_text(
         encoding="utf-8"
     )
@@ -102,7 +84,6 @@ def test_serialized_native_names_and_cryptographic_salts_are_cacheon() -> None:
     assert "optima_c_{" not in engine_tree
     assert "cacheon_c_{" in marginal_runtime
     assert "cacheon_c_[0-9a-f]{64}" in seam
-    assert "cacheon_cute_{digest}" in cute_aot
     assert "cacheon_cuda_{artifact_id}" in cuda_ext
     assert b"cacheon-selection-secret-v1\\0" in qualification
     assert b"cacheon.oci-quiescence.v1\\0" in oci_process

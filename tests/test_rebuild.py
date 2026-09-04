@@ -34,7 +34,6 @@ def _fake_repo(tmp_path: Path, *, marker: Path | None = None) -> Path:
     for name, label in (
         ("apply_dep_patch.py", "patch"),
         ("build_cuda_ext.py", "build"),
-        ("build_cute_cubin.py", "cute-cubin"),
     ):
         body = "# reviewed\n"
         if marker is not None:
@@ -60,7 +59,6 @@ def test_parse_is_pure_and_canonicalizes_registered_order(tmp_path, monkeypatch)
         tmp_path / "bundle",
         {
             "steps": [
-                _step("build_cute_cubin.py"),
                 _step("build_cuda_ext.py"),
                 _step("apply_dep_patch.py"),
             ]
@@ -72,13 +70,11 @@ def test_parse_is_pure_and_canonicalizes_registered_order(tmp_path, monkeypatch)
     assert [step.patcher_id for step in plan.steps] == [
         "cacheon.apply-dep-patch.v1",
         "cacheon.build-cuda-ext.v1",
-        "cacheon.build-cute-cubin.v1",
     ]
     assert plan.to_dict() == {
         "steps": [
             _step("cacheon/patchers/apply_dep_patch.py"),
             _step("cacheon/patchers/build_cuda_ext.py"),
-            _step("cacheon/patchers/build_cute_cubin.py"),
         ]
     }
     assert all(len(step.patcher_sha256) == 64 for step in plan.steps)
@@ -90,7 +86,6 @@ def test_parse_is_pure_and_canonicalizes_registered_order(tmp_path, monkeypatch)
     assert marker.read_text().splitlines() == [
         "patch",
         "build",
-        "cute-cubin",
     ]
 
 

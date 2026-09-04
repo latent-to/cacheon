@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +60,73 @@ def test_only_candidate_owned_receipts_type_the_engine_failure(tmp_path):
     )
     assert "boom" in engine_worker._candidate_receipt_failure(str(candidate), receipts)
     assert engine_worker._candidate_receipt_failure(str(runtime), receipts) == ""
+
+
+@pytest.mark.parametrize("phase", ("launch", "running"))
+@pytest.mark.parametrize("tp_size", (2, 4))
+def test_isolated_engine_reports_child_death_before_parent_exit(
+    monkeypatch, phase, tp_size
+):
+    monkeypatch.setenv("CACHEON_EXTERNAL_NO_EGRESS", "1")
+    monkeypatch.setenv("CACHEON_ENGINE_WORKER", "1")
+    for name in (
+        "_loopback_is_up", "_network_namespace_is_loopback_only",
+        "_egress_is_blocked", "_process_sandbox_is_hardened",
+    ):
+        monkeypatch.setattr(engine_worker, name, lambda: True)
+    monkeypatch.setattr(
+        engine_worker, "engine_kwargs",
+        lambda cfg, **_: {"tp_size": cfg.tp_size, "disable_cuda_graph": False},
+    )
+    events = []
+
+    class Signals:
+        def __init__(self, manager):
+            self.manager = manager
+
+        def sigterm_handler(self):
+            events.append("drain")
+
+        def running_phase_sigquit_handler(self):
+            pytest.fail("SGLang must not kill the reporter before its error frame")
+
+    class Engine:
+        def __init__(self, **kwargs):
+            assert kwargs["tp_size"] == tp_size
+            assert kwargs["disable_cuda_graph"] is False
+            assert kwargs["custom_sigquit_handler"] is engine_worker._engine_child_failed
+            self.tokenizer_manager = SimpleNamespace(signal_handler_class=Signals)
+            if phase == "launch":
+                kwargs["custom_sigquit_handler"]()
+
+        def shutdown(self):
+            events.append("shutdown")
+
+    monkeypatch.setitem(sys.modules, "sglang", SimpleNamespace(Engine=Engine))
+    with pytest.raises(SystemExit, match="SGLang child process failed"):
+        with engine_worker.isolated_engine_session(
+            SimpleNamespace(tp_size=tp_size), bundle_path="", active=False,
+            framework_mode=False, install_seams=False,
+        ) as handle:
+            manager = handle.engine.tokenizer_manager
+            handler = manager.signal_handler_class(manager)
+            handler.sigterm_handler()
+            handler.running_phase_sigquit_handler()
+    assert events == (["drain", "shutdown"] if phase == "running" else [])
+
+
+def test_child_failure_escapes_an_asyncio_signal_callback():
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    pending = loop.create_future()
+    loop.call_soon(engine_worker._engine_child_failed)
+    try:
+        with pytest.raises(SystemExit, match="SGLang child process failed"):
+            loop.run_until_complete(pending)
+    finally:
+        pending.cancel()
+        loop.close()
 
 
 def _distributed_receipt_worker(rank, world_size, store_path, receipt_dir):

@@ -372,7 +372,6 @@ class B300CommissionedResidentPairFactory:
             "controller_distribution_digest",
             "native_build_spec",
             "runtime_preflight_receipt",
-            "native_compile_profile",
         )
         if (
             readiness.service_digest != service

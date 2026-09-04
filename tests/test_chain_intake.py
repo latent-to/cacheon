@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -34,7 +35,7 @@ from cacheon.economics import (
 )
 from cacheon.settlement import (
     SettlementCandidate, SettlementEventType, SettlementQualification,
-    plan_settlement,
+    TargetLineage, TargetLineageNode, plan_settlement,
 )
 from cacheon.stack_identity import canonical_digest, sha256_hex
 from cacheon.stack_manifest import (
@@ -102,11 +103,13 @@ def _audit_policy(label: str, slots: tuple[str, ...]) -> SlotAuditPolicy:
     return SlotAuditPolicy(_h(f"audit-seed:{label}")[:32], 100_000, 32, slots, 1)
 
 
-def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
-    active = store.begin_screen(reservation_id, service_digest=_h("service"))
+def _promote(
+    store: FinalizedIntakeStore, reservation_id: str, *, service: str = _h("service")
+) -> None:
+    active = store.begin_screen(reservation_id, service_digest=service)
     candidate_digest = _h(f"candidate:{reservation_id}:{active.screen_attempts}")
     receipt = ArenaScreenReceipt(
-        _h("service"),
+        service,
         candidate_digest,
         active.screen_attempts,
         tuple(
@@ -166,6 +169,8 @@ def _settlement_plan(store, lease):
         current_tree_digest=lease.stack.tree_digest,
         initial_event_sequence=lease.initial_event_sequence,
         previous_event_digest=lease.previous_event_digest,
+        lineage_tips=lease.lineage_tips,
+        pretransition_reservations=lease.pretransition_reservations,
     )
     evidence = tuple(
         store.reopen_settlement_evidence(row) for row in lease.candidates
@@ -241,13 +246,15 @@ def test_exact_manifest_compatibility_failure_can_return_to_fifo(tmp_path) -> No
             )
 
 
-def _stack_context(catalog: TargetCatalog) -> EvaluationStackContext:
+def _stack_context(
+    catalog: TargetCatalog, *, arena_digest: str = _h("arena")
+) -> EvaluationStackContext:
     targets = catalog.snapshot()["targets"]
     assert isinstance(targets, list)
     return EvaluationStackContext(
         runtime_digest=_h("runtime"),
         base_engine_digest=_h("base"),
-        arena_digest=_h("arena"),
+        arena_digest=arena_digest,
         catalog_snapshot=catalog.snapshot(),
         catalog_digest=catalog.digest,
         target_spec_digests={
@@ -262,13 +269,22 @@ def _qualified_settlement_candidate(
     *,
     primary_only: bool = False,
     retained_block: int = 10,
+    index: int = 0,
+    marker: str = "",
+    speedups: tuple[str, str] = ("1.05", "1.04"),
+    check_single_pass: bool = True,
+    initialize_stack: bool = True,
+    arena_marker: str = "",
+    submission_block: int = 10,
+    attempt_payloads: tuple[bytes, bytes] | None = None,
 ) -> SettlementCandidate | str:
     catalog = default_target_catalog()
     target = "activation.silu_and_mul"
+    arena_digest = _h("arena" + arena_marker)
     incumbent = EvaluationStackManifest(
         runtime_digest=_h("runtime"),
         base_engine_digest=_h("base"),
-        arena_digest=_h("arena"),
+        arena_digest=arena_digest,
         catalog_snapshot=catalog.snapshot(),
         catalog_digest=catalog.digest,
         entries={},
@@ -276,43 +292,50 @@ def _qualified_settlement_candidate(
     replacement = ProposalContributionRef(
         target_id=target,
         target_spec_digest=catalog.target_spec_digest(target),
-        artifact_digest=_h("artifact"),
-        selected_payload_digest=_h("payload"),
-        attribution_digest=_h("attribution"),
+        artifact_digest=_h("artifact" + marker),
+        selected_payload_digest=_h("payload" + marker),
+        attribution_digest=_h("attribution" + marker),
     )
     arm = plan_marginal_arm(
         incumbent,
         replacement,
         catalog=catalog,
         incumbent_tree_digest=_h("incumbent-tree"),
-        candidate_tree_digest=_h("candidate-tree"),
-        expected_context=_stack_context(catalog),
+        candidate_tree_digest=_h("candidate-tree" + marker),
+        expected_context=_stack_context(catalog, arena_digest=arena_digest),
     )
-    store.initialize_evaluation_stack(
-        incumbent, tree_digest=arm.baseline_before.tree_digest
-    )
+    if initialize_stack:
+        store.initialize_evaluation_stack(
+            incumbent, tree_digest=arm.baseline_before.tree_digest
+        )
     evidence_root = store.path.parent / "evidence"
+    payloads = attempt_payloads or (
+        b"retained primary qualification attempt" + marker.encode(),
+        b"retained reproduction qualification attempt" + marker.encode(),
+    )
     primary_attempt = publish_evidence(
         evidence_root,
-        b"retained primary qualification attempt",
+        payloads[0],
         domain="qualification.cohort-attempt",
         media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1",
     )
     reproduction_attempt = publish_evidence(
         evidence_root,
-        b"retained reproduction qualification attempt",
+        payloads[1],
         domain="qualification.cohort-attempt",
         media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1",
     )
-    row = _reserve_one(store)
+    row = _reserve_one(
+        store, index=index, hotkey="miner" + marker, block=submission_block
+    )
     _publish(
         store,
         row.reservation_id,
         _fingerprint(target, target, selected_delta=arm.selected_delta_digest),
-        digest="d" * 64,
-        root="/published/candidate",
+        digest="d" * 64 if not marker else _h("publication" + marker),
+        root="/published/candidate" + marker,
     )
     _promote(store, row.reservation_id)
     def qualification(marker: str, authority: str, attempt, speedup: str):
@@ -348,10 +371,18 @@ def _qualified_settlement_candidate(
             audit_evidence_digest=_h("audit-evidence-" + marker),
         )
 
-    authorities = (_h("primary-authority"), _h("reproduction-authority"))
+    authorities = (
+        _h("primary-authority" + arena_marker),
+        _h("reproduction-authority" + arena_marker),
+    )
     qualifications = (
-        qualification("primary", authorities[0], primary_attempt, "1.05"),
-        qualification("reproduction", authorities[1], reproduction_attempt, "1.04"),
+        qualification("primary" + marker, authorities[0], primary_attempt, speedups[0]),
+        qualification(
+            "reproduction" + marker,
+            authorities[1],
+            reproduction_attempt,
+            speedups[1],
+        ),
     )
     for index, (authority, attempt, settled) in enumerate(
         zip(
@@ -382,12 +413,197 @@ def _qualified_settlement_candidate(
         )
         if index == 0:
             assert store.get(row.reservation_id).status == "reproduction_pending"
-            assert store.lease_settlement_cohort(
-                current_block=max(11, retained_block)
-            ) is None
+            if check_single_pass:
+                assert store.lease_settlement_cohort(
+                    current_block=max(11, retained_block)
+                ) is None
             if primary_only:
                 return row.reservation_id
     return SettlementCandidate.from_reproductions(*qualifications)
+
+
+def _stage_exit(reads: dict[str, float]) -> bytes:
+    """A stage-exit artifact whose lane rates read back as ``reads`` tok/s."""
+
+    def rate(role: str, tokens_per_second: float) -> dict[str, object]:
+        seconds = 131072 / tokens_per_second
+        return {
+            "role": role,
+            "timed_tokens": 786432,
+            "timed_seconds": str(seconds * 6),
+            "conditioning_seconds": str(seconds),
+            "windows": [
+                {"batch_index": index, "seconds": str(seconds), "tokens": 131072}
+                for index in range(2, 8)
+            ],
+        }
+
+    rates = [rate(role, value) for role, value in reads.items()]
+    return json.dumps({"speed_witness": {"rates": rates}}, sort_keys=True).encode()
+
+
+def test_reopen_for_remeasurement_returns_a_pass_pair_to_the_screen_queue(tmp_path):
+    from cacheon.chain.baseline_band import BaselineBandError, remeasurement_evidence
+
+    with _store(tmp_path) as store:
+        slow = _qualified_settlement_candidate(
+            store,
+            marker="slow",
+            speedups=("1.135", "1.132"),
+            attempt_payloads=(
+                _stage_exit({"B": 2031.0, "C": 2307.0}),
+                _stage_exit({"B": 2021.8, "C": 2288.8}),
+            ),
+        )
+        peer = _qualified_settlement_candidate(
+            store,
+            index=1,
+            marker="peer",
+            speedups=("1.032", "1.024"),
+            check_single_pass=False,
+            attempt_payloads=(
+                _stage_exit({"B": 2245.6, "C": 2311.0, "B_prime": 2235.8,
+                             "B_double_prime": 2240.0}),
+                _stage_exit({"B": 2253.2, "C": 2304.0, "B_prime": 2248.6,
+                             "B_double_prime": 2250.0}),
+            ),
+        )
+        assert isinstance(slow, SettlementCandidate)
+        assert isinstance(peer, SettlementCandidate)
+        roots = (store.path.parent / "evidence",)
+
+        evidence = remeasurement_evidence(store, slow.reservation_digest, roots)
+        assert evidence.out_of_band
+        assert evidence.credited_index == 1
+        assert evidence.baseline_reads == 8
+        assert "OUT OF BAND" in evidence.describe()
+        assert not remeasurement_evidence(store, peer.reservation_digest, roots).out_of_band
+        assert {claim.hotkey for claim in store.passed_reward_claims()} == {
+            slow.hotkey, peer.hotkey,
+        }
+
+        with pytest.raises(IntakeError, match="not registered"):
+            store.reopen_for_remeasurement(
+                slow.reservation_digest, reason="operator_decision"
+            )
+        reopened = store.reopen_for_remeasurement(
+            slow.reservation_digest, reason="baseline_out_of_band"
+        )
+        assert (
+            reopened.status, reopened.screen_status, reopened.decision, reopened.reason
+        ) == ("published", "", "", "remeasure:baseline_out_of_band")
+        assert reopened.arena_service_digest == ""
+        assert {claim.hotkey for claim in store.passed_reward_claims()} == {peer.hotkey}
+        for table in ("settlement_candidates", "settlement_qualifications"):
+            assert store._db.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE reservation_id=?",
+                (slow.reservation_digest,),
+            ).fetchone()["n"] == 0
+        archived = store._db.execute(
+            "SELECT reason, candidate_json, qualifications_json FROM "
+            "settlement_reopenings WHERE reservation_id=?",
+            (slow.reservation_digest,),
+        ).fetchone()
+        assert archived["reason"] == "baseline_out_of_band"
+        assert json.loads(archived["candidate_json"])[0]["status"] == "pending"
+        assert len(json.loads(archived["qualifications_json"])) == 2
+        with pytest.raises(IntakeError, match="two-PASS"):
+            store.reopen_for_remeasurement(
+                slow.reservation_digest, reason="baseline_out_of_band"
+            )
+        with pytest.raises(BaselineBandError, match="both halves"):
+            remeasurement_evidence(store, slow.reservation_digest, roots)
+
+        # The row re-enters the screen queue and reaches qualification again.
+        _promote(store, slow.reservation_digest)
+        assert store.get(slow.reservation_digest).status == "promoted"
+
+
+def test_reopen_for_remeasurement_refuses_settled_pairs(tmp_path):
+    with _store(tmp_path) as store:
+        winner = _qualified_settlement_candidate(
+            store, marker="winner", speedups=("1.07", "1.06"),
+        )
+        loser = _qualified_settlement_candidate(
+            store, index=1, marker="loser", speedups=("1.04", "1.03"),
+            check_single_pass=False,
+        )
+        single = _qualified_settlement_candidate(
+            store, index=2, marker="single", primary_only=True,
+            check_single_pass=False,
+        )
+        assert isinstance(winner, SettlementCandidate)
+        assert isinstance(loser, SettlementCandidate)
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+
+        for settled in (winner, loser):
+            with pytest.raises(IntakeError, match="unsettled"):
+                store.reopen_for_remeasurement(
+                    settled.reservation_digest, reason="baseline_out_of_band"
+                )
+        with pytest.raises(IntakeError, match="two-PASS"):
+            store.reopen_for_remeasurement(single, reason="baseline_out_of_band")
+
+
+def test_reopened_row_binds_to_the_stack_that_rescreens_it(tmp_path):
+    # Mainnet 2026-09-04: the reopened row still carried the service digest of
+    # the arena that screened its old pair, so the queue backfill bound it to
+    # that retired stack before the fresh screen ran; the queue head then named
+    # a stack without a commission and every later miner waited behind it.
+    with _store(tmp_path) as store:
+        pair = _qualified_settlement_candidate(
+            store, marker="stale", speedups=("1.135", "1.132"),
+        )
+        assert isinstance(pair, SettlementCandidate)
+        rid = pair.reservation_digest
+        catalog = default_target_catalog()
+        live_arena = _h("arena-live")
+        store.initialize_evaluation_stack(
+            EvaluationStackManifest(
+                runtime_digest=_h("runtime"),
+                base_engine_digest=_h("base"),
+                arena_digest=live_arena,
+                catalog_snapshot=catalog.snapshot(),
+                catalog_digest=catalog.digest,
+                entries={},
+            ),
+            tree_digest=_h("incumbent-tree"),
+        )
+        with pytest.raises(IntakeError, match="reopened"):
+            store.rebind_remeasurement_segment(rid)
+
+        reopened = store.reopen_for_remeasurement(rid, reason="baseline_out_of_band")
+        assert reopened.arena_service_digest == ""
+        assert store.reservation_baseline_segment(rid) is None
+        # With the service digest cleared the backfill cannot resolve a retired
+        # stack for the row, and a rebind before the screen leaves it unbound.
+        store.backfill_reservation_baseline_segments()
+        assert store.reservation_baseline_segment(rid) is None
+        assert store.rebind_remeasurement_segment(rid) is None
+
+        # Reproduce the trap the way it happened: the stale service digest was
+        # still on the row when the backfill ran.
+        with store._transaction():
+            store._db.execute(
+                "UPDATE reservations SET arena_service_digest=? WHERE reservation_id=?",
+                (pair.arena_digest, rid),
+            )
+        store.backfill_reservation_baseline_segments()
+        assert store.reservation_baseline_segment(rid).arena_digest == pair.arena_digest
+        _promote(store, rid, service=live_arena)
+        assert store.get(rid).arena_service_digest == live_arena
+        assert store.reservation_baseline_segment(rid).arena_digest == pair.arena_digest
+        assert store.qualification_queue_baseline().arena_digest == pair.arena_digest
+
+        state = store.rebind_remeasurement_segment(rid)
+        assert state is not None
+        assert state.arena_digest == live_arena
+        assert store.reservation_baseline_segment(rid).arena_digest == live_arena
+        assert store.qualification_queue_baseline().arena_digest == live_arena
+        assert store.rebind_remeasurement_segment(rid).arena_digest == live_arena
 
 
 def test_finalized_batch_is_reserved_atomically_before_transport(tmp_path):
@@ -613,9 +829,6 @@ def test_finalized_sla_removes_old_blocker_but_preserves_settled_candidate(tmp_p
         assert store.get(candidate.reservation_digest).status == "qualified"
         assert store.expire_stale(current_block=100) == ()
         assert store.get(candidate.reservation_digest).status == "qualified"
-        assert store.reopen_active_crown(
-            candidate.arena_digest, candidate.target_id
-        ).candidate == candidate
 
 
 def test_finalized_sla_resets_on_retained_primary_and_survives_restart(tmp_path):
@@ -786,8 +999,6 @@ def test_schema3_archival_is_terminal_preserves_evidence_and_releases_priority(
                 candidate.reservation_digest,
                 reason="must not restore crown eligibility",
             )
-        with pytest.raises(IntakeError, match="active crown"):
-            reopened.reopen_active_crown(candidate.arena_digest, candidate.target_id)
         with pytest.raises(IntakeError, match="exact schema3"):
             reopened.archive_schema3_migration_hold(
                 candidate.reservation_digest,
@@ -1059,6 +1270,105 @@ def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_
         assert copied.status == "failed" and copied.decision == "FAIL"
 
 
+def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
+    path = tmp_path / "private" / "intake.sqlite3"
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        old_stack = store.evaluation_stack(candidate.arena_digest)
+
+        old_rows = _reserve(
+            store,
+            (
+                _arrival(20, hotkey="old-a"),
+                _arrival(21, hotkey="old-b"),
+            ),
+        )
+        for index, row in enumerate(old_rows):
+            _publish(
+                store,
+                row.reservation_id,
+                _fingerprint(f"old.target.{index}", f"old.slot.{index}"),
+                digest=_h(f"old-publication:{index}"),
+                root=f"/published/old-{index}",
+            )
+        _promote(store, old_rows[1].reservation_id)
+
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        plan, evidence = _settlement_plan(store, lease)
+        new_stack = store.commit_settlement(
+            lease, plan, evidence, current_block=11
+        )
+        assert new_stack.generation == old_stack.generation + 1
+        assert all(
+            store.reservation_baseline_segment(row.reservation_id) == old_stack
+            for row in old_rows
+        )
+
+        # Learning the service after the transition cannot rewrite the old
+        # reservation's durable baseline.
+        _promote(store, old_rows[0].reservation_id)
+        assert (
+            store.reservation_baseline_segment(old_rows[0].reservation_id)
+            == old_stack
+        )
+
+        new_row = _reserve_one(store, index=22, hotkey="new", block=12)
+        _publish(
+            store,
+            new_row.reservation_id,
+            _fingerprint("new.target", "new.slot"),
+            digest=_h("new-publication"),
+            root="/published/new",
+        )
+        _promote(store, new_row.reservation_id)
+        assert store.reservation_baseline_segment(new_row.reservation_id) == new_stack
+
+        # A database commissioned before segment persistence reconstructs the
+        # old/new boundary from the CROWN reservation snapshot without reruns.
+        retry_group = _h("old-retry-group")
+        store._db.executemany(
+            "UPDATE reservations SET retry_group_digest=?,retry_position=? "
+            "WHERE reservation_id=?",
+            (
+                (retry_group, index, row.reservation_id)
+                for index, row in enumerate(old_rows)
+            ),
+        )
+        store._db.execute("DELETE FROM reservation_baseline_segments")
+        assert set(store.backfill_reservation_baseline_segments()) == {
+            *(row.reservation_id for row in old_rows),
+            new_row.reservation_id,
+        }
+        assert all(
+            store.reservation_baseline_segment(row.reservation_id) == old_stack
+            for row in old_rows
+        )
+        assert store.reservation_baseline_segment(new_row.reservation_id) == new_stack
+        assert store.qualification_queue_baseline() == old_stack
+        assert store.preview_evaluation_claim(
+            stage="qualification", max_members=8
+        ) == tuple(row.reservation_id for row in old_rows)
+        assert tuple(row.reservation_id for row in store.promoted()) == tuple(
+            row.reservation_id for row in old_rows
+        )
+
+        store._db.executemany(
+            "UPDATE reservations SET status='failed',decision='FAIL',reason='test' "
+            "WHERE reservation_id=?",
+            ((row.reservation_id,) for row in old_rows),
+        )
+        assert store.qualification_queue_baseline() == new_stack
+        assert store.preview_evaluation_claim(
+            stage="qualification", max_members=8
+        ) == (new_row.reservation_id,)
+
+    with FinalizedIntakeStore(path, IntakePolicy(), scope=SCOPE) as reopened:
+        assert reopened.reservation_baseline_segment(old_rows[0].reservation_id) == old_stack
+        assert reopened.reservation_baseline_segment(new_row.reservation_id) == new_stack
+        assert reopened.qualification_queue_baseline() == new_stack
+
+
 def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_path):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store)
@@ -1078,10 +1388,6 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
         assert len(standing) == 1
         assert standing[0].arena_digest == candidate.arena_digest
         assert standing[0].retained_evidence_digest == evidence[0].digest
-        crown = store.reopen_active_crown(candidate.arena_digest, candidate.target_id)
-        assert crown.candidate == candidate
-        assert crown.evidence == evidence[0]
-        assert crown.event.event_type is SettlementEventType.CROWN
         assert store.lease_settlement_cohort(current_block=12) is None
 
     with _store(tmp_path) as reopened:
@@ -1089,34 +1395,328 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
         assert current.generation == 1
         assert current.manifest.digest == candidate.candidate_stack_digest
         assert reopened.active_reward_claims()[0][0].hotkey == candidate.hotkey
-        crown = reopened.reopen_active_crown(
-            candidate.arena_digest, candidate.target_id
-        )
-        assert crown.candidate == candidate
-        reopened._db.execute(
-            "UPDATE settlement_events SET event_json='{}' WHERE event_id=?",
-            (crown.event.digest,),
-        )
-        with pytest.raises(IntakeError, match="event is corrupt"):
-            reopened.reopen_active_crown(candidate.arena_digest, candidate.target_id)
 
 
-def test_retained_pass_is_rewarded_even_when_settlement_holds_it(tmp_path):
+def test_recommission_preserves_current_loser_evidence_without_requeue(tmp_path):
     with _store(tmp_path) as store:
-        candidate = _qualified_settlement_candidate(store)
-        evidence = store.reopen_settlement_evidence(candidate)
-        store._db.execute(
-            "UPDATE settlement_candidates SET status='held',reason='incumbent_advanced',"
-            "settlement_evidence_digest=? WHERE reservation_id=?",
-            (evidence.digest, candidate.reservation_digest),
+        winner = _qualified_settlement_candidate(
+            store,
+            index=0,
+            marker="winner",
+            speedups=("1.07", "1.06"),
         )
-        claims = store.passed_reward_claims()
-        assert len(claims) == 1
-        assert claims[0].hotkey == candidate.hotkey
-        assert claims[0].retained_evidence_digest == evidence.digest
+        loser = _qualified_settlement_candidate(
+            store,
+            index=1,
+            marker="loser",
+            speedups=("1.04", "1.03"),
+            check_single_pass=False,
+        )
+        assert isinstance(winner, SettlementCandidate)
+        assert isinstance(loser, SettlementCandidate)
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        assert set(lease.candidates) == {winner, loser}
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=11)
 
-    with _store(tmp_path) as reopened:
-        assert reopened.passed_reward_claims() == claims
+        assert plan.winner_candidate_digest == winner.digest
+        assert store.passed_reward_claims()[0].hotkey == winner.hotkey
+
+        retained = store.get(loser.reservation_digest)
+        assert retained.status == "qualified"
+        assert retained.screen_status == "promote"
+        assert store._db.execute(
+            "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
+            "WHERE reservation_id=?",
+            (loser.reservation_digest,),
+        ).fetchone()["n"] == 2
+        assert store._db.execute(
+            "SELECT COUNT(*) AS n FROM settlement_qualifications "
+            "WHERE reservation_id=?",
+            (loser.reservation_digest,),
+        ).fetchone()["n"] == 2
+        assert store._db.execute(
+            "SELECT status FROM settlement_candidates WHERE reservation_id=?",
+            (loser.reservation_digest,),
+        ).fetchone()["status"] == "held"
+
+        # The crown remains authoritative; settled history is never erased.
+        assert store._db.execute(
+            "SELECT status FROM settlement_candidates WHERE reservation_id=?",
+            (winner.reservation_digest,),
+        ).fetchone()["status"] == "crowned"
+
+
+def test_crown_records_the_target_lineage_tip_and_fences_a_stale_lease(tmp_path):
+    with _store(tmp_path) as store:
+        assert store.target_lineage_tips() == {}
+        winner = _qualified_settlement_candidate(
+            store,
+            index=0,
+            marker="winner",
+            speedups=("1.07", "1.06"),
+        )
+        assert isinstance(winner, SettlementCandidate)
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        assert lease.lineage_tips == {}
+        plan, evidence = _settlement_plan(store, lease)
+
+        # The expected plan is recomputed from the lease's own tips, so the
+        # tips have to be rebound to durable state or a caller could simply
+        # present a lease that omits the lineage it is about to fork.
+        forged_tip = TargetLineage(
+            (
+                TargetLineageNode(
+                    _h("forged-tip"), "", "1.01",
+                    _h("forged-transition"),
+                ),
+            )
+        )
+        forged = replace(
+            lease,
+            lineage_tips={"activation.silu_and_mul": forged_tip},
+            pretransition_reservations=frozenset(),
+        )
+        forged_plan = plan_settlement(
+            forged.candidates,
+            current_manifest=forged.stack.manifest,
+            current_tree_digest=forged.stack.tree_digest,
+            initial_event_sequence=forged.initial_event_sequence,
+            previous_event_digest=forged.previous_event_digest,
+            lineage_tips=forged.lineage_tips,
+            pretransition_reservations=forged.pretransition_reservations,
+        )
+        assert forged_plan.winner_candidate_digest == ""
+        with pytest.raises(IntakeError, match="target lineage advanced"):
+            store.commit_settlement(forged, forged_plan, evidence, current_block=11)
+
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+
+        assert winner.candidate_manifest is not None
+        crowned_artifact = winner.candidate_manifest.entries[
+            "activation.silu_and_mul"
+        ].artifact_digest
+        tips = store.target_lineage_tips()
+        tip = tips["activation.silu_and_mul"]
+        assert tip.artifact_digest == crowned_artifact
+        assert tip.parent_artifact_digest == ""
+        assert tip.winner_speedup == winner.speedup
+        row = store._db.execute(
+            "SELECT * FROM target_lineage_tips WHERE target_id=?",
+            ("activation.silu_and_mul",),
+        ).fetchone()
+        assert row["arena_id"] == winner.arena_digest
+        assert row["stack_digest"] == winner.candidate_stack_digest
+        assert row["crowned_block"] == 11
+        assert store._db.execute(
+            "SELECT 1 FROM target_lineage_pretransition_reservations "
+            "WHERE transition_event_id=? AND reservation_id=?",
+            (tip.transition_event_id, winner.reservation_digest),
+        ).fetchone() is not None
+
+        # Replaying crowned history reconstructs the same ledger, which is how
+        # a store that settled before the ledger existed gets seeded.
+        store._db.execute("DELETE FROM target_lineage_tips")
+        store._db.execute(
+            "DELETE FROM target_lineage_pretransition_reservations"
+        )
+        assert store.target_lineage_tips() == {}
+        rebuilt = store.backfill_target_lineage_tips()
+        assert rebuilt["activation.silu_and_mul"] == tip
+        assert store.target_lineage_tips()["activation.silu_and_mul"] == tip
+        assert store.backfill_target_lineage_tips()[
+            "activation.silu_and_mul"
+        ] == tip
+
+
+def test_faster_pretransition_sibling_replaces_cross_arena_lineage_tip(tmp_path):
+    with _store(tmp_path) as store:
+        first = _qualified_settlement_candidate(
+            store,
+            index=0,
+            marker="first",
+            arena_marker="first",
+            speedups=("1.06", "1.05"),
+        )
+        faster = _qualified_settlement_candidate(
+            store,
+            index=1,
+            marker="faster",
+            arena_marker="faster",
+            speedups=("1.1", "1.09"),
+            check_single_pass=False,
+        )
+        assert isinstance(first, SettlementCandidate)
+        assert isinstance(faster, SettlementCandidate)
+
+        first_lease = store.lease_settlement_cohort(current_block=11)
+        assert first_lease is not None
+        assert first_lease.candidates == (first,)
+        first_plan, first_evidence = _settlement_plan(store, first_lease)
+        store.commit_settlement(
+            first_lease, first_plan, first_evidence, current_block=11
+        )
+        first_tip = store.target_lineage_tips()["activation.silu_and_mul"]
+        assert first_tip.winner_speedup == first.speedup
+
+        sibling_lease = store.lease_settlement_cohort(current_block=12)
+        assert sibling_lease is not None
+        assert sibling_lease.candidates == (faster,)
+        assert sibling_lease.pretransition_reservations == frozenset(
+            {faster.reservation_digest}
+        )
+        sibling_plan, sibling_evidence = _settlement_plan(
+            store, sibling_lease
+        )
+        assert sibling_plan.winner_candidate_digest == faster.digest
+        crown = next(
+            event for event in sibling_plan.events
+            if event.event_type is SettlementEventType.CROWN
+        )
+        assert crown.reason == "qualified_pretransition_ancestor_win"
+        resulting_stack = store.commit_settlement(
+            sibling_lease,
+            sibling_plan,
+            sibling_evidence,
+            current_block=12,
+        )
+
+        assert faster.candidate_manifest is not None
+        faster_artifact = faster.candidate_manifest.entries[
+            "activation.silu_and_mul"
+        ].artifact_digest
+        new_tip = store.target_lineage_tips()["activation.silu_and_mul"]
+        assert new_tip.artifact_digest == faster_artifact
+        assert new_tip.parent_artifact_digest == first_tip.parent_artifact_digest
+        assert new_tip.winner_speedup == faster.speedup
+        assert resulting_stack.manifest == faster.candidate_manifest
+
+
+def test_backfill_proves_reservation_before_winner_qualification_completed(
+    tmp_path,
+):
+    with _store(tmp_path) as store:
+        winner = _qualified_settlement_candidate(
+            store,
+            index=0,
+            marker="winner",
+            arena_marker="winner",
+            submission_block=10,
+            retained_block=20,
+            speedups=("1.06", "1.05"),
+        )
+        sibling = _qualified_settlement_candidate(
+            store,
+            index=1,
+            marker="sibling",
+            arena_marker="sibling",
+            submission_block=15,
+            retained_block=20,
+            speedups=("1.1", "1.09"),
+            check_single_pass=False,
+        )
+        assert isinstance(winner, SettlementCandidate)
+        assert isinstance(sibling, SettlementCandidate)
+        lease = store.lease_settlement_cohort(current_block=21)
+        assert lease is not None
+        assert lease.candidates == (winner,)
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=21)
+
+        store._db.execute("DELETE FROM target_lineage_tips")
+        store._db.execute("DELETE FROM target_lineage_nodes")
+        store._db.execute(
+            "DELETE FROM target_lineage_pretransition_reservations"
+        )
+        lineage = store.backfill_target_lineage_tips()[
+            "activation.silu_and_mul"
+        ]
+        assert store._db.execute(
+            "SELECT 1 FROM target_lineage_pretransition_reservations "
+            "WHERE transition_event_id=? AND reservation_id=?",
+            (lineage.transition_event_id, sibling.reservation_digest),
+        ).fetchone() is not None
+
+
+def test_faster_stale_sibling_submitted_after_transition_is_held(tmp_path):
+    with _store(tmp_path) as store:
+        first = _qualified_settlement_candidate(
+            store,
+            index=0,
+            marker="first",
+            arena_marker="first",
+            speedups=("1.06", "1.05"),
+        )
+        assert isinstance(first, SettlementCandidate)
+        first_lease = store.lease_settlement_cohort(current_block=11)
+        assert first_lease is not None
+        first_plan, first_evidence = _settlement_plan(store, first_lease)
+        store.commit_settlement(
+            first_lease, first_plan, first_evidence, current_block=11
+        )
+
+        late = _qualified_settlement_candidate(
+            store,
+            index=1,
+            marker="late",
+            arena_marker="late",
+            speedups=("1.1", "1.09"),
+        )
+        assert isinstance(late, SettlementCandidate)
+        late_lease = store.lease_settlement_cohort(current_block=12)
+        assert late_lease is not None
+        assert late_lease.pretransition_reservations == frozenset()
+        late_plan, late_evidence = _settlement_plan(store, late_lease)
+        assert late_plan.winner_candidate_digest == ""
+        assert late_plan.events[0].reason == "stale_incumbent"
+        store.commit_settlement(
+            late_lease, late_plan, late_evidence, current_block=12
+        )
+        status = store._db.execute(
+            "SELECT status FROM settlement_candidates WHERE reservation_id=?",
+            (late.reservation_digest,),
+        ).fetchone()["status"]
+        assert status == "held"
+
+
+def test_recommission_preserves_later_stale_incumbent_hold(tmp_path):
+    with _store(tmp_path) as store:
+        winner = _qualified_settlement_candidate(store, marker="winner")
+        assert isinstance(winner, SettlementCandidate)
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+
+        stale = _qualified_settlement_candidate(
+            store,
+            index=1,
+            marker="stale",
+            check_single_pass=False,
+            initialize_stack=False,
+        )
+        assert isinstance(stale, SettlementCandidate)
+        stale_lease = store.lease_settlement_cohort(current_block=12)
+        assert stale_lease is not None
+        stale_plan, stale_evidence = _settlement_plan(store, stale_lease)
+        assert stale_plan.transition is None
+        assert stale_plan.events[-1].reason == "stale_incumbent"
+        store.commit_settlement(
+            stale_lease, stale_plan, stale_evidence, current_block=12
+        )
+
+        assert store.get(stale.reservation_digest).status == "qualified"
+        assert store._db.execute(
+            "SELECT status FROM settlement_candidates WHERE reservation_id=?",
+            (stale.reservation_digest,),
+        ).fetchone()["status"] == "held"
+        assert store._db.execute(
+            "SELECT COUNT(*) AS n FROM settlement_qualifications "
+            "WHERE reservation_id=?",
+            (stale.reservation_digest,),
+        ).fetchone()["n"] == 2
 
 
 def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp_path):
@@ -1132,25 +1732,24 @@ def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp
         assert second.lease_id != first.lease_id
 
 
-def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path):
+@pytest.mark.parametrize(
+    "predecessor_version",
+    ("cacheon.emissions.v1.1", "cacheon.emissions.v1.3"),
+)
+def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
+    tmp_path, predecessor_version
+):
     catalog = default_target_catalog()
     with _store(tmp_path) as store:
-        candidate = _qualified_settlement_candidate(store)
+        _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
         plan, evidence = _settlement_plan(store, lease)
         store.commit_settlement(lease, plan, evidence, current_block=11)
         context = _context("validator", "miner")
-        with pytest.raises(IntakeError, match="catalogs"):
-            store.build_weight_projection(
-                policy=POLICY,
-                context=context,
-                catalogs={},
-                netuid=SCOPE.netuid,
-            )
         assert _policy_metadata(store) is None
         legacy = POLICY.to_dict()
-        legacy["policy_version"] = "cacheon.emissions.v1.1"
+        legacy["policy_version"] = predecessor_version
         store._db.execute(
             "INSERT INTO metadata(key,value) VALUES('emissions_policy_digest',?)",
             (canonical_digest("cacheon.economics.policy", legacy),),
@@ -1158,7 +1757,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
         projection = store.build_weight_projection(
             policy=POLICY,
             context=context,
-            catalogs={candidate.arena_digest: catalog},
+            catalog=catalog,
             netuid=SCOPE.netuid,
         )
         assert projection.crown_count == 1
@@ -1199,7 +1798,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,
-                catalogs={candidate.arena_digest: catalog},
+                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
         store._db.execute(
@@ -1210,7 +1809,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
             store.build_weight_projection(
                 policy=EmissionsPolicyManifest(101, 20, 100_000),
                 context=context,
-                catalogs={candidate.arena_digest: catalog},
+                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
 
@@ -1226,7 +1825,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,
-                catalogs={candidate.arena_digest: catalog},
+                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
         retained = SQLiteWeightPublicationJournal.reopen_from_head(store)
@@ -1240,7 +1839,7 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
     staging = _staging_manifest("staging", catalog)
 
     with _store(tmp_path) as store:
-        candidate = _qualified_settlement_candidate(store)
+        _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
         plan, evidence = _settlement_plan(store, lease)
@@ -1250,7 +1849,7 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
         projection = store.build_weight_projection(
             policy=POLICY,
             context=context,
-            catalogs={candidate.arena_digest: catalog, staging.arena_digest: catalog},
+            catalog=catalog,
             netuid=SCOPE.netuid,
         )
         assert projection.weights_ppm == (("miner", 1_000_000),)
@@ -1259,12 +1858,12 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
         assert store.evaluation_stack(staging.arena_digest).generation == 0
 
     with _store(tmp_path) as reopened:
-        # A restart must not reactivate a persisted generation-zero arena.  Its
-        # catalog is optional because it has no economic authority yet.
+        # A restart must not reactivate a persisted generation-zero arena: it has
+        # no economic authority yet, so it is never projected.
         projection = reopened.build_weight_projection(
             policy=POLICY,
             context=context,
-            catalogs={candidate.arena_digest: catalog},
+            catalog=catalog,
             netuid=SCOPE.netuid,
         )
         assert projection.weights_ppm == (("miner", 1_000_000),)
@@ -1281,7 +1880,7 @@ def test_all_uncrowned_bootstrap_remains_an_explicit_fail_closed_policy(tmp_path
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,
-                catalogs={staging.arena_digest: catalog},
+                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
         assert _policy_metadata(store) is None

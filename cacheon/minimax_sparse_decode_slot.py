@@ -154,7 +154,7 @@ def _invoke(entry, inputs: dict[str, Any], outputs, _prepared) -> None:
     )
 
 
-def build_slot(SlotSpec, Correctness, tolerances, call_abi):
+def build_slot(SlotSpec, Correctness, tolerances):
     return SlotSpec(
         name="attention.decode",
         entry="attention_decode",
@@ -176,7 +176,6 @@ def build_slot(SlotSpec, Correctness, tolerances, call_abi):
         correctness=Correctness("matched_ratio", min_ratio=0.99),
         tolerances=tolerances,
         kl_threshold=3e-2,
-        call_abi=call_abi,
     )
 
 

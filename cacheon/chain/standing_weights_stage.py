@@ -214,11 +214,10 @@ def compose_weight_offer_push(
                     # torn state (claims without a crowned arena, or the
                     # reverse) is the builder's refusal to surface, not a
                     # reason to burn.
-                    catalogs = {state.arena_digest: catalog for state in states}
                     projection = store.build_weight_projection(
                         policy=policy,
                         context=context,
-                        catalogs=catalogs,
+                        catalog=catalog,
                         netuid=netuid,
                     )
                 elif stage.burn_hotkey:
@@ -229,11 +228,10 @@ def compose_weight_offer_push(
                         burn_hotkey=stage.burn_hotkey,
                     )
                 else:
-                    catalogs = {state.arena_digest: catalog for state in states}
                     projection = store.build_weight_projection(
                         policy=policy,
                         context=context,
-                        catalogs=catalogs,
+                        catalog=catalog,
                         netuid=netuid,
                     )
             offer = CurrentWeightOffer.from_legacy_projection(projection)
