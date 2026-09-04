@@ -812,6 +812,47 @@ def cmd_serve_weights(args: argparse.Namespace) -> int:
     return 0
 
 
+def _watch_interval(args: argparse.Namespace) -> float:
+    interval = getattr(args, "interval", 60.0)
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, (int, float))
+        or not 1 <= float(interval) <= 86_400
+    ):
+        raise SystemExit("--interval must be between 1 and 86400 seconds")
+    return float(interval)
+
+
+def _watch(run_pass, *, interval: float, logger, what: str, on_failure=None) -> int:
+    """Repeat ``run_pass`` until it returns a terminal status, backing off on failures."""
+
+    import time
+
+    failures = 0
+    while True:
+        try:
+            status = run_pass()
+        except Exception as exc:
+            if on_failure is not None:
+                on_failure()
+            if getattr(exc, "retryable", True) is False:
+                raise
+            failures += 1
+            logger.exception("%s pass failed (%d consecutive)", what, failures)
+            if failures >= 10:
+                raise
+        else:
+            failures = 0
+            if status not in {0, 3}:
+                return status
+        time.sleep(interval * (1 + min(failures, 5)))
+
+
+# Confirmed follow-weights passes between chain-client re-dials. The client's per-block
+# caches grew about 6 MB per pass (2026-09-04: 1 GB RSS after three hours on mainnet).
+_FOLLOW_WEIGHTS_CLIENT_PASSES = 30
+
+
 def _close_chain_quietly(subtensor: object) -> None:
     """Best-effort close of a subtensor client whose connection may be dead."""
 
@@ -897,47 +938,39 @@ def cmd_follow_weights(args: argparse.Namespace) -> int:
         return _cmd_follow_weights_once(args)
     if args.dry_run:
         raise SystemExit("--watch cannot be combined with --dry-run")
-    interval = getattr(args, "interval", 60.0)
-    if (
-        isinstance(interval, bool)
-        or not isinstance(interval, (int, float))
-        or not 1 <= float(interval) <= 86_400
-    ):
-        raise SystemExit("--interval must be between 1 and 86400 seconds")
+    interval = _watch_interval(args)
 
     import logging
-    import time
 
-    logger = logging.getLogger("cacheon.chain.weight_share")
-    failures = 0
-    # One chain client for the whole watch session. Dialing a fresh client per
-    # pass leaked one websocket (and its keepalive thread) every interval; a
-    # node blip then failed all of them at once (2026-08-19: 96 keepalive
-    # tracebacks in three minutes on mainnet). Re-dial only after a failed
-    # pass, when the connection is the likeliest casualty.
+    # One chain client across passes: dialing a fresh one per pass leaked a websocket
+    # and its keepalive thread every interval (2026-08-19: 96 keepalive tracebacks in
+    # three minutes on mainnet). Re-dial after a failed pass, when the connection is
+    # the likeliest casualty, and every _FOLLOW_WEIGHTS_CLIENT_PASSES confirmed passes.
     subtensor = None
-    while True:
-        try:
-            if subtensor is None:
-                subtensor = _connect_chain_from_args(args)
-            status = _cmd_follow_weights_once(args, subtensor)
-        except Exception as exc:
-            _close_chain_quietly(subtensor)
-            subtensor = None
-            if getattr(exc, "retryable", True) is False:
-                raise
-            failures += 1
-            logger.exception(
-                "follow-weights pass failed (%d consecutive)", failures
-            )
-            if failures >= 10:
-                raise
-        else:
-            failures = 0
-            if status not in {0, 3}:
-                _close_chain_quietly(subtensor)
-                return status
-        time.sleep(float(interval) * (1 + min(failures, 5)))
+    passes = 0
+
+    def drop_client() -> None:
+        nonlocal subtensor
+        _close_chain_quietly(subtensor)
+        subtensor = None
+
+    def run_pass() -> int:
+        nonlocal subtensor, passes
+        if subtensor is None:
+            subtensor = _connect_chain_from_args(args)
+        status = _cmd_follow_weights_once(args, subtensor)
+        passes += 1
+        if status not in {0, 3} or passes % _FOLLOW_WEIGHTS_CLIENT_PASSES == 0:
+            drop_client()
+        return status
+
+    return _watch(
+        run_pass,
+        interval=interval,
+        logger=logging.getLogger("cacheon.chain.weight_share"),
+        what="follow-weights",
+        on_failure=drop_client,
+    )
 
 
 def cmd_mint_push_credentials(args: argparse.Namespace) -> int:
@@ -1332,36 +1365,16 @@ def cmd_set_weights(args: argparse.Namespace) -> int:
             "--watch requires the signer path and cannot be combined with "
             "--dry-run, --reconcile-only, or --release-hold"
         )
-    interval = getattr(args, "interval", 60.0)
-    if (
-        isinstance(interval, bool)
-        or not isinstance(interval, (int, float))
-        or not 1 <= float(interval) <= 86_400
-    ):
-        raise SystemExit("--interval must be between 1 and 86400 seconds")
+    interval = _watch_interval(args)
 
     import logging
-    import time
 
-    logger = logging.getLogger("cacheon.chain.weights")
-    failures = 0
-    while True:
-        try:
-            status = _cmd_set_weights_once(args)
-        except Exception as exc:
-            if getattr(exc, "retryable", True) is False:
-                raise
-            failures += 1
-            logger.exception(
-                "weight publication pass failed (%d consecutive)", failures
-            )
-            if failures >= 10:
-                raise
-        else:
-            failures = 0
-            if status not in {0, 3}:
-                return status
-        time.sleep(float(interval) * (1 + min(failures, 5)))
+    return _watch(
+        lambda: _cmd_set_weights_once(args),
+        interval=interval,
+        logger=logging.getLogger("cacheon.chain.weights"),
+        what="weight publication",
+    )
 
 
 def cmd_chain_package(args: argparse.Namespace) -> int:
