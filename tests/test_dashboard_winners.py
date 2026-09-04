@@ -8,6 +8,7 @@ from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     cumulative_crown_speedups,
     estimated_sglang_tokens_per_second,
+    live_offer_shares,
 )
 
 
@@ -113,3 +114,55 @@ def test_conservative_candidate_tokens_per_second_uses_slower_pass() -> None:
     assert estimated_sglang_tokens_per_second(rate, Decimal("1.23476")) == (
         Decimal("2100.4") / Decimal("1.23476")
     )
+
+
+def test_live_offer_shares_reads_the_served_vector(tmp_path: Path) -> None:
+    offer = {
+        "schema": "cacheon.current-weight-offer.v2",
+        "offer": {
+            "lane": "legacy_v1",
+            "projection_digest": "ab" * 32,
+            "projection": {
+                "effective_block": 8994701,
+                "crown_count": 4,
+                "stack_generation": 2,
+                "validator_hotkey": "5Vali",
+                "weights_ppm": [["5Alice", 110958], ["5Bob", 889042]],
+            },
+        },
+    }
+    path = tmp_path / "current_weights.json"
+    path.write_text(json.dumps(offer), encoding="utf-8")
+
+    summary, shares = live_offer_shares(path)
+
+    assert summary == {
+        "lane": "legacy_v1",
+        "projection_digest": "ab" * 32,
+        "effective_block": 8994701,
+        "crown_count": 4,
+        "stack_generation": 2,
+        "validator_hotkey": "5Vali",
+    }
+    assert shares == {"5Alice": Decimal("0.110958"), "5Bob": Decimal("0.889042")}
+    assert sum(shares.values()) == Decimal(1)
+
+
+def test_live_offer_shares_reports_absence_instead_of_a_vector(tmp_path: Path) -> None:
+    assert live_offer_shares(tmp_path / "missing.json") == (None, {})
+    broken = tmp_path / "broken.json"
+    broken.write_text('{"offer": {"projection": {}}}', encoding="utf-8")
+    assert live_offer_shares(broken) == (None, {})
+
+
+def test_winners_and_miners_render_the_served_weight_share() -> None:
+    html = (
+        Path(__file__).parents[1] / "dashboard" / "static" / "index.html"
+    ).read_text()
+
+    assert '"Weight share (served offer)"' in html
+    assert '"Registered","Weight share","Subs"' in html
+    assert "w.weight_share" in html and "m.weight_share" in html
+    assert "Served weight offer" in html
+    assert "follower journal" in html
+    assert "Weight publications (latest)" not in html

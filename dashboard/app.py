@@ -41,6 +41,7 @@ from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     cumulative_crown_speedups,
     estimated_sglang_tokens_per_second,
+    live_offer_shares,
 )
 
 # ---------------------------------------------------------------- config ---
@@ -63,6 +64,12 @@ QUAL_EVIDENCE_EXTRA = (
     Path("/root/cacheon-ops/remote-worker/standing-qual-evidence"),
     MISSION / "evidence",
 )
+
+# The weight offer this validator serves to every follower, and the follower
+# journal that records what this validator itself submitted and confirmed.
+OFFER_PATH = Path(os.environ.get(
+    "CACHEON_DASH_OFFER", "/var/lib/cacheon/current_weights.json"))
+FOLLOW_JOURNAL = os.environ.get("CACHEON_DASH_FOLLOW_JOURNAL", "")
 
 NETWORK = os.environ.get(
     "CACHEON_DASH_NETWORK", "wss://archive.sub.latent.to")
@@ -413,6 +420,27 @@ def with_time(block: int) -> dict[str, Any]:
 
 def emission_symbol() -> str:
     return str((ENRICHER.metagraph or {}).get("emission_symbol") or "")
+
+
+def current_offer() -> tuple[dict[str, Any] | None, dict[str, Decimal]]:
+    """The served weight offer with a clock, or ``(None, {})`` when absent."""
+
+    summary, shares = live_offer_shares(OFFER_PATH)
+    if summary is None:
+        return None, {}
+    try:
+        served_unix = int(OFFER_PATH.stat().st_mtime)
+    except OSError:
+        served_unix = None
+    summary["effective"] = with_time(summary["effective_block"])
+    summary["served_unix"] = served_unix
+    summary["path"] = str(OFFER_PATH)
+    return summary, shares
+
+
+def share_value(shares: dict[str, Decimal], hotkey: str) -> float | None:
+    share = shares.get(hotkey)
+    return float(share) if share is not None else None
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -1201,6 +1229,7 @@ def winners() -> dict[str, Any]:
                 disposition["reservation_id"], []).append(speed)
     con.close()
     cumulative_by_reservation = cumulative_crown_speedups(crown_events)
+    offer, shares = current_offer()
 
     items = []
     for row in passed:
@@ -1243,15 +1272,10 @@ def winners() -> dict[str, Any]:
             "passed": with_time(passed_block),
             "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
+            "weight_share": share_value(shares, hotkey),
             "reward_claim_status": (
-                "earning"
-                if row["status"] == "crowned"
-                else (
-                    "awaiting_settlement"
-                    if row["status"] in {"pending", "leased"}
-                    else "stale"
-                )
-            ),
+                "earning" if shares.get(hotkey) else "not_earning"
+            ) if offer is not None else "offer_unavailable",
             "settlement_status": row["status"],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
@@ -1268,9 +1292,14 @@ def winners() -> dict[str, Any]:
         "items": items,
         "emission_symbol": emission_symbol(),
         "pass_total": len(items),
+        "offer": offer,
         "note": (
-            "Only settled CROWN contributions earn. Pending pairs await settlement; "
-            "held measurements are stale and must be recomputed after recommission."
+            "Reproduced PASS pairs earn under the retained-pair policy with time "
+            "decay; a crown is not required. Weight share is this validator's "
+            "currently served offer. The chain reflects it only after commit-reveal "
+            "and stake-weighted consensus across validators, so on-chain emission lags."
+            if offer is not None
+            else "The served weight offer is unavailable; weight shares cannot be shown."
         ),
     }
 
@@ -1299,6 +1328,7 @@ def miners() -> dict[str, Any]:
         WHERE sc.status='crowned' AND r.block >= ? GROUP BY r.hotkey
     """, (cutoff,))}
     con.close()
+    offer, shares = current_offer()
     items = []
     for m in data:
         hk = ENRICHER.hotkey_info(m["hotkey"])
@@ -1308,6 +1338,7 @@ def miners() -> dict[str, Any]:
             **m,
             "active": active,
             "crowned": crowned_by_hotkey.get(m["hotkey"], 0),
+            "weight_share": share_value(shares, m["hotkey"]),
             "hotkey_links": links_for_address(m["hotkey"]),
             "first_seen": with_time(int(m["first_block"])),
             "last_seen": with_time(int(m["last_block"])),
@@ -1315,7 +1346,8 @@ def miners() -> dict[str, Any]:
             "uid": hk.get("uid"),
             "emission_alpha_per_day": hk.get("emission_alpha_per_day"),
         })
-    return {"items": items, "emission_symbol": emission_symbol()}
+    items.sort(key=lambda x: (-(x["weight_share"] or 0), -x["submissions"]))
+    return {"items": items, "emission_symbol": emission_symbol(), "offer": offer}
 
 
 @app.get("/api/events")
@@ -1348,24 +1380,54 @@ def events(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
 
 @app.get("/api/weights")
 def weights(limit: int = Query(30, ge=1, le=500)) -> dict[str, Any]:
-    con = intake_conn()
-    data = rows(con, """
-        SELECT sequence, status, updated_block, record_json
-        FROM weight_publications ORDER BY sequence DESC LIMIT ?
-    """, (limit,))
-    con.close()
-    items = []
-    for w in data:
-        rj = json.loads(w["record_json"] or "{}")
-        items.append({
-            "sequence": w["sequence"],
-            "status": w["status"],
-            "updated": with_time(int(w["updated_block"])),
-            "submit_block": rj.get("submit_block"),
-            "confirmed_block": rj.get("confirmed_block"),
-            "reason": rj.get("reason") or "",
+    """The served offer's vector and this validator's follower journal."""
+
+    offer, shares = current_offer()
+    vector = []
+    for hotkey, share in sorted(shares.items(), key=lambda kv: -kv[1]):
+        hk = ENRICHER.hotkey_info(hotkey)
+        vector.append({
+            "hotkey": hotkey,
+            "hotkey_links": links_for_address(hotkey),
+            "uid": hk.get("uid"),
+            "registered": hk.get("registered", False),
+            "weight_share": float(share),
+            "incentive": hk.get("incentive"),
         })
-    return {"items": items}
+    items: list[dict[str, Any]] = []
+    follower_note = ""
+    if not FOLLOW_JOURNAL:
+        follower_note = "CACHEON_DASH_FOLLOW_JOURNAL is not set; the follower journal is not shown."
+    else:
+        try:
+            con = sqlite3.connect(f"file:{FOLLOW_JOURNAL}?mode=ro", uri=True)
+            con.row_factory = sqlite3.Row
+            data = rows(con, """
+                SELECT sequence, status, updated_block, projection_digest, record_json
+                FROM followed_weight_publications ORDER BY sequence DESC LIMIT ?
+            """, (limit,))
+            con.close()
+        except sqlite3.Error as exc:
+            data = []
+            follower_note = f"follower journal unreadable: {exc}"
+        for w in data:
+            rj = json.loads(w["record_json"] or "{}")
+            items.append({
+                "sequence": w["sequence"],
+                "status": w["status"],
+                "projection_digest": w["projection_digest"],
+                "updated": with_time(int(w["updated_block"])),
+                "submit_block": rj.get("submit_block"),
+                "confirmed_block": rj.get("confirmed_block"),
+                "reason": rj.get("reason") or "",
+            })
+    return {
+        "offer": offer,
+        "vector": vector,
+        "items": items,
+        "follower_journal": FOLLOW_JOURNAL or None,
+        "follower_note": follower_note,
+    }
 
 
 @app.get("/api/hotkey/{hotkey}")
