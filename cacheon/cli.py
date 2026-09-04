@@ -23,8 +23,7 @@ import json
 import sys
 from pathlib import Path
 
-from cacheon.manifest import (all_declared_cuda_sources, all_declared_dep_patches,
-                             load_manifest, resolve_source)
+from cacheon.manifest import all_declared_cuda_sources, load_manifest, resolve_source
 from cacheon.sandbox import scan_path
 
 
@@ -2087,9 +2086,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     # e.g. "kernels/silu.py_evil.py" because it string-prefixes "kernels/silu.py".
     op_sources = {op.source for op in m.ops}
     declared_cuda = all_declared_cuda_sources(args.bundle, m)
-    declared_patches = all_declared_dep_patches(args.bundle, m)
-    extra = [v for v in scan_tree(args.bundle, declared_cuda_sources=declared_cuda,
-                                  declared_dep_patches=declared_patches).violations
+    extra = [v for v in scan_tree(args.bundle, declared_cuda_sources=declared_cuda).violations
              if v.split(":", 1)[0] not in op_sources]
     if extra:
         print("  [VIOLATIONS] vendored/extra/undeclared files (recursive scan):")
@@ -2113,10 +2110,7 @@ def _recursive_scan_ok(bundle: str, manifest=None) -> bool:
     from cacheon.sandbox import scan_tree
 
     declared_cuda = all_declared_cuda_sources(bundle, manifest) if manifest is not None else None
-    declared_patches = (all_declared_dep_patches(bundle, manifest)
-                        if manifest is not None else None)
-    tree = scan_tree(bundle, declared_cuda_sources=declared_cuda,
-                     declared_dep_patches=declared_patches)
+    tree = scan_tree(bundle, declared_cuda_sources=declared_cuda)
     if not tree.ok:
         print("  [FAIL] recursive policy scan (vendored-tree guard):")
         for v in tree.violations:

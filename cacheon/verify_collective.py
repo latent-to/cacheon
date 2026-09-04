@@ -79,10 +79,7 @@ def _collective_descriptor(
     world_size: int,
 ) -> CallDescriptor:
     dimensions: dict[str, Any] = {}
-    if slot_name in {
-        "moe.fused_experts_reduce",
-        "collective.moe_finalize_ar_rmsnorm",
-    }:
+    if slot_name == "moe.fused_experts_reduce":
         # These two contracts explicitly exclude expert parallel dispatch/combine.
         # EP is not a semantic dimension of a bare all-reduce or AR+norm call.
         dimensions["ep_size"] = 1
@@ -576,18 +573,23 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 # Trusted local math never consumes miner-prepared state. It runs
                 # only on the pre-candidate snapshot, then the validator-owned group
                 # performs the fp32 cross-rank reference reduce.
-                partial = (
-                    slot.collective_partial(reference_inputs, None)
-                    if slot.collective_partial
-                    else reference_inputs["x"].float()
-                )
-                summed = partial.detach().float().clone()
-                dist.all_reduce(summed, op=dist.ReduceOp.SUM)
-                refs = (
-                    slot.collective_finish(reference_inputs, summed, None)
-                    if slot.collective_finish is not None
-                    else [summed]
-                )
+                if slot.collective_reference is not None:
+                    refs = slot.collective_reference(
+                        reference_inputs, dist.group.WORLD, rank, world_size
+                    )
+                else:
+                    partial = (
+                        slot.collective_partial(reference_inputs, None)
+                        if slot.collective_partial
+                        else reference_inputs["x"].float()
+                    )
+                    summed = partial.detach().float().clone()
+                    dist.all_reduce(summed, op=dist.ReduceOp.SUM)
+                    refs = (
+                        slot.collective_finish(reference_inputs, summed, None)
+                        if slot.collective_finish is not None
+                        else [summed]
+                    )
                 current = _compare_outputs(
                     checked_outs, list(refs), tol=tol, correctness=slot.correctness
                 )
@@ -946,35 +948,6 @@ def verify_collective(
         zip(catalog_shapes, test_shapes)
     ):
         shape = jittered_shape
-        if (
-            eligibility is not None
-            and slot.name == "collective.moe_finalize_ar_rmsnorm"
-            and dtype_name != "bfloat16"
-        ):
-            # The live FlashInfer export ABI is a 16-bit BF16 pointer contract.
-            # CPU float32 remains useful for validator-owned reference tests when no
-            # bundle eligibility is being qualified, but a float32 miner variant must
-            # be N/A rather than PASS offline and remain unreachable live.
-            context_blocked.append(True)
-            results.append(
-                ShapeResult(
-                    shape=shape,
-                    dtype=dtype_name,
-                    passed=True,
-                    max_abs_err=0.0,
-                    max_rel_err=0.0,
-                    pass_ratio=1.0,
-                    detail=(
-                        "validator N/A (outside live deep-export dtype domain): "
-                        "requires bfloat16"
-                    ),
-                    metric="n/a",
-                    applicable=False,
-                    phase_outcome=GraphPhaseOutcome.not_applicable(),
-                    case_descriptor=_case_descriptor(shape, "single"),
-                )
-            )
-            continue
         if eligibility is not None:
             candidates = [shape] + ([] if shape == catalog_shape else [catalog_shape])
             for candidate in candidates:

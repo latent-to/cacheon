@@ -1,0 +1,14 @@
+bundle_id = "example-fused-add-rmsnorm-torch"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "norm.fused_add_rmsnorm"
+mode = "slot"
+
+[[ops]]
+slot = "norm.fused_add_rmsnorm"
+source = "kernels/fused_add_rmsnorm.py"
+entry = "fused_add_rmsnorm"
+dtypes = ["bfloat16"]
+architectures = ["sm103"]
+metadata = "metadata/fused_add_rmsnorm.json"

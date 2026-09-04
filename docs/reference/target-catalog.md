@@ -7,58 +7,51 @@ target is the reward unit.
 
 Target identity is validator-owned. A bundle may request a target ID and mode,
 but cannot define its members, overlap, displacement, features, correctness
-contract, or composition order.
+contract, or conflicts.
 
 ## What a target specification freezes
 
-A target is more than a name mapped to a slot. Its canonical specification
-binds:
+A target is more than a name mapped to a slot. Its specification binds:
 
 - singleton or atomic kind and exact member slots;
-- displaced, required, and explicitly compatible targets;
-- admitted bundle features such as variants, prepare, override, inspectable
-  CUDA source, or reviewed rebuild operations;
-- the slot contract projection: entry/prepare ABI, graph-dynamic inputs,
-  references, correctness profile, dtype tolerances, KL threshold, and binding
-  family; and
-- any validator-owned composition rule and precedence.
+- displaced, required, and explicitly conflicting targets;
+- admitted bundle features such as variants, prepare, override, CUDA source,
+  or reviewed rebuild operations;
+- the slot contract projection: ABI, graph inputs, reference, correctness,
+  tolerances, KL threshold, and binding family.
 
-The resulting target-spec digest travels with proposals, stack entries,
-qualification evidence, integration records, and releases. A target ID without
-that digest is insufficient to reopen historical authority.
+The target-spec digest travels with proposals, stack entries, qualification,
+integration, and releases; a target ID alone cannot reopen authority.
 
 ## Registered targets
 
-The `target-catalog.v1` policy contains the 11 singleton slot targets plus one
+The `target-catalog.v2` policy contains the 11 singleton slot targets plus one
 atomic target:
 
 | Target | Kind | Members / effect |
 |---|---|---|
 | `activation.silu_and_mul` | slot | Same-named slot |
-| `norm.rmsnorm` | slot | Same-named slot |
-| `attention.sdpa` | slot | Same-named slot |
-| `attention.decode` | slot | Same-named slot |
-| `attention.msa_block_score` | slot | Same-named slot |
-| `attention.msa_prefill_block_score` | slot | Same-named slot |
-| `moe.fused_experts` | slot | Experts without ownership of the trailing reduction |
-| `moe.fused_experts_reduce` | slot | Experts plus their trailing reduction |
+| `collective.all_gather_into_tensor` | slot | Same-named slot |
 | `collective.all_reduce` | slot | Same-named slot |
 | `collective.ar_residual_rmsnorm` | slot | Same-named slot |
-| `collective.moe_finalize_ar_rmsnorm` | slot | Same-named slot |
-| `collective.moe_epilogue.v1` | atomic | Owns both fused collective epilogue members below |
+| `collective.reduce_scatter_tensor` | slot | Same-named slot |
+| `linear.dense` | slot | Same-named slot |
+| `moe.fused_experts` | slot | Experts without ownership of the trailing reduction |
+| `moe.fused_experts_reduce` | slot | Experts plus their trailing reduction |
+| `moe.fused_routed_experts` | slot | Routing head plus experts plus combine (the fat MoE boundary) |
+| `norm.fused_add_rmsnorm` | slot | Residual add plus RMSNorm |
+| `norm.rmsnorm` | slot | Same-named slot |
+| `collective.dp_attention_exchange.v1` | atomic | Owns both DP-attention exchange members below |
 
 The atomic target owns and displaces both
-`collective.ar_residual_rmsnorm` and
-`collective.moe_finalize_ar_rmsnorm`. Those overlapping identities cannot be
+`collective.all_gather_into_tensor` and
+`collective.reduce_scatter_tensor`. Those overlapping identities cannot be
 active alongside the atomic target. This prevents one semantic change from
 creating duplicate permanent reward titles.
 
 Catalog registration defines identity and admission; it does not by itself
-prove that a serving seam is installed or that the deployed model reaches it.
-In the current MiniMax-M3 mainnet arena, `norm.rmsnorm` cannot execute because
-the model uses `GemmaRMSNorm`; do not pay for or submit that target. The MSA
-decode-score target has a live pinned-runtime adapter. See
-[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+prove that a serving seam is installed or that an arena opens the target. See
+[current arena availability](../miner-guide/slots.md#current-glm-53-availability).
 
 ## Resolution
 
@@ -66,7 +59,7 @@ A new contribution should declare exactly one competition target explicitly:
 
 ```toml
 [competition]
-target = "attention.msa_prefill_block_score"
+target = "moe.fused_experts"
 mode = "slot"
 ```
 
@@ -74,7 +67,7 @@ An atomic contribution declares its registered atomic identity:
 
 ```toml
 [competition]
-target = "collective.moe_epilogue.v1"
+target = "collective.dp_attention_exchange.v1"
 mode = "atomic"
 ```
 
@@ -98,34 +91,35 @@ Resolution produces the singleton target and its frozen target-spec digest.
 Adding an unrelated all-reduce row would not create a larger target; it would
 make the bundle ineligible for the requested one.
 
-**Atomic epilogue.** A bundle requests `collective.moe_epilogue.v1` and supplies
-the exact registered member set. If it becomes active, catalog displacement
-removes the two overlapping singleton epilogue titles so one semantic change
-does not earn three continuing rewards.
+**Atomic DP exchange.** A bundle requests
+`collective.dp_attention_exchange.v1` and supplies the exact registered member
+set. If it becomes active, catalog displacement removes the two overlapping
+singleton exchange titles so one semantic change does not earn three
+continuing rewards.
 
 **Legacy inference.** A bundle without `[competition]` may resolve only when
 its observed members identify an exact singleton or registered atomic target
 unambiguously. A parseable `mode = "system"` row has no current registered
 reward identity and therefore cannot resolve by nostalgia.
 
-## Composition
+## Conflict and replacement
 
-The registered rule `sglang.moe.reduce-first.v1` allows
-`moe.fused_experts_reduce` and `moe.fused_experts` to coexist. At the shared
-binding family it applies the reduce-owning target first and uses the plain
-expert target only where applicable afterward. A lower-precedence challenger
-removes a shadowing active target from its candidate arm. Manifest order never
-chooses precedence.
+Runtime priority is not an ownership rule. Targets that can consume the same
+live region are mutually exclusive: a wider target records directional
+`displaces` ownership, while incomparable overlap records symmetric
+`conflicts_with` exclusion. The MoE reduce-owning target therefore displaces
+the plain expert target; they may not coexist under a reduce-first fallback.
 
-All other active target pairs must be non-overlapping under their registered
-contracts. Catalog validation checks displacement, dependency, compatibility,
-and precedence for cycles and contradictions.
+Candidate planning applies exclusion in both directions. A wide candidate
+removes its contained incumbents. A narrow candidate also removes an active
+wide incumbent; the validator-owned base engine supplies computation outside
+the narrow target. Unrelated contributions remain byte-identical. A future
+megakernel can therefore be challenged without shadowing the challenger.
 
-Composition and displacement solve different problems. Displacement says two
-economic titles cannot remain active together. Composition says two compatible
-targets can coexist at a shared runtime binding and fixes which one gets the
-first applicable opportunity. Neither order is chosen by manifest row order,
-proposal arrival order, or speed.
+Catalog validation rejects conflicting active targets before materialization.
+The execution gate still requires exact candidate member/rank completion; it is
+the runtime backstop, not permission to discover an unreachable candidate after
+a paid run.
 
 ## Versioning and identity
 

@@ -49,9 +49,6 @@ from cacheon.eval.b300_qualification_deployment import (
     compose_b300_qualification_deployment,
 )
 from cacheon.eval.b300_screen_qualification_bridge import QUALIFICATION_EXECUTOR_ID
-from cacheon.eval.b300_registered_qualification_inputs import (
-    registered_b300_member_contract_projection,
-)
 from cacheon.eval.evidence_store import publish_evidence
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
@@ -63,9 +60,9 @@ from cacheon.stack_identity import canonical_digest
 from cacheon.target_catalog import default_target_catalog
 
 
-MSA_PREFILL = "attention.msa_prefill_block_score"
+RMSNORM_TARGET = "norm.rmsnorm"
 ALL_REDUCE = "collective.all_reduce"
-ATOMIC_EPILOGUE = "collective.moe_epilogue.v1"
+FUSED_EXPERTS = "moe.fused_experts"
 
 
 def _h(label: str) -> str:
@@ -363,7 +360,7 @@ def test_service_routes_reproduction_to_swapped_lane_owner(
     candidate = _target_candidate(
         tmp_path / "reproduction-candidate",
         index=99,
-        target_id=MSA_PREFILL,
+        target_id=RMSNORM_TARGET,
     )
     store = QualificationContinuationStore(tmp_path / "reproduction-continuation")
     adapter = owner.service.adapter_for(
@@ -411,7 +408,7 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
     candidate = _target_candidate(
         tmp_path / "screen-candidate",
         index=0,
-        target_id=MSA_PREFILL,
+        target_id=RMSNORM_TARGET,
     )
     receipt = worker.service.screen(candidate)
     assert owner.resident.created == 1
@@ -461,7 +458,7 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
     assert set(manager_calls.values()) == {1}
 
 
-def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
+def test_one_owner_routes_heterogeneous_singletons(
     owner: _OwnerHarness,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -470,7 +467,7 @@ def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
     first = _target_candidate(
         tmp_path / "msa-screen",
         index=10,
-        target_id=MSA_PREFILL,
+        target_id=RMSNORM_TARGET,
     )
     owner.service.worker.service.screen(first)
     provider = owner.service.worker._provider
@@ -495,11 +492,11 @@ def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
     )
     products: list[RemoteQualificationProduct] = []
     requests = []
-    targets = (MSA_PREFILL, ALL_REDUCE, ATOMIC_EPILOGUE)
+    targets = (RMSNORM_TARGET, ALL_REDUCE, FUSED_EXPERTS)
     for index, target_id in enumerate(targets, start=10):
         candidate = (
             first
-            if target_id == MSA_PREFILL
+            if target_id == RMSNORM_TARGET
             else _target_candidate(
                 tmp_path / f"target-{index}",
                 index=index,
@@ -529,23 +526,15 @@ def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
     assert all(len(request.body["candidates"]) == 1 for request in requests)
     assert all(len(request.members) == 1 for request in requests)
     assert products[0].authority_manifest.reservations[0].target_members == (
-        MSA_PREFILL,
+        RMSNORM_TARGET,
     )
     assert products[1].authority_manifest.reservations[0].target_members == (
         ALL_REDUCE,
     )
 
-    atomic = products[2].authority_manifest.reservations[0]
-    projection = next(
-        row
-        for row in registered_b300_member_contract_projection(
-            default_target_catalog()
-        )
-        if row.target_id == ATOMIC_EPILOGUE
+    assert products[2].authority_manifest.reservations[0].target_members == (
+        FUSED_EXPERTS,
     )
-    assert atomic.target_members == projection.members
-    assert len(projection.members) == len(projection.member_contracts) == 2
-    assert tuple(row.slot_id for row in projection.member_contracts) == atomic.target_members
 
     production_source = inspect.getsource(
         qualification_module.B300RemoteQualificationAdapter.run
@@ -690,7 +679,7 @@ def test_standalone_adapter_closes_only_its_owned_worker_once(
     candidate = _target_candidate(
         tmp_path / "standalone-candidate",
         index=40,
-        target_id=MSA_PREFILL,
+        target_id=RMSNORM_TARGET,
     )
     standalone = qualification_module.B300RemoteQualificationAdapter(
         owner.deployment,

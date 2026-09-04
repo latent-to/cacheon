@@ -7,10 +7,14 @@ import pytest
 torch = pytest.importorskip("torch")
 
 import cacheon.dispatch as dispatch  # noqa: E402
-from cacheon.dispatch import make_moe_dispatcher  # noqa: E402
+from cacheon.dispatch import (  # noqa: E402
+    make_moe_deferred_dispatcher,
+    make_moe_deferred_finalize_dispatcher,
+    make_moe_dispatcher,
+)
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
 from cacheon.sandbox import load_entry  # noqa: E402
-from cacheon.slots import get_slot  # noqa: E402
+from cacheon.slots import get_slot, slot_for_model  # noqa: E402
 
 MOE_BUNDLE = "examples/miner_moe_fused_experts_torch/kernels/moe.py"
 _BASELINE = object()  # sentinel: the dispatcher returns this iff it fell back
@@ -25,7 +29,7 @@ def _baseline_forward(self, hidden_states, topk_output):
     return _BASELINE
 
 
-class _Param:  # mimics torch.nn.Parameter's .data access the seam uses
+class _Param:
     def __init__(self, t):
         self.data = t
 
@@ -44,14 +48,12 @@ def _fake_layer(inputs, *, moe_tp_size=1, moe_ep_size=1, reduce_results=False, *
 
 
 def _standard_topk_output(inputs):
-    # Duck-typed StandardTopKOutput: carries explicit topk tensors.
     return SimpleNamespace(
         topk_ids=inputs["topk_ids"], topk_weights=inputs["topk_weights"], router_logits=None
     )
 
 
 def _bypassed_topk_output():
-    # BypassedTopKOutput has no topk_ids/topk_weights (routing not materialized).
     return SimpleNamespace(hidden_states=None, router_logits=None, topk_config=None)
 
 
@@ -98,13 +100,29 @@ def test_seam_routes_to_kernel_and_matches_reference(monkeypatch):
 
 
 def test_disabled_when_env_flag_unset(monkeypatch):
-    # Opt-in: with CACHEON_MOE_SEAM unset the seam is inert (trusts the baseline).
     monkeypatch.delenv("CACHEON_MOE_SEAM", raising=False)
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     prepare = load_entry(MOE_BUNDLE, "prepare")
     dispatched = make_moe_dispatcher(_baseline_forward, registry=_registry(entry, prepare))
     assert dispatched(_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs)) is _BASELINE
+
+
+def test_topology_authority_is_required_only_for_an_active_moe_candidate(monkeypatch):
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    def missing_topology():
+        raise RuntimeError("missing topology")
+
+    inputs = _inputs()
+    call = (_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs))
+    monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", missing_topology)
+
+    assert make_moe_dispatcher(_baseline_forward, registry=KernelRegistry())(*call) is _BASELINE
+    with pytest.raises(RuntimeError, match="missing topology"):
+        make_moe_dispatcher(
+            _baseline_forward,
+            registry=_registry(lambda *_args: None, lambda w13, w2: (w13, w2)),
+        )(*call)
 
 
 def test_prepare_runs_once_and_is_memoized(monkeypatch):
@@ -127,7 +145,6 @@ def test_prepare_runs_once_and_is_memoized(monkeypatch):
 
 
 def test_expert_parallel_falls_back(monkeypatch):
-    # EP>1 adds an all-to-all the (M,H)->(M,H) contract doesn't model -> trust baseline.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
@@ -138,13 +155,159 @@ def test_expert_parallel_falls_back(monkeypatch):
 
 
 def test_bypassed_routing_falls_back(monkeypatch):
-    # Routing not materialized (no topk tensors) -> conservative fallback (no re-routing).
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     prepare = load_entry(MOE_BUNDLE, "prepare")
     dispatched = make_moe_dispatcher(_baseline_forward, registry=_registry(entry, prepare))
     assert dispatched(_fake_layer(inputs), inputs["x"], _bypassed_topk_output()) is _BASELINE
+
+
+ROUTED_MOE_BUNDLE = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
+
+
+def _routed_inputs(seed=0):
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
+    shape = {"num_tokens": 4, "num_experts": 4, "hidden": 64, "inter": 64,
+             "topk": 2, "routed_scaling": 2.5}
+    return slot.make_inputs(**shape, dtype=torch.float32, device="cpu", seed=seed)
+
+
+def _routed_layer(inputs):
+    fields = {name: inputs[name] for name in (
+        "w13_weight_scale", "w2_weight_scale", "g1_scale_c", "g1_alphas",
+        "g2_alphas", "w13_input_scale_quant", "w2_input_scale_quant",
+    )}
+    return SimpleNamespace(
+        w13_weight=_Param(inputs["w13_weight"]),
+        w2_weight=_Param(inputs["w2_weight"]),
+        w13_blockscale_swizzled=inputs["w13_weight_scale"],
+        w2_blockscale_swizzled=inputs["w2_weight_scale"],
+        intermediate_size_per_partition=inputs["intermediate_size_per_partition"],
+        moe_tp_size=4, moe_ep_size=1, reduce_results=False,
+        num_fused_shared_experts=0, **fields,
+    )
+
+
+def _routed_topk_output(inputs, **overrides):
+    cfg = dict(
+        top_k=inputs["topk"],
+        correction_bias=inputs["correction_bias"],
+        routed_scaling_factor=inputs["routed_scaling"],
+        scoring_func="sigmoid",
+        renormalize=True,
+        apply_routed_scaling_factor_on_output=True,
+        custom_routing_function=None,
+        num_fused_shared_experts=0,
+        use_grouped_topk=False,
+        num_expert_group=None,
+        topk_group=None,
+    )
+    cfg.update(overrides)
+    return SimpleNamespace(
+        hidden_states=inputs["x"],
+        router_logits=inputs["router_logits"],
+        topk_config=SimpleNamespace(**cfg),
+    )
+
+
+def _routed_registry(entry, prepare):
+    reg = KernelRegistry()
+    reg.register(
+        KernelImpl(
+            slot="moe.fused_routed_experts",
+            bundle_id="test-routed",
+            entry=entry,
+            prepare=prepare,
+            eligibility=Eligibility(
+                dtypes=frozenset({"float32"}), quant=frozenset({"nvfp4"})
+            ),
+        )
+    )
+    reg.enable()
+    return reg
+
+
+def test_routed_moe_dispatches_on_bypassed_routing(monkeypatch):
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    inputs = _routed_inputs()
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
+    reference = slot.invoke_reference(inputs)[0]
+
+    entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    prepare = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+    dispatched = make_moe_dispatcher(
+        _baseline_forward, registry=_routed_registry(entry, prepare)
+    )
+    out = dispatched(_routed_layer(inputs), inputs["x"], _routed_topk_output(inputs))
+    assert out is not _BASELINE, "fat slot should have routed to the miner kernel"
+    assert tuple(out.shape) == (inputs["x"].shape[0], inputs["x"].shape[1])
+    assert _matched_ratio(out, reference) >= slot.correctness.min_ratio
+
+
+def test_routed_moe_out_of_contract_config_stays_stock(monkeypatch):
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    inputs = _routed_inputs()
+    entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    prepare = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+    dispatched = make_moe_dispatcher(
+        _baseline_forward, registry=_routed_registry(entry, prepare)
+    )
+    layer = _routed_layer(inputs)
+    for bad in (
+        {"scoring_func": "softmax"},
+        {"apply_routed_scaling_factor_on_output": False},
+        {"num_fused_shared_experts": 1},
+        {"use_grouped_topk": True, "num_expert_group": 4, "topk_group": 2},
+        {"renormalize": False},
+        {"correction_bias": None},
+    ):
+        out = dispatched(layer, inputs["x"], _routed_topk_output(inputs, **bad))
+        assert out is _BASELINE, f"config {bad} must stay stock"
+
+
+def test_routed_moe_deferred_path_joins_stock_shared_output(monkeypatch):
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    inputs = _routed_inputs()
+    entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    prepare = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+    deferred = make_moe_deferred_dispatcher(
+        _baseline_forward, registry=_routed_registry(entry, prepare)
+    )
+    finalize = make_moe_deferred_finalize_dispatcher(
+        lambda value, shared: (value, shared)
+    )
+
+    routed = slot_for_model(
+        "moe.fused_routed_experts", "GLM-5.3-NVFP4"
+    ).invoke_reference(inputs)[0]
+    shared = torch.randn_like(routed)
+    pending = deferred(
+        _routed_layer(inputs), inputs["x"], _routed_topk_output(inputs)
+    )
+    out = finalize(pending, shared)
+    assert _matched_ratio(out, routed + shared) == 1.0
+
+
+def test_routed_moe_prepare_receives_routing_config(monkeypatch):
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    inputs = _routed_inputs()
+    base_prepare = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+    seen = []
+
+    def spying_prepare(w13, w2, topk, routed_scaling):
+        seen.append((topk, routed_scaling))
+        return base_prepare(w13, w2, topk, routed_scaling)
+
+    entry = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    dispatched = make_moe_dispatcher(
+        _baseline_forward, registry=_routed_registry(entry, spying_prepare)
+    )
+    layer = _routed_layer(inputs)
+    topk_output = _routed_topk_output(inputs)
+    dispatched(layer, inputs["x"], topk_output)
+    dispatched(layer, inputs["x"], topk_output)
+    assert seen == [(inputs["topk"], inputs["routed_scaling"])]
 
 
 def test_missing_prepare_aborts_selected_candidate(monkeypatch):
@@ -157,8 +320,6 @@ def test_missing_prepare_aborts_selected_candidate(monkeypatch):
 
 
 def test_dense_layer_skips_quant_only_kernel(monkeypatch):
-    # The other direction: a DENSE layer must NOT run a quant-only kernel (it expects
-    # scales that aren't there) -> fall back.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
@@ -169,7 +330,6 @@ def test_dense_layer_skips_quant_only_kernel(monkeypatch):
 
 
 def test_non_2d_hidden_states_falls_back(monkeypatch):
-    # The (M,H)->(M,H) contract assumes flattened 2D tokens; anything else -> baseline.
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
@@ -204,20 +364,34 @@ def test_install_patches_forward_impl(monkeypatch):
     def forward_impl(self, hidden_states, topk_output):     # the waist — must be patched
         return ("impl", hidden_states)
 
+    def forward_deferred_finalize(self, hidden_states, topk_output):
+        return ("deferred", hidden_states)
+
+    def finalize_deferred(value, shared):
+        return (value, shared)
+
     class FakeFusedMoE:
         pass
 
     FakeFusedMoE.forward = forward
     FakeFusedMoE.forward_impl = forward_impl
+    FakeFusedMoE.forward_deferred_finalize = forward_deferred_finalize
     mod = ModuleType(sglang_moe._MODULE)
     mod.FusedMoE = FakeFusedMoE
+    finalizer_mod = ModuleType(sglang_moe._FINALIZER_MODULE)
+    setattr(finalizer_mod, sglang_moe._FINALIZER_FUNC, finalize_deferred)
     monkeypatch.setitem(sys.modules, sglang_moe._MODULE, mod)
+    monkeypatch.setitem(sys.modules, sglang_moe._FINALIZER_MODULE, finalizer_mod)
 
-    orig_forward, orig_impl = FakeFusedMoE.forward, FakeFusedMoE.forward_impl
+    orig_forward = FakeFusedMoE.forward
+    orig_impl = FakeFusedMoE.forward_impl
+    orig_deferred = FakeFusedMoE.forward_deferred_finalize
     try:
         sglang_moe.install()
         assert sglang_moe.is_installed()
         assert FakeFusedMoE.forward_impl is not orig_impl          # patched
+        assert FakeFusedMoE.forward_deferred_finalize is not orig_deferred
+        assert getattr(finalizer_mod, sglang_moe._FINALIZER_FUNC) is not finalize_deferred
         assert FakeFusedMoE.forward is orig_forward                # router untouched
         assert FakeFusedMoE._cacheon_orig_forward_impl is orig_impl  # captured for fallback/uninstall
         sglang_moe.install()  # idempotent
@@ -225,6 +399,8 @@ def test_install_patches_forward_impl(monkeypatch):
     finally:
         sglang_moe.uninstall()
     assert FakeFusedMoE.forward_impl is orig_impl
+    assert FakeFusedMoE.forward_deferred_finalize is orig_deferred
+    assert getattr(finalizer_mod, sglang_moe._FINALIZER_FUNC) is finalize_deferred
     assert not sglang_moe.is_installed()
 
 

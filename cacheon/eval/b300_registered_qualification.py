@@ -98,11 +98,9 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     ATTRIBUTION_SCHEMA,
     AUDIT_SEED_DOMAIN,
     FACTORY_SCHEMA,
-    ORDINARY_B300_TARGET_IDS,
     POLICY_SCHEMA,
     PRODUCTION_AUTHORITY_BLOCKERS,
     RESOLVER_SCHEMA,
-    REGISTERED_B300_TARGET_IDS,
     B300FocusedGraphFacts,
     B300MemberContractProjection,
     B300QualificationBlocker,
@@ -154,11 +152,16 @@ class B300RegisteredQualificationComponents:
     plan_builder: Callable[[B300QualificationCohort, bytes], CausalQualificationInput]
 
     def __post_init__(self) -> None:
+        rows = self.profiles if type(self.profiles) is tuple else ()
+        typed_profiles = all(
+            type(row) is B300RegisteredProfileAuthority for row in rows
+        )
+        target_ids = tuple(row.target_id for row in rows) if typed_profiles else ()
         if (
             type(self.profiles) is not tuple
-            or tuple(row.target_id for row in self.profiles)
-            != REGISTERED_B300_TARGET_IDS
-            or any(type(row) is not B300RegisteredProfileAuthority for row in self.profiles)
+            or not target_ids
+            or target_ids != tuple(sorted(set(target_ids)))
+            or not typed_profiles
             or not callable(self.plan_builder)
         ):
             raise B300RegisteredQualificationError(
@@ -201,7 +204,9 @@ class B300RegisteredQualificationFactory:
                 "registered qualification inputs are not exact"
             )
         self._inputs = inputs
-        self._projection = registered_b300_member_contract_projection(inputs.catalog)
+        self._projection = registered_b300_member_contract_projection(
+            inputs.catalog, inputs.policy.registered_target_ids
+        )
         self._profiles = tuple(
             self._profile_row(row) for row in self._projection
         )
@@ -418,7 +423,9 @@ class B300RegisteredQualificationFactory:
                 "registered target differs from its ordered member authority"
             )
         try:
-            facts = inputs.graph_facts_builder(candidate, prepared)
+            facts = inputs.graph_facts_builder(
+                candidate, prepared, inputs.policy.model_profile_key
+            )
         except B300QualificationGraphEvidenceHold:
             raise
         except B300QualificationGraphEvidenceStoreError:
@@ -588,8 +595,12 @@ class B300RegisteredQualificationFactory:
             raise B300RegisteredQualificationError(
                 f"candidate manifest failed swappability inspection: {exc}"
             ) from None
+        mixed_cells = bool(prepared_candidate.session_plan.batch_max_new_tokens)
         pair_native = resident_pair_native(
-            swappable=swappable,
+            # The pair-native lane swaps one fixed-shape resident read. Mixed
+            # cells use the existing two-process B/C/B-prime scheduler until
+            # that swap substrate can retain request-local geometry itself.
+            swappable=swappable and not mixed_cells,
             genesis=not inputs.incumbent_stack.entries,
             incumbent_bundle=inputs.incumbent_bundle,
             candidate_target_id=candidate.reservation.target_id,
@@ -601,7 +612,10 @@ class B300RegisteredQualificationFactory:
             candidate_resident_arm,
             inputs.resident_speed_policy
             if pair_native
-            else replace(inputs.resident_speed_policy, version=8),
+            else replace(
+                inputs.resident_speed_policy,
+                version=9 if mixed_cells else 8,
+            ),
             baseline_bundle_digest=(
                 None if injected_incumbent is None
                 else injected_incumbent.bundle_digest
@@ -714,11 +728,9 @@ __all__ = [
     "B300RegisteredQualificationPolicy",
     "B300RegisteredTargetProjection",
     "FACTORY_SCHEMA",
-    "ORDINARY_B300_TARGET_IDS",
     "POLICY_SCHEMA",
     "PRODUCTION_AUTHORITY_BLOCKERS",
     "RESOLVER_SCHEMA",
-    "REGISTERED_B300_TARGET_IDS",
     "SealedIncumbentBundle",
     "build_b300_registered_qualification_factory",
     "registered_b300_member_contract_projection",

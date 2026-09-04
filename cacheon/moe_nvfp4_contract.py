@@ -16,9 +16,41 @@ NVFP4_GATE_UP_LAYOUT = "gate_up"
 NVFP4_INTERLEAVED_LAYOUT = "up_gate_interleaved_64+sf_swizzled_128x4"
 _NVFP4_TENSORS = (
     "w13_weight", "w2_weight", "w13_blockscale_swizzled",
-    "w2_blockscale_swizzled", "g1_alphas", "g2_alphas",
+    "w2_blockscale_swizzled", "g1_scale_c", "g1_alphas", "g2_alphas",
     "w13_input_scale_quant", "w2_input_scale_quant",
 )
+
+
+def _descriptor_fields(
+    x: torch.Tensor,
+    *,
+    architecture: str | None,
+    graph_mode: str,
+    quant: str,
+    num_experts: int,
+    intermediate_dim: int,
+    top_k: int,
+    tp_size: int | None,
+    world_size: int | None,
+) -> CallDescriptor:
+    fields: dict[str, object] = {
+        "architecture": architecture,
+        "dtype": str(x.dtype).removeprefix("torch."),
+        "graph_mode": graph_mode,
+        "hidden_dim": int(x.shape[-1]),
+        "intermediate_dim": int(intermediate_dim),
+        "last_dim": int(x.shape[-1]),
+        "layout": "routed_moe",
+        "num_experts": int(num_experts),
+        "num_tokens": int(x.shape[0]),
+        "quant": quant,
+        "top_k": int(top_k),
+    }
+    if tp_size is not None:
+        fields["tp_size"] = tp_size
+    if world_size is not None:
+        fields["world_size"] = world_size
+    return CallDescriptor({key: value for key, value in fields.items() if value is not None})
 
 
 def call_descriptor(
@@ -33,24 +65,44 @@ def call_descriptor(
     tp_size: int | None = None,
     world_size: int | None = None,
 ) -> CallDescriptor:
-    fields: dict[str, object] = {
-        "architecture": architecture,
-        "dtype": str(x.dtype).removeprefix("torch."),
-        "graph_mode": graph_mode,
-        "hidden_dim": int(x.shape[-1]),
-        "intermediate_dim": int(intermediate_dim),
-        "last_dim": int(x.shape[-1]),
-        "layout": "routed_moe",
-        "num_experts": int(num_experts),
-        "num_tokens": int(x.shape[0]),
-        "quant": quant,
-        "top_k": int(topk_ids.shape[-1]),
-    }
-    if tp_size is not None:
-        fields["tp_size"] = tp_size
-    if world_size is not None:
-        fields["world_size"] = world_size
-    return CallDescriptor({key: value for key, value in fields.items() if value is not None})
+    return _descriptor_fields(
+        x,
+        architecture=architecture,
+        graph_mode=graph_mode,
+        quant=quant,
+        num_experts=num_experts,
+        intermediate_dim=intermediate_dim,
+        top_k=int(topk_ids.shape[-1]),
+        tp_size=tp_size,
+        world_size=world_size,
+    )
+
+
+def routed_call_descriptor(
+    x: torch.Tensor,
+    *,
+    top_k: int,
+    architecture: str | None,
+    graph_mode: str,
+    quant: str,
+    num_experts: int,
+    intermediate_dim: int,
+    tp_size: int | None = None,
+    world_size: int | None = None,
+) -> CallDescriptor:
+    """The fat routed-MoE slot's descriptor: same vocabulary, but top_k comes from
+    the engine's TopKConfig — no materialized topk_ids exist at this seam."""
+    return _descriptor_fields(
+        x,
+        architecture=architecture,
+        graph_mode=graph_mode,
+        quant=quant,
+        num_experts=num_experts,
+        intermediate_dim=intermediate_dim,
+        top_k=top_k,
+        tp_size=tp_size,
+        world_size=world_size,
+    )
 
 
 def _value(source: object, name: str) -> Any:
@@ -90,17 +142,25 @@ def _layer_view(
     experts = int(w13.shape[0])
     g1 = _value(source, "g1_alphas")
     g2 = _value(source, "g2_alphas")
+    g1_scale_c = _value(source, "g1_scale_c")
     a1 = _value(source, "w13_input_scale_quant")
     a2 = _value(source, "w2_input_scale_quant")
     intermediate = int(_value(source, "intermediate_size_per_partition"))
-    top_k = int(source["topk_ids"].shape[-1]) if isinstance(source, Mapping) else 0
+    top_k = 0
+    if isinstance(source, Mapping):
+        topk_ids = source.get("topk_ids")
+        top_k = (
+            int(topk_ids.shape[-1])
+            if topk_ids is not None
+            else int(source["topk"])
+        )
     tp_size = int(_context(source, "tp_size", 1))
     fused_shared = int(_context(source, "num_fused_shared_experts", 0))
     view = SimpleNamespace(
         w13_weight=w13, w2_weight=w2,
         w13_weight_scale=w13_sf, w2_weight_scale=w2_sf,
         w13_blockscale_swizzled=w13_sf, w2_blockscale_swizzled=w2_sf,
-        g1_alphas=g1, g2_alphas=g2,
+        g1_scale_c=g1_scale_c, g1_alphas=g1, g2_alphas=g2,
         w13_input_scale_quant=a1, w2_input_scale_quant=a2,
         fc1_input_dequant=a1.float().reciprocal(), fc1_dequant=g1,
         fc2_quant=a2, fc2_dequant=g2,
@@ -117,7 +177,10 @@ def _layer_view(
             is_gated=True, num_experts=experts, top_k=top_k,
             hidden_size=int(w13.shape[-1]) * 2,
             intermediate_size_per_partition=intermediate,
-            activation="swigluoai",
+            # A MODEL fact, carried by the arena profile through the verification
+            # inputs (__moe_activation__). The swigluoai default preserves the
+            # live-layer path on M3, where sglang's own runner config is authoritative.
+            activation=str(_context(source, "activation", "swigluoai")),
             num_fused_shared_experts=fused_shared,
         ),
     )
@@ -177,6 +240,7 @@ def verification_inputs(dense: Mapping[str, object]) -> dict[str, object]:
         "w13_weight_scale": codec.swizzle_blockscale(w13_sf),
         "w2_weight_scale": codec.swizzle_blockscale(w2_sf),
         "g1_alphas": ones,
+        "g1_scale_c": ones.clone(),
         "g2_alphas": ones.clone(),
         "w13_input_scale_quant": ones.clone(),
         "w2_input_scale_quant": ones.clone(),

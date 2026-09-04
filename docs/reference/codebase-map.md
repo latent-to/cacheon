@@ -37,12 +37,14 @@ sealed native publication is bound to the reviewed integrated source.
 |---|---|
 | Bundle parsing and path rules | [`manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/manifest.py) |
 | Slot ABI and trusted references | [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) |
-| Target identity and composition | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
+| Arena-specific slot shapes and correctness floors | [`model_profiles.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_profiles.py) |
+| Target identity and exclusion | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
 | Typed tensor/output boundary | [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py) |
 | Static policy | [`sandbox.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py) |
 | Tracing-JIT admission | [`dsl_jit_policy.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dsl_jit_policy.py) |
 | Local and distributed verification | [`verify.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify.py), [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py) |
 | SGLang dispatch | [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py), [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) |
+| Sealed B300 arena-definition parsing and projection | [`b300_arena_definition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_arena_definition.py) |
 | Scheduler-role candidate load | [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py), [`sglang_scheduler_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_scheduler_gate.py) |
 
 ## Sealed direct artifacts
@@ -132,7 +134,7 @@ sealed native publication is bound to the reviewed integrated source.
 Read in this order:
 
 1. `manifest.py` for exact TOML shape and contained-path rules;
-2. `sandbox.py` and `dep_policy.py` for observed source/build features;
+2. `sandbox.py` for observed source/build features;
 3. `target_catalog.py` for target resolution and admitted features;
 4. `artifact_provider.py` and `artifact_abi.py` when the row declares direct exports;
 5. `slots.py` and `tensor_spec.py` for callable/output semantics; and

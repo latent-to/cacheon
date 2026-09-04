@@ -75,8 +75,7 @@ silently makes the candidate N/A cannot create a crown.
 
 ## Local graph diagnostics
 
-On CUDA, `verify` graph-tests every slot whose live seam is captured, which is
-every slot except MSA prefill:
+On CUDA, `verify` graph-tests every slot whose registered live seam is captured:
 
 ```bash
 python -m cacheon.cli verify my_bundle \
@@ -148,11 +147,10 @@ capability domains. Do not branch on a host read of a runtime tensor. The graph
 requirement covers every selected variant and all of its applicable descriptor
 profiles.
 
-The MSA prefill call descriptor includes `graph_mode = "eager"` because its live
-seam genuinely runs eager. That is the validator's determination about one seam,
-not an exemption a bundle can claim for another slot. Crownability is decided by
-the published target/graph requirement, and the graph veto requires complete
-positive evidence for selected members.
+An eager-only seam, when one is registered by an arena, is a validator-owned
+descriptor fact rather than an exemption a bundle can claim. Crownability is
+decided by the published target/graph requirement, and the graph veto requires
+complete positive evidence for selected members.
 
 ## Do not benchmark a different regime
 

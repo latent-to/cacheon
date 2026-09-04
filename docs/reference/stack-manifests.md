@@ -45,7 +45,7 @@ Conceptual shape:
   "catalog_digest": "<sha256>",
   "catalog_snapshot": {},
   "entries": {
-    "attention.sdpa": { "type": "proposal", "...": "..." }
+    "moe.fused_experts": { "type": "proposal", "...": "..." }
   }
 }
 ```
@@ -69,7 +69,7 @@ evidence cannot be reinterpreted through a newer catalog.
 
 ### A marginal transition
 
-Suppose the incumbent already contains an `attention.sdpa` contribution and a
+Suppose the incumbent already contains a `moe.fused_experts` contribution and a
 new proposal wins `norm.rmsnorm`. C is not a two-file bundle: the validator
 materializes a complete engine equal to the incumbent everywhere except the
 resolved RMSNorm target. After two matching PASS attempts, settlement can
@@ -98,7 +98,7 @@ That makes it chain-independent and suitable for deterministic materialization:
   "catalog_digest": "<sha256>",
   "catalog_snapshot": {},
   "entries": {
-    "attention.sdpa": { "type": "integrated", "...": "..." }
+    "moe.fused_experts": { "type": "integrated", "...": "..." }
   }
 }
 ```
@@ -159,7 +159,7 @@ selected crowned payload under the current contract.
   cannot reinterpret an older direct-artifact contribution.
 - Entry keys must equal each reference's target ID.
 - Target-spec digests must match the bound catalog context.
-- Active-target composition and displacement are revalidated.
+- Active-target displacement and conflicts are revalidated.
 - Serialized ordering is canonical before a digest or signature is computed.
 
 ## Common rejection cases
@@ -171,7 +171,7 @@ selected crowned payload under the current contract.
 | Artifact-provider registry or registry digest differs | Native admission/build/load policy belongs to another catalog authority |
 | Entry key differs from `ref.target_id` | The mapping tries to relabel a contribution |
 | Target-spec digest differs | Qualification used another semantic contract |
-| Overlapping active targets | Catalog displacement/composition was not applied canonically |
+| Overlapping active targets | Catalog displacement/conflict exclusion was not applied canonically |
 | Proposal reference in a release manifest | Hostile evaluation content crossed the serving boundary |
 | Integration record missing or mismatched | Reviewed-source authority is incomplete |
 | Runtime/base/arena context mismatch | The stack is being reopened under a different environment |

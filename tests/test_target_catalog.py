@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import os
 import re
 import subprocess
@@ -14,24 +13,18 @@ import pytest
 from cacheon.manifest import (
     ABI_VERSION,
     CompetitionEntry,
-    DepPatchEntry,
     Manifest,
     ManifestError,
     load_manifest,
 )
 from cacheon.target_catalog import (
-    CompositionRule,
     CorrectnessContractRef,
     FEATURE_CUDA_SOURCES,
-    FEATURE_DEP_PATCH_FLASHINFER,
     FEATURE_ENTRY,
     FEATURE_PREPARE,
-    FEATURE_REBUILD_APPLY_DEP_PATCH,
     FEATURE_REBUILD_BUILD_CUDA_EXT,
     FEATURE_SETUP,
     FEATURE_VARIANTS,
-    MOE_EPILOGUE_ATOMIC_TARGET,
-    MOE_EPILOGUE_MEMBERS,
     SINGLETON_TARGET_IDS,
     ResolvedTarget,
     TargetCatalog,
@@ -46,21 +39,9 @@ from cacheon.target_catalog import (
     resolve_intake_target,
     resolve_target,
 )
-from cacheon.stack_identity import canonical_digest
 
 
 SILU = "activation.silu_and_mul"
-
-
-def _diff(path: str = "flashinfer/data/csrc/fused_moe/x.cu") -> str:
-    return "".join(
-        difflib.unified_diff(
-            ["old\n"],
-            ["new\n"],
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
-        )
-    )
 
 
 def _bundle(
@@ -68,7 +49,6 @@ def _bundle(
     *,
     rows: tuple[dict[str, object], ...] = ({"slot": SILU},),
     competition: str = "",
-    dep_target: str | None = None,
 ) -> Path:
     root = tmp_path / "bundle"
     root.mkdir(parents=True)
@@ -106,18 +86,6 @@ def _bundle(
         if "extra_key" in row:
             lines.append(f'{row["extra_key"]} = "future"')
         lines.append("")
-    if dep_target is not None:
-        patch = root / "patches/p.patch"
-        patch.parent.mkdir(parents=True, exist_ok=True)
-        patch.write_text(_diff())
-        lines.extend(
-            [
-                "[[dep_patches]]",
-                f'target = "{dep_target}"',
-                'path = "patches/p.patch"',
-                "",
-            ]
-        )
     (root / "manifest.toml").write_text("\n".join(lines))
     return root
 
@@ -130,7 +98,7 @@ def _slot_spec(
     target_id: str,
     *,
     displaces: frozenset[str] = frozenset(),
-    compatible_with: frozenset[str] = frozenset(),
+    conflicts_with: frozenset[str] = frozenset(),
     requires: frozenset[str] = frozenset(),
     features: frozenset[str] = frozenset({FEATURE_ENTRY}),
 ) -> TargetSpec:
@@ -139,7 +107,7 @@ def _slot_spec(
         kind=TargetKind.SLOT,
         members=(target_id,),
         displaces=displaces,
-        compatible_with=compatible_with,
+        conflicts_with=conflicts_with,
         requires=requires,
         allowed_features=features,
         contract_ref=TargetContractRef(
@@ -173,21 +141,6 @@ def _atomic_spec(
         displaces=frozenset(members) if displaces is None else displaces,
         allowed_features=frozenset({FEATURE_ENTRY}),
         atomic_semantics_id=f"{target_id}.semantics.v1",
-    )
-
-
-def _composition(*target_ids: str, precedence: tuple[str, ...] | None = None):
-    targets = tuple(sorted(target_ids))
-    return CompositionRule(
-        schema_version=1,
-        rule_id="rule." + ".".join(target.removeprefix("slot.") for target in targets),
-        target_ids=targets,
-        precedence=precedence or targets,
-        mode="first_applicable",
-        binding_family_id="test.binding.v1",
-        binding_contract_digest=canonical_digest(
-            "test.binding", {"targets": list(targets)}
-        ),
     )
 
 
@@ -247,20 +200,33 @@ def test_legacy_system_request_parses_but_never_registers_a_title(tmp_path):
 
 
 def test_manifest_field_append_preserves_historical_positional_arguments():
-    patch = DepPatchEntry(target="flashinfer", path="p.patch")
-    manifest = Manifest("bundle", ABI_VERSION, (), (patch,), {"old": "raw"})
+    manifest = Manifest("bundle", ABI_VERSION, (), {"old": "raw"})
 
-    assert manifest.dep_patches == (patch,)
     assert manifest.raw == {"old": "raw"}
     assert manifest.competition is None
 
 
-def test_all_tracked_examples_remain_implicit_and_parseable():
+def test_tracked_examples_preserve_legacy_or_name_modern_target_identity():
     examples = Path(__file__).resolve().parents[1] / "examples"
     manifests = sorted(examples.glob("*/manifest.toml"))
     assert manifests
+    explicit = {
+        "miner_allreduce_torch": CompetitionEntry(
+            "collective.all_reduce", "slot"
+        ),
+        "miner_dense_torch": CompetitionEntry("linear.dense", "slot"),
+        "miner_dp_attention_exchange_torch": CompetitionEntry(
+            "collective.dp_attention_exchange.v1", "atomic"
+        ),
+        "miner_fused_add_rmsnorm_torch": CompetitionEntry(
+            "norm.fused_add_rmsnorm", "slot"
+        ),
+        "miner_moe_fused_routed_torch": CompetitionEntry(
+            "moe.fused_routed_experts", "slot"
+        ),
+    }
     for path in manifests:
-        assert load_manifest(path.parent).competition is None
+        assert load_manifest(path.parent).competition == explicit.get(path.parent.name)
 
 
 # -- canonical resolution ---------------------------------------------------
@@ -309,40 +275,6 @@ def test_multiple_variants_are_one_semantic_member(tmp_path):
     )
 
 
-def test_atomic_resolution_uses_catalog_order_not_manifest_or_variant_order(tmp_path):
-    first, second = MOE_EPILOGUE_MEMBERS
-    manifest = load_manifest(
-        _bundle(
-            tmp_path,
-            competition=_competition(MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-            rows=(
-                {"slot": second},
-                {"slot": first, "variant": "large"},
-                {"slot": first, "variant": "small"},
-            ),
-        )
-    )
-
-    resolved = resolve_target(manifest)
-    assert resolved.target_id == MOE_EPILOGUE_ATOMIC_TARGET
-    assert resolved.members == MOE_EPILOGUE_MEMBERS
-    assert resolved.observed_features >= {FEATURE_ENTRY, FEATURE_VARIANTS}
-
-
-def test_legacy_exact_atomic_pair_resolves_implicitly(tmp_path):
-    manifest = load_manifest(
-        _bundle(
-            tmp_path,
-            rows=tuple({"slot": member} for member in reversed(MOE_EPILOGUE_MEMBERS)),
-        )
-    )
-
-    resolved = resolve_target(manifest)
-    assert resolved.target_id == MOE_EPILOGUE_ATOMIC_TARGET
-    assert resolved.members == MOE_EPILOGUE_MEMBERS
-    assert resolved.implicit
-
-
 @pytest.mark.parametrize(
     "competition, rows, message",
     [
@@ -351,17 +283,6 @@ def test_legacy_exact_atomic_pair_resolves_implicitly(tmp_path):
             _competition(SILU, "atomic"),
             ({"slot": SILU},),
             "catalog kind.*not requested",
-        ),
-        (
-            _competition(MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-            ({"slot": MOE_EPILOGUE_MEMBERS[0]},),
-            "requires exact members",
-        ),
-        (
-            _competition(MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-            tuple({"slot": member} for member in MOE_EPILOGUE_MEMBERS)
-            + ({"slot": SILU},),
-            "requires exact members",
         ),
         (
             _competition(SILU, "slot"),
@@ -432,7 +353,7 @@ def test_default_catalog_has_exactly_one_singleton_per_live_slot():
 
     catalog = default_target_catalog()
     assert set(SINGLETON_TARGET_IDS) == set(SLOTS)
-    for target_id in (*SINGLETON_TARGET_IDS, MOE_EPILOGUE_ATOMIC_TARGET):
+    for target_id in SINGLETON_TARGET_IDS:
         assert catalog.require(target_id).target_id == target_id
 
 
@@ -527,7 +448,7 @@ def test_catalog_snapshot_and_digests_are_canonical_complete_and_immutable():
         "kind",
         "members",
         "displaces",
-        "compatible_with",
+        "conflicts_with",
         "requires",
         "allowed_features",
         "contract_ref",
@@ -586,7 +507,7 @@ def test_requires_means_an_active_contribution_and_is_acyclic():
                 _slot_spec("slot.b", requires=frozenset({"slot.a"})),
             ]
         )
-    with pytest.raises(TargetCatalogError, match="requires targets it displaces"):
+    with pytest.raises(TargetCatalogError, match="requires mutually exclusive"):
         TargetCatalog(
             [
                 _slot_spec(
@@ -626,44 +547,6 @@ def test_requires_means_an_active_contribution_and_is_acyclic():
 def test_transitive_dependency_displacement_contradictions_reject(specs, message):
     with pytest.raises(TargetCatalogError, match=message):
         TargetCatalog(specs)
-
-
-def test_compatible_targets_require_explicit_rule_and_use_its_precedence():
-    a = _slot_spec("slot.a", compatible_with=frozenset({"slot.b"}))
-    b = _slot_spec("slot.b", compatible_with=frozenset({"slot.a"}))
-    with pytest.raises(TargetCatalogError, match="require a CompositionRule"):
-        TargetCatalog([a, b])
-
-    rule = _composition("slot.a", "slot.b", precedence=("slot.b", "slot.a"))
-    catalog = TargetCatalog([a, b], composition_rules=(rule,))
-    assert catalog.composition_rule("slot.a", "slot.b") == rule
-    assert catalog.ordered_active_targets(("slot.a", "slot.b")) == (
-        "slot.b",
-        "slot.a",
-    )
-
-
-def test_composition_rules_are_pairwise_until_multiway_semantics_exist():
-    with pytest.raises(TargetCatalogError, match="exactly two"):
-        CompositionRule(
-            schema_version=1,
-            rule_id="test.three-way.v1",
-            target_ids=("slot.a", "slot.b", "slot.c"),
-            precedence=("slot.a", "slot.b", "slot.c"),
-            mode="first_applicable",
-            binding_family_id="test.binding.v1",
-            binding_contract_digest=canonical_digest(
-                "test.binding", {"targets": ["slot.a", "slot.b", "slot.c"]}
-            ),
-        )
-
-
-def test_default_moe_composition_is_reduce_first_and_digest_bound():
-    catalog = default_target_catalog()
-    rule = catalog.composition_rule("moe.fused_experts", "moe.fused_experts_reduce")
-    assert rule.mode == "first_applicable"
-    assert rule.precedence == ("moe.fused_experts_reduce", "moe.fused_experts")
-    assert len(rule.binding_contract_digest) == 64
 
 
 @pytest.mark.parametrize(
@@ -743,66 +626,37 @@ def test_partial_atomic_overlap_rejects_without_member_ownership_semantics():
     with pytest.raises(TargetCatalogError, match="share members.*explicit"):
         TargetCatalog([*singletons, atomic_ab, atomic_bc])
 
-    atomic_ab = replace(
-        atomic_ab, compatible_with=frozenset({"atomic.bc"})
-    )
-    atomic_bc = replace(
-        atomic_bc, compatible_with=frozenset({"atomic.ab"})
-    )
-    with pytest.raises(TargetCatalogError, match="do not define member ownership"):
-        TargetCatalog(
-            [*singletons, atomic_ab, atomic_bc],
-            composition_rules=(_composition("atomic.ab", "atomic.bc"),),
-        )
+    atomic_ab = replace(atomic_ab, conflicts_with=frozenset({"atomic.bc"}))
+    atomic_bc = replace(atomic_bc, conflicts_with=frozenset({"atomic.ab"}))
+    catalog = TargetCatalog([*singletons, atomic_ab, atomic_bc])
+    with pytest.raises(TargetResolutionError, match="conflicts"):
+        catalog.validate_active_targets(("atomic.ab", "atomic.bc"))
 
 
-def test_catalog_rejects_global_composition_precedence_cycles():
-    specs = [
-        _slot_spec(
-            f"slot.{name}",
-            compatible_with=frozenset(
-                f"slot.{other}" for other in "abc" if other != name
-            ),
-        )
-        for name in "abc"
-    ]
-    rules = (
-        _composition("slot.a", "slot.b", precedence=("slot.a", "slot.b")),
-        _composition("slot.b", "slot.c", precedence=("slot.b", "slot.c")),
-        _composition("slot.a", "slot.c", precedence=("slot.c", "slot.a")),
-    )
-    with pytest.raises(TargetCatalogError, match="precedence contains a cycle"):
-        TargetCatalog(specs, composition_rules=rules)
-
-
-def test_schema_versions_are_type_exact_and_rule_sequences_are_not_strings():
+def test_schema_versions_are_type_exact():
     contract = default_target_catalog().require(SILU).contract_ref
     assert contract is not None
     with pytest.raises(TargetCatalogError, match="schema_version"):
         replace(contract, schema_version=True)
-    with pytest.raises(TargetCatalogError, match="schema_version"):
-        replace(_composition("slot.a", "slot.b"), schema_version=True)
-    with pytest.raises(TargetCatalogError, match="must be sequences"):
-        replace(_composition("slot.a", "slot.b"), target_ids="ab")
 
 
-def test_compatible_overlap_must_be_symmetric_and_not_displaced():
+def test_conflict_must_be_symmetric_and_not_displaced():
     with pytest.raises(TargetCatalogError, match="must be symmetric"):
         TargetCatalog(
             [
-                _slot_spec("slot.a", compatible_with=frozenset({"slot.b"})),
+                _slot_spec("slot.a", conflicts_with=frozenset({"slot.b"})),
                 _slot_spec("slot.b"),
             ]
         )
-    with pytest.raises(TargetCatalogError, match="both displaces and is compatible"):
+    with pytest.raises(TargetCatalogError, match="both displaces and conflicts"):
         TargetCatalog(
             [
                 _slot_spec(
                     "slot.a",
                     displaces=frozenset({"slot.b"}),
-                    compatible_with=frozenset({"slot.b"}),
+                    conflicts_with=frozenset({"slot.b"}),
                 ),
-                _slot_spec("slot.b", compatible_with=frozenset({"slot.a"})),
+                _slot_spec("slot.b", conflicts_with=frozenset({"slot.a"})),
             ]
         )
 
@@ -828,26 +682,23 @@ def test_catalog_registration_order_does_not_change_resolution():
     assert first.require("slot.b") == second.require("slot.b") == b
 
 
-def test_default_displacement_and_compatible_overlap_are_explicit():
+def test_default_displacement_and_conflicts_are_explicit():
     catalog = default_target_catalog()
-    atomic = catalog.require(MOE_EPILOGUE_ATOMIC_TARGET)
 
-    assert atomic.displaces == frozenset(MOE_EPILOGUE_MEMBERS)
-    assert catalog.require("moe.fused_experts").compatible_with == frozenset(
+    assert catalog.require("moe.fused_experts_reduce").displaces == frozenset(
+        {"moe.fused_experts"}
+    )
+    assert catalog.require("moe.fused_routed_experts").conflicts_with == frozenset(
         {"moe.fused_experts_reduce"}
     )
+    with pytest.raises(TargetResolutionError, match="displaces"):
+        catalog.validate_active_targets(
+            ("moe.fused_experts", "moe.fused_experts_reduce")
+        )
     assert all(
         not any(feature.startswith("aot:") for feature in catalog.require(slot).allowed_features)
         for slot in ("moe.fused_experts", "moe.fused_experts_reduce")
     )
-    assert catalog.validate_active_targets(
-        ["moe.fused_experts", "moe.fused_experts_reduce"]
-    ) == ("moe.fused_experts", "moe.fused_experts_reduce")
-    with pytest.raises(TargetResolutionError, match="displaces"):
-        catalog.validate_active_targets(
-            [MOE_EPILOGUE_MEMBERS[0], MOE_EPILOGUE_ATOMIC_TARGET]
-        )
-
     with pytest.raises(TargetResolutionError, match="must be strings"):
         catalog.validate_active_targets((["unhashable"],))  # type: ignore[list-item]
 
@@ -927,102 +778,11 @@ def test_shallow_native_bundle_admits_exact_reviewed_builder(tmp_path):
     }
 
 
-def test_deep_atomic_admits_only_exact_flashinfer_patch_lane(tmp_path):
-    manifest = load_manifest(
-        _bundle(
-            tmp_path,
-            rows=tuple(
-                {"slot": member, "cuda_sources": True}
-                for member in MOE_EPILOGUE_MEMBERS
-            ),
-            competition=_competition(MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-            dep_target="flashinfer",
-        )
-    )
-
-    resolved = resolve_intake_target(
-        manifest,
-        observed_features=(
-            FEATURE_REBUILD_APPLY_DEP_PATCH,
-            FEATURE_REBUILD_BUILD_CUDA_EXT,
-        ),
-    )
-    assert resolved.registered
-    assert resolved.observed_features >= {
-        FEATURE_DEP_PATCH_FLASHINFER,
-        FEATURE_REBUILD_APPLY_DEP_PATCH,
-    }
-
-
-def test_deep_singleton_admits_its_exact_flashinfer_capability(tmp_path):
-    target = "collective.moe_finalize_ar_rmsnorm"
-    manifest = load_manifest(
-        _bundle(
-            tmp_path,
-            rows=({"slot": target, "cuda_sources": True},),
-            competition=_competition(target, "slot"),
-            dep_target="flashinfer",
-        )
-    )
-    resolved = resolve_intake_target(
-        manifest,
-        observed_features=(
-            FEATURE_REBUILD_APPLY_DEP_PATCH,
-            FEATURE_REBUILD_BUILD_CUDA_EXT,
-        ),
-    )
-    assert resolved.target_id == target and resolved.features_complete
-
-
-def test_unrelated_dependency_patch_is_not_registered_for_deep_target(tmp_path):
-    manifest = load_manifest(
-        _bundle(
-            tmp_path,
-            rows=tuple({"slot": member} for member in MOE_EPILOGUE_MEMBERS),
-            competition=_competition(MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-            dep_target="leftpad",
-        )
-    )
-    with pytest.raises(TargetResolutionError, match="dep_patch:leftpad"):
-        resolve_intake_target(
-            manifest, observed_features=(FEATURE_REBUILD_APPLY_DEP_PATCH,)
-        )
-
-
 def test_exact_observed_rebuild_capability_is_target_policy_not_manifest_data(tmp_path):
     manifest = load_manifest(_bundle(tmp_path))
     assert FEATURE_REBUILD_BUILD_CUDA_EXT not in manifest_declared_features(manifest)
-    with pytest.raises(TargetResolutionError, match="rebuild:apply_dep_patch"):
-        resolve_intake_target(
-            manifest, observed_features=(FEATURE_REBUILD_APPLY_DEP_PATCH,)
-        )
     with pytest.raises(TargetResolutionError, match="rebuild:unknown"):
         resolve_intake_target(manifest, observed_features=("rebuild:unknown",))
-
-
-def test_complete_feature_evidence_binds_patch_declaration_to_applier(tmp_path):
-    manifest = load_manifest(
-        _bundle(
-            tmp_path,
-            rows=tuple({"slot": member} for member in MOE_EPILOGUE_MEMBERS),
-            competition=_competition(MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-            dep_target="flashinfer",
-        )
-    )
-    with pytest.raises(TargetResolutionError, match="patch without.*apply_dep_patch"):
-        resolve_intake_target(manifest, observed_features=())
-
-    no_patch = load_manifest(
-        _bundle(
-            tmp_path / "no_patch",
-            rows=tuple({"slot": member} for member in MOE_EPILOGUE_MEMBERS),
-            competition=_competition(MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-        )
-    )
-    with pytest.raises(TargetResolutionError, match="without a declared"):
-        resolve_intake_target(
-            no_patch, observed_features=(FEATURE_REBUILD_APPLY_DEP_PATCH,)
-        )
 
 
 def test_complete_feature_evidence_pairs_cuda_units_with_builder(tmp_path):

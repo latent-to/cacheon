@@ -9,6 +9,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 import cacheon.dispatch as dispatch  # noqa: E402
+import cacheon.dispatch_collective as exchange  # noqa: E402
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
 
 
@@ -205,11 +206,81 @@ def test_allreduce_dispatcher_receipts_and_topology_skip(events, monkeypatch):
     assert completed == ["collective.all_reduce"]
 
 
+def test_compiled_collective_runtime_bodies_route_candidates(events, monkeypatch):
+    monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
+    monkeypatch.setattr(exchange, "_allreduce_group_role", lambda *_args: "tp")
+    group = SimpleNamespace(size=lambda: 2)
+    coordinator = SimpleNamespace(device_group=group, world_size=2)
+
+    def entry(x, out, _group):
+        out.copy_(x * 2)
+
+    registry = _registry("collective.all_reduce", entry)
+    inplace = exchange.make_allreduce_inplace_dispatcher(
+        lambda *_args: pytest.fail("compiled stock in-place body ran"),
+        registry=registry,
+    )
+    outplace = exchange.make_allreduce_outplace_dispatcher(
+        lambda *_args: pytest.fail("compiled stock out-place body ran"),
+        registry=registry,
+    )
+    x = torch.randn(2, 4)
+    expected = x * 2
+    assert inplace(coordinator, x) is None
+    assert torch.equal(x, expected)
+    assert torch.equal(outplace(coordinator, x / 2, "auto"), expected)
+    assert events == ["collective.all_reduce", "collective.all_reduce"]
+
+
+@pytest.mark.parametrize(
+    "slot,input_rows,output_rows,factory",
+    (
+        (
+            "collective.all_gather_into_tensor",
+            2,
+            4,
+            exchange.make_all_gather_dispatcher,
+        ),
+        (
+            "collective.reduce_scatter_tensor",
+            4,
+            2,
+            exchange.make_reduce_scatter_dispatcher,
+        ),
+    ),
+)
+def test_compiled_exchange_runtime_bodies_route_candidates(
+    events, monkeypatch, slot, input_rows, output_rows, factory
+):
+    monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
+    monkeypatch.setattr(exchange, "_allreduce_group_role", lambda *_args: "attn_tp")
+    group = SimpleNamespace(size=lambda: 2)
+    coordinator = SimpleNamespace(device_group=group, world_size=2)
+
+    def entry(x, out, _group):
+        if output_rows > input_rows:
+            out.copy_(x.repeat(output_rows // input_rows, 1))
+        else:
+            out.copy_(x[:output_rows])
+
+    wrapped = factory(
+        lambda *_args: pytest.fail("compiled stock exchange body ran"),
+        registry=_registry(slot, entry),
+    )
+    output = torch.empty(output_rows, 4)
+    assert wrapped(coordinator, output, torch.randn(input_rows, 4)) is None
+    assert events == [slot]
+
+    broken = factory(lambda *_args: "stock", registry=_registry(slot, _boom))
+    with pytest.raises(RuntimeError, match="candidate path failed"):
+        broken(coordinator, torch.empty(output_rows, 4), torch.randn(input_rows, 4))
+
+
 def _fusion_baseline(x, residual, *_args, **_kwargs):
     return "stock", x + residual
 
 
-def test_shallow_and_deep_fusion_receipts(events, monkeypatch):
+def test_shallow_fusion_receipts(events, monkeypatch):
     completed = events
     monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     group = SimpleNamespace(size=lambda: 2)
@@ -235,138 +306,4 @@ def test_shallow_and_deep_fusion_receipts(events, monkeypatch):
     with pytest.raises(RuntimeError, match="candidate path failed"):
         shallow_bad(x, residual, weight)
 
-    deep_x = torch.randn(2, 4, dtype=torch.bfloat16)
-    deep_residual = torch.randn(2, 4, dtype=torch.bfloat16)
-    deep_weight = torch.ones(4, dtype=torch.bfloat16)
-    monkeypatch.setattr(dispatch._moe_export, "has_pends", lambda: True)
-    monkeypatch.setattr(
-        dispatch._moe_export,
-        "export_views",
-        lambda _exp, _device: (
-            torch.randn(2, 4, dtype=torch.bfloat16),
-            torch.zeros(2, dtype=torch.int32),
-            torch.ones(2, 1, dtype=torch.float32),
-        ),
-    )
-    monkeypatch.setattr(dispatch._moe_export, "trusted_finalize", lambda _exp, inp: inp)
-    monkeypatch.setattr(dispatch._moe_export, "orphaned", lambda _exp: None)
-
-    def deep_entry(
-        _gemm, _row_map, _scales, residual, _weight, _eps,
-        out_norm, out_residual, _group,
-    ):
-        out_norm.copy_(residual)
-        out_residual.copy_(residual)
-
-    deep_registry = _registry(
-        "collective.moe_finalize_ar_rmsnorm", deep_entry, dtype="bfloat16"
-    )
-    deep = dispatch.make_arfusion_dispatcher(
-        _fusion_baseline, registry=deep_registry
-    )
-    deep_impl = deep_registry.variants("collective.moe_finalize_ar_rmsnorm")[0]
-    deep_descriptor = dispatch._collective_call_descriptor(
-        deep_x, group_size=2, exp_tokens=2, top_k=1, ep_size=1
-    )
-    exp = {
-        "T": 2,
-        "K": 1,
-        "hid": 4,
-        "selection": dispatch._moe_export.DeepSelection(
-            deep_impl,
-            deep_descriptor,
-            dispatch._moe_export.group_topology(group),
-        ),
-    }
-    monkeypatch.setattr(dispatch._moe_export, "consume", lambda _x: exp)
-    assert torch.is_tensor(deep(deep_x, deep_residual, deep_weight)[0])
-
-    deep_bad_registry = _registry(
-        "collective.moe_finalize_ar_rmsnorm", _boom, dtype="bfloat16"
-    )
-    deep_bad = dispatch.make_arfusion_dispatcher(
-        _fusion_baseline,
-        registry=deep_bad_registry,
-    )
-    bad_impl = deep_bad_registry.variants("collective.moe_finalize_ar_rmsnorm")[0]
-    bad_exp = {
-        **exp,
-        "selection": dispatch._moe_export.DeepSelection(
-            bad_impl,
-            deep_descriptor,
-            dispatch._moe_export.group_topology(group),
-        ),
-    }
-    monkeypatch.setattr(dispatch._moe_export, "consume", lambda _x: bad_exp)
-    with pytest.raises(RuntimeError, match="candidate path failed"):
-        deep_bad(deep_x, deep_residual, deep_weight)
-
-    assert completed == [
-        "collective.ar_residual_rmsnorm",
-        "collective.moe_finalize_ar_rmsnorm",
-    ]
-
-
-def test_deep_trusted_recovery_is_not_candidate_fallback(events, monkeypatch):
-    completed = events
-    monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: None)
-    monkeypatch.setattr(dispatch._moe_export, "trusted_finalize", lambda _exp, inp: inp)
-    monkeypatch.setattr(dispatch._moe_export, "orphaned", lambda _exp: None)
-    registry = KernelRegistry()
-    registry.enable()
-    result = dispatch._deep_consume(
-        {"T": 2, "K": 1, "hid": 4},
-        torch.randn(2, 4),
-        torch.randn(2, 4),
-        torch.ones(4),
-        1e-6,
-        2048,
-        None,
-        False,
-        False,
-        True,
-        registry=registry,
-        baseline_fn=_fusion_baseline,
-    )
-    assert result[0] == "stock"
-    assert completed == []
-
-
-def test_deep_export_mismatch_raises_when_a_candidate_is_registered(events, monkeypatch):
-    completed = events
-    monkeypatch.setattr(
-        dispatch, "_arfusion_group", lambda _use_attn: SimpleNamespace(size=lambda: 2)
-    )
-    monkeypatch.setattr(
-        dispatch._moe_export,
-        "export_views",
-        lambda _exp, _device: (
-            torch.randn(2, 4),
-            torch.zeros(2, dtype=torch.long),
-            torch.ones(2),
-        ),
-    )
-    monkeypatch.setattr(
-        dispatch._moe_export,
-        "trusted_finalize",
-        lambda *_args: pytest.fail("stock recovery ran inside a candidate arm"),
-    )
-    registry = _registry("collective.moe_finalize_ar_rmsnorm", _boom)
-    # A deep candidate is registered, so trusted recovery is off the table: the
-    # export mismatch is fatal rather than something to quietly finish in stock.
-    with pytest.raises(ValueError, match="no producer-bound selection"):
-        dispatch._deep_consume(
-            {"T": 2, "K": 1, "hid": 4},
-            torch.randn(2, 4),
-            torch.randn(2, 4),
-            torch.ones(4),
-            1e-6,
-            2048,
-            None,
-            False,
-            False,
-            True,
-            registry=registry,
-            baseline_fn=_fusion_baseline,
-        )
-    assert completed == []
+    assert completed == ["collective.ar_residual_rmsnorm"]

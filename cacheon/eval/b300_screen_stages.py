@@ -76,7 +76,6 @@ from cacheon.eval.oci_prebuild import (
 from cacheon.manifest import (
     ManifestError,
     all_declared_cuda_sources,
-    all_declared_dep_patches,
     load_manifest,
 )
 from cacheon.rebuild import RebuildError
@@ -304,12 +303,7 @@ def _validate_static_candidate(
             raise _CandidateStaticFailure("candidate Python is not UTF-8") from exc
     inspected = inspect_contribution(root, catalog=catalog)
     declared_cuda = all_declared_cuda_sources(root, manifest)
-    declared_patches = all_declared_dep_patches(root, manifest)
-    scan = scan_tree(
-        root,
-        declared_cuda_sources=declared_cuda,
-        declared_dep_patches=declared_patches,
-    )
+    scan = scan_tree(root, declared_cuda_sources=declared_cuda)
     if not scan.ok:
         raise _CandidateStaticFailure("recursive candidate policy rejected bytes")
     reservation = candidate.reservation

@@ -371,6 +371,9 @@ class SessionExecutionPlan:
     expected_prompt_tokens: int | None = None
     expected_discovery_overlay_identity_digest: str | None = None
     audit_policy: SlotAuditPolicy | None = None
+    batch_max_new_tokens: tuple[int, ...] = ()
+    batch_expected_prompt_tokens: tuple[int | None, ...] = ()
+    quality_max_new_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.engine_config, EngineSessionConfig):
@@ -418,6 +421,36 @@ class SessionExecutionPlan:
         if type(self.conditioning_count) is not int or not 1 <= self.conditioning_count <= self.warmup_count:
             raise OuterSessionInfrastructureError("conditioning_count must be in 1..warmup_count")
         object.__setattr__(self, "prompt_batches", batches)
+        if type(self.batch_max_new_tokens) is not tuple or type(
+            self.batch_expected_prompt_tokens
+        ) is not tuple:
+            raise OuterSessionInfrastructureError(
+                "per-batch request geometry must be exact tuples"
+            )
+        batch_tokens = self.batch_max_new_tokens
+        batch_prompts = self.batch_expected_prompt_tokens
+        if bool(batch_tokens) != bool(batch_prompts) or (
+            batch_tokens
+            and (len(batch_tokens) != len(batches) or len(batch_prompts) != len(batches))
+        ):
+            raise OuterSessionInfrastructureError(
+                "per-batch request geometry must exactly cover prompt batches"
+            )
+        object.__setattr__(self, "batch_max_new_tokens", batch_tokens)
+        object.__setattr__(self, "batch_expected_prompt_tokens", batch_prompts)
+        quality_tokens = (
+            self.max_new_tokens
+            if self.quality_max_new_tokens is None
+            else self.quality_max_new_tokens
+        )
+        if type(quality_tokens) is not int or quality_tokens < 1:
+            raise OuterSessionInfrastructureError(
+                "quality_max_new_tokens must be a positive integer"
+            )
+        if batch_tokens and quality_tokens not in batch_tokens:
+            raise OuterSessionInfrastructureError(
+                "quality request geometry is absent from the session"
+            )
         # Validate every controller-owned frame before any OCI/GPU resource starts.
         try:
             probe_session = "1" * 32
@@ -440,6 +473,7 @@ class SessionExecutionPlan:
                 f"controller init violates protocol policy: {exc}"
             ) from None
         for index, prompts in enumerate(batches):
+            max_new_tokens, expected_prompt_tokens = self.request_geometry(index)
             try:
                 message = batch_request(
                     session_id="1" * 32,
@@ -448,16 +482,36 @@ class SessionExecutionPlan:
                     nonce="3" * 32,
                     batch_index=index,
                     prompts=prompts,
-                    max_new_tokens=self.max_new_tokens,
+                    max_new_tokens=max_new_tokens,
                     top_logprobs_num=self.top_logprobs_num,
                     temperature=self.temperature,
-                    expected_prompt_tokens=self.expected_prompt_tokens,
+                    expected_prompt_tokens=expected_prompt_tokens,
                 )
                 frame_message(message, max_bytes=MAX_BATCH_REQUEST_BYTES)
             except SessionProtocolError as exc:
                 raise OuterSessionInfrastructureError(
                     f"controller batch {index} violates protocol policy: {exc}"
                 ) from None
+
+    def request_geometry(self, batch_index: int) -> tuple[int, int | None]:
+        """Return the validator-sealed request shape for one prompt batch."""
+
+        if type(batch_index) is not int or not 0 <= batch_index < len(self.prompt_batches):
+            raise OuterSessionInfrastructureError("batch index is outside the session")
+        if self.batch_max_new_tokens:
+            return (
+                self.batch_max_new_tokens[batch_index],
+                self.batch_expected_prompt_tokens[batch_index],
+            )
+        return self.max_new_tokens, self.expected_prompt_tokens
+
+    @property
+    def quality_tokens_per_prompt(self) -> int:
+        return (
+            self.max_new_tokens
+            if self.quality_max_new_tokens is None
+            else self.quality_max_new_tokens
+        )
 
 
 def require_decode_dominant_plan(
@@ -492,13 +546,15 @@ def require_decode_dominant_plan(
     charged_start = plan.warmup_count - plan.conditioning_count
     prompt_tokens = 0
     decode_tokens = 0
-    for batch in plan.prompt_batches[charged_start:]:
+    for batch_index, batch in enumerate(
+        plan.prompt_batches[charged_start:], start=charged_start
+    ):
         for prompt in batch:
             count = count_tokens(prompt)
             if type(count) is not int or count <= 0:
                 raise OuterSessionInfrastructureError("count_tokens must return positive ints")
             prompt_tokens += count
-        decode_tokens += len(batch) * plan.max_new_tokens
+        decode_tokens += len(batch) * plan.request_geometry(batch_index)[0]
     share = decode_tokens / (decode_tokens + prompt_tokens)
     if share < float(min_decode_share):
         raise OuterSessionInfrastructureError(
@@ -841,6 +897,7 @@ class OpenedOuterSession:
         if index >= len(self.plan.prompt_batches):
             raise OuterSessionInfrastructureError("session has no remaining planned batch")
         prompts = self.plan.prompt_batches[index]
+        max_new_tokens, expected_prompt_tokens = self.plan.request_geometry(index)
         try:
             request_id, nonce = _fresh_id(self.seen), _fresh_id(self.seen)
             request = validate_batch_request(
@@ -851,10 +908,10 @@ class OpenedOuterSession:
                     nonce=nonce,
                     batch_index=index,
                     prompts=prompts,
-                    max_new_tokens=self.plan.max_new_tokens,
+                    max_new_tokens=max_new_tokens,
                     top_logprobs_num=self.plan.top_logprobs_num,
                     temperature=self.plan.temperature,
-                    expected_prompt_tokens=self.plan.expected_prompt_tokens,
+                    expected_prompt_tokens=expected_prompt_tokens,
                 )
             )
             final_warmup = index == self.plan.warmup_count - 1
@@ -890,7 +947,7 @@ class OpenedOuterSession:
             completed = _now(self.clock, previous=request_started)
             if completed <= request_started:
                 raise OuterSessionInfrastructureError("host batch clock did not advance")
-            token_numerator = len(prompts) * self.plan.max_new_tokens
+            token_numerator = len(prompts) * max_new_tokens
             if evidence.observed_tokens != token_numerator:
                 raise OuterSessionProtocolError("worker evidence token count is not exact")
             row = BatchExecutionEvidence(

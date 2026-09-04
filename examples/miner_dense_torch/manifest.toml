@@ -1,0 +1,15 @@
+bundle_id = "example-dense-torch"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "linear.dense"
+mode = "slot"
+
+[[ops]]
+slot = "linear.dense"
+source = "kernels/dense.py"
+entry = "dense"
+prepare = "prepare"
+dtypes = ["bfloat16"]
+architectures = ["sm103"]
+metadata = "metadata/dense.json"

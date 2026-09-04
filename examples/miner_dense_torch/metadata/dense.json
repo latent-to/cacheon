@@ -1,0 +1,6 @@
+{
+  "architectures": ["sm103"],
+  "dtypes": ["bfloat16"],
+  "notes": "Faithful local-GEMM control for the GLM dense seam; not performance evidence.",
+  "op": "linear.dense"
+}

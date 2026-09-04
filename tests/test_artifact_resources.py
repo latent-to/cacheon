@@ -10,11 +10,31 @@ from cacheon.artifact_abi import (
     ArtifactShapeExtent,
     ArtifactShapeFactor,
     COLLECTIVE_ALL_REDUCE_CALL_ABI,
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
     SlotCallABI,
     SlotResource,
     parse_artifact_bindings,
     parse_artifact_resources,
+)
+
+# Registry-independent fixture ABI with no prepare_args boundary — the shape the
+# generic resource-plan machinery below needs, without depending on a live slot.
+BLOCKSCORE_TEST_ABI = SlotCallABI(
+    slot="test.blockscore",
+    resources=(
+        SlotResource("input.q", "tensor"),
+        SlotResource("input.index_k_cache", "tensor"),
+        SlotResource(
+            "input.max_seqlen_k", "scalar", scalar_type="i64",
+            capability_field="kv_len",
+        ),
+        SlotResource("input.scale", "scalar", scalar_type="f64"),
+        SlotResource("output.topk_idx", "tensor", access="write"),
+        SlotResource("stream.current", "stream"),
+    ),
+    call_args=(
+        "input.q", "input.index_k_cache", "input.max_seqlen_k",
+        "input.scale", "output.topk_idx",
+    ),
 )
 
 MOE_FUSED_EXPERTS_CALL_ABI = SlotCallABI(
@@ -112,7 +132,7 @@ def _resource_rows():
 def test_slot_authorizes_bounded_artifact_storage_without_per_slot_names():
     plan = parse_artifact_resources(
         _resource_rows(),
-        call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+        call_abi=BLOCKSCORE_TEST_ABI,
         field="artifact_resources",
     )
 
@@ -123,7 +143,7 @@ def test_slot_authorizes_bounded_artifact_storage_without_per_slot_names():
     )
     assert plan.by_name["workspace.scratch"].max_bytes == 32_768
     assert plan.by_name["prepared.lookup"].max_bytes == 4096
-    assert set(MSA_PREFILL_BLOCK_SCORE_CALL_ABI.resource_table(plan)) >= {
+    assert set(BLOCKSCORE_TEST_ABI.resource_table(plan)) >= {
         "input.q",
         "output.topk_idx",
         "workspace.scratch",
@@ -138,7 +158,7 @@ def test_slot_authorizes_bounded_artifact_storage_without_per_slot_names():
         ArtifactBinding("workspace.scratch", "tensor"),
         ArtifactBinding("state.epoch", "tensor"),
     )
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+    BLOCKSCORE_TEST_ABI.validate_plan(
         role="prepare",
         bindings=prepare,
         specializes={},
@@ -146,14 +166,14 @@ def test_slot_authorizes_bounded_artifact_storage_without_per_slot_names():
         require_outputs=False,
         artifact_resources=plan,
     )
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+    BLOCKSCORE_TEST_ABI.validate_plan(
         role="run",
         bindings=run,
         specializes={},
         prelaunch=(),
         artifact_resources=plan,
     )
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_pipeline(
+    BLOCKSCORE_TEST_ABI.validate_pipeline(
         (("prepare", prepare, ()), ("run", run, ())),
         artifact_resources=plan,
     )
@@ -166,11 +186,11 @@ def test_slot_authorizes_bounded_artifact_storage_without_per_slot_names():
 def test_bindings_may_name_only_declared_generated_resources():
     plan = parse_artifact_resources(
         (_resource_rows()[0],),
-        call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+        call_abi=BLOCKSCORE_TEST_ABI,
         field="artifact_resources",
     )
     with pytest.raises(ArtifactABIError, match="unknown slot resource"):
-        MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+        BLOCKSCORE_TEST_ABI.validate_plan(
             role="run",
             bindings=(
                 ArtifactBinding("output.topk_idx", "tensor"),
@@ -184,7 +204,7 @@ def test_bindings_may_name_only_declared_generated_resources():
 def test_artifact_resource_scope_defaults_rank_local_and_seals_canonically():
     plan = parse_artifact_resources(
         (_resource_rows()[1],),
-        call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+        call_abi=BLOCKSCORE_TEST_ABI,
         field="artifact_resources",
     )
 
@@ -221,11 +241,11 @@ def test_artifact_resource_scope_is_closed_and_group_ipc_is_persistent(row, mess
 
 
 def test_prepared_shape_sources_exist_at_explicit_or_implicit_prepare_boundary():
-    # MSA has no separate prepare_args boundary, so its validator-owned implicit
-    # pre-run warmup can derive the prepared allocation from call_args.
+    # The fixture ABI has no separate prepare_args boundary, so its validator-owned
+    # implicit pre-run warmup can derive the prepared allocation from call_args.
     implicit = parse_artifact_resources(
         (_resource_rows()[2],),
-        call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+        call_abi=BLOCKSCORE_TEST_ABI,
         field="artifact_resources",
     )
     assert implicit.by_name["prepared.lookup"].lifetime == "prepared"
@@ -455,7 +475,7 @@ def test_resource_schema_rejects_open_ended_authority(mutate, message):
     with pytest.raises(ArtifactABIError, match=message):
         parse_artifact_resources(
             (mutate(row),),
-            call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+            call_abi=BLOCKSCORE_TEST_ABI,
             field="artifact_resources",
         )
 
@@ -476,7 +496,7 @@ def test_resource_shapes_cannot_depend_on_generated_or_unknown_values():
     with pytest.raises(ArtifactABIError, match="unknown validator slot resource"):
         parse_artifact_resources(
             ({**row, "shape": shape},),
-            call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+            call_abi=BLOCKSCORE_TEST_ABI,
             field="artifact_resources",
         )
 
@@ -570,7 +590,7 @@ def test_resource_count_per_buffer_and_total_bytes_are_hard_bounded():
     )
     with pytest.raises(ArtifactABIError, match="at most 32"):
         ArtifactResourcePlan(
-            slot=MSA_PREFILL_BLOCK_SCORE_CALL_ABI.slot,
+            slot=BLOCKSCORE_TEST_ABI.slot,
             resources=tiny,
         )
 
@@ -606,7 +626,7 @@ def test_resource_count_per_buffer_and_total_bytes_are_hard_bounded():
     )
     with pytest.raises(ArtifactABIError, match="aggregate byte cap"):
         ArtifactResourcePlan(
-            slot=MSA_PREFILL_BLOCK_SCORE_CALL_ABI.slot,
+            slot=BLOCKSCORE_TEST_ABI.slot,
             resources=(
                 sixty_four_gib,
                 _static_resource("state.b", lifetime="engine"),

@@ -43,6 +43,7 @@ from cacheon.verification_outcomes import (  # noqa: E402
 )
 
 ALLREDUCE_BUNDLE = "examples/miner_allreduce_torch/kernels/all_reduce.py"
+DP_EXCHANGE_BUNDLE = "examples/miner_dp_attention_exchange_torch/kernels/exchange.py"
 SMALL_SHAPES = [{"num_tokens": 2, "hidden": 8}]
 
 
@@ -155,6 +156,30 @@ def test_allreduce_faithful_passes_gloo_cpu():
         GraphPhaseOutcome.eager_only_passed(),
     ) for row in res.shape_results)
     assert all(row.case_descriptor is not None for row in res.shape_results)
+
+
+@pytest.mark.parametrize(
+    "slot_name,entry_name",
+    (
+        ("collective.all_gather_into_tensor", "all_gather_into_tensor"),
+        ("collective.reduce_scatter_tensor", "reduce_scatter_tensor"),
+    ),
+)
+def test_dp_exchange_faithful_passes_gloo_cpu(monkeypatch, slot_name, entry_name):
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    result = verify_collective(
+        get_slot(slot_name),
+        DP_EXCHANGE_BUNDLE,
+        entry_name,
+        world_size=2,
+        backend="gloo",
+        device="cpu",
+        shapes=SMALL_SHAPES,
+        seed=0,
+    )
+    assert result.passed, "\n".join(
+        f"{row.shape}: {row.detail}" for row in result.shape_results
+    )
 
 
 def test_collective_cpu_verify_does_not_claim_graph_proof():

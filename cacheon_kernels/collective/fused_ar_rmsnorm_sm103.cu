@@ -1,11 +1,6 @@
 // fused_epilogue_sm103.cu — MiniMax-M3 decode epilogue fusion, TP2/TP4/TP8, Blackwell SM103.
 //
-// TWO ENTRY POINTS, ONE CORE (measured surface: 20% of decode GPU, all launch-latency-bound):
-//   1. ar_add_rmsnorm            : one-shot AR + residual-add + RMSNorm            (attn-side, 8.4%)
-//   2. moe_finalize_ar_add_rmsnorm: MoE-finalize prologue (+shared-expert add) + the same core
-//                                                                                  (MoE-side, 11.6%)
-// Replaces per chain: [finalizeMoeRouting] -> [all_reduce_one_shot] -> [fused_add_rmsnorm]
-// (3 launches + 2 full hidden-states HBM round-trips) with ONE kernel.
+// One entry point: one-shot all-reduce + residual-add + RMSNorm.
 //
 // PROVENANCE / DONORS (architecture adapted, implementation ours):
 //   - flashinfer include/flashinfer/comm/trtllm_moe_allreduce_fusion.cuh (finalize-as-AR-prologue,
@@ -20,8 +15,6 @@
 //     store/spin of the seq path entirely (no fences, no flags — arrival == payload visible).
 //     Architecture is the TRT-LLM/flashinfer production pattern; implementation is ours.
 //   - vLLM/sglang custom_all_reduce (push one-shot, per-block device-side flag progression).
-//   - TRT-LLM moe_kernels.cu finalizeMoeRoutingKernel (token-major gather + weighted-sum semantics,
-//     via sglang jit moe_finalize_fuse_shared's index convention: idx[t*K+k] -> permuted row, -1 = skip).
 //
 // FIXES vs the earlier TP2 prototype (kernels/fused_ar_rmsnorm_sm103.cu) — both were replay-killers:
 //   a) NON-ROTATING FLAGS: READY/IDLE toggling lets a fast rank at replay i+1 consume the peer's
@@ -32,7 +25,7 @@
 //      data/flag ordering over NVLink needs .sys scope. All protocol ops here are .sys.
 //
 // PROTOCOL (push one-shot, per token-slot t, my rank = m, world = R):
-//   1. compute my partial row p_m[t]  (attn entry: given; moe entry: finalize prologue)
+//   1. read my partial row p_m[t]
 //   2. store p_m[t] into slot (t, m) of EVERY rank's data buffer (R-1 remote NVLink stores + 1 local)
 //   3. st.release.sys seq  into every rank's flag[t][m]           (seq = my counter[t] + 1)
 //   4. spin ld.acquire.sys on MY LOCAL flag[t][r] == seq for all r (local polling only)
@@ -51,16 +44,8 @@
 //     RECONCILED AT INTEGRATION (v0 check) — recon found conflicting claims; both are one flag here.
 //   - buffers MUST come from a non-VMM allocator (cudaMalloc / default torch caching allocator).
 //     PYTORCH_CUDA_ALLOC_CONF=expandable_segments breaks cudaIpcGetMemHandle (learned the hard way).
-//
-// v7 (2026-07-02, rung-3 S2): COLUMN-WINDOW consumers for the fe_chunk'd gemm2 producer —
-//   moe_epilogue_ptrs_win consumes ONE packed D plane per call (col_off/col_w window),
-//   shared Lamport slot with advance-flag (last chunk only), partial-ssq slots
-//   [MAX_SLOTS, MAX_NC] + last-consume rinv + full-row norm, SPLIT prev-buffer clear.
-//   Spec: experiments/minimax_m3/frontier_2026-07-02/07_GEMM2_AR_OVERLAP_PLAN.md §5 R1/§7 S2.
-//
 // BUILD: build.sh (nvcc -arch=sm_103a for B300; add sm_100a for B200), torch-extension .so.
-// TEST : bench_tp4.py (torchrun, fp64 oracle, --graphs capture/replay) + replay stress (500+ replays);
-//        v7: bench_tp4_chunk.py (TP4 chunk correctness/stress) + bench_hermetic --chain deepchunk.
+// TEST : bench_tp4.py (torchrun, fp64 oracle, --graphs capture/replay) + replay stress (500+ replays).
 
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_bf16.h>
@@ -84,9 +69,7 @@ constexpr int PER_THREAD = H / THREADS;        // 8
 constexpr int CHUNKS = PER_THREAD / VEC;       // 1
 constexpr int MAX_SLOTS = 1024;   // max decode tokens per launch (graph per-bs => static N per graph)
 constexpr int MAX_RANKS = 8;
-constexpr int MAX_TOPK = 8;
 constexpr int NBUFS = 3;          // Lamport triple buffering (mod-3 rotation; 2 rounds of slack)
-constexpr int MAX_NC = 4;         // v7: max gemm2 column chunks (matches csrc fe_chunk::MAX_NC)
 constexpr uint32_t SENTINEL2 = 0x80008000u;  // two packed bf16 -0.0 = "not arrived"
 
 static_assert(H % (THREADS * VEC) == 0, "H must tile evenly");
@@ -550,263 +533,6 @@ __device__ __forceinline__ void exchange_reduce_norm_store_lamport2(
   if (tid == 0) cv.counter[tok] = (cnt == 0xFFFFFFFEu) ? 0u : cnt + 1u;
 }
 
-// ----------------------------------------------------- v7: COLUMN-WINDOW consumers (rung-3 S2)
-// The gemm2 producer is column-chunked (csrc fe_chunk patch, n_c planes packed at chunk width);
-// consumer k processes global columns [col_off, col_off+COLW) as soon as chunk k's GEMM event
-// fires — overlapping chunk k's epilogue with chunk k+1's GEMM. Contract deltas vs the
-// full-row core (07 plan §5 R1 / §7 S2):
-//   - ALL chunk consumers of one logical call share the SAME Lamport (buf, tok) slot: each
-//     reads counter[tok] (identical value — consumers are stream-ordered within the call) and
-//     only the LAST chunk's kernel advances it (advance-flag). Column regions are disjoint, so
-//     the v6 cell-collision and clear-race proofs carry per-region.
-//   - prev-buffer sentinel-clear is SPLIT: consumer k re-sentinels only its column window
-//     (all NRANKS rows). Union over chunks == the v6 full clear; completes before the counter
-//     advance in the last chunk (same kernel-boundary slack argument as v6).
-//   - RMSNorm needs the full-row ssq: consumer k<last block-reduces its window ssq into a
-//     LOCAL fp32 slot ssq_slots[tok*MAX_NC+k] and writes residual_out (bf16(o)) for its
-//     window ONLY. The LAST consumer adds the stored partials (identical order on every rank
-//     -> identical rinv -> no cross-rank drift), then writes norm_out for the WHOLE row: its
-//     own window from fp32 registers, earlier windows by re-reading the bf16 o from
-//     residual_out (same stream -> coherent; the bf16 re-read is an intermediate rounding the
-//     exact-emulation ref models; within the 2-ulp bar).
-//   - Lamport modes only (1 = one-shot, 2 = two-shot). The seq-flag path is not windowed.
-// Thread layout: NTW = COLW/VEC threads, ONE bf16x8 chunk per thread (v3 law: at decode T the
-// kernel IS its latency chain). Two-shot segment ownership is defined WITHIN the window:
-// rank o owns window-chunks [o*SEGW, (o+1)*SEGW) — ownership differs from the full-row v6
-// mapping but each column is still summed exactly once in ascending rank order, so the
-// reduced wire bytes are IDENTICAL to v6 two-shot.
-
-template <int NRANKS, int COLW>
-__device__ __forceinline__ void exchange_win_lamport1(
-    float (&acc)[VEC], CommView cv, int tok, int col_off, uint32_t cnt, float (&red)[VEC]) {
-  const int tid = threadIdx.x;
-  const int col = col_off + tid * VEC;  // my global column base
-  const int buf = (int)(cnt % NBUFS);
-  const size_t buf_elems = (size_t)MAX_SLOTS * MAX_RANKS * H;
-  const size_t row_base = buf * buf_elems + (size_t)tok * MAX_RANKS * H;
-
-  // pack + flush my partial chunk (wire bytes; self rides in registers as the same bytes)
-  uint4 mine;
-  {
-    __nv_bfloat16 pk[VEC];
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) pk[j] = __float2bfloat16(acc[j]);
-    uint4 w = *reinterpret_cast<uint4*>(pk);
-    w.x = flush_neg_zero2(w.x); w.y = flush_neg_zero2(w.y);
-    w.z = flush_neg_zero2(w.z); w.w = flush_neg_zero2(w.w);
-    mine = w;
-  }
-  // push to PEERS' slots (row = me, my window columns only)
-#pragma unroll
-  for (int r = 0; r < NRANKS; ++r) {
-    if (r == cv.rank) continue;
-    st_relaxed_sys_v4(cv.data[r] + row_base + (size_t)cv.rank * H + col, mine);
-  }
-  // v4-concurrent-poll peers' rows at my columns (v4 lesson: issue all, re-load laggards)
-  uint4 pv[NRANKS];
-#pragma unroll
-  for (int r = 0; r < NRANKS; ++r) {
-    if (r == cv.rank) continue;
-    pv[r] = ld_relaxed_sys_v4(cv.data[cv.rank] + row_base + (size_t)r * H + col);
-  }
-  bool pending = true;
-  while (pending) {
-    pending = false;
-#pragma unroll
-    for (int r = 0; r < NRANKS; ++r) {
-      if (r == cv.rank) continue;
-      if (has_sentinel(pv[r])) {
-        pv[r] = ld_relaxed_sys_v4(cv.data[cv.rank] + row_base + (size_t)r * H + col);
-        pending = true;
-      }
-    }
-  }
-  pv[cv.rank] = mine;
-#pragma unroll
-  for (int j = 0; j < VEC; ++j) red[j] = 0.0f;
-#pragma unroll
-  for (int r = 0; r < NRANKS; ++r) {  // deterministic ascending-rank fp32 accumulate
-    __nv_bfloat16 const* b = reinterpret_cast<__nv_bfloat16 const*>(&pv[r]);
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) red[j] += __bfloat162float(b[j]);
-  }
-}
-
-template <int NRANKS, int COLW>
-__device__ __forceinline__ void exchange_win_lamport2(
-    float (&acc)[VEC], CommView cv, int tok, int col_off, uint32_t cnt, float (&red)[VEC]) {
-  constexpr int NTW = COLW / VEC;
-  constexpr int SEGW = NTW / NRANKS;  // window chunks per owner (96 @ TP4, COLW=3072)
-  static_assert(NTW % NRANKS == 0, "window must split evenly across ranks");
-  const int tid = threadIdx.x;
-  const int seg = tid / SEGW;         // which rank owns MY window chunk
-  const int col = col_off + tid * VEC;
-  const int buf = (int)(cnt % NBUFS);
-  const size_t buf_elems = (size_t)MAX_SLOTS * MAX_RANKS * H;
-  const size_t row_base = buf * buf_elems + (size_t)tok * MAX_RANKS * H;
-
-  uint4 mine;
-  {
-    __nv_bfloat16 pk[VEC];
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) pk[j] = __float2bfloat16(acc[j]);
-    uint4 w = *reinterpret_cast<uint4*>(pk);
-    w.x = flush_neg_zero2(w.x); w.y = flush_neg_zero2(w.y);
-    w.z = flush_neg_zero2(w.z); w.w = flush_neg_zero2(w.w);
-    mine = w;
-  }
-
-  // ---- P1 push: my partial chunk -> OWNER's buffer, cell (row me, col) ----
-  if (seg != cv.rank)
-    st_relaxed_sys_v4(cv.data[seg] + row_base + (size_t)cv.rank * H + col, mine);
-
-  if (seg == cv.rank) {
-    // ---- P1 reduce (owner): concurrent-poll peers' rows at my columns ----
-    uint4 pv[NRANKS];
-#pragma unroll
-    for (int r = 0; r < NRANKS; ++r) {
-      if (r == cv.rank) continue;
-      pv[r] = ld_relaxed_sys_v4(cv.data[cv.rank] + row_base + (size_t)r * H + col);
-    }
-    bool pending = true;
-    while (pending) {
-      pending = false;
-#pragma unroll
-      for (int r = 0; r < NRANKS; ++r) {
-        if (r == cv.rank) continue;
-        if (has_sentinel(pv[r])) {
-          pv[r] = ld_relaxed_sys_v4(cv.data[cv.rank] + row_base + (size_t)r * H + col);
-          pending = true;
-        }
-      }
-    }
-    pv[cv.rank] = mine;
-    float redf[VEC];
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) redf[j] = 0.0f;
-#pragma unroll
-    for (int r = 0; r < NRANKS; ++r) {  // ascending rank order — identical bytes to v6 two-shot
-      __nv_bfloat16 const* b = reinterpret_cast<__nv_bfloat16 const*>(&pv[r]);
-#pragma unroll
-      for (int j = 0; j < VEC; ++j) redf[j] += __bfloat162float(b[j]);
-    }
-    // ---- P1.5: flush + broadcast the reduced chunk to all peers at (row me, col) ----
-    __nv_bfloat16 rk[VEC];
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) rk[j] = __float2bfloat16(redf[j]);
-    uint4 rw = *reinterpret_cast<uint4*>(rk);
-    rw.x = flush_neg_zero2(rw.x); rw.y = flush_neg_zero2(rw.y);
-    rw.z = flush_neg_zero2(rw.z); rw.w = flush_neg_zero2(rw.w);
-#pragma unroll
-    for (int r = 0; r < NRANKS; ++r) {
-      if (r == cv.rank) continue;
-      st_relaxed_sys_v4(cv.data[r] + row_base + (size_t)cv.rank * H + col, rw);
-    }
-    __nv_bfloat16 const* rb = reinterpret_cast<__nv_bfloat16 const*>(&rw);
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) red[j] = __bfloat162float(rb[j]);  // identical wire bytes
-  } else {
-    // ---- P2: poll the owner's reduced chunk at cell (row seg, col) in MY buffer ----
-    void const* p = cv.data[cv.rank] + row_base + (size_t)seg * H + col;
-    uint4 v = ld_relaxed_sys_v4(p);
-    while (has_sentinel(v)) v = ld_relaxed_sys_v4(p);
-    __nv_bfloat16 const* b = reinterpret_cast<__nv_bfloat16 const*>(&v);
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) red[j] = __bfloat162float(b[j]);
-  }
-}
-
-// Shared window tail: residual add, window residual_out, partial-ssq vs last-chunk finish
-// (rinv + FULL-row norm), SPLIT prev-buffer clear, advance-flag counter update.
-template <int NRANKS, int COLW>
-__device__ __forceinline__ void window_finish(
-    float (&red)[VEC], CommView cv, int tok, int col_off, uint32_t cnt,
-    __nv_bfloat16 const* __restrict__ residual_in,  // [N,H]
-    __nv_bfloat16 const* __restrict__ weight,       // [H]
-    __nv_bfloat16* __restrict__ residual_out,       // [N,H]
-    __nv_bfloat16* __restrict__ norm_out,           // [N,H]
-    float eps, float weight_bias, float* smem,
-    float* __restrict__ ssq_slots,  // [MAX_SLOTS, MAX_NC] fp32, LOCAL (identical on all ranks)
-    int chunk_idx, int n_c, bool is_last) {
-  constexpr int NTW = COLW / VEC;
-  const int tid = threadIdx.x;
-  const int col = col_off + tid * VEC;
-
-  // residual add + my-window partial ssq
-  float o[VEC];
-  float ssq = 0.0f;
-  {
-    float4 rv = *reinterpret_cast<float4 const*>(residual_in + (size_t)tok * H + col);
-    __nv_bfloat16* rb = reinterpret_cast<__nv_bfloat16*>(&rv);
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) {
-      o[j] = red[j] + __bfloat162float(rb[j]);
-      ssq += o[j] * o[j];
-    }
-  }
-  // residual_out for my window — bf16(o), the exact bytes the last chunk re-reads for norm
-  {
-    __nv_bfloat16 res_pk[VEC];
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) res_pk[j] = __float2bfloat16(o[j]);
-    *reinterpret_cast<float4*>(residual_out + (size_t)tok * H + col) =
-        *reinterpret_cast<float4 const*>(res_pk);
-  }
-
-  const float ssq_win = block_reduce_sum_t<NTW>(ssq, smem);
-
-  if (!is_last) {
-    if (tid == 0) ssq_slots[(size_t)tok * MAX_NC + chunk_idx] = ssq_win;
-  } else {
-    // total ssq: my window + stored partials, SAME summation order on every thread and rank
-    float total = ssq_win;
-    for (int c = 0; c < n_c; ++c)
-      if (c != chunk_idx) total += ssq_slots[(size_t)tok * MAX_NC + c];
-    const float rinv = rsqrtf(total / float(H) + eps);
-    // my window: norm from fp32 registers (v6 numerics)
-    {
-      float4 wv = *reinterpret_cast<float4 const*>(weight + col);
-      __nv_bfloat16* wb = reinterpret_cast<__nv_bfloat16*>(&wv);
-      __nv_bfloat16 nrm_pk[VEC];
-#pragma unroll
-      for (int j = 0; j < VEC; ++j)
-        nrm_pk[j] = __float2bfloat16(o[j] * rinv * (weight_bias + __bfloat162float(wb[j])));
-      *reinterpret_cast<float4*>(norm_out + (size_t)tok * H + col) =
-          *reinterpret_cast<float4 const*>(nrm_pk);
-    }
-    // earlier windows: re-read bf16 o from residual_out (stream-ordered writes by the
-    // earlier chunk consumers), scale, store norm_out
-    for (int base = tid * VEC; base < H; base += NTW * VEC) {
-      if (base >= col_off && base < col_off + COLW) continue;  // mine, already written
-      float4 ov = *reinterpret_cast<float4 const*>(residual_out + (size_t)tok * H + base);
-      float4 wv = *reinterpret_cast<float4 const*>(weight + base);
-      __nv_bfloat16* ob = reinterpret_cast<__nv_bfloat16*>(&ov);
-      __nv_bfloat16* wb = reinterpret_cast<__nv_bfloat16*>(&wv);
-      __nv_bfloat16 nrm_pk[VEC];
-#pragma unroll
-      for (int j = 0; j < VEC; ++j)
-        nrm_pk[j] = __float2bfloat16(__bfloat162float(ob[j]) * rinv *
-                                     (weight_bias + __bfloat162float(wb[j])));
-      *reinterpret_cast<float4*>(norm_out + (size_t)tok * H + base) =
-          *reinterpret_cast<float4 const*>(nrm_pk);
-    }
-  }
-
-  // SPLIT clear: re-sentinel MY window columns of the PREV buffer, all NRANKS rows.
-  // Union over the n_c consumers == the v6 full clear; prev != buf at NBUFS=3, and the
-  // write-write race safety vs a peer's future push carries per-region (v6 proof).
-  const int prev = (int)((cnt + NBUFS - 1) % NBUFS);
-  const size_t buf_elems = (size_t)MAX_SLOTS * MAX_RANKS * H;
-  const size_t prev_base = prev * buf_elems + (size_t)tok * MAX_RANKS * H;
-  const uint4 sent = make_uint4(SENTINEL2, SENTINEL2, SENTINEL2, SENTINEL2);
-#pragma unroll
-  for (int r = 0; r < NRANKS; ++r)  // NTW*VEC == COLW: one v4 store per rank covers my window
-    st_relaxed_sys_v4(cv.data[cv.rank] + prev_base + (size_t)r * H + col, sent);
-
-  // advance-flag: ONLY the last chunk's kernel advances the per-slot counter (wrap rule = v6)
-  if (is_last && tid == 0) cv.counter[tok] = (cnt == 0xFFFFFFFEu) ? 0u : cnt + 1u;
-}
-
 // -------------------------------------------------------------------------------- entry kernels
 // PDL (v5, template flag): launched via cudaLaunchKernelEx with programmatic stream
 // serialization, the kernel may start BEFORE its predecessor completes — overlapping launch
@@ -850,156 +576,6 @@ __global__ void ar_add_rmsnorm_kernel(
                                        eps, weight_bias, smem);
 }
 
-template <int NRANKS, int TOPK, int MODE, bool PDL>  // MODE: 0=seq, 1=lamport 1shot, 2=lamport 2shot
-__global__ void moe_finalize_ar_add_rmsnorm_kernel(
-    __nv_bfloat16 const* __restrict__ gemm2_out,   // [N*TOPK, H] permuted expert rows
-    int32_t const* __restrict__ idx,               // token->permuted-row map; layout per idx_kmajor
-    float const* __restrict__ scales,              // [N, TOPK] routing weights (fp32, t-major both ways)
-    __nv_bfloat16 const* __restrict__ shared_out,  // [N, H] shared-expert partial, or nullptr
-    __nv_bfloat16 const* __restrict__ residual_in, __nv_bfloat16 const* __restrict__ weight,
-    __nv_bfloat16* __restrict__ residual_out, __nv_bfloat16* __restrict__ norm_out,
-    CommView cv, float routed_scaling, float eps, float weight_bias, int idx_kmajor,
-    int exp_rows, int N) {
-  // exp_rows = the EXPORT's token count (k-major stride + row-bounds base). N = tokens to
-  // process this launch — may be SMALLER than exp_rows (the deferred-AR consumer head-trims
-  // CUDA-graph batch padding: e.g. consume T=496 of a 512-row moe export).
-  __shared__ float smem[(THREADS + 31) / 32];  // one slot per warp (24 at THREADS=768)
-  __shared__ int s_idx[TOPK];
-  __shared__ float s_scl[TOPK];
-  const int tok = blockIdx.x;
-  if (PDL) pdl_grid_sync();
-  if (tok >= N) return;
-  if (threadIdx.x < TOPK) {
-    // idx_kmajor=0: sglang jit convention idx[t*K + k]. idx_kmajor=1: TRT-LLM
-    // unpermuted_row_to_permuted_row convention idx[k*exp_rows + t] (fe_export deep seam).
-    s_idx[threadIdx.x] = idx[idx_kmajor ? ((size_t)threadIdx.x * exp_rows + tok)
-                                        : ((size_t)tok * TOPK + threadIdx.x)];
-    s_scl[threadIdx.x] = scales[(size_t)tok * TOPK + threadIdx.x];
-  }
-  __syncthreads();
-
-  // ---- (1) finalize prologue: my partial = routed_scaling * sum_k scl_k * row_k (+ shared) ----
-  float acc[PER_THREAD];
-#pragma unroll
-  for (int c = 0; c < CHUNKS; ++c) {
-    const int base = threadIdx.x * VEC + c * (THREADS * VEC);
-    float f[VEC];
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) f[j] = 0.0f;
-#pragma unroll
-    for (int k = 0; k < TOPK; ++k) {
-      const int row = s_idx[k];
-      if (row < 0 || row >= exp_rows * TOPK) continue;  // dropped / non-local (trtllm guard)
-      float4 v = *reinterpret_cast<float4 const*>(gemm2_out + (size_t)row * H + base);
-      __nv_bfloat16* b = reinterpret_cast<__nv_bfloat16*>(&v);
-      const float s = s_scl[k];
-#pragma unroll
-      for (int j = 0; j < VEC; ++j) f[j] += s * __bfloat162float(b[j]);
-    }
-    if (shared_out != nullptr) {
-      float4 sv = *reinterpret_cast<float4 const*>(shared_out + (size_t)tok * H + base);
-      __nv_bfloat16* sb = reinterpret_cast<__nv_bfloat16*>(&sv);
-#pragma unroll
-      for (int j = 0; j < VEC; ++j) f[j] = f[j] * routed_scaling + __bfloat162float(sb[j]);
-    } else {
-#pragma unroll
-      for (int j = 0; j < VEC; ++j) f[j] *= routed_scaling;
-    }
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) acc[c * VEC + j] = f[j];
-  }
-  if (MODE == 2)
-    exchange_reduce_norm_store_lamport2<NRANKS>(acc, cv, tok, residual_in, weight, residual_out,
-                                                norm_out, eps, weight_bias, smem);
-  else if (MODE == 1)
-    exchange_reduce_norm_store_lamport<NRANKS>(acc, cv, tok, residual_in, weight, residual_out,
-                                               norm_out, eps, weight_bias, smem);
-  else
-    exchange_reduce_norm_store<NRANKS>(acc, cv, tok, residual_in, weight, residual_out, norm_out,
-                                       eps, weight_bias, smem);
-}
-
-// v7 deep-seam WINDOW entry: consume ONE column chunk of a fe_chunk'd gemm2 export.
-// gemm2_out = the chunk's PACKED D plane (row stride g2_ld == chunk width, plane column 0 ==
-// global column col_off). idx/scales = the same k-major TRT-LLM export as the full-row entry.
-// Launch: N blocks x (COLW/VEC) threads.
-template <int NRANKS, int TOPK, int MODE, bool PDL, int COLW>
-__global__ void moe_finalize_ar_add_rmsnorm_win_kernel(
-    __nv_bfloat16 const* __restrict__ gemm2_out,   // [exp_rows*TOPK, g2_ld] packed plane
-    int64_t g2_ld,                                 // plane row stride (elements)
-    int32_t const* __restrict__ idx,               // token->permuted-row map (per idx_kmajor)
-    float const* __restrict__ scales,              // [exp_rows, TOPK] fp32 (scaling pre-folded)
-    __nv_bfloat16 const* __restrict__ residual_in, __nv_bfloat16 const* __restrict__ weight,
-    __nv_bfloat16* __restrict__ residual_out, __nv_bfloat16* __restrict__ norm_out,
-    CommView cv, float eps, float weight_bias, int idx_kmajor, int exp_rows,
-    int col_off, float* __restrict__ ssq_slots, int chunk_idx, int n_c, int is_last, int N) {
-  constexpr int NTW = COLW / VEC;
-  static_assert(MODE == 1 || MODE == 2, "window consumers are Lamport-only");
-  __shared__ float smem[(NTW + 31) / 32];
-  __shared__ int s_idx[TOPK];
-  __shared__ float s_scl[TOPK];
-  const int tok = blockIdx.x;
-  if (PDL) pdl_grid_sync();  // gemm2 chunk + earlier consumers must complete (data deps)
-  if (tok >= N) return;
-  if (threadIdx.x < TOPK) {
-    s_idx[threadIdx.x] = idx[idx_kmajor ? ((size_t)threadIdx.x * exp_rows + tok)
-                                        : ((size_t)tok * TOPK + threadIdx.x)];
-    s_scl[threadIdx.x] = scales[(size_t)tok * TOPK + threadIdx.x];
-  }
-  __syncthreads();
-  const uint32_t cnt = cv.counter[tok];  // shared slot: read-only here; last chunk advances
-
-  // finalize prologue over MY plane columns (plane col = global col - col_off = tid*VEC)
-  float acc[VEC];
-#pragma unroll
-  for (int j = 0; j < VEC; ++j) acc[j] = 0.0f;
-  const int pcol = threadIdx.x * VEC;
-#pragma unroll
-  for (int k = 0; k < TOPK; ++k) {
-    const int row = s_idx[k];
-    if (row < 0 || row >= exp_rows * TOPK) continue;  // dropped / non-local (trtllm guard)
-    float4 v = *reinterpret_cast<float4 const*>(gemm2_out + (size_t)row * g2_ld + pcol);
-    __nv_bfloat16* b = reinterpret_cast<__nv_bfloat16*>(&v);
-    const float s = s_scl[k];
-#pragma unroll
-    for (int j = 0; j < VEC; ++j) acc[j] += s * __bfloat162float(b[j]);
-  }
-
-  float red[VEC];
-  if (MODE == 2)
-    exchange_win_lamport2<NRANKS, COLW>(acc, cv, tok, col_off, cnt, red);
-  else
-    exchange_win_lamport1<NRANKS, COLW>(acc, cv, tok, col_off, cnt, red);
-  window_finish<NRANKS, COLW>(red, cv, tok, col_off, cnt, residual_in, weight, residual_out,
-                              norm_out, eps, weight_bias, smem, ssq_slots, chunk_idx, n_c,
-                              is_last != 0);
-}
-
-// ------------------------------------------------------------------------------------ host side
-static CommView make_view(torch::Tensor data_ptrs, torch::Tensor flag_ptrs, int64_t counter_ptr,
-                          int64_t rank, int64_t world) {
-  TORCH_CHECK(world <= MAX_RANKS && world >= 2, "world must be 2..8");
-  TORCH_CHECK(data_ptrs.numel() == world && flag_ptrs.numel() == world, "need one ptr per rank");
-  CommView cv{};
-  auto* dp = data_ptrs.data_ptr<int64_t>();
-  auto* fp = flag_ptrs.data_ptr<int64_t>();
-  for (int r = 0; r < world; ++r) {
-    cv.data[r] = reinterpret_cast<__nv_bfloat16*>(dp[r]);
-    cv.flags[r] = reinterpret_cast<uint32_t*>(fp[r]);
-  }
-  cv.counter = reinterpret_cast<uint32_t*>(counter_ptr);
-  cv.rank = (int)rank;
-  cv.world = (int)world;
-  return cv;
-}
-
-#define CHECK_ROW(t, n)                                                              \
-  TORCH_CHECK((t).is_cuda() && (t).scalar_type() == torch::kBFloat16 && (t).size(-1) == H, \
-              n " must be CUDA bf16 [*, 6144]")
-
-// PDL-aware launcher: plain <<<>>> when off; cudaLaunchKernelEx + programmatic stream
-// serialization when on (records into CUDA graphs under stream capture — the flashinfer/
-// TRT-LLM production pattern).
 template <typename K, typename... Args>
 static void launch_kern_t(K kern, int N, int threads, cudaStream_t stream, bool pdl, Args... args) {
   if (!pdl) {
@@ -1065,180 +641,6 @@ void ar_add_rmsnorm(torch::Tensor partial_in, torch::Tensor residual_in, torch::
   }
 }
 
-void moe_finalize_ar_add_rmsnorm(torch::Tensor gemm2_out, torch::Tensor idx, torch::Tensor scales,
-                                 c10::optional<torch::Tensor> shared_out, torch::Tensor residual_in,
-                                 torch::Tensor weight, torch::Tensor residual_out,
-                                 torch::Tensor norm_out, torch::Tensor data_ptrs,
-                                 torch::Tensor flag_ptrs, int64_t counter_ptr, int64_t rank,
-                                 int64_t world, double routed_scaling, double eps,
-                                 double weight_bias, int64_t lamport, int64_t pdl) {
-  CHECK_ROW(gemm2_out, "gemm2_out"); CHECK_ROW(residual_in, "residual_in");
-  TORCH_CHECK(idx.scalar_type() == torch::kInt32 && scales.scalar_type() == torch::kFloat32,
-              "idx must be int32, scales fp32");
-  const int N = (int)idx.size(0);
-  const int K = (int)idx.size(1);
-  TORCH_CHECK(N <= MAX_SLOTS, "N exceeds MAX_SLOTS — take the stock path for prefill-sized batches");
-  TORCH_CHECK(K == 4, "M3 is top-4; other TOPK need a new instantiation");
-  CommView cv = make_view(data_ptrs, flag_ptrs, counter_ptr, rank, world);
-  auto stream = at::cuda::getCurrentCUDAStream();
-  const __nv_bfloat16* shared_p =
-      shared_out.has_value() ? reinterpret_cast<__nv_bfloat16 const*>(shared_out->data_ptr()) : nullptr;
-  auto go = [&](auto kern, bool p) {
-    launch_kern(kern, N, stream.stream(), p,
-        reinterpret_cast<__nv_bfloat16 const*>(gemm2_out.data_ptr()), idx.data_ptr<int32_t>(),
-        scales.data_ptr<float>(), shared_p,
-        reinterpret_cast<__nv_bfloat16 const*>(residual_in.data_ptr()),
-        reinterpret_cast<__nv_bfloat16 const*>(weight.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(residual_out.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(norm_out.data_ptr()), cv, (float)routed_scaling, (float)eps,
-        (float)weight_bias, /*idx_kmajor=*/0, /*exp_rows=*/N, N);
-  };
-  TORCH_CHECK(lamport >= 0 && lamport <= 2, "mode must be 0(seq)/1(lamport)/2(twoshot)");
-  switch (cv.world * 8 + (int)lamport * 2 + (pdl ? 1 : 0)) {
-    case 2 * 8 + 0 * 2 + 0: go(moe_finalize_ar_add_rmsnorm_kernel<2, 4, 0, false>, false); break;
-    case 2 * 8 + 0 * 2 + 1: go(moe_finalize_ar_add_rmsnorm_kernel<2, 4, 0, true>, true); break;
-    case 2 * 8 + 1 * 2 + 0: go(moe_finalize_ar_add_rmsnorm_kernel<2, 4, 1, false>, false); break;
-    case 2 * 8 + 1 * 2 + 1: go(moe_finalize_ar_add_rmsnorm_kernel<2, 4, 1, true>, true); break;
-    case 2 * 8 + 2 * 2 + 0: go(moe_finalize_ar_add_rmsnorm_kernel<2, 4, 2, false>, false); break;
-    case 2 * 8 + 2 * 2 + 1: go(moe_finalize_ar_add_rmsnorm_kernel<2, 4, 2, true>, true); break;
-    case 4 * 8 + 0 * 2 + 0: go(moe_finalize_ar_add_rmsnorm_kernel<4, 4, 0, false>, false); break;
-    case 4 * 8 + 0 * 2 + 1: go(moe_finalize_ar_add_rmsnorm_kernel<4, 4, 0, true>, true); break;
-    case 4 * 8 + 1 * 2 + 0: go(moe_finalize_ar_add_rmsnorm_kernel<4, 4, 1, false>, false); break;
-    case 4 * 8 + 1 * 2 + 1: go(moe_finalize_ar_add_rmsnorm_kernel<4, 4, 1, true>, true); break;
-    case 4 * 8 + 2 * 2 + 0: go(moe_finalize_ar_add_rmsnorm_kernel<4, 4, 2, false>, false); break;
-    case 4 * 8 + 2 * 2 + 1: go(moe_finalize_ar_add_rmsnorm_kernel<4, 4, 2, true>, true); break;
-    case 8 * 8 + 0 * 2 + 0: go(moe_finalize_ar_add_rmsnorm_kernel<8, 4, 0, false>, false); break;
-    case 8 * 8 + 0 * 2 + 1: go(moe_finalize_ar_add_rmsnorm_kernel<8, 4, 0, true>, true); break;
-    case 8 * 8 + 1 * 2 + 0: go(moe_finalize_ar_add_rmsnorm_kernel<8, 4, 1, false>, false); break;
-    case 8 * 8 + 1 * 2 + 1: go(moe_finalize_ar_add_rmsnorm_kernel<8, 4, 1, true>, true); break;
-    case 8 * 8 + 2 * 2 + 0: go(moe_finalize_ar_add_rmsnorm_kernel<8, 4, 2, false>, false); break;
-    case 8 * 8 + 2 * 2 + 1: go(moe_finalize_ar_add_rmsnorm_kernel<8, 4, 2, true>, true); break;
-    default: TORCH_CHECK(false, "unsupported world size");
-  }
-}
-
-// Deep-seam entry: raw device pointers exported by the fe_export flashinfer patch
-// (gemm2 unfused output + TRT-LLM k-major row map + token_final_scales). The scales
-// already carry routed_scaling (folded into topk_weights by sglang topk) and the
-// fused shared expert rides in the expert pool (K=5 on M3), so no shared/scaling args.
-void moe_epilogue_ptrs(int64_t gemm2_ptr, int64_t idx_ptr, int64_t scales_ptr, int64_t n_tokens,
-                       int64_t exp_rows, int64_t topk, int64_t idx_kmajor,
-                       torch::Tensor residual_in, torch::Tensor weight,
-                       torch::Tensor residual_out, torch::Tensor norm_out,
-                       torch::Tensor data_ptrs, torch::Tensor flag_ptrs, int64_t counter_ptr,
-                       int64_t rank, int64_t world, double eps, double weight_bias,
-                       int64_t lamport, int64_t pdl) {
-  CHECK_ROW(residual_in, "residual_in");
-  const int N = (int)n_tokens;
-  const int K = (int)topk;
-  TORCH_CHECK(N >= 1 && N <= MAX_SLOTS, "N out of range");
-  TORCH_CHECK(exp_rows >= N, "export rows must cover the consume rows");
-  TORCH_CHECK(gemm2_ptr && idx_ptr && scales_ptr, "null export pointer");
-  CommView cv = make_view(data_ptrs, flag_ptrs, counter_ptr, rank, world);
-  auto stream = at::cuda::getCurrentCUDAStream();
-  auto go = [&](auto kern, bool p) {
-    launch_kern(kern, N, stream.stream(), p,
-        reinterpret_cast<__nv_bfloat16 const*>(gemm2_ptr),
-        reinterpret_cast<int32_t const*>(idx_ptr), reinterpret_cast<float const*>(scales_ptr),
-        static_cast<__nv_bfloat16 const*>(nullptr),
-        reinterpret_cast<__nv_bfloat16 const*>(residual_in.data_ptr()),
-        reinterpret_cast<__nv_bfloat16 const*>(weight.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(residual_out.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(norm_out.data_ptr()), cv, /*routed_scaling=*/1.0f,
-        (float)eps, (float)weight_bias, (int)idx_kmajor, (int)exp_rows, N);
-  };
-  TORCH_CHECK(lamport >= 0 && lamport <= 2, "mode must be 0(seq)/1(lamport)/2(twoshot)");
-#define FE_MOE_K_CASES(W, KK)                                                                     \
-  case W * 100 + KK * 10 + 0 * 2 + 0:                                                            \
-    go(moe_finalize_ar_add_rmsnorm_kernel<W, KK, 0, false>, false); break;                       \
-  case W * 100 + KK * 10 + 0 * 2 + 1:                                                            \
-    go(moe_finalize_ar_add_rmsnorm_kernel<W, KK, 0, true>, true); break;                         \
-  case W * 100 + KK * 10 + 1 * 2 + 0:                                                            \
-    go(moe_finalize_ar_add_rmsnorm_kernel<W, KK, 1, false>, false); break;                       \
-  case W * 100 + KK * 10 + 1 * 2 + 1:                                                            \
-    go(moe_finalize_ar_add_rmsnorm_kernel<W, KK, 1, true>, true); break;                         \
-  case W * 100 + KK * 10 + 2 * 2 + 0:                                                            \
-    go(moe_finalize_ar_add_rmsnorm_kernel<W, KK, 2, false>, false); break;                       \
-  case W * 100 + KK * 10 + 2 * 2 + 1:                                                            \
-    go(moe_finalize_ar_add_rmsnorm_kernel<W, KK, 2, true>, true); break;
-  switch ((int)world * 100 + K * 10 + (int)lamport * 2 + (pdl ? 1 : 0)) {
-    FE_MOE_K_CASES(2, 4)
-    FE_MOE_K_CASES(2, 5)
-    FE_MOE_K_CASES(4, 4)
-    FE_MOE_K_CASES(4, 5)
-    FE_MOE_K_CASES(8, 4)
-    FE_MOE_K_CASES(8, 5)
-    default: TORCH_CHECK(false, "unsupported (world, topk) combo: ", world, ", ", K);
-  }
-#undef FE_MOE_K_CASES
-}
-
-// v7 window entry: one call per gemm2 column chunk, ascending chunk order on ONE stream.
-// ssq_ptr = fp32 [MAX_SLOTS, MAX_NC] LOCAL slots (fused_ops allocates). Instantiated for
-// TP4 (the M3 rig) x COLW {3072 (n_c=2), 1536 (n_c=4)} x TOPK {4,5} x mode {1,2} x PDL.
-void moe_epilogue_ptrs_win(int64_t gemm2_ptr, int64_t g2_ld, int64_t idx_ptr, int64_t scales_ptr,
-                           int64_t n_tokens, int64_t exp_rows, int64_t topk, int64_t idx_kmajor,
-                           int64_t col_off, int64_t col_w, int64_t chunk_idx, int64_t n_c,
-                           int64_t ssq_ptr, torch::Tensor residual_in, torch::Tensor weight,
-                           torch::Tensor residual_out, torch::Tensor norm_out,
-                           torch::Tensor data_ptrs, torch::Tensor flag_ptrs, int64_t counter_ptr,
-                           int64_t rank, int64_t world, double eps, double weight_bias,
-                           int64_t lamport, int64_t pdl) {
-  CHECK_ROW(residual_in, "residual_in");
-  const int N = (int)n_tokens;
-  const int K = (int)topk;
-  TORCH_CHECK(N >= 1 && N <= MAX_SLOTS, "N out of range");
-  TORCH_CHECK(exp_rows >= N, "export rows must cover the consume rows");
-  TORCH_CHECK(gemm2_ptr && idx_ptr && scales_ptr && ssq_ptr, "null pointer");
-  TORCH_CHECK(lamport == 1 || lamport == 2, "window consumers are Lamport-only (mode 1|2)");
-  TORCH_CHECK(n_c >= 2 && n_c <= MAX_NC, "n_c must be 2..MAX_NC");
-  TORCH_CHECK(col_w * n_c == H, "chunks must tile H exactly");
-  TORCH_CHECK(chunk_idx >= 0 && chunk_idx < n_c && col_off == chunk_idx * col_w, "bad window");
-  TORCH_CHECK(g2_ld >= col_w, "plane row stride below window width");
-  CommView cv = make_view(data_ptrs, flag_ptrs, counter_ptr, rank, world);
-  TORCH_CHECK(cv.world == 4, "window path instantiated for TP4 only (add NRANKS cases)");
-  const int is_last = (chunk_idx == n_c - 1) ? 1 : 0;
-  const int nthreads = (int)(col_w / VEC);
-  auto stream = at::cuda::getCurrentCUDAStream();
-  auto go = [&](auto kern, bool p) {
-    launch_kern_t(kern, N, nthreads, stream.stream(), p,
-        reinterpret_cast<__nv_bfloat16 const*>(gemm2_ptr), g2_ld,
-        reinterpret_cast<int32_t const*>(idx_ptr), reinterpret_cast<float const*>(scales_ptr),
-        reinterpret_cast<__nv_bfloat16 const*>(residual_in.data_ptr()),
-        reinterpret_cast<__nv_bfloat16 const*>(weight.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(residual_out.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(norm_out.data_ptr()), cv, (float)eps,
-        (float)weight_bias, (int)idx_kmajor, (int)exp_rows, (int)col_off,
-        reinterpret_cast<float*>(ssq_ptr), (int)chunk_idx, (int)n_c, is_last, N);
-  };
-#define FE_WIN_K_CASES(CW, KK)                                                                  \
-  case CW * 100 + KK * 10 + 1 * 2 + 0:                                                         \
-    go(moe_finalize_ar_add_rmsnorm_win_kernel<4, KK, 1, false, CW>, false); break;             \
-  case CW * 100 + KK * 10 + 1 * 2 + 1:                                                         \
-    go(moe_finalize_ar_add_rmsnorm_win_kernel<4, KK, 1, true, CW>, true); break;               \
-  case CW * 100 + KK * 10 + 2 * 2 + 0:                                                         \
-    go(moe_finalize_ar_add_rmsnorm_win_kernel<4, KK, 2, false, CW>, false); break;             \
-  case CW * 100 + KK * 10 + 2 * 2 + 1:                                                         \
-    go(moe_finalize_ar_add_rmsnorm_win_kernel<4, KK, 2, true, CW>, true); break;
-  switch ((int)col_w * 100 + K * 10 + (int)lamport * 2 + (pdl ? 1 : 0)) {
-    FE_WIN_K_CASES(3072, 4)
-    FE_WIN_K_CASES(3072, 5)
-    FE_WIN_K_CASES(1536, 4)
-    FE_WIN_K_CASES(1536, 5)
-    default: TORCH_CHECK(false, "unsupported (col_w, topk) combo: ", col_w, ", ", K);
-  }
-#undef FE_WIN_K_CASES
-}
-
-// v7: make the CURRENT torch stream wait on a raw cudaEvent_t exported by the fe_chunk csrc
-// patch (per-chunk gemm2 completion). Under capture this becomes the cross-stream fork edge.
-void stream_wait_event(int64_t ev_handle) {
-  TORCH_CHECK(ev_handle, "null event handle");
-  auto stream = at::cuda::getCurrentCUDAStream();
-  C10_CUDA_CHECK(cudaStreamWaitEvent(stream.stream(),
-                                     reinterpret_cast<cudaEvent_t>(ev_handle), 0));
-}
-
 // IPC helpers so the Python side stays allocator-agnostic (buffers MUST be cudaMalloc'd /
 // default-caching-allocator tensors; expandable_segments VMM breaks IPC — see header).
 torch::Tensor get_ipc_handle(int64_t dptr) {
@@ -1262,20 +664,10 @@ int64_t open_ipc_handle(torch::Tensor handle) {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("ar_add_rmsnorm", &fused_epilogue::ar_add_rmsnorm,
         "one-shot AR + residual + RMSNorm (TP2/4/8, bf16 H=6144; lamport=0 seq flags, 1 Lamport)");
-  m.def("moe_finalize_ar_add_rmsnorm", &fused_epilogue::moe_finalize_ar_add_rmsnorm,
-        "MoE finalize (+shared) + one-shot AR + residual + RMSNorm (lamport=0 seq flags, 1 Lamport)");
-  m.def("moe_epilogue_ptrs", &fused_epilogue::moe_epilogue_ptrs,
-        "deep-seam: finalize+AR+add+RMSNorm from fe_export raw pointers (k-major trtllm row map)");
-  m.def("moe_epilogue_ptrs_win", &fused_epilogue::moe_epilogue_ptrs_win,
-        "v7 rung-3: consume ONE column chunk of a fe_chunk'd gemm2 export (Lamport-only; "
-        "call chunks in ascending order on one stream; last chunk norms the full row)");
-  m.def("stream_wait_event", &fused_epilogue::stream_wait_event,
-        "cudaStreamWaitEvent(current torch stream, raw event handle) — fe_chunk fork edge");
   m.def("get_ipc_handle", &fused_epilogue::get_ipc_handle);
   m.def("open_ipc_handle", &fused_epilogue::open_ipc_handle);
   m.attr("H") = fused_epilogue::H;
   m.attr("MAX_SLOTS") = fused_epilogue::MAX_SLOTS;
   m.attr("MAX_RANKS") = fused_epilogue::MAX_RANKS;
   m.attr("NBUFS") = fused_epilogue::NBUFS;
-  m.attr("MAX_NC") = fused_epilogue::MAX_NC;
 }

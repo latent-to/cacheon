@@ -322,6 +322,12 @@ def _write_execution_once(
         if key in _ONCE:
             return
         payload = {"slot": slot}
+        if kind == "completed":
+            # Persist the first invocation's capture fact immediately. A later
+            # phase/exit flush refreshes aggregate counts, but a scheduler that
+            # is killed after model execution must not lose proof that its
+            # candidate was baked into the serving graph.
+            payload.update(_calls_payload(slot))
         if error is not None:
             try:
                 message = str(error)[:512]
@@ -359,7 +365,7 @@ def set_graph_probe(probe: object) -> None:
     _GRAPH_PROBE = probe if callable(probe) else None
 
 
-def _count_call(slot: str) -> None:
+def _count_call(slot: str) -> bool:
     """Tally one invocation of ``slot``. Hot path: keep it cheap.
 
     The capture probe runs only until this slot has been seen inside a capture.
@@ -372,12 +378,15 @@ def _count_call(slot: str) -> None:
         entry = [0, 0]
         _CALLS[slot] = entry
     entry[0] += 1
+    captured_now = False
     if not entry[1] and _GRAPH_PROBE is not None:
         try:
             if _GRAPH_PROBE():
                 entry[1] = 1
+                captured_now = True
         except Exception:  # noqa: BLE001 - a probe must not break model execution
             pass
+    return captured_now
 
 
 def _calls_payload(slot: str) -> dict:
@@ -438,8 +447,13 @@ def completed(slot: str) -> None:
     The file is written once — the count it carries is refreshed at every phase
     boundary and at exit, so the hot path never touches the filesystem.
     """
-    _count_call(slot)
+    captured_now = _count_call(slot)
     _write_execution_once("completed", slot)
+    if captured_now:
+        # An eager warmup commonly writes the once-only receipt before capture.
+        # Refresh exactly when capture first becomes true; a later SIGKILL must
+        # not leave the durable row frozen at captured=false.
+        flush_calls()
 
 
 def failed(

@@ -334,7 +334,7 @@ verdict. The references may live under the same content-addressed store root. It
   pairwise distinct across the two passes;
 - reproduction identities match exactly;
 - the incumbent and target transition are still current;
-- target overlap, displacement, and composition remain valid;
+- target displacement, conflicts, and requirements remain valid;
 - the requested stack update matches the measured candidate.
 
 The planner leases one cohort whose rows share qualification authority and incumbent

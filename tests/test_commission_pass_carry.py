@@ -9,7 +9,7 @@ from cacheon.settlement import SettlementCandidate, SettlementError
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
 from tests.test_settlement import (
-    MSA,
+    ROUTED,
     _candidate,
     _h,
     _ref,
@@ -31,7 +31,7 @@ def _rotate_manifest(
 def _cross_commission_pair(*, runtime: str | None = None):
     catalog = default_target_catalog()
     pair = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "carry"), catalog, label="carry"
+        _stack(catalog), _ref(catalog, ROUTED, "carry"), catalog, label="carry"
     )
     old_orientation = _resident_orientation("old-a", "old-b", control="old")
     primary = replace(

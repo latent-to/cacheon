@@ -139,6 +139,7 @@ def _construction(
     )
     return B300QualificationConstructionAuthority(
         catalog=catalog,
+        registered_target_ids=deployment_fixtures.M3_REGISTERED_TARGET_IDS,
         profiles=deployment_fixtures._profiles(catalog, builder_source),
         incumbent_stack=incumbent,
         incumbent_tree_digest=_h("incumbent-tree"),

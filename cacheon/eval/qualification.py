@@ -1089,6 +1089,7 @@ def _trajectory_rows(lifecycle: object):
     workload = marginal_workload_digest(plan)
     rows = []
     for batch_index, prompts in enumerate(plan.prompt_batches):
+        expected_tokens = plan.request_geometry(batch_index)[0]
         for prompt_index, prompt in enumerate(prompts):
             occurrence = canonical_digest(
                 "cacheon.qualification.prompt-occurrence",
@@ -1104,8 +1105,8 @@ def _trajectory_rows(lifecycle: object):
                 evidence = batches[batch_index].evidence.prompts[prompt_index]
                 if (
                     type(evidence) is not PromptEvidence
-                    or len(evidence.output_ids) != plan.max_new_tokens
-                    or len(evidence.top_logprobs) != plan.max_new_tokens
+                    or len(evidence.output_ids) != expected_tokens
+                    or len(evidence.top_logprobs) != expected_tokens
                     or any(type(token) is not int or token < 0 for token in evidence.output_ids)
                     or any(len(position) != plan.top_logprobs_num for position in evidence.top_logprobs)
                 ):
@@ -1154,7 +1155,33 @@ def _quality_leg_lifecycle(lifecycle: object, candidate_read: int):
 def lifecycle_prompt_digests(lifecycle: object) -> tuple[str, ...]:
     """Canonical prompt-occurrence pool fixed before any quality selection."""
 
-    return tuple(sorted(row[0] for row in _trajectory_rows(lifecycle)[1]))
+    plan = lifecycle.prepared.baseline_session_plan
+    workload, rows = _trajectory_rows(lifecycle)
+    eligible = set()
+    for batch_index, prompts in enumerate(plan.prompt_batches):
+        if (
+            plan.request_geometry(batch_index)[0]
+            != plan.quality_tokens_per_prompt
+        ):
+            continue
+        for prompt_index, prompt in enumerate(prompts):
+            eligible.add(
+                canonical_digest(
+                    "cacheon.qualification.prompt-occurrence",
+                    {
+                        "batch_index": batch_index,
+                        "prompt_index": prompt_index,
+                        "prompt_sha256": hashlib.sha256(
+                            prompt.encode("utf-8")
+                        ).hexdigest(),
+                        "workload_digest": workload,
+                    },
+                )
+            )
+    observed = {row[0] for row in rows}
+    if not eligible or not eligible <= observed:
+        raise QualificationError("quality prompt geometry is absent from trajectories")
+    return tuple(sorted(eligible))
 
 
 def cohort_trajectory_digest(lifecycle: object) -> str:
@@ -1636,7 +1663,7 @@ def validate_quality_binding(
         or binding.selection_digest != selection.digest
         or (binding.tokens_per_prompt, binding.topk_width, binding.hidden_tasks_per_prompt)
         != (profile.tokens_per_prompt, profile.topk_width, profile.hidden_tasks_per_prompt)
-        or (plan.max_new_tokens, plan.top_logprobs_num)
+        or (plan.quality_tokens_per_prompt, plan.top_logprobs_num)
         != (profile.tokens_per_prompt, profile.topk_width)
         or binding.support_policy_digest != profile.support_policy_digest
         or profile.support_policy_digest != retained_support_policy_digest()

@@ -2279,6 +2279,11 @@ def _planned_prompt_digests(prepared: PreparedMarginalRuntime) -> tuple[str, ...
     workload = marginal_workload_digest(plan)
     rows = []
     for batch_index, prompts in enumerate(plan.prompt_batches):
+        if (
+            plan.request_geometry(batch_index)[0]
+            != plan.quality_tokens_per_prompt
+        ):
+            continue
         for prompt_index, prompt in enumerate(prompts):
             rows.append(canonical_digest(
                 "cacheon.qualification.prompt-occurrence",
@@ -2337,7 +2342,7 @@ def _validate_pre_execution(
             != value.expected_runtime_resource_policy_digest
             or (profile.tokens_per_prompt, profile.topk_width)
             != (
-                value.prepared.baseline_session_plan.max_new_tokens,
+                value.prepared.baseline_session_plan.quality_tokens_per_prompt,
                 value.prepared.baseline_session_plan.top_logprobs_num,
             )
         ):

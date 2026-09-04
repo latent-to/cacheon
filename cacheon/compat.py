@@ -1,7 +1,7 @@
 """SGLang compatibility canary — enforce the pin and integration surface.
 
 Our harness patches sglang internals (the `SiluAndMul` / `RMSNorm` seams, the
-`MultiPlatformOp` base, the Engine logprob API, specific `ServerArgs` kwargs). Any
+`BaseFusedOp` base, the Engine logprob API, specific `ServerArgs` kwargs). Any
 sglang upgrade can move those. This canary introspects the INSTALLED sglang —
 imports + signatures only, **no GPU, no model** — and checks every seam and API we
 depend on still exists.
@@ -22,13 +22,12 @@ from typing import Optional
 # The sglang version scored against. Bump DELIBERATELY and in a coordinated way —
 # see docs/dev/sglang-tracking.md. All validators must run the same version (consensus).
 #
-# 0.5.13.post1 (CUDA 13). VALIDATION STATE — read before treating as authoritative:
-#   * static seam canary: GREEN — all chokepoints intact on 0.5.13.post1 (sglang-canary CI,
-#     2026-06-22: FusedMoE/SiluAndMul/RMSNorm/all_reduce + logprob API + ServerArgs).
-#   * GPU end-to-end re-validation (broken-bundle gate FAILs, faithful kernels PASS) + champion
-#     RE-BASELINE: **PENDING** — run on a pod before this pin is authoritative for scoring.
-#     0.5.12.post1 was the last fully H100-validated pin.
-PINNED_SGLANG = "0.5.13.post1"
+# 0.5.18 (CUDA 13). This is the GLM-5.3 branch's source compatibility target.
+# The exact release source and served GLM image were inspected on 2026-08-30;
+# runtime seam activation, broken/faithful controls, and arena rebaseline remain
+# pending. The deployed MiniMax-M3 packet binds its own source-built runtime and
+# is not rewritten by this repository default.
+PINNED_SGLANG = "0.5.18"
 
 
 @dataclass
@@ -112,21 +111,21 @@ def run_checks() -> list[Check]:
             add(f"seam table: {adapter.name} ({adapter.chokepoint})", False, repr(exc))
 
     try:
-        from sglang.srt.layers.utils.multi_platform import MultiPlatformOp
-        mpo = MultiPlatformOp
-        add("MultiPlatformOp base present", True)
+        from sglang.kernels.fused_op import BaseFusedOp
+        fused_op_base = BaseFusedOp
+        add("BaseFusedOp base present", True)
     except Exception as exc:  # noqa: BLE001
-        mpo = None
-        add("MultiPlatformOp base present", False, repr(exc))
+        fused_op_base = None
+        add("BaseFusedOp base present", False, repr(exc))
 
     # activation seam (SiluAndMul slot)
     try:
         from sglang.srt.layers.activation import SiluAndMul
 
         ok = hasattr(SiluAndMul, "forward_cuda") and hasattr(SiluAndMul, "forward_native")
-        if mpo is not None:
-            ok = ok and issubclass(SiluAndMul, mpo)
-        add("seam: SiluAndMul (activation)", ok, "needs forward_cuda/native on a MultiPlatformOp")
+        if fused_op_base is not None:
+            ok = ok and issubclass(SiluAndMul, fused_op_base)
+        add("seam: SiluAndMul (activation)", ok, "needs forward_cuda/native on BaseFusedOp")
     except Exception as exc:  # noqa: BLE001
         add("seam: SiluAndMul (activation)", False, repr(exc))
 
@@ -135,44 +134,53 @@ def run_checks() -> list[Check]:
         from sglang.srt.layers.layernorm import RMSNorm
 
         params = list(inspect.signature(RMSNorm.forward_cuda).parameters)
-        ok = hasattr(RMSNorm, "forward_cuda") and "residual" in params
-        if mpo is not None:
-            ok = ok and issubclass(RMSNorm, mpo)
+        ok = (
+            hasattr(RMSNorm, "forward_cuda")
+            and {"residual", "quant_linear"} <= set(params)
+        )
+        if fused_op_base is not None:
+            ok = ok and issubclass(RMSNorm, fused_op_base)
         add("seam: RMSNorm (layernorm)", ok, f"forward_cuda params={tuple(params)}")
     except Exception as exc:  # noqa: BLE001
         add("seam: RMSNorm (layernorm)", False, repr(exc))
 
-    # MiniMax sparse decode imports this function by value. Check the exact pinned
-    # ABI and the second binding; a callable source symbol alone is not enough.
-    if _requires_present("sglang.srt.layers.attention.minimax_sparse_ops"):
-        try:
-            from sglang.srt.layers.attention.minimax_sparse_ops import minimax_sparse
-            from sglang.srt.layers.attention.minimax_sparse_ops.decode import topk_sparse
+    try:
+        from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 
-            source = topk_sparse.flash_decode_with_gqa_share_sparse
-            consumer = minimax_sparse.flash_decode_with_gqa_share_sparse
-            expected = (
-                "q", "sink", "k_cache", "v_cache", "req_to_token", "seq_lens",
-                "slot_ids", "block_size", "topk_idx", "sm_scale", "use_tma",
-            )
-            params = tuple(inspect.signature(source).parameters)
-            add(
-                "seam: MiniMax sparse decode function and consumer",
-                params == expected and source is consumer,
-                f"params={params!r}; shared_binding={source is consumer}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            add("seam: MiniMax sparse decode function and consumer", False, repr(exc))
+        apply_params = set(inspect.signature(UnquantizedLinearMethod.apply).parameters)
+        into_params = set(
+            inspect.signature(UnquantizedLinearMethod.apply_into).parameters
+        )
+        ok = {"layer", "x", "bias"} <= apply_params and {
+            "layer", "x", "output", "bias"
+        } <= into_params
+        add(
+            "seam: UnquantizedLinearMethod (linear.dense)",
+            ok,
+            f"apply params={tuple(sorted(apply_params))}; "
+            f"apply_into params={tuple(sorted(into_params))}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        add("seam: UnquantizedLinearMethod (linear.dense)", False, repr(exc))
 
-    # MoE seam (the MoE BLOCK slot chokepoint: FusedMoE.forward_impl(hidden_states,
-    # topk_output) — the waist all paths converge on; .forward is bypassed under
-    # piecewise capture, so we patch forward_impl, see cacheon/integrations/sglang_moe.py)
+    # MoE seams. Ordinary runners reach forward_impl; FlashInfer TRT-LLM skips it
+    # through forward_deferred_finalize when it fuses routed finalize + shared add.
     try:
         from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 
         params = set(inspect.signature(FusedMoE.forward_impl).parameters)
-        ok = hasattr(FusedMoE, "forward_impl") and {"hidden_states", "topk_output"} <= params
-        add("seam: FusedMoE.forward_impl (moe.fused_experts)", ok, f"forward_impl params={tuple(sorted(params))}")
+        deferred = set(
+            inspect.signature(FusedMoE.forward_deferred_finalize).parameters
+        )
+        ok = hasattr(FusedMoE, "forward_impl") and {
+            "hidden_states", "topk_output", "pre_quant_input"
+        } <= params and {"hidden_states", "topk_output"} <= deferred
+        add(
+            "seam: FusedMoE routed paths (moe.fused_experts)",
+            ok,
+            f"forward_impl params={tuple(sorted(params))}; "
+            f"deferred params={tuple(sorted(deferred))}",
+        )
     except Exception as exc:  # noqa: BLE001
         add("seam: FusedMoE.forward_impl (moe.fused_experts)", False, repr(exc))
 

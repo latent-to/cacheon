@@ -390,14 +390,14 @@ def test_fail_is_not_rewritten(tmp_path: Path, executor_factory) -> None:
     assert resident.created == 0
 
 
-def test_no_decision_screen_evidence_retries_instead_of_reaching_qualification(
+def test_no_decision_abi_screen_retries_then_holds_instead_of_reaching_qualification(
     tmp_path: Path, executor_factory
 ) -> None:
     """An undecided ABI stage must not buy a seat on the GPU.
 
-    Qualification is the expensive half of the pipeline. Promoting on a stage
-    that returned no decision spends a full evaluation on a candidate whose
-    ABI was never checked; one inconclusive screen retries (6ab052e).
+    Qualification is the expensive half of the pipeline. An undecided stage
+    retries within the screen budget and then parks; only an undecided final
+    stage escalates to qualification. The ABI stage is never final.
     """
 
     authorities, _runner, resident, _builder = _authorities(
@@ -407,12 +407,17 @@ def test_no_decision_screen_evidence_retries_instead_of_reaching_qualification(
     )
     manifest = _manifest(authorities)
     service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
+    first = _binding(tmp_path / "no-decision")
+    exhausted = dataclasses.replace(
+        first, screen_attempt=manifest.capacity.screen_retry_limit
+    )
 
-    receipt = service.screen(_binding(tmp_path / "no-decision"))
-
-    assert receipt.decision is PromotionDecision.RETRY
-    assert tuple(row.stage for row in receipt.results) == ("static", "build", "abi")
-    assert receipt.results[-1].grade is ScreenGrade.NO_DECISION
+    for binding, expected in ((first, PromotionDecision.RETRY),
+                              (exhausted, PromotionDecision.HOLD)):
+        receipt = service.screen(binding)
+        assert receipt.decision is expected
+        assert tuple(row.stage for row in receipt.results) == ("static", "build", "abi")
+        assert receipt.results[-1].grade is ScreenGrade.NO_DECISION
     # The screen stops at the undecided stage: no later stage is run, and the
     # candidate never reaches the resident lane.
     assert resident.created == 0

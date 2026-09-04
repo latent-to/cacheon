@@ -47,6 +47,7 @@ NUMERIC_FIELDS = frozenset(
         "exp_tokens",
         "head_dim",
         "hidden_dim",
+        "input_dim",
         "intermediate_dim",
         "init_blocks",
         "kv_len",
@@ -56,6 +57,7 @@ NUMERIC_FIELDS = frozenset(
         "num_kv_heads",
         "num_q_heads",
         "num_tokens",
+        "output_dim",
         "page_size",
         "q_len",
         "q_block_size",
@@ -72,6 +74,7 @@ CONTEXT_FIELDS = frozenset(
         "graph_mode",
         "layout",
         "model",
+        "parallel_role",
         "phase",
         "quant",
         "runtime",
@@ -79,11 +82,6 @@ CONTEXT_FIELDS = frozenset(
 )
 
 SUPPORTED_FIELDS = NUMERIC_FIELDS | CONTEXT_FIELDS
-
-# Canonical memory-layout name for the batched MSA prefill selection ABI.  Q is
-# dense, index-K stays in the engine's paged cache, and the output is contiguous
-# top-k indices.  Offline verification and live dispatch use the same value.
-MSA_PREFILL_PAGED_LAYOUT = "paged"
 
 _FIELD_ALIASES = {
     "arch": "architecture",
@@ -294,75 +292,6 @@ def collective_call_descriptor(
     }
     fields.update(dimensions or {})
     return CallDescriptor(fields)
-
-
-def msa_prefill_call_descriptor(
-    *,
-    dtype: str,
-    architecture: str | None,
-    head_dim: int,
-    block_size: int,
-    q_len: int,
-    kv_len: int,
-    top_k: int,
-    q_block_size: int,
-    init_blocks: int,
-    local_blocks: int,
-    batch_size: int,
-    num_q_heads: int,
-    num_tokens: int,
-    num_kv_heads: int = 1,
-    model: str = "MiniMax-M3",
-    tp_size: int | None = None,
-    world_size: int | None = None,
-) -> CallDescriptor:
-    """Describe the one batched, paged MSA prefill selection call."""
-
-    return CallDescriptor(
-        dtype=dtype,
-        architecture=architecture,
-        last_dim=head_dim,
-        num_tokens=num_tokens,
-        head_dim=head_dim,
-        block_size=block_size,
-        page_size=block_size,
-        q_block_size=q_block_size,
-        q_len=q_len,
-        kv_len=kv_len,
-        batch_size=batch_size,
-        num_q_heads=num_q_heads,
-        num_kv_heads=num_kv_heads,
-        top_k=top_k,
-        init_blocks=init_blocks,
-        local_blocks=local_blocks,
-        phase="prefill",
-        layout=MSA_PREFILL_PAGED_LAYOUT,
-        graph_mode="eager",
-        quant="dense",
-        model=model,
-        tp_size=tp_size,
-        world_size=world_size,
-    )
-
-
-def msa_decode_score_call_descriptor(
-    *, dtype: str, architecture: str | None, graph_mode: str, head_dim: int,
-    block_size: int, kv_len: int, top_k: int, init_blocks: int,
-    local_blocks: int, batch_size: int, num_q_heads: int, num_kv_heads: int,
-    quant: str = "dense", model: str = "MiniMax-M3",
-    tp_size: int | None = None, world_size: int | None = None,
-) -> CallDescriptor:
-    """Canonical paged per-head MiniMax decode score call."""
-
-    return CallDescriptor(
-        dtype=dtype, architecture=architecture, graph_mode=graph_mode,
-        last_dim=head_dim, num_tokens=batch_size, head_dim=head_dim,
-        block_size=block_size, page_size=block_size, q_len=1, kv_len=kv_len,
-        batch_size=batch_size, num_q_heads=num_q_heads,
-        num_kv_heads=num_kv_heads, top_k=top_k, init_blocks=init_blocks,
-        local_blocks=local_blocks, phase="decode", layout="paged_nhd",
-        quant=quant, model=model, tp_size=tp_size, world_size=world_size,
-    )
 
 
 @dataclass(frozen=True)

@@ -80,7 +80,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (1, 2, 3, 4, 5, 6, 7, 8)
+            or self.version not in (1, 2, 3, 4, 5, 6, 7, 8, 9)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -207,6 +207,13 @@ class ResidentSpeedPolicy:
         exceeds the sealed bound, so no consumer anywhere can grade an unfit
         measurement."""
 
+        if self.version >= 9:
+            # Mixed-cell qualification deliberately contains heterogeneous
+            # batch widths and output budgets. A median of per-batch rates
+            # would erase the minority cell; total timed tokens over the
+            # host-observed makespan gives the sealed mixture one rate.
+            self.read_window_scatter(row)
+            return row.timed_tokens / row.timed_seconds  # type: ignore[attr-defined]
         if self.version >= 3:
             # The call also enforces the sealed window count, which is a
             # structural evidence requirement under every version.
@@ -410,6 +417,9 @@ def _workload(plan: SessionExecutionPlan) -> tuple[object, ...]:
         plan.max_new_tokens,
         plan.top_logprobs_num,
         plan.temperature,
+        plan.batch_max_new_tokens,
+        plan.batch_expected_prompt_tokens,
+        plan.quality_max_new_tokens,
     )
 
 
@@ -550,7 +560,20 @@ class ResidentCrossoverPlan:
 def _expanded(plan: SessionExecutionPlan, reads: int) -> SessionExecutionPlan:
     # Repeat the complete read, including its validator-owned warmup.  The model
     # remains loaded; only the cheap workload conditioning repeats between arms.
-    return replace(plan, prompt_batches=plan.prompt_batches * reads)
+    return replace(
+        plan,
+        prompt_batches=plan.prompt_batches * reads,
+        batch_max_new_tokens=(
+            plan.batch_max_new_tokens * reads
+            if plan.batch_max_new_tokens
+            else ()
+        ),
+        batch_expected_prompt_tokens=(
+            plan.batch_expected_prompt_tokens * reads
+            if plan.batch_expected_prompt_tokens
+            else ()
+        ),
+    )
 
 
 def _expected_lane_digest(arm: ResidentArmPlan) -> str:
@@ -976,7 +999,7 @@ def _validate_resident_execution(
     for index, (row, prompts) in enumerate(
         zip(session.batches, plan.prompt_batches, strict=True)
     ):
-        tokens = len(prompts) * plan.max_new_tokens
+        tokens = len(prompts) * plan.request_geometry(index)[0]
         if (
             type(row) is not BatchExecutionEvidence
             or row.batch_index != index

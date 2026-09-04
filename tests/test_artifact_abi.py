@@ -5,7 +5,6 @@ from cacheon.artifact_abi import (
     ArtifactABIError,
     ArtifactBinding,
     ArtifactPrelaunch,
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
     ProviderCapabilityRequirement,
     SpecializationCapabilityRequirement,
     SLOT_CALL_ABIS,
@@ -20,39 +19,49 @@ from cacheon.artifact_abi import (
 
 _EXPECTED_CALL_ARGS = {
     "activation.silu_and_mul": ("input.x", "output.out"),
-    "norm.rmsnorm": ("input.x", "input.weight", "output.out", "input.eps"),
-    "attention.sdpa": (
-        "input.q", "input.k", "input.v", "output.out", "input.sm_scale", "input.causal"
+    "collective.all_gather_into_tensor": (
+        "input.x", "output.out", "group.current",
     ),
-    "attention.decode": (
-        "input.q", "input.k_cache", "input.v_cache", "input.req_to_token",
-        "input.seq_lens", "input.req_pool_indices", "input.topk_idx",
-        "output.out", "input.sm_scale", "input.block_size",
+    "norm.rmsnorm": ("input.x", "input.weight", "output.out", "input.eps"),
+    "norm.fused_add_rmsnorm": (
+        "input.x", "input.residual", "input.weight", "input.eps",
+        "output.out_norm", "output.out_residual",
     ),
     "collective.all_reduce": ("input.x", "output.out", "group.current"),
     "collective.ar_residual_rmsnorm": (
         "input.x", "input.residual", "input.weight", "input.eps",
         "output.out_norm", "output.out_residual", "group.current",
     ),
-    "collective.moe_finalize_ar_rmsnorm": (
-        "input.gemm_out", "input.row_map", "input.scales", "input.residual",
-        "input.weight", "input.eps", "output.out_norm", "output.out_residual",
-        "group.current",
-    ),
-    "attention.msa_block_score": (
-        "input.q", "input.k_cache", "input.req_to_token", "input.slot_ids",
-        "input.seq_lens", "output.block_scores", "input.sm_scale",
-        "input.block_size", "input.topk", "input.init_blocks", "input.local_blocks",
-    ),
-    "attention.msa_prefill_block_score": (
-        "input.q", "input.index_k_cache", "input.req_to_token", "input.slot_ids",
-        "input.cu_seqlens", "input.seq_lens", "input.prefix_lens",
-        "input.max_seqlen_q", "input.max_seqlen_k", "input.block_size_q",
-        "input.block_size_k", "input.topk", "input.init_blocks",
-        "input.local_blocks", "input.scale", "input.cu_seqblocks_q",
-        "input.max_seqblock_q", "input.all_seqblock_q", "output.topk_idx",
+    "collective.reduce_scatter_tensor": (
+        "input.x", "output.out", "group.current",
     ),
 }
+
+# A registry-independent fixture ABI, rich enough (mixed tensors, capability and
+# non-capability scalars, one write output, a stream) to exercise the generic
+# SlotCallABI validation machinery below without depending on any live slot.
+_BLOCKSCORE_TEST_ABI = SlotCallABI(
+    slot="test.blockscore",
+    resources=(
+        SlotResource("input.q", "tensor"),
+        SlotResource("input.index_k_cache", "tensor"),
+        SlotResource(
+            "input.max_seqlen_k", "scalar", scalar_type="i64",
+            capability_field="kv_len",
+        ),
+        SlotResource(
+            "input.block_size_k", "scalar", scalar_type="i64",
+            capability_field="block_size",
+        ),
+        SlotResource("input.scale", "scalar", scalar_type="f64"),
+        SlotResource("output.topk_idx", "tensor", access="write"),
+        SlotResource("stream.current", "stream"),
+    ),
+    call_args=(
+        "input.q", "input.index_k_cache", "input.max_seqlen_k",
+        "input.block_size_k", "input.scale", "output.topk_idx",
+    ),
+)
 
 
 def _blockscore_bindings():
@@ -86,7 +95,12 @@ def _blockscore_bindings():
 def test_every_native_slot_has_one_shared_validator_owned_call_abi():
     from cacheon.slots import SLOTS
 
-    unsupported = {"moe.fused_experts", "moe.fused_experts_reduce"}
+    unsupported = {
+        "linear.dense",
+        "moe.fused_experts",
+        "moe.fused_experts_reduce",
+        "moe.fused_routed_experts",
+    }
     assert set(SLOT_CALL_ABIS) == set(SLOTS) - unsupported
     assert set(SLOT_CALL_ABIS) == set(_EXPECTED_CALL_ARGS)
     assert all(SLOTS[slot].call_abi is None for slot in unsupported)
@@ -98,9 +112,10 @@ def test_every_native_slot_has_one_shared_validator_owned_call_abi():
 
 def test_collective_boundaries_are_explicit_not_folded_into_run():
     for slot_name in (
+        "collective.all_gather_into_tensor",
         "collective.all_reduce",
         "collective.ar_residual_rmsnorm",
-        "collective.moe_finalize_ar_rmsnorm",
+        "collective.reduce_scatter_tensor",
     ):
         abi = SLOT_CALL_ABIS[slot_name]
         group = abi.by_name["group.current"]
@@ -113,15 +128,11 @@ def test_collective_boundaries_are_explicit_not_folded_into_run():
 
 
 def test_slot_call_abi_accepts_declarative_blockscore_projection():
-    assert MSA_PREFILL_BLOCK_SCORE_CALL_ABI.call_args == (
-        "input.q", "input.index_k_cache", "input.req_to_token", "input.slot_ids",
-        "input.cu_seqlens", "input.seq_lens", "input.prefix_lens",
-        "input.max_seqlen_q", "input.max_seqlen_k", "input.block_size_q",
-        "input.block_size_k", "input.topk", "input.init_blocks",
-        "input.local_blocks", "input.scale", "input.cu_seqblocks_q",
-        "input.max_seqblock_q", "input.all_seqblock_q", "output.topk_idx",
+    assert _BLOCKSCORE_TEST_ABI.call_args == (
+        "input.q", "input.index_k_cache", "input.max_seqlen_k",
+        "input.block_size_k", "input.scale", "output.topk_idx",
     )
-    specializes = MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+    specializes = _BLOCKSCORE_TEST_ABI.validate_plan(
         role="run",
         bindings=_blockscore_bindings(),
         specializes={"input.block_size_k": 128},
@@ -131,7 +142,7 @@ def test_slot_call_abi_accepts_declarative_blockscore_projection():
     )
 
     assert specializes == (("input.block_size_k", 128),)
-    assert MSA_PREFILL_BLOCK_SCORE_CALL_ABI.specialization_capabilities(
+    assert _BLOCKSCORE_TEST_ABI.specialization_capabilities(
         specializes
     ) == {"block_size": 128}
 
@@ -140,13 +151,13 @@ def test_slot_call_abi_rejects_unknown_resource_and_kind_confusion():
     bindings = list(_blockscore_bindings())
     bindings[0] = ArtifactBinding("input.not_declared", "tensor")
     with pytest.raises(ArtifactABIError, match="unknown slot resource"):
-        MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+        _BLOCKSCORE_TEST_ABI.validate_plan(
             role="run", bindings=bindings, specializes={}, prelaunch=()
         )
 
     bindings[0] = ArtifactBinding("input.q", "scalar", cast="i64")
     with pytest.raises(ArtifactABIError, match="not allowed for slot resource"):
-        MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+        _BLOCKSCORE_TEST_ABI.validate_plan(
             role="run", bindings=bindings, specializes={}, prelaunch=()
         )
 
@@ -165,7 +176,7 @@ def test_tensor_projection_matrix_covers_descriptor_pointer_and_metadata():
         ),
         ArtifactBinding("output.topk_idx", "tensor"),
     )
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+    _BLOCKSCORE_TEST_ABI.validate_plan(
         role="run", bindings=bindings, specializes={}, prelaunch=()
     )
 
@@ -176,7 +187,7 @@ def test_tensor_projection_matrix_covers_descriptor_pointer_and_metadata():
 
 def test_tensor_projection_matrix_rejects_implicit_or_ill_typed_coercions():
     with pytest.raises(ArtifactABIError, match="not allowed for slot resource"):
-        MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+        _BLOCKSCORE_TEST_ABI.validate_plan(
             role="run",
             bindings=(
                 ArtifactBinding("input.q", "pointer"),
@@ -195,7 +206,7 @@ def test_tensor_projection_matrix_rejects_implicit_or_ill_typed_coercions():
 
 def test_output_metadata_projection_does_not_claim_write_coverage():
     with pytest.raises(ArtifactABIError, match="does not write slot outputs"):
-        MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+        _BLOCKSCORE_TEST_ABI.validate_plan(
             role="run",
             bindings=(
                 ArtifactBinding(
@@ -240,7 +251,7 @@ def test_bounded_nested_aggregate_projection_covers_cute_algebra_values():
             ),
         ),
     )
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+    _BLOCKSCORE_TEST_ABI.validate_plan(
         role="run",
         bindings=(aggregate, ArtifactBinding("output.topk_idx", "tensor")),
         specializes={},
@@ -293,7 +304,7 @@ def test_slot_call_abi_requires_every_output_to_be_written():
         if binding.source != "output.topk_idx"
     )
     with pytest.raises(ArtifactABIError, match="does not write slot outputs"):
-        MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+        _BLOCKSCORE_TEST_ABI.validate_plan(
             role="run", bindings=bindings, specializes={}, prelaunch=()
         )
 
@@ -304,14 +315,14 @@ def test_multi_export_pipeline_checks_output_coverage_across_run_steps():
         for binding in _blockscore_bindings()
         if binding.source != "output.topk_idx"
     )
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+    _BLOCKSCORE_TEST_ABI.validate_plan(
         role="run",
         bindings=first,
         specializes={"input.block_size_k": 128},
         prelaunch=(),
         require_outputs=False,
     )
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_pipeline(
+    _BLOCKSCORE_TEST_ABI.validate_pipeline(
         (
             ("run", first, ()),
             (
@@ -322,14 +333,14 @@ def test_multi_export_pipeline_checks_output_coverage_across_run_steps():
         )
     )
     with pytest.raises(ArtifactABIError, match="does not write slot outputs"):
-        MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_pipeline(
+        _BLOCKSCORE_TEST_ABI.validate_pipeline(
             (("run", first, ()),)
         )
 
 
 def test_compile_time_specialization_requires_validator_descriptor_fact():
     with pytest.raises(ArtifactABIError, match="lacks a validator capability fact"):
-        MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
+        _BLOCKSCORE_TEST_ABI.validate_plan(
             role="run",
             bindings=_blockscore_bindings(),
             specializes={"input.scale": 0.0},

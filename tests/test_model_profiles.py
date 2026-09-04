@@ -8,14 +8,19 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from cacheon.slots import Activation, _moe_reference, get_slot, slot_for_model  # noqa: E402
+from cacheon.model_profiles import model_profile  # noqa: E402
+from cacheon.slots import (  # noqa: E402
+    SlotProfile,
+    get_slot,
+    slot_for_model,
+    specialize_slot,
+)
 from cacheon.verify import verify_entry_from_source  # noqa: E402
 
 _SMALL_SHAPE = {"num_tokens": 8, "num_experts": 4, "hidden": 64, "inter": 64, "topk": 2}
 
 
 def test_slot_for_model_generic_unchanged():
-    # No model key -> identical object to the generic slot (existing bundles untouched).
     assert slot_for_model("moe.fused_experts", None) is get_slot("moe.fused_experts")
     assert slot_for_model("moe.fused_experts", "UnknownModel") is get_slot("moe.fused_experts")
 
@@ -26,10 +31,8 @@ def test_slot_for_model_m3_swaps_activation_and_correctness():
     assert generic.correctness.mode == "matched_ratio"
     assert m3.correctness.mode == "cosine" and m3.correctness.min_cosine == 0.985
     assert generic.call_abi is m3.call_abi is None
-    # alias resolves to the same profile
     assert slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4").correctness.mode == "cosine"
 
-    # the rebound reference computes swigluoai, not SiLU
     inp = generic.make_inputs(dtype=torch.float32, device="cpu", seed=0,
                               num_tokens=8, num_experts=4, hidden=32, inter=16, topk=2)
     ref_silu = generic.invoke_reference(inp)[0]
@@ -37,17 +40,57 @@ def test_slot_for_model_m3_swaps_activation_and_correctness():
     assert not torch.allclose(ref_silu, ref_swig, atol=1e-3)
 
 
-def test_moe_reference_swigluoai_differs_from_silu():
-    g = torch.Generator().manual_seed(0)
-    x = torch.randn(8, 32, generator=g) * 0.1
-    w13 = torch.randn(4, 32, 32, generator=g) * 0.05  # 2I=32 -> I=16
-    w2 = torch.randn(4, 32, 16, generator=g) * 0.05
-    ids = torch.randint(0, 4, (8, 2), generator=g).to(torch.int32)
-    sc = torch.rand(8, 2, generator=g)
-    w = (sc / sc.sum(1, keepdim=True)).float()
-    silu = _moe_reference(x, w13, w2, ids, w)  # default SiLU
-    swig = _moe_reference(x, w13, w2, ids, w, Activation("swigluoai", 1.702, 7.0))
-    assert not torch.allclose(silu, swig, atol=1e-3)
+def test_glm53_registered_profiles_cover_the_measured_call_regimes():
+    members = ("collective.all_gather_into_tensor", "collective.all_reduce",
+               "collective.reduce_scatter_tensor", "linear.dense",
+               "moe.fused_routed_experts", "norm.fused_add_rmsnorm")
+    profiles = {name: slot_for_model(name, "GLM-5.3-NVFP4").shapes for name in members}
+    assert all(model_profile("GLM-5.3-NVFP4", name) for name in members)
+    assert profiles["collective.all_reduce"] == ({"num_tokens": 16384, "hidden": 6144},)
+    assert {(s["num_tokens"], s["hidden"]) for s in profiles[members[0]]} == {
+        (6, 6144), (32, 6144),
+    }
+    assert {s["num_tokens"] for s in profiles["norm.fused_add_rmsnorm"]} == {
+        6, 24, 32, 128, 4096, 16384,
+    }
+    dense = profiles["linear.dense"]
+    assert {(s["input_dim"], s["output_dim"]) for s in dense} == {
+        (512, 6144), (2048, 4096), (2048, 16384), (3072, 6144),
+        (6144, 160), (6144, 1024), (6144, 2624), (6144, 6144),
+        (16384, 6144),
+    }
+    assert {s["num_tokens"] for s in dense} >= {6, 24, 32, 128, 4096, 16384}
+
+
+def test_slot_for_model_glm53_correctness_is_calibrated_cosine():
+    # Regression for the false-FAIL fallback: with no profile correctness the
+    # GLM NVFP4 slots inherited the generic elementwise matched_ratio gate,
+    # which NVFP4 cannot pass. The registered gate is the measured floor
+    # (glm53_nvfp4_gate.py 2026-08-30) WITH the energy guard — cosine alone
+    # is scale-invariant and passes a kernel that drops routed_scaling.
+    for key in ("GLM-5.3", "GLM-5.3-NVFP4"):
+        c = slot_for_model("moe.fused_routed_experts", key).correctness
+        assert c.mode == "cosine"
+        assert c.min_cosine == 0.985
+        assert c.max_rel_norm_err == 0.05
+
+
+def test_m3_specialized_routing_draw_follows_profile():
+    shape = dict(num_tokens=8, num_experts=8, hidden=64, inter=32, topk=3,
+                 dtype=torch.float32, device="cpu", seed=3)
+    # M3 (fused shared expert): last id column pinned to experts-1 with weight 1.0,
+    # routed weights normalized then scaled 2x — the pre-refactor behavior.
+    m3 = slot_for_model("moe.fused_experts", "MiniMax-M3").make_inputs(**shape)
+    assert torch.all(m3["topk_ids"][:, -1] == 7)
+    assert torch.all(m3["topk_weights"][:, -1] == 1.0)
+    assert torch.allclose(m3["topk_weights"][:, :-1].sum(-1),
+                          torch.full((8,), 2.0), atol=1e-5)
+    assert m3["__moe_num_fused_shared_experts__"] == 1
+    assert m3["__moe_activation__"] == "swigluoai"
+def test_quant_profile_without_shapes_is_rejected():
+    bad = SlotProfile(quant="nvfp4")
+    with pytest.raises(ValueError, match="no shapes"):
+        specialize_slot(get_slot("moe.fused_experts"), bad)
 
 
 # A CPU override bundle source: just the torch reference (the device @cute.jit epilogue is
