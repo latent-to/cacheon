@@ -772,6 +772,11 @@ class EvaluationStackManifest:
         return json.loads(self._catalog_json)
 
     @property
+    def sealed_target_spec_digests(self) -> Mapping[str, str]:
+        """Target spec digests of the catalog this stack was sealed under."""
+        return MappingProxyType(dict(_catalog_spec_rows(self._catalog_json)))
+
+    @property
     def entries(self) -> Mapping[str, ContributionRef]:
         return MappingProxyType(dict(self._entries))
 

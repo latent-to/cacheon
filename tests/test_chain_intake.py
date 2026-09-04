@@ -1556,13 +1556,6 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
         plan, evidence = _settlement_plan(store, lease)
         store.commit_settlement(lease, plan, evidence, current_block=11)
         context = _context("validator", "miner")
-        with pytest.raises(IntakeError, match="catalogs"):
-            store.build_weight_projection(
-                policy=POLICY,
-                context=context,
-                catalogs={},
-                netuid=SCOPE.netuid,
-            )
         assert _policy_metadata(store) is None
         legacy = POLICY.to_dict()
         legacy["policy_version"] = predecessor_version
@@ -1573,7 +1566,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
         projection = store.build_weight_projection(
             policy=POLICY,
             context=context,
-            catalogs={candidate.arena_digest: catalog},
+            catalog=catalog,
             netuid=SCOPE.netuid,
         )
         assert projection.crown_count == 1
@@ -1614,7 +1607,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,
-                catalogs={candidate.arena_digest: catalog},
+                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
         store._db.execute(
@@ -1625,7 +1618,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
             store.build_weight_projection(
                 policy=EmissionsPolicyManifest(101, 20, 100_000),
                 context=context,
-                catalogs={candidate.arena_digest: catalog},
+                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
 
@@ -1641,7 +1634,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,
-                catalogs={candidate.arena_digest: catalog},
+                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
         retained = SQLiteWeightPublicationJournal.reopen_from_head(store)
@@ -1665,7 +1658,7 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
         projection = store.build_weight_projection(
             policy=POLICY,
             context=context,
-            catalogs={candidate.arena_digest: catalog, staging.arena_digest: catalog},
+            catalog=catalog,
             netuid=SCOPE.netuid,
         )
         assert projection.weights_ppm == (("miner", 1_000_000),)
@@ -1674,12 +1667,12 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
         assert store.evaluation_stack(staging.arena_digest).generation == 0
 
     with _store(tmp_path) as reopened:
-        # A restart must not reactivate a persisted generation-zero arena.  Its
-        # catalog is optional because it has no economic authority yet.
+        # A restart must not reactivate a persisted generation-zero arena: it has
+        # no economic authority yet, so it is never projected.
         projection = reopened.build_weight_projection(
             policy=POLICY,
             context=context,
-            catalogs={candidate.arena_digest: catalog},
+            catalog=catalog,
             netuid=SCOPE.netuid,
         )
         assert projection.weights_ppm == (("miner", 1_000_000),)
@@ -1696,7 +1689,7 @@ def test_all_uncrowned_bootstrap_remains_an_explicit_fail_closed_policy(tmp_path
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,
-                catalogs={staging.arena_digest: catalog},
+                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
         assert _policy_metadata(store) is None

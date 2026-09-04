@@ -390,13 +390,10 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
             else:
                 from cacheon.target_catalog import default_target_catalog
 
-                catalog = default_target_catalog()
-                states = store.evaluation_stacks()
-                catalogs = {state.arena_digest: catalog for state in states}
                 projection = store.build_weight_projection(
                     policy=policy,
                     context=context,
-                    catalogs=catalogs,
+                    catalog=default_target_catalog(),
                     netuid=args.netuid,
                 )
             journal = SQLiteWeightPublicationJournal(store, projection)
@@ -1312,13 +1309,10 @@ def cmd_push_weight_offer(args: argparse.Namespace) -> int:
         else:
             from cacheon.target_catalog import default_target_catalog
 
-            catalog = default_target_catalog()
-            states = store.evaluation_stacks()
-            catalogs = {state.arena_digest: catalog for state in states}
             projection = store.build_weight_projection(
                 policy=policy,
                 context=context,
-                catalogs=catalogs,
+                catalog=default_target_catalog(),
                 netuid=args.netuid,
             )
         offer = CurrentWeightOffer.from_legacy_projection(projection)

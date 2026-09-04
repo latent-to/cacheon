@@ -209,6 +209,15 @@ the pod is the proof of the deployment. The launch digest of ordinary source
 bundles is unchanged; the resident audit binding digest no longer carries a
 null compile-profile key.
 
+The same rotation surfaced a latent weights defect on 2026-09-04: the reward
+projection required every crowned stack's sealed catalog snapshot to equal the
+live catalog byte for byte, so the four crowned arenas sealed under
+`dd61300c…` could not be projected on the new tree and the weight-offer
+service failed every tick. The fence now compares the reward-relevant catalog
+policy only (target identity, structure, contracts, and composition rules);
+admission policy and retired sections may differ without re-crowning. See
+`docs/validator-guide/settlement-and-weights.md`.
+
 ### Routing-only resident screen
 
 The abbreviated-serving stage may keep a stock engine resident and hot-swap a

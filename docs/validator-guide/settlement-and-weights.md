@@ -215,7 +215,12 @@ exact vector readback.
 
 Projection is global, not one `set-weights` call per target. Generation-zero arenas
 may contribute retained PASS history but do not become active stack authorities. The
-builder requires catalog coverage for every crowned stack and binds the policy digest.
+builder projects every crowned stack under the live reward catalog and binds the policy
+digest. A crowned stack carries the catalog snapshot it was sealed under; the projection
+refuses that stack when the sealed and live catalogs differ in reward-relevant policy
+(target identity, structure, contracts, or composition rules). Admission policy
+(`allowed_features`) and sections outside `targets` and `composition_rules` may differ
+without re-crowning, so retiring an admission lane does not orphan crowned arenas.
 The v1.1/v1.3/v1.4 bindings advance to v1.5 only with identical numeric policy
 fields; unrelated policy changes remain refused.
 
@@ -523,6 +528,7 @@ retained design intent and the reserved durable schema are described in
 | Post-submit chain authority unavailable | Immediate `held` | Restore authoritative reads before release/retry |
 | Previously confirmed vector changes | `held` | Treat as an incident; compare chain history and signer activity |
 | Emissions parameters differ from bound policy | Projection refused | Use the consensus-approved bound policy or migrate authority explicitly |
+| Crowned stack's sealed catalog and the live catalog differ in target identity, structure, contracts, or composition rules | Projection refused (`evaluation stack and reward catalog differ`) | Restore the catalog or re-crown under the live one; admission-only differences do not trip this |
 | Weighted recipient UID changes before or after signing | Submission aborts or retained publication is held | Reopen exact finalized metagraph authority; never confirm against reassigned UIDs |
 | Held reservation has no disposition | It remains durable and may block later work until explicit disposition or eligible finalized-block SLA expiry | Preserve and monitor it; use audited `release_hold` or minimum-age `expire` when operator action is required, never silent deletion |
 | Arena must be retired as an authority domain | No generic transition is available | Define and implement a reviewed typed arena-retirement policy before changing economic authority |

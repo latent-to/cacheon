@@ -3313,10 +3313,15 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         *,
         policy,
         context,
-        catalogs: Mapping[str, object],
+        catalog: object,
         netuid: int,
     ) -> WeightProjection:
-        """Build one global all-arena vector from the complete retained authority."""
+        """Build one global all-arena vector from the complete retained authority.
+
+        ``catalog`` is the live reward catalog; every crowned arena is projected
+        under it, and the economics fence refuses a sealed stack whose
+        reward-relevant catalog policy differs from it.
+        """
 
         from cacheon.chain.weights import WeightProjection
         from cacheon.economics import (
@@ -3330,7 +3335,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         if (
             type(policy) is not EmissionsPolicyManifest
             or type(context) is not GlobalRewardProjectionContext
-            or not isinstance(catalogs, Mapping)
+            or type(catalog) is not TargetCatalog
             or type(netuid) is not int
             or netuid < 0
         ):
@@ -3348,10 +3353,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("active reward claim belongs to an absent evaluation arena")
         if set(by_arena) - active_ids:
             raise IntakeError("active reward claim belongs to an uncrowned evaluation arena")
-        if set(catalogs) - state_ids:
-            raise IntakeError("reward catalog names an absent evaluation arena")
-        if active_ids - set(catalogs):
-            raise IntakeError("reward catalogs do not cover every crowned evaluation arena")
         for claim in standing:
             self._reopen_claim_evidence(claim.retained_evidence_digest, "crowned")
         for claim in discovery:
@@ -3360,9 +3361,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
         authorities = []
         for state in active_states:
-            catalog = catalogs[state.arena_digest]
-            if type(catalog) is not TargetCatalog:
-                raise IntakeError("reward catalog is not exactly typed")
             authorities.append(
                 ArenaRewardAuthority(
                     catalog,
