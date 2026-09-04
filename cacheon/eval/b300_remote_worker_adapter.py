@@ -452,31 +452,22 @@ def run_with_runtime(
                     " deployment authorities"
                 )
             body = wire.body
-            candidates = body.get("candidates")
+            from cacheon.chain.qualification_request import require_commissioned_incumbent
+
+            service = runtime._commissioned_service
+            if service is not None and body.get("screen_lane") == "reproduction":
+                qualification_commission = service.reproduction_commission
+            require_commissioned_incumbent(body, qualification_commission.construction)
+            candidates = body["candidates"]
             # Cohort size is enforced against the sealed manifest capacity by
             # B300RemoteQualificationAdapter.run before any resident work.
-            if (
-                type(candidates) is not list
-                or not candidates
-                or any(
-                    type(row) is not dict or "publication" not in row
-                    for row in candidates
-                )
-            ):
-                raise AdapterError(
-                    "qualification request does not contain a closed promoted cohort"
-                )
             publications = resolve_cohort_publications(
                 outer,
                 request_dir,
                 candidates,
                 runtime.paths.publication_root,
             )
-            screen_lane = body.get("screen_lane")
-            if screen_lane not in {"primary", "reproduction"}:
-                raise AdapterError(
-                    "qualification request lacks an exact commissioned stage"
-                )
+            screen_lane = body["screen_lane"]
             qualification_adapter = runtime.qualification_adapter_for(
                 publications,
                 screen_lane,

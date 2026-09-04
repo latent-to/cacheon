@@ -128,9 +128,11 @@ digest. Each target also binds a target-spec digest and a contract digest. A
 validator does not reinterpret a historical contribution through whatever
 catalog happens to be installed later: evaluation materializes a stack only
 under the exact catalog it was sealed with, and a standing reward claim binds
-the sealed target-spec digest. Reward projection tolerates a live catalog that
-differs from the sealed one in admission policy alone (`allowed_features`,
-sections outside `targets` and `composition_rules`); any difference in target
-identity, structure, contracts, or composition rules refuses the projection.
+the sealed target-spec digest. Reward projection reads each stack's own retained
+catalog, including historical v1 composition and current v2 exclusions. It checks
+active membership, displacement, requirements and applicable composition without
+loading retired admission or provider registries. A changed installed catalog
+does not require re-crowning; changed retained bytes or a substituted target-spec
+digest still fail their existing evidence bindings.
 
 Source: [`cacheon/target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).

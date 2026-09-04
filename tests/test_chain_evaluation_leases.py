@@ -125,7 +125,7 @@ def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
 def _complete_screen(store: FinalizedIntakeStore, lease: EvaluationLease) -> None:
     assert len(lease.members) == 1
     reservation_id = lease.members[0].reservation_id
-    service = _h("leased-service")
+    service = _h("service")
     active = store.begin_screen(reservation_id, service_digest=service)
     candidate = _h(f"leased-candidate:{reservation_id}:{active.screen_attempts}")
     receipt = ArenaScreenReceipt(

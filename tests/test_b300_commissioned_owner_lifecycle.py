@@ -618,6 +618,8 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
         body={
             "candidates": [{"publication": candidate.publication.to_dict()}],
             "screen_lane": "reproduction",
+            "incumbent_stack_digest": owner.construction.incumbent_stack.digest,
+            "incumbent_tree_digest": owner.construction.incumbent_tree_digest,
         }
     )
     worker_fixtures._patch_authenticated_carrier(

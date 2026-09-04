@@ -165,7 +165,6 @@ def compose_weight_offer_push(
         GlobalRewardProjectionContext,
         MetagraphMember,
     )
-    from cacheon.target_catalog import default_target_catalog
 
     fallbacks = [stage.fallback_endpoint] if stage.fallback_endpoint else None
     subtensor = chain.connect(
@@ -204,7 +203,6 @@ def compose_weight_offer_push(
                     )
                 ),
             )
-            catalog = default_target_catalog()
             with store_factory() as store:
                 states = store.evaluation_stacks()
                 standing, discovery = store.active_reward_claims()
@@ -217,7 +215,6 @@ def compose_weight_offer_push(
                     projection = store.build_weight_projection(
                         policy=policy,
                         context=context,
-                        catalog=catalog,
                         netuid=netuid,
                     )
                 elif stage.burn_hotkey:
@@ -231,7 +228,6 @@ def compose_weight_offer_push(
                     projection = store.build_weight_projection(
                         policy=policy,
                         context=context,
-                        catalog=catalog,
                         netuid=netuid,
                     )
             offer = CurrentWeightOffer.from_legacy_projection(projection)

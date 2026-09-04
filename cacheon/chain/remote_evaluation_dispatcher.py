@@ -16,10 +16,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import re
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import Iterable, Protocol
 
 from cacheon.arena_service import (
@@ -37,6 +35,9 @@ from cacheon.chain.evaluation_coordinator import (
     _LeaseHeartbeat,
 )
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
+from cacheon.chain.qualification_request import (
+    INCUMBENT_FIELDS, LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS,
+)
 from cacheon.chain.remote_qualification_evidence import (
     _SCHEMA_VERSION,
     RemoteEvaluationDispatcherError,
@@ -63,7 +64,6 @@ from cacheon.eval.qualification_intake import (
     QualificationReservation,
 )
 from cacheon.eval.native_artifact import NativeArtifactFile
-from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.stack_identity import (
     canonical_digest,
     canonical_json_bytes,
@@ -612,22 +612,16 @@ def _validate_request_body(stage: str, value: dict[str, object]) -> None:
         except (TypeError, ValueError, RuntimeError) as exc:
             raise RemoteEvaluationDispatcherError("screen request body is invalid") from exc
         return
-    fields = {
-        "candidates",
-        "kind",
-        "qualification_policy_digest",
-        "schema_version",
-        "screen_lane",
-        "service_digest",
-    }
     if (
-        set(value) != fields
+        frozenset(value) not in (LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS)
         or value["kind"] != "qualification_work"
         or value["schema_version"] != _SCHEMA_VERSION
         or type(value["candidates"]) is not list
     ):
         raise RemoteEvaluationDispatcherError("qualification request body is not closed")
     try:
+        for field in INCUMBENT_FIELDS & value.keys():
+            _digest(value[field], field)
         _digest(value["qualification_policy_digest"], "qualification_policy_digest")
         service_digest = _digest(value["service_digest"], "service_digest")
     except (TypeError, ValueError) as exc:
@@ -642,7 +636,6 @@ def _validate_request_body(stage: str, value: dict[str, object]) -> None:
         )
     ):
         raise RemoteEvaluationDispatcherError("qualification request cohort is empty")
-    reservations = []
     for row in value["candidates"]:
         if type(row) is not dict or set(row) != candidate_fields:
             raise RemoteEvaluationDispatcherError("qualification request candidate is malformed")
@@ -668,7 +661,6 @@ def _validate_request_body(stage: str, value: dict[str, object]) -> None:
             or candidate_digest != expected_candidate
         ):
             raise RemoteEvaluationDispatcherError("qualification request provenance differs")
-        reservations.append(reservation)
 
 def _request_body_reservation_ids(
     stage: str,
@@ -773,30 +765,6 @@ def _request_body_for_screen(
         "service_digest": coordinator.service.identity,
     }
 
-def _request_body_for_qualification(
-    coordinator: EvaluationCoordinator,
-    claim: ClaimedQualificationEvaluation,
-) -> dict[str, object]:
-    return {
-        "candidates": [
-            {
-                "candidate_digest": candidate.digest,
-                "publication": publication.to_dict(),
-                "reservation": candidate.reservation.to_dict(),
-                "screen_receipt": receipt.to_dict(),
-            }
-            for candidate, publication, receipt in zip(
-                claim.candidates, claim.publications, claim.screen_receipts, strict=True
-            )
-        ],
-        "kind": "qualification_work",
-        "qualification_policy_digest": (
-            coordinator.service.manifest.qualification_policy_digest
-        ),
-        "schema_version": _SCHEMA_VERSION,
-        "screen_lane": claim.screen_lane,
-        "service_digest": coordinator.service.identity,
-    }
 
 def seal_remote_request(
     lease: EvaluationLease,
@@ -975,9 +943,6 @@ class RemoteEvaluationDispatcher:
         coordinator: EvaluationCoordinator,
         transport: AuthenticatedWorkerTransport,
         credential: RemoteWorkerCredential,
-        qualification_evidence_root: str | Path | None = None,
-        qualification_incumbent_stack: EvaluationStackManifest | None = None,
-        qualification_incumbent_tree_digest: str | None = None,
     ):
         if (
             type(coordinator) is not EvaluationCoordinator
@@ -996,57 +961,10 @@ class RemoteEvaluationDispatcher:
         ):
             raise RemoteEvaluationDispatcherError("remote transport differs from CPU authority")
         coordinator.readiness.validate(coordinator.service)
-        evidence_root = (
-            None
-            if qualification_evidence_root is None
-            else Path(qualification_evidence_root)
-        )
-        if evidence_root is not None and (
-            not evidence_root.is_absolute()
-            or evidence_root != Path(os.path.normpath(evidence_root))
-        ):
-            raise RemoteEvaluationDispatcherError(
-                "CPU qualification evidence root is not canonical and absolute"
-            )
-        configured = (
-            evidence_root is not None,
-            qualification_incumbent_stack is not None,
-            qualification_incumbent_tree_digest is not None,
-        )
-        if any(configured) and not all(configured):
-            raise RemoteEvaluationDispatcherError(
-                "CPU qualification authority must configure evidence and incumbent together"
-            )
-        if qualification_incumbent_stack is not None:
-            if type(qualification_incumbent_stack) is not EvaluationStackManifest:
-                raise RemoteEvaluationDispatcherError(
-                    "CPU qualification incumbent stack is not exactly typed"
-                )
-            incumbent_tree_digest = _digest(
-                qualification_incumbent_tree_digest,
-                "qualification_incumbent_tree_digest",
-            )
-            runtime = coordinator.service.manifest.runtime
-            if (
-                qualification_incumbent_stack.runtime_digest
-                != runtime.runtime_digest
-                or qualification_incumbent_stack.base_engine_digest
-                != runtime.base_engine_digest
-                or qualification_incumbent_stack.arena_digest
-                != coordinator.service.identity
-            ):
-                raise RemoteEvaluationDispatcherError(
-                    "CPU qualification incumbent differs from the sealed service"
-                )
-        else:
-            incumbent_tree_digest = None
         self.coordinator = coordinator
         self.transport = transport
         self.credential = credential
         self.transport_identity = identity
-        self.qualification_evidence_root = evidence_root
-        self.qualification_incumbent_stack = qualification_incumbent_stack
-        self.qualification_incumbent_tree_digest = incumbent_tree_digest
 
     def _validate_live_transport(self) -> None:
         self.coordinator.readiness.validate(self.coordinator.service)

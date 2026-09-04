@@ -116,12 +116,12 @@ def _global_context(block: int = 200, members=None):
     )
 
 
-def _project(policy, catalog, stack, context, standing, discovery=(), generation=7):
+def _project(policy, stack, context, standing, discovery=(), generation=7):
     standing = tuple(standing)
     return project_global_rewards(
         policy,
         context,
-        (ArenaRewardAuthority(catalog, stack, generation, tuple(standing)),),
+        (ArenaRewardAuthority(stack, generation, tuple(standing)),),
         standing,
         discovery,
     )
@@ -189,7 +189,6 @@ def test_standing_projection_is_relative_grouped_and_exactly_normalized() -> Non
     stack = _stack(catalog)
     result = _project(
         _policy(),
-        catalog,
         stack,
         _global_context(),
         (
@@ -208,7 +207,6 @@ def test_multiple_families_for_one_hotkey_are_summed_before_normalization() -> N
     stack = _stack(catalog)
     result = _project(
         _policy(),
-        catalog,
         stack,
         _global_context(),
         (
@@ -223,7 +221,7 @@ def test_atomic_target_is_one_family_and_suppresses_singletons() -> None:
     catalog = _catalog()
     atomic = _stack(catalog, ("atomic.ab",))
     claim = _claim(atomic, "atomic.ab", "alice", 1_250_000)
-    result = _project(_policy(), catalog, atomic, _global_context(), (claim,))
+    result = _project(_policy(), atomic, _global_context(), (claim,))
     assert len(result.standing) == 1
     assert result.standing[0].target_id == "atomic.ab"
     assert result.weights_by_hotkey == {"alice": WEIGHT_PPM}
@@ -232,7 +230,6 @@ def test_atomic_target_is_one_family_and_suppresses_singletons() -> None:
     with pytest.raises(EconomicsError, match="overlap"):
         _project(
             _policy(),
-            catalog,
             overlap,
             _global_context(),
             (
@@ -256,21 +253,21 @@ def test_projection_holds_if_any_active_family_is_not_exact(mutation: str) -> No
     elif mutation == "spec":
         claims = (left, replace(right, target_spec_digest=_d("8")))
     with pytest.raises(EconomicsError):
-        _project(_policy(), catalog, stack, _global_context(), claims)
+        _project(_policy(), stack, _global_context(), claims)
 
 
 def test_missing_live_hotkey_burns_its_share_to_the_validator() -> None:
     catalog = _catalog()
     stack = _stack(catalog, ("slot.a",))
     standing = _claim(stack, "slot.a", "ghost", 1_100_000)
-    result = _project(_policy(), catalog, stack, _global_context(), (standing,))
+    result = _project(_policy(), stack, _global_context(), (standing,))
     assert result.standing[0].hotkey == "ghost"
     assert result.weights_by_hotkey == {"validator": WEIGHT_PPM}
 
     standing = replace(standing, hotkey="alice")
     expired = _discovery(hotkey="ghost", block=100)
     result = _project(
-        _policy(), catalog, stack, _global_context(), (standing,), (expired,)
+        _policy(), stack, _global_context(), (standing,), (expired,)
     )
     assert result.expired_discovery_claims == (expired.digest,)
     assert result.weights_by_hotkey == {"alice": WEIGHT_PPM}
@@ -282,14 +279,12 @@ def test_present_families_keep_their_ppm_when_an_absent_share_is_burned() -> Non
     alice = _claim(stack, "slot.a", "alice", 1_100_000)
     present = _project(
         _policy(),
-        catalog,
         stack,
         _global_context(),
         (alice, _claim(stack, "slot.b", "bob", 1_200_000, evidence="7")),
     )
     burned = _project(
         _policy(),
-        catalog,
         stack,
         _global_context(),
         (alice, _claim(stack, "slot.b", "ghost", 1_200_000, evidence="7")),
@@ -311,7 +306,7 @@ def test_missing_live_discovery_hotkey_burns_only_its_bounty_share() -> None:
         _discovery("ghost", 3, proposal="8", evidence="9"),
     )
     result = _project(
-        _policy(), catalog, stack, _global_context(), standing, discoveries
+        _policy(), stack, _global_context(), standing, discoveries
     )
     assert result.weights_by_hotkey == {
         "alice": 274_638,
@@ -328,21 +323,21 @@ def test_discovery_expiry_is_exact_and_claims_cannot_be_renewed() -> None:
     standing = (_claim(stack, "slot.a", "alice", 1_100_000),)
     claim = _discovery(block=150)
     assert _project(
-        _policy(), catalog, stack, _global_context(199), standing, (claim,)
+        _policy(), stack, _global_context(199), standing, (claim,)
     ).discovery
     assert _project(
-        _policy(), catalog, stack, _global_context(200), standing, (claim,)
+        _policy(), stack, _global_context(200), standing, (claim,)
     ).discovery == ()
 
     renewed = replace(claim, retained_evidence_digest=_d("7"))
     with pytest.raises(EconomicsError, match="renewed"):
         _project(
-            _policy(), catalog, stack, _global_context(199), standing, (claim, renewed)
+            _policy(), stack, _global_context(199), standing, (claim, renewed)
         )
     reused_evidence = replace(claim, proposal_digest=_d("8"))
     with pytest.raises(EconomicsError, match="duplicated"):
         _project(
-            _policy(), catalog, stack, _global_context(199), standing, (claim, reused_evidence)
+            _policy(), stack, _global_context(199), standing, (claim, reused_evidence)
         )
 
 
@@ -352,7 +347,6 @@ def test_disabled_discovery_pool_fails_on_a_live_claim() -> None:
     with pytest.raises(EconomicsError, match="disabled"):
         _project(
             _policy(discovery_pool_ppm=0),
-            catalog,
             stack,
             _global_context(),
             (_claim(stack, "slot.a", "alice", 1_100_000),),
@@ -368,7 +362,7 @@ def test_projection_identity_is_order_stable_and_binds_every_authority() -> None
         _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
     )
     context = _global_context()
-    left = _project(_policy(), catalog, stack, context, claims)
+    left = _project(_policy(), stack, context, claims)
     reordered = GlobalRewardProjectionContext(
         context.chain_scope_digest,
         context.validator_hotkey,
@@ -376,9 +370,9 @@ def test_projection_identity_is_order_stable_and_binds_every_authority() -> None
         context.current_block_hash,
         tuple(reversed(context.metagraph_members)),
     )
-    right = _project(_policy(), catalog, stack, reordered, reversed(claims))
+    right = _project(_policy(), stack, reordered, reversed(claims))
     assert left.digest == right.digest
-    changed = _project(_policy(), catalog, stack, context, claims, generation=8)
+    changed = _project(_policy(), stack, context, claims, generation=8)
     assert changed.digest != left.digest
     assert context.metagraph_digest in context.to_dict().values()
 
@@ -387,17 +381,16 @@ def test_empty_stack_zero_credit_and_future_bounty_fail_closed() -> None:
     catalog = _catalog()
     empty = _stack(catalog, ())
     with pytest.raises(EconomicsError, match="active crown"):
-        _project(_policy(), catalog, empty, _global_context(), ())
+        _project(_policy(), empty, _global_context(), ())
 
     stack = _stack(catalog, ("slot.a",))
     ancient = _claim(stack, "slot.a", "alice", 1_000_001, crowned_block=0)
     with pytest.raises(EconomicsError, match="decayed"):
-        _project(_policy(), catalog, stack, _global_context(1_000_000), (ancient,))
+        _project(_policy(), stack, _global_context(1_000_000), (ancient,))
     future = _discovery(block=201)
     with pytest.raises(EconomicsError, match="newer"):
         _project(
             _policy(),
-            catalog,
             stack,
             _global_context(200),
             (_claim(stack, "slot.a", "alice", 1_100_000),),
@@ -412,7 +405,7 @@ def test_sub_ppm_credit_is_retained_but_not_published_as_zero() -> None:
         _claim(stack, "slot.a", "alice", 1_000_001, crowned_block=100),
         _claim(stack, "slot.b", "bob", 1_200_000, crowned_block=1_600, evidence="7"),
     )
-    result = _project(_policy(), catalog, stack, _global_context(1_600), claims)
+    result = _project(_policy(), stack, _global_context(1_600), claims)
     assert len(result.standing) == 2
     assert result.weights_by_hotkey == {"bob": WEIGHT_PPM}
 
@@ -436,13 +429,11 @@ def test_global_projection_pools_families_before_one_normalization() -> None:
     second = _stack(catalog, ("slot.a", "slot.b"), arena="f")
     authorities = (
         ArenaRewardAuthority(
-            catalog,
             first,
             3,
             (_claim(first, "slot.a", "alice", 1_100_000),),
         ),
         ArenaRewardAuthority(
-            catalog,
             second,
             9,
             (
@@ -469,13 +460,11 @@ def test_any_invalid_arena_holds_the_complete_global_vector() -> None:
     first = _stack(catalog, ("slot.a",), arena="c")
     second = _stack(catalog, ("slot.a", "slot.b"), arena="f")
     valid = ArenaRewardAuthority(
-        catalog,
         first,
         3,
         (_claim(first, "slot.a", "alice", 1_100_000),),
     )
     incomplete = ArenaRewardAuthority(
-        catalog,
         second,
         9,
         (_claim(second, "slot.a", "bob", 1_200_000),),
@@ -510,7 +499,7 @@ def test_non_crowned_pass_keeps_earning_after_another_pass_becomes_active() -> N
     result = project_global_rewards(
         _policy(),
         _global_context(),
-        (ArenaRewardAuthority(catalog, stack, 2, (active,)),),
+        (ArenaRewardAuthority(stack, 2, (active,)),),
         (held, active),
     )
     assert {row.hotkey for row in result.standing} == {"alice", "bob"}
@@ -542,14 +531,13 @@ def _projection_under(catalog: TargetCatalog, snapshot: dict):
     stack = _sealed_stack(catalog, snapshot)
     return _project(
         _policy(),
-        catalog,
         stack,
         _global_context(),
         (_claim(stack, "slot.a", "alice", 1_500_000),),
     )
 
 
-def test_reward_catalog_may_differ_from_sealed_catalog_only_in_admission_policy() -> None:
+def test_retired_admission_policy_does_not_require_recrowning() -> None:
     catalog = _catalog()
     sealed = catalog.snapshot()
     # A retired registry section and an admission feature on an inactive target
@@ -561,25 +549,6 @@ def test_reward_catalog_may_differ_from_sealed_catalog_only_in_admission_policy(
     assert stack.catalog_digest != catalog.digest
     result = _projection_under(catalog, sealed)
     assert result.weights_by_hotkey["alice"] > 0
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda snap: snap["targets"].append(dict(snap["targets"][0], target_id="slot.z")),
-        lambda snap: snap["targets"][0].__setitem__("contract_digest", _d("9")),
-        lambda snap: snap["targets"][1].__setitem__("displaces", ["slot.a"]),
-        lambda snap: snap["targets"][1].__setitem__("conflicts_with", ["slot.b"]),
-        lambda snap: snap.__setitem__("policy_version", "target-catalog.v0"),
-    ],
-    ids=["extra-target", "contract", "structure", "composition", "policy-version"],
-)
-def test_reward_policy_drift_between_sealed_and_live_catalog_holds(mutate) -> None:
-    catalog = _catalog()
-    sealed = catalog.snapshot()
-    mutate(sealed)
-    with pytest.raises(EconomicsError, match="evaluation stack and reward catalog differ"):
-        _projection_under(catalog, sealed)
 
 
 def test_active_target_admission_drift_keeps_the_sealed_claim_binding() -> None:
@@ -597,4 +566,4 @@ def test_active_target_admission_drift_keeps_the_sealed_claim_binding() -> None:
         target_spec_digest=catalog.target_spec_digest("slot.a"),
     )
     with pytest.raises(EconomicsError, match="stale or incompatible"):
-        _project(_policy(), catalog, stack, _global_context(), (claim,))
+        _project(_policy(), stack, _global_context(), (claim,))

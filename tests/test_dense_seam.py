@@ -92,3 +92,29 @@ def test_dense_adapter_candidate_error_is_not_stock_fallback(monkeypatch, layer)
         _Method().apply(layer, torch.randn(3, 5))
     with pytest.raises(RuntimeError, match="dense candidate failed"):
         _Method().apply_into(layer, torch.randn(3, 5), torch.empty(3, 7))
+
+
+@pytest.mark.parametrize("method_name", ["apply", "apply_into"])
+def test_dense_reuses_inference_workspace_outside_capture(monkeypatch, layer, method_name):
+    monkeypatch.setenv("CACHEON_DENSE_SEAM", "1")
+    prepares = []
+
+    def prepare(weight):
+        prepares.append(weight)
+        return weight, torch.ones(1)
+
+    def entry(x, prepared, out):
+        weight, workspace = prepared
+        workspace.zero_()
+        torch.mm(x, weight.t(), out=out)
+
+    dense_seam.install(_registry(entry, prepare))
+    method = getattr(_Method(), method_name)
+    x = torch.randn(3, 5)
+    with torch.inference_mode():
+        output = torch.empty(3, 7)
+        args = (layer, x, output) if method_name == "apply_into" else (layer, x)
+        method(*args)
+    actual = method(*args)
+    assert torch.allclose(actual, x @ layer.weight.t())
+    assert len(prepares) == 1

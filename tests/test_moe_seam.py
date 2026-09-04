@@ -229,6 +229,40 @@ def _routed_registry(entry, prepare):
     return reg
 
 
+@pytest.mark.parametrize("deferred", [False, True])
+def test_routed_workspace_and_deferred_output_survive_inference_capture(
+    monkeypatch, deferred,
+):
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    inputs = _routed_inputs()
+    layer = _routed_layer(inputs)
+    prepares = []
+
+    def prepare(*_args):
+        prepares.append(True)
+        return torch.ones(1)
+
+    def entry(x, _router, _bias, workspace, out):
+        workspace.zero_()
+        out.copy_(x)
+
+    factory = make_moe_deferred_dispatcher if deferred else make_moe_dispatcher
+    call = factory(_baseline_forward, registry=_routed_registry(entry, prepare))
+    with torch.inference_mode():
+        warm = call(layer, inputs["x"], _routed_topk_output(inputs))
+    if deferred:
+        finalize = make_moe_deferred_finalize_dispatcher(
+            lambda *_args: pytest.fail("selected routed output returned to stock")
+        )
+        shared = torch.ones_like(inputs["x"])
+        assert torch.equal(finalize(warm, shared), inputs["x"] + shared)
+    actual = call(layer, inputs["x"], _routed_topk_output(inputs))
+    if deferred:
+        actual = finalize(actual, shared)
+    assert torch.equal(actual, inputs["x"] + 1 if deferred else inputs["x"])
+    assert prepares == [True]
+
+
 def test_routed_moe_dispatches_on_bypassed_routing(monkeypatch):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _routed_inputs()

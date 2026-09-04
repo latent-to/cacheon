@@ -624,16 +624,12 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
             _write_hold_result(authority, plan, observed.carrier_path)
             return observed
 
-    counters = {"batch": 0, "claim": 0, "commit": 0, "import": 0}
+    counters = {"claim": 0, "commit": 0, "import": 0}
     original_claim = RecoverableFinalizedIntakeStore.claim_recoverable_qualification
 
     def counted_claim(store, **kwargs):
         counters["claim"] += 1
         return original_claim(store, **kwargs)
-
-    def forbidden_batch(_batch):
-        counters["batch"] += 1
-        raise AssertionError("remote HOLD reached miner batch classification")
 
     def forbidden_import(*_args, **_kwargs):
         counters["import"] += 1
@@ -660,7 +656,6 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
     )
     transport = HoldTransport(authority, fixtures)
     dispatcher = _dispatcher(authority, transport)
-    monkeypatch.setattr(dispatcher, "_has_no_decision", forbidden_batch)
     durable_commit = dispatcher._commit_remote_hold
     interrupted = False
 
@@ -695,7 +690,7 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
         request_id,
         "remote_qualification_hold:graph_evidence_incomplete",
     )
-    assert counters == {"batch": 0, "claim": 0, "commit": 0, "import": 0}
+    assert counters == {"claim": 0, "commit": 0, "import": 0}
     assert (transport.plans, transport.materializations, transport.publications) == (
         1,
         1,
@@ -974,7 +969,7 @@ def test_expired_prepared_recovery_holds_before_transport_when_renewal_denied(
     ]
 
 
-def test_completed_product_is_requeued_after_incumbent_change(
+def test_completed_product_with_another_request_incumbent_is_held(
     tmp_path: Path,
 ) -> None:
     fixtures = _fixtures()
@@ -990,18 +985,13 @@ def test_completed_product_is_requeued_after_incumbent_change(
         ),
         qualification_incumbent_tree_digest=authority.fixtures._h("other-tree"),
     )
-    with _store(authority) as store:
-        store._db.execute(
-            "UPDATE evaluation_stacks SET generation=1,tree_digest=? WHERE arena_id=?",
-            (authority.fixtures._h("other-tree"), authority.service.identity),
-        )
     outcome = dispatcher.dispatch_once()
-    assert type(outcome).__name__ == "RecoverableQualificationRequeue"
-    assert outcome.outcome.decision == "NO_DECISION"
-    assert outcome.outcome.failure_code == "incumbent_changed"
+    assert type(outcome) is RecoverableQualificationHold
+    assert outcome.reason == "transport_hold:remote_payload_changed"
     with _store(authority) as store:
-        assert store.pending_qualification_recovery() is None
-        assert store.promoted()
+        recovery = store.pending_qualification_recovery()
+        assert recovery is not None and recovery.phase.value == "held"
+    assert (transport.plans, transport.publications) == (1, 1)
 
 
 def test_first_claim_installs_the_commissioned_genesis_incumbent(

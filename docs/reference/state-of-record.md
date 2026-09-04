@@ -10,10 +10,12 @@ different events. Evidence for one does not authorize another.
 
 On **2026-09-05**, the GLM branch incorporated PR #110's source-build-only
 execution path while preserving the GLM catalog's exclusive overlap policy and
-retirement of the M3 attention and dependency-patch surfaces. Reward-policy
-comparison reads both catalog schema versions; it still refuses a historical
-stack whose reward policy differs from the supplied catalog. The reconciled
-source passes CPU validation, but requires a fresh GLM runtime commission.
+retirement of the M3 attention and dependency-patch surfaces. Reward projection
+now reads each retained stack's own catalog, preserving historical v1 and current
+v2 active relationships and exact claim bindings in one global vector. New remote
+qualification requests bind the commissioned incumbent stack and tree before
+resident entry; completed retained requests reopen under their original binding.
+These source changes require a fresh GLM runtime commission.
 
 The GLM-5.3 branch moved the source compatibility target to SGLang `0.5.18` on
 2026-08-30. Exact-image 8xB300 controls now establish full-model generation,

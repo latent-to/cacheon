@@ -22,11 +22,7 @@ from pathlib import Path
 
 from cacheon.arena_service import (
     ArenaCandidateBinding,
-    ArenaQualificationRequest,
-    ArenaScreenReceipt,
-    ArenaServiceError,
     PromotionDecision,
-    ScreenStageResult,
 )
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.chain.evaluation_leases import EvaluationLease
@@ -45,6 +41,7 @@ from cacheon.chain.remote_qualification_hold import (
     RemoteQualificationHoldReason,
     capture_remote_qualification_hold,
 )
+from cacheon.chain.remote_qualification_evidence import _screen_receipt_from_dict
 from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorker,
     B300MainnetWorkerError,
@@ -65,25 +62,12 @@ from cacheon.eval.qualification_intake import (
     QualificationReservation,
 )
 from cacheon.stack_identity import canonical_digest
+from cacheon.chain.qualification_request import (
+    QUALIFICATION_FIELDS, require_commissioned_incumbent,
+)
 
 
-_QUALIFICATION_BODY_FIELDS = frozenset(
-    {
-        "candidates",
-        "kind",
-        "qualification_policy_digest",
-        "schema_version",
-        "screen_lane",
-        "service_digest",
-    }
-)
-_CANDIDATE_FIELDS = frozenset(
-    {"candidate_digest", "publication", "reservation", "screen_receipt"}
-)
 _LOG = logging.getLogger(__name__)
-_SCREEN_RECEIPT_FIELDS = frozenset(
-    {"candidate_digest", "decision", "results", "screen_attempt", "service_digest"}
-)
 _SCALAR_TYPES = {type(None), bool, int, float, str, bytes}
 
 
@@ -195,35 +179,6 @@ def _readiness_matches_deployment(
         and readiness.qualification_policy_digest
         == manifest.qualification_policy_digest
     )
-
-
-def _screen_receipt(value: object) -> ArenaScreenReceipt:
-    if (
-        type(value) is not dict
-        or set(value) != _SCREEN_RECEIPT_FIELDS
-        or type(value["results"]) is not list
-    ):
-        raise B300RemoteQualificationAdapterError(
-            "remote promoted receipt is not a closed object"
-        )
-    try:
-        results = [ScreenStageResult.from_dict(row) for row in value["results"]]
-    except ArenaServiceError as exc:
-        raise B300RemoteQualificationAdapterError(
-            f"remote promoted screen stage is invalid: {exc}"
-        ) from None
-    try:
-        return ArenaScreenReceipt(
-            value["service_digest"],
-            value["candidate_digest"],
-            value["screen_attempt"],
-            tuple(results),
-            PromotionDecision(value["decision"]),
-        )
-    except (TypeError, ValueError, RuntimeError) as exc:
-        raise B300RemoteQualificationAdapterError(
-            "remote promoted receipt is invalid"
-        ) from exc
 
 
 def _qualification_evidence_references(
@@ -484,7 +439,7 @@ class B300RemoteQualificationAdapter:
         body = request.body
         manifest = self.deployment.manifest
         if (
-            set(body) != _QUALIFICATION_BODY_FIELDS
+            set(body) != QUALIFICATION_FIELDS
             or body["kind"] != "qualification_work"
             or type(body["candidates"]) is not list
             or not 1 <= len(body["candidates"]) <= manifest.capacity.max_cohort_size
@@ -506,21 +461,13 @@ class B300RemoteQualificationAdapter:
                 "remote request differs from deployment service, policy, lane, or READY authority"
             )
 
+        require_commissioned_incumbent(body, self.construction)
         candidate_rows = []
         receipt_rows = []
         for row in body["candidates"]:
-            if type(row) is not dict or set(row) != _CANDIDATE_FIELDS:
-                raise B300RemoteQualificationAdapterError(
-                    "remote qualification candidate is not closed"
-                )
-            try:
-                reservation = QualificationReservation.from_dict(row["reservation"])
-            except (TypeError, ValueError, RuntimeError) as exc:
-                raise B300RemoteQualificationAdapterError(
-                    "remote qualification reservation is invalid"
-                ) from exc
+            reservation = QualificationReservation.from_dict(row["reservation"])
             publication = self.publications.resolve(row["publication"])
-            receipt = _screen_receipt(row["screen_receipt"])
+            receipt = _screen_receipt_from_dict(row["screen_receipt"])
             try:
                 candidate = ArenaCandidateBinding(
                     reservation,
@@ -556,12 +503,6 @@ class B300RemoteQualificationAdapter:
                 request.initial_expires_block,
                 request.initial_expires_block,
             )
-            qualification = ArenaQualificationRequest(
-                manifest.digest,
-                manifest.qualification_policy_digest,
-                candidates,
-                receipts,
-            )
         except (TypeError, ValueError, RuntimeError) as exc:
             raise B300RemoteQualificationAdapterError(
                 "remote qualification lease or promoted cohort is invalid"
@@ -569,8 +510,6 @@ class B300RemoteQualificationAdapter:
         if (
             lease.reservation_ids
             != tuple(row.reservation.reservation_digest for row in candidates)
-            or qualification.candidates != candidates
-            or qualification.screen_receipts != receipts
         ):
             raise B300RemoteQualificationAdapterError(
                 "remote lease differs from the exact promoted cohort"

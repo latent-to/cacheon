@@ -259,6 +259,8 @@ def _body(
             }
         ],
         "kind": "qualification_work",
+        "incumbent_stack_digest": configured.construction.incumbent_stack.digest,
+        "incumbent_tree_digest": configured.construction.incumbent_tree_digest,
         "qualification_policy_digest": (
             manifest.qualification_policy_digest
             if policy_digest is None

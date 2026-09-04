@@ -357,7 +357,10 @@ def test_commission_materializes_and_resolves_each_fifo_publication(
     fixtures._publication_tar(distinct_publication, distinct_archive)
     paths = _adapter_paths(tmp_path)
     commission = object.__new__(adapter.B300RemoteQualificationCommission)
-    fixed_authorities = (object(), object(), object())
+    fixed_authorities = (object(), SimpleNamespace(
+        incumbent_stack=SimpleNamespace(digest="a" * 64),
+        incumbent_tree_digest="b" * 64,
+    ), object())
     object.__setattr__(commission, "deployment", fixed_authorities[0])
     object.__setattr__(commission, "construction", fixed_authorities[1])
     object.__setattr__(commission, "readiness", fixed_authorities[2])
@@ -418,6 +421,8 @@ def test_commission_materializes_and_resolves_each_fifo_publication(
                         {"publication": expected_publication.to_dict()}
                     ],
                     "screen_lane": "primary",
+                    "incumbent_stack_digest": "a" * 64,
+                    "incumbent_tree_digest": "b" * 64,
                 }
             )
             wires.append(wire)
@@ -469,9 +474,15 @@ def test_qualification_archive_mismatch_never_builds_or_runs_adapter(
     )
     outer = spool.load_json(job_dir / "request.json")
     archive = spool.artifact_for_role(outer, job_dir, "candidate_publication")
-    wire = SimpleNamespace(
-        body={"candidates": [{"publication": {"changed": "wire"}}]}
-    )
+    object.__setattr__(commission, "construction", SimpleNamespace(
+        incumbent_stack=SimpleNamespace(digest="a" * 64),
+        incumbent_tree_digest="b" * 64,
+    ))
+    wire = SimpleNamespace(body={
+        "candidates": [{"publication": {"changed": "wire"}}],
+        "screen_lane": "primary", "incumbent_stack_digest": "a" * 64,
+        "incumbent_tree_digest": "b" * 64,
+    })
     _patch_authenticated_carrier(
         monkeypatch, stage="qualification", wire=wire
     )
@@ -515,6 +526,10 @@ def test_qualification_execution_failure_is_epoch_fatal(
 
     commission = object.__new__(adapter.B300RemoteQualificationCommission)
     commissioned = object.__new__(B300RemoteQualificationAdapter)
+    object.__setattr__(commission, "construction", SimpleNamespace(
+        incumbent_stack=SimpleNamespace(digest="a" * 64),
+        incumbent_tree_digest="b" * 64,
+    ))
     runtime = _runtime_shell(
         _adapter_paths(tmp_path), qualification_commission=commission
     )
@@ -522,6 +537,8 @@ def test_qualification_execution_failure_is_epoch_fatal(
         body={
             "candidates": [{"publication": {"candidate": "one"}}],
             "screen_lane": "primary",
+            "incumbent_stack_digest": "a" * 64,
+            "incumbent_tree_digest": "b" * 64,
         }
     )
     _patch_authenticated_carrier(

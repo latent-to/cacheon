@@ -127,16 +127,6 @@ def run_checks() -> list[Check]:
                 f"missing required parameters {missing}; {why}; sig {sig}",
             )
             continue
-        if method == "set_weights" and not has_kwargs:
-            finalization_default = signature.parameters["wait_for_finalization"].default
-            if finalization_default is not True:
-                add(
-                    f"subtensor.{method}",
-                    False,
-                    "wait_for_finalization must default to True; "
-                    f"{why}; sig {sig}",
-                )
-                continue
         add(f"subtensor.{method}", True, f"{why}; sig {sig}")
 
     # Discovery: the commitment / weight / metagraph member families. Names vary by

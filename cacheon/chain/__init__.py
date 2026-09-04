@@ -314,20 +314,8 @@ def read_validator_weight_snapshot(
     else:
         metagraph_view = _reopen_metagraph_view(subtensor, netuid, metagraph_view)
     hotkeys = list(metagraph_view.hotkeys)
-    raw_uids = list(metagraph_view.uids)
-    raw_last_updates = list(metagraph_view.last_update)
-    if len(raw_uids) != len(hotkeys) or len(raw_last_updates) != len(hotkeys):
-        raise ChainWeightStateError("metagraph UID/hotkey/last-update widths differ")
-    if any(not isinstance(hotkey, str) or not hotkey for hotkey in hotkeys):
-        raise ChainWeightStateError("metagraph contains an invalid hotkey")
-    if len(set(hotkeys)) != len(hotkeys):
-        raise ChainWeightStateError("metagraph contains duplicate hotkeys")
-    uids = [_weight_uint(raw, "metagraph UID") for raw in raw_uids]
-    last_updates = [
-        _weight_uint(raw, "metagraph last-update block") for raw in raw_last_updates
-    ]
-    if len(set(uids)) != len(uids):
-        raise ChainWeightStateError("metagraph contains duplicate UIDs")
+    uids = list(metagraph_view.uids)
+    last_updates = list(metagraph_view.last_update)
     uid_to_hotkey = dict(zip(uids, hotkeys, strict=True))
     try:
         validator_index = hotkeys.index(validator_hotkey)

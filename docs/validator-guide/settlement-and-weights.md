@@ -215,12 +215,12 @@ exact vector readback.
 
 Projection is global, not one `set-weights` call per target. Generation-zero arenas
 may contribute retained PASS history but do not become active stack authorities. The
-builder projects every crowned stack under the live reward catalog and binds the policy
-digest. A crowned stack carries the catalog snapshot it was sealed under; the projection
-refuses that stack when the sealed and live catalogs differ in reward-relevant policy
-(target identity, structure, contracts, or composition rules). Admission policy
-(`allowed_features`) and sections outside `targets` and `composition_rules` may differ
-without re-crowning, so retiring an admission lane does not orphan crowned arenas.
+builder validates every crowned stack under its own sealed catalog and binds the
+emissions policy digest. Historical v1 and current v2 catalogs can coexist in one
+projection. The active target relationships and exact sealed claim bindings remain
+required; retired admission or provider policy is not reconstructed. All earning
+claims enter one normalization, so a catalog change neither orphans old rewards
+nor creates an independently normalized pool for the new arena.
 The v1.1/v1.3/v1.4 bindings advance to v1.5 only with identical numeric policy
 fields; unrelated policy changes remain refused.
 

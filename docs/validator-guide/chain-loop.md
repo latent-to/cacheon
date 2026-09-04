@@ -341,6 +341,20 @@ wrappers supply every installed path as an explicit argument; active endpoints,
 credentials, sealed capability bytes, and process composition stay in the
 private operations tree.
 
+New qualification requests bind `incumbent_stack_digest` and
+`incumbent_tree_digest` from the CPU's commissioned authority. The worker checks
+both against the requested primary or reproduction commission before resolving
+publications, marking resident entry, or retiring the screen. A returned product
+must match that authenticated request pin. Retained requests keep their original
+bytes and grammar when reopened; an older unbound request remains readable for
+completed-result recovery but cannot start execution on the new worker.
+
+Before changing arena/service identity, drain the prior active reservations,
+leases, and unresolved recoveries under their original authority. A blank legacy
+reservation for a target shared by two models does not identify its intended
+arena. A service-specific baseline lookup never substitutes another arena's sole
+stack. Restarting an unchanged service retains the existing recovery path.
+
 ## Standing CPU supervisor
 
 `python -m cacheon.chain.standing_cpu_supervisor --config <path>` is the

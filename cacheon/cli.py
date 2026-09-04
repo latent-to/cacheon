@@ -387,12 +387,9 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
                     f"hotkey {args.burn_hotkey} (all-uncrowned bootstrap)"
                 )
             else:
-                from cacheon.target_catalog import default_target_catalog
-
                 projection = store.build_weight_projection(
                     policy=policy,
                     context=context,
-                    catalog=default_target_catalog(),
                     netuid=args.netuid,
                 )
             journal = SQLiteWeightPublicationJournal(store, projection)
@@ -1306,12 +1303,9 @@ def cmd_push_weight_offer(args: argparse.Namespace) -> int:
                 burn_hotkey=args.burn_hotkey,
             )
         else:
-            from cacheon.target_catalog import default_target_catalog
-
             projection = store.build_weight_projection(
                 policy=policy,
                 context=context,
-                catalog=default_target_catalog(),
                 netuid=args.netuid,
             )
         offer = CurrentWeightOffer.from_legacy_projection(projection)

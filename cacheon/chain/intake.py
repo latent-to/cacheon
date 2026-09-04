@@ -2162,6 +2162,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             return self._evaluation_stack_state_from_row(
                 exact, context="evaluation stack state"
             )
+        if arena_or_service_digest:
+            return None
         rows = tuple(self._db.execute("SELECT * FROM evaluation_stacks ORDER BY arena_id"))
         if len(rows) != 1:
             return None
@@ -3325,15 +3327,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         *,
         policy,
         context,
-        catalog: object,
         netuid: int,
     ) -> WeightProjection:
-        """Build one global all-arena vector from the complete retained authority.
-
-        ``catalog`` is the live reward catalog; every crowned arena is projected
-        under it, and the economics fence refuses a sealed stack whose
-        reward-relevant catalog policy differs from it.
-        """
+        """Pool all retained earning claims under each crown's sealed catalog."""
 
         from cacheon.chain.weights import WeightProjection
         from cacheon.economics import (
@@ -3342,12 +3338,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             GlobalRewardProjectionContext,
             project_global_rewards,
         )
-        from cacheon.target_catalog import TargetCatalog
 
         if (
             type(policy) is not EmissionsPolicyManifest
             or type(context) is not GlobalRewardProjectionContext
-            or type(catalog) is not TargetCatalog
             or type(netuid) is not int
             or netuid < 0
         ):
@@ -3375,7 +3369,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         for state in active_states:
             authorities.append(
                 ArenaRewardAuthority(
-                    catalog,
                     state.manifest,
                     state.generation,
                     tuple(by_arena.get(state.arena_digest, ())),

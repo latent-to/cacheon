@@ -121,6 +121,10 @@ variance reduction.
 `prepare` runs at load time and may build the representation consumed by the
 serving entry. It must not mutate the raw inputs.
 
+Routed-MoE and dense preparation and invocation run in inference mode, including
+reuse after graph capture. Candidate-owned prepared workspaces remain writable
+across those calls; the prohibition on mutating raw inputs still applies.
+
 ```python
 def prepare(w13, w2):
     # w13: (E, 2*I, H), gate then up; w2: (E, H, I)

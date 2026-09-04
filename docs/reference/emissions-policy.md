@@ -42,10 +42,10 @@ Logarithmic units make compounded gains path-independent. Policy version
 CROWN-only restriction. Existing v1.1/v1.3/v1.4 bindings move forward only
 when all numeric policy fields match; the credit formula is unchanged.
 
-The active standing claim still validates the current evaluation stack, and the
-stack is projected under the live reward catalog only while the sealed and live
-catalogs agree on reward-relevant policy (target identity, structure, contracts,
-and composition rules); admission policy may differ. Reward
+The active standing claim validates its evaluation stack against that stack's
+sealed catalog and target-spec bytes. Historical v1 composition and v2 exclusion
+rules retain their active meaning; installing another model's catalog does not
+reinterpret or invalidate an earned claim. Reward
 history is derived from existing settlement candidates and their two retained
 PASS records; there is no parallel accepted-history table. Missing or corrupt
 evidence holds the projection. If a claimant leaves the metagraph, its share

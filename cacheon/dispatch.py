@@ -1,11 +1,4 @@
-"""The validator-owned dispatcher.
-
-This is the only place a miner kernel is actually invoked during serving. It is
-written so that the *validator* owns everything risky around the call:
-
-It owns output allocation, eligibility, routing, and the auditable candidate
-call. Miner code receives validator-allocated tensors and fills the output.
-"""
+"""Validator-owned output allocation, eligibility, routing and audited miner calls."""
 
 from __future__ import annotations
 
@@ -654,7 +647,8 @@ def make_moe_deferred_finalize_dispatcher(
             raise RuntimeError(
                 "deferred MoE shared output does not match the selected routed output"
             )
-        routed.add_(shared_output)
+        with torch.inference_mode():
+            routed.add_(shared_output)
         _log_once_active(_ROUTED_MOE_SLOT)
         _receipts.completed(_ROUTED_MOE_SLOT)
         return routed
@@ -873,6 +867,7 @@ def _try_routed_moe(
     return out
 
 
+@torch.inference_mode()
 def _run_routed_moe_kernel(
     self, x, router_logits, correction_bias, impl, *, top_k, routed_scaling
 ):

@@ -74,6 +74,7 @@ def _eligible(layer: object, x: torch.Tensor, bias: object) -> torch.Tensor | No
     return weight
 
 
+@torch.inference_mode()
 def _prepared(layer: object, impl: object, weight: torch.Tensor):
     cache = getattr(layer, "_cacheon_dense_prepared_by_impl", None)
     if cache is None:
@@ -124,7 +125,8 @@ def _make_apply(baseline, registry: KernelRegistry):
         )
         audit = _audit.sampled()
         audit_x = x.clone() if audit else None
-        _receipts.invoke(_SLOT, impl.entry, x, prepared, out)
+        with torch.inference_mode():
+            _receipts.invoke(_SLOT, impl.entry, x, prepared, out)
         if audit:
             _audit.run(
                 _SLOT,
@@ -156,7 +158,8 @@ def _make_apply_into(baseline, stock_apply, registry: KernelRegistry):
         impl, _, prepared = selected
         audit = _audit.sampled()
         audit_x = x.clone() if audit else None
-        _receipts.invoke(_SLOT, impl.entry, x, prepared, output)
+        with torch.inference_mode():
+            _receipts.invoke(_SLOT, impl.entry, x, prepared, output)
         if audit:
             _audit.run(
                 _SLOT,

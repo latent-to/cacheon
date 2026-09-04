@@ -103,11 +103,11 @@ def _audit_policy(label: str, slots: tuple[str, ...]) -> SlotAuditPolicy:
     return SlotAuditPolicy(_h(f"audit-seed:{label}")[:32], 100_000, 32, slots, 1)
 
 
-def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
-    active = store.begin_screen(reservation_id, service_digest=_h("service"))
+def _promote(store: FinalizedIntakeStore, reservation_id: str, service_digest=_h("service")) -> None:
+    active = store.begin_screen(reservation_id, service_digest=service_digest)
     candidate_digest = _h(f"candidate:{reservation_id}:{active.screen_attempts}")
     receipt = ArenaScreenReceipt(
-        _h("service"),
+        service_digest,
         candidate_digest,
         active.screen_attempts,
         tuple(
@@ -275,9 +275,9 @@ def _qualified_settlement_candidate(
     arena_marker: str = "",
     submission_block: int = 10,
     attempt_payloads: tuple[bytes, bytes] | None = None,
+    target: str = "activation.silu_and_mul",
 ) -> SettlementCandidate | str:
     catalog = default_target_catalog()
-    target = "activation.silu_and_mul"
     arena_digest = _h("arena" + arena_marker)
     incumbent = EvaluationStackManifest(
         runtime_digest=_h("runtime"),
@@ -335,7 +335,7 @@ def _qualified_settlement_candidate(
         digest="d" * 64 if not marker else _h("publication" + marker),
         root="/published/candidate" + marker,
     )
-    _promote(store, row.reservation_id)
+    _promote(store, row.reservation_id, service_digest=arena_digest)
     def qualification(marker: str, authority: str, attempt, speedup: str):
         audit_policy = _audit_policy(marker, (target,))
         return SettlementQualification(
@@ -391,7 +391,7 @@ def _qualified_settlement_candidate(
         )
     ):
         if index:
-            _promote(store, row.reservation_id)
+            _promote(store, row.reservation_id, service_digest=arena_digest)
         store.mark_qualifying(row.reservation_id, authority, AUTHORITY)
         outcome = QualificationIntakeOutcome(
             row.reservation_id,
@@ -1230,7 +1230,7 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
                 digest=_h(f"old-publication:{index}"),
                 root=f"/published/old-{index}",
             )
-        _promote(store, old_rows[1].reservation_id)
+        _promote(store, old_rows[1].reservation_id, service_digest=old_stack.arena_digest)
 
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
@@ -1246,7 +1246,7 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
 
         # Learning the service after the transition cannot rewrite the old
         # reservation's durable baseline.
-        _promote(store, old_rows[0].reservation_id)
+        _promote(store, old_rows[0].reservation_id, service_digest=old_stack.arena_digest)
         assert (
             store.reservation_baseline_segment(old_rows[0].reservation_id)
             == old_stack
@@ -1260,7 +1260,7 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
             digest=_h("new-publication"),
             root="/published/new",
         )
-        _promote(store, new_row.reservation_id)
+        _promote(store, new_row.reservation_id, service_digest=new_stack.arena_digest)
         assert store.reservation_baseline_segment(new_row.reservation_id) == new_stack
 
         # A database commissioned before segment persistence reconstructs the
@@ -1678,7 +1678,6 @@ def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp
 def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
     tmp_path, predecessor_version
 ):
-    catalog = default_target_catalog()
     with _store(tmp_path) as store:
         _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
@@ -1696,7 +1695,6 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
         projection = store.build_weight_projection(
             policy=POLICY,
             context=context,
-            catalog=catalog,
             netuid=SCOPE.netuid,
         )
         assert projection.crown_count == 1
@@ -1737,7 +1735,6 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,
-                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
         store._db.execute(
@@ -1748,7 +1745,6 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
             store.build_weight_projection(
                 policy=EmissionsPolicyManifest(101, 20, 100_000),
                 context=context,
-                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
 
@@ -1764,7 +1760,6 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,
-                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
         retained = SQLiteWeightPublicationJournal.reopen_from_head(store)
@@ -1788,7 +1783,6 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
         projection = store.build_weight_projection(
             policy=POLICY,
             context=context,
-            catalog=catalog,
             netuid=SCOPE.netuid,
         )
         assert projection.weights_ppm == (("miner", 1_000_000),)
@@ -1802,7 +1796,6 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
         projection = reopened.build_weight_projection(
             policy=POLICY,
             context=context,
-            catalog=catalog,
             netuid=SCOPE.netuid,
         )
         assert projection.weights_ppm == (("miner", 1_000_000),)
@@ -1819,7 +1812,6 @@ def test_all_uncrowned_bootstrap_remains_an_explicit_fail_closed_policy(tmp_path
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,
-                catalog=catalog,
                 netuid=SCOPE.netuid,
             )
         assert _policy_metadata(store) is None
