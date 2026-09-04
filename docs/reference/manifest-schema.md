@@ -198,9 +198,7 @@ A bundle cannot choose:
 | Duplicate-slot error | Multiple rows without explicit unique variants | Name every variant and make domains disjoint |
 | Competition error | Unknown target, wrong `slot`/`atomic` mode, legacy `system` title | Choose a registered target from validator output |
 | Feature-admission error | CUDA, patch, override, setup, or extra capability outside target policy | Remove the feature or choose the registered lane |
-| Artifact-provider error | Unknown provider, missing rebuild feature, or non-crownable provider | Use the registered provider only on a target that admits it |
-| Artifact-ABI error | Binding source/projection, resource lifecycle, or device parameter widths disagree | Reconstruct the declaration from the slot call ABI and complete CUBIN contract |
-| Compile-profile error | Factory requests an undeclared constant or architecture/profile authority differs | Declare only allowlisted inputs and rebuild for the exact arena profile |
+| CUDA-source declaration error | Missing, uncontained, or non-`.cu`/`.cuh` input | Declare contained source paths in `cuda_sources`; build admission remains validator-owned |
 | Static scan error | Forbidden import/operation or uninspectable tree content | Rewrite the source; scanning is not a sandbox exception list |
 | Verification error | Callable/signature/output/reference mismatch | Debug the registered tensor and correctness contract |
 | Qualification failure | Complete engine misses timing, drift, quality, fidelity, or resource gates | Inspect retained arena evidence; do not relabel the outcome |
