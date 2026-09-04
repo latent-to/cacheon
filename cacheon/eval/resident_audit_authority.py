@@ -88,15 +88,11 @@ def resident_audit_allocation_digest(
 
 def _binding_digest(binding: TrustedLaunchBinding) -> str:
     receipt = getattr(binding.runtime_preflight_receipt, "sha256", None)
-    compile_profile = binding.native_compile_profile
     return canonical_digest(
         RESIDENT_AUDIT_BINDING_SCHEMA,
         {
             "controller_distribution": binding.controller_distribution_digest,
             "native_build": binding.native_build_spec.digest,
-            "native_compile_profile": (
-                None if compile_profile is None else compile_profile.digest
-            ),
             "physical_hardware": {
                 "architecture": binding.physical_hardware.architecture,
                 "device_policy": binding.physical_hardware.device_policy_digest,

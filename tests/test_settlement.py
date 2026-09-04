@@ -360,6 +360,8 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     # These bytes include the current target-catalog digest. Replacing the never-live
     # dense decode, MoE NVFP4, paged MSA-prefill, and MSA decode-score contracts
     # are reviewed target identity epochs; the settlement schema remains unchanged.
+    # 2026-09-04: retiring the sealed direct-artifact lane removed the artifact-provider
+    # registry from the catalog snapshot (dd61300c -> aec370cd); same class of epoch.
     catalog = default_target_catalog()
     candidate = _candidate(
         _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
@@ -367,10 +369,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "9ea7a26eff49837d2c53abd9d86e87993ebd3f9d862f269caed67d9905c2ad35"
+        "5a0cc0852316c68bbbf042e113f4bef26f2f9cb14995a57b727e137d592e620e"
     )
     assert candidate.digest == (
-        "7da3cd0625f341ea29512b8471ad249d37c8f4b2b09017ece68f5afdda86fd3f"
+        "4bd400ad48b916082486e991626b8ecba930c4f45081b04273fc3a5390ba30ae"
     )
 
 

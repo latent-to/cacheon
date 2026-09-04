@@ -98,11 +98,6 @@ def mark_driver() -> None:
 # Bundle is loaded once per process even though activate() may run many times
 # (once per watched module import) and load_candidate_bundle() is re-entrant.
 _bundle_loaded = False
-# A direct device artifact cannot be admitted until SGLang has selected this
-# scheduler rank's CUDA device and created its context.  Only the positive
-# scheduler-entry gate may set this marker; output-path processes can import the
-# context hook but have no authority to make it load a bundle.
-_bundle_pending: tuple[str, bool] | None = None
 
 
 def activate() -> None:
@@ -121,9 +116,7 @@ def activate() -> None:
     output-path process is the output-substitution surface (a bundle could
     patch detokenization and spoof benchmark-accuracy text downstream of the
     sampler). The load authority begins only in load_candidate_bundle(), invoked
-    by scheduler_gate at run_scheduler_process entry. Ordinary bundles load
-    there; direct artifacts remain disabled until the table-tracked post-device
-    hook binds them to that scheduler rank's CUDA context. The engine-side
+    by scheduler_gate at run_scheduler_process entry. The engine-side
     active-member coverage gate then counts exactly the scheduler ranks
     (tp_size), and any extra armed process is a refusal.
     """
@@ -143,10 +136,9 @@ def activate() -> None:
         REGISTRY.disable()
         return
 
-    if _bundle_loaded or _bundle_pending is not None:
+    if _bundle_loaded:
         # A watched module imported after the scheduler-entry load (lazy model
-        # imports): adapters were (re)installed above.  A pending direct bundle
-        # remains disabled until the post-device hook finalizes it.
+        # imports): adapters were (re)installed above.
         return
 
     bundle = os.environ.get("CACHEON_BUNDLE_PATH", "").strip()
@@ -178,12 +170,11 @@ def load_candidate_bundle() -> None:
     """Load + enable the vetted bundle in THIS process; scheduler ranks only.
 
     The single caller is the scheduler_gate seam (cacheon/integrations/
-    sglang_scheduler_gate.py) wrapping run_scheduler_process entry. Direct
-    artifact rows are staged, not bound, until the post-device hook. Idempotent;
-    a no-op in the driver, in baseline processes, and once loaded or staged.
+    sglang_scheduler_gate.py) wrapping run_scheduler_process entry. Idempotent;
+    a no-op in the driver, in baseline processes, and once loaded.
     """
     release_required = _truthy(os.environ.get("CACHEON_RELEASE_REQUIRED"))
-    if _IS_DRIVER or _bundle_loaded or _bundle_pending is not None:
+    if _IS_DRIVER or _bundle_loaded:
         return
 
     from cacheon.registry import REGISTRY
@@ -195,50 +186,6 @@ def load_candidate_bundle() -> None:
         REGISTRY.disable()
         return
 
-    _load_candidate_bundle_locked(
-        bundle,
-        REGISTRY,
-        release_required,
-        defer_direct_artifacts=True,
-    )
-
-
-def finalize_pending_candidate_bundle() -> None:
-    """Bind a scheduler-staged direct bundle after rank-local CUDA setup.
-
-    The sole caller is the validator-owned AFTER hook on
-    ``ModelRunner.init_torch_distributed``.  That SGLang method has selected the
-    exact rank device and initialized its process groups, but model loading,
-    warmup, and CUDA-graph capture have not begun.  Non-scheduler processes
-    never acquire ``_bundle_pending`` and therefore remain inert here.
-    """
-
-    global _bundle_pending
-    if _IS_DRIVER or _bundle_loaded or _bundle_pending is None:
-        return
-
-    from cacheon.registry import REGISTRY
-
-    bundle, release_required = _bundle_pending
-    # Consume the authority before any CUDA-bound work.  A failed target-rank
-    # finalization is terminal; a later draft/additional runner must not retry it
-    # in another context.
-    _bundle_pending = None
-    if (
-        not _truthy(os.environ.get("CACHEON_ACTIVE"))
-        or os.environ.get("CACHEON_BUNDLE_PATH", "").strip() != bundle
-    ):
-        _bundle_pending = None
-        REGISTRY.clear()
-        from cacheon import receipts
-
-        receipts.write(
-            "load_failed",
-            {"bundle": bundle, "reason": "pending candidate authority changed"},
-        )
-        if release_required:
-            _release_abort("pending candidate authority changed before device binding")
-        return
     _load_candidate_bundle_locked(bundle, REGISTRY, release_required)
 
 
@@ -249,7 +196,7 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
     The caller must immediately recapture before serving another batch.
     """
 
-    global _bundle_loaded, _bundle_pending
+    global _bundle_loaded
     import time
 
     from cacheon.registry import REGISTRY
@@ -257,7 +204,6 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
     started = time.perf_counter()
     REGISTRY.disable()
     REGISTRY.clear()
-    _bundle_pending = None
     _bundle_loaded = False
     # Drop prior candidates' imported kernel modules so a same-stem source file
     # re-executes instead of aliasing a previous miner's module.
@@ -274,10 +220,6 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
         from cacheon.manifest import load_manifest
 
         manifest = load_manifest(bundle)
-        if any(op.aot_exports for op in manifest.ops):
-            raise RuntimeError(
-                "direct device-artifact bundles are not swappable in the screen tier"
-            )
         if getattr(manifest, "dep_patches", None):
             # A dep-patched tree changes the pinned flashinfer csrc through a
             # prebuild overlay; a live engine cannot adopt that, so such
@@ -303,59 +245,13 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
     return result
 
 
-def teardown_candidate_bundle(*, suppress_errors: bool = False) -> None:
-    """Release sealed-artifact lifecycle state at scheduler-process exit.
-
-    The scheduler gate invokes this after the engine function unwinds, never from
-    an import hook or output-path process.  Direct artifact entries synchronize,
-    run declared destroy exports, and retain accounting on any failure.
-    """
-
-    global _bundle_pending
-    _bundle_pending = None
-    try:
-        from cacheon.artifact_runtime import shutdown_direct_artifact_runtimes
-
-        shutdown_direct_artifact_runtimes()
-    except Exception as exc:  # noqa: BLE001 - teardown evidence must survive
-        logger.exception("cacheon: candidate artifact teardown failed")
-        try:
-            from cacheon import receipts
-
-            receipts.write("teardown_failed", {"reason": str(exc)[:4096]})
-        except Exception:  # noqa: BLE001 - preserve the initiating teardown error
-            logger.exception("cacheon: failed to write teardown failure receipt")
-        if not suppress_errors:
-            raise
-
-
 def _load_candidate_bundle_locked(
     bundle,
     REGISTRY,
     release_required: bool,
-    *,
-    defer_direct_artifacts: bool = False,
 ) -> None:
-    global _bundle_loaded, _bundle_pending
+    global _bundle_loaded
     try:
-        if defer_direct_artifacts:
-            from cacheon.manifest import load_manifest
-
-            manifest = load_manifest(bundle)
-            if any(op.aot_exports for op in manifest.ops):
-                pending = (bundle, release_required)
-                if _bundle_pending not in (None, pending):
-                    raise RuntimeError(
-                        "scheduler already staged a different direct artifact bundle"
-                    )
-                _bundle_pending = pending
-                REGISTRY.disable()
-                logger.info(
-                    "cacheon: staged direct bundle %s until rank-local CUDA setup",
-                    bundle,
-                )
-                return
-        _bundle_pending = None
         if not _enable_loaded_bundle(bundle):
             if release_required:
                 _release_abort("bundle registered no slots")
@@ -366,7 +262,6 @@ def _load_candidate_bundle_locked(
         # module import re-triggers activate() after this load.
         _install_adapters(release_required)
     except Exception as exc:  # noqa: BLE001 - a bad bundle must not wedge the engine
-        _bundle_pending = None
         logger.exception("cacheon: bundle load failed for %s", bundle)
         from cacheon import receipts
 
@@ -488,16 +383,6 @@ def _load_bundle_into_registry(bundle: str) -> None:
             "candidate scheduler has an incomplete native-artifact authority"
         )
     apply_rebuild_plan(bundle, phase="load" if prebuilt else "all")
-    from cacheon.artifact_runtime import resolve_direct_artifact_entry
-
-    # Resolve every direct-AOT binding before importing ANY candidate module.  A
-    # mixed/atomic bundle therefore cannot monkeypatch CuTe, torch, an artifact path,
-    # or adapter globals and redirect a later direct row.
-    direct_entries = {
-        (op.slot, op.variant): resolve_direct_artifact_entry(op)
-        for op in manifest.ops
-        if op.aot_exports
-    }
     # ONE module instance per SOURCE FILE, shared across ops: two slots declared on
     # the same source (e.g. the shallow + deep fused-epilogue entries sharing one IPC
     # workspace in module globals) must not get two module instances — each would
@@ -521,24 +406,10 @@ def _load_bundle_into_registry(bundle: str) -> None:
         # prepare and entry would vanish; sys.modules would point at the last copy
         # while entry closed over an earlier one — torch.compile re-imports by name).
         src_key = Path(src).resolve()
-        module = None
-        if op.aot_exports:
-            entry = direct_entries[(op.slot, op.variant)]
-            if entry is None:
-                raise RuntimeError("direct CuTe AOT row resolved no validator entry")
-            # Direct artifacts may carry validator-generated init/prepare/storage
-            # lifecycle.  The runtime entry owns this method; no candidate Python
-            # callable is imported in the scheduler process.
-            prepare = getattr(entry, "prepare", None)
-            if prepare is not None and not callable(prepare):
-                raise RuntimeError("direct CuTe AOT prepare boundary is not callable")
-        else:
-            module = loaded_by_src.get(src_key)
-            if module is None:
-                module = loaded_by_src[src_key] = load_module(src)
-        if op.aot_exports:
-            pass
-        elif getattr(op, "override_point", None):
+        module = loaded_by_src.get(src_key)
+        if module is None:
+            module = loaded_by_src[src_key] = load_module(src)
+        if getattr(op, "override_point", None):
             # Override submission: compose the miner's epilogue into the validator-owned base
             # kernel -> a standard (entry, prepare) that flows through the normal dispatcher.
             from cacheon_kernels.override import build_override
@@ -575,7 +446,6 @@ def _load_bundle_into_registry(bundle: str) -> None:
         # (framework_mode) and it MUST run in the no-egress isolation worker before the
         # subnet opens to untrusted miners.
         if getattr(op, "setup", None):
-            assert module is not None  # direct-AOT rows forbid setup at manifest load
             setup_key = (src_key, op.setup)
             if setup_key not in setup_done:
                 callable_from(module, op.setup)()

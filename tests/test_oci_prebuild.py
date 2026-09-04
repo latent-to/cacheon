@@ -6,7 +6,6 @@ import os
 import sys
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -30,12 +29,10 @@ from cacheon.eval.oci_prebuild import (
     OCIPrebuildPolicy,
     PREBUILD_RECEIPT,
     PREBUILD_SCHEMA,
-    _write_compile_profile,
     build_prebuild_argv,
     container_build,
     run_oci_prebuild,
 )
-from cacheon.eval.native_compile_profile import NativeCuTeCompileProfile
 from cacheon.eval.oci_process import (
     CommandResult,
     OCIAttachedDiagnostic,
@@ -304,39 +301,6 @@ def _prebuild_argv(lease, resolved, preflight, config, **over):
     )
 
 
-def _compile_profile() -> NativeCuTeCompileProfile:
-    return NativeCuTeCompileProfile(
-        logical_architecture="sm103",
-        compiler_architecture="sm_103a",
-        image_digest=_digest("profile-image"),
-        platform_digest=_digest("profile-platform"),
-        worker_distribution_digest=_digest("profile-worker"),
-        logical_hardware_digest=_digest("profile-hardware"),
-        device_policy_digest=_digest("profile-device"),
-        topology_digest=_digest("profile-topology"),
-        visible_gpu_count=8,
-        tp_size=4,
-        ep_size=1,
-        dp_size=2,
-        constants={"max_active_clusters.cluster_size_1": 148},
-        measurement_digest=_digest("profile-measurement"),
-    )
-
-
-def test_compile_profile_staging_overrides_restrictive_controller_umask(
-    tmp_path: Path,
-) -> None:
-    profile = _compile_profile()
-    destination = tmp_path / "compile-profile.json"
-    previous = os.umask(0o077)
-    try:
-        _write_compile_profile(profile, destination)
-    finally:
-        os.umask(previous)
-    assert destination.stat().st_mode & 0o777 == 0o444
-    assert destination.read_bytes() == profile.canonical_bytes
-
-
 def test_policy_binds_resource_and_native_dependency_inputs(tmp_path: Path) -> None:
     policy = _policy()
     resource_changes = {
@@ -448,40 +412,6 @@ def test_exact_prebuild_argv_has_only_two_mounts_no_gpu_no_egress_no_caps(
         "cacheon.eval.oci_prebuild",
         "--container-build",
     )
-
-
-def test_profiled_prebuild_adds_one_read_only_profile_mount_and_digest_env(
-    tmp_path: Path,
-) -> None:
-    tree, launch, binding, preflight, config = _case(tmp_path)
-    resolved = resolve_engine_launch(launch, binding)
-    profile_digest = _digest("cute-profile")
-    profiled = replace(
-        resolved,
-        native_compile_profile=SimpleNamespace(digest=profile_digest),
-    )
-    manager = _manager(config)
-    lease = manager.register(
-        lease_id="profiled-prebuild-test",
-        container_name="cacheon-profiled-prebuild-test",
-        mount_relpaths=("stage",),
-        stage_relpaths=("seccomp.json", "cute-profile.json"),
-    )
-    argv = _prebuild_argv(
-        lease, profiled, preflight, config, compile_profile_path=lease.stage_paths[1]
-    )
-    profile_mounts = [
-        value
-        for value in argv
-        if value.startswith("--mount=") and "cute-compile-profile.json" in value
-    ]
-    assert len(profile_mounts) == 1
-    assert "readonly" in profile_mounts[0]
-    assert f"--env=CACHEON_CUTE_COMPILE_PROFILE_DIGEST={profile_digest}" in argv
-    assert "--env=CACHEON_CUTE_COMPILE_PROFILE=/cacheon/cute-compile-profile.json" in argv
-
-    with pytest.raises(OCIPrebuildError, match="does not match launch authority"):
-        _prebuild_argv(lease, profiled, preflight, config)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="production publication uses Linux renameat2")

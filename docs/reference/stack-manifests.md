@@ -23,8 +23,7 @@ arena. It binds:
 
 - runtime and base-engine digests;
 - the arena digest;
-- the full target-catalog snapshot and digest, including the registered artifact-provider
-  policy; and
+- the full target-catalog snapshot and digest; and
 - one content-addressed contribution reference per active target.
 
 Its entries may be hostile `ProposalContributionRef` values or reviewed
@@ -57,9 +56,6 @@ Conceptual shape:
 - `arena_digest` fixes the hardware/workload/policy comparison domain.
 - `catalog_snapshot` explains the target policy used at that time, while
   `catalog_digest` authenticates those exact bytes.
-- The catalog snapshot carries both `artifact_provider_registry` and its digest. Provider
-  kind, ABI, build/load phases, capability vocabulary, and crownability therefore rotate
-  catalog and stack authority even when the visible target IDs are unchanged.
 - `entries` names the active contribution for each economic target.
 
 Each entry separates the whole artifact digest, selected-payload digest,
@@ -155,8 +151,6 @@ selected crowned payload under the current contract.
 - Parsing is exact-schema and rejects unknown or mistyped structure.
 - Catalog snapshots travel with their digests; installed policy cannot silently
   reinterpret retained evidence.
-- Artifact-provider policy is part of that catalog snapshot; a later provider registry
-  cannot reinterpret an older direct-artifact contribution.
 - Entry keys must equal each reference's target ID.
 - Target-spec digests must match the bound catalog context.
 - Active-target composition and displacement are revalidated.
@@ -168,7 +162,6 @@ selected crowned payload under the current contract.
 |---|---|
 | Unknown field during reopen | The object does not match the exact current schema |
 | Catalog digest and snapshot disagree | The supplied context is inconsistent or forged |
-| Artifact-provider registry or registry digest differs | Native admission/build/load policy belongs to another catalog authority |
 | Entry key differs from `ref.target_id` | The mapping tries to relabel a contribution |
 | Target-spec digest differs | Qualification used another semantic contract |
 | Overlapping active targets | Catalog displacement/composition was not applied canonically |

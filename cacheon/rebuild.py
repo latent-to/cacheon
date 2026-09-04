@@ -43,7 +43,6 @@ _PATCHER_SUBDIR = ("cacheon", "patchers")
 _REGISTERED_PATCHERS = {
     "apply_dep_patch.py": ("cacheon.apply-dep-patch.v1", 0),
     "build_cuda_ext.py": ("cacheon.build-cuda-ext.v1", 1),
-    "build_cute_cubin.py": ("cacheon.build-cute-cubin.v1", 2),
 }
 
 

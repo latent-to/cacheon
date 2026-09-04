@@ -126,7 +126,6 @@ def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema(target, topk
 
 def test_m3_reduce_profile_uses_live_shape_topology_and_nvfp4_prepare():
     slot = slot_for_model("moe.fused_experts_reduce", "MiniMax-M3-NVFP4")
-    assert slot.call_abi is None
     assert slot.shapes[0] == {
         "num_tokens": 1, "num_experts": 129, "hidden": 6144,
         "inter": 768, "topk": 5,

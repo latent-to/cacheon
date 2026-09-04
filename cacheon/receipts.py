@@ -72,8 +72,6 @@ _IDENTITY_KINDS = frozenset(
         "failed",
         "not_selected",
         "audit",
-        "aot_loaded",
-        "aot_invoked",
     }
 )
 # Include the receipt directory so one long-lived process can participate in

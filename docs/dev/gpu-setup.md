@@ -190,28 +190,6 @@ spawn-safe seam arms each tensor-parallel rank process rather than only
 rank 0. Once armed, a missing prerequisite is a loud failure, never a skip.
 Expect roughly ten minutes for the three boots.
 
-## Native toolchain tier (opt-in)
-
-`tests/test_native_toolchain_live.py` is the build smoke for the
-`cutlass.cute.cubin.v1` provider: a deviceless container compiles a minimal
-`@cute.jit` kernel with the validator compiler recipe, then a GPU container
-runs the produced bytes through the production ELF gate and Driver-API
-admission, asserting the loaded kernel is the declared one. It proves
-toolchain compatibility and device loadability; it does not execute the
-sealed prebuild protocol or any slot's numeric contract.
-
-```bash
-CACHEON_LIVE_NATIVE_TESTS=1 \
-CACHEON_SERVE_IMAGE=<worker image ref> \
-python -m pytest tests/test_native_toolchain_live.py
-```
-
-It shares `CACHEON_SERVE_REPO`, `CACHEON_SERVE_GPU`, and adds
-`CACHEON_SERVE_SCRATCH` (a docker-mountable scratch directory, default a
-temporary directory) and `CACHEON_NATIVE_ARCH` (compile architecture,
-default `sm_100a`; it must match the admission device). Expect one to two
-minutes.
-
 ## Complete-engine performance development
 
 Cacheon deliberately exposes no local qualification command. Contributors may profile

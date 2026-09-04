@@ -82,10 +82,8 @@ The disposable prebuild container receives:
 
 It receives no network, GPU, model, home directory, wallet, Docker socket, or ambient host
 mount. The top-level prebuild parses candidate files as data and invokes only
-validator-registered rebuild patchers. A registered sealed-direct-artifact patcher may
-start a further bounded compiler child, import the declared candidate factory there, and
-call it under the closed compile-request/profile ABI. The host never imports candidate
-Python or loads the produced native object.
+validator-registered rebuild patchers. The host never imports candidate Python or loads
+the produced native object.
 
 Prebuild container controls include:
 

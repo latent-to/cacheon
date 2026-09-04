@@ -698,20 +698,7 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
     for forbidden in (".pass", "credentials", "docker.sock", "result-output"):
         assert forbidden not in encoded
 
-    profile_digest = hashlib.sha256(b"cute-compile-profile").hexdigest()
-    profiled_argv = _argv(
-        case,
-        lease,
-        cache,
-        replace(
-            case.resolved,
-            native_compile_profile=SimpleNamespace(digest=profile_digest),
-        ),
-        case.runtime,
-    )
     assert "--read-only" not in argv
-    assert f"--env=CACHEON_CUTE_COMPILE_PROFILE_DIGEST={profile_digest}" in profiled_argv
-    assert not any("CACHEON_CUTE_COMPILE_PROFILE_DIGEST" in row for row in argv)
 
     multi_resolved = replace(
         case.resolved,

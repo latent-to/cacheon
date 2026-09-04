@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from cacheon.sandbox import scan_source, scan_tree
+from cacheon.sandbox import scan_source
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 

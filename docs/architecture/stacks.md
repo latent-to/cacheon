@@ -205,35 +205,6 @@ Principal implementations are
 [`eval/native_artifact.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/native_artifact.py),
 and [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py).
 
-### Direct-artifact identity across the stack
-
-A direct artifact is not identified by its CUBIN name or `ops.entry`. Its
-canonical execution identity covers the provider, compiler factory, allowed
-profile inputs, ordered bindings, lifecycle plan, specialization predicates,
-prelaunch operations, validator-owned resource plan, derived capability
-requirements, and complete device launch plan. That projection is included in
-the selected contribution and selected-delta identities used to materialize the
-engine tree.
-
-The target catalog separately binds the immutable provider-registry snapshot and
-digest. Launch preparation then adds the measured compile profile, native build
-specification, sealed publication digest, and exact file inventory. Runtime
-admission adds driver-observed CUBIN ABI and contract digests, while execution
-receipts prove that the selected entry loaded, ran, and completed on every active
-member without fallback.
-
-These layers answer different questions:
-
-| Layer | Bound authority |
-|---|---|
-| Contribution | Exact declarative device execution and source closure |
-| Catalog | Which artifact providers and target features are permitted |
-| Build | Image, logical/compiler architecture, topology-derived profile, patcher, and publication |
-| Runtime | Exact retained CUBIN handle, observed ABI, rank device, parameters, resources, and lifecycle |
-| Qualification | Full member coverage, successful invocation, seam completion, and zero fallback |
-
-See [Sealed direct artifacts](direct-artifacts.md) for the complete contract.
-
 ## Transactional stack updates
 
 A passing qualification does not immediately mutate the incumbent. The settlement path requires two independently selected and reopened passing qualifications for the exact same reproduction identity.
@@ -289,7 +260,5 @@ There is no supported arrow from a mutable miner URL, chain record, or evaluatio
 - [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) — marginal arms, cohorts, transitions, and rollback
 - [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic source materialization and integration promotion
 - [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — singleton, atomic, overlap, and composition policy
-- [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_identity.py) — canonical direct-artifact execution identity
-- [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_provider.py) — closed provider registry included in catalog identity
 - [`eval/reference_quality.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_quality.py) — pristine reference quality products
 - [`eval/calibration.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/calibration.py) — calibrated qualification/reference policy

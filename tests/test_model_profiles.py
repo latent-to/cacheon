@@ -25,7 +25,6 @@ def test_slot_for_model_m3_swaps_activation_and_correctness():
     m3 = slot_for_model("moe.fused_experts", "MiniMax-M3")
     assert generic.correctness.mode == "matched_ratio"
     assert m3.correctness.mode == "cosine" and m3.correctness.min_cosine == 0.985
-    assert generic.call_abi is m3.call_abi is None
     # alias resolves to the same profile
     assert slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4").correctness.mode == "cosine"
 

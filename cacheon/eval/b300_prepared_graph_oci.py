@@ -8,7 +8,6 @@ import secrets
 import sys
 from pathlib import Path
 
-from cacheon.cute_aot import CUTE_COMPILE_PROFILE_DIGEST_ENV
 from cacheon.eval.b300_qualification_graph_provider import (
     B300QualificationGraphArtifact,
 )
@@ -183,8 +182,6 @@ def _graph_argv(
         "TRITON_HOME": f"{CONTAINER_CACHE}/triton-home",
         "XDG_CACHE_HOME": f"{CONTAINER_CACHE}/xdg",
     }
-    if resolved.native_compile_profile is not None:
-        env[CUTE_COMPILE_PROFILE_DIGEST_ENV] = resolved.native_compile_profile.digest
 
     argv = [
         *lease.run_prefix(preflight.docker_binary),

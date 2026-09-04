@@ -117,7 +117,7 @@ def _invoke(entry, inputs: dict, outputs, _prepared) -> None:
     entry(*(inputs[name] for name in INPUT_NAMES), outputs[0])
 
 
-def build_slot(SlotSpec, Correctness, tolerances, call_abi):
+def build_slot(SlotSpec, Correctness, tolerances):
     shape = lambda i: (i["q"].shape[1], int(i["all_seqblock_q"]), int(i["topk"]))  # noqa: E731
     return SlotSpec(
         name="attention.msa_prefill_block_score", entry="msa_prefill_block_score",
@@ -141,7 +141,7 @@ def build_slot(SlotSpec, Correctness, tolerances, call_abi):
              "batch_size": 1, "num_q_heads": 1, "topk": 16, "ragged": False},
         ),
         correctness=Correctness("topk_overlap", top_k=8, min_overlap=0.9),
-        tolerances=tolerances, kl_threshold=3e-2, call_abi=call_abi,
+        tolerances=tolerances, kl_threshold=3e-2,
     )
 
 

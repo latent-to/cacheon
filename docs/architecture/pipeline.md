@@ -209,14 +209,6 @@ runtime ranks may validate and load native products but may never compile or
 repair them. Both stages use read-only roots, bounded mounts and protocols, and
 host-owned cleanup; the trusted controller also owns timing.
 
-For a direct-artifact row, prebuild executes the declared compiler factory only
-inside a no-egress compiler child and publishes CUBIN rather than a host launcher.
-After rank-local CUDA setup, the scheduler worker admits the exact CUBIN, binds its
-complete driver-observed ABI to the declarative device plan by ordinal, and
-materializes parameters and lifecycle storage in validator code. Qualification
-requires per-member `aot_loaded`, `aot_invoked`, and normal `completed` coverage,
-with no fallback receipt. See [Sealed direct artifacts](direct-artifacts.md).
-
 V7 precommits the mathematical bounds that make a B/C result invariant to every
 legal B′. It stops after B/C for a clear result and collects B′ only inside the
 inconclusive band. V8 precommits all three reads, so B′ is taken regardless of
