@@ -46,8 +46,6 @@ LINE_WATERMARK = 900
 # Module families consumed through mechanisms a static scan cannot follow.
 # Each entry names its wiring; do not extend this list without one.
 ALLOWLIST_PREFIXES = (
-    # Patch files applied by path into the pinned SGLang tree.
-    "cacheon.arena_assets",
     # sitecustomize injected into validator-owned OCI lifetimes.
     "cacheon.eval.oci_site",
     # Seam adapters registered by short stem in cacheon/seams.py rows.
@@ -238,8 +236,6 @@ def volume_warnings(root: Path, verbose: bool) -> list[str]:
             continue
         for path in sorted(base.rglob("*.py")):
             rel = path.relative_to(root)
-            if rel.parts[:2] == ("cacheon", "arena_assets"):
-                continue
             lines = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
             if lines > LINE_WATERMARK:
                 oversized.append((lines, rel))

@@ -189,7 +189,7 @@
 "tests/test_target_unavailable.py": 11,
 "tests/test_tensor_spec.py": 16,
 "tests/test_tokenizer_identity.py": 12,
-"tests/test_vendor_provenance.py": 41,
+"tests/test_vendor_provenance.py": 29,
 "tests/test_verify_cpu.py": 96,
 "tests/test_weight_offer_service.py": 19,
 "tests/test_weight_publication.py": 159,

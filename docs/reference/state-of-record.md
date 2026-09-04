@@ -17,6 +17,9 @@ qualification requests bind the commissioned incumbent stack and tree before
 resident entry; completed retained requests reopen under their original binding.
 These source changes require a fresh GLM runtime commission.
 
+The distribution also drops the retired MiniMax SGLang overlay copies and their
+packaging exceptions. The GLM worker consumes the pinned upstream SGLang image.
+
 The GLM-5.3 branch moved the source compatibility target to SGLang `0.5.18` on
 2026-08-30. Exact-image 8xB300 controls now establish full-model generation,
 all-rank seam activation, graph capture, deliberately broken and faithful
