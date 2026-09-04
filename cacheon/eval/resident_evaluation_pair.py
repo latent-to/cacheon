@@ -270,7 +270,11 @@ class ResidentEvaluationHandle:
         return state.session.swap(bundle_digest)
 
     def execute_batch(
-        self, prompts: Sequence[str], *, canary: bool = False
+        self,
+        prompts: Sequence[str],
+        *,
+        canary: bool = False,
+        timeout_s: float | None = None,
     ) -> ResidentBatchEvidence:
         state = _capability(self.__token)
         used = len(state.session.batch_rows) - state.batch_start
@@ -278,7 +282,9 @@ class ResidentEvaluationHandle:
             raise ResidentEvaluationEpochFatal(
                 "request would exceed its declared batch count"
             )
-        return state.session.execute_batch(prompts, canary=canary)
+        return state.session.execute_batch(
+            prompts, canary=canary, timeout_s=timeout_s
+        )
 
     def execute_batch_with_shape(
         self,

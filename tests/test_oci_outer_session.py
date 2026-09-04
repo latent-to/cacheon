@@ -335,9 +335,6 @@ def test_happy_path_accepts_preflight_before_ready_and_returns_raw_host_interval
     assert result.conditioning_started_at == result.batches[0].response_completed_at
     assert result.first_timed_completed_at == result.batches[2].response_completed_at
     assert result.conditioning_token_numerator == 8
-    assert result.conditioning_interval_seconds > (
-        result.batches[1].elapsed_seconds + result.batches[2].elapsed_seconds
-    )
     assert result.preflight == plan.expected_preflight
 
 

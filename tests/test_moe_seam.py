@@ -184,6 +184,7 @@ def _routed_layer(inputs):
         w13_blockscale_swizzled=inputs["w13_weight_scale"],
         w2_blockscale_swizzled=inputs["w2_weight_scale"],
         intermediate_size_per_partition=inputs["intermediate_size_per_partition"],
+        top_k=inputs["topk"],
         moe_tp_size=4, moe_ep_size=1, reduce_results=False,
         num_fused_shared_experts=0, **fields,
     )

@@ -35,16 +35,6 @@
   evaluation stack; it does not ship code. Digest distinctness does not attest separate
   operators, hosts, or infrastructure failure domains.
 
-**Direct-artifact declaration**
-: The manifest's closed description of artifact exports, semantic bindings,
-  specialization, launch parameters, resources, and lifecycle. It contains no
-  candidate runtime callback.
-
-**Direct-artifact runtime**
-: Validator-owned scheduler-rank code that reopens a sealed publication, admits
-  its observed device ABI, materializes parameters and resources from the live
-  slot call, launches it, and emits execution evidence.
-
 **Engine release**
 : A signed, chain-independent, integrated-only Cacheon Engine artifact with
   reproducible runtime builds, exact model receipt, native artifacts, SBOM,
@@ -85,17 +75,6 @@
 **Release stack**
 : Chain-independent `EngineReleaseManifest` containing only integrated
   contribution references. It has no arena or proposal content.
-
-**Sealed CUBIN publication**
-: The content-addressed CUBIN files and canonical index produced by the
-  registered CuTe provider's hermetic prebuild. It is one provider-specific form
-  of a sealed direct artifact, not a miner-supplied host launcher or JIT input.
-
-**Sealed direct artifact**
-: A contribution execution form in which the manifest is a closed launch
-  program and runtime execution uses validator-built, sealed device code. The
-  provider, compilation profile, publication, observed ABI, and launch plan are
-  independently bound authorities.
 
 **Slot**
 : Validator-owned execution ABI inside the pinned engine. Slots define how a

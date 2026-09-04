@@ -142,8 +142,6 @@ def screen_swappability(manifest: Manifest) -> str | None:
 
     if type(manifest) is not Manifest:
         raise ResidentScreenLaneError("swappability requires a typed manifest")
-    if any(op.aot_exports for op in manifest.ops):
-        return "aot device artifacts are not swappable in the screen tier"
     if any(op.cuda_sources for op in manifest.ops):
         # Native products are built for a dedicated candidate launch.
         return "native-rebuild bundles are not swappable in the screen tier"
@@ -263,7 +261,6 @@ class ResidentScreenLane:
         self._work: queue.Queue = queue.Queue()
         self._session_id: str | None = None
         self._lifetime_error: BaseException | None = None
-        self._last_evidence: object | None = None
         self._last_canary_reference: float | None = None
         self._last_canary_recovery: tuple[float, float] | None = None
         self._last_canary_recovered: bool | None = None
@@ -274,11 +271,6 @@ class ResidentScreenLane:
         """The most recent lifetime's session identity (survives its close)."""
         with self._state:
             return self._session_id
-
-    @property
-    def last_lifetime_evidence(self) -> object | None:
-        with self._state:
-            return self._last_evidence
 
     @property
     def last_canary_recovery(self) -> tuple[tuple[float, float], bool] | None:
@@ -444,9 +436,7 @@ class ResidentScreenLane:
         try:
             # The factory is reviewed deployment code around execute_resident,
             # which already enforces its own evidence type on return.
-            evidence = self._factory(driver)
-            with self._state:
-                self._last_evidence = evidence
+            self._factory(driver)
         except BaseException as exc:  # surfaced to the waiter via _await
             with self._state:
                 self._lifetime_error = exc

@@ -871,37 +871,6 @@ def _device_architecture(device: str) -> Optional[str]:
     return f"sm{major}{minor}"
 
 
-def _direct_aot_prepare_boundary(
-    slot: SlotSpec,
-    entry: Callable[..., None],
-    *,
-    prepare_name: Optional[str],
-) -> Optional[Callable]:
-    """Resolve only the validator-generated lifecycle boundary of a direct entry.
-
-    Direct-AOT rows are forbidden from naming a Python ``prepare`` callable: their
-    prepare implementation is assembled from the sealed artifact plan and exposed
-    as ``entry.prepare`` by the validator runtime.  Prepare+forward slots must see
-    that exact callable or admission fails before any verification launch.
-    """
-
-    if prepare_name is not None:
-        raise ValueError(
-            "direct CuTe AOT rows cannot declare a candidate Python prepare callable"
-        )
-    prepare = getattr(entry, "prepare", None)
-    if prepare is not None and not callable(prepare):
-        raise RuntimeError("direct CuTe AOT prepare boundary is not callable")
-    if slot.invoke_prepare is not None:
-        if prepare is None:
-            raise RuntimeError(
-                f"slot {slot.name!r} requires a callable validator-generated "
-                "direct CuTe AOT prepare boundary"
-            )
-        return prepare
-    return None
-
-
 def verify_entry_from_source(
     slot_name: str,
     source_path: str,
@@ -939,8 +908,6 @@ def verify_entry_from_source(
 
     slot = slot_for_model(slot_name, model_key)
     dtype = getattr(torch, dtype_name)
-    direct_entry = None
-    direct_op = None
     if bundle_path:
         from cacheon.rebuild import apply_rebuild_plan
 
@@ -950,39 +917,22 @@ def verify_entry_from_source(
             else "all"
         )
         apply_rebuild_plan(bundle_path, phase=rebuild_phase)
-        from cacheon.artifact_runtime import resolve_direct_artifact_entry
-        from cacheon.manifest import load_manifest
+    # ONE module instance: entry/prepare (or an override's device fns) must share
+    # a namespace — separate loads re-execute the candidate module body.
+    module = load_module(source_path)  # candidate code; isolated child only
+    if override_point is not None:
+        from cacheon_kernels.override import build_override
 
-        direct_op = load_manifest(bundle_path).op_for(slot_name, variant_name)
-        if direct_op is None:
-            raise ValueError(
-                f"bundle has no manifest row for {(slot_name, variant_name)!r}"
-            )
-        direct_entry = resolve_direct_artifact_entry(direct_op)
-    if direct_entry is not None:
-        if override_point is not None:
-            raise ValueError("direct CuTe AOT rows cannot use an override")
-        entry = direct_entry
-        prepare = _direct_aot_prepare_boundary(
-            slot, direct_entry, prepare_name=prepare_name
+        def _loader(name, _mod=module):
+            fn = getattr(_mod, name, None)
+            return fn if callable(fn) else None
+
+        entry, prepare = build_override(
+            slot_name, override_point, entry_name, _loader
         )
     else:
-        # ONE module instance: entry/prepare (or an override's device fns) must share
-        # a namespace — separate loads re-execute the candidate module body.
-        module = load_module(source_path)  # candidate code; isolated child only
-        if override_point is not None:
-            from cacheon_kernels.override import build_override
-
-            def _loader(name, _mod=module):
-                fn = getattr(_mod, name, None)
-                return fn if callable(fn) else None
-
-            entry, prepare = build_override(
-                slot_name, override_point, entry_name, _loader
-            )
-        else:
-            entry = callable_from(module, entry_name)
-            prepare = callable_from(module, prepare_name) if prepare_name else None
+        entry = callable_from(module, entry_name)
+        prepare = callable_from(module, prepare_name) if prepare_name else None
     eligibility = None
     if eligibility_metadata is not None:
         from cacheon.registry import eligibility_from_metadata

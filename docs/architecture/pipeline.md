@@ -125,12 +125,12 @@ to route work: a promising result advances to qualification and a clearly uncomp
 stable result may be rejected under the registered screen policy. It cannot create a
 qualification PASS, crown, settlement speedup, or reward claim.
 
-For a standing resident worker, the ordered ABI and graph screen rows can be explicit
-carrier deferrals: the build product is reopened in those positions, while the subsequent
-resident swap acknowledgement and read perform the actual all-rank registration and graph
-recapture without unloading the stock model. Those deferrals must never be interpreted as
-qualification correctness evidence. The isolated qualification audit and numerical judge
-remain mandatory before a candidate can PASS or crown.
+The ordered ABI and graph screen rows are carrier deferrals: the build product is reopened
+in those positions, while the subsequent resident swap acknowledgement and read perform the
+actual all-rank registration and graph recapture without unloading the stock model. The
+earlier per-candidate eager/graph engine mode for those rows was deleted on 2026-09-02.
+Those deferrals must never be interpreted as qualification correctness evidence. The
+isolated qualification audit and numerical judge remain mandatory before a PASS or crown.
 
 Some contribution classes cannot satisfy the hot-swap contract. Direct AOT artifacts,
 dependency patches, native rebuilds, and setup hooks receive an explicit screen waiver
@@ -208,14 +208,6 @@ execution occur only in the runtime's positively identified scheduler ranks;
 runtime ranks may validate and load native products but may never compile or
 repair them. Both stages use read-only roots, bounded mounts and protocols, and
 host-owned cleanup; the trusted controller also owns timing.
-
-For a direct-artifact row, prebuild executes the declared compiler factory only
-inside a no-egress compiler child and publishes CUBIN rather than a host launcher.
-After rank-local CUDA setup, the scheduler worker admits the exact CUBIN, binds its
-complete driver-observed ABI to the declarative device plan by ordinal, and
-materializes parameters and lifecycle storage in validator code. Qualification
-requires per-member `aot_loaded`, `aot_invoked`, and normal `completed` coverage,
-with no fallback receipt. See [Sealed direct artifacts](direct-artifacts.md).
 
 V7 precommits the mathematical bounds that make a B/C result invariant to every
 legal B′. It stops after B/C for a clear result and collects B′ only inside the

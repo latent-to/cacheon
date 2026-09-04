@@ -61,6 +61,19 @@ class RemoteEvaluationDispatcherError(RuntimeError):
     """Remote work cannot be authenticated, reopened, released, or committed."""
 
 
+class RemoteEvaluationReleased(RemoteEvaluationDispatcherError):
+    """The durable lease was released with a typed reason after a remote failure.
+
+    Raised only once the release is committed, so a supervisor can record the
+    disposition and keep serving instead of failing closed.
+    """
+
+    def __init__(self, lease_id: str, reason: str) -> None:
+        super().__init__(reason)
+        self.lease_id = lease_id
+        self.reason = reason
+
+
 def _digest(value: object, field_name: str) -> str:
     try:
         return require_sha256_hex(value, field=field_name)  # type: ignore[arg-type]

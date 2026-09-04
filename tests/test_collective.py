@@ -25,7 +25,6 @@ from cacheon.verify_collective import (  # noqa: E402
     _MAX_VERDICT_BYTES,
     _RankVerdict,
     _VERDICT_VERSION,
-    _direct_aot_collective_callables,
     _init_rank_process_group,
     _rank_barrier,
     _read_rank_verdict,
@@ -114,33 +113,6 @@ def test_cpu_process_group_and_barrier_keep_gloo_call_signature():
         world_size=2,
     )
     fake_dist.barrier.assert_called_once_with()
-
-
-def test_collective_direct_aot_propagates_only_validator_prepare_boundary():
-    class DirectEntry:
-        def __call__(self, *_args):
-            return None
-
-        def prepare(self, w13, w2):
-            return ("validator-prepared", w13, w2)
-
-    slot = get_slot("moe.fused_experts_reduce")
-    direct_entry = DirectEntry()
-    entry, prepare = _direct_aot_collective_callables(
-        slot, direct_entry, prepare_name=None
-    )
-
-    assert entry is direct_entry
-    assert callable(prepare)
-    assert prepare("w13", "w2") == ("validator-prepared", "w13", "w2")
-    with pytest.raises(RuntimeError, match="validator-generated.*prepare boundary"):
-        _direct_aot_collective_callables(
-            slot, lambda *_args: None, prepare_name=None
-        )
-    with pytest.raises(ValueError, match="candidate Python prepare"):
-        _direct_aot_collective_callables(
-            slot, direct_entry, prepare_name="prepare"
-        )
 
 
 def test_allreduce_faithful_passes_gloo_cpu():

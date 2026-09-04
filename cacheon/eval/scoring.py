@@ -149,7 +149,7 @@ def score_speedup(
         for sample in raw_candidates
     ]
     if not reads or not candidate_reads:
-        return SpeedupVerdict(0.0, float("inf"), 1.0 + min_margin, False, False,
+        return SpeedupVerdict(0.0, 0.0, 1.0 + margin, False, False,
                               len(reads), "missing/zero throughput sample",
                               n_candidates=len(candidate_reads))
     base = statistics.fmean(reads)
@@ -162,7 +162,14 @@ def score_speedup(
     # measured 7.2% spread between two honest candidate legs, so a single-C verdict at
     # small margins crowns or kills on a per-boot draw.
     candidate_noise = relative_spread(candidate_reads) if len(candidate_reads) >= 2 else 0.0
-    noise = max(baseline_noise, candidate_noise) if math.isfinite(baseline_noise) else baseline_noise
+    # An unmeasured single-baseline spread is not measured infinite noise.
+    # Confidence and detail retain that distinction; keep the durable numeric
+    # witness finite so a NO-DECISION continuation can be reopened.
+    noise = (
+        max(baseline_noise, candidate_noise)
+        if math.isfinite(baseline_noise)
+        else 0.0
+    )
     speedup = candidate / base
     required = 1.0 + max(margin, multiplier * (noise if math.isfinite(noise) else 0.0))
     if not math.isfinite(speedup) or not math.isfinite(required):

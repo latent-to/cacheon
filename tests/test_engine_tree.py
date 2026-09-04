@@ -5,7 +5,6 @@ import importlib
 import json
 import os
 import shutil
-import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -16,25 +15,17 @@ import pytest
 import cacheon.engine_tree as engine_tree
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
-from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
+from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.engine_tree import (
     EngineTreeError,
     inspect_contribution,
     integrated_source_tree_digest,
     materialize_engine_tree,
-    promote_integrated_contribution,
     reopen_materialized_engine_tree,
 )
 from cacheon.manifest import load_manifest
 from cacheon.sandbox import load_module
-from cacheon.settlement import (
-    SettlementCandidate,
-    SettlementEvidence,
-    SettlementEventType,
-    SettlementQualification,
-    plan_settlement,
-)
 from cacheon.stack_manifest import (
     EngineReleaseManifest,
     EvaluationStackContext,
@@ -591,212 +582,6 @@ def test_integrated_release_revalidates_reviewed_source(tmp_path: Path) -> None:
             tmp_path / "wrong-payload",
             integration_records={record.target_id: record},
         )
-
-
-def test_integration_promotion_binds_crown_evidence_source_and_review_commit(
-    tmp_path: Path,
-) -> None:
-    catalog = default_target_catalog()
-    context = _evaluation_context(catalog)
-    proposal = _proposal_ref(SINGLETON, catalog)
-    incumbent = _evaluation_stack(catalog, context)
-    arm = plan_marginal_arm(
-        incumbent,
-        proposal,
-        catalog=catalog,
-        incumbent_tree_digest=_digest("promotion-incumbent-tree"),
-        candidate_tree_digest=_digest("promotion-candidate-tree"),
-        expected_context=context,
-    )
-    primary_attempt_payload = b'{"attempt":"primary"}'
-    reproduction_attempt_payload = b'{"attempt":"reproduction"}'
-    audit_slots = tuple(sorted(catalog.require(proposal.target_id).members))
-    primary_audit = _audit_policy("promotion-primary", audit_slots)
-    primary = SettlementQualification(
-        lane="registered",
-        arena_digest=incumbent.arena_digest,
-        reservation_digest=_digest("promotion-reservation"),
-        finalized_block=10,
-        event_index=0,
-        event_subindex=0,
-        hotkey="miner-promotion",
-        target_id=proposal.target_id,
-        members=tuple(sorted(catalog.require(proposal.target_id).members)),
-        selected_delta_digest=arm.selected_delta_digest,
-        qualification_authority_digest=_digest("promotion-authority"),
-        qualification_plan_digest=_digest("promotion-plan"),
-        qualification_attempt_digest=hashlib.sha256(primary_attempt_payload).hexdigest(),
-        qualification_report_digest=_digest("promotion-report"),
-        selection_commitment_digest=_digest("promotion-selection-commitment"),
-        selection_secret_commitment_digest=_digest("promotion-selection-secret"),
-        selection_evidence_digest=_digest("promotion-selection-evidence"),
-        arm_digest=arm.digest,
-        incumbent_stack_digest=arm.baseline_before.stack_digest,
-        incumbent_tree_digest=arm.baseline_before.tree_digest,
-        candidate_stack_digest=arm.challenger.stack_digest,
-        candidate_tree_digest=arm.challenger.tree_digest,
-        speedup="1.05",
-        incumbent_manifest=incumbent,
-        candidate_manifest=arm.candidate,
-        audit_control_digest=primary_audit.control.digest,
-        audit_policy=primary_audit,
-        audit_evidence_digest=_digest("promotion-audit-evidence"),
-    )
-    reproduction_audit = _audit_policy("promotion-reproduction", audit_slots)
-    reproduction = replace(
-        primary,
-        qualification_authority_digest=_digest("promotion-reproduction-authority"),
-        qualification_plan_digest=_digest("promotion-reproduction-plan"),
-        qualification_attempt_digest=hashlib.sha256(
-            reproduction_attempt_payload
-        ).hexdigest(),
-        qualification_report_digest=_digest("promotion-reproduction-report"),
-        selection_commitment_digest=_digest(
-            "promotion-reproduction-selection-commitment"
-        ),
-        selection_secret_commitment_digest=_digest(
-            "promotion-reproduction-selection-secret"
-        ),
-        selection_evidence_digest=_digest(
-            "promotion-reproduction-selection-evidence"
-        ),
-        audit_policy=reproduction_audit,
-        audit_evidence_digest=_digest("promotion-reproduction-audit-evidence"),
-        speedup="1.04",
-    )
-    candidate = SettlementCandidate.from_reproductions(primary, reproduction)
-    evidence_root = tmp_path / "integration-evidence"
-    primary_ref = publish_evidence(
-        evidence_root,
-        primary_attempt_payload,
-        domain="qualification.cohort-attempt",
-        media_type="application/json",
-        schema="cacheon.qualification.cohort-attempt.v1",
-    )
-    reproduction_ref = publish_evidence(
-        evidence_root,
-        reproduction_attempt_payload,
-        domain="qualification.cohort-attempt",
-        media_type="application/json",
-        schema="cacheon.qualification.cohort-attempt.v1",
-    )
-    evidence = SettlementEvidence.bind(
-        candidate,
-        primary_attempt_ref=primary_ref,
-        reproduction_attempt_ref=reproduction_ref,
-    )
-    settlement = plan_settlement(
-        (candidate,),
-        current_manifest=incumbent,
-        current_tree_digest=arm.baseline_before.tree_digest,
-    )
-    crown = next(
-        row for row in settlement.events if row.event_type is SettlementEventType.CROWN
-    )
-
-    repository = tmp_path / "review-repository"
-    integrated = repository / "integrated"
-    shutil.copytree(SINGLETON, integrated)
-    subprocess.run(("git", "init", "-q", str(repository)), check=True)
-    subprocess.run(("git", "-C", str(repository), "add", "integrated"), check=True)
-    subprocess.run(
-        (
-            "git", "-C", str(repository), "-c", "user.name=Cacheon Review",
-            "-c", "user.email=review@cacheon.invalid", "commit", "-q", "-m", "review",
-        ),
-        check=True,
-    )
-    review_commit = subprocess.run(
-        ("git", "-C", str(repository), "rev-parse", "HEAD"),
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    def reviewed(label: str, domain: str) -> EvidenceArtifactRef:
-        payload = json.dumps(
-            {"evidence": label}, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
-        return publish_evidence(
-            evidence_root,
-            payload,
-            domain=domain,
-            media_type="application/json",
-            schema=f"cacheon.{domain}.v1",
-        )
-
-    artifacts = IntegrationReviewArtifacts(
-        primary_ref,
-        reproduction_ref,
-        reviewed("promotion-license", "integration.license"),
-        reviewed("promotion-provenance", "integration.provenance"),
-        reviewed("promotion-security", "integration.security-review"),
-        reviewed("promotion-compatibility", "integration.compatibility"),
-        reviewed("promotion-tests", "integration.tests"),
-    )
-
-    def promote(**changes):
-        arguments = {
-            "candidate": candidate,
-            "settlement_evidence": evidence,
-            "crown_event": crown,
-            "proposal": proposal,
-            "integrated_source_root": integrated,
-            "repository_root": repository,
-            "evidence_root": evidence_root,
-            "catalog": catalog,
-            "review_commit": review_commit,
-            "review_artifacts": artifacts,
-            "reviewer": "validator-release-review",
-        }
-        arguments.update(changes)
-        return promote_integrated_contribution(**arguments)
-
-    record = promote()
-    assert record.settlement_candidate_digest == candidate.digest
-    assert record.settlement_evidence_digest == evidence.digest
-    assert record.crown_event_digest == crown.digest
-    assert record.proposal_contribution_digest == proposal.digest
-    assert record.artifacts == artifacts
-    assert record.review_commit == review_commit
-    assert IntegrationReviewRecord.from_dict(record.to_dict()) == record
-
-    with pytest.raises(EngineTreeError, match="exact candidate CROWN"):
-        promote(
-            crown_event=replace(crown, subject_digest=_digest("wrong-crown-subject"))
-        )
-    with pytest.raises(EngineTreeError, match="crowned delta"):
-        promote(
-            proposal=replace(
-                proposal, attribution_digest=_digest("wrong-proposal-attribution")
-            )
-        )
-    with pytest.raises(EngineTreeError, match="evidence differs"):
-        promote(
-            settlement_evidence=replace(
-                evidence, primary_report_digest=_digest("wrong-primary-report")
-            )
-        )
-
-    license_ref = artifacts.license_evidence_ref
-    license_path = (
-        evidence_root / license_ref.domain / license_ref.sha256[:2] / license_ref.sha256
-    )
-    license_path.unlink()
-    with pytest.raises(EngineTreeError, match="cannot reopen retained"):
-        promote()
-    restored = reviewed("promotion-license", "integration.license")
-    assert restored == license_ref
-    license_path.chmod(0o600)
-    license_path.write_bytes(b"x" * license_ref.size)
-    license_path.chmod(0o400)
-    with pytest.raises(EngineTreeError, match="cannot reopen retained"):
-        promote()
-    license_path.unlink()
-    assert reviewed("promotion-license", "integration.license") == license_ref
-
-    (integrated / "unreviewed-padding.txt").write_text("not in review commit\n")
-    with pytest.raises(EngineTreeError, match="differs from the integration review_commit"):
-        promote()
 
 def test_inert_padding_changes_artifact_not_selected_payload(tmp_path: Path) -> None:
     padded = _copy(tmp_path, name="padded")
@@ -1399,18 +1184,6 @@ def test_failed_preinstall_verification_leaves_no_destination(
     assert not destination.exists()
 
 
-def test_runtime_rebuild_order_is_global_not_contribution_order() -> None:
-    raw = engine_tree._runtime_rebuild(
-        [
-            {"type": "repo_python", "path": "cacheon/patchers/build_cute_cubin.py"},
-            {"type": "repo_python", "path": "cacheon/patchers/build_cuda_ext.py"},
-        ]
-    )
-    assert raw is not None
-    assert [row["path"] for row in json.loads(raw)["steps"]] == [
-        "cacheon/patchers/build_cuda_ext.py",
-        "cacheon/patchers/build_cute_cubin.py",
-    ]
 
 
 @pytest.mark.parametrize("fixture", [SINGLETON, FUSED], ids=["norm-singleton", "atomic-dp"])

@@ -191,7 +191,6 @@ class StandingCpuSupervisor:
     stall_timeout_s: float = 3_600.0
     _status: SupervisorStatus = field(init=False, repr=False)
     _last_tick_progressed: bool = field(init=False, repr=False)
-    _commission_required: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not callable(self.screen_once):
@@ -215,7 +214,6 @@ class StandingCpuSupervisor:
             last_progress_unix=float(self.clock()),
         )
         self._last_tick_progressed = False
-        self._commission_required = False
 
     def status(self) -> SupervisorStatus:
         return self._status
@@ -265,10 +263,18 @@ class StandingCpuSupervisor:
         # Recoverable qualification HOLD / REQUEUE are first-class public products.
         from cacheon.chain.recoverable_qualification_dispatcher import (
             CompletedQualificationHold,
+            QualificationCommissionRequired,
             RecoverableQualificationHold,
             RecoverableQualificationRequeue,
         )
 
+        if type(raw) is QualificationCommissionRequired:
+            return SupervisorStageResult(
+                stage=stage,
+                progressed=False,
+                disposition="commission_required",
+                hold_reason="baseline_commission_required",
+            )
         if type(raw) is CompletedQualificationHold:
             return SupervisorStageResult(
                 stage=stage,
@@ -321,10 +327,24 @@ class StandingCpuSupervisor:
         )
 
     def _run_stage(self, stage: str, callback: Callable[[], Any]) -> SupervisorStageResult | None:
+        from cacheon.chain.remote_qualification_evidence import RemoteEvaluationReleased
+
         try:
             raw = callback()
         except StandingCpuSupervisorError:
             raise
+        except RemoteEvaluationReleased as exc:
+            # The dispatcher committed the lease release with its typed reason
+            # (release-cap accounting included) before raising.  That is a
+            # durable disposition, not an invented one: record it and keep
+            # serving (2026-09-02/03: each screen infrastructure release ended
+            # the process instead).
+            return SupervisorStageResult(
+                stage=stage,
+                progressed=True,
+                disposition="released",
+                lease_id=exc.lease_id,
+            )
         except Exception as exc:
             # Never invent COMPLETE/REQUEUE/HOLD from exception class alone.
             self._last_tick_progressed = False
@@ -349,15 +369,6 @@ class StandingCpuSupervisor:
     def tick(self) -> SupervisorStatus:
         """Advance one unit, settling before a new qualification may claim."""
 
-        if self._commission_required:
-            return self._observe(
-                SupervisorStageResult(
-                    stage="settlement",
-                    progressed=False,
-                    disposition="commission_required",
-                    hold_reason="baseline_commission_required",
-                )
-            )
         deferred: SupervisorStageResult | None = None
         for stage, callback in (
             ("settlement", self.settle_once),
@@ -371,8 +382,6 @@ class StandingCpuSupervisor:
             if result is None:
                 continue
             if result.progressed:
-                if stage == "settlement":
-                    self._commission_required = True
                 return self._observe(result)
             if deferred is None:
                 deferred = result

@@ -16,12 +16,8 @@ pinning the load to positively-identified scheduler execution processes.
 ``run_scheduler_process`` is the module-level function sglang spawns one
 scheduler rank with (mp spawn pickles it by qualified name, so the child
 resolves THIS wrapper after its own bootstrap re-installs it). The wrapper
-loads ordinary bundles at process entry. A direct device-artifact bundle is
-only staged there, then bound by the validator-owned post-device hook after
-SGLang establishes the rank-local CUDA context and before model load, warmup,
-or graph capture. Non-scheduler children never call this gate, never acquire
-that pending authority, never execute miner code, and never write an active
-receipt.
+loads the bundle at process entry. Non-scheduler children never call this
+gate, never execute miner code, and never write an active receipt.
 """
 
 from __future__ import annotations
@@ -53,17 +49,8 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
     def run_scheduler_process(*args, **kwargs):
         from cacheon import seam
 
-        try:
-            seam.load_candidate_bundle()
-            result = fn(*args, **kwargs)
-        except BaseException:
-            # Preserve the initiating engine failure. Teardown still attempts to
-            # fence/release direct artifacts, but a secondary cleanup error must
-            # not replace the rank traceback the controller needs to diagnose.
-            seam.teardown_candidate_bundle(suppress_errors=True)
-            raise
-        seam.teardown_candidate_bundle()
-        return result
+        seam.load_candidate_bundle()
+        return fn(*args, **kwargs)
 
     setattr(run_scheduler_process, _GATE_FLAG, True)
     run_scheduler_process._cacheon_orig = fn  # type: ignore[attr-defined]

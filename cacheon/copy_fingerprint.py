@@ -47,7 +47,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cacheon.manifest import load_manifest, resolve_cuda_sources, resolve_source
-from cacheon.stack_identity import canonical_json_bytes
 
 
 def _strip_docstrings(tree: ast.AST) -> None:
@@ -70,10 +69,6 @@ def normalized_source(source: str) -> str:
     tree = ast.parse(source)
     _strip_docstrings(tree)
     return ast.unparse(ast.fix_missing_locations(tree))
-
-
-def source_fingerprint(source: str) -> str:
-    return hashlib.sha256(normalized_source(source).encode("utf-8")).hexdigest()
 
 
 class _Skeletonize(ast.NodeTransformer):
@@ -103,11 +98,6 @@ def structural_source(source: str) -> str:
     _strip_docstrings(tree)
     tree = _Skeletonize().visit(tree)
     return ast.unparse(ast.fix_missing_locations(tree))
-
-
-def structural_fingerprint(source: str) -> str:
-    """Advisory near-copy signal robust to variable renames AND constant tweaks."""
-    return hashlib.sha256(structural_source(source).encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -249,31 +239,9 @@ def _closure_norm(root: Path, entry: Path, transform) -> str:
 def _op_identity_for_slot(manifest, op, slot: str) -> str:
     """Project one op through an explicit dispatch-slot execution identity.
 
-    Historical Python/Triton/CUDA rows retain their exact six-field projection.
-    A direct artifact does not execute ``op.entry``; it instead appends the full
-    canonical artifact/resource/lifecycle declaration that constructs its call.
+    Python/Triton/CUDA rows use their exact six-field projection.
     """
 
-    if op.aot_exports:
-        from cacheon.artifact_identity import (
-            DIRECT_ARTIFACT_ENTRY,
-            direct_artifact_execution_identity,
-        )
-
-        artifact_identity = canonical_json_bytes(
-            direct_artifact_execution_identity(manifest, op)
-        ).decode("utf-8")
-        return "\x00".join(
-            [
-                slot,
-                DIRECT_ARTIFACT_ENTRY,
-                op.prepare or "",
-                op.setup or "",
-                op.base_kernel or "",
-                op.override_point or "",
-                artifact_identity,
-            ]
-        )
     return "\x00".join(
         [
             slot,
@@ -296,8 +264,6 @@ def _op_identity(op, *, manifest=None) -> str:
     label, not source identity, and renaming it must not evade copy detection. Capability metadata
     is likewise excluded, so relabeling a stolen implementation's domain does not make it fresh.
     """
-    if op.aot_exports and manifest is None:
-        raise ValueError("direct artifact copy identity requires its manifest")
     return _op_identity_for_slot(manifest, op, op.slot)
 
 

@@ -469,10 +469,6 @@ class GraphVerificationGrade(_Canonical):
             if value is not None:
                 object.__setattr__(self, field, _digest(value, field))
 
-    @property
-    def veto_passed(self) -> bool:
-        return self.decision is QualificationDecision.PASS
-
     @classmethod
     def from_dict(cls, value: object) -> "GraphVerificationGrade":
         def decision(item: object) -> QualificationDecision:

@@ -53,16 +53,6 @@ from typing import Callable, Optional, Sequence
 import torch
 import torch.nn.functional as F
 
-from cacheon.artifact_abi import (
-    COLLECTIVE_ALL_REDUCE_CALL_ABI,
-    COLLECTIVE_ALL_GATHER_CALL_ABI,
-    COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
-    COLLECTIVE_REDUCE_SCATTER_CALL_ABI,
-    FUSED_ADD_RMSNORM_CALL_ABI,
-    RMSNORM_CALL_ABI,
-    SILU_AND_MUL_CALL_ABI,
-    SlotCallABI,
-)
 from cacheon.moe_nvfp4_contract import (
     prepare_args_from_layer as _moe_prepare_args_from_layer,
 )
@@ -210,12 +200,6 @@ class SlotSpec:
     # reordered softmax, so a flat 5e-3 false-fails a faithful attention kernel — README
     # calibration finding 6). None -> use the eval's generic threshold.
     kl_threshold: Optional[float] = None
-    # Provider-neutral, declarative resource ABI for sealed AOT/native artifacts.
-    # It is additive and intentionally appended after historical fields. A miner's
-    # launch plan may only bind these validator-owned resources; it cannot name a
-    # per-submission Python adapter. Every catalog slot points at the shared immutable
-    # row in artifact_abi; provider support may still fail closed at build/runtime.
-    call_abi: Optional[SlotCallABI] = None
 
     def tolerance_for(self, dtype: torch.dtype) -> Tolerance:
         if dtype in self.tolerances:
@@ -292,7 +276,6 @@ SILU_AND_MUL = SlotSpec(
     ),
     correctness=Correctness("allclose"),
     tolerances=_BF16_TOL,
-    call_abi=SILU_AND_MUL_CALL_ABI,
 )
 
 
@@ -337,7 +320,6 @@ RMSNORM = SlotSpec(
     ),
     correctness=Correctness("allclose"),
     tolerances=_BF16_TOL,
-    call_abi=RMSNORM_CALL_ABI,
 )
 
 
@@ -620,7 +602,6 @@ COLLECTIVE_ALL_REDUCE = SlotSpec(
     # gate on matched_ratio vs the fp32 sum, with the end-to-end token/KL gate mandatory.
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
-    call_abi=COLLECTIVE_ALL_REDUCE_CALL_ABI,
 )
 
 
@@ -650,7 +631,6 @@ COLLECTIVE_ALL_GATHER = SlotSpec(
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
-    call_abi=COLLECTIVE_ALL_GATHER_CALL_ABI,
 )
 
 
@@ -680,7 +660,6 @@ COLLECTIVE_REDUCE_SCATTER = SlotSpec(
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
-    call_abi=COLLECTIVE_REDUCE_SCATTER_CALL_ABI,
 )
 
 
@@ -774,7 +753,6 @@ COLLECTIVE_AR_RESIDUAL_RMSNORM = SlotSpec(
     # gate on matched_ratio vs the fp32 composed reference, e2e token/KL gate mandatory.
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
-    call_abi=COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
 )
 
 
@@ -803,7 +781,6 @@ FUSED_ADD_RMSNORM = SlotSpec(
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
-    call_abi=FUSED_ADD_RMSNORM_CALL_ABI,
 )
 
 

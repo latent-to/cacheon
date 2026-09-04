@@ -26,9 +26,9 @@ already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
 | Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (1 τ each): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
-| Winners | Every retained two-PASS improvement: conservative speedup over the incumbent, compounded stack speedup over retained SGLang stock with a serving tok/s estimate, settlement status, and current miner emission |
-| Miners | Per-hotkey leaderboard: submissions, crowns, qualified/failed, fees paid, registration + emission |
-| Timeline | Settlement events (CROWN/ADOPTION/HOLD/…) and weight publications journal |
+| Winners | Every retained two-PASS settlement candidate: conservative speedup over the incumbent, compounded stack speedup over retained SGLang stock with a serving tok/s estimate, the miner's weight share in the served offer (earning / not earning), settlement status, and current on-chain emission |
+| Miners | Per-hotkey leaderboard sorted by served weight share: submissions, crowns, qualified/failed, fees paid, registration + emission |
+| Timeline | Settlement events (CROWN/ADOPTION/HOLD/…), the served weight offer's vector, and this validator's follower journal (intent/pending/held/confirmed) |
 | System | DB/chain/process/heartbeat health, intake lag |
 
 ## Design notes
@@ -55,6 +55,8 @@ already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
 | `CACHEON_DASH_SPOOL` | `/root/cacheon-ops/remote-worker/spool` |
 | `CACHEON_DASH_NETWORK` | `wss://archive.sub.latent.to` |
 | `CACHEON_DASH_ENRICH` | `1` (set `0` to disable chain lookups) |
+| `CACHEON_DASH_OFFER` | `/var/lib/cacheon/current_weights.json` (the file the weight-offer service serves) |
+| `CACHEON_DASH_FOLLOW_JOURNAL` | unset; the follower journal SQLite named by the follow-weights lane's `--journal-db`. When unset the Timeline says so instead of showing a stale journal. |
 
 ## API
 
@@ -86,6 +88,15 @@ Metagraph emission is denominated in the subnet's own alpha token, so
 The installed bittensor unit table can disagree with the chain, so the UI
 renders the served symbol and never a local one. Only the 1 τ eval-cost fee is
 in TAO.
+
+Reward shares come from the served weight offer, not from settlement status:
+reproduced PASS pairs earn under the retained-pair policy with time decay, and
+a crown is not required. `/api/winners` and `/api/miners` carry `weight_share`
+(the hotkey's fraction of the served vector, null when the offer file is
+unavailable) plus an `offer` summary (projection digest, effective block,
+crown count). `/api/weights` returns that vector with UIDs and on-chain
+incentive beside the follower journal rows, so the lag between the served
+offer and chain consensus is visible rather than mistaken for a wrong number.
 
 `/api/winners` reports each contribution twice over: `improvement_pct` is the
 conservative gain over the incumbent it displaced, while

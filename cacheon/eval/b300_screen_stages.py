@@ -5,15 +5,15 @@ miner-owned inventory, and reruns manifest, target-catalog, contribution, and
 recursive source policy.  It never imports candidate Python.
 
 Build, ABI, and graph stages share one bounded candidate-bound carrier.  Build
-uses :func:`run_oci_prebuild` directly.  ABI runs a validator-owned eager OCI
-session and independently regrades its raw slot-audit receipts.  Graph runs a
-separate graph-enabled OCI session, publishes a verdict-free observation, then
-reopens and regrades those bytes before returning a routing-only screen grade.
+uses :func:`run_oci_prebuild` directly and reopens the native product.  ABI and
+graph keep their fixed stage positions but only reopen that carrier: their GPU
+work is deferred to the resident all-rank swap, whose acknowledgement proves
+slot registration and whose read forces graph recapture/replay.
 
 An exception or missing/mutated carrier is infrastructure ``NO_DECISION``.
-Only deterministic policy rejection from immutable submitted bytes, or a
-successfully reopened host-regraded audit witness, can produce candidate
-``FAIL``.  No candidate field selects a module, command, argument, or loader.
+Only deterministic policy rejection from immutable submitted bytes can produce
+candidate ``FAIL`` here.  No candidate field selects a module, command,
+argument, or loader.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterator, Protocol
+from typing import Iterator, Protocol
 
 from cacheon.arena_service import (
     MAX_SCREEN_REASON_CHARS,
@@ -53,40 +53,27 @@ from cacheon.engine_tree import (
 )
 from cacheon.eval.b300_arena_provider import B300ScreenStageHandler
 from cacheon.eval.engine_launch import (
-    EngineLaunchError,
     EngineLaunchSpec,
     ResolvedEngineLaunch,
     TrustedLaunchBinding,
     resolve_engine_launch,
 )
 from cacheon.eval.evidence_store import (
-    EvidenceArtifactRef,
-    EvidenceStoreError,
     prepare_evidence_root,
-    publish_evidence,
-    reopen_evidence,
 )
 from cacheon.eval.native_artifact import (
-    NativeArtifactError,
     NativeArtifactPublication,
     reopen_native_artifact,
 )
 from cacheon.eval.oci_backend import (
-    EngineExecutionEvidence,
-    OCIBackendError,
     OCIEngineExecutor,
     TrustedArenaModelMountReceipt,
 )
-from cacheon.eval.oci_outer_session import OuterSessionCandidateError, SessionExecutionPlan
 from cacheon.eval.oci_prebuild import (
-    OCIPrebuildError,
     OCIPrebuildResult,
     run_oci_prebuild,
 )
-from cacheon.eval.qualification import QualificationDecision
-from cacheon.eval.qualification_runner import AuditWitness, QualificationRunnerError
 from cacheon.manifest import (
-    Manifest,
     ManifestError,
     all_declared_cuda_sources,
     load_manifest,
@@ -109,14 +96,11 @@ from cacheon.target_catalog import (
 STATIC_SCREEN_SCHEMA = "cacheon.eval.b300-static-screen.v1"
 PIPELINE_SCREEN_SCHEMA = "cacheon.eval.b300-build-abi-graph-screen.v1"
 SCREEN_EVIDENCE_SCHEMA = "cacheon.eval.b300-screen-stage-evidence.v1"
-ABI_EVIDENCE_DOMAIN = "cacheon.b300-screen-abi"
-ABI_EVIDENCE_SCHEMA = "cacheon.b300-screen-abi.v1"
-GRAPH_EVIDENCE_DOMAIN = "cacheon.b300-screen-graph"
-GRAPH_EVIDENCE_SCHEMA = "cacheon.b300-screen-graph.v1"
-EVIDENCE_MEDIA_TYPE = "application/json"
 
 _PIPELINE_STAGES = ("build", "abi", "graph")
-_PIPELINE_EXECUTION_MODES = frozenset({"isolated", "resident"})
+# Retained verbatim in the coordinator identity digest: the isolated eager
+# execution mode was deleted, and sealed screen deployments must replay.
+_PIPELINE_EXECUTION_MODE = "resident"
 _TREE_METADATA = "metadata/cacheon_engine_tree.json"
 
 
@@ -508,18 +492,15 @@ class B300StaticScreenAdapter:
 
 @dataclass(frozen=True)
 class B300ScreenExecutionPlan:
-    """Candidate-bound eager and graph launches from one sealed resolver."""
+    """Candidate-bound graph launch and build binding from one sealed resolver."""
 
     service_digest: str
     candidate_digest: str
     screen_attempt: int
     selected_delta_digest: str
-    eager_launch: EngineLaunchSpec
     graph_launch: EngineLaunchSpec
     binding: TrustedLaunchBinding
     model_mount: TrustedArenaModelMountReceipt
-    eager_session: SessionExecutionPlan
-    graph_session: SessionExecutionPlan
     deadline: float
 
     def __post_init__(self) -> None:
@@ -532,12 +513,9 @@ class B300ScreenExecutionPlan:
         if type(self.screen_attempt) is not int or self.screen_attempt <= 0:
             raise B300ScreenStagesError("screen plan attempt is invalid")
         if (
-            type(self.eager_launch) is not EngineLaunchSpec
-            or type(self.graph_launch) is not EngineLaunchSpec
+            type(self.graph_launch) is not EngineLaunchSpec
             or type(self.binding) is not TrustedLaunchBinding
             or type(self.model_mount) is not TrustedArenaModelMountReceipt
-            or type(self.eager_session) is not SessionExecutionPlan
-            or type(self.graph_session) is not SessionExecutionPlan
             or isinstance(self.deadline, bool)
             or not isinstance(self.deadline, (int, float))
             or not math.isfinite(float(self.deadline))
@@ -570,51 +548,6 @@ def _executor_policy_digest(executor: OCIEngineExecutor) -> str:
             "runtime_policy_digest": config.runtime.digest,
         },
     )
-
-
-def _session_plan_digest(plan: SessionExecutionPlan) -> str:
-    prompts = [
-        [hashlib.sha256(prompt.encode("utf-8")).hexdigest() for prompt in batch]
-        for batch in plan.prompt_batches
-    ]
-    payload = {
-            "audit_policy_digest": (
-                None if plan.audit_policy is None else plan.audit_policy.digest
-            ),
-            "conditioning_count": plan.conditioning_count,
-            "engine_config_digest": plan.engine_config.digest,
-            "expected_discovery_overlay_identity_digest": (
-                plan.expected_discovery_overlay_identity_digest
-            ),
-            "expected_preflight_digest": plan.expected_preflight.digest,
-            "launch_digest": plan.launch_digest,
-            "max_new_tokens": plan.max_new_tokens,
-            "prompt_digests": prompts,
-            "temperature": format(plan.temperature, ".17g"),
-            "top_logprobs_num": plan.top_logprobs_num,
-            "warmup_count": plan.warmup_count,
-        }
-    if plan.batch_max_new_tokens or plan.quality_max_new_tokens is not None:
-        payload["batch_request_geometry"] = [
-            [tokens, prompt_tokens]
-            for tokens, prompt_tokens in zip(
-                plan.batch_max_new_tokens,
-                plan.batch_expected_prompt_tokens,
-                strict=True,
-            )
-        ]
-        payload["quality_max_new_tokens"] = plan.quality_tokens_per_prompt
-    return canonical_digest("cacheon.eval.b300-screen-session-plan.v1", payload)
-
-
-def _same_launch_except_engine_config(
-    eager: EngineLaunchSpec,
-    graph: EngineLaunchSpec,
-) -> bool:
-    left, right = eager.to_dict(), graph.to_dict()
-    left.pop("engine_config_digest")
-    right.pop("engine_config_digest")
-    return left == right
 
 
 def _read_tree_metadata(tree: MaterializedEngineTree) -> dict[str, object]:
@@ -672,176 +605,6 @@ def _resolve_candidate_tree(
     return resolved
 
 
-def _decode_canonical_json(payload: bytes) -> dict[str, object]:
-    def reject_float(_value: str) -> None:
-        raise B300ScreenStagesError("screen evidence contains a JSON float")
-
-    def pairs(rows: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in rows:
-            if key in result:
-                raise B300ScreenStagesError("screen evidence repeats a JSON key")
-            result[key] = value
-        return result
-
-    try:
-        value = json.loads(
-            payload.decode("utf-8"),
-            parse_float=reject_float,
-            parse_constant=reject_float,
-            object_pairs_hook=pairs,
-        )
-    except B300ScreenStagesError:
-        raise
-    except (UnicodeError, ValueError, RecursionError) as exc:
-        raise B300ScreenStagesError("screen evidence is malformed") from exc
-    if type(value) is not dict or canonical_json_bytes(value) != payload:
-        raise B300ScreenStagesError("screen evidence is not canonical")
-    return value
-
-
-def _publish_and_reopen_witness(
-    evidence_root: Path,
-    witness: AuditWitness,
-) -> tuple[EvidenceArtifactRef, AuditWitness]:
-    payload = canonical_json_bytes(witness.to_dict())
-    reference = publish_evidence(
-        evidence_root,
-        payload,
-        domain=ABI_EVIDENCE_DOMAIN,
-        media_type=EVIDENCE_MEDIA_TYPE,
-        schema=ABI_EVIDENCE_SCHEMA,
-    )
-    reopened = AuditWitness.from_dict(
-        _decode_canonical_json(reopen_evidence(evidence_root, reference))
-    )
-    if reopened != witness or reopened.regrade() != witness.regrade():
-        raise B300ScreenStagesError("ABI witness changed after publication")
-    return reference, reopened
-
-
-def _reopen_witness(
-    evidence_root: Path,
-    reference: EvidenceArtifactRef,
-    expected_digest: str,
-) -> AuditWitness:
-    if (
-        reference.domain != ABI_EVIDENCE_DOMAIN
-        or reference.media_type != EVIDENCE_MEDIA_TYPE
-        or reference.schema != ABI_EVIDENCE_SCHEMA
-    ):
-        raise B300ScreenStagesError("ABI evidence reference is outside policy")
-    witness = AuditWitness.from_dict(
-        _decode_canonical_json(reopen_evidence(evidence_root, reference))
-    )
-    if witness.digest != expected_digest:
-        raise B300ScreenStagesError("ABI evidence digest changed")
-    witness.regrade()
-    return witness
-
-
-@dataclass(frozen=True)
-class B300GraphScreenObservation:
-    """Verdict-free facts from one complete graph-enabled audited session."""
-
-    service_digest: str
-    candidate_digest: str
-    screen_attempt: int
-    selected_delta_digest: str
-    launch_digest: str
-    build_spec_digest: str
-    native_publication_digest: str
-    session_plan_digest: str
-    expected_batches: int
-    observed_batches: int
-    audit_witness: AuditWitness
-
-    def __post_init__(self) -> None:
-        for field in (
-            "service_digest",
-            "candidate_digest",
-            "selected_delta_digest",
-            "launch_digest",
-            "build_spec_digest",
-            "native_publication_digest",
-            "session_plan_digest",
-        ):
-            object.__setattr__(self, field, _digest(getattr(self, field), field))
-        if (
-            type(self.screen_attempt) is not int
-            or self.screen_attempt <= 0
-            or type(self.expected_batches) is not int
-            or self.expected_batches <= 0
-            or type(self.observed_batches) is not int
-            or self.observed_batches < 0
-            or type(self.audit_witness) is not AuditWitness
-        ):
-            raise B300ScreenStagesError("graph screen observation is malformed")
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "audit_witness": self.audit_witness.to_dict(),
-            "build_spec_digest": self.build_spec_digest,
-            "candidate_digest": self.candidate_digest,
-            "expected_batches": self.expected_batches,
-            "launch_digest": self.launch_digest,
-            "native_publication_digest": self.native_publication_digest,
-            "observed_batches": self.observed_batches,
-            "screen_attempt": self.screen_attempt,
-            "selected_delta_digest": self.selected_delta_digest,
-            "service_digest": self.service_digest,
-            "session_plan_digest": self.session_plan_digest,
-        }
-
-    @classmethod
-    def from_dict(cls, value: object) -> "B300GraphScreenObservation":
-        expected = {
-            "audit_witness",
-            "build_spec_digest",
-            "candidate_digest",
-            "expected_batches",
-            "launch_digest",
-            "native_publication_digest",
-            "observed_batches",
-            "screen_attempt",
-            "selected_delta_digest",
-            "service_digest",
-            "session_plan_digest",
-        }
-        if type(value) is not dict or set(value) != expected:
-            raise B300ScreenStagesError("graph screen evidence fields differ")
-        return cls(
-            **{
-                **value,
-                "audit_witness": AuditWitness.from_dict(value["audit_witness"]),
-            }
-        )  # type: ignore[arg-type]
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest(GRAPH_EVIDENCE_SCHEMA, self.to_dict())
-
-
-def _publish_and_reopen_graph(
-    evidence_root: Path,
-    observation: B300GraphScreenObservation,
-) -> tuple[EvidenceArtifactRef, B300GraphScreenObservation]:
-    payload = canonical_json_bytes(observation.to_dict())
-    reference = publish_evidence(
-        evidence_root,
-        payload,
-        domain=GRAPH_EVIDENCE_DOMAIN,
-        media_type=EVIDENCE_MEDIA_TYPE,
-        schema=GRAPH_EVIDENCE_SCHEMA,
-    )
-    reopened = B300GraphScreenObservation.from_dict(
-        _decode_canonical_json(reopen_evidence(evidence_root, reference))
-    )
-    if reopened != observation or reopened.digest != observation.digest:
-        raise B300ScreenStagesError("graph observation changed after publication")
-    return reference, reopened
-
-
 @dataclass(frozen=True)
 class _PipelineCarrier:
     service_digest: str
@@ -850,21 +613,17 @@ class _PipelineCarrier:
     publication_digest: str
     plan: B300ScreenExecutionPlan
     prebuild: OCIPrebuildResult
-    abi_reference: EvidenceArtifactRef | None = None
-    abi_witness_digest: str | None = None
     abi_deferred: bool = False
 
 
 class B300BuildABIGraphScreenAdapter:
     """Strict single-flight build→ABI→graph screen coordinator.
 
-    ``isolated`` preserves the ordinary eager and graph launch pair.  A
-    deployment with a standing resident screen lane uses ``resident``: build
-    still produces and reopens the candidate-native carrier, while ABI and
-    graph execution are explicitly deferred to the final resident stage.  The
-    resident swap acknowledgement proves the all-rank slot registration and
-    its read forces graph recapture/replay without tearing down the stock
-    model between arrivals.  These stages are routing-only and never crown.
+    Build produces and reopens the candidate-native carrier; the ABI and graph
+    stages are explicitly deferred to the final resident stage.  The resident
+    swap acknowledgement proves the all-rank slot registration and its read
+    forces graph recapture/replay without tearing down the stock model between
+    arrivals.  These stages are routing-only and never crown.
     """
 
     def __init__(
@@ -876,7 +635,6 @@ class B300BuildABIGraphScreenAdapter:
         plan_resolver: B300ScreenPlanResolver,
         evidence_policy_digest: str,
         evidence_root: str | Path,
-        execution_mode: str = "isolated",
     ) -> None:
         if type(catalog) is not TargetCatalog:
             raise B300ScreenStagesError("pipeline catalog is not exact")
@@ -884,8 +642,6 @@ class B300BuildABIGraphScreenAdapter:
             raise B300ScreenStagesError("pipeline executor is not exact")
         if not callable(plan_resolver):
             raise B300ScreenStagesError("pipeline plan resolver is not callable")
-        if execution_mode not in _PIPELINE_EXECUTION_MODES:
-            raise B300ScreenStagesError("pipeline execution mode is invalid")
         self.catalog = catalog
         self.executor = executor
         self.evidence_root = prepare_evidence_root(Path(evidence_root))
@@ -900,13 +656,12 @@ class B300BuildABIGraphScreenAdapter:
             evidence_policy_digest,
             "evidence_policy_digest",
         )
-        self._execution_mode = execution_mode
         self.identity_digest = canonical_digest(
             PIPELINE_SCREEN_SCHEMA,
             {
                 "catalog_digest": self._catalog_digest,
                 "evidence_policy_digest": self._evidence_policy_digest,
-                "execution_mode": self._execution_mode,
+                "execution_mode": _PIPELINE_EXECUTION_MODE,
                 "executor_policy_digest": self._executor_digest,
                 "plan_resolver_digest": self._plan_resolver_digest,
                 "stages": list(_PIPELINE_STAGES),
@@ -970,12 +725,7 @@ class B300BuildABIGraphScreenAdapter:
             expected = (
                 "build"
                 if self._active is None
-                else (
-                    "abi"
-                    if self._active.abi_reference is None
-                    and not self._active.abi_deferred
-                    else "graph"
-                )
+                else ("graph" if self._active.abi_deferred else "abi")
             )
             if policy.stage != expected or (
                 self._active is not None
@@ -997,16 +747,8 @@ class B300BuildABIGraphScreenAdapter:
             if policy.stage == "build":
                 return self._run_build(manifest, candidate, started)
             if policy.stage == "abi":
-                if self._execution_mode == "resident":
-                    return self._defer_abi_to_resident(
-                        manifest, candidate, started
-                    )
-                return self._run_abi(manifest, candidate, started)
-            if self._execution_mode == "resident":
-                return self._defer_graph_to_resident(
-                    manifest, candidate, started
-                )
-            return self._run_graph(manifest, candidate, started)
+                return self._defer_abi_to_resident(manifest, candidate, started)
+            return self._defer_graph_to_resident(manifest, candidate, started)
 
     def _no_decision(
         self,
@@ -1029,24 +771,6 @@ class B300BuildABIGraphScreenAdapter:
             facts=facts,
         )
 
-    def _candidate_failure(
-        self, manifest, candidate, stage: str, started: float,
-        exc: OuterSessionCandidateError,
-    ) -> ScreenStageResult:
-        self._active = None
-        return _stage_result(
-            manifest=manifest, candidate=candidate, stage=stage,
-            grade=ScreenGrade.FAIL,
-            reason=(
-                "candidate_never_executed"
-                if exc.candidate_failure_type == "CandidateNeverExecutedError"
-                else "candidate_exception"
-            ),
-            authority_digest=self.identity_digest, started=started,
-            facts={"exception_detail": exc.candidate_failure,
-                   "exception_type": exc.candidate_failure_type},
-        )
-
     def _validate_plan(
         self,
         manifest: ArenaServiceManifest,
@@ -1056,29 +780,28 @@ class B300BuildABIGraphScreenAdapter:
         if type(plan) is not B300ScreenExecutionPlan:
             raise B300ScreenStagesError("plan resolver returned an untyped plan")
         runtime = manifest.runtime
-        eager, graph = plan.eager_launch, plan.graph_launch
+        graph = plan.graph_launch
         if (
             plan.service_digest != manifest.digest
             or plan.candidate_digest != candidate.digest
             or plan.screen_attempt != candidate.screen_attempt
             or plan.selected_delta_digest
             != candidate.reservation.selected_delta_digest
-            or not _same_launch_except_engine_config(eager, graph)
-            or eager.arena_digest != manifest.digest
-            or eager.runtime_digest != runtime.runtime_digest
-            or eager.base_engine_digest != runtime.base_engine_digest
-            or eager.validator_overlay_digest != runtime.validator_overlay_digest
-            or eager.worker_distribution_digest
+            or graph.arena_digest != manifest.digest
+            or graph.runtime_digest != runtime.runtime_digest
+            or graph.base_engine_digest != runtime.base_engine_digest
+            or graph.validator_overlay_digest != runtime.validator_overlay_digest
+            or graph.worker_distribution_digest
             != runtime.worker_distribution_digest
-            or eager.model_revision_digest != runtime.model_revision_digest
-            or eager.model_manifest_digest != runtime.model_manifest_digest
-            or eager.model_content_digest != runtime.model_content_digest
-            or eager.hardware.architecture != runtime.target_architecture
-            or eager.hardware.topology_class != runtime.topology_class
-            or eager.hardware.topology_digest != runtime.topology_digest
-            or eager.hardware.visible_gpu_count != runtime.gpu_count
-            or eager.hardware.tp_size != runtime.tensor_parallel_size
-            or eager.hardware.device_policy_digest
+            or graph.model_revision_digest != runtime.model_revision_digest
+            or graph.model_manifest_digest != runtime.model_manifest_digest
+            or graph.model_content_digest != runtime.model_content_digest
+            or graph.hardware.architecture != runtime.target_architecture
+            or graph.hardware.topology_class != runtime.topology_class
+            or graph.hardware.topology_digest != runtime.topology_digest
+            or graph.hardware.visible_gpu_count != runtime.gpu_count
+            or graph.hardware.tp_size != runtime.tensor_parallel_size
+            or graph.hardware.device_policy_digest
             != self.executor.device_policy.policy_sha256
             or plan.model_mount.arena_digest != manifest.digest
             or plan.model_mount.model_revision_digest != runtime.model_revision_digest
@@ -1089,27 +812,7 @@ class B300BuildABIGraphScreenAdapter:
             raise B300ScreenStagesError(
                 "screen plan differs from candidate or arena authority"
             )
-        for launch, session, eager_mode in (
-            (eager, plan.eager_session, True),
-            (graph, plan.graph_session, False),
-        ):
-            audit = session.audit_policy
-            if (
-                session.launch_digest != launch.digest
-                or session.expected_engine_config_digest
-                != launch.engine_config_digest
-                or session.engine_config.digest != launch.engine_config_digest
-                or session.engine_config.disable_cuda_graph is not eager_mode
-                or session.engine_config.tp_size != runtime.tensor_parallel_size
-                or audit is None
-                or audit.expected_slots != candidate.reservation.target_members
-                or audit.expected_member_count != runtime.tensor_parallel_size
-            ):
-                raise B300ScreenStagesError(
-                    "screen session plan differs from lane authority"
-                )
         _resolve_candidate_tree(plan, candidate, self.catalog, launch=graph)
-        _resolve_candidate_tree(plan, candidate, self.catalog, launch=eager)
 
     def _reopen_carrier(
         self,
@@ -1203,112 +906,6 @@ class B300BuildABIGraphScreenAdapter:
             },
         )
 
-    def _validate_execution(
-        self,
-        execution: EngineExecutionEvidence,
-        carrier: _PipelineCarrier,
-        launch: EngineLaunchSpec,
-        session: SessionExecutionPlan,
-    ) -> None:
-        if (
-            type(execution) is not EngineExecutionEvidence
-            or execution.launch_digest != launch.digest
-            or execution.resource_policy_digest != self.executor.config.runtime.digest
-            or execution.prebuild.build_spec_digest
-            != carrier.prebuild.build_spec_digest
-            or execution.prebuild.publication.publication_digest
-            != carrier.prebuild.publication.publication_digest
-            or execution.native_publication_digest
-            != carrier.prebuild.publication.publication_digest
-            or execution.session.launch_digest != launch.digest
-            or execution.session.audit_policy_digest
-            != session.audit_policy.digest  # type: ignore[union-attr]
-            or len(execution.session.batches) != len(session.prompt_batches)
-            or execution.session.warmup_count != session.warmup_count
-            or execution.session.conditioning_count != session.conditioning_count
-        ):
-            raise B300ScreenStagesError("OCI screen execution changed its exact plan")
-
-    def _run_abi(
-        self,
-        manifest: ArenaServiceManifest,
-        candidate: ArenaCandidateBinding,
-        started: float,
-    ) -> ScreenStageResult:
-        carrier = self._active
-        assert carrier is not None
-        try:
-            self._reopen_carrier(
-                carrier,
-                candidate,
-                launch=carrier.plan.eager_launch,
-            )
-            execution = self.executor.execute(
-                carrier.plan.eager_launch,
-                carrier.plan.binding,
-                carrier.plan.model_mount,
-                carrier.plan.eager_session,
-                deadline=carrier.plan.deadline,
-            )
-            self._validate_execution(
-                execution,
-                carrier,
-                carrier.plan.eager_launch,
-                carrier.plan.eager_session,
-            )
-            witness = AuditWitness.from_execution(
-                execution,
-                selected_delta_digest=carrier.plan.selected_delta_digest,
-                policy=carrier.plan.eager_session.audit_policy,
-            )
-            reference, witness = _publish_and_reopen_witness(
-                self.evidence_root,
-                witness,
-            )
-            self._reopen_carrier(
-                carrier,
-                candidate,
-                launch=carrier.plan.eager_launch,
-            )
-        except OuterSessionCandidateError as exc:
-            return self._candidate_failure(manifest, candidate, "abi", started, exc)
-        except Exception as exc:
-            self._active = None
-            return self._no_decision(
-                manifest,
-                candidate,
-                "abi",
-                "abi_infrastructure",
-                started,
-                exc,
-            )
-        grade = (
-            ScreenGrade.PASS
-            if witness.decision is QualificationDecision.PASS
-            else ScreenGrade.FAIL
-        )
-        if grade is ScreenGrade.PASS:
-            self._active = replace(
-                carrier,
-                abi_reference=reference,
-                abi_witness_digest=witness.digest,
-            )
-        else:
-            self._active = None
-        return _stage_result(
-            manifest=manifest,
-            candidate=candidate,
-            stage="abi",
-            grade=grade,
-            reason=("eager_abi_verified" if grade is ScreenGrade.PASS else "eager_abi_failed"),
-            authority_digest=self.identity_digest,
-            started=started,
-            facts={
-                "artifact_sha256": reference.sha256,
-                "audit_witness_digest": witness.digest,
-            },
-        )
-
     def _defer_abi_to_resident(
         self,
         manifest: ArenaServiceManifest,
@@ -1395,117 +992,6 @@ class B300BuildABIGraphScreenAdapter:
             },
         )
 
-    def _run_graph(
-        self,
-        manifest: ArenaServiceManifest,
-        candidate: ArenaCandidateBinding,
-        started: float,
-    ) -> ScreenStageResult:
-        carrier = self._active
-        assert carrier is not None
-        self._active = None
-        try:
-            assert carrier.abi_reference is not None
-            assert carrier.abi_witness_digest is not None
-            prior = _reopen_witness(
-                self.evidence_root,
-                carrier.abi_reference,
-                carrier.abi_witness_digest,
-            )
-            if prior.decision is not QualificationDecision.PASS:
-                raise B300ScreenStagesError("graph stage lacks a passing ABI witness")
-            publication = self._reopen_carrier(
-                carrier,
-                candidate,
-                launch=carrier.plan.graph_launch,
-            )
-            execution = self.executor.execute(
-                carrier.plan.graph_launch,
-                carrier.plan.binding,
-                carrier.plan.model_mount,
-                carrier.plan.graph_session,
-                deadline=carrier.plan.deadline,
-            )
-            self._validate_execution(
-                execution,
-                carrier,
-                carrier.plan.graph_launch,
-                carrier.plan.graph_session,
-            )
-            witness = AuditWitness.from_execution(
-                execution,
-                selected_delta_digest=carrier.plan.selected_delta_digest,
-                policy=carrier.plan.graph_session.audit_policy,
-            )
-            observation = B300GraphScreenObservation(
-                manifest.digest,
-                candidate.digest,
-                candidate.screen_attempt,
-                carrier.plan.selected_delta_digest,
-                carrier.plan.graph_launch.digest,
-                carrier.prebuild.build_spec_digest,
-                publication.publication_digest,
-                _session_plan_digest(carrier.plan.graph_session),
-                len(carrier.plan.graph_session.prompt_batches),
-                len(execution.session.batches),
-                witness,
-            )
-            reference, observation = _publish_and_reopen_graph(
-                self.evidence_root,
-                observation,
-            )
-            if (
-                observation.service_digest != manifest.digest
-                or observation.candidate_digest != candidate.digest
-                or observation.screen_attempt != candidate.screen_attempt
-                or observation.selected_delta_digest
-                != candidate.reservation.selected_delta_digest
-                or observation.launch_digest != carrier.plan.graph_launch.digest
-                or observation.build_spec_digest
-                != carrier.prebuild.build_spec_digest
-                or observation.native_publication_digest
-                != publication.publication_digest
-                or observation.session_plan_digest
-                != _session_plan_digest(carrier.plan.graph_session)
-                or observation.observed_batches != observation.expected_batches
-            ):
-                raise B300ScreenStagesError("graph observation failed independent regrade")
-            passed, detail = observation.audit_witness.regrade()
-            if (observation.audit_witness.decision is QualificationDecision.PASS) != passed:
-                raise B300ScreenStagesError("graph audit witness changed on regrade")
-            _reopen_publication(candidate)
-            self._reopen_carrier(
-                carrier,
-                candidate,
-                launch=carrier.plan.graph_launch,
-            )
-        except OuterSessionCandidateError as exc:
-            return self._candidate_failure(manifest, candidate, "graph", started, exc)
-        except Exception as exc:
-            return self._no_decision(
-                manifest,
-                candidate,
-                "graph",
-                "graph_infrastructure",
-                started,
-                exc,
-            )
-        grade = ScreenGrade.PASS if passed else ScreenGrade.FAIL
-        return _stage_result(
-            manifest=manifest,
-            candidate=candidate,
-            stage="graph",
-            grade=grade,
-            reason=("graph_session_verified" if passed else "graph_session_failed"),
-            authority_digest=self.identity_digest,
-            started=started,
-            facts={
-                "artifact_sha256": reference.sha256,
-                "graph_observation_digest": observation.digest,
-            },
-        )
-
-
 def compose_b300_non_serving_screen_handlers(
     static: B300StaticScreenAdapter,
     pipeline: B300BuildABIGraphScreenAdapter,
@@ -1523,16 +1009,11 @@ def compose_b300_non_serving_screen_handlers(
 
 
 __all__ = [
-    "ABI_EVIDENCE_DOMAIN",
-    "ABI_EVIDENCE_SCHEMA",
     "B300BuildABIGraphScreenAdapter",
-    "B300GraphScreenObservation",
     "B300ScreenExecutionPlan",
     "B300ScreenPlanResolver",
     "B300ScreenStagesError",
     "B300StaticScreenAdapter",
-    "GRAPH_EVIDENCE_DOMAIN",
-    "GRAPH_EVIDENCE_SCHEMA",
     "PIPELINE_SCREEN_SCHEMA",
     "STATIC_SCREEN_SCHEMA",
     "compose_b300_non_serving_screen_handlers",

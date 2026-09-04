@@ -110,7 +110,6 @@ nav:
       - Proposal to release: architecture/pipeline.md
       - Target and slot contract: architecture/slot-contract.md
       - Evaluation and release stacks: architecture/stacks.md
-      - Sealed direct artifacts: architecture/direct-artifacts.md
       - Runtime injection seam: architecture/seam.md
   - Miner guide:
       - Overview: miner-guide/overview.md

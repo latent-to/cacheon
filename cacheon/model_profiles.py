@@ -63,7 +63,6 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
             repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
                 *_moe_prepare_args_from_inputs(i), i["topk"], i["routed_scaling"]
             )
-            repl["call_abi"] = None
     if slot.name in _MOE_SLOTS:
         act = profile.activation
 
@@ -134,7 +133,6 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
         repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
             *_moe_prepare_args_from_inputs(i)
         )
-        repl["call_abi"] = None
     if profile.shapes is not None:
         repl["shapes"] = profile.shapes
     return replace(slot, **repl) if repl else slot

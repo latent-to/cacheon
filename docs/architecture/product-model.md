@@ -199,8 +199,7 @@ The product model is intact only if all six statements hold:
 1. Removing chain access and miner hosting does not prevent rebuilding or serving the latest signed release.
 2. A new component is evaluated as one marginal substitution over the current stack.
 3. The trusted controller never imports candidate code; candidate runtime execution stays
-   inside a complete isolated engine, while a sealed-direct-artifact factory may execute
-   only inside its further isolated no-network/no-GPU compiler child.
+   inside a complete isolated engine.
 4. A whole-system prototype cannot acquire a duplicate permanent whole-engine reward title by packaging alone.
 5. Every shipped component resolves to reviewed source and immutable attribution.
 6. Updating the evaluation incumbent and publishing a release are independent, explicitly authorized state transitions.
@@ -214,9 +213,8 @@ Before extending Cacheon, locate the feature in this model:
 2. **Who supplies surrounding code?** The validator must assemble the incumbent; a miner
    must not be required to redistribute other contributors' bundles.
 3. **Where does hostile code execute?** Runtime proposal code belongs only in the complete
-   isolated evaluation engine. A direct-artifact factory may run only in the bounded
-   compiler child during disposable prebuild. Neither path may import candidate code into
-   the controller or carry a miner runtime callback into a serving release.
+   isolated evaluation engine. It may not import candidate code into the controller or
+   carry a miner runtime callback into a serving release.
 4. **What creates product authority?** Identify the review record, preserved selected
    payload, integrated source, maintained tests, and release decision.
 5. **Can the resulting release stand alone?** Rebuild, verification, and serving must not

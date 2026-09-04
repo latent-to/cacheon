@@ -482,6 +482,23 @@ class PersistentAdapterProcess:
             fail("adapter completion state is not boolean")
         self.consecutive_failures = 0 if completed else self.consecutive_failures + 1
 
+    def _retire(self, request_id: str) -> None:
+        """Replace an adapter that retired itself behind a completed result.
+
+        The adapter already tore its resident lifetime down, so the next
+        request boots a fresh process at once instead of dying against the
+        latched one and paying the dead-adapter cooldown.
+        """
+        append_event(
+            self.paths.root,
+            "adapter_process_retired",
+            adapter_start_count=self.start_count,
+            request_id=request_id,
+            worker_epoch=self.registration["worker_epoch"],
+        )
+        self.close()
+        self.restart_permitted = True
+
     def permit_restart(self) -> None:
         """Clear the failure burst at an explicit cooldown boundary.
 
@@ -639,6 +656,9 @@ class PersistentAdapterProcess:
             "state": "completed",
         }
         if control == expected:
+            return None
+        if control == {**expected, "retired": True}:
+            self._retire(request_id)
             return None
         request_failed = {
             "request_id": request_id,
@@ -975,7 +995,10 @@ def pod_serve(
                         os.replace(job_root, completed)
                     append_event(paths.root, "adapter_finished", request_id=request_id)
                     if (
-                        not adapter_process.alive
+                        (
+                            not adapter_process.alive
+                            and not adapter_process.restart_permitted
+                        )
                         or adapter_process.consecutive_failures
                         >= MAX_CONSECUTIVE_ADAPTER_FAILURES
                     ):

@@ -21,12 +21,6 @@ from functools import lru_cache
 from itertools import combinations
 from typing import Iterable, Mapping
 
-from cacheon.artifact_provider import (
-    ARTIFACT_PROVIDERS,
-    CUTE_CUBIN_MANIFEST_FEATURE,
-    CUTE_CUBIN_REBUILD_FEATURE,
-    ArtifactProviderPolicyError,
-)
 from cacheon.manifest import CompetitionEntry, DEFAULT_VARIANT, Manifest
 from cacheon.stack_identity import canonical_digest
 
@@ -53,15 +47,7 @@ FEATURE_PREPARE = "prepare"
 FEATURE_SETUP = "setup"
 FEATURE_OVERRIDE = "override"
 FEATURE_CUDA_SOURCES = "cuda_sources"
-FEATURE_AOT_CUTE_OBJECT = CUTE_CUBIN_MANIFEST_FEATURE
 FEATURE_REBUILD_BUILD_CUDA_EXT = "rebuild:build_cuda_ext"
-FEATURE_REBUILD_BUILD_CUTE_AOT = CUTE_CUBIN_REBUILD_FEATURE
-
-_ARTIFACT_PROVIDER_TARGET_FEATURES = frozenset(
-    feature
-    for descriptor in ARTIFACT_PROVIDERS.descriptors()
-    for feature in descriptor.required_target_features
-)
 
 KNOWN_CONTRIBUTION_FEATURES = frozenset(
     {
@@ -73,7 +59,7 @@ KNOWN_CONTRIBUTION_FEATURES = frozenset(
         FEATURE_CUDA_SOURCES,
         FEATURE_REBUILD_BUILD_CUDA_EXT,
     }
-) | _ARTIFACT_PROVIDER_TARGET_FEATURES
+)
 
 _STANDARD_COMPONENT_FEATURES = frozenset(
     {
@@ -84,7 +70,7 @@ _STANDARD_COMPONENT_FEATURES = frozenset(
         FEATURE_CUDA_SOURCES,
         FEATURE_REBUILD_BUILD_CUDA_EXT,
     }
-) | _ARTIFACT_PROVIDER_TARGET_FEATURES
+)
 _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CATALOG_SCHEMA_VERSION = 2
@@ -370,8 +356,6 @@ def manifest_declared_features(manifest: Manifest) -> frozenset[str]:
             features.add(FEATURE_OVERRIDE)
         if op.cuda_sources:
             features.add(FEATURE_CUDA_SOURCES)
-        if op.aot_exports:
-            features.update(f"aot:{export.provider}" for export in op.aot_exports)
         # Unknown op keys are retained by Manifest for forward compatibility.
         # They are observable capabilities, not an implicit permission bypass.
         features.update(f"op_extra:{key}" for key in op.extra)
@@ -403,36 +387,6 @@ def _validate_complete_feature_evidence(
         raise TargetResolutionError(
             "rebuild:build_cuda_ext requires a declared .cu compilation unit"
         )
-    declared_provider_ids = {
-        export.provider for op in manifest.ops for export in op.aot_exports
-    }
-    try:
-        declared_descriptors = tuple(
-            ARTIFACT_PROVIDERS.require(provider_id)
-            for provider_id in sorted(declared_provider_ids)
-        )
-    except ArtifactProviderPolicyError as exc:
-        raise TargetResolutionError(str(exc)) from None
-    for descriptor in declared_descriptors:
-        missing = descriptor.required_target_features - features
-        if missing:
-            raise TargetResolutionError(
-                "complete feature evidence has artifact-provider AOT exports "
-                f"without required features {tuple(sorted(missing))!r}"
-            )
-    for descriptor in ARTIFACT_PROVIDERS.descriptors():
-        if descriptor.rebuild_feature not in features:
-            continue
-        matching_declared = {
-            row.provider_id
-            for row in declared_descriptors
-            if row.rebuild_feature == descriptor.rebuild_feature
-        }
-        if not matching_declared:
-            raise TargetResolutionError(
-                f"complete feature evidence selects {descriptor.rebuild_feature} "
-                "without declared artifact-provider AOT exports"
-            )
 
 
 class TargetCatalog:
@@ -674,11 +628,6 @@ class TargetCatalog:
         self._snapshot = {
             "schema_version": _CATALOG_SCHEMA_VERSION,
             "policy_version": _CATALOG_POLICY_VERSION,
-            # Provider admission/build/load policy is consensus-bearing. Changing
-            # crownability, artifact kind, ABI, or capability vocabulary must
-            # rotate catalog/stack authority even when target feature names do not.
-            "artifact_provider_registry": ARTIFACT_PROVIDERS.snapshot(),
-            "artifact_provider_registry_digest": ARTIFACT_PROVIDERS.digest,
             "targets": [self._target_snapshots[target_id] for target_id in ordered],
         }
         self._digest = canonical_digest(_TARGET_CATALOG_DOMAIN, self._snapshot)
@@ -1164,8 +1113,6 @@ def default_target_catalog() -> TargetCatalog:
     specs: list[TargetSpec] = []
     for target_id in SINGLETON_TARGET_IDS:
         features = _STANDARD_COMPONENT_FEATURES
-        if target_id in {"moe.fused_experts", "moe.fused_experts_reduce"}:
-            features = features - _ARTIFACT_PROVIDER_TARGET_FEATURES
         specs.append(
             TargetSpec(
                 target_id=target_id,

@@ -18,6 +18,7 @@ from cacheon.eval.oci_session_protocol import (
     frame_message,
     make_init,
     parse_frame_bytes,
+    parse_error_message,
     preflight_accept_message,
     ready_message,
 )
@@ -217,3 +218,66 @@ def test_width_zero_reference_scoring_skips_the_support_gather() -> None:
     assert [token.target_logprob for token in tokens] == [-0.25, -0.75]
     assert [token.true_argmax_token_id for token in tokens] == [11, 4]
     assert all(token.support_logprobs == () for token in tokens)
+
+
+@pytest.mark.parametrize("owner", ("candidate", "validator_runtime", "missing"))
+def test_child_death_reports_only_receipt_backed_candidate_failure(
+    monkeypatch, tmp_path, owner
+):
+    import json
+
+    from cacheon.eval.engine_worker import _engine_child_failed
+    from cacheon.eval.oci_outer_session import OuterSessionCandidateError, _worker_error
+
+    config, session, launch = _config(), "2" * 32, _h("child-failure")
+    facts = _facts(config, launch)
+    monkeypatch.setenv("CACHEON_SESSION_PROTOCOL", "resident")
+    monkeypatch.setenv("CACHEON_LAUNCH_DIGEST", launch)
+    monkeypatch.setenv("CACHEON_ENGINE_CONFIG_DIGEST", config.digest)
+    monkeypatch.setattr(worker, "_read_only_directory", lambda _: True)
+    monkeypatch.setattr(worker, "_resident_control_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        worker, "_validate_live_preflight",
+        lambda *_, **__: (facts, SimpleNamespace(runtime_manifest=None)),
+    )
+    if owner != "missing":
+        root = tmp_path / "receipts" / "1"
+        root.mkdir(parents=True)
+        (root / "failed.rank0.json").write_text(json.dumps({
+            "failure_owner": owner, "rank": 0, "slot": "moe.fused_experts_reduce",
+            "error_type": "AssertionError", "error": "top-k width mismatch",
+            "source": "kernels/moe.py", "line": 1005,
+        }))
+
+    @contextlib.contextmanager
+    def engine_session(*_):
+        _engine_child_failed()
+        yield  # pragma: no cover - the failing engine must not become ready
+
+    monkeypatch.setattr(worker, "_engine_session", engine_session)
+    payload = frame_message(make_init(
+        config, session_id=session, launch_digest=launch,
+        expected_engine_config_digest=config.digest,
+    ), max_bytes=MAX_CONTROL_BYTES) + frame_message(preflight_accept_message(
+        session_id=session, launch_digest=launch, facts=facts,
+    ), max_bytes=MAX_CONTROL_BYTES)
+    input_read, input_write = os.pipe()
+    output_read, output_write = os.pipe()
+    os.write(input_write, payload)
+    os.close(input_write)
+    try:
+        assert worker.run_session(input_fd=input_read, output_fd=output_write) == 1
+        assert parse_frame_bytes(_read_frame(output_read), max_bytes=MAX_CONTROL_BYTES)[
+            "type"
+        ] == "preflight"
+        error = parse_frame_bytes(_read_frame(output_read), max_bytes=MAX_CONTROL_BYTES)
+        detail = parse_error_message(error, session_id=session, launch_digest=launch)
+        assert detail is not None
+        assert detail[1] == ("CandidateExecutionFailure" if owner == "candidate" else "SystemExit")
+        raised = _worker_error(detail, diagnostic_provider=None)
+        assert isinstance(raised, OuterSessionCandidateError) == (owner == "candidate")
+        assert ("top-k width mismatch" in str(raised)) == (owner == "candidate")
+    finally:
+        os.close(input_read)
+        os.close(output_read)
+        os.close(output_write)

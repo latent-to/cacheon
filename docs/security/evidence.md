@@ -182,6 +182,14 @@ had authenticated those absent products.
 
 ## Failure semantics
 
+The isolated engine worker routes SGLang child-death signals through its existing
+rank-receipt reporter before the OCI lifetime is destroyed. This applies both at
+engine launch and after SGLang installs its running-phase signal handler. A
+candidate-owned failure receipt can therefore produce the existing candidate
+failure result; a missing or validator-owned receipt cannot. The engine still
+fails and is torn down: this does not resume serving, substitute stock, or turn
+a generic process exit into an attributable candidate verdict.
+
 | Problem discovered while reopening | Consequence |
 |---|---|
 | Artifact digest, length, domain, media type, or schema differs | Authentication failure; do not consume the bytes |

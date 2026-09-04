@@ -149,7 +149,9 @@ def run_continuation_quality_stage(
             value.evidence_root,
             reference,
             expected=value,
-            resident_pair_lifecycle=resident_lifecycle,
+            resident_pair_lifecycle=(
+                resident_lifecycle if resident_pair_mode else None
+            ),
         )
         if continuation is not None:
             continuation.record_final(reference)

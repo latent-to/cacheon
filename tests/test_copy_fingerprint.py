@@ -24,10 +24,17 @@ from cacheon.copy_fingerprint import (
     compare_submitted_deltas,
     fingerprint_submitted_delta,
     normalized_source,
-    source_fingerprint,
-    structural_fingerprint,
     structural_source,
 )
+
+
+def source_fingerprint(source: str) -> str:
+    return hashlib.sha256(normalized_source(source).encode("utf-8")).hexdigest()
+
+
+def structural_fingerprint(source: str) -> str:
+    return hashlib.sha256(structural_source(source).encode("utf-8")).hexdigest()
+
 
 # A rename-everything + constant-tweak copy of ORIG: same structure, vars renamed
 # (x->inp, out->dst, d->half), the // 2 constant changed to // 3. No statements added.

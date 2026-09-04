@@ -14,7 +14,7 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
 POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "cacheon.emissions.v1.3"
+POLICY_VERSION = "cacheon.emissions.v1.5"
 WEIGHT_PPM = 1_000_000
 CREDIT_SCALE = 1_000_000_000_000
 STALL_SCALE_BLOCKS = 1_800
@@ -457,6 +457,42 @@ def _allocate_pool(credits: Mapping[str, int], pool: int) -> dict[str, int]:
     return result
 
 
+_ADMISSION_ONLY_TARGET_FIELDS = frozenset({"allowed_features"})
+
+
+def _reward_policy(snapshot: Mapping[str, object]) -> dict[str, object]:
+    """The catalog policy the reward projection consumes.
+
+    Target identity, structure, contracts, and composition rules decide which
+    contributions are active and what a claim binds.  Admission policy
+    (``allowed_features``) and retired provider registries never reach the
+    reward arithmetic, so a reward catalog may differ from a sealed stack's
+    catalog in those alone without re-crowning the arena.
+    """
+
+    targets = snapshot.get("targets")
+    rules = snapshot.get("composition_rules")
+    schema = snapshot.get("schema_version")
+    if (
+        schema not in (1, 2)
+        or not isinstance(targets, list)
+        or (schema == 1 and not isinstance(rules, list))
+        or (schema == 2 and rules is not None and not isinstance(rules, list))
+    ):
+        raise EconomicsError("catalog snapshot is malformed")
+    if any(not isinstance(row, Mapping) for row in targets):
+        raise EconomicsError("catalog snapshot targets are malformed")
+    return {
+        "schema_version": snapshot.get("schema_version"),
+        "policy_version": snapshot.get("policy_version"),
+        "targets": [
+            {k: v for k, v in row.items() if k not in _ADMISSION_ONLY_TARGET_FIELDS}
+            for row in targets
+        ],
+        "composition_rules": rules,
+    }
+
+
 def project_global_rewards(
     policy: EmissionsPolicyManifest,
     context: GlobalRewardProjectionContext,
@@ -464,7 +500,7 @@ def project_global_rewards(
     earning_claims: Iterable[StandingRewardClaim],
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
 ) -> GlobalRewardProjection:
-    """Pool every retained two-PASS contribution before one indivisible vector."""
+    """Pool the store-selected earning claims before one indivisible vector."""
 
     if type(policy) is not EmissionsPolicyManifest:
         raise EconomicsError("policy is not exactly typed")
@@ -490,8 +526,9 @@ def project_global_rewards(
         standing_index[key] = claim
     for authority in authorities:
         catalog, stack = authority.catalog, authority.stack
-        if stack.catalog_digest != catalog.digest or stack.catalog_snapshot != catalog.snapshot():
+        if _reward_policy(stack.catalog_snapshot) != _reward_policy(catalog.snapshot()):
             raise EconomicsError("evaluation stack and reward catalog differ")
+        sealed_specs = stack.sealed_target_spec_digests
         try:
             active_targets = catalog.validate_active_targets(stack.entries)
         except TargetResolutionError as exc:
@@ -509,7 +546,7 @@ def project_global_rewards(
             if claim.arena_digest != stack.arena_digest:
                 raise EconomicsError(f"standing claim for {target_id!r} names another arena")
             if (
-                claim.target_spec_digest != catalog.target_spec_digest(target_id)
+                claim.target_spec_digest != sealed_specs.get(target_id)
                 or claim.target_spec_digest != contribution.target_spec_digest
                 or claim.contribution_digest != contribution.digest
             ):

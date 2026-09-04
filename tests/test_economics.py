@@ -72,10 +72,10 @@ def _catalog() -> TargetCatalog:
     )
 
 
-def _contribution(catalog: TargetCatalog, target: str, char: str):
+def _contribution(catalog: TargetCatalog, target: str, char: str, spec_digest=None):
     return ProposalContributionRef(
         target_id=target,
-        target_spec_digest=catalog.target_spec_digest(target),
+        target_spec_digest=spec_digest or catalog.target_spec_digest(target),
         artifact_digest=_d(char),
         selected_payload_digest=canonical_digest("test.selected", {"target": target, "char": char}),
         attribution_digest=canonical_digest("test.attribution", {"char": char}),
@@ -515,3 +515,86 @@ def test_non_crowned_pass_keeps_earning_after_another_pass_becomes_active() -> N
     )
     assert {row.hotkey for row in result.standing} == {"alice", "bob"}
     assert all(result.weights_by_hotkey[hotkey] > 0 for hotkey in ("alice", "bob"))
+
+
+def _sealed_spec(snapshot: dict, target: str) -> str:
+    row = next(row for row in snapshot["targets"] if row["target_id"] == target)
+    return canonical_digest("cacheon.target-spec", row)
+
+
+def _sealed_stack(catalog: TargetCatalog, snapshot: dict, targets=("slot.a",)):
+    """A stack sealed under ``snapshot`` whose entries bind the sealed specs."""
+    entries = {
+        target: _contribution(catalog, target, "123"[index], _sealed_spec(snapshot, target))
+        for index, target in enumerate(targets)
+    }
+    return EvaluationStackManifest(
+        runtime_digest=_d("a"),
+        base_engine_digest=_d("b"),
+        arena_digest=_d("c"),
+        catalog_snapshot=snapshot,
+        catalog_digest=canonical_digest("cacheon.target-catalog", snapshot),
+        entries=entries,
+    )
+
+
+def _projection_under(catalog: TargetCatalog, snapshot: dict):
+    stack = _sealed_stack(catalog, snapshot)
+    return _project(
+        _policy(),
+        catalog,
+        stack,
+        _global_context(),
+        (_claim(stack, "slot.a", "alice", 1_500_000),),
+    )
+
+
+def test_reward_catalog_may_differ_from_sealed_catalog_only_in_admission_policy() -> None:
+    catalog = _catalog()
+    sealed = catalog.snapshot()
+    # A retired registry section and an admission feature on an inactive target
+    # rotate the catalog digest without touching reward policy.
+    sealed["artifact_provider_registry"] = {"retired": True}
+    inactive = next(row for row in sealed["targets"] if row["target_id"] == "slot.b")
+    inactive["allowed_features"] = sorted({*inactive["allowed_features"], "aot:retired"})
+    stack = _sealed_stack(catalog, sealed)
+    assert stack.catalog_digest != catalog.digest
+    result = _projection_under(catalog, sealed)
+    assert result.weights_by_hotkey["alice"] > 0
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda snap: snap["targets"].append(dict(snap["targets"][0], target_id="slot.z")),
+        lambda snap: snap["targets"][0].__setitem__("contract_digest", _d("9")),
+        lambda snap: snap["targets"][1].__setitem__("displaces", ["slot.a"]),
+        lambda snap: snap["targets"][1].__setitem__("conflicts_with", ["slot.b"]),
+        lambda snap: snap.__setitem__("policy_version", "target-catalog.v0"),
+    ],
+    ids=["extra-target", "contract", "structure", "composition", "policy-version"],
+)
+def test_reward_policy_drift_between_sealed_and_live_catalog_holds(mutate) -> None:
+    catalog = _catalog()
+    sealed = catalog.snapshot()
+    mutate(sealed)
+    with pytest.raises(EconomicsError, match="evaluation stack and reward catalog differ"):
+        _projection_under(catalog, sealed)
+
+
+def test_active_target_admission_drift_keeps_the_sealed_claim_binding() -> None:
+    catalog = _catalog()
+    sealed = catalog.snapshot()
+    active = next(row for row in sealed["targets"] if row["target_id"] == "slot.a")
+    active["allowed_features"] = sorted({*active["allowed_features"], "aot:retired"})
+    assert _sealed_spec(sealed, "slot.a") != catalog.target_spec_digest("slot.a")
+    result = _projection_under(catalog, sealed)
+    assert result.weights_by_hotkey["alice"] > 0
+    # A claim carrying the live digest instead of the sealed one is not this crown's.
+    stack = _sealed_stack(catalog, sealed)
+    claim = replace(
+        _claim(stack, "slot.a", "alice", 1_500_000),
+        target_spec_digest=catalog.target_spec_digest("slot.a"),
+    )
+    with pytest.raises(EconomicsError, match="stale or incompatible"):
+        _project(_policy(), catalog, stack, _global_context(), (claim,))

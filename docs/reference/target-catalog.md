@@ -126,6 +126,11 @@ a paid run.
 The complete catalog snapshot is embedded in stack manifests and bound by a
 digest. Each target also binds a target-spec digest and a contract digest. A
 validator does not reinterpret a historical contribution through whatever
-catalog happens to be installed later.
+catalog happens to be installed later: evaluation materializes a stack only
+under the exact catalog it was sealed with, and a standing reward claim binds
+the sealed target-spec digest. Reward projection tolerates a live catalog that
+differs from the sealed one in admission policy alone (`allowed_features`,
+sections outside `targets` and `composition_rules`); any difference in target
+identity, structure, contracts, or composition rules refuses the projection.
 
 Source: [`cacheon/target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).

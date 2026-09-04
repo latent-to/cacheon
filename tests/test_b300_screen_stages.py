@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import shutil
 import time
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -45,20 +44,11 @@ from cacheon.eval.engine_launch import (
 )
 from cacheon.eval.native_artifact import publish_native_artifact
 from cacheon.eval.oci_backend import (
-    CandidateFreeRuntimeIdentity,
-    EngineExecutionEvidence,
     OCIBackendConfig,
     OCIEngineExecutor,
     OCIRuntimeResourcePolicy,
     TrustedArenaModelMountReceipt,
-    expected_runtime_preflight,
     runtime_identity_from_preflight,
-)
-from cacheon.eval.oci_outer_session import (
-    BatchExecutionEvidence,
-    OuterSessionCandidateError,
-    SessionExecutionEvidence,
-    SessionExecutionPlan,
 )
 from cacheon.eval.oci_prebuild import (
     OCIPrebuildConfig,
@@ -66,10 +56,7 @@ from cacheon.eval.oci_prebuild import (
     OCIPrebuildResult,
 )
 from cacheon.eval.oci_session_protocol import (
-    AuditReceiptFacts,
-    BatchEvidence,
     EngineSessionConfig,
-    SlotAuditPolicy,
 )
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
@@ -356,7 +343,7 @@ def _screen_case(tmp_path: Path, catalog: TargetCatalog):
         "sm103",
         executor.config.prebuild.policy.dependency_policy_digest,
     )
-    eager_config, graph_config = _engine_config(eager=True), _engine_config(eager=False)
+    graph_config = _engine_config(eager=False)
     common = {
         "runtime_digest": runtime.runtime_digest,
         "base_engine_digest": runtime.base_engine_digest,
@@ -376,17 +363,13 @@ def _screen_case(tmp_path: Path, catalog: TargetCatalog):
         "native_build_spec_digest": native.digest,
         "hardware": hardware,
     }
-    eager_launch = EngineLaunchSpec(
-        **common,
-        engine_config_digest=eager_config.digest,
-    )
     graph_launch = EngineLaunchSpec(
         **common,
         engine_config_digest=graph_config.digest,
     )
     binding = TrustedLaunchBinding(
         tree,
-        eager_launch.controller_distribution_digest,
+        graph_launch.controller_distribution_digest,
         native,
         preflight,
         physical,
@@ -398,34 +381,14 @@ def _screen_case(tmp_path: Path, catalog: TargetCatalog):
         model_manifest_digest=runtime.model_manifest_digest,
         model_content_digest=runtime.model_content_digest,
     )
-    audit = SlotAuditPolicy("1" * 32, 1_000_000, 2, (SLOT,), 4)
-
-    def session(launch: EngineLaunchSpec, config: EngineSessionConfig):
-        return SessionExecutionPlan(
-            launch.digest,
-            config.digest,
-            config,
-            expected_runtime_preflight(launch, preflight),
-            (("warmup",), ("timed",)),
-            1,
-            1,
-            2,
-            1,
-            0.0,
-            audit_policy=audit,
-        )
-
     plan = B300ScreenExecutionPlan(
         manifest.digest,
         candidate.digest,
         candidate.screen_attempt,
         candidate.reservation.selected_delta_digest,
-        eager_launch,
         graph_launch,
         binding,
         mount,
-        session(eager_launch, eager_config),
-        session(graph_launch, graph_config),
         time.monotonic() + 120.0,
     )
     staging = tmp_path / "native-stage"
@@ -444,145 +407,6 @@ def _screen_case(tmp_path: Path, catalog: TargetCatalog):
         _h("build-argv"),
     )
     return manifest, candidate, executor, plan, prebuild, identity
-
-
-def _execution(
-    launch: EngineLaunchSpec,
-    session_plan: SessionExecutionPlan,
-    prebuild: OCIPrebuildResult,
-    executor: OCIEngineExecutor,
-    identity: CandidateFreeRuntimeIdentity,
-    *,
-    passing: bool,
-) -> EngineExecutionEvidence:
-    receipts = tuple(
-        AuditReceiptFacts(
-            SLOT,
-            2,
-            0 if passing else (1 if rank == 0 else 0),
-            0,
-            0,
-            1.0 if passing or rank else 0.5,
-            1.0,
-            "allclose",
-            100 + rank,
-            rank,
-            4,
-        )
-        for rank in range(4)
-    )
-    batches = tuple(
-        BatchExecutionEvidence(
-            index,
-            f"{index + 1:032x}",
-            f"{index + 3:032x}",
-            float(index + 1),
-            float(index + 2),
-            1,
-            BatchEvidence(()),
-            receipts if index == 1 else (),
-        )
-        for index in range(2)
-    )
-    session = SessionExecutionEvidence(
-        "a" * 32,
-        launch.digest,
-        session_plan.expected_preflight,
-        1.0,
-        batches,
-        session_plan.warmup_count,
-        session_plan.conditioning_count,
-        1.0,
-        2.0,
-        1,
-        3.0,
-        audit_policy_digest=session_plan.audit_policy.digest,
-    )
-    return EngineExecutionEvidence(
-        "cacheon-engine-execution-v1",
-        launch.digest,
-        identity,
-        _h("preflight-receipt"),
-        _h("model-receipt"),
-        executor.config.runtime.digest,
-        replace(prebuild, launch_digest=launch.digest),
-        prebuild.publication.publication_digest,
-        _h("runtime-argv"),
-        (),
-        (),  # Device receipts are already enforced by OCIEngineExecutor.
-        session,
-    )
-
-
-@pytest.mark.parametrize(
-    ("graph_passes", "expected"),
-    ((True, ScreenGrade.PASS), (False, ScreenGrade.FAIL)),
-)
-def test_pipeline_retains_reopens_and_host_regrades_each_stage(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    graph_passes: bool,
-    expected: ScreenGrade,
-) -> None:
-    catalog = default_target_catalog()
-    manifest, candidate, executor, plan, prebuild, identity = _screen_case(
-        tmp_path,
-        catalog,
-    )
-    calls: list[str] = []
-
-    monkeypatch.setattr(
-        screen_stages,
-        "_resolve_candidate_tree",
-        lambda *_args, **_kwargs: calls.append("resolve"),
-    )
-    monkeypatch.setattr(
-        screen_stages,
-        "run_oci_prebuild",
-        lambda *args, **kwargs: (calls.append("prebuild") or prebuild),
-    )
-
-    def execute(_self, launch, _binding, _mount, session, *, deadline):
-        calls.append("eager" if launch is plan.eager_launch else "graph")
-        return _execution(
-            launch,
-            session,
-            prebuild,
-            executor,
-            identity,
-            passing=(True if launch is plan.eager_launch else graph_passes),
-        )
-
-    monkeypatch.setattr(OCIEngineExecutor, "execute", execute)
-    adapter = B300BuildABIGraphScreenAdapter(
-        catalog=catalog,
-        executor=executor,
-        plan_resolver_digest=_h("plan-resolver"),
-        plan_resolver=lambda _manifest, _candidate: plan,
-        evidence_policy_digest=_h("evidence-policy"),
-        evidence_root=tmp_path / "evidence",
-    )
-    try:
-        results = tuple(
-            adapter.run_screen(
-                manifest,
-                ScreenStagePolicy(stage, 30_000),
-                candidate,
-            )
-            for stage in ("build", "abi", "graph")
-        )
-    finally:
-        adapter.close()
-        executor.manager.close()
-
-    assert tuple(row.grade for row in results) == (
-        ScreenGrade.PASS,
-        ScreenGrade.PASS,
-        expected,
-    )
-    assert "prebuild" in calls
-    assert calls.count("eager") == 1
-    assert calls.count("graph") == 1
 
 
 def test_resident_pipeline_builds_then_defers_gpu_checks_to_resident_stage(
@@ -619,7 +443,6 @@ def test_resident_pipeline_builds_then_defers_gpu_checks_to_resident_stage(
         plan_resolver=lambda _manifest, _candidate: plan,
         evidence_policy_digest=_h("evidence-policy"),
         evidence_root=tmp_path / "evidence",
-        execution_mode="resident",
     )
     try:
         results = tuple(
@@ -643,7 +466,7 @@ def test_resident_pipeline_builds_then_defers_gpu_checks_to_resident_stage(
     assert calls.count("resolve") >= 3
 
 
-def test_pipeline_order_or_execution_exception_is_no_decision_and_clears_carrier(
+def test_pipeline_order_or_carrier_infrastructure_is_no_decision_and_clears_carrier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -654,11 +477,18 @@ def test_pipeline_order_or_execution_exception_is_no_decision_and_clears_carrier
     )
     monkeypatch.setattr(screen_stages, "_resolve_candidate_tree", lambda *_a, **_k: None)
     monkeypatch.setattr(screen_stages, "run_oci_prebuild", lambda *_a, **_k: prebuild)
-    monkeypatch.setattr(
-        OCIEngineExecutor,
-        "execute",
-        lambda *_a, **_k: (_ for _ in ()).throw(OSError("runtime unavailable")),
-    )
+    reopen = screen_stages.reopen_native_artifact
+    reopen_calls: list[int] = []
+
+    def flaky_reopen(*args, **kwargs):
+        reopen_calls.append(1)
+        if len(reopen_calls) > 1:
+            raise OSError("native store unavailable")
+        return reopen(*args, **kwargs)
+
+    # Build reopens the native product once; the ABI deferral's carrier reopen
+    # is the second call and fails closed as carrier infrastructure.
+    monkeypatch.setattr(screen_stages, "reopen_native_artifact", flaky_reopen)
     adapter = B300BuildABIGraphScreenAdapter(
         catalog=catalog,
         executor=executor,
@@ -696,56 +526,6 @@ def test_pipeline_order_or_execution_exception_is_no_decision_and_clears_carrier
     assert build.grade is ScreenGrade.PASS
     assert abi.grade is ScreenGrade.NO_DECISION
     assert graph_after_clear.grade is ScreenGrade.NO_DECISION
-
-
-def test_typed_candidate_exception_is_exact_terminal_screen_fail(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    catalog = default_target_catalog()
-    manifest, candidate, executor, plan, prebuild, _identity = _screen_case(
-        tmp_path, catalog,
-    )
-    monkeypatch.setattr(screen_stages, "_resolve_candidate_tree", lambda *_a, **_k: None)
-    monkeypatch.setattr(screen_stages, "run_oci_prebuild", lambda *_a, **_k: prebuild)
-    failure = (
-        "rank 3 RuntimeError in moe.fused_experts during entry at "
-        "kernels/moe.py:117: invalid launch geometry"
-    )
-    monkeypatch.setattr(
-        OCIEngineExecutor,
-        "execute",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            OuterSessionCandidateError(
-                "batch: CandidateEngineFailure",
-                candidate_failure=failure,
-                candidate_failure_type="CandidateEngineFailure",
-            )
-        ),
-    )
-    adapter = B300BuildABIGraphScreenAdapter(
-        catalog=catalog,
-        executor=executor,
-        plan_resolver_digest=_h("plan-resolver"),
-        plan_resolver=lambda _manifest, _candidate: plan,
-        evidence_policy_digest=_h("evidence-policy"),
-        evidence_root=tmp_path / "evidence",
-    )
-    try:
-        assert adapter.run_screen(
-            manifest, ScreenStagePolicy("build", 30_000), candidate
-        ).grade is ScreenGrade.PASS
-        abi = adapter.run_screen(
-            manifest, ScreenStagePolicy("abi", 30_000), candidate
-        )
-    finally:
-        adapter.close()
-        executor.manager.close()
-
-    assert abi.grade is ScreenGrade.FAIL
-    assert abi.reason.startswith("candidate_exception (CandidateEngineFailure:")
-    assert "kernels/moe.py:117" in abi.reason
-    assert "invalid launch geometry" in abi.reason
 
 
 def test_composition_exposes_only_the_exact_non_serving_order(tmp_path: Path) -> None:

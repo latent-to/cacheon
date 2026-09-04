@@ -8,6 +8,13 @@ Passing tests, completing an empirical qualification, activating an incentive
 policy, publishing weights, and producing a deployable engine release are
 different events. Evidence for one does not authorize another.
 
+On **2026-09-05**, the GLM branch incorporated PR #110's source-build-only
+execution path while preserving the GLM catalog's exclusive overlap policy and
+retirement of the M3 attention and dependency-patch surfaces. Reward-policy
+comparison reads both catalog schema versions; it still refuses a historical
+stack whose reward policy differs from the supplied catalog. The reconciled
+source passes CPU validation, but requires a fresh GLM runtime commission.
+
 The GLM-5.3 branch moved the source compatibility target to SGLang `0.5.18` on
 2026-08-30. Exact-image 8xB300 controls now establish full-model generation,
 all-rank seam activation, graph capture, deliberately broken and faithful
@@ -163,7 +170,7 @@ readable and read-only while it reopens the canonical receipt, complete file
 inventory, and actual file bytes. This is a local fail-closed input check; it
 does not establish that a paid OCI lifetime has mounted or executed that model.
 
-### Slots, targets, and direct artifacts
+### Slots and targets
 
 The executable catalog contains 11 slots and one registered atomic target:
 
@@ -254,13 +261,57 @@ the deployed validator lineage (settlement on every pass, the champion-floor
 projection, and both ceiling raises) merged into the GLM branch, so one source
 now carries both the mixed-cell arena and live mainnet behavior.
 
-The closed direct-artifact registry has one crownable provider,
-`cutlass.cute.cubin.v1`. Candidate compiler-factory code runs in a GPU-hidden,
-no-network child and may publish one sealed CUBIN. Validator code owns ABI
-admission, ordinal binding, pointer/scalar/TMA materialization, launch, storage,
-cleanup, and evidence. The schema exposes collective vocabulary, but the
-standard provider does not supply arbitrary group/peer resolvers; unsupported
-plans fail closed.
+On 2026-09-02 the recoverable qualification dispatcher began installing or
+verifying the commissioned incumbent against the durable evaluation stack
+before any claim. On 2026-09-03 this became queue-segment-aware: reservations
+persist the exact stack assigned to their FIFO segment, an old resident may
+drain its already-bound segment after settlement advances durable lineage, and
+a different commissioned stack is requested before the first lease in the next
+segment. A new arena still receives its genesis stack row from its first
+commissioned claim instead of failing at its first PASS commit.
+The gap was reached on mainnet the same day: reservation `69f50573` passed
+qualification at 1.0827x on the recommissioned arena, and the standing owner
+rejected the result with "evaluation stack is not initialized" because no
+remote-path caller had created the arena's row since `e1c77204`.
+
+On 2026-09-04 the sealed direct-artifact lane (`cutlass.cute.cubin.v1`:
+`aot_exports` and `artifact_resources` manifest rows, the artifact provider
+registry, CUBIN admission/launch/materialization, the compile-profile prebuild
+path, and the `artifact_context` seam row) was retired from the tree. No
+submitted mainnet manifest had ever declared it (285 stored manifests checked
+against the live intake store). A manifest that still declares those rows is
+rejected at intake as an unregistered op field. Removing the provider registry
+from the catalog snapshot rotated the catalog digest from `dd61300c…` to
+`aec370cd…` and therefore the evaluation stack digest; deploying this tree is
+a fresh-arena recommission, and its first real screen plus qualification on
+the pod is the proof of the deployment. The launch digest of ordinary source
+bundles is unchanged; the resident audit binding digest no longer carries a
+null compile-profile key.
+
+The same rotation surfaced a latent weights defect on 2026-09-04: the reward
+projection required every crowned stack's sealed catalog snapshot to equal the
+live catalog byte for byte, so the four crowned arenas sealed under
+`dd61300c…` could not be projected on the new tree and the weight-offer
+service failed every tick. The fence now compares the reward-relevant catalog
+policy only (target identity, structure, contracts, and composition rules);
+admission policy and retired sections may differ without re-crowning. See
+`docs/validator-guide/settlement-and-weights.md`.
+
+On 2026-09-05 a retained PASS pair on `moe.fused_experts_reduce` was found to
+credit +13.25% while its candidate lane ran at 2289–2307 tok/s, inside the
+2277–2333 tok/s band every other retained candidate produced that day, and
+slower than the fastest of them. Both halves had read the incumbent lane at
+2022–2031 tok/s against a 2224–2290 tok/s band for the same incumbent artifact
+across the other ten retained halves. The slow baseline state has appeared in 9
+of 64 retained baseline-role reads since the champion baseline began (August
+19 record: 8.5% of halves); the two-PASS minimum absorbed every case except
+that pair, where both halves drew it. Under v7 a clear PASS at the B/C precheck
+never reads B′, so the check that could have caught it is skipped exactly when
+the baseline is wrong, and no absolute band exists in `cacheon/eval`. The
+operator command `chain-reopen-qualification` now returns such a pair to the
+screen queue for a fresh pair against the current incumbent, gated on the
+retained lane rates (`cacheon/chain/baseline_band.py`); the settlement-side
+band gate and always-read B′ remain open work.
 
 ### Routing-only resident screen
 
@@ -290,6 +341,34 @@ Direct AOT artifacts, dependency patches, native rebuilds, and setup hooks are
 not safely hot-swappable. They receive a typed screen waiver and proceed to
 dedicated qualification. A waiver and a screen promotion are routing products,
 not qualification evidence.
+
+### Candidate time budget in the resident screen (2026-09-02)
+
+Each candidate read in the resident screen is bounded by
+`max(300 s, 10 × the latest stock read)` on the same engine and prompts
+(`ScreenPolicy.candidate_time_multiple`, `candidate_time_floor_s`). A read
+that outlives its budget is raised as a candidate failure and graded as a
+terminal screen FAIL with a receipt reason starting `candidate_timeout:`.
+The session's absolute batch timeout is unchanged and still classifies as
+infrastructure when it fires outside a candidate read. Motivation: on
+2026-09-02 a mainnet `moe.fused_experts` bundle whose prefill path was a
+per-expert Python dequantization loop ran for the whole 1800 s batch timeout
+twice, surfaced as `remote_screen_infrastructure`, re-held, and burned the
+release cap; four ranks were stack-dumped mid-read to attribute it. Proven on
+the mainnet pod the same day under release `3d27775e`: that bundle reached a
+terminal FAIL in 10 min 21 s with reason
+`candidate_timeout: candidate read exceeded 364s (10x the 36.4s stock read,
+floor 300s)`, and the standing owner moved to the next reservation.
+
+### Isolated eager screen mode deleted (2026-09-02)
+
+`B300BuildABIGraphScreenAdapter` no longer carries an `isolated` execution
+mode. The per-candidate eager and graph OCI sessions, their slot-audit witness
+and graph observation evidence, and the eager half of `B300ScreenExecutionPlan`
+were deleted; the ABI and graph rows are always resident carrier deferrals.
+No commissioned deployment had selected the isolated mode since the resident
+lane was registered. The coordinator identity digest keeps the literal
+`execution_mode: resident`, so sealed screen deployments replay unchanged.
 
 ### One workload authority (2026-08-21)
 
@@ -576,11 +655,22 @@ either the live V1 offer or the explicitly configured crownless burn offer to
 the gateway; it never signs. Configuration must name `enable_weights` and
 `weights_stage_config` consistently or startup fails closed.
 
-The current `cacheon.emissions.v1.3` projection rewards every distinct retained
+The current `cacheon.emissions.v1.5` projection rewards every distinct retained
 two-PASS contribution, including settlement holds. Credit uses logarithmic
 speedup, submission-time stall bonus, and exponential decay; a later crown does
-not erase or rerun an earlier PASS. Matching v1.1 policy bindings advance
-automatically, while any numeric policy change remains refused.
+not erase or rerun an earlier PASS. Matching v1.1/v1.3/v1.4 policy bindings
+advance, while any numeric policy change remains refused. This restores the
+two-PASS rule after an interim CROWN-only deployment on 2026-09-03.
+The follower also resumes its retained in-flight projection before adopting a
+fresh offer, using the same existing recovery helper as `set-weights`.
+
+A stack transition does not invalidate, archive, or requeue completed
+qualification evidence. The old resident drains the contiguous FIFO segment
+already assigned to it; screening may continue because it is
+baseline-independent. Qualification holds for manual recommissioning only when
+the queue cursor reaches a segment assigned to a different stack. A retained
+remote qualification product that differs from the live commissioned stack is
+released through a digest-bound recovery transition instead of being imported.
 
 When a valid active claimant is absent from the current metagraph, that
 family's allocated ppm is sent to the validator hotkey for the tick rather than
@@ -677,12 +767,7 @@ policy, registry types, and serving receipts.
 
 Current release authority is incomplete:
 
-- the serving wheel does not close every manifest/direct-artifact runtime
-  import;
-- release preparation does not provider-specifically rebuild and reopen the
-  complete CuTe index/compile-profile authority;
-- `release_runtime.py` does not propagate the signed CuTe compile-profile
-  digest into the engine process;
+- the serving wheel does not close every manifest runtime import;
 - builder output, effective runtime arguments, management-route policy, and
   complete release/session receipt binding still require end-to-end closure;
   and

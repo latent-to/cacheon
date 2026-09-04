@@ -54,7 +54,6 @@ The registered rows are:
 | `collective` family | `GroupCoordinator.all_reduce`, in/out-place variants, all-gather, and reduce-scatter | `collective.all_reduce`, `collective.all_gather_into_tensor`, `collective.reduce_scatter_tensor` | `collective` |
 | `arfusion` | `flashinfer_allreduce_residual_rmsnorm` | `collective.ar_residual_rmsnorm` | `arfusion` |
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot | None |
-| `artifact_context` | `ModelRunner.init_torch_distributed` | Rank-local sealed direct-artifact binding; not a slot | None |
 | `resident_swap` | `ModelRunner.init_decode_cuda_graph` plus idle-gated scheduler cache flush | Persistent resident screening only; not qualification or a slot | None |
 
 Several adapter rows may share one binding when they implement one semantic

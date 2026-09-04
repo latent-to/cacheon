@@ -20,7 +20,7 @@ swaps and two reads, never an engine reload.
 
 Trust tier: screen/routing only.  Payment and crown evidence still come from
 the isolated per-candidate qualification path.  Non-swappable bundles
-(aot_exports device artifacts, dep-patched trees) never enter this queue — the
+(dep-patched trees) never enter this queue — the
 seam refuses them — and are scheduled as dedicated launches by the caller.
 
 This module is deliberately free of executor imports: it drives the
@@ -35,6 +35,10 @@ import statistics
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from cacheon.eval.oci_outer_session import (
+    OuterSessionCandidateError,
+    OuterSessionTimeoutError,
+)
 from cacheon.eval.oci_resident_session import (
     ResidentBatchEvidence,
     SwapReceipt,
@@ -60,7 +64,11 @@ class ScreenSession(Protocol):
 
     def swap(self, bundle_digest: str | None) -> SwapReceipt: ...
     def execute_batch(
-        self, prompts: Sequence[str], *, canary: bool = False
+        self,
+        prompts: Sequence[str],
+        *,
+        canary: bool = False,
+        timeout_s: float | None = None,
     ) -> ResidentBatchEvidence: ...
 
 
@@ -112,6 +120,20 @@ class ScreenPolicy:
     escalation_band: float = 0.02
     canary_tolerance: float = 0.012
     max_candidates_per_lifetime: int = 8
+    # A candidate read outliving this budget is the candidate's speed, not
+    # infrastructure: the stock read seconds earlier on the same engine and
+    # prompts is the reference.  Sized for first-call JIT plus a slow kernel;
+    # the 2026-09-02 mainnet bundle that motivated it needed hours.
+    candidate_time_multiple: float = 10.0
+    candidate_time_floor_s: float = 300.0
+
+    def candidate_time_budget_s(self, stock_elapsed_s: float) -> float:
+        """Wall-time budget for one candidate read beside one stock read."""
+
+        return max(
+            float(self.candidate_time_floor_s),
+            float(self.candidate_time_multiple) * float(stock_elapsed_s),
+        )
 
     def __post_init__(self) -> None:
         for name, value, low, high in (
@@ -120,6 +142,8 @@ class ScreenPolicy:
             ("max_noise", self.max_noise, 0.0, 1.0),
             ("escalation_band", self.escalation_band, 0.0, 1.0),
             ("canary_tolerance", self.canary_tolerance, 0.0, 1.0),
+            ("candidate_time_multiple", self.candidate_time_multiple, 1.0, 1_000.0),
+            ("candidate_time_floor_s", self.candidate_time_floor_s, 0.0, 86_400.0),
         ):
             if (
                 isinstance(value, bool)
@@ -256,6 +280,7 @@ class ResidentScreenLoop:
         self._policy = policy
         self._stock: list[float] = []
         self._baseline_prev: float | None = None
+        self._baseline_elapsed_s: float | None = None
         self._processed = 0
         self._stopped: str | None = None
         self._withdrawn_reference: float | None = None
@@ -279,6 +304,33 @@ class ResidentScreenLoop:
         """Candidates with retained verdicts (a withdrawn one does not count)."""
         return self._processed
 
+    def _candidate_read(
+        self, session: ScreenSession, prompt_plan: tuple[str, ...]
+    ) -> ResidentBatchEvidence:
+        """One candidate read, bounded by the latest stock read on this engine.
+
+        The stock read seconds earlier proved the engine on these exact
+        prompts, so a candidate read that outlives its budget is the
+        candidate's speed and is raised as a terminal candidate failure, never
+        as infrastructure (mainnet 2026-09-02: a per-expert Python fallback
+        needed hours and surfaced as a 30-minute session timeout).
+        """
+
+        stock_elapsed_s = self._baseline_elapsed_s
+        if stock_elapsed_s is None or stock_elapsed_s <= 0:
+            raise ResidentQueueError("screen has no stock read to budget against")
+        policy = self._policy
+        budget_s = policy.candidate_time_budget_s(stock_elapsed_s)
+        try:
+            return session.execute_batch(prompt_plan, timeout_s=budget_s)
+        except OuterSessionTimeoutError as exc:
+            stated = (
+                f"candidate_timeout: candidate read exceeded {budget_s:.0f}s "
+                f"({policy.candidate_time_multiple:g}x the {stock_elapsed_s:.1f}s "
+                f"stock read, floor {policy.candidate_time_floor_s:.0f}s)"
+            )
+            raise OuterSessionCandidateError(stated, candidate_failure=stated) from exc
+
     def screen(self, candidate: ScreenCandidate) -> CandidateScreenVerdict | None:
         if type(candidate) is not ScreenCandidate:
             raise ResidentQueueError("screen candidate is not exactly typed")
@@ -299,6 +351,7 @@ class ResidentScreenLoop:
             session.execute_batch(prompt_plan, canary=True)
             opening = session.execute_batch(prompt_plan, canary=True)
             self._baseline_prev = _throughput(opening)
+            self._baseline_elapsed_s = opening.elapsed_seconds
             self._stock.append(self._baseline_prev)
 
         receipts: list[SwapReceipt] = []
@@ -320,7 +373,7 @@ class ResidentScreenLoop:
                 f"{list(candidate.expected_slots)!r}"
             )
         else:
-            candidate_row = session.execute_batch(prompt_plan)
+            candidate_row = self._candidate_read(session, prompt_plan)
             batch_indices.append(candidate_row.batch_index)
             candidate_reads.append(_throughput(candidate_row))
 
@@ -338,6 +391,7 @@ class ResidentScreenLoop:
         closing = session.execute_batch(prompt_plan, canary=True)
         batch_indices.append(closing.batch_index)
         closing_throughput = _throughput(closing)
+        self._baseline_elapsed_s = closing.elapsed_seconds
         self._stock.append(closing_throughput)
         baseline_reads.append(closing_throughput)
 
@@ -356,7 +410,7 @@ class ResidentScreenLoop:
                 if swap_in_2.slots != candidate.expected_slots:
                     failure = "escalation swap registered different slots"
                 else:
-                    candidate_row_2 = session.execute_batch(prompt_plan)
+                    candidate_row_2 = self._candidate_read(session, prompt_plan)
                     batch_indices.append(candidate_row_2.batch_index)
                     candidate_reads.append(_throughput(candidate_row_2))
                 swap_out_2 = session.swap(None)
@@ -369,6 +423,7 @@ class ResidentScreenLoop:
                 closing_2 = session.execute_batch(prompt_plan, canary=True)
                 batch_indices.append(closing_2.batch_index)
                 closing_throughput = _throughput(closing_2)
+                self._baseline_elapsed_s = closing_2.elapsed_seconds
                 self._stock.append(closing_throughput)
                 baseline_reads.append(closing_throughput)
                 if failure is None:

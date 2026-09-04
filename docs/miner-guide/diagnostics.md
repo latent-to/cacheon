@@ -250,6 +250,14 @@ A FAIL stops at the failing stage and rejects the proposal. A retryable
 exhausted or non-retryable uncertainty is held. Passing all five only promotes
 the candidate to full qualification—it does not score or crown it.
 
+The `abbreviated_serving` read of your bundle is time-bounded. The engine
+takes a stock read on the same prompts seconds before it swaps your bundle
+in; your read gets `max(300 s, 10 × that stock read)`. Outliving the budget
+is a terminal FAIL whose receipt reason starts with `candidate_timeout:`, and
+it is graded as your kernel's speed, not as infrastructure, because the stock
+read already proved the engine. A kernel that falls back to a per-expert
+Python loop for prefill shapes it does not cover is the usual cause.
+
 Use the last stage receipt rather than rerunning an unrelated local command.
 For example, a production build failure may involve the immutable materialized
 tree and pinned build image that a local combined rebuild did not reproduce.

@@ -57,71 +57,6 @@ The authoritative ABI objects are in
 output shape/stride checks in
 [tensor_spec.py](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py).
 
-## Direct-artifact form of the ABI
-
-A sealed direct artifact implements the same slot semantics without a runtime
-Python callable. Its `bindings` list projects the immutable slot call ABI into a
-closed native signature. For example, a simple tensor kernel can bind input and
-output device pointers plus the validator's current stream:
-
-```toml
-bindings = [
-  { source = "input.x", kind = "pointer", projection = "device_ptr" },
-  { source = "output.out", kind = "pointer", projection = "device_ptr" },
-  { source = "stream.current", kind = "stream" },
-]
-```
-
-The binding order is the index space used by the device plan. It is not
-necessarily the CUDA parameter order: one semantic tensor binding can feed a
-pointer, dimension expression, stride expression, packed field, and TMA
-descriptor. The validator joins every expression and parameter reference back to
-the typed binding before prebuild and again when reopening sealed state.
-
-The complete direct ABI has three parts:
-
-| Layer | Declared by the bundle | Owned at runtime by the validator |
-|---|---|---|
-| Semantic call | Ordered projections of registered slot resources | Live tensors, scalars, stream, group, and output ownership |
-| Artifact storage | Bounded `workspace.*`, `prepared.*`, and `state.*` rows | Allocation, address, scope, budget, and lifecycle |
-| Device launch | Complete logical kernels, parameter widths, and ordered launch plans | Physical CUBIN admission, parameter packing, TMA/FastDivmod construction, launch, and cleanup |
-
-Device parameters are a closed set: exact scalars, admitted pointers, packed
-structs with checked non-overlapping fields, 128-byte TMA descriptors,
-CuTe/CUTLASS FastDivmod values, and provider-authorized group handles. Checked
-expressions can read live tensor shape, stride, element size, storage offset,
-element count, and admitted scalars. They cannot execute candidate callbacks,
-construct arbitrary pointer arithmetic, or discover an ambient stream or group.
-
-The manifest declares logical kernel names because CuTe-generated physical names
-depend on the materialized module. After rank CUDA setup, the validator observes
-the exact sealed CUBIN through the Driver API and binds the canonical logical
-inventory to the physical inventory by ordinal. Kernel count and every formal
-parameter width must match. The admitted library handle is retained for launch,
-so inspection and execution refer to the same loaded object.
-
-Lifecycle roles are ordered `init`, `prepare`, `reset`, `run`, `destroy`.
-`workspace.*` is call-local; `prepared.*` must cross prepare to run; `state.*`
-persists with the engine artifact entry. A `prelaunch` fill can initialize an
-authorized output or artifact resource, but there is no general host prelaunch
-callback.
-
-Direct execution still obeys capability routing, output poisoning, graph replay,
-reference comparison, full-engine quality, and reproduction. Qualification also
-requires `aot_loaded`, `aot_invoked`, and normal `completed` receipts from every
-active scheduler member, with no fallback receipt. Loading a CUBIN is not proof
-that it provided the measured result.
-
-Group-aware projections are declaratively recognized only through the supplied
-slot group and exact persistent `group_ipc` resources. This schema support does
-not make the standard CuTe load path executable: it supplies no group
-capability/handle resolvers, so these projections fail closed. A reviewed resolver
-integration would still need distributed evidence for each concrete topology and
-plan.
-
-See [Sealed direct artifacts](../architecture/direct-artifacts.md) and the
-[manifest field reference](../reference/manifest-schema.md).
-
 ## Op slots
 
 ### `activation.silu_and_mul`
@@ -206,6 +141,16 @@ prepare("nvfp4_layer", weights)
 E2M1 weights, swizzled E4M3 scales, `g1_alphas`/`g2_alphas`, inverse activation
 scales, intermediate size, group size 16, and ModelOpt `gate_up` layout.
 Candidates may repack it; the validator dequantizes an independent fp32 oracle.
+
+`weights.moe_runner_config.top_k` is the routing width, including fused shared
+experts. Live preparation reads it from the serving layer; verification reads
+it from `topk_ids.shape[-1]`. Neither path substitutes a zero placeholder.
+
+`topk_weights` contains validator-supplied raw positive FP32 routing multipliers.
+They are not promised to be probabilities: do not assume that a row sums to one,
+or that its only value is `1.0` when `K == 1`. SGLang configurations that do not
+renormalize routing, or that apply a routed scaling factor, make those distinctions
+part of the result the kernel must preserve.
 
 GLM-5.3 appends its static routing configuration:
 

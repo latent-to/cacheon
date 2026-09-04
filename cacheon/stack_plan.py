@@ -241,21 +241,6 @@ class MarginalArmPlan:
     def digest(self) -> str:
         return canonical_digest("cacheon.stack.marginal-arm-plan", self.to_dict())
 
-    def require_current(
-        self,
-        current: EvaluationStackManifest,
-        *,
-        tree_digest: str,
-        expected_context: EvaluationStackContext,
-    ) -> "MarginalArmPlan":
-        current.validate_against(expected_context)
-        current_tree = _digest(tree_digest, field="current tree_digest")
-        if current.digest != self.incumbent.digest:
-            raise StaleStackPlanError("marginal arm incumbent stack is stale")
-        if current_tree != self.baseline_before.tree_digest:
-            raise StaleStackPlanError("marginal arm incumbent tree is stale")
-        return self
-
     def reopen(
         self,
         *,
@@ -639,26 +624,6 @@ class CohortPlan:
     def execution_arms(self) -> tuple[MarginalArmPlan, ...]:
         by_delta = {arm.selected_delta_digest: arm for arm in self.arms}
         return tuple(by_delta[digest] for digest in self.execution_order)
-
-    @property
-    def authority_arms(self) -> tuple[MarginalArmPlan, ...]:
-        by_ref = {arm.contribution_digest: arm for arm in self.arms}
-        return tuple(by_ref[ref.digest] for ref in self.authority_order)
-
-    def require_current(
-        self,
-        current: EvaluationStackManifest,
-        *,
-        tree_digest: str,
-        expected_context: EvaluationStackContext,
-    ) -> "CohortPlan":
-        current.validate_against(expected_context)
-        current_tree = _digest(tree_digest, field="current tree_digest")
-        if current.digest != self.incumbent.stack_digest:
-            raise StaleStackPlanError("cohort incumbent stack is stale")
-        if current_tree != self.incumbent.tree_digest:
-            raise StaleStackPlanError("cohort incumbent tree is stale")
-        return self
 
     def reopen(
         self,

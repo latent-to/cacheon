@@ -25,8 +25,7 @@ my_bundle/
 ```
 
 Advanced, target-approved bundles may also contain declared `.cu`/`.cuh`
-sources, unified dependency diffs, a reviewed `rebuild.json`, or a CuTe source
-module with a sealed direct-artifact declaration. Do not include compiled
+sources, unified dependency diffs, or a reviewed `rebuild.json`. Do not include compiled
 objects, CUBINs, wheels, shared libraries, caches, model weights, credentials, or
 absolute machine paths.
 
@@ -153,8 +152,6 @@ Each `[[ops]]` row describes one implementation:
 | `setup` | engine-wide setup hook; currently forbidden by every registered target |
 | `base_kernel`, `override_point` | registered override composition fields |
 | `cuda_sources` | declared inspectable `.cu`/`.cuh` inputs to an approved build step |
-| `aot_exports` | sealed compiler exports, semantic bindings, specializations, lifecycle steps, and complete device plans |
-| `artifact_resources` | miner-named but validator-allocated workspace, prepared storage, or engine state |
 
 `bundle_id` must be a simple non-empty identifier, and newly authored bundles
 must use the component ABI `cacheon-op-abi-v0`. Validators retain a reader-only
@@ -242,81 +239,6 @@ This matters because variant selection is a semantic decision, not a source-orde
 convenience. If two rows match the same call, the validator cannot know which selected
 delta was measured or which implementation would later serve. Conversely, a gap is
 allowed: the trusted incumbent remains the fallback outside all candidate domains.
-
-## Direct CUBIN bundles
-
-The registered direct-artifact provider is `cutlass.cute.cubin.v1`. It compiles
-CuTe source into a sealed CUBIN during validator prebuild and executes it through
-the validator's CUDA Driver ABI. It does not run a miner-supplied launcher in the
-scheduler process.
-
-A direct bundle contains source and declarations, not generated native output:
-
-```text
-my_direct_bundle/
-  manifest.toml
-  kernels/
-    kernel_cute.py
-  metadata/
-    kernel.json
-  rebuild.json
-  README.md
-  LICENSE
-```
-
-The resolved rebuild selection is data, not a command:
-
-```json
-{
-  "steps": [
-    {"type": "repo_python", "path": "build_cute_cubin.py"}
-  ]
-}
-```
-
-The operation row retains `entry` because the outer bundle ABI requires it. For
-direct execution the value is not called and is excluded from canonical direct-
-execution identity. The meaningful declaration is `[[ops.aot_exports]]`, which
-must include the provider, compiler-side factory, bounded compile-profile inputs,
-ordered bindings, specialization/lifecycle fields, and a complete
-`cacheon.device-launch-plan.v1` plan.
-
-The plan is intentionally explicit. It inventories every logical kernel and
-formal parameter width, then declares every launch's grid, block, optional
-cluster, shared memory, parameter construction, stream, and allowlisted
-attributes. Parameter values are constructed by validator code from checked
-expressions and admitted slot resources. Supported constructions include exact
-scalars and pointers, packed structs, TMA descriptors, CuTe/CUTLASS FastDivmod,
-and provider-authorized group projections.
-
-If the algorithm needs intermediate storage, declare
-`[[ops.artifact_resources]]`. `workspace.*` is call-local, `prepared.*` crosses
-the validator's prepare/run boundary, and `state.*` persists with the engine
-entry. The validator allocates all three. Resource declarations cannot create a
-new stream, group, semantic input, output, or arbitrary address.
-
-Direct-artifact admission is exact:
-
-- the target must permit `aot:cutlass.cute.cubin.v1` and
-  `rebuild:build_cute_cubin`;
-- the factory runs only in the no-network/no-GPU compiler child with declared
-  validator-measured profile values;
-- the only executable products are CUBINs; the sealed provider publication also carries
-  its canonical index, while the enclosing native publication carries its prebuild and
-  inventory metadata, all bound to build/profile/tree identities;
-- the scheduler admits the complete driver-observed CUBIN ABI by kernel ordinal
-  after rank CUDA setup; and
-- qualification requires load, invocation, and seam-completion evidence on every
-  active member, with no fallback.
-
-The provider vocabulary includes native group handles and peer-pointer tables, but
-the standard `build_cute_cubin` load path does not install the required group
-capability/handle resolvers; such a plan fails closed before execution. Group-aware
-support therefore requires reviewed runtime work before the ordinary distributed
-correctness, graph, full-engine, and reproduction gates can produce evidence.
-
-Use the field tables in [Bundle manifest](../reference/manifest-schema.md) and the
-runtime model in [Sealed direct artifacts](../architecture/direct-artifacts.md).
 
 ## What the content hash binds
 
@@ -411,10 +333,6 @@ cuda_sources = ["kernels/epilogue_sm103.cu"]
 Declarations do not bypass policy. Intake independently observes rebuild,
 override, and CUDA-source features and resolves them against the target
 catalog. See [Override points](override-points.md).
-
-Direct-artifact exports follow the same rule: the closed provider registry and
-target catalog, not a provider string in TOML, determine whether a row is
-authoritative and crownable.
 
 Next, read the [Kernel ABI](kernel-abi.md), then build the minimal example in
 [Your first kernel](your-first-kernel.md).

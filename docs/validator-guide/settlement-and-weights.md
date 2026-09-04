@@ -91,6 +91,33 @@ produce bounty events without changing the stack. Among current registered candi
 the planner chooses the highest conservative speedup and uses finalized order as a stable
 tie-break.
 
+Staleness is judged per target lineage, not only against the planning arena's own stack.
+`arena_digest` is derived per commissioned baseline, so a challenger graded against a
+superseded incumbent is commissioned into a *different* arena whose own stack is that old
+baseline. The per-arena `incumbent == before` test alone therefore passes and crowns it a
+second time for one target. `target_lineage_tips` records the artifact holding each
+target's active root-to-tip lineage, each parent artifact, and each conservative winning
+speedup. A candidate measured against any ancestor remains eligible when its reservation
+was already present when the active lineage first left that ancestor and its conservative
+speedup is strictly greater than the product of every winning edge from that ancestor to
+the current tip. For example, with `A -> B -> C`, a candidate `D` measured on A must beat
+`(B/A) * (C/B)`. Equality does not pass. If D wins, the active lineage becomes `A -> D`;
+D is the next baseline and the old `B -> C` branch remains auditable history.
+
+A later reservation against an old ancestor, a candidate based on an artifact outside the
+active lineage, or a score at/below the composed threshold is held `stale_incumbent`.
+Retained qualification evidence is not deleted or recomputed merely because the active
+tip advanced.
+
+Each CROWN snapshots the reservation IDs present in intake; this is the temporal authority
+for the exception and avoids ambiguous same-block comparisons. Stores that settled before
+this ledger existed are seeded once with `cacheon chain-backfill-lineage`, which rebuilds
+the ledger from the newest recorded crown per target and is idempotent. Historical journals
+did not retain a transition-time snapshot, so the backfill conservatively marks only
+reservations no later than the winning submission itself as provably pre-transition. The
+lease's tips and eligible reservation set are rebound to durable state inside the commit
+transaction because the expected plan is recomputed from the lease's own authority.
+
 The hash-chained event journal can contain:
 
 | Event | Meaning |
@@ -126,12 +153,26 @@ The event journal is append-only and digest chained. Event types have distinct j
 Do not infer event meaning from a miner bundle name or the final row status. Reopen the
 event, candidate pair, evidence receipt, and resulting stack state as one authority.
 
-## Legacy V1 PASS rewards
+## Legacy V1 CROWN rewards
 
-Every distinct registered contribution with two independently bound PASSes earns,
-including a settlement `HOLD`. Crown changes never invalidate or rerun completed
-PASS/FAIL results. The projector derives this history from retained settlement
-candidates and qualification evidence rather than a second reward table.
+Two independently bound PASSes make a contribution eligible for settlement; they
+do not make it an earning claim. Only the settlement `CROWN` earns. When that
+transition advances the incumbent, existing reservations keep their durable queue
+baseline. Qualification drains the contiguous old-baseline segment in finalized
+arrival order under the still-resident commission. Settlement may use the
+pre-transition ancestor rule above, but it never erases a completed evaluation just
+because the tip changed.
+
+The evaluator requests recommission only when the oldest active queue segment is
+bound to a different stack. The boundary is checked before a qualification lease,
+request publication, or GPU action. Screening can continue because it is not
+baseline-relative. After recommissioning, the next segment runs against its own
+persisted stack; one qualification cohort can never mix stack segments. A completed
+remote product that differs from the baseline assigned to its own lease is still
+released through a digest-bound stale-incumbent recovery event because that is an
+execution-authority mismatch, not a normal queue transition. The projector derives
+crown history from retained settlement candidates and qualification evidence rather
+than a second reward table.
 
 Credit uses logarithmic speedup, a submission-time stall multiplier, and
 exponential half-life decay as defined in
@@ -148,8 +189,8 @@ promotion, integration, or release cannot renew the same bounty.
 
 ## Legacy V1 global projection
 
-The reward builder reopens every retained PASS pair plus the active stacks and
-standing claims, then binds:
+The reward builder reopens every retained crowned PASS pair plus the active stacks
+and standing claims, then binds:
 
 - chain genesis scope and netuid;
 - validator hotkey;
@@ -174,9 +215,25 @@ exact vector readback.
 
 Projection is global, not one `set-weights` call per target. Generation-zero arenas
 may contribute retained PASS history but do not become active stack authorities. The
-builder requires catalog coverage for every crowned stack and binds the policy digest.
-The v1.1 binding advances to v1.3 only with identical numeric policy fields; unrelated
-policy changes remain refused.
+builder projects every crowned stack under the live reward catalog and binds the policy
+digest. A crowned stack carries the catalog snapshot it was sealed under; the projection
+refuses that stack when the sealed and live catalogs differ in reward-relevant policy
+(target identity, structure, contracts, or composition rules). Admission policy
+(`allowed_features`) and sections outside `targets` and `composition_rules` may differ
+without re-crowning, so retiring an admission lane does not orphan crowned arenas.
+The v1.1/v1.3/v1.4 bindings advance to v1.5 only with identical numeric policy
+fields; unrelated policy changes remain refused.
+
+A retained pair earns from the lower of its two settled speedups, and that ratio
+is only as good as the baseline lane behind it. When the retained stage-exit
+artifacts show that the credited half read the baseline lane under the arena
+band (the median of every retained baseline-role read in the arena minus five
+percent, over at least six reads), the operator command
+[`chain-reopen-qualification`](../reference/cli.md#chain-reopen-qualification)
+returns the pair to the screen queue for a fresh independent pair against the
+current incumbent and archives the old candidate under `settlement_reopenings`.
+The pair stops earning the moment it leaves `qualified`. Crowned or otherwise
+settled candidates are lineage and cannot be reopened this way.
 
 ## Dry run
 
@@ -293,18 +350,13 @@ stateDiagram-v2
 only observes it. At or after the deadline, absent matching readback becomes `held` rather
 than blindly resubmitting.
 
-On every non-dry public invocation, `set-weights` first constructs the current projection,
-then reopens the exact retained projection named by an `intent` or `pending` journal head.
-It resumes that immutable vector across later chain heads when chain scope, netuid, and
-signer authority still match; a restart cannot replace an in-flight vector merely because
-a newly computed head would produce different weights. An authority mismatch fails
-closed. A direct caller that bypasses this resume step and presents a different projection
-to the low-level reconciler receives a retained hold rather than a silent replacement.
+On every non-dry invocation, `set-weights` and `follow-weights` resume any retained
+`intent` or `pending` projection before adopting a new one. Chain scope, netuid
+and signer must still match. A refreshed offer cannot replace an in-flight vector.
+An authority mismatch or a direct low-level call bypassing resume fails closed.
 
-The reconciler can record a preexisting chain match as `confirmed` without submitting.
-Conversely, it refuses a real submission when `crown_count` is zero, when the wallet
-hotkey differs from the projection authority, or when the effective metagraph/block is
-already stale.
+The reconciler can confirm a preexisting chain match without signing. It refuses
+a real submission with zero `crown_count`, a different signer, or stale authority.
 
 If the journal is held, investigate and preserve the record. To append an audited release
 without submitting:
@@ -359,6 +411,15 @@ Roles are split so the **eval host never publishes weights on-chain**:
    publish via the same commit-reveal reconciler (`follow-weights`). The
    signer-only journal does not require a replica of evaluator economic
    state.
+
+Offer production must survive an evaluation pause: `follow-weights` refuses a
+projection older than its refresh window, so an offer that stops being re-minted
+while the standing supervisor is down freezes the chain vector. The standalone
+producer, `python -m cacheon.chain.weight_offer_service --config <sealed offer
+config>`, composes the supervisor's weights stage against the same sealed screen
+and weights authorities on a loop, pushes to `serve-weights`, and never signs.
+Exactly one producer runs per intake database: while it is armed, the standing
+supervisor's `enable_weights` stays false.
 
 ```bash
 # one-time on the gateway host: dedicated HTTP authority (not a chain signer)
@@ -467,7 +528,7 @@ retained design intent and the reserved durable schema are described in
 | Condition | Safe outcome | Recovery |
 |---|---|---|
 | Earlier overlapping reservation unresolved | Candidate remains settlement-pending | Resolve earlier finalized work; do not reorder or delete it |
-| Candidate names old incumbent | `HOLD` event / stale-incumbent disposition | A fresh qualification must target the current stack |
+| Candidate names old incumbent | `HOLD` event / stale-incumbent disposition | Keep its retained evidence; do not rerun it solely because the tip advanced |
 | Lease expires or store/journal head advances | Commit aborts; expired lease returns pending | Reopen authority and obtain a new lease generation |
 | Either PASS evidence root cannot reopen | No settlement and no reward projection | Restore exact content-addressed bytes or retain hold |
 | Transaction fails mid-plan | SQLite rollback; no partial events/claims/stack | Diagnose, then rerun against unchanged authority |
@@ -478,9 +539,11 @@ retained design intent and the reserved durable schema are described in
 | Post-submit chain authority unavailable | Immediate `held` | Restore authoritative reads before release/retry |
 | Previously confirmed vector changes | `held` | Treat as an incident; compare chain history and signer activity |
 | Emissions parameters differ from bound policy | Projection refused | Use the consensus-approved bound policy or migrate authority explicitly |
+| Crowned stack's sealed catalog and the live catalog differ in target identity, structure, contracts, or composition rules | Projection refused (`evaluation stack and reward catalog differ`) | Restore the catalog or re-crown under the live one; admission-only differences do not trip this |
 | Weighted recipient UID changes before or after signing | Submission aborts or retained publication is held | Reopen exact finalized metagraph authority; never confirm against reassigned UIDs |
 | Held reservation has no disposition | It remains durable and may block later work until explicit disposition or eligible finalized-block SLA expiry | Preserve and monitor it; use audited `release_hold` or minimum-age `expire` when operator action is required, never silent deletion |
 | Arena must be retired as an authority domain | No generic transition is available | Define and implement a reviewed typed arena-retirement policy before changing economic authority |
+| Candidate from another arena names an ancestor of the current tip | Eligible only if already present when lineage left that ancestor and strictly faster than the composed ancestor-to-tip threshold | Seed lineage history; otherwise the candidate is held `stale_incumbent` with its original evidence retained |
 
 The journal and settlement tables are evidence. Back them up with SQLite-aware tooling,
 monitor WAL/disk health, and test restoration with evidence roots present. Never repair an

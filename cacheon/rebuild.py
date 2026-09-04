@@ -42,7 +42,6 @@ from typing import Any, Literal
 _PATCHER_SUBDIR = ("cacheon", "patchers")
 _REGISTERED_PATCHERS = {
     "build_cuda_ext.py": ("cacheon.build-cuda-ext.v1", 1),
-    "build_cute_cubin.py": ("cacheon.build-cute-cubin.v1", 2),
 }
 
 

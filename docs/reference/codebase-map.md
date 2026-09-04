@@ -13,7 +13,7 @@ are trying to understand:
 ```mermaid
 flowchart LR
     M["manifest + slots + target catalog"] --> D["local dispatch and verification"]
-    M --> N["sealed artifact prebuild + device runtime"]
+    M --> N["hermetic native prebuild"]
     M --> I["finalized intake + immutable publication"]
     I --> A["injected arena service"]
     A --> Q["isolated qualification evidence"]
@@ -27,9 +27,7 @@ flowchart LR
 
 The local branch is useful to contributors but cannot crown anything. The
 intake, arena, qualification, settlement, and weight branch owns hostile
-evaluation and economic state. A sealed direct artifact enters qualification
-through the registered prebuild/runtime boundary; after integration review, its
-sealed native publication is bound to the reviewed integrated source.
+evaluation and economic state.
 
 ## Contribution contract
 
@@ -46,21 +44,6 @@ sealed native publication is bound to the reviewed integrated source.
 | SGLang dispatch | [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py), [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) |
 | Sealed B300 arena-definition parsing and projection | [`b300_arena_definition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_arena_definition.py) |
 | Scheduler-role candidate load | [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py), [`sglang_scheduler_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_scheduler_gate.py) |
-
-## Sealed direct artifacts
-
-| Area | Primary source |
-|---|---|
-| Closed provider policy | [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_provider.py) |
-| Slot call ABI, resources, and lifecycle | [`artifact_abi.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_abi.py), [`artifact_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_runtime.py) |
-| Canonical direct-execution identity | [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_identity.py), [`artifact_resource_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_resource_identity.py) |
-| Declarative device launch | [`artifact_device_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_device_launch.py) |
-| CUBIN ABI and Driver admission | [`cuda_cubin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cuda_cubin.py), [`cuda_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cuda_launch.py) |
-| Parameter, TMA, and FastDivmod materialization | [`cuda_materialize.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cuda_materialize.py) |
-| CuTe compiler boundary and sealed index | [`cute_aot.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cute_aot.py), [`cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cute_cubin.py) |
-| Measured compile profile | [`eval/native_compile_profile.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/native_compile_profile.py) |
-| Registered build patcher | [`patchers/build_cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/patchers/build_cute_cubin.py) |
-| Rank-local post-CUDA binding | [`integrations/sglang_artifact_context.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_artifact_context.py) |
 
 ## Intake and referee
 
@@ -100,7 +83,6 @@ sealed native publication is bound to the reviewed integrated source.
 | Current speed substrates | v7 standing-pair B/C/[B′] in [`eval/resident_pair_crossover.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_pair_crossover.py); v8 two-process B/C/B′ in [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py) and [`eval/oci_outer_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_outer_session.py) |
 | Immutable native prebuild | [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
 | Device conditioning/cleanup | [`eval/device_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/device_state.py) |
-| Compile-profile and multi-architecture prebuild | [`eval/native_compile_profile.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/native_compile_profile.py), [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
 
 ## State, economics, and weights
 
@@ -136,9 +118,8 @@ Read in this order:
 1. `manifest.py` for exact TOML shape and contained-path rules;
 2. `sandbox.py` for observed source/build features;
 3. `target_catalog.py` for target resolution and admitted features;
-4. `artifact_provider.py` and `artifact_abi.py` when the row declares direct exports;
-5. `slots.py` and `tensor_spec.py` for callable/output semantics; and
-6. `verify.py` or `verify_collective.py` for executable correctness.
+4. `slots.py` and `tensor_spec.py` for callable/output semantics; and
+5. `verify.py` or `verify_collective.py` for executable correctness.
 
 This ordering separates syntax, capability admission, ABI, and numerical
 failure. They are different diagnoses even when the CLI reports them in one
@@ -200,9 +181,6 @@ fixture:
 
 - `test_static.py` and `test_target_catalog.py` cover hostile
   input and target admission;
-- `test_artifact_abi.py`, `test_artifact_device_launch.py`,
-  `test_artifact_runtime.py`, `test_cuda_cubin.py`, `test_cuda_materialize.py`, and
-  `test_cute_cubin.py` cover the sealed direct-artifact boundary;
 - `test_stack_manifest.py`, stack-planning tests, and `test_engine_tree.py`
   cover canonical composition and integration materialization;
 - qualification, OCI, audit, and reference-protocol tests cover current v7
