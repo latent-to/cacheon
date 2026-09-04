@@ -356,11 +356,7 @@ class SettlementLease:
     candidates: tuple[SettlementCandidate, ...]
     initial_event_sequence: int
     previous_event_digest: str
-    # Python 3.11 rejects an unhashable dataclass default (mappingproxy hashes only
-    # from 3.12); CI collects on 3.11.
-    lineage_tips: Mapping[str, object] = dc_field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    lineage_tips: Mapping[str, object] = dc_field(default_factory=dict)
     pretransition_reservations: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
