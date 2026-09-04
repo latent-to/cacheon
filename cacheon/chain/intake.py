@@ -4133,15 +4133,64 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 self._db.execute(
                     f"DELETE FROM {table} WHERE reservation_id=?", (reservation_id,)
                 )
+            # The service digest names the arena that screened the old pair.
+            # Left in place, the queue backfill would bind the row to that
+            # retired stack before its fresh screen could bind the live one.
             self._db.execute(
                 "UPDATE reservations SET status='published',screen_lane='',"
-                "screen_status='',decision='',reason=?,retry_group_digest='',"
-                "retry_position=0,qualification_authority_digest='',"
-                "qualification_authority_json='',qualification_evidence_digest='' "
-                "WHERE reservation_id=?",
+                "screen_status='',arena_service_digest='',decision='',reason=?,"
+                "retry_group_digest='',retry_position=0,"
+                "qualification_authority_digest='',qualification_authority_json='',"
+                "qualification_evidence_digest='' WHERE reservation_id=?",
                 (f"remeasure:{reason}", reservation_id),
             )
         return self.get(reservation_id)
+
+    def remeasurement_pending(self, reservation_id: str) -> bool:
+        """Whether a reopened reservation is still waiting for its fresh pair."""
+
+        row = self.get(reservation_id)
+        return (
+            row.status in {"published", "screening", "promoted"}
+            and self._db.execute(
+                "SELECT 1 FROM settlement_reopenings WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone() is not None
+            and self._db.execute(
+                "SELECT 1 FROM settlement_candidates WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone() is None
+        )
+
+    def rebind_remeasurement_segment(
+        self, reservation_id: str
+    ) -> EvaluationStackState | None:
+        """Bind a reopened row's baseline segment to the stack that re-screened it.
+
+        Idempotent repair for a reopened row the queue backfill bound to its
+        retired arrival stack. Once the fresh screen has stamped the live
+        service digest, that digest names the stack the row must drain under;
+        before the screen the row is left unbound for the screen to bind.
+        """
+
+        with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
+            if not self.remeasurement_pending(reservation_id):
+                raise IntakeError("only a reopened reservation awaiting its fresh pair may be rebound")
+            row = self.get(reservation_id)
+            self._db.execute(
+                "DELETE FROM reservation_baseline_segments WHERE reservation_id=?",
+                (reservation_id,),
+            )
+            if not row.arena_service_digest:
+                return None
+            state = self._unambiguous_evaluation_stack(row.arena_service_digest)
+            if state is None:
+                raise IntakeError("reopened reservation's screen names no evaluation stack")
+            self._bind_reservation_baseline_segment(
+                reservation_id, state, reason="remeasure_rescreen"
+            )
+        return state
 
 
 class SQLiteWeightPublicationJournal:

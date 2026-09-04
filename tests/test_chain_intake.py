@@ -103,11 +103,13 @@ def _audit_policy(label: str, slots: tuple[str, ...]) -> SlotAuditPolicy:
     return SlotAuditPolicy(_h(f"audit-seed:{label}")[:32], 100_000, 32, slots, 1)
 
 
-def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
-    active = store.begin_screen(reservation_id, service_digest=_h("service"))
+def _promote(
+    store: FinalizedIntakeStore, reservation_id: str, *, service: str = _h("service")
+) -> None:
+    active = store.begin_screen(reservation_id, service_digest=service)
     candidate_digest = _h(f"candidate:{reservation_id}:{active.screen_attempts}")
     receipt = ArenaScreenReceipt(
-        _h("service"),
+        service,
         candidate_digest,
         active.screen_attempts,
         tuple(
@@ -490,6 +492,7 @@ def test_reopen_for_remeasurement_returns_a_pass_pair_to_the_screen_queue(tmp_pa
         assert (
             reopened.status, reopened.screen_status, reopened.decision, reopened.reason
         ) == ("published", "", "", "remeasure:baseline_out_of_band")
+        assert reopened.arena_service_digest == ""
         assert {claim.hotkey for claim in store.passed_reward_claims()} == {peer.hotkey}
         for table in ("settlement_candidates", "settlement_qualifications"):
             assert store._db.execute(
@@ -543,6 +546,64 @@ def test_reopen_for_remeasurement_refuses_settled_pairs(tmp_path):
                 )
         with pytest.raises(IntakeError, match="two-PASS"):
             store.reopen_for_remeasurement(single, reason="baseline_out_of_band")
+
+
+def test_reopened_row_binds_to_the_stack_that_rescreens_it(tmp_path):
+    # Mainnet 2026-09-04: the reopened row still carried the service digest of
+    # the arena that screened its old pair, so the queue backfill bound it to
+    # that retired stack before the fresh screen ran; the queue head then named
+    # a stack without a commission and every later miner waited behind it.
+    with _store(tmp_path) as store:
+        pair = _qualified_settlement_candidate(
+            store, marker="stale", speedups=("1.135", "1.132"),
+        )
+        assert isinstance(pair, SettlementCandidate)
+        rid = pair.reservation_digest
+        catalog = default_target_catalog()
+        live_arena = _h("arena-live")
+        store.initialize_evaluation_stack(
+            EvaluationStackManifest(
+                runtime_digest=_h("runtime"),
+                base_engine_digest=_h("base"),
+                arena_digest=live_arena,
+                catalog_snapshot=catalog.snapshot(),
+                catalog_digest=catalog.digest,
+                entries={},
+            ),
+            tree_digest=_h("incumbent-tree"),
+        )
+        with pytest.raises(IntakeError, match="reopened"):
+            store.rebind_remeasurement_segment(rid)
+
+        reopened = store.reopen_for_remeasurement(rid, reason="baseline_out_of_band")
+        assert reopened.arena_service_digest == ""
+        assert store.reservation_baseline_segment(rid) is None
+        # With the service digest cleared the backfill cannot resolve a retired
+        # stack for the row, and a rebind before the screen leaves it unbound.
+        store.backfill_reservation_baseline_segments()
+        assert store.reservation_baseline_segment(rid) is None
+        assert store.rebind_remeasurement_segment(rid) is None
+
+        # Reproduce the trap the way it happened: the stale service digest was
+        # still on the row when the backfill ran.
+        with store._transaction():
+            store._db.execute(
+                "UPDATE reservations SET arena_service_digest=? WHERE reservation_id=?",
+                (pair.arena_digest, rid),
+            )
+        store.backfill_reservation_baseline_segments()
+        assert store.reservation_baseline_segment(rid).arena_digest == pair.arena_digest
+        _promote(store, rid, service=live_arena)
+        assert store.get(rid).arena_service_digest == live_arena
+        assert store.reservation_baseline_segment(rid).arena_digest == pair.arena_digest
+        assert store.qualification_queue_baseline().arena_digest == pair.arena_digest
+
+        state = store.rebind_remeasurement_segment(rid)
+        assert state is not None
+        assert state.arena_digest == live_arena
+        assert store.reservation_baseline_segment(rid).arena_digest == live_arena
+        assert store.qualification_queue_baseline().arena_digest == live_arena
+        assert store.rebind_remeasurement_segment(rid).arena_digest == live_arena
 
 
 def test_finalized_batch_is_reserved_atomically_before_transport(tmp_path):

@@ -548,7 +548,11 @@ speedup read the baseline lane under the arena band — the median of every
 retained baseline-role read in that arena minus five percent, over at least six
 reads — and it prints that evidence either way. `--dry-run` prints the evidence
 and changes nothing. Crowned or otherwise settled candidates are lineage and
-are refused. It never signs, settles, or crowns.
+are refused. A reopened row binds to the stack whose service re-screens it,
+never to the stack current at its original arrival; running the command again
+on a reopened row that is still waiting for its fresh pair repairs that
+binding (or leaves the row unbound for the screen to bind) and changes nothing
+else. It never signs, settles, or crowns.
 
 ### `chain-backfill-lineage`
 

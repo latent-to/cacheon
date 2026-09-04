@@ -232,7 +232,13 @@ the baseline is wrong, and no absolute band exists in `cacheon/eval`. The
 operator command `chain-reopen-qualification` now returns such a pair to the
 screen queue for a fresh pair against the current incumbent, gated on the
 retained lane rates (`cacheon/chain/baseline_band.py`); the settlement-side
-band gate and always-read B′ remain open work.
+band gate and always-read B′ remain open work. The first live reopen exposed
+the queue trap: the row still carried the service digest of the arena that
+screened its old pair, so the queue backfill bound it to that retired stack
+before its fresh screen ran, and the evaluator held on
+`baseline_commission_required` with newer submissions waiting behind it. A
+reopened row now clears that digest and binds to the stack whose service
+re-screens it; a second run of the command repairs a row already caught.
 
 ### Routing-only resident screen
 
