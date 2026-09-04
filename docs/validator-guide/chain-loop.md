@@ -467,6 +467,14 @@ credit. Credit grants are private validator mutations with an audit note, not a
 miner-controlled payment token; see the
 [CLI reference](../reference/cli.md#chain-eval-cost-credit).
 
+Byte-identical resubmissions replay their prior verdict before any lease is claimed:
+a bundle whose exact content hash already reached a terminal `FAIL` under the exact
+current arena service digest inherits that `FAIL` (reason
+`duplicate_of:<reservation>:<original reason>`) and costs neither a screen nor a
+qualification. A prior `PASS` is never replayed — settlement requires an independently
+bound PASS pair, so a resubmitted winner queues for a real evaluation. Any changed
+byte, or any change to the arena, produces a fresh evaluation.
+
 ## Verdict and retry semantics
 
 The controller maps failures according to where authority was lost:
