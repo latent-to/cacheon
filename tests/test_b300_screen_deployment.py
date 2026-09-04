@@ -196,6 +196,7 @@ def test_materialize_and_replay_exact_service_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths, gpus, ready = _case(tmp_path)
+    assert deployment._device_policy(gpus[:4]).drain_timeout_s == 300.0
     result = deployment.materialize_b300_screen_identities(
         **paths,
         gpu_provisioner=lambda selected, *, deadline: gpus,
@@ -379,7 +380,6 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
         )
         assert type(plan) is B300ScreenExecutionPlan
         assert plan.service_digest == composition.manifest.digest
-        assert plan.eager_launch.arena_digest == composition.manifest.digest
         assert plan.graph_launch.arena_digest == composition.manifest.digest
         assert plan.model_mount.arena_digest == composition.manifest.digest
         assert plan.binding.physical_hardware.physical_gpu_ids == (
@@ -388,11 +388,8 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
             "2",
             "3",
         )
-        assert plan.eager_launch.hardware.tp_size == 4
-        assert plan.eager_session.engine_config.disable_cuda_graph is True
-        assert plan.graph_session.engine_config.disable_cuda_graph is False
-        assert plan.eager_launch.tree_digest == plan.graph_launch.tree_digest
-        assert plan.eager_launch.digest != plan.graph_launch.digest
+        assert plan.graph_launch.hardware.tp_size == 4
+        assert plan.graph_launch.tree_digest == plan.binding.native_build_spec.tree_digest
         composition.pipeline._validate_plan(  # noqa: SLF001 - regression gate
             composition.manifest, candidate, plan
         )
@@ -404,8 +401,10 @@ def test_graph_engine_config_derives_from_the_declared_cell() -> None:
     cell = WorkloadCell("s8", 8192, 1024, 64, 8)
     eager = deployment._engine_config(("msa",), cell, disable_cuda_graph=True)
     graph = deployment._engine_config(("msa",), cell, disable_cuda_graph=False)
+    runtime = deployment._runtime_policy(_preflight())
     assert "watchdog_timeout" not in eager.engine_kwargs
-    assert graph.engine_kwargs["watchdog_timeout"] == 1800
+    assert (runtime.init_timeout_seconds, runtime.batch_timeout_seconds) == (1800, 1800)
+    assert graph.engine_kwargs["watchdog_timeout"] == runtime.batch_timeout_seconds
     for config in (eager, graph):
         assert config.engine_kwargs["context_length"] == 8192 + 1024 + 128
         assert config.engine_kwargs["disable_radix_cache"] is True

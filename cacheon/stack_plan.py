@@ -130,10 +130,6 @@ class TargetTransition:
         if self.prior is not None:
             if self.prior.target_id != self.target_id:
                 raise StackPlanError("prior contribution does not match transition target")
-            if self.displaced:
-                raise StackPlanError(
-                    "same-target replacement cannot also displace active targets"
-                )
             if self.prior.selected_delta_digest == self.replacement.selected_delta_digest:
                 raise StackPlanError("same-target replacement has no executable delta")
         displaced_ids = tuple(ref.target_id for ref in self.displaced)
@@ -312,12 +308,13 @@ def _candidate_transition(
 
     active = incumbent.entries
     prior = active.get(target_id)
-    if prior is not None:
-        remove: tuple[str, ...] = ()
-        displaced: tuple[ContributionRef, ...] = ()
-    else:
-        # Directional displacement cannot be inverted.  In particular, an
-        # atomic incumbent is never decomposed by proposing one member.
+    remove = {
+        active_id
+        for active_id in set(active) & set(catalog.require(target_id).compatible_with)
+        if catalog.composition_rule(active_id, target_id).precedence.index(active_id)
+        < catalog.composition_rule(active_id, target_id).precedence.index(target_id)
+    }
+    if prior is None:
         blockers = tuple(
             sorted(
                 active_id
@@ -330,10 +327,9 @@ def _candidate_transition(
                 f"target {target_id!r} cannot implicitly decompose active "
                 f"targets {blockers!r}"
             )
-        remove = tuple(
-            sorted(set(active) & set(catalog.displacement_closure(target_id)))
-        )
-        displaced = tuple(active[target] for target in remove)
+        remove.update(set(active) & set(catalog.displacement_closure(target_id)))
+    removed = tuple(sorted(remove))
+    displaced = tuple(active[target] for target in removed)
 
     transition = TargetTransition(
         target_id=target_id,
@@ -343,13 +339,13 @@ def _candidate_transition(
         displaced=displaced,
     )
     try:
-        candidate = incumbent.with_contribution(replacement, remove=remove)
+        candidate = incumbent.with_contribution(replacement, remove=removed)
         catalog.validate_active_targets(candidate.entries)
         candidate.validate_against(expected_context)
     except (ValueError, TargetResolutionError) as exc:
         raise StackPlanError(f"invalid marginal transition: {exc}") from exc
 
-    expected_targets = (set(active) - set(remove)) | {target_id}
+    expected_targets = (set(active) - set(removed)) | {target_id}
     if set(candidate.entries) != expected_targets:
         raise StackPlanError("candidate changed entries outside the target transition")
     for active_id, incumbent_ref in active.items():

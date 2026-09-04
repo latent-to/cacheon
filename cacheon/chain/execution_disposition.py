@@ -268,30 +268,10 @@ class ExecutionOutcome:
 # this marker in the typed outcome; the store release reason keeps the raw code.
 WORKER_INFRASTRUCTURE_REQUEUE_FAILURE = "worker_infrastructure_result"
 
-# Durable HELD reason written by the qualification dispatcher before
-# infrastructure results became requeue-class; the store accepts exactly this
-# reason when migrating a parked recovery back into the queue.
 WORKER_INFRASTRUCTURE_HOLD_REASON = (
     f"transport_hold:{WORKER_INFRASTRUCTURE_REQUEUE_FAILURE}"
 )
-
-# Durable HELD reason written when a retained request no longer verifies
-# against the live worker authority.  The retained request is dead by
-# definition -- it can never dispatch again -- so the recovery migrates into
-# the same bounded requeue: retire the dead request, mint a fresh one under
-# the current authority, capped by the systemic release limit.
 AUTHORITY_CHANGED_HOLD_REASON = "transport_hold:authority_changed"
-
-# Durable HELD reason written when a published request's spool carrier is gone
-# while its result directory survives.  The carrier is the only thing that can
-# deliver a retained request, so such a request is dead by definition exactly
-# like the two reasons above, and migrates through the same bounded requeue.
-# Before 2026-08-16 this reason had no handler at all: an operator outbox
-# rotation retired carriers whose results stayed behind, the dispatcher stamped
-# the recovery HELD, and because "resume the active recovery" runs before any
-# fresh claim, one parked row starved every qualification claim for hours with
-# no operator escape.  Never a candidate signal -- a missing spool artifact
-# says nothing about the bundle.
 ORPHANED_CARRIER_HOLD_REASON = "transport_hold:published_carrier_missing"
 
 # Durable HELD reason written when a completed, published product carries no

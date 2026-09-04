@@ -378,6 +378,13 @@ class B300MainnetWorker:
             self._validate_readiness(self.readiness, self.service)
             self._provider.retire_resident_screen()
 
+    @property
+    def resident_screen_latched(self) -> bool:
+        """True once the screen lifetime can only be cleared by an adapter restart."""
+
+        with self._lock:
+            return self._provider.resident_screen_latched
+
     def _bind_remote_qualification_graph_gate_root(self, root: Path) -> None:
         """Bind the adapter-owned CAS root once for this resident worker epoch."""
 

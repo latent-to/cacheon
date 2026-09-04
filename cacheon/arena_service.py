@@ -470,7 +470,8 @@ class ArenaScreenReceipt:
         terminal = grades[-1]
         if (
             (self.decision is PromotionDecision.PROMOTE
-             and (len(results) != len(SCREEN_STAGES) or terminal is not ScreenGrade.PASS))
+             and (len(results) != len(SCREEN_STAGES)
+                  or terminal not in {ScreenGrade.PASS, ScreenGrade.NO_DECISION}))
             or (self.decision is PromotionDecision.REJECT and terminal is not ScreenGrade.FAIL)
             or (
                 self.decision in {PromotionDecision.RETRY, PromotionDecision.HOLD}
@@ -669,13 +670,14 @@ class ArenaService:
                 decision = PromotionDecision.REJECT
                 break
             if result.grade is ScreenGrade.NO_DECISION:
-                # A stage that did not decide must never be converted into a
-                # PASS. Waiving it promoted a candidate on a gate that had not
-                # actually run -- and it erased the stage's own evidence digest
-                # behind a waiver digest, so nobody could see which gate was
-                # skipped or why. Park it instead: an operator releases the
-                # hold once they have looked at the cause.
-                decision = PromotionDecision.HOLD
+                decision = self.retry_disposition(
+                    "screen", attempt=candidate.screen_attempt
+                )
+                if (
+                    decision is PromotionDecision.HOLD
+                    and result.stage == SCREEN_STAGES[-1]
+                ):
+                    decision = PromotionDecision.PROMOTE
                 break
         return ArenaScreenReceipt(
             self.identity,

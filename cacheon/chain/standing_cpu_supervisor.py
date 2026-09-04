@@ -191,6 +191,7 @@ class StandingCpuSupervisor:
     stall_timeout_s: float = 3_600.0
     _status: SupervisorStatus = field(init=False, repr=False)
     _last_tick_progressed: bool = field(init=False, repr=False)
+    _commission_required: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not callable(self.screen_once):
@@ -214,6 +215,7 @@ class StandingCpuSupervisor:
             last_progress_unix=float(self.clock()),
         )
         self._last_tick_progressed = False
+        self._commission_required = False
 
     def status(self) -> SupervisorStatus:
         return self._status
@@ -345,26 +347,22 @@ class StandingCpuSupervisor:
         return self._normalize(stage, raw)
 
     def tick(self) -> SupervisorStatus:
-        """Advance at most one unit of work, preferring protected qualification resume.
+        """Advance one unit, settling before a new qualification may claim."""
 
-        Order:
-        1. qualification (resume same-request recovery before claiming new screen work)
-        2. screen FIFO
-        3. optional settlement / weights stages (later handoff gates)
-
-        A HOLD or REQUEUE is not a unit of work and must not consume the tick:
-        one durably held qualification would otherwise starve every later
-        stage (observed on mainnet 2026-08-10 — screens stalled behind a held
-        recovery). The first non-progressing result is surfaced only when no
-        stage progresses, and holds never reset the stall clock.
-        """
-
-        # Qualification first: recover active protected leases after restart.
+        if self._commission_required:
+            return self._observe(
+                SupervisorStageResult(
+                    stage="settlement",
+                    progressed=False,
+                    disposition="commission_required",
+                    hold_reason="baseline_commission_required",
+                )
+            )
         deferred: SupervisorStageResult | None = None
         for stage, callback in (
+            ("settlement", self.settle_once),
             ("qualification", self.qualification_once),
             ("screen", self.screen_once),
-            ("settlement", self.settle_once),
             ("weights", self.weights_once),
         ):
             if callback is None:
@@ -373,6 +371,8 @@ class StandingCpuSupervisor:
             if result is None:
                 continue
             if result.progressed:
+                if stage == "settlement":
+                    self._commission_required = True
                 return self._observe(result)
             if deferred is None:
                 deferred = result
@@ -403,8 +403,7 @@ class StandingCpuSupervisor:
 
 def settlement_stage(
     *,
-    store_factory: Callable[[], Any],
-    current_block: Callable[[], int],
+    open_store: Callable[[], tuple[Any, tuple[int, str]]],
     finalized_block_provider: Callable[[], int | tuple[int, str]],
 ) -> Callable[[], SupervisorStageResult | None]:
     """Wrap ``validator_loop._settle_pending`` as one injectable supervisor stage."""
@@ -412,14 +411,17 @@ def settlement_stage(
     def once() -> SupervisorStageResult | None:
         from cacheon.chain.validator_loop import _settle_pending
 
-        with store_factory() as store:
+        store, point = open_store()
+        try:
             if not store.has_pending_settlement():
                 return None
             committed = _settle_pending(
                 store,
-                current_block=int(current_block()),
+                current_block=point[0],
                 finalized_block_provider=finalized_block_provider,
             )
+        finally:
+            store.close()
         if not committed:
             return None
         lease_id = next(iter(committed))
@@ -466,7 +468,7 @@ def run_forever(
     restart_initial_backoff_s: float = 1.0,
     restart_max_backoff_s: float = 60.0,
 ) -> None:
-    """Run supervisor ticks until ``stop`` is set; rebuild after stage failures."""
+    """Run until stopped; a stage exception exits before another paid dispatch."""
 
     if type(supervisor) is not StandingCpuSupervisor or not isinstance(
         stop, threading.Event
@@ -492,12 +494,7 @@ def run_forever(
             )
             if on_status is not None:
                 on_status(supervisor.status())
-            if waiter(backoff):
-                break
-            backoff = min(float(restart_max_backoff_s), backoff * 2.0)
-            # Surface the failure without inventing a reclaim/retry disposition.
-            del exc
-            continue
+            raise
         if on_status is not None:
             on_status(status)
         if status.phase is SupervisorPhase.IDLE:
@@ -759,13 +756,7 @@ def build_standing_supervisor(
         # never sits in the screen/qualification path.
         subtensor = chain.connect(config.settlement_network, retry_forever=True)
         settle_once = settlement_stage(
-            store_factory=partial(
-                RecoverableFinalizedIntakeStore,
-                screen_config.intake_db,
-                screen_config.policy,
-                scope=screen_config.scope,
-            ),
-            current_block=lambda: chain.read_finalized_head(subtensor)[0],
+            open_store=screen_dispatcher.coordinator._open_at_durable_cursor,
             finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
         )
 

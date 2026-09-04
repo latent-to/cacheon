@@ -390,14 +390,14 @@ def test_fail_is_not_rewritten(tmp_path: Path, executor_factory) -> None:
     assert resident.created == 0
 
 
-def test_no_decision_screen_evidence_parks_instead_of_reaching_qualification(
+def test_no_decision_screen_evidence_retries_instead_of_reaching_qualification(
     tmp_path: Path, executor_factory
 ) -> None:
     """An undecided ABI stage must not buy a seat on the GPU.
 
     Qualification is the expensive half of the pipeline. Promoting on a stage
     that returned no decision spends a full evaluation on a candidate whose
-    ABI was never actually checked.
+    ABI was never checked; one inconclusive screen retries (6ab052e).
     """
 
     authorities, _runner, resident, _builder = _authorities(
@@ -410,7 +410,7 @@ def test_no_decision_screen_evidence_parks_instead_of_reaching_qualification(
 
     receipt = service.screen(_binding(tmp_path / "no-decision"))
 
-    assert receipt.decision is PromotionDecision.HOLD
+    assert receipt.decision is PromotionDecision.RETRY
     assert tuple(row.stage for row in receipt.results) == ("static", "build", "abi")
     assert receipt.results[-1].grade is ScreenGrade.NO_DECISION
     # The screen stops at the undecided stage: no later stage is run, and the
@@ -597,14 +597,19 @@ def test_canary_failure_holds_and_latches_resident_epoch(
         )
 
     monkeypatch.setattr(ResidentServingScreenStage, "run_screen", canary_failure)
+    assert not provider.resident_screen_latched
     assert provider.run_screen(
         manifest, manifest.screens.stages[-1], candidate
     ).grade is ScreenGrade.NO_DECISION
     assert (calls, resident.created, resident.closed) == (1, 1, 0)
+    # The latch is visible behind the completed result so the adapter can
+    # retire itself before the next request dies against it.
+    assert provider.resident_screen_latched
     with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
         provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
     assert (calls, resident.created, resident.closed) == (1, 1, 0)
     provider.close()
+    assert resident.closed == 1
 
 
 def test_qualification_preserves_exact_request_order_and_real_authorities(

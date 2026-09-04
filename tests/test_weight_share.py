@@ -350,80 +350,50 @@ def test_fetch_binds_request_signature_over_timestamp() -> None:
     assert headers["x-cacheon-signature"] == sign_auth_digest(follower, digest)
 
 
-class _Journal:
-    def __init__(self) -> None:
-        self.row = None
-        self.history = []
+def test_new_offers_do_not_replace_pending_weight_transactions():
+    from tests.test_weight_publication import Chain, Journal, _projection, _wallet
 
-    def load(self):
-        return self.row
+    chain = Chain()
+    original = _projection()
+    journal = Journal(retained=(original,))
+    dry = publish_followed_weights(
+        subtensor=chain, signer_wallet=_wallet(),
+        offer=CurrentWeightOffer.from_legacy_projection(original),
+        journal=journal, refresh_blocks=20, dry_run=True,
+    )
+    assert dry.status == "dry_run"
+    assert journal.row is None
+    assert chain.submit_calls == 0
 
-    def compare_and_swap(self, expected_record_digest, replacement):
-        assert expected_record_digest == (self.row.digest if self.row else None)
-        self.row = replacement
-        self.history.append(replacement)
-
-    def retained_projection(self, projection_digest):
-        raise AssertionError("not used")
-
-
-def test_publish_followed_weights_uses_reconciler(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    offer = CurrentWeightOffer.from_legacy_projection(_projection())
-    wallet = SimpleNamespace(hotkey=_FakeHotkey("follower", b"f"))
-    journal = _Journal()
-    seen = {}
-
-    def fake_reconcile(
-        subtensor,
-        signer_wallet,
-        projection,
-        journal_arg,
-        *,
-        refresh_blocks,
-        dry_run=False,
-        reconcile_only=False,
-        allow_stale_initial=False,
-        max_stale_initial_blocks=None,
-        require_current_crown=True,
-    ):
-        seen["projection"] = projection
-        seen["wallet"] = signer_wallet
-        seen["refresh_blocks"] = refresh_blocks
-        seen["dry_run"] = dry_run
-        seen["allow_stale_initial"] = allow_stale_initial
-        seen["max_stale_initial_blocks"] = max_stale_initial_blocks
-        seen["require_current_crown"] = require_current_crown
-        assert journal_arg is journal
-        return SimpleNamespace(
-            projection_digest=projection.digest,
-            status="dry_run",
-            chain_matches=False,
-            submitted=False,
-            refresh_due=False,
+    def follow(projection):
+        return publish_followed_weights(
+            subtensor=chain, signer_wallet=_wallet(),
+            offer=CurrentWeightOffer.from_legacy_projection(projection),
+            journal=journal, refresh_blocks=20,
         )
 
-    monkeypatch.setattr(
-        "cacheon.chain.weight_share.reconcile_weight_publication",
-        fake_reconcile,
-    )
-    result = publish_followed_weights(
-        subtensor=object(),
-        signer_wallet=wallet,
-        offer=offer,
-        journal=journal,
-        refresh_blocks=100,
-        dry_run=True,
-    )
-    assert result.status == "dry_run"
-    assert seen["projection"].validator_hotkey == "follower"
-    assert seen["projection"].weights_ppm == offer.projection.weights_ppm
-    assert seen["wallet"] is None
-    assert seen["dry_run"] is True
-    assert seen["allow_stale_initial"] is True
-    assert seen["max_stale_initial_blocks"] == 100
-    assert seen["require_current_crown"] is True
+    assert follow(original).status == "pending"
+    chain.block = 101
+    chain.install(original.weights, update=100)
+    newer = _projection(block=101, weights=(("bob", 1_000_000),))
+    result = follow(newer)
+    assert result.status == "confirmed"
+    assert result.projection_digest == original.digest
+    assert chain.submit_calls == 1
+
+    chain.block = 102
+    replacement = _projection(block=102, weights=newer.weights_ppm)
+    journal.retained[replacement.digest] = replacement
+    assert follow(replacement).status == "pending"
+    chain.install(replacement.weights, update=102)
+    chain.block = 103
+    result = follow(_projection(block=103, weights=newer.weights_ppm))
+    assert result.status == "confirmed"
+    assert result.projection_digest == replacement.digest
+    assert chain.submit_calls == 2
+    assert [r.status for r in journal.history] == [
+        "intent", "pending", "confirmed", "intent", "pending", "confirmed",
+    ]
 
 
 def test_push_endpoint_accepts_rotatable_credentials(

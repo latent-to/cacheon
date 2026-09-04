@@ -113,8 +113,9 @@ reward identity and therefore cannot resolve by nostalgia.
 The registered rule `sglang.moe.reduce-first.v1` allows
 `moe.fused_experts_reduce` and `moe.fused_experts` to coexist. At the shared
 binding family it applies the reduce-owning target first and uses the plain
-expert target only where applicable afterward. Manifest order never chooses
-precedence.
+expert target only where applicable afterward. A lower-precedence challenger
+removes a shadowing active target from its candidate arm. Manifest order never
+chooses precedence.
 
 All other active target pairs must be non-overlapping under their registered
 contracts. Catalog validation checks displacement, dependency, compatibility,

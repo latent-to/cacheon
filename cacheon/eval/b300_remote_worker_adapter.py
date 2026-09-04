@@ -339,6 +339,11 @@ class AdapterRuntime:
         if registration != self.registration or ready != self.ready:
             raise AdapterError("commissioned registration or READY authority changed")
 
+    def resident_screen_latched(self) -> bool:
+        """True once this process can no longer serve a screen or qualification."""
+
+        return self.worker.resident_screen_latched
+
     def close(self) -> None:
         if self.closed:
             return
@@ -597,6 +602,7 @@ def _emit_control(
     request_id: str | None = None,
     *,
     output=None,
+    retired: bool = False,
 ) -> None:
     value: dict[str, object] = {
         "schema": SCHEMA_ADAPTER_CONTROL,
@@ -604,6 +610,8 @@ def _emit_control(
     }
     if request_id is not None:
         value["request_id"] = request_id
+    if retired:
+        value["retired"] = True
     stream = sys.stdout.buffer if output is None else output
     stream.write(spool_canonical_json(value) + b"\n")
     stream.flush()
@@ -712,6 +720,33 @@ def serve_runtime(
             )
             _emit_control("epoch_failed", request_id, output=control_output)
             return 2
+        if runtime.resident_screen_latched():
+            # A stock-canary miss or a dead resident engine latches the
+            # lifetime after a completed result.  Retire this process now,
+            # with the result already durable, so the pod boots a fresh
+            # adapter for the next request instead of sacrificing it to the
+            # latch (2026-09-02: one paid request lost per canary miss).
+            print(
+                "CACHEON-B300-ADAPTER-RETIRED: "
+                f"request={request_id} reason=resident_screen_latched",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                runtime.close()
+            except Exception as exc:
+                traceback.print_exception(exc, file=sys.stderr)
+                print(
+                    "CACHEON-B300-ADAPTER-RETIRE-TEARDOWN-FAILED: "
+                    f"request={request_id} "
+                    f"type={type(exc.__cause__ or exc).__name__}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            _emit_control(
+                "completed", request_id, output=control_output, retired=True
+            )
+            return 0
         _emit_control("completed", request_id, output=control_output)
     return 0
 

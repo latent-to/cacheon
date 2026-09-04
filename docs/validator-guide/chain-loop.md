@@ -477,7 +477,7 @@ The controller maps failures according to where authority was lost:
 | Eval-cost payment lookup RPC/decode blip | pass aborted; cursor unchanged | Retry the pass; do not fail the miner |
 | Transient HTTPS/DNS or immutable-publication storage fault | `transport_retry` / `NO_DECISION` | Retry until the transport budget, then `held` |
 | Static/build/ABI/graph/serving screen `FAIL` | `failed` / `FAIL` | None under that screen authority |
-| Screen timeout or inconclusive evidence | Retry in the same primary or reproduction lane | Arena screen budget decides retry versus hold |
+| Serving-canary inconclusive evidence | Retry once, then retain `NO_DECISION` and advance to full qualification | A routing canary cannot indefinitely hold the queue |
 | Qualification plan/runner/raw-speed failure affecting a registered cohort | `NO_DECISION` for every member plus a persisted bisection plan | Cohort halves are retried to isolate poisoning without assigning losses |
 | Per-candidate post-attempt `NO_DECISION` | Retained report plus one-candidate requeue | Retry in primary or reproduction lane |
 | First complete `PASS` | `reproduction_pending`; no settlement candidate yet | Fresh screen and qualification required |

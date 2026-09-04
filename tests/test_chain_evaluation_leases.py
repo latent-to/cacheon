@@ -226,7 +226,7 @@ def test_expiry_requeues_exact_status_without_attempt_and_advances_generation(tm
         )] == ["claimed", "expired", "claimed"]
 
 
-def test_late_result_durably_expires_before_rejecting(tmp_path):
+def test_completed_result_wins_before_expiry_is_reclaimed(tmp_path):
     with _store(tmp_path) as store:
         row = _published_rows(store, 1)[0]
         lease = store.claim_evaluation_lease(
@@ -234,18 +234,16 @@ def test_late_result_durably_expires_before_rejecting(tmp_path):
         )
         assert lease is not None
         _advance(store, 12)
-        with pytest.raises(IntakeError, match="after lease expiry"):
-            with store.accept_evaluation_result(
-                lease, current_block=12, result_digest=_h("late-result")
-            ):
-                raise AssertionError("expired result entered mutation context")
+        with store.accept_evaluation_result(
+            lease, current_block=12, result_digest=_h("late-result")
+        ):
+            _complete_screen(store, lease)
         assert store.active_evaluation_leases() == ()
-        requeued = store.get(row.reservation_id)
-        assert (requeued.status, requeued.screen_attempts) == ("published", 0)
-        assert store.screenable() == (requeued,)
+        retained = store.get(row.reservation_id)
+        assert (retained.status, retained.screen_attempts) == ("promoted", 1)
         assert [event.event_type for event in store.evaluation_lease_events(
             lease_id=lease.lease_id
-        )] == ["claimed", "expired"]
+        )] == ["claimed", "completed"]
 
 
 def test_heartbeat_is_cas_and_stale_completion_is_rejected(tmp_path):
