@@ -29,6 +29,7 @@ class ScreenQuantPolicyError(RuntimeError):
 MOE_QUANT_SLOTS: tuple[str, ...] = (
     "moe.fused_experts",
     "moe.fused_experts_reduce",
+    "moe.fused_routed_experts",
 )
 
 #: Served model quantization -> the quant a candidate kernel must declare.

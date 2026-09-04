@@ -1,11 +1,4 @@
-"""CPU tests for the generalized (op + block) slot abstraction.
-
-Covers: (1) the new ``kind`` discriminator, (2) a multi-input *block* slot
-(attention.sdpa) verifies a faithful pure-torch kernel, (3) the ``matched_ratio``
-correctness mode FAILS a broken attention kernel, and (4) backward-compat — the
-single-op slots (silu) still verify under the generalized spec. torch-only; skipped
-where torch is unavailable (e.g. the dev laptop); runs on the pod.
-"""
+"""CPU contract checks for op and block slots."""
 
 from __future__ import annotations
 
@@ -14,69 +7,34 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from cacheon.sandbox import load_entry  # noqa: E402
-from cacheon.slots import get_slot  # noqa: E402
+from cacheon.registry import eligibility_from_metadata  # noqa: E402
+from cacheon.slots import get_slot, slot_for_model  # noqa: E402
 from cacheon.verify import verify_entry  # noqa: E402
 
-ATTN_BUNDLE = "examples/miner_attention_torch/kernels/attention.py"
-ATTN_DECODE_BUNDLE = "examples/miner_attention_decode_torch/kernels/attention_decode.py"
 MOE_BUNDLE = "examples/miner_moe_fused_experts_torch/kernels/moe.py"
+ROUTED_MOE_BUNDLE = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
+DENSE_BUNDLE = "examples/miner_dense_torch/kernels/dense.py"
+FUSED_NORM_BUNDLE = (
+    "examples/miner_fused_add_rmsnorm_torch/kernels/fused_add_rmsnorm.py"
+)
+ROUTED_SHAPE = {
+    "num_tokens": 2, "num_experts": 4, "hidden": 64, "inter": 64,
+    "topk": 2, "routed_scaling": 2.5,
+}
 
 
 def test_slot_kind_discriminator():
-    assert get_slot("attention.sdpa").kind == "block"
-    assert get_slot("attention.decode").kind == "block"
+    assert get_slot("moe.fused_experts").kind == "block"
+    assert get_slot("moe.fused_routed_experts").kind == "block"
+    assert get_slot("linear.dense").kind == "block"
+    assert get_slot("collective.all_gather_into_tensor").kind == "collective"
+    assert get_slot("collective.reduce_scatter_tensor").kind == "collective"
+    assert get_slot("norm.fused_add_rmsnorm").kind == "block"
     assert get_slot("activation.silu_and_mul").kind == "op"
     assert get_slot("norm.rmsnorm").kind == "op"
 
 
-def test_attention_block_passes_correctness_cpu():
-    entry = load_entry(ATTN_BUNDLE, "attention")
-    slot = get_slot("attention.sdpa")
-    result = verify_entry(slot, entry, dtype=torch.float32, device="cpu", seed=0)
-    assert result.passed, "\n".join(
-        f"{r.shape}: max_abs={r.max_abs_err} ratio={r.pass_ratio} {r.detail}" for r in result.shape_results
-    )
-
-
-def test_broken_attention_fails_matched_ratio_cpu():
-    # A broken "kernel": ignores k/v entirely and copies q -> wrong everywhere, so the
-    # fraction-of-elements-within-tolerance falls below the slot's min_ratio (0.99).
-    def broken(q, k, v, out, sm_scale, causal=True):
-        out.copy_(q)
-
-    slot = get_slot("attention.sdpa")
-    result = verify_entry(slot, broken, dtype=torch.float32, device="cpu", seed=0)
-    assert not result.passed
-
-
-def test_attention_decode_passes_correctness_cpu():
-    entry = load_entry(ATTN_DECODE_BUNDLE, "attention_decode")
-    slot = get_slot("attention.decode")
-    result = verify_entry(slot, entry, dtype=torch.float32, device="cpu", seed=0)
-    assert result.passed, "\n".join(
-        f"{r.shape}: max_abs={r.max_abs_err} ratio={r.pass_ratio} {r.detail}" for r in result.shape_results
-    )
-
-
-def test_broken_decode_fails_matched_ratio_cpu():
-    # A candidate that ignores the validator-selected blocks cannot pass merely
-    # because it has the right output shape.
-    def broken(
-        q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices,
-        topk_idx, out, sm_scale, block_size,
-    ):
-        del k_cache, v_cache, req_to_token, seq_lens, req_pool_indices
-        del topk_idx, sm_scale, block_size
-        out.copy_(q)
-
-    slot = get_slot("attention.decode")
-    result = verify_entry(slot, broken, dtype=torch.float32, device="cpu", seed=0)
-    assert not result.passed
-
-
 def test_moe_prepare_forward_passes_correctness_cpu():
-    # The (prepare, forward) PAIR: load BOTH miner callables; verify runs prepare (the
-    # weight layout) then forward, and compares to the fp32 MoE reference.
     fwd = load_entry(MOE_BUNDLE, "fused_experts")
     prep = load_entry(MOE_BUNDLE, "prepare")
     slot = get_slot("moe.fused_experts")
@@ -86,10 +44,32 @@ def test_moe_prepare_forward_passes_correctness_cpu():
     )
 
 
+def test_dense_prepare_forward_passes_correctness_cpu():
+    result = verify_entry(
+        slot_for_model("linear.dense", "GLM-5.3-NVFP4"),
+        load_entry(DENSE_BUNDLE, "dense"),
+        prepare=load_entry(DENSE_BUNDLE, "prepare"),
+        dtype=torch.float32,
+        device="cpu",
+        shapes=[{
+            "num_tokens": 3, "input_dim": 8, "output_dim": 12,
+            "parallel_role": "row", "local_tp_size": 4,
+        }],
+        eligibility=eligibility_from_metadata(
+            {"capabilities": {
+                "input_dim": 8, "num_tokens": 3, "output_dim": 12,
+                "parallel_role": "row", "tp_size": 4, "world_size": 4,
+            }},
+            ("float32",),
+        ),
+        architecture="cpu",
+        tp_size=4,
+        world_size=4,
+    )
+    assert result.passed and result.shape_results[0].applicable
+
+
 def test_moe_broken_prepare_fails_cpu():
-    # A `prepare` that forgets the [gate;up]->[up;gate] reorder -> forward swaps the
-    # halves -> silu(up)*gate != silu(gate)*up -> wrong. The slot is only correct when
-    # BOTH callables agree, so a bad prepare must fail just like a bad forward would.
     def broken_prepare(w13, w2):
         return {"w13": w13.contiguous(), "w2": w2.contiguous(), "inter": w13.shape[1] // 2}
 
@@ -99,18 +79,46 @@ def test_moe_broken_prepare_fails_cpu():
     assert not result.passed
 
 
+def test_routed_moe_wrong_routing_fails_cpu():
+    faithful = load_entry(ROUTED_MOE_BUNDLE, "fused_routed_experts")
+    prep = load_entry(ROUTED_MOE_BUNDLE, "prepare")
+
+    def wrong_routing(x, router_logits, correction_bias, prepared, out):
+        forced = 100 * torch.arange(
+            correction_bias.numel(), device=correction_bias.device
+        )
+        faithful(x, torch.zeros_like(router_logits), forced, prepared, out)
+
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
+    result = verify_entry(
+        slot, wrong_routing, prepare=prep, dtype=torch.float32, device="cpu",
+        shapes=[ROUTED_SHAPE],
+    )
+    assert not result.passed
+    assert result.num_applicable == 1
+
+
+def test_routed_moe_margin_enforced_inputs():
+    slot = get_slot("moe.fused_routed_experts")
+    for shape in slot.shapes:
+        i = slot.make_inputs(dtype=torch.float32, device="cpu", seed=7, **shape)
+        choice = torch.sigmoid(i["router_logits"]) + i["correction_bias"].unsqueeze(0)
+        sorted_choice = choice.sort(dim=-1, descending=True).values
+        k = shape["topk"]
+        gap = sorted_choice[:, k - 1] - sorted_choice[:, k]
+        assert torch.all(gap > 0.01), f"ambiguous selection at {shape}"
+
+
 def test_moe_is_prepare_forward_slot():
     slot = get_slot("moe.fused_experts")
     assert slot.kind == "block"
     assert slot.prepare == "prepare"          # names the 2nd miner callable
     assert slot.invoke_prepare is not None
-    # forward-only slots have no prepare:
     assert get_slot("activation.silu_and_mul").prepare is None
     assert get_slot("activation.silu_and_mul").invoke_prepare is None
 
 
 def test_silu_op_still_verifies_under_generalized_spec():
-    # Backward-compat: the single-op path is unchanged by the multi-output/block work.
     def silu(x, out):
         d = x.shape[-1] // 2
         out.copy_(torch.nn.functional.silu(x[..., :d].float()).to(x.dtype) * x[..., d:])
@@ -120,11 +128,27 @@ def test_silu_op_still_verifies_under_generalized_spec():
     assert result.passed
 
 
+def test_fused_add_rmsnorm_block_verifies_both_outputs():
+    result = verify_entry(
+        slot_for_model("norm.fused_add_rmsnorm", "GLM-5.3-NVFP4"),
+        load_entry(FUSED_NORM_BUNDLE, "fused_add_rmsnorm"),
+        dtype=torch.float32,
+        device="cpu",
+        shapes=[{"num_tokens": 3, "hidden": 16}],
+        eligibility=eligibility_from_metadata(
+            {"min_num_tokens": 3, "max_num_tokens": 3}, ("float32",)
+        ),
+        architecture="cpu",
+    )
+    assert result.passed and result.shape_results[0].applicable
+
+
 def test_matched_ratio_is_active_only_for_the_block_slot():
-    # The op slots keep all-close; the attention block uses matched_ratio. This guards
+    # The op slots keep all-close; the block slots use matched_ratio. This guards
     # against accidentally loosening the op gates when the abstraction was generalized.
     assert get_slot("activation.silu_and_mul").correctness.mode == "allclose"
     assert get_slot("norm.rmsnorm").correctness.mode == "allclose"
-    assert get_slot("attention.sdpa").correctness.mode == "matched_ratio"
-    assert get_slot("attention.decode").correctness.mode == "matched_ratio"
     assert get_slot("moe.fused_experts").correctness.mode == "matched_ratio"
+    assert get_slot("moe.fused_routed_experts").correctness.mode == "matched_ratio"
+    assert get_slot("linear.dense").correctness.mode == "matched_ratio"
+    assert get_slot("norm.fused_add_rmsnorm").correctness.mode == "matched_ratio"

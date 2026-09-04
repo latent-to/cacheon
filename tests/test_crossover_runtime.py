@@ -14,6 +14,7 @@ from cacheon.eval.crossover_runtime import (
     CrossoverRuntimeError,
     ResidentArmPlan,
     ResidentCrossoverPlan,
+    ResidentReadRate,
     ResidentSpeedPolicy,
     SpeedStageDecision,
     TimedWindow,
@@ -833,6 +834,36 @@ def test_policy_v3_serialization_is_version_dependent() -> None:
         _policy_v3(max_conditioning_slowdown=2.5)
     with pytest.raises(CrossoverRuntimeError, match="require resident speed policy v3"):
         replace(legacy, max_conditioning_slowdown=1.25)
+
+
+def test_policy_v9_scores_the_complete_mixed_cell_makespan() -> None:
+    policy = _policy_v3(version=9, max_window_scatter=0.25)
+    row = ResidentReadRate(
+        "B",
+        "a" * 64,
+        "b" * 64,
+        "c" * 32,
+        0,
+        3,
+        1,
+        3,
+        10,
+        90,
+        100,
+        1.0,
+        12.0,
+        13.0,
+        100 / 13,
+        (
+            TimedWindow(1, 10, 1.0),
+            TimedWindow(2, 10, 10.0),
+            TimedWindow(3, 70, 1.0),
+        ),
+    )
+
+    assert policy.scored_tokens_per_second(row) == 90 / 12
+    assert policy.scored_tokens_per_second(row) != 10.0  # per-window median
+    assert ResidentSpeedPolicy.from_dict(policy.to_dict()) == policy
 
 
 # --- version 8: the two-process substrate ---------------------------------

@@ -43,7 +43,7 @@ class SeamAdapter:
     requires: str | None = None
     # Optional validator protocol binding. Both fields are validator-owned table
     # metadata and must appear together. Multiple adapters may intentionally share
-    # one binding/gate when they implement one atomic semantic product.
+    # one binding/gate.
     binding_id: str | None = None
     environment_gate: str | None = None
 
@@ -53,9 +53,8 @@ class SeamBinding:
     """One validator-owned activation gate for a fixed adapter set.
 
     Binding identifiers cross the isolated-session protocol; environment variable
-    names never do.  Several adapters may share one binding when they implement one
-    semantic product (the shallow consume seam and both deep fused-epilogue producer
-    adapters all require the same ``arfusion`` activation gate).
+    names never do. Several adapters may share one binding when they implement one
+    semantic product.
     """
 
     binding_id: str
@@ -69,38 +68,24 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     SeamAdapter("activation", "sglang.srt.layers.activation",
                 "sglang_silu", "SiluAndMul.forward_cuda", ("activation.silu_and_mul",)),
     SeamAdapter("layernorm", "sglang.srt.layers.layernorm",
-                "sglang_norm", "RMSNorm.forward_cuda", ("norm.rmsnorm",)),
-    SeamAdapter(
-        "attention",
-        "sglang.srt.layers.attention.minimax_sparse_ops.decode.topk_sparse",
-        "sglang_minimax_sparse_decode",
-        "flash_decode_with_gqa_share_sparse",
-        ("attention.decode",),
-        requires="sglang.srt.layers.attention.minimax_sparse_ops",
-        binding_id="attention",
-        environment_gate="CACHEON_ATTENTION_SEAM",
-    ),
-    SeamAdapter(
-        "attention_audit_mode",
-        "sglang.srt.layers.attention.minimax_sparse_backend",
-        "sglang_minimax_sparse_decode",
-        "MiniMaxSparseAttnBackend.__init__",
-        ("attention.decode",),
-        requires="sglang.srt.layers.attention.minimax_sparse_ops",
-        binding_id="attention",
-        environment_gate="CACHEON_ATTENTION_SEAM",
-    ),
-    SeamAdapter(
-        "msa_decode_score",
-        "sglang.srt.layers.attention.minimax_sparse_ops.decode.flash_with_topk_idx",
-        "sglang_minimax_sparse_decode", "attr:_decode_score_kernel",
-        ("attention.msa_block_score",),
-        requires="sglang.srt.layers.attention.minimax_sparse_ops",
-        binding_id="msa_decode_score",
-        environment_gate="CACHEON_MSA_DECODE_SCORE_SEAM",
-    ),
+                "sglang_norm", "RMSNorm.forward_cuda",
+                ("norm.fused_add_rmsnorm", "norm.rmsnorm")),
+    SeamAdapter("dense", "sglang.srt.layers.quantization.unquant",
+                "sglang_dense", "UnquantizedLinearMethod.apply", ("linear.dense",),
+                binding_id="dense", environment_gate="CACHEON_DENSE_SEAM"),
     SeamAdapter("moe", "sglang.srt.layers.moe.fused_moe_triton.layer",
-                "sglang_moe", "FusedMoE.forward_impl", ("moe.fused_experts", "moe.fused_experts_reduce"),
+                "sglang_moe", "FusedMoE.forward_impl",
+                ("moe.fused_experts", "moe.fused_experts_reduce",
+                 "moe.fused_routed_experts"),
+                binding_id="moe", environment_gate="CACHEON_MOE_SEAM"),
+    SeamAdapter("moe_deferred", "sglang.srt.layers.moe.fused_moe_triton.layer",
+                "sglang_moe", "FusedMoE.forward_deferred_finalize",
+                ("moe.fused_routed_experts",),
+                binding_id="moe", environment_gate="CACHEON_MOE_SEAM"),
+    SeamAdapter("moe_deferred_finalize",
+                "sglang.srt.layers.moe.moe_runner.flashinfer_trtllm",
+                "sglang_moe", "finalize_flashinfer_trtllm_deferred_output",
+                ("moe.fused_routed_experts",),
                 binding_id="moe", environment_gate="CACHEON_MOE_SEAM"),
     SeamAdapter("moe_reduce", "sglang.srt.models.minimax_m3",
                 "sglang_moe", "MiniMaxM3MoE.forward_normal", ("moe.fused_experts_reduce",),
@@ -109,6 +94,22 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     SeamAdapter("collective", "sglang.srt.distributed.parallel_state",
                 "sglang_allreduce", "GroupCoordinator.all_reduce", ("collective.all_reduce",),
                 binding_id="collective", environment_gate="CACHEON_COLLECTIVE_SEAM"),
+    SeamAdapter("collective_all_reduce_inplace",
+                "sglang.srt.distributed.parallel_state", "sglang_allreduce",
+                "GroupCoordinator._all_reduce_in_place", ("collective.all_reduce",),
+                binding_id="collective", environment_gate="CACHEON_COLLECTIVE_SEAM"),
+    SeamAdapter("collective_all_reduce_outplace",
+                "sglang.srt.distributed.parallel_state", "sglang_allreduce",
+                "GroupCoordinator._all_reduce_out_place", ("collective.all_reduce",),
+                binding_id="collective", environment_gate="CACHEON_COLLECTIVE_SEAM"),
+    SeamAdapter("collective_all_gather", "sglang.srt.distributed.parallel_state",
+                "sglang_allreduce", "GroupCoordinator._all_gather_into_tensor",
+                ("collective.all_gather_into_tensor",), binding_id="collective",
+                environment_gate="CACHEON_COLLECTIVE_SEAM"),
+    SeamAdapter("collective_reduce_scatter", "sglang.srt.distributed.parallel_state",
+                "sglang_allreduce", "GroupCoordinator._reduce_scatter_tensor",
+                ("collective.reduce_scatter_tensor",), binding_id="collective",
+                environment_gate="CACHEON_COLLECTIVE_SEAM"),
     # Module-LEVEL function chokepoint (no dot): sglang's fused AR+residual+RMSNorm
     # epilogue waist. Callers resolve the symbol per call via a function-local import,
     # so rebinding the module attribute reroutes every call site. Only hot when the
@@ -117,34 +118,6 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
                 "sglang_arfusion", "flashinfer_allreduce_residual_rmsnorm",
                 ("collective.ar_residual_rmsnorm",), binding_id="arfusion",
                 environment_gate="CACHEON_ARFUSION_SEAM"),
-    # The deep fused-epilogue pair (see cacheon/moe_export.py). defer_gate records the
-    # per-layer "this AR is deferred" decision + forward/layer scoping on the
-    # model-agnostic LayerCommunicator idiom; moe_export arms skip-finalize around the
-    # cutlass fused-moe call and pends the exported pre-finalize pointers. The consume
-    # side is the EXISTING arfusion dispatcher (it checks pends before the shallow
-    # path). Both install only for bundles that registered the deep slot.
-    SeamAdapter("defer_gate", "sglang.srt.layers.communicator",
-                "sglang_defer_gate", "LayerCommunicator.should_fuse_mlp_allreduce_with_next_layer",
-                ("collective.moe_finalize_ar_rmsnorm",), binding_id="arfusion",
-                environment_gate="CACHEON_ARFUSION_SEAM"),
-    SeamAdapter("moe_export", "sglang.srt.layers.quantization.modelopt_quant",
-                "sglang_moe_export", "flashinfer_cutlass_fused_moe",
-                ("collective.moe_finalize_ar_rmsnorm",), requires="flashinfer",
-                binding_id="arfusion", environment_gate="CACHEON_ARFUSION_SEAM"),
-    # Module-LEVEL function chokepoint on the MSA (MiniMax-M3) arena's PREFILL indexer:
-    # every sparse layer's chunked-prefill block-scoring funnels through this wrapper
-    # (the score kernel alone is ~30% of long-context serving prefill). The miner fills
-    # the score SHEET; the wrapper's stock top-k tail keeps the SELECTION validator-
-    # owned. `requires` points at the M3-only package so the compat canary SKIPS this
-    # row on pins without the MSA backend (why the decode-side sibling stayed a stub —
-    # that reason no longer applies to table rows with `requires`).
-    SeamAdapter("msa_prefill",
-                "sglang.srt.layers.attention.minimax_sparse_ops.prefill.flash_with_topk_idx",
-                "sglang_msa_prefill", "flash_prefill_with_topk_index",
-                ("attention.msa_prefill_block_score",),
-                requires="sglang.srt.layers.attention.minimax_sparse_ops",
-                binding_id="msa_prefill",
-                environment_gate="CACHEON_MSA_PREFILL_SEAM"),
     # NOT a slot seam: the candidate-bundle load gate. sglang spawns scheduler ranks
     # AND a detokenizer (output-path!) through the same bootstrap, and the detokenizer
     # imports watched modules too — so seam.activate() never loads miner code; this
@@ -167,16 +140,6 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     # it in. See cacheon/integrations/sglang_resident_swap.py.
     SeamAdapter("resident_swap", "sglang.srt.model_executor.model_runner",
                 "sglang_resident_swap", "ModelRunner.init_decode_cuda_graph", ()),
-    # NOT a slot seam: the dep_patches runtime consume side. When the active bundle
-    # declared dependency patches (materialized as a csrc OVERLAY by the reviewed
-    # patcher — cacheon/patchers/apply_dep_patch.py), this adapter repoints
-    # flashinfer's late-bound csrc constant at the overlay, forces JIT (bypassing the
-    # prebuilt AOT .so) for the policy's module names, and writes an `overlay`
-    # receipt. Empty slots tuple; policy comes from cacheon/dep_policy.py, never from
-    # bundle content. Watching flashinfer.jit.core (imports .env transitively) means
-    # the rebind lands before any JIT gen can run.
-    SeamAdapter("flashinfer_overlay", "flashinfer.jit.core",
-                "flashinfer_overlay", "attr:JitSpec", (), requires="flashinfer"),
 )
 
 

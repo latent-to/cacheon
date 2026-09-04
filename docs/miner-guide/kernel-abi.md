@@ -151,83 +151,35 @@ This is pure RMSNorm. The slot does not grant ownership of a residual add.
     `RMSNorm.forward_cuda` callsite. This section defines the ABI, but miners
     must not pay for or submit `norm.rmsnorm` to the current mainnet arena.
 
-## Attention block slots
+## Block slots
 
-### `attention.sdpa`
+### `linear.dense`
 
 ```python
-def attention(q, k, v, out, sm_scale, causal):
-    # q: (T, Hq, D); k/v: (S, Hkv, D); Hq is divisible by Hkv
+def prepare(weight):
+    # weight: (N, K)
+    return build_layout(weight)
+
+def dense(x, prepared, out):
+    # x: (M, K); out: (M, N)
     ...
 ```
 
-The result is scaled dot-product attention with GQA/MQA expansion and the
-validator-provided causal flag.
+This boundary owns one unquantized local GEMM. Bias and any surrounding
+row/column-parallel communication remain engine-owned.
 
-### `attention.decode`
+### `norm.fused_add_rmsnorm`
 
 ```python
-def attention_decode(
-    q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices,
-    topk_idx, out, sm_scale, block_size,
-):
-    # q: (B,Hq,D); paged K/V: (max_slots,Hkv,D)
-    # topk_idx: (Hkv,B,K) block IDs selected by validator-owned stock code
+def fused_add_rmsnorm(x, residual, weight, eps, out_norm, out_residual):
+    # out_residual = (x + residual) rounded to the input dtype
+    # out_norm = rmsnorm(out_residual, weight, eps)
     ...
 ```
 
-This is the graph-native MiniMax-M3 sparse-attend boundary. The validator owns
-cache writes, score production, top-k selection, request/page metadata, and output
-allocation. The candidate attends exactly the supplied nonnegative block IDs;
-`-1` entries and tokens at or beyond `seq_lens` are excluded. The entry contains no
-host synchronization or request-dependent allocation and must declare graph safety
-to enter a scored CUDA graph.
-
-The live call descriptor includes `batch_size`/`num_tokens`, page-table capacity as
-`kv_len`, `top_k`, block/page size, head counts, head dimension, layout, model, and
-phase, so capability predicates on those fields are enforced. `quant` describes the
-K/V tensors at this boundary (`dense` for the commissioned BF16 cache); the model's
-NVFP4 expert-weight format is not an attention-kernel requirement.
-
-### `attention.msa_block_score`
-
-```python
-def msa_block_score(
-    q, k_cache, req_to_token, slot_ids, seq_lens, out,
-    sm_scale, block_size, topk, init_blocks, local_blocks,
-):
-    # out: FP32 (local_index_heads, batch, context // block_size)
-    ...
-```
-
-`req_to_token[slot_ids]` maps each logical sequence position into `k_cache`.
-The candidate fills every live per-head block score, including init/local forced
-blocks and `-inf` tail cells. Stock code retains per-head top-k, head reduction,
-and sparse attend. Correctness uses top-16 selected-set overlap ≥ 0.875.
-
-### `attention.msa_prefill_block_score`
-
-```python
-def msa_prefill_block_score(
-    q, index_k_cache, req_to_token, slot_ids, cu_seqlens, seq_lens,
-    prefix_lens, max_seqlen_q, max_seqlen_k, block_size_q, block_size_k,
-    topk, init_blocks, local_blocks, scale, cu_seqblocks_q,
-    max_seqblock_q, all_seqblock_q, out_topk,
-):
-    # q: (total_q, num_q_heads, D); index_k_cache: paged (slots, 1, D)
-    # out_topk: contiguous int32 (num_q_heads, all_seqblock_q, topk)
-    ...
-```
-
-This V2 call owns score production and selection for the full ragged batch.
-`req_to_token[slot_ids[b]]` maps logical keys to the paged cache. Query block
-`qb` selects only blocks visible through
-`prefix_lens[b] + qb * block_size_q`; initial and local blocks follow the
-supplied policy. Every valid index is global within that request's logical key
-sequence, and unused output cells must be `-1`. The candidate is called once;
-there is no validator gather, score slab, request-by-head loop, or separate
-top-k launch. The validator independently reconstructs and audits the selected
-sets before the pinned sparse-attention consumer runs.
+Both outputs are validator-allocated and must be filled. The registered
+reference preserves the input-dtype residual-add rounding before the fp32
+variance reduction.
 
 ## Prepare/forward MoE slots
 
@@ -244,29 +196,44 @@ def fused_experts(x, topk_ids, topk_weights, prepared, out):
     ...
 ```
 
-For the MiniMax-M3 NVFP4 profile, `prepare` instead receives the exact tagged
-form below from both verification and live dispatch:
+NVFP4 verification and live dispatch use the same tagged prepare form:
 
 ```python
 prepare("nvfp4_layer", weights)
 ```
 
-`weights` is a validator-owned view, not the SGLang layer. It exposes packed
-`uint8` E2M1 `w13_weight`/`w2_weight`, swizzled E4M3 weight scales,
-`g1_alphas`/`g2_alphas`, inverse activation scales, intermediate size, group
-size 16, and the logical ModelOpt `gate_up` layout. `prepare` may repack that
-view into any candidate-owned backend layout. The
-validator derives each weight's outer scale as `g*_alpha * a*_inv` and
-dequantizes independently for its fp32 reference.
+`weights` is a validator-owned view—not the SGLang layer—with packed `uint8`
+E2M1 weights, swizzled E4M3 scales, `g1_alphas`/`g2_alphas`, inverse activation
+scales, intermediate size, group size 16, and ModelOpt `gate_up` layout.
+Candidates may repack it; the validator dequantizes an independent fp32 oracle.
 
-`topk_weights` contains validator-supplied raw positive FP32 routing multipliers.
-They are not promised to be probabilities: do not assume that a row sums to one,
-or that its only value is `1.0` when `K == 1`. SGLang configurations that do not
-renormalize routing, or that apply a routed scaling factor, make those distinctions
-part of the result the kernel must preserve.
+GLM-5.3 appends its static routing configuration:
 
-`moe.fused_experts` produces the local expert result. The enclosing trusted path
-retains ownership of any later collective.
+```python
+prepare("nvfp4_layer", weights, topk, routed_scaling)
+```
+
+`topk_weights` contains raw positive FP32 multipliers, not promised
+probabilities. Preserve non-unit row sums, including when `K == 1`.
+
+`moe.fused_experts` is local; the trusted path owns any later collective.
+
+`moe.fused_routed_experts` owns the routing head as well as expert execution and
+the weighted combine:
+
+```python
+def prepare(w13, w2, topk, routed_scaling):
+    return build_layout(w13, w2, topk, routed_scaling)
+
+def fused_routed_experts(
+    x, router_logits, correction_bias, prepared, out
+):
+    ...
+```
+
+Selection uses `topk(sigmoid(router_logits) + correction_bias)`. Combine weights
+come from the unbiased sigmoid scores, are renormalized, and are multiplied by
+the registered routed scaling factor.
 
 `moe.fused_experts_reduce` owns that trailing reduction and therefore receives a
 process group:
@@ -307,6 +274,26 @@ def all_reduce(x, out, group):
     out.copy_(tmp)
 ```
 
+### `collective.all_gather_into_tensor`
+
+```python
+def all_gather_into_tensor(x, out, group):
+    # x: (M, H); out: (world*M, H), in rank order
+    ...
+```
+
+### `collective.reduce_scatter_tensor`
+
+```python
+def reduce_scatter_tensor(x, out, group):
+    # x: (world*M, H); out: this rank's SUM-reduced (M, H) shard
+    ...
+```
+
+GLM-5.3 rewards these two callables together through the atomic
+`collective.dp_attention_exchange.v1` target. A bundle for that target must
+implement both members.
+
 ### `collective.ar_residual_rmsnorm`
 
 ```python
@@ -321,44 +308,15 @@ def ar_residual_rmsnorm(
 Both outputs must be filled. `x` differs by rank; `residual` and `weight` are
 replicated inputs.
 
-### `collective.moe_finalize_ar_rmsnorm`
-
-```python
-def moe_finalize_ar_rmsnorm(
-    gemm_out,
-    row_map,
-    scales,
-    residual,
-    weight,
-    eps,
-    out_norm,
-    out_residual,
-    group,
-):
-    ...
-```
-
-This deep boundary performs four operations as one semantic unit:
-
-1. gather pre-finalize GEMM rows using K-major `row_map`;
-2. scale and sum the expert contributions;
-3. all-reduce the local partials;
-4. add the residual and apply RMSNorm.
-
-`gemm_out` has shape `(T_exp*K, H)`, `row_map` has shape `(T_exp*K)`, and
-`scales` has shape `(T_exp, K)`. The live batch may be head-trimmed with
-`T <= T_exp`. The deep producer export required to reach this seam is governed
-by target and [dependency-patch](dep-patches.md) policy.
-
 ## Correctness is target-owned
 
 The validator computes trusted references and applies the target contract. The
 current catalog uses:
 
 - elementwise tolerance for numerically equivalent op kernels;
-- `matched_ratio` for attention, MoE, and collectives whose legitimate reduction
-  order can change rounding;
-- per-row `topk_overlap` for MSA score-derived or direct block selections.
+- `matched_ratio` for dense, routed MoE, fused norm, and collectives whose
+  legitimate reduction order can change rounding; and
+- cosine similarity for the low-bit MiniMax-M3 expert boundaries.
 
 Tolerance, ratio, overlap, reference, and model binding are not miner-selected
 manifest values. Passing local `verify` demonstrates compatibility with its
@@ -371,9 +329,7 @@ The comparators reflect the semantic output of each boundary:
   operation;
 - **matched ratio or cosine** permits the bounded rounding/reduction effects expected of
   a low-bit or reordered implementation without allowing the miner to choose its own
-  tolerance; and
-- **top-k overlap** grades the block sets consumed downstream, because raw
-  score equality and index ordering are not the semantic requirement.
+  tolerance.
 
 Slot verification and end-to-end quality answer different questions. A per-call error can
 fit a slot tolerance yet compound across layers, so qualification still uses candidate-

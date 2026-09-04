@@ -88,7 +88,7 @@ fields this way:
 | `N/A` | this variant does not apply to the selected invariant context; no candidate code was invoked for it |
 | `NUMERICAL_PASS` | numerical checks passed but required CUDA-graph proof did not complete |
 | `max_abs`, `max_rel` | worst reported errors; the target's comparator, not either number alone, decides pass/fail |
-| `ratio`, `cos`, `overlap` | the active semantic metric for tolerant, low-bit, or MSA selection contracts |
+| `ratio`, `cos`, `overlap` | the active semantic metric for tolerant, low-bit, or selection contracts |
 | `graph_replays` | successful checked replays; absent on this CPU tutorial |
 
 Individual shape rows can be N/A when a declared domain excludes them. If every bundle

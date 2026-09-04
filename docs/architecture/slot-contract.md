@@ -5,7 +5,9 @@ The slot contract is Cacheon's narrow waist: a stable, validator-owned tensor bo
 Slots may evolve, SGLang adapters may churn, and correctness policies may be
 recalibrated. Every core slot must still satisfy the four invariants on this
 page. This page is the normative checklist; the executable catalog is
-[`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py).
+[`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py),
+while arena-specific shapes and measured correctness floors live in
+[`cacheon/model_profiles.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_profiles.py).
 
 ## The four invariants
 
@@ -18,15 +20,6 @@ The same typed output contract is used by offline verification and the live engi
 ### 2. The slot is strictly upstream of the sampler
 
 A slot may replace a bounded data-plane region, but it may not control final logits, logprobs, tokens, or sampling. Its output continues through validator-owned or pinned-runtime computation before the final response exists.
-
-For selection-style slots, the candidate may fill either a score sheet or a
-validator-allocated block-index tensor. The validator independently grades the
-selected sets and retains the subsequent attention and model path; candidate
-indices are never accepted by assertion.
-
-MSA decode keeps its score-sheet boundary. MSA prefill V2 receives the live
-selection width and full paged batch, then writes `topk_idx` once per wrapper
-invocation. Both are graded by validator-owned set overlap before downstream use.
 
 ### 3. Correctness uses trusted high-precision ground truth
 
@@ -73,21 +66,20 @@ The current API contains **11 slots**.
 | Slot | Kind | Entry point | Semantic boundary |
 |---|---|---|---|
 | `activation.silu_and_mul` | `op` | `silu_and_mul` | Gated MLP activation product |
-| `norm.rmsnorm` | `op` | `rmsnorm` | RMS normalization; residual addition remains outside |
-| `attention.sdpa` | `block` | `attention` | Scaled dot-product attention core |
-| `attention.decode` | `block` | `attention_decode` | Paged decode-attention boundary |
-| `attention.msa_block_score` | `block` | `msa_block_score` | Paged per-index-head decode scores; validator owns top-k and attend |
-| `attention.msa_prefill_block_score` | `block` | `msa_prefill_block_score` | Batched paged MSA prefill score-to-selection; validator audits indices and owns attend |
-| `moe.fused_experts` | `block` | `fused_experts` | Prepared MoE expert execution |
-| `moe.fused_experts_reduce` | `collective` | `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
+| `collective.all_gather_into_tensor` | `collective` | `all_gather_into_tensor` | Equal-size all-gather into a validator-owned output |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |
 | `collective.ar_residual_rmsnorm` | `collective` | `ar_residual_rmsnorm` | Fused all-reduce, residual add, and RMSNorm |
-| `collective.moe_finalize_ar_rmsnorm` | `collective` | `moe_finalize_ar_rmsnorm` | Deep MoE finalize, all-reduce, residual, and RMSNorm boundary |
+| `collective.reduce_scatter_tensor` | `collective` | `reduce_scatter_tensor` | Equal-size SUM reduce-scatter into a validator-owned output |
+| `linear.dense` | `block` | `prepare` + `dense` | Unquantized local dense GEMM; surrounding communication stays outside |
+| `moe.fused_experts` | `block` | `prepare` + `fused_experts` | Prepared MoE expert execution |
+| `moe.fused_experts_reduce` | `collective` | `prepare` + `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
+| `moe.fused_routed_experts` | `block` | `prepare` + `fused_routed_experts` | Routing, expert execution, and weighted combine |
+| `norm.fused_add_rmsnorm` | `block` | `fused_add_rmsnorm` | Residual add plus RMSNorm with two validator-owned outputs |
+| `norm.rmsnorm` | `op` | `rmsnorm` | RMS normalization; residual addition remains outside |
 
-This table defines registered ABI contracts, not deployment availability. In
-the current MiniMax-M3 mainnet arena, `norm.rmsnorm` is unavailable because
-MiniMax-M3 uses `GemmaRMSNorm`. No other registered target is withdrawn. See
-[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+This table defines cross-arena ABI contracts, not deployment availability. An
+arena seals its own registered target set and the complete closed complement.
+See [current arena availability](../miner-guide/slots.md#current-glm-53-availability).
 
 Run `cacheon slots` against the installed code for the human-readable live list.
 The command prints multi-line summaries rather than a JSON/structured schema;
@@ -207,16 +199,16 @@ profiling autotuner tactics, both the deep MoE producer seam and its fused-epilo
 consumer use the stock path. Candidate code cannot affect tactic selection, and those
 calls do not establish candidate firing evidence.
 
-## Atomic targets and composition
+## Atomic targets and exclusion
 
 A slot is a semantic ABI; a reward target is an economic identity. Most current targets are one-to-one singleton projections of slots, but the catalog can register an atomic target spanning multiple slots.
 
-`collective.moe_epilogue.v1` owns the pair:
+`collective.dp_attention_exchange.v1` owns the pair:
 
-- `collective.ar_residual_rmsnorm`;
-- `collective.moe_finalize_ar_rmsnorm`.
+- `collective.all_gather_into_tensor`;
+- `collective.reduce_scatter_tensor`.
 
-The catalog explicitly records displacement of the corresponding singleton targets. It also defines first-applicable precedence for the compatible `moe.fused_experts_reduce` and `moe.fused_experts` targets. Packaging order never decides overlap or ownership.
+The catalog explicitly records displacement of the corresponding singleton targets. Wider or conflicting targets cannot coexist at one live boundary: candidate planning removes the incumbent owner before materialization, in either transition direction. Packaging order and runtime first-match behavior never decide overlap or ownership.
 
 See [Product model](product-model.md) and [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
@@ -275,7 +267,7 @@ the following:
   verifier-only until one exists?
 - Do strict-mode receipts and end-to-end qualification prove that the candidate path fired
   without fallback?
-- Has the target catalog encoded overlap, displacement, requirements, and composition
+- Has the target catalog encoded overlap, displacement, requirements, and exclusion
   rather than relying on bundle order?
 
 Passing a unit test without these properties is not sufficient to extend the narrow waist.

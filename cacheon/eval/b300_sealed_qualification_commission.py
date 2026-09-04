@@ -405,6 +405,7 @@ def declared_qualification_deadline_digest() -> str:
 def sealed_qualification_profile_rows(
     catalog: TargetCatalog,
     *,
+    registered_target_ids: tuple[str, ...],
     builder_source_digest: str,
 ) -> tuple[tuple[str, str, str], ...]:
     """(target, spec digest, resolver digest) rows for one reviewed identity."""
@@ -415,7 +416,9 @@ def sealed_qualification_profile_rows(
         )
     reviewed = _digest(builder_source_digest, "reviewed builder source digest")
     rows = []
-    for target in registered_b300_member_contract_projection(catalog):
+    for target in registered_b300_member_contract_projection(
+        catalog, registered_target_ids
+    ):
         resolver_digest = registered_b300_profile_resolver_digest(
             target,
             builder_source_digest=reviewed,
@@ -429,10 +432,13 @@ def sealed_qualification_profile_rows(
 def predicted_qualification_registry_digest(
     catalog: TargetCatalog,
     *,
+    registered_target_ids: tuple[str, ...],
     builder_source_digest: str,
 ) -> str:
     rows = sealed_qualification_profile_rows(
-        catalog, builder_source_digest=builder_source_digest
+        catalog,
+        registered_target_ids=registered_target_ids,
+        builder_source_digest=builder_source_digest,
     )
     return canonical_digest(
         QUALIFICATION_REGISTRY_SCHEMA,
@@ -453,6 +459,7 @@ def predicted_qualification_registry_digest(
 def predicted_qualification_builder_digest(
     catalog: TargetCatalog,
     *,
+    registered_target_ids: tuple[str, ...],
     builder_source_digest: str,
     selection_store_digest: str,
     resident_count_quality_builder_digest: str,
@@ -465,7 +472,9 @@ def predicted_qualification_builder_digest(
             ),
             "evidence_policy_digest": QUALIFICATION_EVIDENCE_POLICY_DIGEST,
             "profile_registry_digest": predicted_qualification_registry_digest(
-                catalog, builder_source_digest=builder_source_digest
+                catalog,
+                registered_target_ids=registered_target_ids,
+                builder_source_digest=builder_source_digest,
             ),
             "resident_count_quality_builder_digest": _digest(
                 resident_count_quality_builder_digest,
@@ -482,6 +491,7 @@ def predicted_qualification_builder_digest(
 def predicted_qualification_policy_digest(
     catalog: TargetCatalog,
     *,
+    registered_target_ids: tuple[str, ...],
     builder_source_digest: str,
     selection_store_digest: str,
     hidden_judge_binding_digest: str,
@@ -493,6 +503,7 @@ def predicted_qualification_policy_digest(
         {
             "builder_digest": predicted_qualification_builder_digest(
                 catalog,
+                registered_target_ids=registered_target_ids,
                 builder_source_digest=builder_source_digest,
                 selection_store_digest=selection_store_digest,
                 resident_count_quality_builder_digest=(
@@ -507,7 +518,9 @@ def predicted_qualification_policy_digest(
                 hidden_judge_binding_digest, "hidden judge binding digest"
             ),
             "profile_registry_digest": predicted_qualification_registry_digest(
-                catalog, builder_source_digest=builder_source_digest
+                catalog,
+                registered_target_ids=registered_target_ids,
+                builder_source_digest=builder_source_digest,
             ),
             "speed_evidence_policy": QUALIFICATION_SPEED_EVIDENCE_POLICY,
         },

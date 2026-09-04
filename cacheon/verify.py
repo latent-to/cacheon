@@ -1,27 +1,8 @@
-"""Op-correctness — the cheap gate before any end-to-end eval.
+"""Per-slot correctness and CUDA-graph gate before full-model qualification.
 
-Given a slot and a miner ``entry`` callable, generate deterministic inputs over the
-slot's standard shapes, run the miner kernel and the trusted *high-precision*
-reference, and compare under the slot's ``Correctness`` policy:
-
-* ``allclose`` — every element within ``atol + rtol*|e|`` (numerically-equivalent
-  ops, e.g. a faster silu).
-* ``matched_ratio`` — at least ``min_ratio`` of elements within that bound (kernels
-  that legitimately differ from the reference: attention's reordered softmax, fp8,
-  MLA weight absorption). The reference is always high-precision ground truth, never
-  the stock kernel — so a faster *and slightly different* kernel can still pass.
-
-Multi-output slots (blocks) are supported: the validator allocates one ``out`` per
-declared output shape and the miner fills them.
-
-This is the per-op analogue of a unit test: necessary but NOT sufficient — small
-per-op errors that pass here can compound into large end-to-end KL, which is why the
-pipeline still runs the end-to-end gate. To stop a kernel from special-casing the fixed
-verification inputs, the input VALUES vary with ``seed`` and, when ``jitter_seed`` is
-set (the CLI path does this per run), the COUNT dimensions (num_tokens / batch / ctx)
-are perturbed too — so a kernel can't hard-code the exact verify shapes. Feature dims
-(hidden / head_dim) are left intact since kernels legitimately specialize on them; the
-end-to-end gate on fresh prompts is the backstop against shape-branching there.
+The validator owns inputs, outputs, high-precision references, shape jitter, and
+comparators. Passing is necessary but never replaces the fresh-prompt end-to-end
+gate, where locally acceptable numerical differences can compound.
 """
 
 from __future__ import annotations
@@ -32,14 +13,9 @@ from typing import Callable, Optional, Protocol
 
 import torch
 
-from cacheon.capabilities import (
-    CONTEXT_FIELDS,
-    CallDescriptor,
-    msa_decode_score_call_descriptor,
-    msa_prefill_call_descriptor,
-)
+from cacheon.capabilities import CONTEXT_FIELDS, CallDescriptor
+from cacheon.model_profiles import verification_call_descriptor
 from cacheon.registry import Eligibility
-from cacheon.moe_nvfp4_contract import call_descriptor as moe_call_descriptor
 from cacheon.slots import SlotSpec
 from cacheon.tensor_spec import (
     allocate_output_spec,
@@ -547,379 +523,6 @@ def _jitter_shapes(shapes: list[dict], seed: int) -> list[dict]:
     return out
 
 
-_MSA_PROBE_MAX_HEAD_DIM = 512
-_MSA_PROBE_MAX_BLOCK_SIZE = 4096
-_MSA_PROBE_MAX_Q_LEN = 1024
-_MSA_PROBE_MAX_KV_LEN = 131072
-_MSA_PROBE_MAX_MATMUL_WORK = 300_000_000
-_MSA_PROBE_MAX_TOTAL_WORK = 600_000_000
-_MSA_MAX_CANDIDATE_COMBINATIONS = 64
-_MSA_MAX_SYNTHESIZED_SHAPES = 32
-_MSA_PREFILL_SHAPE_FIELDS = frozenset(
-    {"q_len", "prefix_blocks", "head_dim", "block_size"}
-)
-_MSA_PREFILL_INPUT_FIELDS = frozenset(
-    {
-        "q", "index_k_cache", "req_to_token", "slot_ids", "cu_seqlens",
-        "seq_lens", "prefix_lens", "max_seqlen_q", "max_seqlen_k",
-        "block_size_q", "block_size_k", "topk", "init_blocks",
-        "local_blocks", "scale", "cu_seqblocks_q", "max_seqblock_q",
-        "all_seqblock_q",
-    }
-)
-_MSA_SYNTHESIZED_CAPABILITY_FIELDS = frozenset(
-    {"head_dim", "last_dim", "block_size", "q_len", "num_tokens", "kv_len"}
-)
-
-
-def _has_msa_prefill_probe_schema(
-    slot: SlotSpec, eligibility: Eligibility, catalog_shapes: list[dict]
-) -> bool:
-    """Recognize the semantic probe schema without consulting slot identity."""
-
-    constrained = eligibility.capabilities.constrained_fields
-    has_legacy_shape_bound = any(
-        value is not None
-        for value in (
-            eligibility.max_last_dim,
-            eligibility.min_num_tokens,
-            eligibility.max_num_tokens,
-        )
-    )
-    return (
-        slot.correctness.mode == "topk_overlap"
-        and (
-            bool(constrained & _MSA_SYNTHESIZED_CAPABILITY_FIELDS)
-            or has_legacy_shape_bound
-        )
-        and bool(catalog_shapes)
-        and all(_MSA_PREFILL_SHAPE_FIELDS <= set(shape) for shape in catalog_shapes)
-    )
-
-
-def _has_msa_prefill_call_contract(slot: SlotSpec, inputs: dict) -> bool:
-    """Recognize the canonical batched paged selection call."""
-
-    return (
-        slot.correctness.mode == "topk_overlap"
-        and _MSA_PREFILL_INPUT_FIELDS <= set(inputs)
-        and torch.is_tensor(inputs["q"])
-        and inputs["q"].dim() == 3
-        and torch.is_tensor(inputs["index_k_cache"])
-        and inputs["index_k_cache"].dim() == 3
-    )
-
-
-def _msa_shape_descriptor(
-    slot: SlotSpec,
-    shape: dict,
-    *,
-    dtype: torch.dtype,
-    architecture: Optional[str],
-    tp_size: Optional[int],
-    world_size: Optional[int],
-) -> CallDescriptor | None:
-    """Describe an MSA probe without allocating its potentially large tensors."""
-
-    q_len = int(shape["q_len"])
-    head_dim = int(shape["head_dim"])
-    block_size = int(shape["block_size"])
-    if min(q_len, head_dim, block_size) < 1:
-        return None
-    batch_size = int(shape.get("batch_size", 2))
-    num_q_heads = int(shape.get("num_q_heads", 3))
-    ragged = bool(shape.get("ragged", True))
-    prefix_base = shape.get("prefix_len_override")
-    if prefix_base is None:
-        prefix_base = int(shape.get("prefix_blocks", 12)) * block_size + 1
-    prefix_base = int(prefix_base)
-    kv_len = prefix_base + q_len
-    num_tokens = sum(
-        max(1, q_len - batch) if ragged else q_len
-        for batch in range(batch_size)
-    )
-    if prefix_base < 0 or min(batch_size, num_q_heads, num_tokens) < 1:
-        return None
-    return msa_prefill_call_descriptor(
-        dtype=_name(dtype),
-        architecture=architecture,
-        head_dim=head_dim,
-        block_size=block_size,
-        q_len=q_len,
-        kv_len=kv_len,
-        top_k=int(shape.get("topk", slot.correctness.top_k)),
-        q_block_size=int(shape.get("block_size_q") or block_size),
-        init_blocks=int(shape.get("init_blocks", 0)),
-        local_blocks=int(shape.get("local_blocks", 1)),
-        batch_size=batch_size,
-        num_q_heads=num_q_heads,
-        num_tokens=num_tokens,
-        num_kv_heads=1,
-        tp_size=tp_size,
-        world_size=world_size,
-    )
-
-
-def _msa_numeric_domain_values(
-    eligibility: Eligibility,
-    fields: set[str],
-    defaults: set[int],
-    *,
-    limit: int,
-    legacy_minimum: int | None = None,
-    legacy_maximum: int | None = None,
-) -> tuple[list[int], list[int], bool, bool]:
-    """Return safe validator candidates, with domain-derived values first."""
-
-    derived: set[int] = set()
-    constrained = False
-    outside_limit = False
-    for predicate in eligibility.capabilities.predicates:
-        if predicate.field not in fields:
-            continue
-        constrained = True
-        if predicate.allowed:
-            values = {
-                int(value)
-                for value in predicate.allowed
-                if isinstance(value, int) and not isinstance(value, bool)
-            }
-            outside_limit = outside_limit or any(
-                value < 1 or value > limit for value in values
-            )
-            derived.update(values)
-            continue
-        lo = 1 if predicate.minimum is None else predicate.minimum
-        declared_hi = predicate.maximum
-        outside_limit = outside_limit or lo < 1 or lo > limit
-        outside_limit = outside_limit or declared_hi is None or declared_hi > limit
-        hi = limit if declared_hi is None else min(declared_hi, limit)
-        if lo <= hi:
-            derived.update((lo, hi, (lo + hi) // 2))
-    if legacy_minimum is not None:
-        constrained = True
-        outside_limit = outside_limit or not 1 <= legacy_minimum <= limit
-        derived.add(legacy_minimum)
-    if legacy_maximum is not None:
-        constrained = True
-        outside_limit = outside_limit or not 1 <= legacy_maximum <= limit
-        derived.add(legacy_maximum)
-    elif legacy_minimum is not None:
-        # A legacy lower bound with no upper bound denotes an unbounded live
-        # domain, just like a named {min: ...} predicate. The bounded verifier
-        # may sample it, but may not call that complete qualification evidence.
-        outside_limit = True
-    derived = {value for value in derived if 1 <= value <= limit}
-    ordinary = {value for value in defaults if 1 <= value <= limit} - derived
-    return sorted(derived), sorted(ordinary), constrained, outside_limit
-
-
-def _synthesize_msa_capability_shapes(
-    slot: SlotSpec,
-    eligibility: Eligibility,
-    catalog_shapes: list[dict],
-    *,
-    dtype: torch.dtype,
-    architecture: Optional[str],
-    tp_size: Optional[int],
-    world_size: Optional[int],
-) -> tuple[list[dict], bool, str]:
-    """Create bounded semantic probes when a declared MSA domain misses the catalog.
-
-    This is not arena-grade range coverage. It makes new exact/ranged shape domains
-    ingestible without an Cacheon edit while retaining a strict allocation/work ceiling;
-    the later ArenaProfile layer owns workload distributions and larger probes.
-    """
-
-    catalog_matches = [
-        shape
-        for shape in catalog_shapes
-        if (descriptor := _msa_shape_descriptor(
-            slot,
-            shape,
-            dtype=dtype,
-            architecture=architecture,
-            tp_size=tp_size,
-            world_size=world_size,
-        )) is not None and eligibility.match(descriptor).accepted
-    ]
-
-    head_defaults = {int(shape["head_dim"]) for shape in catalog_shapes}
-    block_defaults = {int(shape["block_size"]) for shape in catalog_shapes}
-    q_defaults = {int(shape["q_len"]) for shape in catalog_shapes}
-    head_derived, head_ordinary, head_constrained, head_outside = (
-        _msa_numeric_domain_values(
-        eligibility,
-        {"head_dim", "last_dim"},
-        head_defaults,
-        limit=_MSA_PROBE_MAX_HEAD_DIM,
-        legacy_maximum=eligibility.max_last_dim,
-        )
-    )
-    block_derived, block_ordinary, block_constrained, block_outside = (
-        _msa_numeric_domain_values(
-        eligibility,
-        {"block_size"},
-        block_defaults,
-        limit=_MSA_PROBE_MAX_BLOCK_SIZE,
-        )
-    )
-    q_derived, q_ordinary, q_constrained, q_outside = _msa_numeric_domain_values(
-        eligibility,
-        {"q_len", "num_tokens"},
-        q_defaults,
-        limit=_MSA_PROBE_MAX_Q_LEN,
-        legacy_minimum=eligibility.min_num_tokens,
-        legacy_maximum=eligibility.max_num_tokens,
-    )
-    kv_derived, _kv_ordinary, kv_constrained, kv_outside = (
-        _msa_numeric_domain_values(
-        eligibility,
-        {"kv_len"},
-        set(),
-        limit=_MSA_PROBE_MAX_KV_LEN,
-        )
-    )
-    if not (head_constrained or block_constrained or q_constrained or kv_constrained):
-        return [], True, ""
-    if head_outside or block_outside or q_outside or kv_outside:
-        return (
-            [],
-            False,
-            "declared MSA capability domain exceeds the bounded probe limits",
-        )
-
-    def _dimension_values(
-        derived: list[int],
-        ordinary: list[int],
-        constrained: bool,
-        field: str,
-    ) -> list[int]:
-        if constrained and derived:
-            return derived
-        if catalog_matches:
-            values = sorted({int(shape[field]) for shape in catalog_matches})
-            return values[:1]
-        return ordinary[:1]
-
-    heads = _dimension_values(
-        head_derived, head_ordinary, head_constrained, "head_dim"
-    )
-    blocks = _dimension_values(
-        block_derived, block_ordinary, block_constrained, "block_size"
-    )
-    q_lengths = _dimension_values(
-        q_derived, q_ordinary, q_constrained, "q_len"
-    )
-    kv_lengths = kv_derived
-    if not heads or not blocks or not q_lengths or (kv_constrained and not kv_lengths):
-        return [], True, ""
-
-    kv_factor = len(kv_lengths) if kv_constrained else 1
-    candidate_combinations = len(heads) * len(blocks) * len(q_lengths) * kv_factor
-    if candidate_combinations > _MSA_MAX_CANDIDATE_COMBINATIONS:
-        return (
-            [],
-            False,
-            f"declared MSA capability cross-product has {candidate_combinations} "
-            f"probe combinations; limit is {_MSA_MAX_CANDIDATE_COMBINATIONS}",
-        )
-
-    synthesized: list[dict] = []
-    seen: set[tuple[int, int, int, int]] = set()
-    catalog_prefixes: dict[tuple[int, int, int], int] = {}
-    for shape in catalog_shapes:
-        q_len = int(shape["q_len"])
-        head_dim = int(shape["head_dim"])
-        block_size = int(shape["block_size"])
-        prefix_len = shape.get("prefix_len_override")
-        if prefix_len is None:
-            prefix_len = max(int(shape.get("prefix_blocks", 12)), 12) * block_size + 1
-        prefix_len = int(prefix_len)
-        seen.add((q_len, head_dim, block_size, prefix_len))
-        catalog_prefixes.setdefault((q_len, head_dim, block_size), prefix_len)
-    total_work = 0
-    for head_dim in heads:
-        for block_size in blocks:
-            for q_len in q_lengths:
-                # Prefix length is a semantic property of each block-size
-                # combination. Reusing the byte/token prefix from a catalog case
-                # with a smaller block can leave <= top_k visible blocks and make
-                # the selection grade vacuous. Scale it independently here; an
-                # identical catalog case is already removed by ``seen`` below.
-                default_prefix = catalog_prefixes.get(
-                    (q_len, head_dim, block_size),
-                    max(12, int(slot.correctness.top_k) + 4) * block_size + 39,
-                )
-                candidate_kv = kv_lengths if kv_constrained else [default_prefix + q_len]
-                for kv_len in candidate_kv:
-                    prefix_len = kv_len - q_len
-                    visible_blocks = (prefix_len + block_size) // block_size
-                    if prefix_len < 0 or visible_blocks <= int(slot.correctness.top_k):
-                        return (
-                            [],
-                            False,
-                            "an MSA capability combination cannot form a "
-                            "non-vacuous top-k probe",
-                        )
-                    key = (q_len, head_dim, block_size, prefix_len)
-                    if key in seen:
-                        continue
-                    shape = {
-                        "q_len": q_len,
-                        "prefix_blocks": max(12, prefix_len // block_size),
-                        "prefix_len_override": prefix_len,
-                        "head_dim": head_dim,
-                        "block_size": block_size,
-                        "batch_size": 1,
-                        "num_q_heads": 1,
-                        "topk": int(slot.correctness.top_k),
-                        "init_blocks": 0,
-                        "local_blocks": 1,
-                        "ragged": False,
-                    }
-                    descriptor = _msa_shape_descriptor(
-                        slot,
-                        shape,
-                        dtype=dtype,
-                        architecture=architecture,
-                        tp_size=tp_size,
-                        world_size=world_size,
-                    )
-                    if descriptor is None or not eligibility.match(descriptor).accepted:
-                        return (
-                            [],
-                            False,
-                            "an MSA capability combination could not be represented "
-                            "by the canonical call descriptor",
-                        )
-                    work = q_len * kv_len * head_dim
-                    probe_count = 2 if q_len > 1 else 1
-                    if work > _MSA_PROBE_MAX_MATMUL_WORK:
-                        return (
-                            [],
-                            False,
-                            "an MSA capability probe exceeds the per-shape work limit",
-                        )
-                    if (
-                        len(synthesized) + probe_count
-                        > _MSA_MAX_SYNTHESIZED_SHAPES
-                        or total_work + work * probe_count > _MSA_PROBE_MAX_TOTAL_WORK
-                    ):
-                        return (
-                            [],
-                            False,
-                            "declared MSA capability domain exceeds the total probe budget",
-                        )
-                    seen.add(key)
-                    synthesized.append(shape)
-                    total_work += work
-                    if q_len > 1:
-                        synthesized.append({**shape, "causal_probe": True})
-                        total_work += work
-    return synthesized, True, ""
-
-
 def verify_entry(
     slot: SlotSpec,
     entry: Callable[..., None],
@@ -970,9 +573,8 @@ def verify_entry(
     )
     case_world_size = world_size if world_size is not None else (tp_size or 1)
     case_tp_size = tp_size if tp_size is not None else case_world_size
-    case_architecture = (
-        architecture or _device_architecture(device) or torch.device(device).type
-    )
+    descriptor_architecture = architecture or _device_architecture(device)
+    case_architecture = descriptor_architecture or torch.device(device).type
 
     def sealed_call(descriptor: CallDescriptor) -> CallDescriptor:
         return descriptor.with_updates(
@@ -985,17 +587,6 @@ def verify_entry(
     catalog_shapes = list(shapes) if shapes is not None else list(slot.shapes)
     domain_coverage_complete = True
     domain_coverage_detail = ""
-    if eligibility is not None and _has_msa_prefill_probe_schema(
-        slot, eligibility, catalog_shapes
-    ):
-        resolved_arch = architecture or _device_architecture(device)
-        synthesized, domain_coverage_complete, domain_coverage_detail = (
-            _synthesize_msa_capability_shapes(
-                slot, eligibility, catalog_shapes, dtype=dtype,
-                architecture=resolved_arch, tp_size=tp_size, world_size=world_size,
-            )
-        )
-        catalog_shapes.extend(synthesized)
     test_shapes = catalog_shapes
     if jitter_seed is not None:
         test_shapes = _jitter_shapes(catalog_shapes, jitter_seed)
@@ -1007,16 +598,14 @@ def verify_entry(
     ):
         shape = jittered_shape
         inputs = slot.make_inputs(dtype=dtype, device=device, seed=seed + i, **shape)
-        descriptor = _verification_call_descriptor(
+        descriptor = verification_call_descriptor(
             slot,
             inputs,
-            dtype=dtype,
-            device=device,
-            architecture=architecture,
+            dtype_name=_name(dtype),
+            architecture=descriptor_architecture,
             tp_size=tp_size,
             world_size=world_size,
             graph_mode=verification_graph_mode,
-            model_key=model_key,
         )
         if eligibility is not None:
             match = eligibility.match(descriptor)
@@ -1033,16 +622,14 @@ def verify_entry(
                     seed=seed + i,
                     **catalog_shape,
                 )
-                catalog_descriptor = _verification_call_descriptor(
+                catalog_descriptor = verification_call_descriptor(
                     slot,
                     catalog_inputs,
-                    dtype=dtype,
-                    device=device,
-                    architecture=architecture,
+                    dtype_name=_name(dtype),
+                    architecture=descriptor_architecture,
                     tp_size=tp_size,
                     world_size=world_size,
                     graph_mode=verification_graph_mode,
-                    model_key=model_key,
                 )
                 catalog_match = eligibility.match(catalog_descriptor)
                 if catalog_match.accepted:
@@ -1270,125 +857,6 @@ def verify_entry(
         context_inapplicable=context_inapplicable,
         domain_coverage_complete=domain_coverage_complete,
         domain_coverage_detail=domain_coverage_detail,
-    )
-
-
-def _verification_call_descriptor(
-    slot: SlotSpec,
-    inputs: dict,
-    *,
-    dtype: torch.dtype,
-    device: str,
-    architecture: Optional[str],
-    tp_size: Optional[int],
-    world_size: Optional[int],
-    graph_mode: str,
-    model_key: Optional[str],
-) -> CallDescriptor:
-    """Build the same canonical call description as a live arena binding.
-
-    Fields are semantic and therefore never guessed from vaguely similar tensor
-    names.  A slot needs an explicit validator mapping before miners can constrain
-    its richer dimensions; MSA prefill is the first migrated binding.
-    """
-
-    resolved_arch = architecture or _device_architecture(device)
-    if slot.name == "attention.msa_block_score" and {
-        "q", "k_cache", "req_to_token", "slot_ids", "seq_lens", "block_size",
-        "topk", "init_blocks", "local_blocks",
-    } <= set(inputs):
-        q, k_cache = inputs["q"], inputs["k_cache"]
-        return msa_decode_score_call_descriptor(
-            dtype=_name(q.dtype), architecture=resolved_arch, graph_mode=graph_mode,
-            head_dim=int(q.shape[-1]), block_size=int(inputs["block_size"]),
-            kv_len=int(inputs["req_to_token"].shape[1]), top_k=int(inputs["topk"]),
-            init_blocks=int(inputs["init_blocks"]),
-            local_blocks=int(inputs["local_blocks"]), batch_size=int(q.shape[0]),
-            num_q_heads=int(q.shape[1]), num_kv_heads=int(k_cache.shape[1]),
-            quant="fp8" if "float8" in str(k_cache.dtype).lower() else "dense",
-            model=model_key or "MiniMax-M3", tp_size=tp_size, world_size=world_size,
-        )
-    if slot.name == "attention.decode" and {
-        "q", "k_cache", "v_cache", "req_to_token", "seq_lens",
-        "req_pool_indices", "topk_idx", "block_size",
-    } <= set(inputs):
-        q = inputs["q"]
-        k_cache = inputs["k_cache"]
-        return CallDescriptor(
-            dtype=_name(q.dtype),
-            architecture=resolved_arch,
-            graph_mode=graph_mode,
-            layout="paged_nhd",
-            model=model_key or "MiniMax-M3",
-            phase="decode",
-            quant="dense",
-            batch_size=int(q.shape[0]),
-            num_tokens=int(q.shape[0]),
-            q_len=1,
-            num_q_heads=int(q.shape[1]),
-            num_kv_heads=int(k_cache.shape[1]),
-            head_dim=int(q.shape[-1]),
-            kv_len=int(inputs["req_to_token"].shape[1]),
-            last_dim=int(q.shape[-1]),
-            block_size=int(inputs["block_size"]),
-            page_size=int(inputs["block_size"]),
-            top_k=int(inputs["topk_idx"].shape[-1]),
-            tp_size=tp_size,
-            world_size=world_size,
-        )
-    if slot.name == "moe.fused_experts" and {
-        "x", "topk_ids", "w13", "w2",
-    } <= set(inputs):
-        quant = str(inputs.get("__moe_quant__", "dense"))
-        return moe_call_descriptor(
-            inputs["x"],
-            inputs["topk_ids"],
-            architecture=resolved_arch,
-            graph_mode=graph_mode,
-            quant=quant,
-            num_experts=int(inputs["w13"].shape[0]),
-            intermediate_dim=int(inputs["w2"].shape[-1]),
-            tp_size=tp_size,
-            world_size=world_size,
-        )
-    if not _has_msa_prefill_call_contract(slot, inputs):
-        primary = next(
-            (
-                inputs[name]
-                for name in ("x", "q", "input", "input_tensor", "residual", "gemm_out")
-                if name in inputs and torch.is_tensor(inputs[name])
-            ),
-            None,
-        )
-        fields = {"dtype": _name(dtype), "architecture": resolved_arch}
-        if primary is not None and primary.dim() > 0:
-            fields["last_dim"] = int(primary.shape[-1])
-            if slot.name in {
-                "collective.ar_residual_rmsnorm",
-                "collective.moe_finalize_ar_rmsnorm",
-            }:
-                fields["num_tokens"] = int(primary.shape[0])
-        return CallDescriptor(fields)
-    q = inputs["q"]
-    index_k = inputs["index_k_cache"]
-    return msa_prefill_call_descriptor(
-        dtype=_name(q.dtype),
-        architecture=resolved_arch,
-        head_dim=int(q.shape[-1]),
-        block_size=int(inputs["block_size_k"]),
-        q_len=int(inputs["max_seqlen_q"]),
-        kv_len=int(inputs["max_seqlen_k"]),
-        top_k=int(inputs["topk"]),
-        q_block_size=int(inputs["block_size_q"]),
-        init_blocks=int(inputs["init_blocks"]),
-        local_blocks=int(inputs["local_blocks"]),
-        batch_size=int(inputs["cu_seqlens"].shape[0] - 1),
-        num_q_heads=int(q.shape[1]),
-        num_tokens=int(q.shape[0]),
-        num_kv_heads=int(index_k.shape[1]),
-        tp_size=tp_size,
-        world_size=world_size,
-        model=model_key or "MiniMax-M3",
     )
 
 

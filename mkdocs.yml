@@ -126,7 +126,6 @@ nav:
       - Why submissions fail: miner-guide/why-submissions-fail.md
       - Troubleshooting: miner-guide/diagnostics.md
       - Override points: miner-guide/override-points.md
-      - Dependency patches: miner-guide/dep-patches.md
   - Validator guide:
       - Overview: validator-guide/overview.md
       - Deployment readiness: validator-guide/first-hour.md

@@ -280,21 +280,6 @@ class OpEntry:
 
 
 @dataclass(frozen=True)
-class DepPatchEntry:
-    """One bundle-declared dependency patch (the ``dep_patches`` tier).
-
-    ``target`` names a PINNED dependency (e.g. "flashinfer") — whether that target is
-    patchable at all, and WHERE inside it a patch may land, is arena policy enforced by
-    the one reviewed applier (cacheon/patchers/apply_dep_patch.py), never bundle content.
-    ``path`` is a bundle-relative TEXT unified diff, structurally validated at load
-    (cacheon/deppatch.py): modifications + new files only, no binary/rename/delete.
-    """
-
-    target: str
-    path: str
-
-
-@dataclass(frozen=True)
 class CompetitionEntry:
     """A bundle's requested validator-owned contribution target.
 
@@ -313,10 +298,7 @@ class Manifest:
     bundle_id: str
     abi_version: str
     ops: tuple[OpEntry, ...]
-    dep_patches: tuple[DepPatchEntry, ...] = ()
     raw: dict[str, Any] = field(default_factory=dict)
-    # Appended after every historical field so positional construction retains
-    # the old meaning of arguments four and five.
     competition: CompetitionEntry | None = None
 
     def ops_for(self, slot: str) -> tuple[OpEntry, ...]:
@@ -398,45 +380,6 @@ def _validate_cuda_source(root: Path, rel: str, *, slot: str) -> Path:
         p.suffix in _CUDA_SOURCE_SUFFIXES,
         f"ops ({slot}) {kind} must be .cu or .cuh: {rel!r}",
     )
-    return p
-
-
-_DEP_PATCH_SUFFIXES = (".patch", ".diff")
-
-
-def _validate_dep_patch(root: Path, rel: str, *, target: str) -> Path:
-    """Validate one declared ``dep_patches`` entry: same containment/symlink posture as
-    ``_validate_cuda_source`` (suffix-restricted so the declaration can't sanction an
-    arbitrary file), PLUS a structural parse of the diff itself — a bundle carrying a
-    binary/rename/delete "patch" fails at intake, not at apply time."""
-    kind = "dep_patches"
-    _require(isinstance(rel, str) and rel != "", f"{kind} ({target}) path must be a non-empty string")
-    _require(not rel.startswith("/"), f"{kind} ({target}) path must be relative: {rel!r}")
-    unresolved = root / rel
-    _require(not unresolved.is_symlink(), f"{kind} ({target}) must not be a symlink: {rel!r}")
-    p = unresolved.resolve()
-    root_resolved = root.resolve()
-    _require(
-        p == root_resolved or root_resolved in p.parents,
-        f"{kind} ({target}) path escapes bundle root: {rel!r}",
-    )
-    _require(p.exists(), f"{kind} ({target}) not found: {rel!r}")
-    _require(not p.is_symlink(), f"{kind} ({target}) must not be a symlink: {rel!r}")
-    _require(p.is_file(), f"{kind} ({target}) must be a regular file: {rel!r}")
-    _require(
-        p.suffix in _DEP_PATCH_SUFFIXES,
-        f"{kind} ({target}) must be .patch or .diff: {rel!r}",
-    )
-    from cacheon.deppatch import DepPatchError, parse_patch_text
-
-    try:
-        text = p.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise ManifestError(f"{kind} ({target}) {rel!r} is not UTF-8 text: {exc}") from exc
-    try:
-        parse_patch_text(text)
-    except DepPatchError as exc:
-        raise ManifestError(f"{kind} ({target}) {rel!r} rejected: {exc}") from exc
     return p
 
 
@@ -1219,32 +1162,15 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
         )
         competition = CompetitionEntry(target=target, mode=mode)
 
-    dep_raw = data.get("dep_patches", ())
     _require(
-        isinstance(dep_raw, (list, tuple)),
-        "top-level 'dep_patches' must be a list of {target, path} tables",
+        "dep_patches" not in data,
+        "top-level 'dep_patches' is retired and unsupported",
     )
-    dep_patches: list[DepPatchEntry] = []
-    seen_dep: set[tuple[str, str]] = set()
-    for i, dp in enumerate(dep_raw):
-        _require(isinstance(dp, dict), f"dep_patches[{i}] must be a table")
-        target = str(dp.get("target", "")).strip()
-        _require(bool(target) and bool(_ID_RE.match(target)),
-                 f"dep_patches[{i}] 'target' must be a simple identifier: {target!r}")
-        rel = str(dp.get("path", "")).strip()
-        _validate_dep_patch(root, rel, target=target)
-        key = (target, rel)
-        _require(key not in seen_dep, f"duplicate dep_patches entry: {key!r}")
-        seen_dep.add(key)
-        unknown = set(dp) - {"target", "path"}
-        _require(not unknown, f"dep_patches[{i}] has unknown keys: {sorted(unknown)}")
-        dep_patches.append(DepPatchEntry(target=target, path=rel))
 
     return Manifest(
         bundle_id=bundle_id,
         abi_version=abi,
         ops=tuple(ops),
-        dep_patches=tuple(dep_patches),
         raw=data,
         competition=competition,
     )
@@ -1277,15 +1203,3 @@ def all_declared_cuda_sources(bundle_root: str | Path, manifest: Manifest) -> fr
     for op in manifest.ops:
         out.update(resolve_cuda_sources(root, op))
     return frozenset(out)
-
-
-def resolve_dep_patches(bundle_root: str | Path, manifest: Manifest) -> tuple[Path, ...]:
-    """Absolute, containment-checked (re-validated) paths of all declared dep patches."""
-    root = Path(bundle_root)
-    return tuple(_validate_dep_patch(root, dp.path, target=dp.target)
-                 for dp in manifest.dep_patches)
-
-
-def all_declared_dep_patches(bundle_root: str | Path, manifest: Manifest) -> frozenset[Path]:
-    """``scan_tree``-shaped allowlist of every declared dep patch (see cuda variant)."""
-    return frozenset(resolve_dep_patches(bundle_root, manifest))

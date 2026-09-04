@@ -1,0 +1,22 @@
+# CPU/GPU dry-run bundle for the moe.fused_routed_experts FAT slot: routing +
+# experts + combine in one contract. Two miner callables: `prepare` (weight layout
+# + routing config, runs once at load) + `fused_routed_experts` (forward, per
+# step). The forward receives router LOGITS, not materialized topk tensors — the
+# miner owns the routing head (selection on sigmoid(logits)+bias, weights from the
+# unbiased sigmoid scores, renormalize, scale). Pure torch; a real submission
+# would fuse routing, quantized expert GEMMs, and the combine into one kernel.
+
+bundle_id = "example-moe-fused-routed-torch"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "moe.fused_routed_experts"
+mode = "slot"
+
+[[ops]]
+slot = "moe.fused_routed_experts"
+source = "kernels/moe_routed.py"
+entry = "fused_routed_experts"
+prepare = "prepare"
+dtypes = ["float32", "bfloat16", "float16"]
+metadata = "metadata/moe_routed.json"

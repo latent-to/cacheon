@@ -146,7 +146,7 @@ lists the currently closed targets.
 ## Things that are not valid submissions
 
 - **Patches to SGLang.** The engine is pinned and consensus-critical. Submit
-  kernels, not engine changes. See [Dependency patches](dep-patches.md).
+  kernels, not engine changes.
 - **Engine-wide setup.** A bundle that installs process-wide setup is not a
   registered target and is rejected at resolution.
 

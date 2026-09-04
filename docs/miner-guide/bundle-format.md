@@ -374,36 +374,29 @@ complete member set. The current example shape is:
 
 ```toml
 [competition]
-target = "collective.moe_epilogue.v1"
+target = "collective.dp_attention_exchange.v1"
 mode = "atomic"
 
 [[ops]]
-slot = "collective.ar_residual_rmsnorm"
-source = "kernels/epilogue.py"
-entry = "ar_residual_rmsnorm"
+slot = "collective.all_gather_into_tensor"
+source = "kernels/exchange.py"
+entry = "all_gather_into_tensor"
 
 [[ops]]
-slot = "collective.moe_finalize_ar_rmsnorm"
-source = "kernels/epilogue.py"
-entry = "moe_finalize_ar_rmsnorm"
+slot = "collective.reduce_scatter_tensor"
+source = "kernels/exchange.py"
+entry = "reduce_scatter_tensor"
 ```
 
 The committed
-[atomic stack fixture](https://github.com/latent-to/cacheon/tree/main/tests/fixtures/stack_fused_epilogue_atomic)
-is useful for studying identity and rebuild declarations. It is a test fixture,
-not a production-ready kernel and not a template whose stub ABI should be
-copied blindly.
+[DP-attention exchange example](https://github.com/latent-to/cacheon/tree/main/examples/miner_dp_attention_exchange_torch)
+provides both required member rows and faithful PyTorch collective entries. It
+is an ABI template, not a competitive collective implementation.
 
 ## Advanced declarations
 
 These fields are valid only where the registered target explicitly allows the
 corresponding observed feature:
-
-```toml
-[[dep_patches]]
-target = "flashinfer"
-path = "patches/fused_moe.patch"
-```
 
 ```toml
 [[ops]]
@@ -416,9 +409,8 @@ cuda_sources = ["kernels/epilogue_sm103.cu"]
 ```
 
 Declarations do not bypass policy. Intake independently observes rebuild,
-override, CUDA-source, and dependency-patch features and resolves them against
-the target catalog. See [Override points](override-points.md) and
-[Dependency patches](dep-patches.md).
+override, and CUDA-source features and resolves them against the target
+catalog. See [Override points](override-points.md).
 
 Direct-artifact exports follow the same rule: the closed provider registry and
 target catalog, not a provider string in TOML, determine whether a row is

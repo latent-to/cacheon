@@ -61,6 +61,9 @@ def workload_shape(plan: SessionExecutionPlan) -> tuple[object, ...]:
         plan.max_new_tokens,
         plan.top_logprobs_num,
         plan.temperature,
+        plan.batch_max_new_tokens,
+        plan.batch_expected_prompt_tokens,
+        plan.quality_max_new_tokens,
         plan.expected_discovery_overlay_identity_digest,
         plan.audit_policy,
     )

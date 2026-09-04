@@ -24,7 +24,7 @@ from cacheon.verify import verify_entry  # noqa: E402
 SHAPE = {"num_tokens": 4, "num_experts": 4, "hidden": 64, "inter": 64, "topk": 2}
 WEIGHT_FIELDS = (
     "w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale",
-    "g1_alphas", "g2_alphas", "w13_input_scale_quant",
+    "g1_scale_c", "g1_alphas", "g2_alphas", "w13_input_scale_quant",
     "w2_input_scale_quant", "intermediate_size_per_partition",
 )
 
@@ -116,6 +116,38 @@ def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
     )
     live_w13, live_w2 = dequantize_prepare_args(live_args)
     assert torch.equal(live_w13, inputs["w13"]) and torch.equal(live_w2, inputs["w2"])
+
+
+def test_glm_routed_example_executes_the_nvfp4_prepare_contract():
+    source = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
+    inputs = slot.make_inputs(
+        num_tokens=2, num_experts=4, hidden=64, inter=64, topk=2,
+        routed_scaling=2.5, dtype=torch.float32, device="cpu", seed=11,
+    )
+    assert prepare_args_from_inputs(inputs)[1].moe_runner_config.top_k == 2
+    result = verify_entry(
+        slot,
+        load_entry(source, "fused_routed_experts"),
+        prepare=load_entry(source, "prepare"),
+        dtype=torch.float32,
+        device="cpu",
+        shapes=[{
+            "num_tokens": 2, "num_experts": 4, "hidden": 64, "inter": 64,
+            "topk": 2, "routed_scaling": 2.5,
+        }],
+        eligibility=Eligibility(
+            dtypes=frozenset({"float32"}), quant=frozenset({"nvfp4"}),
+            min_num_tokens=2, max_num_tokens=2,
+        ),
+        architecture="cpu",
+        tp_size=4,
+        world_size=4,
+    )
+
+    case = result.shape_results[0].case_descriptor
+    assert result.passed and result.shape_results[0].applicable and case is not None
+    assert dict(case.calls[0])["quant"] == "nvfp4"
 
 
 def test_m3_reduce_profile_uses_live_shape_topology_and_nvfp4_prepare():

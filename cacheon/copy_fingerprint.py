@@ -46,8 +46,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from cacheon.manifest import (load_manifest, resolve_cuda_sources, resolve_dep_patches,
-                             resolve_source)
+from cacheon.manifest import load_manifest, resolve_cuda_sources, resolve_source
 from cacheon.stack_identity import canonical_json_bytes
 
 
@@ -141,29 +140,6 @@ def normalized_cuda_source(source: str) -> str:
 
 def cuda_source_fingerprint(source: str) -> str:
     return hashlib.sha256(normalized_cuda_source(source).encode("utf-8")).hexdigest()
-
-
-def normalized_dep_patch(source: str) -> str:
-    """Reformat-invariant normalization of a unified diff (the dep_patches tier).
-
-    What a patch DOES is its +/- lines and the files it touches; everything else is
-    presentation an evader can regenerate freely — hunk headers move with -U context
-    width, context lines multiply with it, git headers come and go. Keep only the
-    file headers and the +/- payload, whitespace-collapsed. A patch re-emitted with
-    different context width / offsets / comments-in-context fingerprints identically;
-    changing what it actually changes does not.
-    """
-    keep: list[str] = []
-    for ln in source.splitlines():
-        if ln.startswith(("--- ", "+++ ")):
-            keep.append(_WHITESPACE_RE.sub(" ", ln.strip()))
-        elif ln.startswith(("+", "-")):
-            keep.append(_WHITESPACE_RE.sub(" ", ln[1:].strip()))
-    return "\n".join(keep)
-
-
-def dep_patch_fingerprint(source: str) -> str:
-    return hashlib.sha256(normalized_dep_patch(source).encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -545,20 +521,6 @@ def bundle_slot_file_fingerprints(bundle_root: str | Path) -> dict[str, list[str
     root = Path(bundle_root)
     manifest = load_manifest(root)
     out: dict[str, set[str]] = {}
-    # Declared dep patches are BUNDLE-level (they modify the engine's dependency tree
-    # for every slot the bundle claims), so their fingerprints fold into EVERY slot's
-    # file set: a stolen deep-seam patch re-shipped behind a different kernel shim is
-    # still "all of their work inside yours" for the containment compare. Two entries
-    # each, mirroring cuda_sources: exact raw sha256 + the reformat-invariant
-    # normalized-diff fingerprint (context width / hunk offsets / git headers free).
-    patch_fps: set[str] = set()
-    for dp in resolve_dep_patches(root, manifest):
-        try:
-            raw = dp.read_bytes()
-        except OSError:
-            continue
-        patch_fps.add(hashlib.sha256(raw).hexdigest())
-        patch_fps.add(dep_patch_fingerprint(raw.decode("utf-8", errors="replace")))
     try:
         for op in manifest.ops:
             entry = resolve_source(root, op)
@@ -566,7 +528,7 @@ def bundle_slot_file_fingerprints(bundle_root: str | Path) -> dict[str, list[str
             # All sibling variants contribute to one slot-level union. This keeps a
             # stolen singleton's set contained in a stolen+fresh multi-variant bundle,
             # which is the load-bearing relocation/padding copy signal in Ledger.reveal.
-            fps = out.setdefault(op.slot, set(patch_fps))
+            fps = out.setdefault(op.slot, set())
             for f in _closure_files(root, entry):
                 try:
                     source = f.read_text(encoding="utf-8")

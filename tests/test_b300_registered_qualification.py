@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import json
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -45,30 +44,25 @@ from cacheon.eval.calibration import (
 )
 from cacheon.eval.crossover_runtime import ResidentArmPlan, ResidentSpeedPolicy
 from cacheon.eval.engine_launch import TrustedLaunchBinding
-from cacheon.eval.evidence_store import reopen_evidence
 from cacheon.eval.oci_backend import expected_runtime_preflight
-from cacheon.eval.qualification import (
-    GraphVerificationRawEvidence,
-    GraphVariantRequirement,
-    ReferenceManifest,
-)
+from cacheon.eval.qualification import GraphVariantRequirement, ReferenceManifest
 from cacheon.eval.qualification_intake import (
     GraphShapeObservation,
     GraphVariantObservation,
     QualificationReservation,
 )
 from cacheon.eval.qualification_runner import SpeedStageDisposition
-from cacheon.eval.scoring import marginal_workload_digest
-from cacheon.target_catalog import (
-    MOE_EPILOGUE_ATOMIC_TARGET,
-    SINGLETON_TARGET_IDS,
-    default_target_catalog,
+from tests.support.b300 import (
+    GLM53_REGISTERED_TARGET_IDS,
+    M3_REGISTERED_TARGET_IDS,
 )
+from cacheon.eval.scoring import marginal_workload_digest
+from cacheon.target_catalog import SINGLETON_TARGET_IDS, default_target_catalog
 from tests.test_calibration import _observations
 from tests.test_marginal_runtime import FUSED, _case, _local_binding, _native
 
 
-TARGET = "attention.msa_prefill_block_score"
+TARGET = "norm.rmsnorm"
 
 
 def _h(label: str) -> str:
@@ -94,29 +88,29 @@ def _candidate_source(root: Path) -> Path:
     metadata = root / "metadata"
     kernels.mkdir(parents=True)
     metadata.mkdir()
-    (kernels / "msa_prefill_block_score.py").write_text(
-        "def msa_prefill_block_score(q, index_k, out=None):\n"
+    (kernels / "rmsnorm_stub.py").write_text(
+        "def rmsnorm_stub(q, index_k, out=None):\n"
         "    return q if out is None else out.copy_(q)\n"
     )
-    (metadata / "msa_prefill.json").write_text(
-        '{"op":"attention.msa_prefill_block_score"}\n'
+    (metadata / "rmsnorm_stub.json").write_text(
+        '{"op":"norm.rmsnorm"}\n'
     )
     (root / "rebuild.json").write_text('{"steps":[]}\n')
     (root / "manifest.toml").write_text(
         "\n".join(
             (
-                'bundle_id = "ordinary-msa-prefill"',
+                'bundle_id = "ordinary-rmsnorm-stub"',
                 'abi_version = "cacheon-op-abi-v0"',
                 "[competition]",
                 f'target = "{TARGET}"',
                 'mode = "slot"',
                 "[[ops]]",
                 f'slot = "{TARGET}"',
-                'source = "kernels/msa_prefill_block_score.py"',
-                'entry = "msa_prefill_block_score"',
+                'source = "kernels/rmsnorm_stub.py"',
+                'entry = "rmsnorm_stub"',
                 'dtypes = ["bfloat16", "float16"]',
                 'architectures = ["sm100", "sm103"]',
-                'metadata = "metadata/msa_prefill.json"',
+                'metadata = "metadata/rmsnorm_stub.json"',
             )
         )
         + "\n"
@@ -231,7 +225,9 @@ def _graph_facts_for_members(
 def _focused_graph_facts(
     candidate: ArenaCandidateBinding,
     _prepared,
+    model_profile_key: str,
 ) -> registered.B300FocusedGraphFacts:
+    assert model_profile_key in {"GLM-5.3-NVFP4", "MiniMax-M3"}
     return _graph_facts_for_members(candidate.reservation.target_members)
 
 
@@ -252,6 +248,15 @@ def _harness(
 ) -> _Harness:
     case = _case(tmp_path / "runtime")
     catalog = case.catalog
+    glm = source_fixture == FUSED
+    registered_target_ids = (
+        GLM53_REGISTERED_TARGET_IDS
+        if glm
+        else M3_REGISTERED_TARGET_IDS
+    )
+    model_profile_key = (
+        "GLM-5.3-NVFP4" if glm else "MiniMax-M3"
+    )
     evidence_root = (
         _private_directory(tmp_path / "evidence")
         if evidence_root is None
@@ -301,6 +306,8 @@ def _harness(
     )
     policy = registered.B300RegisteredQualificationPolicy.seal(
         catalog,
+        registered_target_ids=registered_target_ids,
+        model_profile_key=model_profile_key,
         verification_policy_digest=verification_policy,
         nll_tail_threshold="20",
         tokens_per_prompt=case.session.max_new_tokens,
@@ -412,31 +419,52 @@ def _harness(
     )
 
 
-def test_registry_exactly_covers_all_twelve_registered_targets_without_fe_identity(
+def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identity(
     tmp_path: Path,
 ) -> None:
     harness = _harness(tmp_path)
 
+    # The B300 arena's registered set is PINNED arena data: it excludes catalog
+    # rows that belong to other arenas (the GLM fat MoE slot) and must not grow
+    # when the cross-arena catalog does.
     expected = tuple(
-        sorted((*SINGLETON_TARGET_IDS, MOE_EPILOGUE_ATOMIC_TARGET))
+        sorted(
+            (
+                *(
+                        target
+                        for target in SINGLETON_TARGET_IDS
+                        if target not in {
+                            "collective.all_gather_into_tensor",
+                            "collective.reduce_scatter_tensor",
+                            "linear.dense",
+                            "moe.fused_routed_experts",
+                        "norm.fused_add_rmsnorm",
+                    }
+                ),
+            )
+        )
     )
     snapshot_ids = tuple(
         row["target_id"]
         for row in harness.inputs.catalog.snapshot()["targets"]
     )
-    assert registered.REGISTERED_B300_TARGET_IDS == expected
-    assert registered.REGISTERED_B300_TARGET_IDS == snapshot_ids
-    assert len(snapshot_ids) == 12
-    assert registered.ORDINARY_B300_TARGET_IDS == expected
+    assert M3_REGISTERED_TARGET_IDS == expected
+    assert set(M3_REGISTERED_TARGET_IDS) <= set(snapshot_ids)
+    assert len(M3_REGISTERED_TARGET_IDS) == 6
     projection = registered.registered_b300_member_contract_projection(
-        harness.inputs.catalog
+        harness.inputs.catalog, M3_REGISTERED_TARGET_IDS
     )
     assert tuple(row.target_id for row in harness.factory.profiles) == (
         tuple(row.target_id for row in projection)
     )
-    assert "attention.decode" in expected
-    assert "attention.msa_prefill_block_score" in expected
-    assert MOE_EPILOGUE_ATOMIC_TARGET in expected
+    assert "moe.fused_routed_experts" not in expected
+    assert "norm.rmsnorm" in expected
+    assert "collective.dp_attention_exchange.v1" not in expected
+    assert "collective.moe_finalize_ar_rmsnorm" not in expected
+    glm_projection = registered.registered_b300_member_contract_projection(
+        harness.inputs.catalog, GLM53_REGISTERED_TARGET_IDS
+    )
+    assert tuple(row.target_id for row in glm_projection) == GLM53_REGISTERED_TARGET_IDS
     assert harness.factory.components.profiles == harness.factory.profiles
     assert (
         harness.factory.components.builder_source_digest
@@ -455,10 +483,8 @@ def test_registry_exactly_covers_all_twelve_registered_targets_without_fe_identi
     target_id_source = inspect.getsource(
         qualification_deployment.registered_b300_target_ids
     )
-    assert MOE_EPILOGUE_ATOMIC_TARGET not in factory_source
     assert TARGET not in factory_source
     assert "SINGLETON_TARGET_IDS" not in target_id_source
-    assert "MOE_EPILOGUE_ATOMIC_TARGET" not in target_id_source
 
 
 def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatable(
@@ -552,9 +578,9 @@ def test_pair_native_routing_requires_swap_reachability_and_same_target() -> Non
     """
 
     bundle = registered.SealedIncumbentBundle(
-        "attention.msa_prefill_block_score",
+        "norm.rmsnorm",
         _h("crowned"),
-        ("attention.msa_prefill_block_score",),
+        ("norm.rmsnorm",),
     )
     route = registered.resident_pair_native
     assert route(
@@ -563,7 +589,7 @@ def test_pair_native_routing_requires_swap_reachability_and_same_target() -> Non
     )
     assert route(
         swappable=True, genesis=False, incumbent_bundle=bundle,
-        candidate_target_id="attention.msa_prefill_block_score",
+        candidate_target_id="norm.rmsnorm",
     )
     # Non-swappable candidates always boot.
     assert not route(
@@ -579,7 +605,7 @@ def test_pair_native_routing_requires_swap_reachability_and_same_target() -> Non
     # An incumbent one swap cannot realize routes everyone to v8.
     assert not route(
         swappable=True, genesis=False, incumbent_bundle=None,
-        candidate_target_id="attention.msa_prefill_block_score",
+        candidate_target_id="norm.rmsnorm",
     )
 
 
@@ -588,9 +614,9 @@ def test_sealed_incumbent_bundle_binds_to_the_declared_stack_entry(
 ) -> None:
     harness = _harness(tmp_path)
     foreign = registered.SealedIncumbentBundle(
-        "attention.msa_prefill_block_score",
+        "norm.rmsnorm",
         _h("not-in-the-stack"),
-        ("attention.msa_prefill_block_score",),
+        ("norm.rmsnorm",),
     )
     with pytest.raises(
         registered.B300RegisteredQualificationError,
@@ -603,7 +629,7 @@ def test_sealed_incumbent_bundle_binds_to_the_declared_stack_entry(
         match="sorted distinct slots",
     ):
         registered.SealedIncumbentBundle(
-            "attention.msa_prefill_block_score",
+            "norm.rmsnorm",
             _h("crowned"),
             ("b.slot", "a.slot"),
         )
@@ -612,7 +638,7 @@ def test_sealed_incumbent_bundle_binds_to_the_declared_stack_entry(
         match="incumbent bundle digest",
     ):
         registered.SealedIncumbentBundle(
-            "attention.msa_prefill_block_score", "nothex", ("a.slot",)
+            "norm.rmsnorm", "nothex", ("a.slot",)
         )
 
 
@@ -660,73 +686,11 @@ def test_native_candidate_is_planned_on_the_two_process_schedule(
     assert replace(planned, version=sealed.version) == sealed
 
 
-def test_atomic_fixture_builds_one_registered_plan_with_partitioned_member_evidence(
-    tmp_path: Path,
-) -> None:
-    harness = _harness(tmp_path, FUSED)
-    secret = b"atomic fused epilogue selection!!"[:32]
-
-    value = harness.factory.plan_builder(harness.cohort, secret)
-    authority = value.candidates[0]
-    graph = authority.graph_requirement
-    catalog = harness.inputs.catalog
-    target = catalog.require(MOE_EPILOGUE_ATOMIC_TARGET)
-
-    assert harness.candidate.reservation.target_id == MOE_EPILOGUE_ATOMIC_TARGET
-    assert len(value.prepared.candidates) == 1
-    assert value.prepared.source.transition.target_id == MOE_EPILOGUE_ATOMIC_TARGET
-    assert value.prepared.source.transition.replacement.target_id == (
-        MOE_EPILOGUE_ATOMIC_TARGET
-    )
-    assert graph.binding.target_id == MOE_EPILOGUE_ATOMIC_TARGET
-    assert graph.binding.target_spec_digest == catalog.target_spec_digest(
-        MOE_EPILOGUE_ATOMIC_TARGET
-    )
-    assert graph.binding.catalog_digest == catalog.digest
-    assert tuple(row.slot_id for row in graph.binding.members) == target.members
-    for observed, member_id in zip(graph.binding.members, target.members, strict=True):
-        member = catalog.require(member_id)
-        contract = member.contract_ref
-        assert contract is not None
-        assert observed.target_spec_digest == catalog.target_spec_digest(member_id)
-        assert observed.contract_digest == catalog.contract_digest(member_id)
-        assert observed.verification_profile_id == contract.verification_profile_id
-
-    raw = GraphVerificationRawEvidence.from_dict(
-        json.loads(reopen_evidence(harness.inputs.evidence_root, authority.graph_artifact_ref))
-    )
-    assert tuple(row.slot_id for row in raw.members) == target.members
-    assert all(
-        tuple(variant.slot_id for variant in member.variants)
-        == (member.slot_id,)
-        for member in raw.members
-    )
-    assert value.audit_policies[0].expected_slots == target.members
-    assert value.speed_evidence_policy.version == 3
-    assert value.resident_speed_plan is not None
-    assert value.resident_audit_plan is not None
-    assert value.resident_audit_plan.audit_policy.expected_slots == target.members
-    assert value.resident_audit_plan.plan.engine_config.disable_cuda_graph
-    assert value.resident_speed_plan.selected_delta_digest == (
-        harness.candidate.reservation.selected_delta_digest
-    )
-    assert authority.profile.reference is harness.inputs.reference_manifest
-    assert authority.profile.calibration_digest == (
-        harness.inputs.calibration_manifest.digest
-    )
-    assert value.pristine_stack.entries == {}
-    assert value.pristine_stack is harness.inputs.pristine_stack
-
-
-def test_registry_accepts_atomic_and_rejects_unknown_or_stale_authority(
+def test_registry_rejects_unknown_or_stale_authority(
     tmp_path: Path,
 ) -> None:
     harness = _harness(tmp_path)
 
-    assert (
-        harness.factory.profile_for(MOE_EPILOGUE_ATOMIC_TARGET).target_id
-        == MOE_EPILOGUE_ATOMIC_TARGET
-    )
     with pytest.raises(registered.B300RegisteredQualificationError, match="unsupported"):
         harness.factory.profile_for("unknown.registered.target")
 
@@ -758,64 +722,22 @@ def test_registry_accepts_atomic_and_rejects_unknown_or_stale_authority(
             ),
         )
 
-    base_projections = list(harness.policy.target_contract_projection)
-    atomic_index = next(
-        index
-        for index, row in enumerate(base_projections)
-        if row.target_id == MOE_EPILOGUE_ATOMIC_TARGET
-    )
-    for field, value in (
-        ("verification_profile_id", "stale.member.verify.v1"),
-        ("contract_digest", _h("stale-member-contract")),
-        ("target_spec_digest", _h("stale-member-target-spec")),
-    ):
-        projections = list(base_projections)
-        atomic = projections[atomic_index]
-        member_rows = list(atomic.member_contracts)
-        member_rows[0] = replace(member_rows[0], **{field: value})
-        projections[atomic_index] = replace(
-            atomic,
-            member_contracts=tuple(member_rows),
-        )
-        stale_members = replace(
-            harness.policy,
-            target_contract_projection=tuple(projections),
-        )
-        with pytest.raises(
-            registered.B300RegisteredQualificationError,
-            match="member-contract authority is stale",
-        ):
-            stale_members.require_catalog(default_target_catalog())
-
-    atomic = base_projections[atomic_index]
-    for malformed in (
-        atomic.member_contracts[:-1],
-        tuple(reversed(atomic.member_contracts)),
-        (atomic.member_contracts[0], atomic.member_contracts[0]),
-    ):
-        with pytest.raises(
-            registered.B300RegisteredQualificationError,
-            match="member-contract projection is not canonical",
-        ):
-            replace(atomic, member_contracts=malformed)
-
-
 def test_graph_facts_cannot_relabel_another_registered_target(
     tmp_path: Path,
 ) -> None:
     harness = _harness(tmp_path)
 
-    def wrong_target(_candidate, _prepared):
+    def wrong_target(_candidate, _prepared, _model_profile_key):
         descriptor = _h("wrong-target-shape")
         requirement = GraphVariantRequirement(
-            "attention.decode",
+            "moe.fused_experts",
             "default",
             (descriptor,),
             True,
             (descriptor,),
         )
         observation = GraphVariantObservation(
-            "attention.decode",
+            "moe.fused_experts",
             "default",
             True,
             True,
@@ -851,38 +773,10 @@ def test_graph_facts_cannot_relabel_another_registered_target(
     assert "another or incomplete member" in str(caught.value.__cause__)
 
 
-@pytest.mark.parametrize("mode", ("missing", "extra"))
-def test_atomic_graph_facts_require_the_exact_member_domain(
-    tmp_path: Path,
-    mode: str,
-) -> None:
-    harness = _harness(tmp_path, FUSED)
-    expected = harness.candidate.reservation.target_members
-    members = expected[:1] if mode == "missing" else tuple(
-        sorted((*expected, "attention.decode"))
-    )
-
-    inputs = replace(
-        harness.inputs,
-        graph_facts_builder_digest=_h(f"{mode}-member-graph-builder"),
-        graph_facts_builder=lambda _candidate, _prepared: _graph_facts_for_members(
-            members
-        ),
-    )
-    factory = registered.build_b300_registered_qualification_factory(inputs)
-    with pytest.raises(
-        B300QualificationDeploymentError,
-        match="registered profile authority failed",
-    ) as caught:
-        factory.plan_builder(harness.cohort, b"m" * 32)
-    assert isinstance(caught.value.__cause__, registered.B300RegisteredQualificationError)
-    assert "member domain" in str(caught.value.__cause__)
-
-
 def test_graph_facts_reject_duplicate_or_reordered_variants() -> None:
     members = (
+        "collective.all_reduce",
         "collective.ar_residual_rmsnorm",
-        "collective.moe_finalize_ar_rmsnorm",
     )
     facts = _graph_facts_for_members(members)
     with pytest.raises(
@@ -911,7 +805,7 @@ def test_graph_evidence_hold_survives_registered_profile_resolution(
     harness = _harness(tmp_path)
     hold = B300QualificationGraphEvidenceHold("graph attempt is still armed")
 
-    def unavailable(_candidate, _prepared):
+    def unavailable(_candidate, _prepared, _model_profile_key):
         raise hold
 
     inputs = replace(
@@ -930,7 +824,7 @@ def test_corrupt_graph_store_state_becomes_typed_hold(
 ) -> None:
     harness = _harness(tmp_path)
 
-    def corrupt(_candidate, _prepared):
+    def corrupt(_candidate, _prepared, _model_profile_key):
         raise B300QualificationGraphEvidenceStoreError("corrupt graph bytes")
 
     inputs = replace(

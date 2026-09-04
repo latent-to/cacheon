@@ -10,16 +10,17 @@ call. Miner code receives validator-allocated tensors and fills the output.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import torch
 
 from cacheon import audit as _audit
-from cacheon import moe_export as _moe_export
 from cacheon import receipts as _receipts
 from cacheon.capabilities import CallDescriptor, collective_call_descriptor
 from cacheon.moe_nvfp4_contract import (
     call_descriptor as moe_call_descriptor,
+    routed_call_descriptor as routed_moe_call_descriptor,
     supports_layer as supports_nvfp4_moe_layer,
 )
 from cacheon.registry import REGISTRY, KernelRegistry
@@ -286,6 +287,7 @@ def make_rmsnorm_dispatcher(
     *,
     registry: KernelRegistry = REGISTRY,
     slot: str = "norm.rmsnorm",
+    fused_slot: str = "norm.fused_add_rmsnorm",
 ) -> Callable[..., object]:
     """Build a replacement for ``RMSNorm.forward_cuda`` / ``forward_native``.
 
@@ -296,23 +298,37 @@ def make_rmsnorm_dispatcher(
     trusted baseline.
     """
 
-    def dispatched(self, x, residual=None, post_residual_addition=None):
-        if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
+    def stock(self, x, residual, post_residual_addition, quant_linear):
+        if quant_linear is None:
             return baseline_forward(self, x, residual, post_residual_addition)
+        return baseline_forward(
+            self, x, residual, post_residual_addition, quant_linear=quant_linear
+        )
+
+    def dispatched(
+        self, x, residual=None, post_residual_addition=None, quant_linear=None
+    ):
+        if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
+            return stock(self, x, residual, post_residual_addition, quant_linear)
         # Rare / semantic-override paths -> trusted baseline (keeps the contract simple
         # & safe): fp32 residual, a variance computed over a prefix subset of the hidden
         # dim (variance_size_override), or HF cast-before-multiply semantics
         # (cast_x_before_out_mul) are all NOT the pure rmsnorm the slot contract states.
-        if (post_residual_addition is not None or getattr(self, "fp32_residual", False)
+        if (quant_linear is not None or post_residual_addition is not None
+                or getattr(self, "fp32_residual", False)
                 or getattr(self, "variance_size_override", None) is not None
                 or getattr(self, "cast_x_before_out_mul", False)):
-            return baseline_forward(self, x, residual, post_residual_addition)
+            return stock(self, x, residual, post_residual_addition, quant_linear)
 
-        impl = registry.select(
-            slot, _elementwise_descriptor(x, last_dim=x.shape[-1])
-        ).impl
+        descriptor = _elementwise_descriptor(x, last_dim=x.shape[-1])
+        fused_impl = (
+            registry.select(fused_slot, descriptor).impl
+            if residual is not None
+            else None
+        )
+        impl = fused_impl or registry.select(slot, descriptor).impl
         if impl is None:
-            return baseline_forward(self, x, residual, post_residual_addition)
+            return stock(self, x, residual, post_residual_addition, quant_linear)
 
         eps = float(self.variance_epsilon)
         weight = self.weight.data
@@ -325,6 +341,28 @@ def make_rmsnorm_dispatcher(
                 _audit.run(slot, (out,), lambda: baseline_forward(self, a_x, None, None))
             _receipts.completed(slot)
             return out
+        if fused_impl is not None:
+            a_x, a_res = (x.clone(), residual.clone()) if aud else (None, None)
+            out = torch.empty_like(x)
+            new_residual = torch.empty_like(residual)
+            _receipts.invoke(
+                fused_slot,
+                fused_impl.entry,
+                x,
+                residual,
+                weight,
+                eps,
+                out,
+                new_residual,
+            )
+            if aud:
+                _audit.run(
+                    fused_slot,
+                    (out, new_residual),
+                    lambda: baseline_forward(self, a_x, a_res, None),
+                )
+            _receipts.completed(fused_slot)
+            return out, new_residual
         a_x, a_res = (x.clone(), residual.clone()) if aud else (None, None)
         new_residual = x + residual  # validator owns the add
         out = torch.empty_like(new_residual)
@@ -351,10 +389,20 @@ def make_moe_dispatcher(
     reduce; the reduce-owning slot receives the real process group.
     """
 
-    def dispatched(self, hidden_states, topk_output):
-        if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
+    def stock(self, hidden_states, topk_output, pre_quant_input):
+        if pre_quant_input is None:
             return baseline_forward(self, hidden_states, topk_output)
-        if _moe_seam_active():
+        return baseline_forward(
+            self, hidden_states, topk_output, pre_quant_input=pre_quant_input
+        )
+
+    def dispatched(self, hidden_states, topk_output, pre_quant_input=None):
+        if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
+            return stock(self, hidden_states, topk_output, pre_quant_input)
+        active_moe = registry.active and any(
+            registry.variants(slot) for slot in (*slots, _ROUTED_MOE_SLOT)
+        )
+        if _moe_seam_active() and active_moe:
             if not (_moe_supported(self) and hidden_states.dim() == 2):
                 pass
             else:
@@ -362,10 +410,26 @@ def make_moe_dispatcher(
                 quant_fmt = _moe_quant_format(self)
                 routed = _standard_topk(topk_output)
                 if routed is None:
-                    pass
+                    # BYPASSED routing (e.g. flashinfer_trtllm hands router LOGITS
+                    # only): the fat routed-MoE slot is that boundary.
+                    result = _try_routed_moe(
+                        self,
+                        hidden_states,
+                        topk_output,
+                        registry,
+                        in_graph=in_graph,
+                        quant_fmt=quant_fmt,
+                        stock_reference=lambda audit_x: stock(
+                            self, audit_x, topk_output, pre_quant_input
+                        ),
+                    )
+                    if result is not None:
+                        return result
                 else:
                     x = hidden_states
                     for slot in slots:
+                        if not registry.variants(slot):
+                            continue
                         reduce_slot = slot.endswith(".fused_experts_reduce")
                         group = None
                         descriptor = None
@@ -498,14 +562,18 @@ def make_moe_dispatcher(
                         )
                         if aud:
                             def stock_reference():
-                                stock = baseline_forward(self, a_x, topk_output)
+                                stock_result = stock(
+                                    self, a_x, topk_output, pre_quant_input
+                                )
                                 if reduce_slot and _moe_reduce_owner(self) is not None:
                                     from sglang.srt.distributed.communication_op import (
                                         tensor_model_parallel_all_reduce,
                                     )
 
-                                    stock = tensor_model_parallel_all_reduce(stock)
-                                return stock
+                                    stock_result = tensor_model_parallel_all_reduce(
+                                        stock_result
+                                    )
+                                return stock_result
 
                             _audit.run(
                                 slot,
@@ -516,7 +584,80 @@ def make_moe_dispatcher(
                             _log_once_active(slot)
                             _receipts.completed(slot)
                         return out
+        return stock(self, hidden_states, topk_output, pre_quant_input)
+
+    return dispatched
+
+
+@dataclass(frozen=True)
+class _DeferredRoutedMoEOutput:
+    """Candidate output carried across SGLang's stock shared-expert join."""
+
+    routed: torch.Tensor
+
+
+def make_moe_deferred_dispatcher(
+    baseline_forward: Callable[..., object],
+    *,
+    registry: KernelRegistry = REGISTRY,
+) -> Callable[..., object]:
+    """Wrap the FlashInfer TRT-LLM deferred routed-expert path.
+
+    SGLang bypasses ``FusedMoE.forward_impl`` when separate shared experts can
+    fuse with the routed-expert finalize. A selected fat-slot candidate already
+    returns the scaled, finalized routed output, so carry it to the stock join;
+    the companion finalizer wrapper adds the separately computed shared output.
+    """
+
+    def dispatched(self, hidden_states, topk_output):
+        if _dynamo_compiling():
+            return baseline_forward(self, hidden_states, topk_output)
+        if (
+            _moe_seam_active()
+            and registry.active
+            and registry.variants(_ROUTED_MOE_SLOT)
+            and _moe_supported(self)
+            and hidden_states.dim() == 2
+        ):
+            result = _try_routed_moe(
+                self,
+                hidden_states,
+                topk_output,
+                registry,
+                in_graph=_in_cuda_graph(),
+                quant_fmt=_moe_quant_format(self),
+                stock_reference=None,
+                defer_completion=True,
+            )
+            if result is not None:
+                return _DeferredRoutedMoEOutput(result)
         return baseline_forward(self, hidden_states, topk_output)
+
+    return dispatched
+
+
+def make_moe_deferred_finalize_dispatcher(
+    baseline_finalize: Callable[..., object],
+) -> Callable[..., object]:
+    """Join a selected routed candidate with SGLang's separate shared expert."""
+
+    def dispatched(deferred_output, shared_output):
+        if not isinstance(deferred_output, _DeferredRoutedMoEOutput):
+            return baseline_finalize(deferred_output, shared_output)
+        routed = deferred_output.routed
+        if not (
+            torch.is_tensor(shared_output)
+            and tuple(shared_output.shape) == tuple(routed.shape)
+            and shared_output.dtype == routed.dtype
+            and shared_output.device == routed.device
+        ):
+            raise RuntimeError(
+                "deferred MoE shared output does not match the selected routed output"
+            )
+        routed.add_(shared_output)
+        _log_once_active(_ROUTED_MOE_SLOT)
+        _receipts.completed(_ROUTED_MOE_SLOT)
+        return routed
 
     return dispatched
 
@@ -614,14 +755,171 @@ def _standard_topk(topk_output):
     return topk_ids, topk_weights
 
 
-def _moe_prepared(self, impl, slot):
+_ROUTED_MOE_SLOT = "moe.fused_routed_experts"
+
+
+def _bypassed_routing_contract(topk_output):
+    """Return ``(router_logits, correction_bias, top_k, routed_scaling)`` iff the
+    BYPASSED routing config matches the fat slot's contract EXACTLY, else None.
+
+    The slot's routing head is fixed: sigmoid scoring, selection on scores+bias,
+    weights from the unbiased scores renormalized then scaled in the routed output,
+    no expert grouping, no fused shared experts, no custom routing. An engine config
+    outside that domain stays stock — the dispatcher never approximates routing
+    semantics."""
+    router_logits = getattr(topk_output, "router_logits", None)
+    cfg = getattr(topk_output, "topk_config", None)
+    if cfg is None or not torch.is_tensor(router_logits):
+        return None
+    bias = getattr(cfg, "correction_bias", None)
+    top_k = getattr(cfg, "top_k", None)
+    scaling = getattr(cfg, "routed_scaling_factor", None)
+    if not torch.is_tensor(bias):
+        return None
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+        return None
+    if not isinstance(scaling, (int, float)) or isinstance(scaling, bool):
+        return None
+    if getattr(cfg, "scoring_func", None) != "sigmoid":
+        return None
+    if not getattr(cfg, "renormalize", False):
+        return None
+    if getattr(cfg, "apply_routed_scaling_factor_on_output", None) is not True:
+        return None
+    if getattr(cfg, "custom_routing_function", None) is not None:
+        return None
+    if int(getattr(cfg, "num_fused_shared_experts", 0) or 0) != 0:
+        return None
+    if getattr(cfg, "use_grouped_topk", False):
+        if getattr(cfg, "num_expert_group", None) not in (None, 0, 1):
+            return None
+        if getattr(cfg, "topk_group", None) not in (None, 0, 1):
+            return None
+    return router_logits, bias, int(top_k), float(scaling)
+
+
+def _try_routed_moe(
+    self,
+    x,
+    topk_output,
+    registry,
+    *,
+    in_graph,
+    quant_fmt,
+    stock_reference,
+    defer_completion: bool = False,
+):
+    """Dispatch a BYPASSED-routing batch into the fat routed-MoE slot.
+
+    Returns the combined output, or None when no registered implementation (or an
+    out-of-contract routing config) applies — the caller then serves stock."""
+    fat = _bypassed_routing_contract(topk_output)
+    if fat is None:
+        return None
+    if quant_fmt == "nvfp4" and not supports_nvfp4_moe_layer(self):
+        return None
+    router_logits, correction_bias, top_k, routed_scaling = fat
+    tp_size, world_size = _runtime_parallel_sizes()
+    w13 = self.w13_weight.data
+    w2 = self.w2_weight.data
+    descriptor = routed_moe_call_descriptor(
+        x,
+        top_k=top_k,
+        architecture=_arch_tag(x.device.index or 0) if x.is_cuda else None,
+        graph_mode="cuda_graph" if in_graph else "eager",
+        quant=quant_fmt or "dense",
+        num_experts=int(w13.shape[0]),
+        intermediate_dim=int(
+            getattr(
+                self,
+                "intermediate_size_per_partition",
+                w2.shape[-1] * (2 if quant_fmt else 1),
+            )
+        ),
+        tp_size=tp_size,
+        world_size=world_size,
+    )
+    impl = registry.select(_ROUTED_MOE_SLOT, descriptor).impl
+    if impl is None:
+        return None
+    if impl.prepare is None:
+        raise RuntimeError(
+            f"selected MoE candidate for {_ROUTED_MOE_SLOT} has no prepare"
+        )
+    committed = registry.select(_ROUTED_MOE_SLOT, descriptor)
+    if committed.impl is not impl:
+        raise RuntimeError("MoE selection changed between preflight and commit")
+    aud = not defer_completion and not in_graph and _audit.sampled()
+    a_x = x.clone() if aud else None
+    out = _run_routed_moe_kernel(
+        self,
+        x,
+        router_logits,
+        correction_bias,
+        impl,
+        top_k=top_k,
+        routed_scaling=routed_scaling,
+    )
+    if aud:
+        assert stock_reference is not None
+        _audit.run(
+            _ROUTED_MOE_SLOT,
+            (out,) if torch.is_tensor(out) else tuple(out),
+            lambda: stock_reference(a_x),
+        )
+    if not defer_completion:
+        _log_once_active(_ROUTED_MOE_SLOT)
+        _receipts.completed(_ROUTED_MOE_SLOT)
+    return out
+
+
+def _run_routed_moe_kernel(
+    self, x, router_logits, correction_bias, impl, *, top_k, routed_scaling
+):
+    """Run the fat routed-experts contract into validator-allocated output."""
+    live_inputs = {
+        "x": x,
+        "router_logits": router_logits,
+        "correction_bias": correction_bias,
+    }
+    contract, allocation, tensor_inputs, input_bindings = _allocate_live_outputs(
+        _ROUTED_MOE_SLOT, live_inputs, like=x
+    )
+    if len(allocation.outputs) != 1:
+        raise RuntimeError(f"{_ROUTED_MOE_SLOT} must declare exactly one live output")
+    out = allocation.outputs[0]
+    prepared = _moe_prepared(
+        self, impl, _ROUTED_MOE_SLOT,
+        extra_prepare_args=(top_k, routed_scaling),
+    )
+    _clear_moe_reduced(out)
+    try:
+        _receipts.invoke(
+            _ROUTED_MOE_SLOT, impl.entry,
+            x, router_logits, correction_bias, prepared, out,
+        )
+    finally:
+        _clear_moe_reduced(out)
+    _validate_live_outputs(
+        contract, allocation, tensor_inputs, input_bindings, like=x
+    )
+    if getattr(self, "reduce_results", False) and getattr(self, "moe_tp_size", 1) > 1:
+        from sglang.srt.distributed.communication_op import tensor_model_parallel_all_reduce
+
+        out = tensor_model_parallel_all_reduce(out)
+    return out
+
+
+def _moe_prepared(self, impl, slot, extra_prepare_args=()):
     """Run ``prepare`` once per implementation on this layer's expert weights.
 
     A layer may route different shapes to different variants.  A single layer-wide
     prepared object would hand variant B the layout produced by variant A, so the
     cache identity includes the slot, bundle, variant, and callable.  The slot's
     ``prepare_from_layer`` (validator-owned) maps the live sglang layer to the prepare
-    call shape — weights + biases + layout flags — so the miner owns only the transform."""
+    call shape — weights + biases + layout flags — so the miner owns only the
+    transform. ``extra_prepare_args`` appends validator-owned static routing config
+    (the fat slot's top_k + routed_scaling, read from the live TopKConfig)."""
     cache = getattr(self, "_cacheon_moe_prepared_by_impl", None)
     if cache is None:
         cache = {}
@@ -636,7 +934,7 @@ def _moe_prepared(self, impl, slot):
         else:
             args = (self.w13_weight.data, self.w2_weight.data)
         cache[key] = _receipts.invoke(
-            slot, impl.prepare, *args, phase="prepare"
+            slot, impl.prepare, *args, *extra_prepare_args, phase="prepare"
         )
     return cache[key]
 
@@ -698,8 +996,8 @@ def _run_moe_kernel(
         contract, allocation, tensor_inputs, input_bindings, like=x
     )
     if getattr(self, "reduce_results", False) and getattr(self, "moe_tp_size", 1) > 1:
-        # Sum this rank's partial expert output across the TP group (raises if the
-        # collective is unavailable -> caller falls back to the trusted baseline).
+        # Sum this rank's partial expert output across the TP group. A missing
+        # collective is terminal after candidate selection.
         from sglang.srt.distributed.communication_op import tensor_model_parallel_all_reduce
 
         out = tensor_model_parallel_all_reduce(out)
@@ -716,19 +1014,23 @@ def _tp_device_group():
     try:
         from sglang.srt.distributed.parallel_state import get_tp_group
 
-        return getattr(get_tp_group(), "device_group", None)
-    except Exception:  # noqa: BLE001 - no exact group authority -> stock
-        return None
+        group = getattr(get_tp_group(), "device_group", None)
+    except Exception as exc:  # noqa: BLE001 - preserve pinned-runtime cause
+        raise RuntimeError("selected MoE target cannot resolve its TP group") from exc
+    if group is None:
+        raise RuntimeError("selected MoE target resolved no TP device group")
+    return group
 
 
-def _moe_data_parallel_world_size() -> Optional[int]:
-    """Return Sglang's authoritative MoE-DP size, or ``None`` if unknown.
+def _moe_data_parallel_world_size() -> int:
+    """Return SGLang's authoritative MoE-DP size or fail the active target.
 
     ``FusedMoE.forward_impl`` surrounds its local expert core with dispatcher
     dispatch/combine when MoE data parallelism is active.  Cacheon's current
     ``(M,H)->(M,H)`` expert contracts replace that whole method but do not model
     those operations, so a layer attribute or environment hint cannot authorize
-    the route.  Missing or drifted runtime authority therefore means stock.
+    the route. Missing or drifted pinned-runtime authority is terminal; serving
+    stock would turn an active candidate into a phantom comparison.
     """
 
     try:
@@ -737,10 +1039,12 @@ def _moe_data_parallel_world_size() -> Optional[int]:
         )
 
         size = get_moe_data_parallel_world_size()
-    except Exception:  # noqa: BLE001 - missing/uninitialized authority -> stock
-        return None
+    except Exception as exc:  # noqa: BLE001 - preserve pinned-runtime cause
+        raise RuntimeError(
+            "selected MoE target cannot resolve MoE-DP topology"
+        ) from exc
     if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-        return None
+        raise RuntimeError("selected MoE target received invalid MoE-DP topology")
     return size
 
 
@@ -864,6 +1168,17 @@ def _log_collective_active() -> None:
 _ARFUSION_LOGGED_ACTIVE = False
 
 
+def _flashinfer_tuning() -> bool:
+    """Keep candidate collectives out of FlashInfer tactic profiling."""
+
+    try:
+        from flashinfer.autotuner import AutoTuner
+
+        return bool(AutoTuner.get().is_tuning_mode)
+    except Exception:  # noqa: BLE001 - an absent tuner is ordinary stock behavior
+        return False
+
+
 def make_arfusion_dispatcher(
     baseline_fn: Callable[..., object],
     *,
@@ -906,23 +1221,11 @@ def make_arfusion_dispatcher(
             # FlashInfer profiles stock tactics under this same epilogue call site.
             # Miner collectives must be invisible to that lifecycle: decide before
             # deep consume, capability preflight, or the receipted commit boundary.
-            if _moe_export.flashinfer_tuning():
+            if _flashinfer_tuning():
                 return baseline_fn(
                     input_tensor, residual, weight, eps, max_token_num, use_oneshot,
                     trigger_completion_at_end, fp32_acc, use_attn_tp_group
                 )
-            # DEEP consume first: if this call's input is a moe output whose in-op
-            # finalize was skipped (ptr-keyed pend from the export seam), the tensor
-            # is UNFINALIZED — it must never reach the shallow kernel or the stock
-            # baseline directly. _deep_consume always returns a finalized result
-            # (miner deep kernel, or trusted fp32 reconstruct + stock fusion).
-            if _moe_export.has_pends():
-                exp = _moe_export.consume(input_tensor)
-                if exp is not None:
-                    return _deep_consume(
-                        exp, input_tensor, residual, weight, eps, max_token_num,
-                        use_oneshot, trigger_completion_at_end, fp32_acc,
-                        use_attn_tp_group, registry=registry, baseline_fn=baseline_fn)
             # Contiguity guard = STOCK PARITY: the stock function refuses
             # non-contiguous input/residual/weight (real call sites pass views —
             # upstream guards for it, flashinfer_comm_fusion.py). A raw-pointer
@@ -1019,237 +1322,9 @@ def _arfusion_seam_active() -> bool:
     return os.environ.get("CACHEON_ARFUSION_SEAM") == "1"
 
 
-_DEEP_SLOT = "collective.moe_finalize_ar_rmsnorm"
-
-
-def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
-                  use_oneshot, trigger_completion_at_end, fp32_acc,
-                  use_attn_tp_group, *, registry, baseline_fn):
-    """Consume one skipped-finalize export under its producer-bound decision.
-
-    Export is the destructive boundary: after FlashInfer skipped finalize, the
-    pended tensor may run only the *same* variant, capability contract, and process
-    group that Cacheon selected before arming. With no deep candidate registered the
-    export is finished by trusted local finalize + stock fusion, which is stock end
-    to end. With one registered, every mismatch below is fatal: recovering into stock
-    would put stock inside a run that carries the candidate's name.
-    """
-    if not registry.variants(_DEEP_SLOT) or not registry.active:
-        return _deep_trusted_recovery(
-            exp, input_tensor, residual, weight, eps, max_token_num, use_oneshot,
-            trigger_completion_at_end, fp32_acc, use_attn_tp_group,
-            baseline_fn=baseline_fn,
-        )
-    t = input_tensor.shape[0] if torch.is_tensor(input_tensor) and input_tensor.dim() == 2 else -1
-    try:
-        exp_t = int(exp["T"])
-        exp_k = int(exp["K"])
-        exp_h = int(exp["hid"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError("cacheon deep seam: malformed export pend") from exc
-    if (
-        t < 0
-        or t > exp_t
-        or exp_t < 0
-        or not 1 <= exp_k <= 64
-        or input_tensor.shape[-1] != exp_h
-    ):
-        raise RuntimeError(
-            "cacheon deep seam: consume/export shape pairing broken "
-            f"(T={t}/{exp_t} H={input_tensor.shape[-1] if t >= 0 else '?'}"
-            f"/{exp_h} K={exp_k}) — refusing to serve an unfinalized output"
-        )
-
-    selection = exp.get("selection")
-    if not isinstance(selection, _moe_export.DeepSelection):
-        raise ValueError("export pend has no producer-bound selection")
-    if not (
-        input_tensor.dtype == torch.bfloat16
-        and input_tensor.is_contiguous()
-        and torch.is_tensor(residual)
-        and tuple(residual.shape) == tuple(input_tensor.shape)
-        and residual.dtype == input_tensor.dtype
-        and residual.device == input_tensor.device
-        and residual.is_contiguous()
-        and torch.is_tensor(weight)
-        and weight.dim() == 1
-        and weight.shape[0] == exp_h
-        and weight.dtype == input_tensor.dtype
-        and weight.device == input_tensor.device
-        and weight.is_contiguous()
-    ):
-        raise ValueError("consume tensors do not match the deep live ABI")
-
-    group = _arfusion_group(use_attn_tp_group)
-    topology = _moe_export.group_topology(group)
-    if (
-        _arfusion_group_role(use_attn_tp_group) != "tp"
-        or topology is None
-        or topology != selection.topology
-    ):
-        raise ValueError("consume process group differs from export preflight")
-
-    dimensions = {
-        "ep_size": 1,
-        "num_tokens": t,
-        "exp_tokens": exp_t,
-        "top_k": exp_k,
-    }
-    descriptor = _collective_call_descriptor(
-        input_tensor,
-        group_size=topology.world_size,
-        **dimensions,
-    )
-    decision = registry.select(_DEEP_SLOT, descriptor)
-    impl = decision.impl
-    if impl is not selection.impl:
-        raise ValueError("consume selected a different or ineligible deep variant")
-
-    # Every producer-observed invariant must still hold. ``num_tokens`` alone may
-    # shrink because CUDA-graph batch padding is head-trimmed at consume.
-    producer_invariants = {
-        key: value
-        for key, value in selection.descriptor.items()
-        if key != "num_tokens"
-    }
-    consume_invariants = {
-        key: value for key, value in descriptor.items() if key != "num_tokens"
-    }
-    if producer_invariants != consume_invariants:
-        raise ValueError("consume descriptor differs from export preflight")
-
-    # Everything above is deterministic routing/topology metadata shared by the
-    # lockstep ranks. From here onward, pointer wrapping, cloning, allocation,
-    # candidate execution, and post-validation are rank-local fallible work: a
-    # failure must abort the engine, never enter stock on only one rank.
-    gemm_out, row_map, scales = _moe_export.export_views(exp, input_tensor.device)
-    if not (
-        tuple(gemm_out.shape) == (exp_t * exp_k, exp_h)
-        and gemm_out.dtype == torch.bfloat16
-        and gemm_out.device == input_tensor.device
-        and gemm_out.is_contiguous()
-        and tuple(row_map.shape) == (exp_t * exp_k,)
-        and row_map.dtype == torch.int32
-        and row_map.device == input_tensor.device
-        and row_map.is_contiguous()
-        and tuple(scales.shape) == (exp_t, exp_k)
-        and scales.dtype == torch.float32
-        and scales.device == input_tensor.device
-        and scales.is_contiguous()
-    ):
-        raise RuntimeError("deep export views violate the typed live ABI")
-
-    # Collective audit: rank-identical sampling keeps the reference all-reduce
-    # in lockstep. This fallible clone/allocation prelude is deliberately after
-    # route commitment, so a rank-local failure aborts instead of diverging into
-    # stock while peers enter candidate collectives.
-    aud = not _in_cuda_graph() and _audit.sampled()
-    if aud:
-        a_inputs = {
-            "gemm_out": gemm_out.clone(),
-            "row_map": row_map.clone(),
-            "scales": scales.clone(),
-            "residual": residual.clone(),
-            "weight": weight,
-            "eps": eps,
-        }
-    live_inputs = {
-        "gemm_out": gemm_out,
-        "row_map": row_map,
-        "scales": scales,
-        "residual": residual,
-        "weight": weight,
-        "eps": float(eps),
-    }
-    contract, allocation, tensor_inputs, input_bindings = _allocate_live_outputs(
-        _DEEP_SLOT, live_inputs, like=input_tensor
-    )
-    if len(allocation.outputs) != 2:
-        raise RuntimeError(f"{_DEEP_SLOT} must declare exactly two live outputs")
-    out_norm, out_residual = allocation.outputs
-
-    committed = registry.select(_DEEP_SLOT, descriptor)
-    if committed.impl is not impl:
-        raise ValueError("deep selection changed between preflight and commit")
-    _receipts.invoke(
-        _DEEP_SLOT,
-        impl.entry,
-        gemm_out,
-        row_map,
-        scales,
-        residual,
-        weight,
-        float(eps),
-        out_norm,
-        out_residual,
-        group,
-    )
-    _validate_live_outputs(
-        contract,
-        allocation,
-        tensor_inputs,
-        input_bindings,
-        like=input_tensor,
-    )
-    if aud:
-        def _reference():
-            import torch.distributed as dist
-
-            from cacheon.slots import (
-                _ar_norm_reference_from_sum,
-                _moe_fin_local_finalize,
-            )
-
-            part = _moe_fin_local_finalize(a_inputs)
-            dist.all_reduce(part, group=group)
-            return _ar_norm_reference_from_sum(a_inputs, part, None)
-
-        _audit.run(_DEEP_SLOT, (out_norm, out_residual), _reference)
-    _log_arfusion_active()
-    _receipts.completed(_DEEP_SLOT)
-    return out_norm, out_residual
-
-
-def _deep_trusted_recovery(exp, input_tensor, residual, weight, eps, max_token_num,
-                           use_oneshot, trigger_completion_at_end, fp32_acc,
-                           use_attn_tp_group, *, baseline_fn):
-    """Finish a skipped-finalize export with no candidate involved, anywhere.
-
-    fp32 finalize from the exported views (head-trimmed to this call's T), then the
-    stock fusion on the now-FINALIZED tensor. Receipted as an orphan so a nonzero
-    count stays visible as seam-health data.
-    """
-
-    finalized = _moe_export.trusted_finalize(exp, input_tensor)
-    _moe_export.orphaned(exp)
-    return baseline_fn(finalized, residual, weight, eps, max_token_num, use_oneshot,
-                       trigger_completion_at_end, fp32_acc, use_attn_tp_group)
-
-
 # (The 2026-07-07 one-off "stockcheck" diagnostic that lived here was productized
 # into cacheon/audit.py — the in-engine audit is the same mechanism, generic across
 # dispatchers, receipted, and gated by the eval driver.)
-
-
-def make_msa_prefill_dispatcher(
-    baseline_fn: Callable[..., object],
-    module: object,
-    *,
-    registry: KernelRegistry = REGISTRY,
-    slot: str = "attention.msa_prefill_block_score",
-) -> Callable[..., object]:
-    from cacheon.msa_prefill_dispatch import make_dispatcher
-
-    return make_dispatcher(
-        baseline_fn,
-        module,
-        registry=registry,
-        slot=slot,
-        arch_tag=_arch_tag,
-        runtime_parallel_sizes=_runtime_parallel_sizes,
-        dynamo_compiling=_dynamo_compiling,
-        in_cuda_graph=_in_cuda_graph,
-    )
 
 
 def _arfusion_group(use_attn_tp_group: bool):

@@ -38,7 +38,7 @@ source .venv/bin/activate
 python -m pip install --upgrade pip uv
 
 # General resolver path; verify that the selected Torch wheel matches this host.
-uv pip install "sglang==0.5.13.post1" ninja datasets
+uv pip install "sglang==0.5.18" ninja datasets
 uv pip install -e ".[dev,release]"
 ```
 
@@ -48,7 +48,7 @@ install` above with the deployment-reviewed equivalent of:
 
 ```bash
 uv pip install --prerelease=allow --torch-backend=cu130 \
-  "sglang==0.5.13.post1" ninja datasets
+  "sglang==0.5.18" ninja datasets
 ```
 
 Do not use `--torch-backend=cu130` on a non-CUDA-13 host. In either path,
@@ -56,7 +56,7 @@ record `python -c 'import torch; print(torch.__version__, torch.version.cuda)'`
 and reject the environment if the resolved wheel does not match the driver,
 toolkit, and deployment lock.
 
-The repository's current SGLang contract is `0.5.13.post1`, but installing the
+The repository's current SGLang contract is `0.5.18`, but installing the
 pin is not evidence that its GPU gates passed. Check the dated validation
 boundary in [State of record](../reference/state-of-record.md) and the proof
 procedure in [SGLang compatibility](sglang-tracking.md). A deployment lockfile

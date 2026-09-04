@@ -48,29 +48,22 @@ The registered rows are:
 | Adapter | SGLang chokepoint | Served slot or role | Public binding |
 |---|---|---|---|
 | `activation` | `SiluAndMul.forward_cuda` | `activation.silu_and_mul` | Registry-selected |
-| `layernorm` | `RMSNorm.forward_cuda` | `norm.rmsnorm` | Registry-selected |
-| `attention` | `flash_decode_with_gqa_share_sparse` | graph-native MiniMax-M3 `attention.decode` sparse attend | `attention` |
-| `attention_audit_mode` | `MiniMaxSparseAttnBackend.__init__` | keeps MSA prefill but routes the untimed decode audit through the scored Triton insertion | `attention` |
-| `msa_decode_score` | `_decode_score_kernel` | paged per-head `attention.msa_block_score`; stock owns top-k and attend | `msa_decode_score` |
-| `moe` | `FusedMoE.forward_impl` | `moe.fused_experts`, `moe.fused_experts_reduce` | `moe` |
-| `collective` | `GroupCoordinator.all_reduce` | `collective.all_reduce` | `collective` |
-| `arfusion` | `flashinfer_allreduce_residual_rmsnorm` | `collective.ar_residual_rmsnorm`; consume side for the deep epilogue | `arfusion` |
-| `defer_gate` | `LayerCommunicator.should_fuse_mlp_allreduce_with_next_layer` | Deep epilogue producer/scoping gate | `arfusion` |
-| `moe_export` | `flashinfer_cutlass_fused_moe` | `collective.moe_finalize_ar_rmsnorm` export wrapper | `arfusion` |
-| `msa_prefill` | `flash_prefill_with_topk_index` | `attention.msa_prefill_block_score` | `msa_prefill` |
+| `layernorm` | `RMSNorm.forward_cuda` | `norm.rmsnorm`, `norm.fused_add_rmsnorm` | Registry-selected |
+| `dense` | `UnquantizedLinearMethod.apply` | `linear.dense` | `dense` |
+| `moe` family | `FusedMoE.forward_impl` plus the deferred FlashInfer runner/finalize chokepoints | `moe.fused_experts`, `moe.fused_experts_reduce`, `moe.fused_routed_experts` | `moe` |
+| `collective` family | `GroupCoordinator.all_reduce`, in/out-place variants, all-gather, and reduce-scatter | `collective.all_reduce`, `collective.all_gather_into_tensor`, `collective.reduce_scatter_tensor` | `collective` |
+| `arfusion` | `flashinfer_allreduce_residual_rmsnorm` | `collective.ar_residual_rmsnorm` | `arfusion` |
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot | None |
 | `artifact_context` | `ModelRunner.init_torch_distributed` | Rank-local sealed direct-artifact binding; not a slot | None |
 | `resident_swap` | `ModelRunner.init_decode_cuda_graph` plus idle-gated scheduler cache flush | Persistent resident screening only; not qualification or a slot | None |
-| `flashinfer_overlay` | FlashInfer `JitSpec` attribute | Reviewed dependency-patch consume side; not a slot | None |
 
-Several adapters may share one binding when they implement one semantic product. The shallow AR-fusion consume adapter and both deep producer adapters share `arfusion`; activating only part of that set would violate the protocol.
+Several adapter rows may share one binding when they implement one semantic
+product. The MoE and collective families use this to keep every version-pinned
+chokepoint under one validator-selected gate.
 
 The catalog can contain a verified slot before the pinned runtime exposes a safe
 live chokepoint. `norm.rmsnorm` remains such a case because MiniMax-M3 uses
-`GemmaRMSNorm`, not the registered `RMSNorm.forward_cuda`. The decode-score
-adapter replaces the pinned `_decode_score_kernel`; unchanged stock code consumes
-its paged per-head slab for top-k and attend. The separate `attention.decode`
-adapter patches both its defining symbol and by-value consumer. See
+`GemmaRMSNorm`, not the registered `RMSNorm.forward_cuda`. See
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 `resident_swap` is deliberately outside the crown path. It is inert unless the
@@ -118,11 +111,10 @@ Inside the engine, each binding maps to one fixed gate:
 
 | Binding | Fixed gate |
 |---|---|
-| `attention` | `CACHEON_ATTENTION_SEAM` |
 | `arfusion` | `CACHEON_ARFUSION_SEAM` |
 | `collective` | `CACHEON_COLLECTIVE_SEAM` |
+| `dense` | `CACHEON_DENSE_SEAM` |
 | `moe` | `CACHEON_MOE_SEAM` |
-| `msa_prefill` | `CACHEON_MSA_PREFILL_SEAM` |
 
 Normalization rejects unknown, duplicated, or non-canonical identifiers. Engine launch then emits the complete fixed seam environment, preventing stale ambient values from arming additional adapters.
 
@@ -206,20 +198,6 @@ Each adapter wraps one pinned chokepoint and delegates to a validator-owned disp
 Before candidate selection, ineligibility is normal stock routing. During crownable qualification, selected-path failures and fallbacks invalidate evidence; they must not silently become stock-vs-stock success. Collective selection is stricter: once ranks agree on a candidate route, a rank-local failure aborts the engine because peers may already be inside candidate communication.
 
 The dispatch implementation is [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py); registration and eligibility live in [`registry.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/registry.py).
-
-## Deep MoE epilogue
-
-The deep epilogue crosses three SGLang points but remains one semantic path:
-
-1. `defer_gate` decides whether the layer may defer its all-reduce and scopes the decision to the current forward/layer;
-2. `moe_export` wraps fused-MoE execution and exports the validator-defined pre-finalize tensors;
-3. `arfusion` consumes a pending deep export before considering the shallow AR+residual+RMSNorm route.
-
-All three adapters share the `arfusion` binding. The state machine rejects stale, mismatched, or incorrectly scoped exports, and it vetoes an unsafe final-layer defer based on model-owned layer count.
-
-The deep target may require a FlashInfer dependency overlay. That overlay is not an arbitrary runtime patch: a validator-shipped patcher applies an allowed source diff to a copied source tree during the reviewed build phase, the native artifact is sealed, and the `flashinfer_overlay` adapter redirects only registered late-bound JIT inputs. The installed dependency tree is not edited in place.
-
-Principal code: [`moe_export.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/moe_export.py), [`dep_policy.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dep_policy.py), and [`patchers/apply_dep_patch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/patchers/apply_dep_patch.py).
 
 ## Graph behavior
 

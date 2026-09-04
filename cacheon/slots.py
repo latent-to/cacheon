@@ -15,8 +15,8 @@ whole-model submissions).
 * ``"op"`` — a single fused op. ``silu_and_mul`` (``entry(x, out)``), ``rmsnorm``
   (``entry(x, weight, out, eps)``).
 * ``"block"`` — a region that fuses several ops behind one tensor-in/tensor-out
-  contract, for bigger wins. ``attention.sdpa`` (``entry(q, k, v, out, sm_scale,
-  causal)``) is the first: it subsumes QK^T + softmax + (·)V. A block has the *same
+  contract, for bigger wins. ``moe.fused_experts`` (dispatch + expert GEMMs +
+  activation + combine behind one call) is the canonical one. A block has the *same
   shape* of contract as an op (named tensor inputs -> validator-allocated outputs),
   just wider — which is exactly why the seam / verify / registry machinery is
   unchanged. The breadth is bounded: a slot must stay strictly upstream of the
@@ -47,30 +47,35 @@ Adding a slot is a validator action (a code change here), never a miner action.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
 
 from cacheon.artifact_abi import (
-    ATTENTION_DECODE_CALL_ABI,
-    ATTENTION_SDPA_CALL_ABI,
     COLLECTIVE_ALL_REDUCE_CALL_ABI,
+    COLLECTIVE_ALL_GATHER_CALL_ABI,
     COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
-    COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
-    MSA_BLOCK_SCORE_CALL_ABI,
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+    COLLECTIVE_REDUCE_SCATTER_CALL_ABI,
+    FUSED_ADD_RMSNORM_CALL_ABI,
     RMSNORM_CALL_ABI,
     SILU_AND_MUL_CALL_ABI,
     SlotCallABI,
 )
-from cacheon.minimax_sparse_decode_slot import build_slot as build_minimax_sparse_decode_slot
-from cacheon.minimax_sparse_prefill_slot import build_slot as build_minimax_sparse_prefill_slot
 from cacheon.moe_nvfp4_contract import (
-    prepare_args_from_inputs as _moe_prepare_args_from_inputs,
     prepare_args_from_layer as _moe_prepare_args_from_layer,
-    verification_inputs as _moe_nvfp4_verification_inputs,
+)
+from cacheon.dense_contract import dense_reference, make_dense_inputs
+from cacheon.collective_exchange_contract import (
+    all_gather_reference,
+    make_all_gather_inputs,
+    make_reduce_scatter_inputs,
+    reduce_scatter_reference,
+)
+from cacheon.norm_contract import (
+    fused_add_rmsnorm_reference,
+    make_fused_add_rmsnorm_inputs,
 )
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 
@@ -197,6 +202,9 @@ class SlotSpec:
     # outputs, one per ``out_shapes`` entry. None -> the reference is the sum itself and
     # the slot has exactly one output (the pre-existing all-reduce contract).
     collective_finish: Optional[Callable] = None
+    # Collectives whose reference is not an all-reduce may provide the complete
+    # distributed oracle directly: (inputs, group, rank, world_size) -> outputs.
+    collective_reference: Optional[Callable] = None
     # Per-slot end-to-end KL gate, calibrated to THIS slot's intrinsic noise floor (the
     # generic 5e-3 default is tuned for elementwise ops; attention sits ~6e-3 vs flash's
     # reordered softmax, so a flat 5e-3 false-fails a faithful attention kernel — README
@@ -334,97 +342,6 @@ RMSNORM = SlotSpec(
 
 
 # ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.sdpa   (scaled-dot-product attention, GQA/MQA-capable)
-#   q:(T,Hq,D)  k,v:(S,Hkv,D) -> o:(T,Hq,D) = softmax(qk^T*scale + causal) v
-#   contract: entry(q, k, v, out, sm_scale, causal)
-#
-# This is the first *block* slot — the attention compute core every backend
-# (FlashAttention / FlashInfer / FlashMLA / Triton) implements. It demonstrates the
-# generalization: several fused ops behind one typed boundary, multiple tensor
-# inputs, and a matched-ratio gate. This generic dense contract is offline-only in
-# the MiniMax-M3 arena; its graph-native decode sibling owns paged sparse attend.
-# ---------------------------------------------------------------------------
-
-
-def _sdpa_reference(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, sm_scale: float, causal: bool) -> torch.Tensor:
-    # q:(T,Hq,D)  k,v:(S,Hkv,Dv) -> o:(T,Hq,Dv).  GQA/MQA via Hq % Hkv == 0.
-    T, Hq, D = q.shape
-    S, Hkv, Dv = v.shape
-    g = Hq // Hkv
-    q32 = q.float()
-    k32 = k.float().repeat_interleave(g, dim=1)  # (S,Hq,D)
-    v32 = v.float().repeat_interleave(g, dim=1)  # (S,Hq,Dv)
-    scores = torch.matmul(q32.permute(1, 0, 2), k32.permute(1, 2, 0)) * sm_scale  # (Hq,T,S)
-    if causal:
-        offset = S - T  # the cached prefix length (0 in the self-contained case)
-        ti = torch.arange(T, device=q.device).view(T, 1)
-        si = torch.arange(S, device=q.device).view(1, S)
-        scores = scores.masked_fill((si > ti + offset).view(1, T, S), float("-inf"))
-    p = torch.softmax(scores, dim=-1)
-    o = torch.matmul(p, v32.permute(1, 0, 2)).permute(1, 0, 2)  # (T,Hq,Dv)
-    return o.to(q.dtype)
-
-
-def _sdpa_inputs(*, num_tokens: int, num_q_heads: int, num_kv_heads: int, head_dim: int,
-                 dtype: torch.dtype, device: str, seed: int) -> dict:
-    g = torch.Generator(device=device).manual_seed(seed)
-
-    def rnd(*shape: int) -> torch.Tensor:
-        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
-
-    return {
-        "q": rnd(num_tokens, num_q_heads, head_dim),
-        "k": rnd(num_tokens, num_kv_heads, head_dim),
-        "v": rnd(num_tokens, num_kv_heads, head_dim),
-        "sm_scale": 1.0 / (head_dim ** 0.5),
-        "causal": True,
-    }
-
-
-ATTENTION_SDPA = SlotSpec(
-    name="attention.sdpa",
-    entry="attention",
-    summary=(
-        "o = softmax(q k^T * scale + causal_mask) v  (GQA/MQA);  "
-        "q:(T,Hq,D) k,v:(S,Hkv,D) -> o:(T,Hq,D);  entry(q, k, v, out, sm_scale, causal)"
-    ),
-    kind="block",
-    make_inputs=_sdpa_inputs,
-    out_shapes=lambda i: [tuple(i["q"].shape)],
-    invoke_reference=lambda i: [_sdpa_reference(i["q"], i["k"], i["v"], i["sm_scale"], i["causal"])],
-    invoke_entry=lambda entry, i, outs, prepared: entry(i["q"], i["k"], i["v"], outs[0], i["sm_scale"], i["causal"]),
-    graph_dynamic_inputs=("q", "k", "v"),
-    shapes=(
-        {"num_tokens": 1, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64},
-        {"num_tokens": 16, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128},   # GQA
-        {"num_tokens": 64, "num_q_heads": 16, "num_kv_heads": 16, "head_dim": 128},
-        {"num_tokens": 128, "num_q_heads": 8, "num_kv_heads": 1, "head_dim": 128},  # MQA
-    ),
-    # A real attention kernel reorders the softmax reduction (flash / online softmax)
-    # and may run in fp8, so it is NOT bit-exact: gate on a matched ratio against the
-    # fp32 reference, not all-close. 0.99 tolerates a thin tail of ULP-level diffs.
-    correctness=Correctness("matched_ratio", min_ratio=0.99),
-    tolerances=_BF16_TOL,
-    # Attention's intrinsic end-to-end KL floor (~6e-3 vs flash) is above the generic
-    # 5e-3 gate; calibrate to ~5x the floor so a faithful attention kernel isn't false-failed.
-    kl_threshold=3e-2,
-    call_abi=ATTENTION_SDPA_CALL_ABI,
-)
-
-
-# ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.decode
-#   MiniMax-M3's graph-native sparse decode boundary over paged main/index KV.
-#   The focused constructor keeps this oversized registry to wiring only.
-# ---------------------------------------------------------------------------
-
-
-ATTENTION_DECODE = build_minimax_sparse_decode_slot(
-    SlotSpec, Correctness, _BF16_TOL, ATTENTION_DECODE_CALL_ABI
-)
-
-
-# ---------------------------------------------------------------------------
 # Slot (BLOCK, prepare+forward): moe.fused_experts
 #   prepare(w13, w2) -> prepared              (weight layout; runs ONCE at load)
 #   forward(x, topk_ids, topk_weights, prepared, out)   (per step)
@@ -534,6 +451,116 @@ MOE_FUSED_EXPERTS = SlotSpec(
 
 
 # ---------------------------------------------------------------------------
+# Slot (BLOCK): moe.fused_routed_experts   (the FAT MoE slot: routing + experts
+#   + combine in one contract)
+#
+# The boundary every served MoE engine of this class must have: FusedMoE.forward_impl
+# receiving (hidden_states, router LOGITS). On runner backends that route inside the
+# fused kernel (flashinfer_trtllm hands the seam a BypassedTopKOutput carrying
+# router_logits only), the thin fused_experts contract cannot bind — this slot is
+# that boundary. Measured 2026-08-30 (GLM-5.3 decode cell): routing + both expert
+# GEMMs + finalize + input quant ≈ 53% of decode GPU time.
+#
+# Routing math mirrors the pinned engine exactly (topk.py biased_grouped_topk_impl,
+# no group step at n_group=1): select on sigmoid(logits) + correction_bias, weight
+# by the UNBIASED sigmoid scores gathered at the selection, renormalize with the
+# +1e-20 epsilon, scale by routed_scaling. The near-tie discontinuity that makes a
+# single output gate false-fail honest kernels (two experts tied at rank k) is
+# killed at INPUT SYNTHESIS, not with a hybrid metric: the input builder boosts the
+# selected experts' logits so every verification row has an unambiguous top-k, and
+# real-serving tie behavior stays covered by the end-to-end quality gates.
+# ---------------------------------------------------------------------------
+
+
+def _routed_moe_inputs(*, num_tokens: int, num_experts: int, hidden: int, inter: int,
+                       topk: int, routed_scaling: float = 1.0, dtype: torch.dtype,
+                       device: str, seed: int) -> dict:
+    g = torch.Generator(device=device).manual_seed(seed)
+
+    def rnd(*shape: int, scale: float = 1.0) -> torch.Tensor:
+        return (torch.randn(*shape, generator=g, device=device, dtype=torch.float32) * scale).to(dtype)
+
+    logits = torch.randn(num_tokens, num_experts, generator=g, device=device,
+                         dtype=torch.float32)
+    bias = torch.randn(num_experts, generator=g, device=device,
+                       dtype=torch.float32) * 0.1
+    # Margin enforcement: lift the already-selected experts' logits so the
+    # selection gap at rank `topk` is unambiguous for every row (the boost is
+    # monotone in choice score, so the selected SET is unchanged).
+    choice = torch.sigmoid(logits) + bias.unsqueeze(0)
+    chosen = choice.topk(topk, dim=-1).indices
+    logits = logits.scatter_add(
+        1, chosen, torch.ones_like(chosen, dtype=torch.float32)
+    )
+    return {
+        "x": rnd(num_tokens, hidden, scale=0.1),
+        "w13": rnd(num_experts, 2 * inter, hidden, scale=0.05),
+        "w2": rnd(num_experts, hidden, inter, scale=0.05),
+        "router_logits": logits,
+        "correction_bias": bias,
+        "topk": int(topk),
+        "routed_scaling": float(routed_scaling),
+    }
+
+
+def _routed_moe_topk(router_logits: torch.Tensor, correction_bias: torch.Tensor,
+                     topk: int, routed_scaling: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """The pinned engine's routing head in fp32 (selection biased, weights unbiased)."""
+    scores = torch.sigmoid(router_logits.float())
+    choice = scores + correction_bias.float().unsqueeze(0)
+    topk_ids = torch.topk(choice, k=topk, dim=-1).indices
+    weights = scores.gather(1, topk_ids)
+    weights = weights / (weights.sum(-1, keepdim=True) + 1e-20)
+    return topk_ids.to(torch.int32), (weights * routed_scaling).float()
+
+
+def _routed_moe_reference(i: dict, act: Activation = _SILU) -> torch.Tensor:
+    topk_ids, topk_weights = _routed_moe_topk(
+        i["router_logits"], i["correction_bias"], i["topk"], i["routed_scaling"]
+    )
+    return _moe_reference(i["x"], i["w13"], i["w2"], topk_ids, topk_weights, act)
+
+
+MOE_FUSED_ROUTED_EXPERTS = SlotSpec(
+    name="moe.fused_routed_experts",
+    entry="fused_routed_experts",
+    prepare="prepare",
+    summary=(
+        "fused ROUTED MoE — routing + experts + combine, a (prepare, forward) PAIR. "
+        "prepare(w13, w2, topk, routed_scaling) -> prepared (once at load); "
+        "forward(x, router_logits, correction_bias, prepared, out). "
+        "x:(M,H) router_logits:(M,E) correction_bias:(E,) w13:(E,2I,H)[gate;up] "
+        "w2:(E,H,I) -> out:(M,H). Selection = topk(sigmoid(logits)+bias); weights = "
+        "unbiased sigmoid scores renormalized (+1e-20) and scaled by routed_scaling."
+    ),
+    kind="block",
+    make_inputs=_routed_moe_inputs,
+    out_shapes=lambda i: [(i["x"].shape[0], i["x"].shape[1])],
+    invoke_reference=lambda i: [_routed_moe_reference(i)],
+    invoke_prepare=lambda prepare_fn, i: prepare_fn(
+        i["w13"], i["w2"], i["topk"], i["routed_scaling"]
+    ),
+    # Live layers map through the same nvfp4-aware contract as the thin slot;
+    # the dispatcher appends (top_k, routed_scaling) from the engine's TopKConfig.
+    prepare_from_layer=_moe_prepare_args_from_layer,
+    invoke_entry=lambda entry, i, outs, prepared: entry(
+        i["x"], i["router_logits"], i["correction_bias"], prepared, outs[0]
+    ),
+    graph_dynamic_inputs=("x", "router_logits"),
+    shapes=(
+        {"num_tokens": 4, "num_experts": 8, "hidden": 256, "inter": 128, "topk": 2,
+         "routed_scaling": 1.0},
+        {"num_tokens": 16, "num_experts": 32, "hidden": 512, "inter": 256, "topk": 4,
+         "routed_scaling": 2.5},
+        {"num_tokens": 33, "num_experts": 16, "hidden": 320, "inter": 192, "topk": 4,
+         "routed_scaling": 1.0},
+    ),
+    correctness=Correctness("matched_ratio", min_ratio=0.97),
+    tolerances=_BF16_TOL,
+)
+
+
+# ---------------------------------------------------------------------------
 # Catalog
 # ---------------------------------------------------------------------------
 
@@ -594,6 +621,66 @@ COLLECTIVE_ALL_REDUCE = SlotSpec(
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
     call_abi=COLLECTIVE_ALL_REDUCE_CALL_ABI,
+)
+
+
+COLLECTIVE_ALL_GATHER = SlotSpec(
+    name="collective.all_gather_into_tensor",
+    entry="all_gather_into_tensor",
+    summary=(
+        "equal-size tensor all-gather along dim 0: each rank contributes x:(M,H), "
+        "entry(x, out, group) fills out:(world*M,H) in rank order."
+    ),
+    kind="collective",
+    make_inputs=make_all_gather_inputs,
+    out_shapes=lambda i: [
+        (i["x"].shape[0] * int(i["world_size"]), i["x"].shape[1])
+    ],
+    invoke_reference=lambda i: [i["x"]],
+    invoke_entry=lambda entry, i, outs, prepared: entry(
+        i["x"], outs[0], i.get("__group__")
+    ),
+    graph_dynamic_inputs=("x",),
+    invoke_collective=lambda entry, i, out, group, prepared: entry(i["x"], out, group),
+    collective_reference=all_gather_reference,
+    shapes=(
+        {"num_tokens": 1, "hidden": 6144},
+        {"num_tokens": 8, "hidden": 6144},
+        {"num_tokens": 32, "hidden": 6144},
+    ),
+    correctness=Correctness("matched_ratio", min_ratio=0.99),
+    tolerances=_BF16_TOL,
+    call_abi=COLLECTIVE_ALL_GATHER_CALL_ABI,
+)
+
+
+COLLECTIVE_REDUCE_SCATTER = SlotSpec(
+    name="collective.reduce_scatter_tensor",
+    entry="reduce_scatter_tensor",
+    summary=(
+        "equal-size SUM reduce-scatter along dim 0: each rank contributes "
+        "x:(world*M,H), entry(x, out, group) fills this rank's out:(M,H)."
+    ),
+    kind="collective",
+    make_inputs=make_reduce_scatter_inputs,
+    out_shapes=lambda i: [
+        (i["x"].shape[0] // int(i["world_size"]), i["x"].shape[1])
+    ],
+    invoke_reference=lambda i: [i["x"]],
+    invoke_entry=lambda entry, i, outs, prepared: entry(
+        i["x"], outs[0], i.get("__group__")
+    ),
+    graph_dynamic_inputs=("x",),
+    invoke_collective=lambda entry, i, out, group, prepared: entry(i["x"], out, group),
+    collective_reference=reduce_scatter_reference,
+    shapes=(
+        {"num_tokens": 1, "hidden": 6144},
+        {"num_tokens": 8, "hidden": 6144},
+        {"num_tokens": 32, "hidden": 6144},
+    ),
+    correctness=Correctness("matched_ratio", min_ratio=0.99),
+    tolerances=_BF16_TOL,
+    call_abi=COLLECTIVE_REDUCE_SCATTER_CALL_ABI,
 )
 
 
@@ -691,100 +778,60 @@ COLLECTIVE_AR_RESIDUAL_RMSNORM = SlotSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slot (collective): collective.moe_finalize_ar_rmsnorm — the DEEP fused-epilogue
-# waist: MoE finalize (gather permuted gemm2 rows, scale, sum over experts-per-token)
-# + all-reduce + residual-add + RMSNorm in ONE kernel. This is the fe_export deep
-# seam's kernel contract: the producer dep-patch exports flashinfer's pre-finalize
-# pointers (gemm_output / row_map / scales) instead of launching the standalone
-# finalize kernel, and the deferred-AR call site consumes them here — killing a
-# ~17us/layer latency-bound kernel + a full [T,H] round-trip at decode.
-#
-# Verifiable WITHOUT flashinfer: the validator seeds synthetic pre-finalize tensors
-# per rank, and finalize is LINEAR, so finalize-then-AR == AR-then-finalize:
-# collective_partial = trusted fp32 LOCAL finalize per rank, verify sums across
-# ranks, collective_finish = the same trusted add+norm as the shallow slot.
-#
-# ABI (matches fe_export.h, 2026-07-02 campaign):
-#   gemm_out [T_exp*K, H]  per-rank partial (unfused gemm2 output, permuted rows)
-#   row_map  [T_exp*K] i32 REPLICATED, K-MAJOR: slot (t, k) lives at t + k*T_exp
-#   scales   [T_exp, K] f32 REPLICATED, T-MAJOR
-#   residual [T, H], weight [H]  replicated; T <= T_exp (CUDA-graph batch padding:
-#   the consume call may HEAD-TRIM — same data_ptr, offset-0 slice).
-# ---------------------------------------------------------------------------
-
-
-def _moe_fin_inputs(*, num_tokens: int, exp_tokens: int, topk: int, hidden: int,
-                    dtype: torch.dtype, device: str, seed: int,
-                    rank: int = 0, world_size: int = 1) -> dict:
-    # gemm_out differs per rank (TP-sharded gemm2 emits per-rank partials the reduce
-    # sums); routing (row_map/scales) and residual/weight are REPLICATED model/router
-    # state -> seeded WITHOUT rank. Same replication-split discipline as the shallow
-    # slot. num_tokens is jittered by verify; exp_tokens is clamped to keep T <= T_exp.
-    exp_tokens = max(exp_tokens, num_tokens)
-    rows = exp_tokens * topk
-    gx = torch.Generator(device=device).manual_seed(seed + 1_000_003 * rank)
-    gs = torch.Generator(device=device).manual_seed(seed)
-    gemm_out = (torch.randn(rows, hidden, generator=gx, device=device,
-                            dtype=torch.float32) * 0.1).to(dtype)
-    row_map = torch.randperm(rows, generator=gs, device=device).to(torch.int32)
-    scales = (torch.rand(exp_tokens, topk, generator=gs, device=device,
-                         dtype=torch.float32) + 0.1) / topk
-    residual = (torch.randn(num_tokens, hidden, generator=gs, device=device,
-                            dtype=torch.float32) * 0.1).to(dtype)
-    weight = (torch.rand(hidden, generator=gs, device=device,
-                         dtype=torch.float32) * 0.5 + 0.75).to(dtype)
-    return {"gemm_out": gemm_out, "row_map": row_map, "scales": scales,
-            "residual": residual, "weight": weight, "eps": 1e-6}
-
-
-def _moe_fin_local_finalize(inputs: dict, prepared=None) -> "torch.Tensor":
-    # Trusted fp32 LOCAL finalize (this rank's partial): for token t,
-    # acc[t] = sum_k scales[t,k] * gemm_out[row_map[t + k*T_exp]]; head-trim to T.
-    t = inputs["residual"].shape[0]
-    t_exp, k = inputs["scales"].shape
-    per_k = inputs["gemm_out"].float()[inputs["row_map"].long().view(k, t_exp)]
-    acc = (per_k * inputs["scales"].float().t().unsqueeze(-1)).sum(dim=0)
-    return acc[:t]
-
-
-COLLECTIVE_MOE_FINALIZE_AR_RMSNORM = SlotSpec(
-    name="collective.moe_finalize_ar_rmsnorm",
-    entry="moe_finalize_ar_rmsnorm",
+FUSED_ADD_RMSNORM = SlotSpec(
+    name="norm.fused_add_rmsnorm",
+    entry="fused_add_rmsnorm",
     summary=(
-        "DEEP fused MoE epilogue (the fe_export contract): finalize (gather permuted "
-        "gemm2 rows via K-MAJOR row_map, scale by T-MAJOR scales, sum over K) + "
-        "all-reduce + residual-add + RMSNorm, one kernel. gemm_out:(T_exp*K,H) per-rank "
-        "partial; row_map/scales/residual/weight replicated; T<=T_exp (graph padding "
-        "head-trim). entry(gemm_out, row_map, scales, residual, weight, eps, out_norm, "
-        "out_residual, group). Validator owns both outputs + the group; verified "
-        "DISTRIBUTED without flashinfer — finalize is linear, so the reference is "
-        "trusted fp32 local finalize per rank -> cross-rank sum -> add+norm."
+        "fused residual add + RMSNorm at SGLang's RMSNorm.forward_cuda waist: "
+        "entry(x, residual, weight, eps, out_norm, out_residual). The validator "
+        "owns both outputs; the residual add rounds in the input dtype before "
+        "the fp32 variance reduction."
     ),
-    kind="collective",
-    make_inputs=_moe_fin_inputs,
-    out_shapes=lambda i: [tuple(i["residual"].shape), tuple(i["residual"].shape)],
-    invoke_reference=lambda i: _ar_norm_reference_from_sum(
-        i, _moe_fin_local_finalize(i), None),
+    kind="block",
+    make_inputs=make_fused_add_rmsnorm_inputs,
+    out_shapes=lambda i: [tuple(i["x"].shape), tuple(i["x"].shape)],
+    invoke_reference=fused_add_rmsnorm_reference,
     invoke_entry=lambda entry, i, outs, prepared: entry(
-        i["gemm_out"], i["row_map"], i["scales"], i["residual"], i["weight"], i["eps"],
-        outs[0], outs[1], i.get("__group__")),
-    graph_dynamic_inputs=("gemm_out", "row_map", "scales", "residual"),
-    collective_partial=_moe_fin_local_finalize,
-    invoke_collective=lambda entry, i, outs, group, prepared: entry(
-        i["gemm_out"], i["row_map"], i["scales"], i["residual"], i["weight"], i["eps"],
-        outs[0], outs[1], group),
-    collective_finish=_ar_norm_reference_from_sum,
+        i["x"], i["residual"], i["weight"], i["eps"], outs[0], outs[1]
+    ),
+    graph_dynamic_inputs=("x", "residual"),
     shapes=(
-        # K=5 = M3 (top4 + fused shared expert). Head-trim (T < T_exp) exercised in the
-        # 1st/3rd shapes; num_tokens jitters per run, exp_tokens clamps to stay >= T.
-        {"num_tokens": 8, "exp_tokens": 16, "topk": 5, "hidden": 4096},
-        {"num_tokens": 64, "exp_tokens": 64, "topk": 5, "hidden": 6144},
-        {"num_tokens": 224, "exp_tokens": 256, "topk": 5, "hidden": 6144},
+        {"num_tokens": 8, "hidden": 6144},
+        {"num_tokens": 32, "hidden": 6144},
+        {"num_tokens": 128, "hidden": 6144},
+        {"num_tokens": 4096, "hidden": 6144},
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
-    call_abi=COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
+    call_abi=FUSED_ADD_RMSNORM_CALL_ABI,
+)
+
+
+DENSE_LINEAR = SlotSpec(
+    name="linear.dense",
+    entry="dense",
+    prepare="prepare",
+    summary=(
+        "unquantized local dense GEMM with validator-owned output: "
+        "prepare(weight[N,K]) -> prepared; entry(x[M,K], prepared, out[M,N]). "
+        "Bias and the surrounding row/column-parallel communication stay outside "
+        "the slot."
+    ),
+    kind="block",
+    make_inputs=make_dense_inputs,
+    out_shapes=lambda i: [(i["x"].shape[0], i["weight"].shape[0])],
+    invoke_reference=dense_reference,
+    invoke_prepare=lambda prepare_fn, i: prepare_fn(i["weight"]),
+    prepare_from_layer=lambda layer: (layer.weight.data,),
+    invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], prepared, outs[0]),
+    graph_dynamic_inputs=("x",),
+    shapes=(
+        {"num_tokens": 8, "input_dim": 256, "output_dim": 384},
+        {"num_tokens": 32, "input_dim": 512, "output_dim": 256},
+        {"num_tokens": 128, "input_dim": 384, "output_dim": 512},
+    ),
+    correctness=Correctness("matched_ratio", min_ratio=0.99),
+    tolerances=_BF16_TOL,
 )
 
 
@@ -844,108 +891,18 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 )
 
 
-# MiniMax decode scores are paged and consumed per index head.  The old dense,
-# summed-head sheet modeled another operation: topk(sum(heads)) is not the stock
-# union/reduction of per-head top-k selections.
-def _msa_inputs(*, batch: int, context: int, num_q_heads: int, num_kv_heads: int,
-                head_dim: int, block_size: int, topk: int, init_blocks: int,
-                local_blocks: int, dtype: torch.dtype, device: str, seed: int) -> dict:
-    generator = torch.Generator(device=device).manual_seed(seed)
-    rnd = lambda *shape: torch.randn(  # noqa: E731
-        *shape, generator=generator, device=device, dtype=torch.float32
-    ).to(dtype)
-    context = max(topk + 4, (context + block_size - 1) // block_size) * block_size
-    pages, requests = context // block_size, batch + 2
-    req_to_token = torch.empty(requests, context, dtype=torch.int32, device=device)
-    logical = torch.arange(context, device=device)
-    for request in range(requests):
-        order = torch.randperm(pages, generator=generator, device=device)
-        req_to_token[request] = (
-            (request % 2) * context + order[logical // block_size] * block_size
-            + logical % block_size
-        ).int()
-    seq_lens = torch.randint(
-        context - 3 * block_size + 1, context + 1, (batch,), generator=generator,
-        dtype=torch.int32, device=device,
-    )
-    seq_lens[0] = context
-    return {
-        "q": rnd(batch, num_q_heads, head_dim),
-        "k_cache": rnd(2 * context, num_kv_heads, head_dim),
-        "req_to_token": req_to_token,
-        "slot_ids": torch.randperm(requests, generator=generator, device=device)[:batch].int(),
-        "seq_lens": seq_lens, "sm_scale": head_dim**-0.5,
-        "block_size": block_size, "topk": topk,
-        "init_blocks": init_blocks, "local_blocks": local_blocks,
-    }
-
-
-def _msa_block_score_reference(i):
-    q, cache, block = i["q"].float(), i["k_cache"].float(), i["block_size"]
-    physical = i["req_to_token"][i["slot_ids"].long()].long()
-    keys, kv_heads = cache[physical], cache.shape[1]
-    grouped_q = q.view(q.shape[0], kv_heads, q.shape[1] // kv_heads, q.shape[2])
-    token = torch.einsum("bkgd,bskd->bkgs", grouped_q, keys)
-    token = token.flatten(1, 2).permute(1, 0, 2) * i["sm_scale"] * 1.4426950409
-    positions = torch.arange(token.shape[-1], device=q.device)
-    token.masked_fill_(positions >= i["seq_lens"].view(-1, 1), float("-inf"))
-    scores = token.view(q.shape[1], q.shape[0], -1, block).amax(-1)
-    blocks = (i["seq_lens"] + block - 1) // block
-    columns = torch.arange(scores.shape[-1], device=q.device).view(1, 1, -1)
-    scores.masked_fill_(columns >= blocks.view(1, -1, 1), float("-inf"))
-    scores[:, :, :i["init_blocks"]] = 1e30
-    local = (columns >= (blocks - i["local_blocks"]).clamp_min(0).view(1, -1, 1))
-    scores.masked_fill_(local & (columns < blocks.view(1, -1, 1)), 1e29)
-    return scores
-
-
-ATTENTION_MSA_BLOCK_SCORE = SlotSpec(
-    name="attention.msa_block_score",
-    entry="msa_block_score",
-    summary=(
-        "Paged MiniMax decode index scores: q:(B,Hq,D), k_cache:(slots,Hkv,D), "
-        "page mapping and row lengths -> fp32 scores:(Hq,B,blocks). The candidate "
-        "owns scores; the validator retains per-head top-k, reduction and attend."
-    ),
-    kind="block",
-    make_inputs=_msa_inputs,
-    out_shapes=lambda i: [(i["q"].shape[1], i["q"].shape[0],
-                           i["req_to_token"].shape[1] // i["block_size"])],
-    invoke_reference=lambda i: [_msa_block_score_reference(i)],
-    invoke_entry=lambda entry, i, outs, prepared: entry(
-        i["q"], i["k_cache"], i["req_to_token"], i["slot_ids"], i["seq_lens"],
-        outs[0], i["sm_scale"], i["block_size"], i["topk"], i["init_blocks"],
-        i["local_blocks"]),
-    graph_dynamic_inputs=("q", "k_cache", "req_to_token", "slot_ids", "seq_lens"),
-    # MiniMax-M3 has four global index heads; TP4 shards one head to each rank.
-    shapes=tuple({"batch": batch, "context": 2560, "num_q_heads": 1,
-                  "num_kv_heads": 1, "head_dim": 128, "block_size": 128,
-                  "topk": 16, "init_blocks": 0, "local_blocks": 1}
-                 for batch in (1, 8, 32)),
-    correctness=Correctness("topk_overlap", top_k=16, min_overlap=0.875),
-    tolerances=_BF16_TOL,
-    kl_threshold=3e-2,
-    call_abi=MSA_BLOCK_SCORE_CALL_ABI,
-)
-
-
-ATTENTION_MSA_PREFILL_BLOCK_SCORE = build_minimax_sparse_prefill_slot(
-    SlotSpec, Correctness, _BF16_TOL, MSA_PREFILL_BLOCK_SCORE_CALL_ABI
-)
-
-
 SLOTS: dict[str, SlotSpec] = {
     SILU_AND_MUL.name: SILU_AND_MUL,
     RMSNORM.name: RMSNORM,
-    ATTENTION_SDPA.name: ATTENTION_SDPA,
-    ATTENTION_DECODE.name: ATTENTION_DECODE,
-    ATTENTION_MSA_BLOCK_SCORE.name: ATTENTION_MSA_BLOCK_SCORE,
-    ATTENTION_MSA_PREFILL_BLOCK_SCORE.name: ATTENTION_MSA_PREFILL_BLOCK_SCORE,
     MOE_FUSED_EXPERTS.name: MOE_FUSED_EXPERTS,
+    MOE_FUSED_ROUTED_EXPERTS.name: MOE_FUSED_ROUTED_EXPERTS,
     MOE_FUSED_EXPERTS_REDUCE.name: MOE_FUSED_EXPERTS_REDUCE,
+    DENSE_LINEAR.name: DENSE_LINEAR,
     COLLECTIVE_ALL_REDUCE.name: COLLECTIVE_ALL_REDUCE,
+    COLLECTIVE_ALL_GATHER.name: COLLECTIVE_ALL_GATHER,
+    COLLECTIVE_REDUCE_SCATTER.name: COLLECTIVE_REDUCE_SCATTER,
     COLLECTIVE_AR_RESIDUAL_RMSNORM.name: COLLECTIVE_AR_RESIDUAL_RMSNORM,
-    COLLECTIVE_MOE_FINALIZE_AR_RMSNORM.name: COLLECTIVE_MOE_FINALIZE_AR_RMSNORM,
+    FUSED_ADD_RMSNORM.name: FUSED_ADD_RMSNORM,
 }
 
 
@@ -981,119 +938,38 @@ def list_slots() -> list[str]:
 class SlotProfile:
     """Validator-owned (model, slot) overrides. ``activation`` retargets the HP reference
     to the model's real activation; ``correctness`` (optional) swaps the op-sanity metric
-    (e.g. cosine for a low-bit kernel). None fields keep the generic slot default."""
+    (e.g. cosine for a low-bit kernel). None fields keep the generic slot default.
+
+    Every model fact a slot needs lives in ``cacheon.model_profiles``: the
+    verification ``shapes`` (per-rank shards, at the arena TP), the fused-shared-expert
+    count (0 when the arena serves shared experts unfused — read it from the live
+    server_args, not the checkpoint), and the routed-weight scale the synthetic routing
+    mimics. Rotating the arena adds a MODEL_PROFILES entry; it does not edit code."""
 
     activation: Activation = field(default_factory=Activation)
     correctness: Optional[Correctness] = None
     quant: Optional[str] = None
-
-
-_MOE_SLOTS = ("moe.fused_experts", "moe.fused_experts_reduce")
+    shapes: Optional[tuple[dict, ...]] = None
+    num_fused_shared_experts: int = 0
+    routed_weight_scale: float = 1.0
 
 
 def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
-    """Return a copy of ``slot`` retargeted by a validator ``profile``. Only rebinds the
-    pieces the profile changes (the activation-bearing references + the correctness policy);
-    everything else — inputs, shapes, seam wiring — is untouched. The module-level slot
-    singletons are never mutated, so ``get_slot`` stays generic."""
-    repl: dict = {}
-    if slot.name in _MOE_SLOTS:
-        act = profile.activation
+    from cacheon.model_profiles import specialize_slot as _specialize_slot
 
-        def _ref(i, _act=act):
-            return [_moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"], _act)]
-
-        repl["invoke_reference"] = _ref
-        if slot.collective_partial is not None:  # the reduce block's distributed reference
-            def _partial(i, prepared, _act=act):
-                return _moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"], _act).float()
-
-            repl["collective_partial"] = _partial
-    if profile.correctness is not None:
-        repl["correctness"] = profile.correctness
-    if slot.name in _MOE_SLOTS and profile.quant == "nvfp4":
-        make_dense_inputs = slot.make_inputs
-
-        def _quant_inputs(**kwargs):
-            dense = make_dense_inputs(**kwargs)
-            tokens, top_k = dense["topk_ids"].shape
-            experts = dense["w13"].shape[0]
-            routed_k = top_k - 1
-            generator = torch.Generator(device=kwargs["device"]).manual_seed(
-                int(kwargs["seed"]) + 17_171
-            )
-            routed = torch.rand(
-                tokens, experts - 1, generator=generator, device=kwargs["device"]
-            ).topk(routed_k, dim=-1).indices.to(torch.int32)
-            scores = torch.rand(
-                tokens, routed_k, generator=generator, device=kwargs["device"]
-            )
-            dense["topk_ids"] = torch.cat(
-                (routed, torch.full_like(routed[:, :1], experts - 1)), dim=-1
-            )
-            dense["topk_weights"] = torch.cat(
-                (2 * scores / scores.sum(-1, keepdim=True), torch.ones_like(scores[:, :1])),
-                dim=-1,
-            )
-            dense.update(
-                __moe_tp_size__=int(kwargs.get("world_size", 4)),
-                __moe_ep_size__=1,
-                __moe_ep_rank__=0,
-                __moe_reduce_results__=False,
-                __moe_num_fused_shared_experts__=1,
-            )
-            return _moe_nvfp4_verification_inputs(dense)
-
-        repl["make_inputs"] = _quant_inputs
-        repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
-            *_moe_prepare_args_from_inputs(i)
-        )
-        repl["call_abi"] = None
-        repl["shapes"] = _M3_MOE_SHAPES
-    return replace(slot, **repl) if repl else slot
-
-
-_M3_MOE_PROFILE = SlotProfile(
-    activation=Activation("swigluoai", alpha=1.702, limit=7.0),
-    # Low-bit (NVFP4) experts: gate on cosine vs the same-function fp32 reference.
-    # min_cosine = the measured NVFP4 representational floor (0.9958 at M3 shape,
-    # m3_swigluoai_gate.py) with headroom; plain-SiLU scores 0.45 and is rejected.
-    # No norm guard yet (max_rel_norm_err uncalibrated — TODO measure the floor).
-    correctness=Correctness("cosine", min_cosine=0.985),
-)
-_M3_MOE_SHAPES = (
-    {"num_tokens": 1, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
-    {"num_tokens": 8, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
-    {"num_tokens": 32, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
-)
-_M3_MOE_NVFP4_PROFILE = replace(_M3_MOE_PROFILE, quant="nvfp4")
-
-# model key (as a miner may declare it / as the validator keys its served model) -> {slot: profile}
-MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
-    "MiniMax-M3": {
-        # BOTH experts slots run the same swigluoai experts on M3 — the reduce-owning
-        # block (the overlap target) just also owns the trailing all-reduce, and
-        # specialize_slot retargets its distributed reference (collective_partial) too.
-        # Registering only the plain slot would verify an M3 reduce kernel against a
-        # SiLU reference and false-fail every honest submission.
-        "moe.fused_experts": _M3_MOE_NVFP4_PROFILE,
-        "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
-    },
-}
-# NVFP4 builds carry a "-NVFP4" suffix in their declared model id; alias them.
-MODEL_PROFILES["MiniMax-M3-NVFP4"] = MODEL_PROFILES["MiniMax-M3"]
+    return _specialize_slot(slot, profile)
 
 
 def model_profile(model_key: Optional[str], slot_name: str) -> Optional[SlotProfile]:
-    if not model_key:
-        return None
-    return MODEL_PROFILES.get(model_key, {}).get(slot_name)
+    from cacheon.model_profiles import model_profile as _model_profile
+
+    return _model_profile(model_key, slot_name)
 
 
 def slot_for_model(slot_name: str, model_key: Optional[str] = None) -> SlotSpec:
     """``get_slot`` + the validator's per-model specialization. With no model key (or no
     registered profile) this is exactly ``get_slot`` — the generic slot — so existing
     callers and bundles are unchanged."""
-    slot = get_slot(slot_name)
-    prof = model_profile(model_key, slot_name)
-    return specialize_slot(slot, prof) if prof else slot
+    from cacheon.model_profiles import slot_for_model as _slot_for_model
+
+    return _slot_for_model(slot_name, model_key)

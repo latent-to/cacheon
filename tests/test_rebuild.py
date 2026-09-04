@@ -32,7 +32,6 @@ def _fake_repo(tmp_path: Path, *, marker: Path | None = None) -> Path:
     patchers = repo / "cacheon" / "patchers"
     patchers.mkdir(parents=True)
     for name, label in (
-        ("apply_dep_patch.py", "patch"),
         ("build_cuda_ext.py", "build"),
         ("build_cute_cubin.py", "cute-cubin"),
     ):
@@ -62,7 +61,6 @@ def test_parse_is_pure_and_canonicalizes_registered_order(tmp_path, monkeypatch)
             "steps": [
                 _step("build_cute_cubin.py"),
                 _step("build_cuda_ext.py"),
-                _step("apply_dep_patch.py"),
             ]
         },
     )
@@ -70,25 +68,20 @@ def test_parse_is_pure_and_canonicalizes_registered_order(tmp_path, monkeypatch)
     plan = parse_rebuild_plan(bundle)
     assert plan is not None and not marker.exists()
     assert [step.patcher_id for step in plan.steps] == [
-        "cacheon.apply-dep-patch.v1",
         "cacheon.build-cuda-ext.v1",
         "cacheon.build-cute-cubin.v1",
     ]
     assert plan.to_dict() == {
         "steps": [
-            _step("cacheon/patchers/apply_dep_patch.py"),
             _step("cacheon/patchers/build_cuda_ext.py"),
             _step("cacheon/patchers/build_cute_cubin.py"),
         ]
     }
     assert all(len(step.patcher_sha256) == 64 for step in plan.steps)
-    assert plan.identity_data()["steps"][0]["patcher_id"] == (
-        "cacheon.apply-dep-patch.v1"
-    )
+    assert plan.identity_data()["steps"][0]["patcher_id"] == "cacheon.build-cuda-ext.v1"
 
     assert apply_rebuild_plan(bundle) is True
     assert marker.read_text().splitlines() == [
-        "patch",
         "build",
         "cute-cubin",
     ]
