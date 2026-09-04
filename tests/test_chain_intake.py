@@ -1550,7 +1550,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
 ):
     catalog = default_target_catalog()
     with _store(tmp_path) as store:
-        candidate = _qualified_settlement_candidate(store)
+        _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
         plan, evidence = _settlement_plan(store, lease)
@@ -1648,7 +1648,7 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
     staging = _staging_manifest("staging", catalog)
 
     with _store(tmp_path) as store:
-        candidate = _qualified_settlement_candidate(store)
+        _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
         plan, evidence = _settlement_plan(store, lease)
