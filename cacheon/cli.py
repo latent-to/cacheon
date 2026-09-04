@@ -1930,6 +1930,47 @@ def cmd_chain_release_hold(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_reopen_qualification(args: argparse.Namespace) -> int:
+    """Reopen one unsettled PASS pair whose credited half read the baseline out of band."""
+
+    from cacheon import chain
+    from cacheon.chain.baseline_band import (
+        BaselineBandError,
+        qualification_evidence_roots,
+        remeasurement_evidence,
+    )
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+
+    roots = qualification_evidence_roots(
+        Path(args.evidence_state_dir),
+        tuple(Path(root) for root in args.evidence_root),
+    )
+    subtensor = chain.connect(args.network)
+    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
+    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
+        try:
+            evidence = remeasurement_evidence(store, args.reservation_id, roots)
+        except BaselineBandError as exc:
+            raise SystemExit(f"remeasurement refused: {exc}") from None
+        print(evidence.describe())
+        if not evidence.out_of_band:
+            raise SystemExit(
+                "remeasurement refused: the credited half read the baseline "
+                "lane inside the arena band"
+            )
+        if args.dry_run:
+            print("dry run: reservation left unchanged")
+            return 0
+        reopened = store.reopen_for_remeasurement(
+            args.reservation_id, reason="baseline_out_of_band"
+        )
+    print(
+        f"reopened {reopened.reservation_id}: status={reopened.status} "
+        f"reason={reopened.reason}"
+    )
+    return 0
+
+
 def cmd_chain_backfill_lineage(args: argparse.Namespace) -> int:
     """Rebuild the per-target lineage ledger from the newest CROWN per target."""
 
@@ -3131,6 +3172,33 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reservation-id", required=True)
     sp.add_argument("--reason", required=True, help="bounded operator audit reason")
     sp.set_defaults(func=cmd_chain_release_hold)
+
+    sp = sub.add_parser(
+        "chain-reopen-qualification",
+        help=(
+            "operator: return one unsettled two-PASS reservation to the screen "
+            "queue for a fresh pair when retained evidence shows its credited "
+            "half read the baseline lane under the arena band; never signs, "
+            "settles, or crowns"
+        ),
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument("--network", required=True)
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    sp.add_argument("--reservation-id", required=True)
+    sp.add_argument(
+        "--evidence-state-dir", required=True,
+        help="worker state directory holding the qualification-evidence-* stores",
+    )
+    sp.add_argument(
+        "--evidence-root", action="append", default=[],
+        help="additional evidence store root (repeatable)",
+    )
+    sp.add_argument(
+        "--dry-run", action="store_true",
+        help="print the band evidence and leave the reservation unchanged",
+    )
+    sp.set_defaults(func=cmd_chain_reopen_qualification)
 
     sp = sub.add_parser(
         "chain-backfill-lineage",

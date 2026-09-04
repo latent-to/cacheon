@@ -224,6 +224,17 @@ without re-crowning, so retiring an admission lane does not orphan crowned arena
 The v1.1/v1.3/v1.4 bindings advance to v1.5 only with identical numeric policy
 fields; unrelated policy changes remain refused.
 
+A retained pair earns from the lower of its two settled speedups, and that ratio
+is only as good as the baseline lane behind it. When the retained stage-exit
+artifacts show that the credited half read the baseline lane under the arena
+band (the median of every retained baseline-role read in the arena minus five
+percent, over at least six reads), the operator command
+[`chain-reopen-qualification`](../reference/cli.md#chain-reopen-qualification)
+returns the pair to the screen queue for a fresh independent pair against the
+current incumbent and archives the old candidate under `settlement_reopenings`.
+The pair stops earning the moment it leaves `qualified`. Crowned or otherwise
+settled candidates are lineage and cannot be reopened this way.
+
 ## Dry run
 
 Use the same policy values intended for the deployment:

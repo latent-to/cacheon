@@ -37,6 +37,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-snapshot-verify` | validator | recovery verification | Download and semantically reopen one snapshot, optionally into fresh staging |
 | `chain-archive-schema3-hold` | validator | durable state transition | Terminally archive one exact legacy schema-3 reproduction hold |
 | `chain-release-hold` | validator | durable state transition | Return one held or no-decision reservation to its queue under a stated reason |
+| `chain-reopen-qualification` | validator | durable state transition | Return one unsettled two-PASS reservation to the screen queue for a fresh pair when retained evidence shows its credited half read the baseline lane under the arena band |
 | `chain-backfill-lineage` | validator | durable state transition | Rebuild the per-target lineage ledger from the newest recorded crown; idempotent |
 | `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation, or run the subnet-owner burn bypass |
 | `mint-push-credentials` | operator | weight-share push auth | Create/rotate HMAC secrets for eval → serve-weights |
@@ -524,6 +525,30 @@ qualification exists, otherwise `published`, otherwise `transport_retry`. The
 operator reason is persisted on the row. It never signs, settles, crowns, or
 touches evidence, and it refuses a legacy schema-3 migration hold, which has
 its own terminal command above.
+
+### `chain-reopen-qualification`
+
+```bash
+python -m cacheon.cli chain-reopen-qualification \
+  --network <network> --netuid <netuid> \
+  --intake-db chain_intake/intake.sqlite3 \
+  --reservation-id <reservation-id> \
+  --evidence-state-dir <worker-state-dir> \
+  --dry-run
+```
+
+Returns one `qualified` two-PASS reservation whose settlement candidate is
+still `pending` to the screen queue as `published`, exactly like a fresh
+submission: the live worker screens it again, binds it to the live stack, and
+measures a new independent pair against the current incumbent. The retained
+candidate and both halves move to `settlement_reopenings`, so the pair stops
+earning the moment it leaves `qualified`. The command refuses unless the
+retained stage-exit artifacts show that the half which set the credited (lower)
+speedup read the baseline lane under the arena band — the median of every
+retained baseline-role read in that arena minus five percent, over at least six
+reads — and it prints that evidence either way. `--dry-run` prints the evidence
+and changes nothing. Crowned or otherwise settled candidates are lineage and
+are refused. It never signs, settles, or crowns.
 
 ### `chain-backfill-lineage`
 

@@ -274,6 +274,7 @@ def _qualified_settlement_candidate(
     initialize_stack: bool = True,
     arena_marker: str = "",
     submission_block: int = 10,
+    attempt_payloads: tuple[bytes, bytes] | None = None,
 ) -> SettlementCandidate | str:
     catalog = default_target_catalog()
     target = "activation.silu_and_mul"
@@ -306,16 +307,20 @@ def _qualified_settlement_candidate(
             incumbent, tree_digest=arm.baseline_before.tree_digest
         )
     evidence_root = store.path.parent / "evidence"
+    payloads = attempt_payloads or (
+        b"retained primary qualification attempt" + marker.encode(),
+        b"retained reproduction qualification attempt" + marker.encode(),
+    )
     primary_attempt = publish_evidence(
         evidence_root,
-        b"retained primary qualification attempt" + marker.encode(),
+        payloads[0],
         domain="qualification.cohort-attempt",
         media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1",
     )
     reproduction_attempt = publish_evidence(
         evidence_root,
-        b"retained reproduction qualification attempt" + marker.encode(),
+        payloads[1],
         domain="qualification.cohort-attempt",
         media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1",
@@ -413,6 +418,131 @@ def _qualified_settlement_candidate(
             if primary_only:
                 return row.reservation_id
     return SettlementCandidate.from_reproductions(*qualifications)
+
+
+def _stage_exit(reads: dict[str, float]) -> bytes:
+    """A stage-exit artifact whose lane rates read back as ``reads`` tok/s."""
+
+    def rate(role: str, tokens_per_second: float) -> dict[str, object]:
+        seconds = 131072 / tokens_per_second
+        return {
+            "role": role,
+            "timed_tokens": 786432,
+            "timed_seconds": str(seconds * 6),
+            "conditioning_seconds": str(seconds),
+            "windows": [
+                {"batch_index": index, "seconds": str(seconds), "tokens": 131072}
+                for index in range(2, 8)
+            ],
+        }
+
+    rates = [rate(role, value) for role, value in reads.items()]
+    return json.dumps({"speed_witness": {"rates": rates}}, sort_keys=True).encode()
+
+
+def test_reopen_for_remeasurement_returns_a_pass_pair_to_the_screen_queue(tmp_path):
+    from cacheon.chain.baseline_band import BaselineBandError, remeasurement_evidence
+
+    with _store(tmp_path) as store:
+        slow = _qualified_settlement_candidate(
+            store,
+            marker="slow",
+            speedups=("1.135", "1.132"),
+            attempt_payloads=(
+                _stage_exit({"B": 2031.0, "C": 2307.0}),
+                _stage_exit({"B": 2021.8, "C": 2288.8}),
+            ),
+        )
+        peer = _qualified_settlement_candidate(
+            store,
+            index=1,
+            marker="peer",
+            speedups=("1.032", "1.024"),
+            check_single_pass=False,
+            attempt_payloads=(
+                _stage_exit({"B": 2245.6, "C": 2311.0, "B_prime": 2235.8,
+                             "B_double_prime": 2240.0}),
+                _stage_exit({"B": 2253.2, "C": 2304.0, "B_prime": 2248.6,
+                             "B_double_prime": 2250.0}),
+            ),
+        )
+        assert isinstance(slow, SettlementCandidate)
+        assert isinstance(peer, SettlementCandidate)
+        roots = (store.path.parent / "evidence",)
+
+        evidence = remeasurement_evidence(store, slow.reservation_digest, roots)
+        assert evidence.out_of_band
+        assert evidence.credited_index == 1
+        assert evidence.baseline_reads == 8
+        assert "OUT OF BAND" in evidence.describe()
+        assert not remeasurement_evidence(store, peer.reservation_digest, roots).out_of_band
+        assert {claim.hotkey for claim in store.passed_reward_claims()} == {
+            slow.hotkey, peer.hotkey,
+        }
+
+        with pytest.raises(IntakeError, match="not registered"):
+            store.reopen_for_remeasurement(
+                slow.reservation_digest, reason="operator_decision"
+            )
+        reopened = store.reopen_for_remeasurement(
+            slow.reservation_digest, reason="baseline_out_of_band"
+        )
+        assert (
+            reopened.status, reopened.screen_status, reopened.decision, reopened.reason
+        ) == ("published", "", "", "remeasure:baseline_out_of_band")
+        assert {claim.hotkey for claim in store.passed_reward_claims()} == {peer.hotkey}
+        for table in ("settlement_candidates", "settlement_qualifications"):
+            assert store._db.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE reservation_id=?",
+                (slow.reservation_digest,),
+            ).fetchone()["n"] == 0
+        archived = store._db.execute(
+            "SELECT reason, candidate_json, qualifications_json FROM "
+            "settlement_reopenings WHERE reservation_id=?",
+            (slow.reservation_digest,),
+        ).fetchone()
+        assert archived["reason"] == "baseline_out_of_band"
+        assert json.loads(archived["candidate_json"])[0]["status"] == "pending"
+        assert len(json.loads(archived["qualifications_json"])) == 2
+        with pytest.raises(IntakeError, match="two-PASS"):
+            store.reopen_for_remeasurement(
+                slow.reservation_digest, reason="baseline_out_of_band"
+            )
+        with pytest.raises(BaselineBandError, match="both halves"):
+            remeasurement_evidence(store, slow.reservation_digest, roots)
+
+        # The row re-enters the screen queue and reaches qualification again.
+        _promote(store, slow.reservation_digest)
+        assert store.get(slow.reservation_digest).status == "promoted"
+
+
+def test_reopen_for_remeasurement_refuses_settled_pairs(tmp_path):
+    with _store(tmp_path) as store:
+        winner = _qualified_settlement_candidate(
+            store, marker="winner", speedups=("1.07", "1.06"),
+        )
+        loser = _qualified_settlement_candidate(
+            store, index=1, marker="loser", speedups=("1.04", "1.03"),
+            check_single_pass=False,
+        )
+        single = _qualified_settlement_candidate(
+            store, index=2, marker="single", primary_only=True,
+            check_single_pass=False,
+        )
+        assert isinstance(winner, SettlementCandidate)
+        assert isinstance(loser, SettlementCandidate)
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+
+        for settled in (winner, loser):
+            with pytest.raises(IntakeError, match="unsettled"):
+                store.reopen_for_remeasurement(
+                    settled.reservation_digest, reason="baseline_out_of_band"
+                )
+        with pytest.raises(IntakeError, match="two-PASS"):
+            store.reopen_for_remeasurement(single, reason="baseline_out_of_band")
 
 
 def test_finalized_batch_is_reserved_atomically_before_transport(tmp_path):

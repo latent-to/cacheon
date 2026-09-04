@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from cacheon.chain.baseline_band import (
+    qualification_evidence_roots,
+    qualification_speed,
+)
 from cacheon.eval.evidence_store import (
     prepare_evidence_root,
     publish_canonical_json_evidence,
 )
-from dashboard.receipts import (
-    qualification_evidence_roots,
-    qualification_speed,
-    screen_stages,
-)
+from dashboard.receipts import screen_stages
 
 
 def _receipt(stages: list[dict[str, object]]) -> str:

@@ -66,6 +66,10 @@ _AUTOMATICALLY_EXPIRABLE = (
 )
 _AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
 _VALIDATOR_DOWNTIME_REQUEUE_REASON = "validator_downtime_requeued"
+# A retained PASS pair may be reopened for a fresh pair only for a registered
+# measurement defect; the operator command that names one must carry the
+# retained evidence for it (cacheon.chain.baseline_band).
+_REMEASUREMENT_REASONS = frozenset({"baseline_out_of_band"})
 # One refresh of the SLA anchor after a prior validator-downtime requeue
 # re-expired (operator/SLA mismatch).  A third attempt still fails closed.
 _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON = "validator_downtime_requeued_refresh"
@@ -636,6 +640,14 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             ) STRICT;
             CREATE INDEX IF NOT EXISTS settlement_candidates_status
                 ON settlement_candidates(status, authority_digest, reservation_id);
+            CREATE TABLE IF NOT EXISTS settlement_reopenings (
+                reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
+                sequence INTEGER NOT NULL CHECK(sequence>=0),
+                reason TEXT NOT NULL,
+                candidate_json TEXT NOT NULL,
+                qualifications_json TEXT NOT NULL,
+                PRIMARY KEY(reservation_id, sequence)
+            ) STRICT;
             CREATE TABLE IF NOT EXISTS target_lineage_tips (
                 target_id TEXT PRIMARY KEY,
                 artifact_digest TEXT NOT NULL,
@@ -4034,6 +4046,100 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 "qualification_evidence_digest='' "
                 "WHERE reservation_id=?",
                 (status, reason, attempts, reservation_id),
+            )
+        return self.get(reservation_id)
+
+    def retained_pass_pairs(self) -> tuple[tuple[str, str, tuple[str, str], tuple[tuple[int, str], ...]], ...]:
+        """Every retained two-PASS pair: id, arena, settled half speedups, half artifact refs."""
+
+        from cacheon.settlement import SettlementCandidate
+
+        pairs = []
+        for row in self._db.execute(
+            "SELECT sc.reservation_id, sc.candidate_json FROM settlement_candidates sc "
+            "JOIN reservations r USING(reservation_id) "
+            "WHERE r.status='qualified' AND r.decision='PASS' "
+            "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
+        ):
+            candidate = SettlementCandidate.from_dict(json.loads(row["candidate_json"]))
+            refs = tuple(
+                (int(half["reproduction_index"]), half["attempt_ref_json"])
+                for half in self._db.execute(
+                    "SELECT reproduction_index, attempt_ref_json FROM "
+                    "settlement_qualifications WHERE reservation_id=? "
+                    "ORDER BY reproduction_index",
+                    (row["reservation_id"],),
+                )
+            )
+            pairs.append((
+                row["reservation_id"], candidate.arena_digest,
+                (candidate.primary.speedup, candidate.reproduction.speedup), refs,
+            ))
+        return tuple(pairs)
+
+    def reopen_for_remeasurement(
+        self, reservation_id: str, *, reason: str
+    ) -> IntakeReservation:
+        """Return one unsettled two-PASS reservation to the screen queue for a fresh pair.
+
+        The retained candidate and both qualification halves move to
+        ``settlement_reopenings`` (append-only), so the row stops earning the
+        moment it leaves ``qualified`` and re-enters intake like a new
+        submission: a fresh screen under the live service identity, a fresh
+        baseline binding to the live stack, and a fresh independent PASS pair
+        against the current incumbent. A crowned or otherwise settled candidate
+        is lineage and is refused.
+        """
+
+        if reason not in _REMEASUREMENT_REASONS:
+            raise IntakeError("remeasurement reason is not registered")
+        with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
+            row = self.get(reservation_id)
+            if row.status != "qualified" or row.decision != "PASS":
+                raise IntakeError("only a retained two-PASS reservation may be reopened")
+            if not row.publication_digest or not row.publication_root:
+                raise IntakeError("reopened reservation has no retained publication")
+            candidate = self._db.execute(
+                "SELECT * FROM settlement_candidates WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone()
+            if candidate is None or candidate["status"] != "pending":
+                raise IntakeError("only an unsettled PASS pair may be reopened")
+            halves = self._db.execute(
+                "SELECT * FROM settlement_qualifications WHERE reservation_id=? "
+                "ORDER BY reproduction_index",
+                (reservation_id,),
+            ).fetchall()
+            if len(halves) != 2:
+                raise IntakeError("reopened reservation does not retain two halves")
+            sequence = self._db.execute(
+                "SELECT COUNT(*) AS n FROM settlement_reopenings WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone()["n"]
+            encode = lambda rows: json.dumps(  # noqa: E731
+                [{key: item[key] for key in item.keys()} for item in rows],
+                separators=(",", ":"), sort_keys=True,
+            )
+            self._db.execute(
+                "INSERT INTO settlement_reopenings(reservation_id,sequence,reason,"
+                "candidate_json,qualifications_json) VALUES(?,?,?,?,?)",
+                (reservation_id, sequence, reason, encode([candidate]), encode(halves)),
+            )
+            for table in (
+                "settlement_qualifications", "settlement_candidates",
+                "reservation_baseline_segments", "reservation_sla_resets",
+            ):
+                self._db.execute(
+                    f"DELETE FROM {table} WHERE reservation_id=?", (reservation_id,)
+                )
+            self._db.execute(
+                "UPDATE reservations SET status='published',screen_lane='',"
+                "screen_status='',decision='',reason=?,retry_group_digest='',"
+                "retry_position=0,qualification_authority_digest='',"
+                "qualification_authority_json='',qualification_evidence_digest='' "
+                "WHERE reservation_id=?",
+                (f"remeasure:{reason}", reservation_id),
             )
         return self.get(reservation_id)
 

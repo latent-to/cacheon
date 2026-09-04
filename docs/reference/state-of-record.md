@@ -218,6 +218,22 @@ policy only (target identity, structure, contracts, and composition rules);
 admission policy and retired sections may differ without re-crowning. See
 `docs/validator-guide/settlement-and-weights.md`.
 
+On 2026-09-05 a retained PASS pair on `moe.fused_experts_reduce` was found to
+credit +13.25% while its candidate lane ran at 2289–2307 tok/s, inside the
+2277–2333 tok/s band every other retained candidate produced that day, and
+slower than the fastest of them. Both halves had read the incumbent lane at
+2022–2031 tok/s against a 2224–2290 tok/s band for the same incumbent artifact
+across the other ten retained halves. The slow baseline state has appeared in 9
+of 64 retained baseline-role reads since the champion baseline began (August
+19 record: 8.5% of halves); the two-PASS minimum absorbed every case except
+that pair, where both halves drew it. Under v7 a clear PASS at the B/C precheck
+never reads B′, so the check that could have caught it is skipped exactly when
+the baseline is wrong, and no absolute band exists in `cacheon/eval`. The
+operator command `chain-reopen-qualification` now returns such a pair to the
+screen queue for a fresh pair against the current incumbent, gated on the
+retained lane rates (`cacheon/chain/baseline_band.py`); the settlement-side
+band gate and always-read B′ remain open work.
+
 ### Routing-only resident screen
 
 The abbreviated-serving stage may keep a stock engine resident and hot-swap a

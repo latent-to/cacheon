@@ -32,11 +32,11 @@ from dashboard.forensics import (
     forensics_log,
     submission_forensics,
 )
-from dashboard.receipts import (
+from cacheon.chain.baseline_band import (
     qualification_evidence_roots,
     qualification_speed,
-    screen_stages,
 )
+from dashboard.receipts import screen_stages
 from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     cumulative_crown_speedups,
