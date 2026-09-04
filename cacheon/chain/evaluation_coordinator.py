@@ -946,7 +946,7 @@ class EvaluationCoordinator:
                 "qualification result changed the exact finalized cohort"
             )
         envelope.verify(claim.lease, self.readiness, self.service, batch)
-        tree_digest = _digest(incumbent_tree_digest, "incumbent_tree_digest")
+        _digest(incumbent_tree_digest, "incumbent_tree_digest")
         runtime = self.service.manifest.runtime
         if (
             incumbent_stack.runtime_digest != runtime.runtime_digest
