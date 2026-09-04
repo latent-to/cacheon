@@ -9,7 +9,7 @@ import re
 import sqlite3
 import stat
 import fcntl
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
 from types import MappingProxyType
@@ -356,7 +356,11 @@ class SettlementLease:
     candidates: tuple[SettlementCandidate, ...]
     initial_event_sequence: int
     previous_event_digest: str
-    lineage_tips: Mapping[str, object] = MappingProxyType({})
+    # Python 3.11 rejects an unhashable dataclass default (mappingproxy hashes only
+    # from 3.12); CI collects on 3.11.
+    lineage_tips: Mapping[str, object] = dc_field(
+        default_factory=lambda: MappingProxyType({})
+    )
     pretransition_reservations: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
