@@ -1941,6 +1941,24 @@ def cmd_chain_reopen_qualification(args: argparse.Namespace) -> int:
     subtensor = chain.connect(args.network)
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
     with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
+        if store.remeasurement_pending(args.reservation_id):
+            # Second run on an already reopened row: repair its baseline binding.
+            row = store.get(args.reservation_id)
+            print(
+                f"{row.reservation_id} is already reopened ({row.status}, "
+                f"{row.reason}); rebinding its baseline segment"
+            )
+            if args.dry_run:
+                print("dry run: reservation left unchanged")
+                return 0
+            state = store.rebind_remeasurement_segment(args.reservation_id)
+            print(
+                "left unbound for the fresh screen to bind"
+                if state is None
+                else f"rebound to arena {state.arena_digest[:16]} "
+                f"generation {state.generation}"
+            )
+            return 0
         try:
             evidence = remeasurement_evidence(store, args.reservation_id, roots)
         except BaselineBandError as exc:

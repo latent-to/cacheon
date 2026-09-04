@@ -232,8 +232,10 @@ percent, over at least six reads), the operator command
 [`chain-reopen-qualification`](../reference/cli.md#chain-reopen-qualification)
 returns the pair to the screen queue for a fresh independent pair against the
 current incumbent and archives the old candidate under `settlement_reopenings`.
-The pair stops earning the moment it leaves `qualified`. Crowned or otherwise
-settled candidates are lineage and cannot be reopened this way.
+The pair stops earning the moment it leaves `qualified`. A reopened row binds
+to the stack whose service re-screens it, not the stack current at its original
+arrival, so it never parks the queue behind a retired commission. Crowned or
+otherwise settled candidates are lineage and cannot be reopened this way.
 
 ## Dry run
 
