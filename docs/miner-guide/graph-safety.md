@@ -36,9 +36,6 @@ routes the candidate under capture exactly as it routes it eagerly, and a kernel
 that cannot be captured fails there loudly instead of being quietly skipped while
 the captured graph keeps serving stock.
 
-The only slot currently outside the captured region is the MiniMax prefill index
-score, because SGLang runs prefill eager.
-
 The validator creates a graph requirement bound to all of the following:
 
 - target specification and every target member;

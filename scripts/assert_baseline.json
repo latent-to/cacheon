@@ -98,7 +98,7 @@
 "tests/test_model_provision.py": 20,
 "tests/test_moe_nvfp4_contract.py": 24,
 "tests/test_moe_reduce_slot.py": 11,
-"tests/test_moe_seam.py": 40,
+"tests/test_moe_seam.py": 36,
 "tests/test_native_artifact.py": 85,
 "tests/test_numeric_answer_judge.py": 38,
 "tests/test_object_store.py": 37,

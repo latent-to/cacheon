@@ -81,11 +81,6 @@ def rmsnorm(x, weight, out, eps):
 
 This is pure RMSNorm. The slot does not grant ownership of a residual add.
 
-!!! warning "Not available on the current MiniMax-M3 arena"
-    MiniMax-M3 uses `GemmaRMSNorm`, not the registered
-    `RMSNorm.forward_cuda` callsite. This section defines the ABI, but miners
-    must not pay for or submit `norm.rmsnorm` to the current mainnet arena.
-
 ## Block slots
 
 ### `linear.dense`
@@ -265,7 +260,7 @@ current catalog uses:
 - elementwise tolerance for numerically equivalent op kernels;
 - `matched_ratio` for dense, routed MoE, fused norm, and collectives whose
   legitimate reduction order can change rounding; and
-- cosine similarity for the low-bit MiniMax-M3 expert boundaries.
+- cosine similarity for low-bit expert boundaries.
 
 Tolerance, ratio, overlap, reference, and model binding are not miner-selected
 manifest values. Passing local `verify` demonstrates compatibility with its

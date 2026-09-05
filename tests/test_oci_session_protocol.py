@@ -163,7 +163,6 @@ def test_seam_binding_table_is_closed() -> None:
         "moe",
         "moe_deferred",
         "moe_deferred_finalize",
-        "moe_reduce",
     )
     for binding in SEAM_BINDINGS:
         adapter_rows = tuple(

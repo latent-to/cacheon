@@ -37,10 +37,6 @@ class SeamAdapter:
     # "attr:Name" for a (possibly non-callable) module attribute the adapter rebinds.
     chokepoint: str
     slots: tuple[str, ...]  # the slot(s) this adapter serves (cross-ref into slots.py)
-    # Package that must be importable for this adapter's row to be ASSESSABLE. The
-    # compat canary SKIPS (not fails) the row when it is absent — e.g. flashinfer
-    # exists on engine boxes but not on CPU intake/dev boxes. None = always assessable.
-    requires: str | None = None
     # Optional validator protocol binding. Both fields are validator-owned table
     # metadata and must appear together. Multiple adapters may intentionally share
     # one binding/gate.
@@ -86,10 +82,6 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
                 "sglang.srt.layers.moe.moe_runner.flashinfer_trtllm",
                 "sglang_moe", "finalize_flashinfer_trtllm_deferred_output",
                 ("moe.fused_routed_experts",),
-                binding_id="moe", environment_gate="CACHEON_MOE_SEAM"),
-    SeamAdapter("moe_reduce", "sglang.srt.models.minimax_m3",
-                "sglang_moe", "MiniMaxM3MoE.forward_normal", ("moe.fused_experts_reduce",),
-                requires="sglang.srt.models.minimax_m3",
                 binding_id="moe", environment_gate="CACHEON_MOE_SEAM"),
     SeamAdapter("collective", "sglang.srt.distributed.parallel_state",
                 "sglang_allreduce", "GroupCoordinator.all_reduce", ("collective.all_reduce",),

@@ -53,29 +53,18 @@ Routed MoE includes the 16,384-token prefill shape; its untimed reference groups
 tokens by expert without duplicating weights. Mixed-cell qualification remains
 the full-model quality and performance gate.
 
-## Current MiniMax-M3 availability
+## Arena availability
 
-As of 2026-08-30, three registered slot contracts are **unavailable for paid
-submission in the current MiniMax-M3 mainnet arena**:
+The catalog registers contracts; each arena's pinned data seals which of them
+accept paid submission, and a registered slot can be absent from an arena
+whose model never executes the adapter's callsite. Check the arena's
+registered set in the [state of record](../reference/state-of-record.md)
+before paying.
 
-- `norm.rmsnorm`: the deployed model uses `GemmaRMSNorm` at every relevant
-  normalization callsite. The registered adapter patches the separate
-  `RMSNorm.forward_cuda` boundary, so a candidate for this slot cannot execute.
-- `activation.silu_and_mul`: the deployed model computes expert activation
-  inside the MoE grouped-GEMM epilogue on 57 of 60 layers, and its three dense
-  layers route a swigluoai function the registered adapter does not patch. A
-  candidate for this slot loads but is never called.
-- `moe.fused_experts_reduce`: sealed closed pending its full-engine
-  outer-reduction proof.
-
-Do not pay for those targets; intake parks them without consuming payment. The
-remaining M3 targets are `moe.fused_experts`, `collective.all_reduce`, and
-`collective.ar_residual_rmsnorm`.
-
-Closure removes only the standalone lane. Activation remains claimable inside
-`moe.fused_experts`, normalization inside `collective.ar_residual_rmsnorm`, and
-a fused kernel is judged only by its named target contract. See the slot
-contract's closure section.
+Closing a standalone lane removes only that lane. Activation remains claimable
+inside a fused MoE target, normalization inside
+`collective.ar_residual_rmsnorm`, and a fused kernel is judged only by its
+named target contract. See the slot contract's closure section.
 
 Registration and installation remain different facts: the catalog can register
 a slot before the pinned runtime binds a live adapter for it.
@@ -138,10 +127,10 @@ Start from the published arena, not from an isolated kernel idea:
    registers that surface.
 
 For a first offline implementation, `activation.silu_and_mul` and
-`norm.rmsnorm` have the smallest single-process ABIs. They are useful for
-learning the contract only: both are unavailable for paid submission in the
-current MiniMax-M3 arena as stated above. Advanced collective and deep-MoE
-targets require the matching multi-GPU and build environment to test honestly.
+`norm.rmsnorm` have the smallest single-process ABIs; check
+[Arena availability](#arena-availability) before paying for either. Advanced
+collective and deep-MoE targets require the matching multi-GPU and build
+environment to test honestly.
 
 ### A decision procedure
 

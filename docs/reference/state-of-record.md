@@ -200,16 +200,15 @@ from the cross-arena catalog. Historical evaluation records embed their own
 catalog snapshots and are unaffected. The deployed M3 lane runs from its pinned
 source trees and is unaffected by repository-side retirement.
 
-The table records contracts, not deployment availability. As of 2026-08-30,
-three targets are unavailable in the MiniMax-M3 arena: `norm.rmsnorm`
-(GemmaRMSNorm outside the registered seam), `activation.silu_and_mul` (the
-model activates inside the MoE GEMM epilogue; the dense-layer swigluoai
-callsite is unpatched — measured never-called on 2026-08-23), and
-`moe.fused_experts_reduce` (sealed closed pending its full-engine
-outer-reduction proof). Their computation stays claimable inside open fused
-targets; closure keys on the submitted target name only. The miner-facing
-notice is
-[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+The table records contracts, not deployment availability. In the retired
+MiniMax-M3 arena three targets were unavailable: `norm.rmsnorm` (GemmaRMSNorm
+outside the registered seam), `activation.silu_and_mul` (the model activated
+inside the MoE GEMM epilogue; the dense-layer swigluoai callsite was unpatched,
+measured never-called on 2026-08-23), and `moe.fused_experts_reduce` (sealed
+closed pending a full-engine outer-reduction proof that was never produced).
+Their computation stayed claimable inside open fused targets; closure keys on
+the submitted target name only. The miner-facing notice is
+[Arena availability](../miner-guide/slots.md#arena-availability).
 
 The full GLM-5.3 arena instead registers exactly
 `moe.fused_routed_experts`, `linear.dense`, `norm.fused_add_rmsnorm`,
@@ -733,6 +732,24 @@ mode deliberately trusts configured raw storage. A valid old authenticated
 envelope can still be replayed within the bounded follower freshness window,
 and storage, gateway, push-secret, response-hotkey, signer-wallet, and host-root
 availability/custody remain deployment responsibilities.
+
+### Retired the MiniMax-M3 model-side MoE seam (2026-09-05)
+
+The `moe_reduce` seam row bound `moe.fused_experts_reduce` to
+`MiniMaxM3MoE.forward_normal`, and its two-sided completion handshake (the
+model-side wrapper in `integrations/sglang_moe.py` and the reduce-owner marker
+protocol in `dispatch.py`) was the only model-specific code in the seam table.
+With the M3 arena formally retired, both sides were deleted together, along
+with the `requires` skip field on `SeamAdapter` that existed only for that
+row, the importerless `integrations/_by_value_function.py` helper, and the
+M3 availability notices in the miner guide. The `moe.fused_experts_reduce`
+contract stays registered in the catalog, since its bytes are part of every
+recorded catalog digest, but no arena binds it: a reduce-owning MoE kernel
+needs the serving model's outer reduction suppressed, and that hook belongs
+to the arena that registers the target. The change is inert on the GLM-5.3
+arena, whose registered set never included the target and whose seam-binding
+derivation is identical without the row; the deployed M3 lane runs from its
+own pinned source tree and is untouched.
 
 ### Removed reviewed-release manifest lane (2026-09-05)
 

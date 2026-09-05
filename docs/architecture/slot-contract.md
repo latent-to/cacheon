@@ -106,8 +106,7 @@ The target catalog freezes a stdlib-only projection of each live slot into `Targ
 ### One call, end to end
 
 For a non-collective contract such as `norm.rmsnorm`, the important sequence is
-shown below. The example explains the ABI even though that target is unavailable
-in the current MiniMax-M3 arena:
+shown below:
 
 ```mermaid
 sequenceDiagram

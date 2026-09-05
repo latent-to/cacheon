@@ -56,10 +56,9 @@ Collective slots add the validator-owned process group; candidate code may use
 it but may not create a private group or let only some ranks fall back.
 
 !!! warning "Arena availability is narrower than the catalog"
-    MiniMax-M3 does not offer `norm.rmsnorm`, `activation.silu_and_mul`, or
-    `moe.fused_experts_reduce` for paid submission. GLM-5.3 seals a different
-    five-target set. See
-    [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+    Each arena seals its own subset of this table; GLM-5.3 registers five
+    targets. See
+    [Arena availability](../miner-guide/slots.md#arena-availability).
 
 ## Kinds
 
