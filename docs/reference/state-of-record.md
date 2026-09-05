@@ -799,8 +799,14 @@ stored offers reopen byte-identically. The reserved schema-4/5/6 migrations
 and V2 table DDL were retired on **2026-09-05**: no reader of those tables
 existed anywhere in the tree. Intake keeps accepting metadata stamps 3 through
 6, so a database created before that date opens unchanged with its 108 V2
-objects untouched (16 tables, 60 indexes, 32 triggers; never dropped), while a
-fresh database now holds 68 schema objects at stamp 3 instead of 176 at stamp 5.
+objects untouched (16 tables, 32 triggers, 5 named indexes and 55 automatic
+primary-key indexes; never dropped), while a fresh database now holds 68
+schema objects at stamp 3 instead of 176 at stamp 5. A validator archive
+records whichever shape it captured: archives of existing databases are
+byte-identical to before, and an archive of a fresh database now carries stamp
+3 and 16 fewer table counts. A stamp-3 database later opened by a controller
+built before this date gains the V2 objects and stamp 5; both shapes open under
+either build.
 
 Reintroducing V2 is a new reviewed change, not a revert switch.
 

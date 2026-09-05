@@ -30,7 +30,6 @@ _TARGET_CATALOG_DOMAIN = "cacheon.target-catalog"
 _TARGET_SPEC_DOMAIN = "cacheon.target-spec"
 _SELECTED_DELTA_DOMAIN = "cacheon.contribution.selected_delta"
 _PROPOSAL_DOMAIN = "cacheon.contribution.proposal"
-_QUALIFICATION_COHORT_ATTEMPT_SCHEMA = "cacheon.qualification.cohort-attempt.v1"
 _EVALUATION_STACK_DOMAIN = "cacheon.stack.evaluation"
 
 

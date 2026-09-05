@@ -17,7 +17,6 @@ import posixpath
 import re
 import shutil
 import stat
-import subprocess
 import tempfile
 from contextlib import contextmanager
 from collections.abc import Mapping
@@ -1001,26 +1000,6 @@ def inspect_contribution(
     source = _source_directory(source_root, field="contribution source")
     with _staged_source_tree(source) as staged:
         return replace(_inspect_contribution(staged, catalog=catalog), root=source)
-
-
-def _git_output(repository: Path, *arguments: str) -> bytes:
-    try:
-        result = subprocess.run(
-            ("git", "-C", str(repository), *arguments),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise EngineTreeError(f"cannot inspect integration review commit: {exc}") from None
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise EngineTreeError(
-            f"integration review commit inspection failed: {detail or result.returncode}"
-        )
-    return result.stdout
 
 
 def _put_file(files: dict[str, bytes], path: str, data: bytes) -> None:
