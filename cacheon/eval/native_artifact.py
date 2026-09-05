@@ -160,16 +160,6 @@ class NativeArtifactPublication:
         if _publication_digest(payload) != self.publication_digest:
             raise NativeArtifactError("native artifact publication digest is inconsistent")
 
-    @property
-    def tree_digest(self) -> str:
-        """Compatibility-neutral name for the exact published tree digest."""
-
-        return self.publication_digest
-
-    @property
-    def path(self) -> Path:
-        return self.root
-
     def identity_dict(self) -> dict[str, object]:
         """Return the path-free canonical publication identity."""
 
