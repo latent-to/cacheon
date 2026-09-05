@@ -130,7 +130,9 @@ def _apply_pending_swap(
     if generation <= _applied_generation:
         return None
     prior_generation = _applied_generation
-    rank = getattr(model_runner, "tp_rank", "unknown")
+    from sglang.srt.distributed.parallel_state import get_tensor_model_parallel_rank
+
+    rank = get_tensor_model_parallel_rank()
     started = time.perf_counter()
     ack: dict[str, object] = {
         "generation": generation,

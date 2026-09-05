@@ -16,13 +16,12 @@ class _Layer:
         self._cacheon_moe_prepared_by_impl = {"a": object(), "b": object()}
 
 
-def _runtime(monkeypatch, tmp_path, *, recapture_error=None, recapture_hook=None):
+def _runtime(monkeypatch, tmp_path, *, rank=0, recapture_error=None, recapture_hook=None):
     layer = _Layer()
     events = []
 
     class Runner:
         is_draft_worker = False
-        tp_rank = 0
 
         def __init__(self):
             self.model = SimpleNamespace(modules=lambda: (layer,))
@@ -52,6 +51,9 @@ def _runtime(monkeypatch, tmp_path, *, recapture_error=None, recapture_hook=None
     scheduler_module.Scheduler = Scheduler
     monkeypatch.setitem(sys.modules, swap._MODULE, model_module)
     monkeypatch.setitem(sys.modules, swap._SCHED_MODULE, scheduler_module)
+    parallel = ModuleType("sglang.srt.distributed.parallel_state")
+    parallel.get_tensor_model_parallel_rank = lambda: rank
+    monkeypatch.setitem(sys.modules, parallel.__name__, parallel)
     monkeypatch.setenv("CACHEON_RESIDENT_SWAP", str(tmp_path))
     monkeypatch.setattr(swap, "_applied_generation", -1)
     monkeypatch.setattr(swap.gc, "collect", lambda: events.append("gc"))
@@ -79,10 +81,12 @@ def _runtime(monkeypatch, tmp_path, *, recapture_error=None, recapture_hook=None
     return Scheduler(), layer, events
 
 
-def test_swap_evicts_prepared_weights_before_success_ack(monkeypatch, tmp_path):
-    scheduler, layer, events = _runtime(monkeypatch, tmp_path)
+@pytest.mark.parametrize("rank", range(4))
+def test_swap_evicts_prepared_weights_before_success_ack(monkeypatch, tmp_path, rank):
+    scheduler, layer, events = _runtime(monkeypatch, tmp_path, rank=rank)
     assert scheduler.flush_cache() is True
-    ack = json.loads((tmp_path / "ack.rank0.json").read_text())
+    ack = json.loads((tmp_path / f"ack.rank{rank}.json").read_text())
+    assert not (tmp_path / "ack.rankunknown.json").exists()
     assert not hasattr(layer, "_cacheon_moe_prepared_by_impl")
     assert events == ["sync", "gc", "empty", "recapture"]
     assert ack["ok"] is True and ack["evicted_prepared_entries"] == 2
