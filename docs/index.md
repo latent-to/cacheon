@@ -80,7 +80,8 @@ smallest validator-controlled delta it contributes. Authoritative qualification 
 
 Every candidate is measured by the two-process schedule: v8 (v9 for a
 mixed-cell workload) launches separate baseline and candidate engines and
-always takes B′. C′/B″ survive only in historical v2–v5 evidence. Primary and reproduction
+always takes B′. The earlier schedules (v1–v7) are sealed MiniMax-M3 history that
+this tree no longer decodes. Primary and reproduction
 attempts also exchange incumbent and candidate physical-lane roles. A persistent
 hot-swap screen may route candidates before this schedule, but its measurements
 cannot qualify or settle a contribution.

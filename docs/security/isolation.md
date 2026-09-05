@@ -151,7 +151,7 @@ The outer controller owns:
 - session framing and bounded outputs;
 - pre/active/post device-state receipts;
 - timers and speed recomputation;
-- physical-lane assignment and adaptive escalation;
+- physical-lane assignment;
 - typed audit coverage and host regrade;
 - candidate destruction before T; and
 - final cleanup and quiescence proof.

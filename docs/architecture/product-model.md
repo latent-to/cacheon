@@ -62,7 +62,7 @@ collects B/C/B′. Mixed-cell arenas use the same two-process B/C/B′ schedule 
 which grades total timed tokens over the complete sealed mixture. The candidate
 then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
-trust domain. C′/B″ are historical v2–v5 evidence shapes, not current reads.
+trust domain. C′/B″ are not reads on this substrate; their schedules are deleted.
 
 The **reward unit** is the smallest validator-controlled attributable delta:
 

@@ -91,7 +91,6 @@ def run_continuation_quality_stage(
     make_id: Callable[[], str],
     continuation: Any | None,
     quality_state: Any | None,
-    quality_reads: int,
     resident_lifecycle: Any | None,
     resident_speed_witness: Any | None,
     seams: QualificationContinuationRunnerSeams,
@@ -176,7 +175,7 @@ def run_continuation_quality_stage(
             resident_speed_witness=resident_speed_witness,
             seams=seams,
         )
-        if len(requests) != len(value.candidates) * quality_reads or any(
+        if len(requests) != len(value.candidates) or any(
             row.plan_digest != request_plan_digest for row in requests
         ):
             raise seams.qualification_continuation_error(
@@ -294,28 +293,18 @@ def run_continuation_quality_stage(
             session_id = make_id()
             request_rows: list[Any] = []
             for authority in value.candidates:
-                for candidate_read in range(1, quality_reads + 1):
-                    kwargs = {
-                        "session_id": session_id,
-                        "plan_digest": request_plan_digest,
-                        "request_id": make_id(),
-                        "nonce": make_id(),
-                        "index": len(request_rows),
-                    }
-                    if candidate_read == 1:
-                        # Preserve historical call/serialization behavior exactly.
-                        request = seams.reference_request(
-                            lifecycle, authority, selection, **kwargs
-                        )
-                    else:
-                        request = seams.reference_request(
-                            lifecycle,
-                            authority,
-                            selection,
-                            candidate_read=candidate_read,
-                            **kwargs,
-                        )
-                    request_rows.append(request)
+                request_rows.append(
+                    seams.reference_request(
+                        lifecycle,
+                        authority,
+                        selection,
+                        session_id=session_id,
+                        plan_digest=request_plan_digest,
+                        request_id=make_id(),
+                        nonce=make_id(),
+                        index=len(request_rows),
+                    )
+                )
             requests = tuple(request_rows)
             plan = seams.reference_session_plan_type(
                 value.candidates[0].profile.reference,
@@ -423,8 +412,7 @@ def _request_plan_digest(
         "reference_manifest_digest": value.candidates[0].profile.reference.digest,
         "selection_digest": selection.digest,
     }
-    if value.speed_evidence_policy.version != 1:
-        payload["speed_evidence_policy"] = value.speed_evidence_policy.to_dict()
+    payload["speed_evidence_policy"] = value.speed_evidence_policy.to_dict()
     if resident_speed_witness is not None:
         payload["resident_speed_evidence"] = resident_speed_witness.evidence_digest
     return seams.canonical_digest(

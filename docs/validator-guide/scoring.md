@@ -22,8 +22,8 @@ features:
 
 Every candidate is measured by v8's separate baseline and candidate engine
 processes (v9 for a mixed-cell workload), which always read B/C/B′ because the
-quality gate consumes the second stock read. C′/B″ are unreachable; they survive
-only in historical v2–v5 evidence. During execution, the controller fixes prompt
+quality gate consumes the second stock read. C′/B″ do not exist on this
+substrate. During execution, the controller fixes prompt
 batches and token budgets, serializes timed GPU work, validates bounded batch
 frames and token numerators, and records both charged intervals (registered
 conditioning plus timed) and timed windows. The durable resident witness retains
@@ -58,15 +58,13 @@ refused.
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
 Provenance still records the exact controller, but measurement reuse is not
-invalidated by an unrelated controller revision. Under historical v2/v3,
-excessive baseline disagreement or per-read scatter could yield
-`NO_DECISION`. V4 made every retained read gradable and terminates an
-undetermined final spread as `FAIL valid_not_faster`; v5 additionally excludes
-later baseline brackets that drift past the sealed ceiling and decides from the
-adjacent C/B pair. V6 made B′ conditional and v7 added the symmetric baseline
-swap on the since-deleted resident pair; v8 and v9 precommit B′ on the
-two-process substrate. Retained evidence always regrades under the version that
-produced it.
+invalidated by an unrelated controller revision. The grader treats every
+retained read as gradable and terminates an undetermined final spread as
+`FAIL valid_not_faster`; it excludes later baseline brackets that drift past
+the sealed ceiling and decides from the adjacent C/B pair. V8 and v9 precommit
+B′ on the two-process substrate. Retained evidence regrades under the version
+that produced it; evidence sealed below version 8 belongs to the MiniMax-M3
+era and is refused rather than regraded.
 
 Policy version 3 replaces each read's single timed aggregate with the median
 over per-batch timed windows. The window is the timed batch because host
@@ -93,8 +91,7 @@ stage. Evaluation work never shares the clock with a speed measurement. A versio
 conditioning slowdown bound: the conditioning span is the only place a
 candidate's prefill cost is host-visible, so the candidate's conditioning
 seconds must stay within the bound of the baseline's, compared at equal
-warmth position. Historical repeat schedules compare C′ with the matching
-warm baseline; current v8/v9 have no C′ and grade the initial C/B pair.
+warmth position. V8/v9 have no C′ and grade the initial C/B pair.
 Conditioning spans carry warm/cold session structure and positions must never
 be mixed. A violation is a clear
 candidate `FAIL`: a decode win cannot hide a prefill regression. The check

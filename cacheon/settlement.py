@@ -569,12 +569,10 @@ class SettlementQualification:
             },
         )
         audit_evidence_digest = report.audit_evidence_digest
-        resident_witness = (
-            report.speed_witness
-            if type(report.speed_witness) is ResidentSpeedWitness
-            else None
-        )
-        if resident_witness is not None and (
+        resident_witness = report.speed_witness
+        if type(resident_witness) is not ResidentSpeedWitness:
+            raise SettlementError("qualification report speed witness is not resident")
+        if (
             lane != "registered"
             or len(authority.reservations) != 1
             or len(attempt.reports) != 1
@@ -583,9 +581,7 @@ class SettlementQualification:
                 "resident crossover settlement requires one registered candidate"
             )
         resident_lane_orientation = (
-            None
-            if resident_witness is None
-            else ResidentLaneOrientation.from_resident_speed_witness(resident_witness)
+            ResidentLaneOrientation.from_resident_speed_witness(resident_witness)
         )
         if (
             reservation.selected_delta_digest != arm.selected_delta_digest

@@ -260,7 +260,6 @@ def test_native_rebuild_uses_dedicated_candidate_launch(
             reports=(
                 SimpleNamespace(
                     raw_quality_artifact=raw_quality_ref,
-                    repeat_quality=None,
                 ),
             )
         ),

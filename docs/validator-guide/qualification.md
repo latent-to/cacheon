@@ -47,21 +47,18 @@ Retained attempts identify the speed policy that created them:
 
 | Version | Timed reads | Purpose |
 |---|---|---|
-| v1 | B/C/B′ | Historical byte-compatible authority |
-| v2 | B/C/B′/C′/B″ | Fixed repeat-read authority |
-| v3 | B/C/B′, then C′/B″ only when borderline | Resident adaptive authority |
-| v4 | as v3 | Every read graded; bookend invariance decides |
-| v5 | as v3 | Adds the bracket-drift exclusion |
-| v6 | B/C, then B′ only when a legal bookend could reverse it | Conditional bookend |
-| v7 | as v6 | Adds the symmetric baseline swap (historical; pair lane deleted 2026-09-06) |
 | v8 | B/C/B′, always three | Two-process substrate, every single-cell candidate |
 | v9 | B/C/B′, always three | Two-process substrate, mixed-cell workloads |
 
-Versions 6 and 7 belonged to the standing resident pair, where the candidate was
-hot-swapped into a loaded engine; that lane was deleted on 2026-09-06 after the
-GLM workload (two cells) made it unreachable. Every candidate is now measured by
-the two-process crossover, which launches its own baseline and candidate engines.
-That substrate binds v8 (v9 for a mixed-cell workload) and reads B′
+Versions 1–7 were the MiniMax-M3 era's schedules: the adaptive five-read
+bracket (v1–v5) and the conditional bookend on the standing resident pair
+(v6/v7). Their graders, the legacy `SpeedWitness` lane, and the repeat-quality
+leg were deleted on 2026-09-06 with the pair-native lane. No MiniMax-M3
+product will be re-run or re-graded, so the runtime, evidence readers, and
+settlement refuse a witness below version 8 instead of decoding it. Every
+candidate is now measured by the two-process crossover, which launches its own
+baseline and candidate engines. That substrate binds v8 (v9 for a mixed-cell
+workload) and reads B′
 unconditionally: the quality gate takes its stock-drift control from the second
 baseline read, and a conditional bookend leaves a clear PASS with no control to
 harvest. Reading it regardless of the outcome also preserves what the
@@ -73,15 +70,14 @@ built, and the worker executes the version the sealed plan carries, so the plan
 and the execution substrate cannot disagree. Every calibrated threshold is the
 one the provider sealed.
 
-C′ and B″ are unreachable under v6 and later. The five-arm bracket survives only
-in v2–v5 evidence.
+C′ and B″ do not exist under v8 or v9; no code path in this tree reads them.
 
 Fresh execution is resident-only: the runner refuses any other speed-evidence
 policy at entry, and the constructor default is the resident policy — the only
-one a fresh plan can run. Versions 1 and 2 survive as reopen vocabulary: a
-reopen binds the retained evidence's own policy explicitly, and historical
-serialized artifacts regrade byte-for-byte without reinterpretation. Merely
-changing the policy label does not upgrade old evidence.
+one a fresh plan can run. A reopen binds the retained evidence's own policy
+explicitly, and retained v8/v9 artifacts regrade byte-for-byte without
+reinterpretation. Merely changing the policy label does not upgrade old
+evidence.
 
 ## Current adaptive timeline
 
@@ -319,13 +315,10 @@ dispositions; it does not invoke the full causal regrader.
 
 The final report is derived from the serialized attempt, referenced graph/quality
 artifacts, and calibration manifests. Reopen can regrade graph and raw quality evidence.
-Speed regrading uses the retained witness type registered by the speed-policy
-version. Legacy v1/v2 use `SpeedWitness`: v1 contains three aggregate B/C/B′
-`ChargedExecutionRate` rows and v2 contains a fixed five B/C/B′/C′/B″ rows.
-Version-3 resident-family attempts use `ResidentSpeedWitness`, which retains the
-actual schedule: historical three-or-five-read v3–v5, historical v6/v7 B/C with
-optional B′, or current v8/v9 B/C/B′. It also retains physical-lane authority,
-operational timings, and budget. Regrading recomputes rates and the frozen
+Speed regrading uses the retained `ResidentSpeedWitness`, which retains the
+v8/v9 B/C/B′ schedule, physical-lane authority, operational timings, and
+budget. A witness below version 8 is sealed MiniMax-M3 history and is refused
+rather than decoded. Regrading recomputes rates and the frozen
 decision from those typed facts; it does not reconstruct them from raw session
 frames. A summary JSON line without these products is not authority.
 

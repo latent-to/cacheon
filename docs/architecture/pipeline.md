@@ -176,12 +176,12 @@ measured on the two-process substrate:
 - the plan seals v8 (v9 for a mixed-cell workload): separate baseline and
   candidate processes always read B/C/B′ because the quality gate consumes the
   second stock read; and
-- C′/B″ remain readable only in historical v2–v5 evidence. Nothing currently
-  commissioned seals those reads.
+- C′/B″ do not exist; the pre-v8 schedules that read them were deleted with
+  the MiniMax-M3 history seal, and their evidence is refused.
 
 The current subpolicy retains stage and total budgets and the required
-physical-lane role assignment. Old evidence reopens under its own versioned
-arithmetic; a label change cannot upgrade it.
+physical-lane role assignment. Evidence reopens under the arithmetic that
+produced it; a label change cannot upgrade it and pre-v8 witnesses are refused.
 
 The authoritative work is staged. Speed is decided first; audit and pristine-reference
 quality run only after the speed stage remains eligible, apart from an explicitly
@@ -192,7 +192,6 @@ registered calibration-observation continuation.
 | B | Exact frozen incumbent on the assigned baseline lane/process | Yes | Opening performance read |
 | C | Incumbent plus one exact target delta on the disjoint candidate lane/process | Yes | Candidate measurement and sealed trajectory |
 | B′ | The same incumbent authority as B | Yes | Mandatory stock-drift control |
-| C′ / B″ | Historical v2–v5 candidate/baseline repeats | Yes | Reopen old evidence only; unreachable in current work |
 | A | Candidate in a separate eager, untimed role | No | Registered sampled slot audit and typed host regrade |
 | T | Pristine candidate-free reference | No | Teacher-forced semantic quality and hidden tasks |
 
@@ -229,7 +228,6 @@ uses the registered B/B′ bookend unless the later bracket is excluded by the
 sealed drift rule:
 
 ```text
-v7_clear_speedup = C / B
 bookended_speedup = C / mean(B, B′)
 required_bar      = 1 + max(margin_floor, noise_multiplier × measured_noise)
 ```
@@ -374,7 +372,7 @@ able to reopen, rather than merely observe, each handoff:
 - registered arena, target catalog, incumbent manifest, candidate transition, and screen
   receipt;
 - lane identities and a versioned `ResidentSpeedWitness` containing exactly the
-  scheduled rows (current v8/v9 B/C/B′; historical v6/v7 B/C with optional B′), plus
+  scheduled rows (v8/v9 B/C/B′), plus
   retained graph/quality/pristine-T references and witnesses; richer raw
   session/device frames are validated in-run but are not serialized into the
   attempt;

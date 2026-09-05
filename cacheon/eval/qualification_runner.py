@@ -78,15 +78,13 @@ from cacheon.eval.resident_audit_authority import (
     ResidentAuditAuthorityError, ResidentAuditExecutionAuthority,
 )
 from cacheon.eval.scoring import (
-    ChargedExecutionRate, RawSpeedEvidenceError, SpeedupVerdict,
-    _projection_digest, marginal_workload_digest, score_speedup,
+    RawSpeedEvidenceError, SpeedupVerdict, marginal_workload_digest,
 )
 from cacheon.eval.speed_verdict import (
     SPEED_FAIL_REASONS,
     fail_reason,
     resident_speed_roles,
     speed_grade,
-    v6_grade,
 )
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes, require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -99,14 +97,10 @@ class QualificationRunnerError(RuntimeError):
     retryable = True
 
 ATTEMPT_DOMAIN = "qualification.cohort-attempt"
-ATTEMPT_SCHEMA = "cacheon.qualification.cohort-attempt.v1"
-ATTEMPT_SCHEMA_V2 = "cacheon.qualification.cohort-attempt.v2"
 ATTEMPT_SCHEMA_V3 = "cacheon.qualification.cohort-attempt.v3"
 STAGE_EXIT_DOMAIN = "qualification.stage-exit"
 STAGE_EXIT_SCHEMA = "cacheon.qualification.stage-exit.v1"
 
-LEGACY_SPEED_ESTIMATOR = "bcbp-baseline-range.v1"
-REPEAT_SPEED_ESTIMATOR = "bcbpcbpp-max-arm-range.v1"
 RESIDENT_SPEED_ESTIMATOR = "resident-adaptive-bcbp-v1"
 
 
@@ -114,12 +108,11 @@ RESIDENT_SPEED_ESTIMATOR = "resident-adaptive-bcbp-v1"
 class SpeedEvidencePolicy:
     """Consensus identity for the speed-read shape and its estimator.
 
-    Fresh execution is resident-only (version 3); ``run_causal_qualification``
-    refuses any other version at entry.  Versions 1 and 2 are retained-evidence
-    vocabulary: they reopen historical B/C/B-prime (and the never-calibrated
-    repeat-shaped) artifacts byte-for-byte through settlement, and cannot be
-    freshly executed.  The read shape is pre-B authority and therefore must
-    agree across primary and reproduction.
+    Only the resident policy (version 3) exists: the marginal v1/v2 lanes and
+    their retained-evidence readers were deleted with the MiniMax-M3 history
+    seal on 2026-09-06.  The fields stay on the wire because settlement hashes
+    this exact ``to_dict`` under its own domain.  The read shape is pre-B
+    authority and therefore must agree across primary and reproduction.
     """
 
     version: int
@@ -127,25 +120,12 @@ class SpeedEvidencePolicy:
     estimator: str
 
     def __post_init__(self) -> None:
-        expected = {
-            1: (1, LEGACY_SPEED_ESTIMATOR),
-            2: (2, REPEAT_SPEED_ESTIMATOR),
-            3: (0, RESIDENT_SPEED_ESTIMATOR),
-        }
         if (
             type(self.version) is not int
-            or self.version not in expected
-            or (self.candidate_reads, self.estimator) != expected[self.version]
+            or (self.version, self.candidate_reads, self.estimator)
+            != (3, 0, RESIDENT_SPEED_ESTIMATOR)
         ):
             raise QualificationRunnerError("speed evidence policy is unsupported")
-
-    @classmethod
-    def legacy(cls) -> "SpeedEvidencePolicy":
-        return cls(1, 1, LEGACY_SPEED_ESTIMATOR)
-
-    @classmethod
-    def repeat(cls) -> "SpeedEvidencePolicy":
-        return cls(2, 2, REPEAT_SPEED_ESTIMATOR)
 
     @classmethod
     def resident(cls) -> "SpeedEvidencePolicy":
@@ -163,9 +143,6 @@ class SpeedEvidencePolicy:
         }
 
 
-# Fresh execution is resident-only; the entry gate refuses anything else, so the
-# default is the one policy a fresh plan can actually run.  Legacy v1 (and the
-# never-calibrated v2 repeat shape) survive only as reopen vocabulary.
 DEFAULT_SPEED_EVIDENCE_POLICY = SpeedEvidencePolicy.resident
 
 
@@ -193,9 +170,8 @@ def _strict(value: object, fields: set[str], label: str) -> dict[str, object]:
 def _encode_record(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
-    # Reports have a deliberately versioned wire shape: v1 omits the v2-only
-    # repeat witness.  Let their custom serializer run even when nested inside
-    # an attempt dataclass.
+    # Reports and resident witnesses own their wire shape; let their serializer
+    # run even when nested inside an attempt dataclass.
     if type(value) in {
         globals().get("CandidateQualificationReport"),
         globals().get("ResidentSpeedWitness"),
@@ -412,16 +388,12 @@ class CausalQualificationInput:
             )
         object.__setattr__(self, "audit_policies", audit_policies)
         resident = self.resident_speed_plan
-        if (self.speed_evidence_policy.version == 3) != (
-            type(resident) is ResidentCrossoverPlan
-        ):
+        if type(resident) is not ResidentCrossoverPlan:
             raise QualificationRunnerError(
                 "resident speed plan coverage differs from speed policy"
             )
         resident_audit = self.resident_audit_plan
-        if (self.speed_evidence_policy.version == 3) != (
-            type(resident_audit) is ResidentAuditExecutionAuthority
-        ):
+        if type(resident_audit) is not ResidentAuditExecutionAuthority:
             raise QualificationRunnerError(
                 "resident audit plan coverage differs from speed policy"
             )
@@ -602,123 +574,6 @@ def _aggregate_decision(*values: QualificationDecision) -> QualificationDecision
     if QualificationDecision.NO_DECISION in values:
         return QualificationDecision.NO_DECISION
     return QualificationDecision.PASS
-
-def _validated_rate(row: ChargedExecutionRate) -> ChargedExecutionRate:
-    if type(row) is not ChargedExecutionRate:
-        raise QualificationRunnerError("charged rate is not typed")
-    require_sha256_hex(row.launch_digest, field="rate launch")
-    counts = (row.conditioning_tokens, row.timed_tokens, row.charged_tokens)
-    seconds = (row.conditioning_seconds, row.timed_seconds, row.charged_seconds)
-    if (len(row.session_id) != 32 or any(char not in "0123456789abcdef" for char in row.session_id)
-            or any(type(value) is not int or value <= 0 for value in counts)
-            or counts[2] != counts[0] + counts[1]
-            or any(type(value) is not float or not math.isfinite(value) or value <= 0 for value in seconds)
-            or seconds[2] != seconds[0] + seconds[1]
-            or row.tokens_per_second != counts[2] / seconds[2]):
-        raise QualificationRunnerError("charged rate numerators or intervals are inconsistent")
-    return row
-
-def _rate_from_dict(value: object) -> ChargedExecutionRate:
-    raw = dict(_strict(value, set(ChargedExecutionRate.__dataclass_fields__), "charged rate witness"))
-    for field in ("conditioning_seconds", "timed_seconds", "charged_seconds", "tokens_per_second"):
-        raw[field] = float(raw[field])
-    return _validated_rate(ChargedExecutionRate(**raw))  # type: ignore[arg-type]
-
-@dataclass(frozen=True)
-class SpeedWitness:
-    selected_delta_digest: str
-    candidate_launch_digest: str
-    calibration_digest: str
-    calibration_context_digest: str
-    workload_digest: str
-    runtime_resource_policy_digest: str
-    evidence_digest: str
-    # 3 rates = the historical B/C/B-prime shape (digest-identical to all prior
-    # witnesses); 5 rates = repeat-read evidence in RUN ORDER B, C, B', C', B''.
-    rates: tuple[ChargedExecutionRate, ...]
-
-    def __post_init__(self) -> None:
-        for field in self.__dataclass_fields__:
-            if field != "rates":
-                object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
-        rates = tuple(self.rates)
-        if len(rates) not in (3, 5):
-            raise QualificationRunnerError(
-                "speed witness must contain B/C/B-prime rates (or B/C/B'/C'/B'' repeat reads)"
-            )
-        rates = tuple(_validated_rate(row) for row in rates)
-        object.__setattr__(self, "rates", rates)
-        if _projection_digest(
-            self.selected_delta_digest, self.candidate_launch_digest, self.calibration_digest,
-            self.calibration_context_digest, self.workload_digest,
-            self.runtime_resource_policy_digest, rates,
-        ) != self.evidence_digest:
-            raise QualificationRunnerError("speed witness evidence digest does not recompute")
-
-    def to_dict(self) -> dict[str, object]:
-        return _record_dict(self)
-
-    @property
-    def policy(self) -> SpeedEvidencePolicy:
-        # The read shape is inside the signed raw witness.  Keeping the policy
-        # derived (rather than adding serialized fields) preserves legacy v1
-        # witness bytes exactly.
-        return (
-            SpeedEvidencePolicy.legacy()
-            if len(self.rates) == 3
-            else SpeedEvidencePolicy.repeat()
-        )
-
-    @classmethod
-    def from_dict(cls, value: object) -> "SpeedWitness":
-        raw = _strict(value, set(cls.__dataclass_fields__), "speed witness")
-        return cls(**{**raw, "rates": tuple(_rate_from_dict(row) for row in raw["rates"])})  # type: ignore[arg-type]
-
-    def regrade(
-        self,
-        calibration: CalibrationManifest,
-        context: CalibrationContext,
-        *,
-        expected_policy: SpeedEvidencePolicy | None = None,
-    ) -> tuple[QualificationDecision, str, str | None]:
-        if expected_policy is not None and (
-            type(expected_policy) is not SpeedEvidencePolicy
-            or self.policy != expected_policy
-        ):
-            raise QualificationRunnerError("speed witness policy differs from authority")
-        if (
-            self.calibration_digest != calibration.digest
-            or self.calibration_context_digest != context.digest
-            or self.workload_digest != context.workload_digest
-            or not calibration.thresholds_frozen
-        ):
-            raise QualificationRunnerError("speed witness calibration authority differs")
-        if len(self.rates) == 3:
-            before, candidate, after = self.rates
-            baseline_reads = [before.tokens_per_second, after.tokens_per_second]
-            candidate_reads = [candidate.tokens_per_second]
-        else:  # run order B, C, B', C', B''
-            before, candidate, after, candidate_repeat, baseline_third = self.rates
-            baseline_reads = [
-                before.tokens_per_second, after.tokens_per_second,
-                baseline_third.tokens_per_second,
-            ]
-            candidate_reads = [candidate.tokens_per_second, candidate_repeat.tokens_per_second]
-        verdict = score_speedup(
-            baseline_reads, candidate_reads,
-            min_margin=float(decimal_value(calibration.speed.min_margin)),
-            k=float(decimal_value(calibration.speed.noise_multiplier)),
-            max_noise=float(decimal_value(calibration.speed.max_noise)),
-        )
-        grade = (
-            QualificationDecision.NO_DECISION
-            if not verdict.confident
-            else QualificationDecision.PASS
-            if verdict.passed_speedup
-            else QualificationDecision.FAIL
-        )
-        return grade, format(verdict.speedup, ".17g"), _speed_reason(grade, verdict)
-
 
 def _speed_reason(
     grade: "QualificationDecision",
@@ -926,17 +781,11 @@ class ResidentSpeedWitness:
     def policy(self) -> SpeedEvidencePolicy:
         return SpeedEvidencePolicy.resident()
 
-    @property
-    def has_repeat(self) -> bool:
-        return len(self.rates) == 5
-
     def always_bookend_result(self) -> tuple[QualificationDecision, str, str | None]:
         """Grade the two-process schedule: B, C and B-prime, read unconditionally.
 
-        The pre-v6 branch below asserts an adaptive read shape -- three reads if
-        and only if the first grade was clear -- because there the third read is
-        earned by a close call. Version 8 precommits it (the quality gate takes
-        its stock-drift control from the second baseline read), so there is no
+        Version 8 precommits the third read (the quality gate takes its
+        stock-drift control from the second baseline read), so there is no
         adaptive shape to assert: one grade over the whole schedule terminates.
         """
 
@@ -962,44 +811,14 @@ class ResidentSpeedWitness:
         )
 
     def accepted_speedup(self) -> str:
-        """The settled speedup, graded the way this witness's version grades.
+        """The settled speedup, graded exactly as ``regrade`` grades it.
 
         Callers outside qualification (settlement) need the accepted speedup
-        without a calibration authority to regrade against. They must not pick
-        a grading function by hand: ``v6_result`` does not reject a v8 witness
-        -- its guard is ``version < 6`` -- so a hand-picked call would run v6
-        arithmetic over v8 reads and settle a number the gate never decided.
-        This dispatches on the same boundary ``regrade`` does.
+        without a calibration authority to regrade against; they must not pick
+        a grading function by hand, so this shares ``regrade``'s grader.
         """
 
-        if self.resident_policy.version >= 8:
-            return self.always_bookend_result()[1]
-        return self.v6_result()[1]
-
-    def v6_result(self) -> tuple[QualificationDecision, str, str | None]:
-        if self.resident_policy.version < 6:
-            raise QualificationRunnerError("resident speed witness is not v6")
-        try:
-            _, verdict, decision = v6_grade(
-                self.resident_policy,
-                self.rates[0],
-                self.rates[1],
-                self.rates[2] if len(self.rates) == 3 else None,
-            )
-            # A two-read exit is the B/C precheck, where a conditioning
-            # regression is a terminating FAIL in its own right; a third read
-            # exists only because that precheck already came back clean.
-            conditioning = len(
-                self.rates
-            ) == 2 and self.resident_policy.conditioning_regression(
-                self.rates[0], self.rates[1]
-            )
-        except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
-            raise QualificationRunnerError(str(exc)) from None
-        grade = QualificationDecision(decision.value)
-        return grade, format(verdict.speedup, ".17g"), _speed_reason(
-            grade, verdict, conditioning_failed=conditioning
-        )
+        return self.always_bookend_result()[1]
 
     def regrade(
         self,
@@ -1037,77 +856,7 @@ class ResidentSpeedWitness:
             or self.workload_digest != context.workload_digest
         ):
             raise QualificationRunnerError("resident speed calibration authority differs")
-        if self.resident_policy.version >= 8:
-            return self.always_bookend_result()
-        if self.resident_policy.version >= 6:
-            return self.v6_result()
-        try:
-            baselines = [
-                self.resident_policy.scored_tokens_per_second(row)
-                for row in self.rates
-                if row.role.startswith("B")
-            ]
-            candidates = [
-                self.resident_policy.scored_tokens_per_second(row)
-                for row in self.rates
-                if row.role.startswith("C")
-            ]
-        except CrossoverRuntimeError as exc:
-            raise QualificationRunnerError(str(exc)) from None
-        initial = score_speedup(
-            baselines[:2],
-            candidates[:1],
-            min_margin=self.resident_policy.min_margin,
-            k=self.resident_policy.noise_multiplier,
-            max_noise=self.resident_policy.max_noise,
-        )
-        # Conditioning pairs by warmth position (C vs B cold, C' vs B' warm);
-        # a bound violation is a clear candidate FAIL under the sealed policy
-        # and must regrade identically to the live decision.
-        try:
-            conditioning_initial = self.resident_policy.conditioning_regression(
-                self.rates[0], self.rates[1]
-            )
-        except CrossoverRuntimeError as exc:
-            raise QualificationRunnerError(str(exc)) from None
-        clear = conditioning_initial or (
-            initial.confident
-            and (
-                initial.speedup <= initial.required - self.resident_policy.min_margin
-                or initial.speedup >= initial.required + self.resident_policy.min_margin
-            )
-        )
-        if (len(self.rates) == 3) != clear:
-            raise QualificationRunnerError("resident adaptive read shape does not regrade")
-        if clear:
-            verdict = initial
-            conditioning_failed = conditioning_initial
-        else:
-            verdict = score_speedup(
-                baselines,
-                candidates,
-                min_margin=self.resident_policy.min_margin,
-                k=self.resident_policy.noise_multiplier,
-                max_noise=self.resident_policy.max_noise,
-            )
-            try:
-                conditioning_failed = self.resident_policy.conditioning_regression(
-                    self.rates[2], self.rates[3]
-                )
-            except CrossoverRuntimeError as exc:
-                raise QualificationRunnerError(str(exc)) from None
-        grade = (
-            QualificationDecision.FAIL
-            if conditioning_failed
-            else QualificationDecision.NO_DECISION
-            if not verdict.confident
-            else QualificationDecision.PASS
-            if verdict.passed_speedup
-            else QualificationDecision.FAIL
-        )
-        return grade, format(verdict.speedup, ".17g"), _speed_reason(
-            grade, verdict, conditioning_failed=conditioning_failed
-        )
+        return self.always_bookend_result()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1568,84 +1317,11 @@ class QualificationTimingWitness:
         )
 
 
-@dataclass(frozen=True)
-class RepeatQualityWitness:
-    """The independently teacher-graded B-prime/C-prime/B-double-prime leg."""
-
-    quality_evidence_digest: str
-    quality_decision: QualificationDecision
-    candidate_mean_teacher_nll: str
-    raw_quality_artifact: EvidenceArtifactRef
-    raw_quality_binding: ReferenceQualityRawBinding
-    t_request_sha256: str
-
-    def __post_init__(self) -> None:
-        for name in ("quality_evidence_digest", "t_request_sha256"):
-            object.__setattr__(
-                self, name, require_sha256_hex(getattr(self, name), field=name)
-            )
-        object.__setattr__(self, "quality_decision", _decision(self.quality_decision))
-        if (
-            type(self.raw_quality_artifact) is not EvidenceArtifactRef
-            or type(self.raw_quality_binding) is not ReferenceQualityRawBinding
-        ):
-            raise QualificationRunnerError("repeat quality witness is not typed")
-        try:
-            nll = float(self.candidate_mean_teacher_nll)
-        except (TypeError, ValueError) as exc:
-            raise QualificationRunnerError("repeat candidate mean NLL is not numeric") from exc
-        if not math.isfinite(nll) or nll < 0:
-            raise QualificationRunnerError("repeat candidate mean NLL is nonfinite or negative")
-
-    def to_dict(self) -> dict[str, object]:
-        return _record_dict(self)
-
-    @classmethod
-    def from_dict(cls, value: object) -> "RepeatQualityWitness":
-        raw = _strict(value, set(cls.__dataclass_fields__), "repeat quality witness")
-        return cls(**{
-            **raw,
-            "raw_quality_artifact": EvidenceArtifactRef.from_dict(raw["raw_quality_artifact"]),
-            "raw_quality_binding": ReferenceQualityRawBinding.from_dict(raw["raw_quality_binding"]),
-        })  # type: ignore[arg-type]
-
-
-def _quality_decision_pair(
-    primary: QualificationDecision, repeat: QualificationDecision | None
-) -> QualificationDecision:
-    values = (primary,) if repeat is None else (primary, repeat)
-    if QualificationDecision.FAIL in values:
-        return QualificationDecision.FAIL
-    if QualificationDecision.NO_DECISION in values:
-        return QualificationDecision.NO_DECISION
-    return QualificationDecision.PASS
-
-
-def _speed_has_repeat(value: object) -> bool:
-    if type(value) is SpeedWitness:
-        return value.policy.version == 2
-    if type(value) is ResidentSpeedWitness:
-        return value.has_repeat
-    raise QualificationRunnerError("speed witness type is unsupported")
-
-
 def _candidate_runtime_resource_policy_digest(value: object) -> str:
-    if type(value) is SpeedWitness:
-        return value.runtime_resource_policy_digest
     if type(value) is ResidentSpeedWitness:
         return value.candidate_runtime_resource_policy_digest
     raise QualificationRunnerError("speed witness type is unsupported")
 
-
-def _report_fields(value: object, *, include_repeat: bool) -> dict[str, object]:
-    result = {
-        row.name: _encode_record(getattr(value, row.name))
-        for row in fields(value)
-        if row.name != "repeat_quality"
-    }
-    if include_repeat:
-        result["repeat_quality"] = _encode_record(getattr(value, "repeat_quality"))
-    return result
 
 @dataclass(frozen=True)
 class CandidateQualificationReport:
@@ -1666,7 +1342,7 @@ class CandidateQualificationReport:
     candidate_mean_teacher_nll: str
     raw_quality_artifact: EvidenceArtifactRef
     raw_quality_binding: ReferenceQualityRawBinding
-    speed_witness: SpeedWitness | ResidentSpeedWitness
+    speed_witness: ResidentSpeedWitness
     t_request_sha256: str
     audit_evidence_digest: str
     audit_decision: QualificationDecision
@@ -1674,7 +1350,6 @@ class CandidateQualificationReport:
     decision: QualificationDecision
     reason: str
     retryable: bool
-    repeat_quality: RepeatQualityWitness | None = None
 
     def __post_init__(self) -> None:
         for field in (
@@ -1692,15 +1367,10 @@ class CandidateQualificationReport:
         if (
             type(self.raw_quality_artifact) is not EvidenceArtifactRef
             or type(self.raw_quality_binding) is not ReferenceQualityRawBinding
-            or type(self.speed_witness) not in {SpeedWitness, ResidentSpeedWitness}
+            or type(self.speed_witness) is not ResidentSpeedWitness
             or type(self.audit_witness) is not AuditWitness
         ):
             raise QualificationRunnerError("candidate evidence witness is not typed")
-        if _speed_has_repeat(self.speed_witness) != (
-            type(self.repeat_quality) is RepeatQualityWitness):
-            raise QualificationRunnerError(
-                "candidate repeat quality coverage differs from speed policy"
-            )
         expected = _aggregate_decision(
             self.graph_decision, self.speed_decision, self.quality_decision, self.audit_decision,
         )
@@ -1732,42 +1402,28 @@ class CandidateQualificationReport:
                 raise QualificationRunnerError(f"{field} is nonfinite or negative")
 
     def to_dict(self) -> dict[str, object]:
-        return _report_fields(self, include_repeat=self.repeat_quality is not None)
+        return {
+            row.name: _encode_record(getattr(self, row.name)) for row in fields(self)
+        }
 
     @classmethod
     def from_dict(cls, value: object) -> "CandidateQualificationReport":
-        fields_all = set(cls.__dataclass_fields__) - {"_domain"}
-        fields_base = fields_all - {"repeat_quality"}
         if type(value) is not dict:
             raise QualificationRunnerError("candidate report is not an object")
-        optional = ({"repeat_quality"} if "repeat_quality" in value else set())
         raw = _strict(
-            value,
-            fields_base | optional,
-            "candidate report",
+            value, set(cls.__dataclass_fields__) - {"_domain"}, "candidate report"
         )
         return cls(**{
             **raw,
             "raw_quality_artifact": EvidenceArtifactRef.from_dict(raw["raw_quality_artifact"]),
             "raw_quality_binding": ReferenceQualityRawBinding.from_dict(raw["raw_quality_binding"]),
-            "speed_witness": (
-                ResidentSpeedWitness.from_dict(raw["speed_witness"])
-                if type(raw["speed_witness"]) is dict
-                and "resident_policy" in raw["speed_witness"]
-                else SpeedWitness.from_dict(raw["speed_witness"])
-            ),
+            "speed_witness": ResidentSpeedWitness.from_dict(raw["speed_witness"]),
             "audit_witness": AuditWitness.from_dict(raw["audit_witness"]),
-            "repeat_quality": (
-                RepeatQualityWitness.from_dict(raw["repeat_quality"])
-                if "repeat_quality" in raw
-                else None
-            ),
         })  # type: ignore[arg-type]
 
     @property
     def digest(self) -> str:
-        domain = self._domain if self.repeat_quality is None else f"{self._domain}.repeat"
-        return canonical_digest(domain, self.to_dict())
+        return canonical_digest(self._domain, self.to_dict())
 
 
 def _attempt_speed_policy(reports: tuple[object, ...]) -> SpeedEvidencePolicy:
@@ -1906,7 +1562,7 @@ class CohortQualificationAttempt:
     reference_execution: ReferenceExecutionWitness
     teardown_after_t: OCIQuiescenceReceipt
     reports: tuple[CandidateQualificationReport, ...]
-    operational_timing: QualificationTimingWitness | None = None
+    operational_timing: QualificationTimingWitness
 
     def __post_init__(self) -> None:
         for field in (
@@ -1922,42 +1578,35 @@ class CohortQualificationAttempt:
             or type(self.teardown_after_t) is not OCIQuiescenceReceipt
             or type(self.entropy_observed_monotonic_s) is not float
             or not math.isfinite(self.entropy_observed_monotonic_s)
+            or type(self.operational_timing) is not QualificationTimingWitness
         ):
             raise QualificationRunnerError("cohort attempt authority is not typed")
         reports = tuple(self.reports)
         if not reports or any(type(row) is not CandidateQualificationReport for row in reports):
             raise QualificationRunnerError("cohort reports are not typed")
         object.__setattr__(self, "reports", reports)
-        speed_policy = _attempt_speed_policy(reports)
-        if (speed_policy.version == 3) != (
-            type(self.operational_timing) is QualificationTimingWitness
+        _attempt_speed_policy(reports)
+        timing = self.operational_timing
+        report = reports[0] if len(reports) == 1 else None
+        if (
+            report is None
+            or timing.policy_digest != report.speed_witness.resident_policy.digest
+            or timing.speed_evidence_digest != report.speed_evidence_digest
+            or timing.audit_evidence_digest != report.audit_evidence_digest
+            or timing.reference_session_digest
+            != self.reference_execution.session_digest
+            or timing.max_qualification_seconds
+            != report.speed_witness.resident_policy.max_qualification_seconds
+            or timing.speed_started_monotonic_s
+            != report.speed_witness.started_monotonic_s
+            or timing.speed_completed_monotonic_s
+            != report.speed_witness.completed_monotonic_s
+            or timing.qualification_completed_monotonic_s
+            > self.teardown_after_t.observed_monotonic_s
         ):
             raise QualificationRunnerError(
-                "resident attempt operational timing coverage differs"
+                "resident attempt timing differs from retained evidence"
             )
-        if self.operational_timing is not None:
-            timing = self.operational_timing
-            report = reports[0] if len(reports) == 1 else None
-            if (
-                report is None
-                or type(report.speed_witness) is not ResidentSpeedWitness
-                or timing.policy_digest != report.speed_witness.resident_policy.digest
-                or timing.speed_evidence_digest != report.speed_evidence_digest
-                or timing.audit_evidence_digest != report.audit_evidence_digest
-                or timing.reference_session_digest
-                != self.reference_execution.session_digest
-                or timing.max_qualification_seconds
-                != report.speed_witness.resident_policy.max_qualification_seconds
-                or timing.speed_started_monotonic_s
-                != report.speed_witness.started_monotonic_s
-                or timing.speed_completed_monotonic_s
-                != report.speed_witness.completed_monotonic_s
-                or timing.qualification_completed_monotonic_s
-                > self.teardown_after_t.observed_monotonic_s
-            ):
-                raise QualificationRunnerError(
-                    "resident attempt timing differs from retained evidence"
-                )
         before, after = self.teardown_before_t, self.teardown_after_t
         if (
             (before.executor_id, before.manager_instance_id, before.namespace_digest)
@@ -1971,21 +1620,14 @@ class CohortQualificationAttempt:
             raise QualificationRunnerError("cohort causal ordering or executor identity differs")
 
     def to_dict(self) -> dict[str, object]:
-        result = _record_dict(self)
-        if self.operational_timing is None:
-            result.pop("operational_timing")
-        return result
+        return _record_dict(self)
 
     @classmethod
     def from_dict(cls, value: object) -> "CohortQualificationAttempt":
-        fields_v3 = set(cls.__dataclass_fields__) - {"_domain"}
-        fields_legacy = fields_v3 - {"operational_timing"}
         if type(value) is not dict:
             raise QualificationRunnerError("cohort attempt is not an object")
         raw = _strict(
-            value,
-            fields_v3 if "operational_timing" in value else fields_legacy,
-            "cohort attempt",
+            value, set(cls.__dataclass_fields__) - {"_domain"}, "cohort attempt"
         )
         return cls(**{
             **raw,
@@ -1997,10 +1639,8 @@ class CohortQualificationAttempt:
             "teardown_before_t": _quiescence_from_dict(raw["teardown_before_t"]),
             "teardown_after_t": _quiescence_from_dict(raw["teardown_after_t"]),
             "reports": tuple(CandidateQualificationReport.from_dict(row) for row in raw["reports"]),
-            "operational_timing": (
-                QualificationTimingWitness.from_dict(raw["operational_timing"])
-                if "operational_timing" in raw
-                else None
+            "operational_timing": QualificationTimingWitness.from_dict(
+                raw["operational_timing"]
             ),
         })  # type: ignore[arg-type]
 
@@ -2010,13 +1650,9 @@ class CohortQualificationAttempt:
 
     @property
     def digest(self) -> str:
-        version = _attempt_speed_policy(self.reports).version
-        domain = {
-            1: self._domain,
-            2: f"{self._domain}.repeat",
-            3: f"{self._domain}.resident",
-        }[version]
-        return canonical_digest(domain, self.to_dict())
+        # The resident suffix is the sealed domain of every settled attempt;
+        # the marginal (unsuffixed) and repeat domains left with the M3 seal.
+        return canonical_digest(f"{self._domain}.resident", self.to_dict())
 
 
 QualificationAttempt = CohortQualificationAttempt
@@ -2092,12 +1728,10 @@ def _selected_frames(
     lifecycle: ResidentMarginalLifecycleEvidence,
     selected_delta_digest: str,
     prompts: tuple[str, ...],
-    *,
-    candidate_read: int = 1,
 ) -> tuple[tuple[str, str, tuple[dict[str, object], ...]], ...]:
-    from cacheon.eval.qualification import _quality_leg_lifecycle
+    from cacheon.eval.qualification import _resident_lifecycle
 
-    lifecycle = _quality_leg_lifecycle(lifecycle, candidate_read)
+    lifecycle = _resident_lifecycle(lifecycle)
     candidates = tuple(row.arm.selected_delta_digest for row in lifecycle.candidates)
     if candidates.count(selected_delta_digest) != 1:
         raise QualificationRunnerError("selected candidate is absent or ambiguous")
@@ -2122,14 +1756,12 @@ def _reference_request(
     request_id: str,
     nonce: str,
     index: int,
-    candidate_read: int = 1,
 ) -> ReferenceRequest:
     prompts = []
     for prompt_digest, prompt_text, frames in _selected_frames(
         lifecycle,
         authority.selected_delta_digest,
         selection.selected_prompt_digests,
-        candidate_read=candidate_read,
     ):
         roles = []
         for frame in frames:
@@ -2249,8 +1881,6 @@ def _raw_artifact(
     reference_execution: PristineReferenceExecutionEvidence,
     exchange: object,
     hidden_judge: HiddenJudge,
-    *,
-    candidate_read: int = 1,
 ) -> ReferenceQualityRawArtifact:
     profile = authority.profile
     request = exchange.request
@@ -2259,7 +1889,6 @@ def _raw_artifact(
         lifecycle,
         authority.selected_delta_digest,
         selection.selected_prompt_digests,
-        candidate_read=candidate_read,
     )
     prompts = []
     for (prompt_digest, _text, role_frames), request_prompt, teacher_prompt in zip(
@@ -2301,13 +1930,11 @@ def _raw_artifact(
             lifecycle,
             selected_delta_digest=authority.selected_delta_digest,
             selected_prompt_digests=selection.selected_prompt_digests,
-            candidate_read=candidate_read,
         ),
         selected_trajectory_projection_digest(
             lifecycle,
             selected_delta_digest=authority.selected_delta_digest,
             selected_prompt_digests=selection.selected_prompt_digests,
-            candidate_read=candidate_read,
         ),
         selection.selected_prompt_digests,
         reference_execution.session.digest,
@@ -2331,41 +1958,17 @@ def _run_slot_audits(
 ) -> tuple[dict[str, AuditWitness], float]:
     """Run one independent eager, untimed candidate role per sealed C arm."""
 
-    resident_authority: ResidentAuditExecutionAuthority | None = None
-    retirement_cutoff: float | None = None
-    if type(lifecycle) is ResidentMarginalLifecycleEvidence:
-        timed_session_ids = set(lifecycle.timed_session_ids)
-        if type(value.resident_audit_plan) is not ResidentAuditExecutionAuthority:
-            raise QualificationRunnerError("resident audit lacks its sealed eager authority")
-        resident_authority = value.resident_audit_plan
-        audit_plans = (resident_authority.plan,)
-        retirement_cutoff = max(
-            lifecycle.crossover.baseline_quiescence.observed_monotonic_s,
-            lifecycle.crossover.candidate_quiescence.observed_monotonic_s,
-        )
-    else:
-        timed_session_ids = {
-            lifecycle.baseline_before.session.session_id,
-            lifecycle.baseline_after.session.session_id,
-            *(row.execution.session.session_id for row in lifecycle.candidates),
-            *(
-                row.execution.session.session_id
-                for row in lifecycle.candidates_repeat
-            ),
-            *(
-                (lifecycle.baseline_third.session.session_id,)
-                if lifecycle.baseline_third is not None
-                else ()
-            ),
-        }
-        audit_plans = tuple(
-            replace(prepared.session_plan, audit_policy=policy)
-            for prepared, policy in zip(
-                value.prepared.candidates,
-                value.audit_policies,
-                strict=True,
-            )
-        )
+    if type(lifecycle) is not ResidentMarginalLifecycleEvidence:
+        raise QualificationRunnerError("slot audit lifecycle is not resident")
+    timed_session_ids = set(lifecycle.timed_session_ids)
+    if type(value.resident_audit_plan) is not ResidentAuditExecutionAuthority:
+        raise QualificationRunnerError("resident audit lacks its sealed eager authority")
+    resident_authority = value.resident_audit_plan
+    audit_plans = (resident_authority.plan,)
+    retirement_cutoff = max(
+        lifecycle.crossover.baseline_quiescence.observed_monotonic_s,
+        lifecycle.crossover.candidate_quiescence.observed_monotonic_s,
+    )
     witnesses: dict[str, AuditWitness] = {}
     last_completed = 0.0
     for prepared, authority, policy, audit_plan in zip(
@@ -2445,7 +2048,6 @@ def _report_reason(
     speed: QualificationDecision,
     quality: ReferenceQualityVerdict,
     audit: AuditWitness,
-    repeat_quality: ReferenceQualityVerdict | None = None,
     *,
     speed_reason: str | None = None,
 ) -> str:
@@ -2468,10 +2070,6 @@ def _report_reason(
         return "quality_regression"
     if quality.decision == "NO_DECISION":
         return "quality_overlap"
-    if repeat_quality is not None and repeat_quality.decision == "FAIL":
-        return "quality_repeat_regression"
-    if repeat_quality is not None and repeat_quality.decision == "NO_DECISION":
-        return "quality_repeat_overlap"
     return "qualified"
 
 
@@ -2517,35 +2115,25 @@ def qualification_authority_digest(value: CausalQualificationInput) -> str:
                       value.reference_engine_config.digest, value.reference_preflight.digest],
         "source": value.prepared.source.digest,
         }
-        if value.speed_evidence_policy.version == 1:
-            return canonical_digest(
-                "cacheon.qualification.causal-authority.audit-v1", payload
-            )
         payload["speed_evidence_policy"] = value.speed_evidence_policy.to_dict()
-        if value.speed_evidence_policy.version == 3:
-            assert value.resident_speed_plan is not None
-            assert value.resident_audit_plan is not None
-            payload["resident_speed_plan"] = value.resident_speed_plan.digest
-            payload["resident_audit_authority"] = value.resident_audit_plan.digest
-            if (
-                value.speed_stage_disposition
-                is SpeedStageDisposition.CALIBRATION_OBSERVATION
-            ):
-                payload["speed_stage_disposition"] = (
-                    value.speed_stage_disposition.value
-                )
-                return canonical_digest(
-                    "cacheon.qualification.causal-authority.v3.eager-audit-v2."
-                    "calibration-observation-v1",
-                    payload,
-                )
+        assert value.resident_speed_plan is not None
+        assert value.resident_audit_plan is not None
+        payload["resident_speed_plan"] = value.resident_speed_plan.digest
+        payload["resident_audit_authority"] = value.resident_audit_plan.digest
+        if (
+            value.speed_stage_disposition
+            is SpeedStageDisposition.CALIBRATION_OBSERVATION
+        ):
+            payload["speed_stage_disposition"] = (
+                value.speed_stage_disposition.value
+            )
+            return canonical_digest(
+                "cacheon.qualification.causal-authority.v3.eager-audit-v2."
+                "calibration-observation-v1",
+                payload,
+            )
         return canonical_digest(
-            (
-                "cacheon.qualification.causal-authority.v3.eager-audit-v2"
-                if value.speed_evidence_policy.version == 3
-                else "cacheon.qualification.causal-authority.v2.audit-v1"
-            ),
-            payload,
+            "cacheon.qualification.causal-authority.v3.eager-audit-v2", payload
         )
     raise QualificationRunnerError("qualification authority mode is inconsistent")
 
@@ -2559,18 +2147,7 @@ def _validate_reference_execution(
         "validator_overlay": identity.validator_overlay_digest,
     })
     reference = expected.candidates[0].profile.reference
-    expected_requests = tuple(
-        request
-        for report in attempt.reports
-        for request in (
-            (report.t_request_sha256,)
-            if report.repeat_quality is None
-            else (
-                report.t_request_sha256,
-                report.repeat_quality.t_request_sha256,
-            )
-        )
-    )
+    expected_requests = tuple(report.t_request_sha256 for report in attempt.reports)
     plan_digest = canonical_digest("cacheon.eval.reference-session-plan", {
         "engine_config_digest": expected.reference_engine_config.digest,
         "expected_preflight_digest": expected.reference_preflight.digest,
@@ -2733,26 +2310,15 @@ def reopen_qualification_stage_exit(
 def publish_causal_qualification(
     root: Path, attempt: QualificationAttempt
 ) -> EvidenceArtifactRef:
-    policy = (
-        _attempt_speed_policy(attempt.reports)
-        if type(attempt) is CohortQualificationAttempt
-        else None
-    )
-    if type(attempt) is CohortQualificationAttempt:
-        domain = ATTEMPT_DOMAIN
-        schema = {
-            1: ATTEMPT_SCHEMA,
-            2: ATTEMPT_SCHEMA_V2,
-            3: ATTEMPT_SCHEMA_V3,
-        }[policy.version]
-    else:
+    if type(attempt) is not CohortQualificationAttempt:
         raise QualificationRunnerError("qualification attempt is not typed")
+    _attempt_speed_policy(attempt.reports)
     return publish_evidence(
         root,
         canonical_json_bytes(attempt.to_dict()),
-        domain=domain,
+        domain=ATTEMPT_DOMAIN,
         media_type="application/json",
-        schema=schema,
+        schema=ATTEMPT_SCHEMA_V3,
     )
 
 def reopen_causal_qualification(
@@ -2764,15 +2330,7 @@ def reopen_causal_qualification(
     """Authenticate and independently regrade one durable cohort attempt."""
 
     try:
-        artifact_type = (
-            ATTEMPT_DOMAIN,
-            "application/json",
-            {
-                1: ATTEMPT_SCHEMA,
-                2: ATTEMPT_SCHEMA_V2,
-                3: ATTEMPT_SCHEMA_V3,
-            }[expected.speed_evidence_policy.version],
-        )
+        artifact_type = (ATTEMPT_DOMAIN, "application/json", ATTEMPT_SCHEMA_V3)
         if type(reference) is not EvidenceArtifactRef or (
             reference.domain, reference.media_type, reference.schema
         ) != artifact_type:
@@ -2814,90 +2372,50 @@ def reopen_causal_qualification(
                                                   expected_binding=raw),
                 calibration=calibration, expected_context=expected.calibration_context,
             )
-            repeat_quality = None
-            repeat_raw = None
-            if report.repeat_quality is not None:
-                repeat_raw = report.repeat_quality.raw_quality_binding
-                repeat_quality = score_reference_quality(
-                    reopen_reference_quality_evidence(
-                        root,
-                        report.repeat_quality.raw_quality_artifact,
-                        expected_binding=repeat_raw,
-                    ),
-                    calibration=calibration,
-                    expected_context=expected.calibration_context,
-                )
             speed = report.speed_witness
             rates = speed.rates
-            if expected.speed_evidence_policy.version == 3:
-                plan = expected.resident_speed_plan
-                if (
-                    type(speed) is not ResidentSpeedWitness
-                    or type(plan) is not ResidentCrossoverPlan
-                    or speed.plan_digest != plan.digest
-                    or speed.baseline_lane_digest
-                    == speed.candidate_lane_digest
-                    or speed.baseline_runtime_resource_policy_digest
-                    != plan.baseline.runtime_resource_policy_digest
-                    or speed.candidate_runtime_resource_policy_digest
-                    != plan.candidate.runtime_resource_policy_digest
-                    or speed.candidate_runtime_resource_policy_digest
-                    != expected.expected_runtime_resource_policy_digest
-                ):
-                    raise QualificationRunnerError(
-                        "resident speed witness differs from its authority"
-                    )
-                expected_launches = tuple(
-                    plan.baseline.launch.digest
-                    if row.role.startswith("B")
-                    else plan.candidate.launch.digest
-                    for row in rates
+            plan = expected.resident_speed_plan
+            if (
+                type(speed) is not ResidentSpeedWitness
+                or type(plan) is not ResidentCrossoverPlan
+                or speed.plan_digest != plan.digest
+                or speed.baseline_lane_digest
+                == speed.candidate_lane_digest
+                or speed.baseline_runtime_resource_policy_digest
+                != plan.baseline.runtime_resource_policy_digest
+                or speed.candidate_runtime_resource_policy_digest
+                != plan.candidate.runtime_resource_policy_digest
+                or speed.candidate_runtime_resource_policy_digest
+                != expected.expected_runtime_resource_policy_digest
+            ):
+                raise QualificationRunnerError(
+                    "resident speed witness differs from its authority"
                 )
-                expected_lanes = tuple(
-                    plan.baseline_lane_digest
-                    if row.role.startswith("B")
-                    else plan.candidate_lane_digest
-                    for row in rates
-                )
-                baseline_sessions = {
-                    row.session_id for row in rates if row.role.startswith("B")
-                }
-                candidate_sessions = {
-                    row.session_id for row in rates if row.role.startswith("C")
-                }
-                session_shape_valid = (
-                    len(baseline_sessions) == 1
-                    and len(candidate_sessions) == 1
-                    and baseline_sessions.isdisjoint(candidate_sessions)
-                    and tuple(row.lane_digest for row in rates)
-                    == expected_lanes
-                )
-            else:
-                if type(speed) is not SpeedWitness:
-                    raise QualificationRunnerError(
-                        "legacy speed witness changed type"
-                    )
-                if (
-                    speed.runtime_resource_policy_digest
-                    != expected.expected_runtime_resource_policy_digest
-                ):
-                    raise QualificationRunnerError(
-                        "legacy speed witness changed runtime policy"
-                    )
-                expected_launches = (
-                    expected.prepared.baseline_launch.digest,
-                    prepared.launch.digest,
-                    expected.prepared.baseline_launch.digest,
-                )
-                if expected.speed_evidence_policy.version == 2:
-                    expected_launches += (
-                        prepared.launch.digest,
-                        expected.prepared.baseline_launch.digest,
-                    )
-                session_shape_valid = (
-                    len({row.session_id for row in rates})
-                    == len(expected_launches)
-                )
+            expected_launches = tuple(
+                plan.baseline.launch.digest
+                if row.role.startswith("B")
+                else plan.candidate.launch.digest
+                for row in rates
+            )
+            expected_lanes = tuple(
+                plan.baseline_lane_digest
+                if row.role.startswith("B")
+                else plan.candidate_lane_digest
+                for row in rates
+            )
+            baseline_sessions = {
+                row.session_id for row in rates if row.role.startswith("B")
+            }
+            candidate_sessions = {
+                row.session_id for row in rates if row.role.startswith("C")
+            }
+            session_shape_valid = (
+                len(baseline_sessions) == 1
+                and len(candidate_sessions) == 1
+                and baseline_sessions.isdisjoint(candidate_sessions)
+                and tuple(row.lane_digest for row in rates)
+                == expected_lanes
+            )
             if (
                 (speed.selected_delta_digest, speed.candidate_launch_digest,
                  speed.evidence_digest)
@@ -2924,11 +2442,8 @@ def reopen_causal_qualification(
                 audit_witness.policy != audit_policy
                 or audit_witness.selected_delta_digest
                 != authority.selected_delta_digest
-                or audit_witness.candidate_launch_digest != (
-                    expected.resident_audit_plan.launch.digest
-                    if expected.speed_evidence_policy.version == 3
-                    else prepared.launch.digest
-                )
+                or audit_witness.candidate_launch_digest
+                != expected.resident_audit_plan.launch.digest
                 or audit_witness.runtime_resource_policy_digest
                 != expected.expected_runtime_resource_policy_digest
                 or audit_witness.session_id in {row.session_id for row in rates}
@@ -2948,21 +2463,8 @@ def reopen_causal_qualification(
                 "t_request_sha256": report.t_request_sha256,
                 "t_session_digest": attempt.reference_session_digest,
             }
-            quality_grade = _quality_decision_pair(
-                _decision(quality.decision),
-                None if repeat_quality is None else _decision(repeat_quality.decision),
-            )
-            candidate_mean_teacher_nll = max(
-                (
-                    quality.candidate_mean_teacher_nll,
-                    *(
-                        (repeat_quality.candidate_mean_teacher_nll,)
-                        if repeat_quality is not None
-                        else ()
-                    ),
-                ),
-                key=float,
-            )
+            quality_grade = _decision(quality.decision)
+            candidate_mean_teacher_nll = quality.candidate_mean_teacher_nll
             if type(authority) is CandidateQualificationAuthority:
                 if type(report) is not CandidateQualificationReport:
                     raise QualificationRunnerError(
@@ -3007,7 +2509,7 @@ def reopen_causal_qualification(
                     _retained_reason(
                         _report_reason(
                             graph, speed_grade, quality, audit_witness,
-                            repeat_quality, speed_reason=speed_reason,
+                            speed_reason=speed_reason,
                         ),
                         report.reason,
                     ),
@@ -3033,77 +2535,10 @@ def reopen_causal_qualification(
                 authority.profile.nll_tail_threshold,
                 authority.profile.topk_width, authority.profile.hidden_tasks_per_prompt,
             )
-            repeat_matches = repeat_raw is None and repeat_quality is None
-            if repeat_raw is not None and repeat_quality is not None:
-                if report.repeat_quality is None:  # defensive against future report unions
-                    raise QualificationRunnerError("repeat quality witness disappeared")
-                repeat_common = {
-                    "calibration_digest": calibration.digest,
-                    "candidate_lifecycle_digest": repeat_raw.candidate_lifecycle_digest,
-                    "profile_digest": authority.profile.digest,
-                    "selected_delta_digest": authority.selected_delta_digest,
-                    "selection_digest": attempt.selection.digest,
-                    "t_request_sha256": report.repeat_quality.t_request_sha256,
-                    "t_session_digest": attempt.reference_session_digest,
-                }
-                if type(authority) is not CandidateQualificationAuthority:
-                    raise QualificationRunnerError("repeat quality authority type differs")
-                repeat_identity = canonical_digest(
-                    "cacheon.qualification.candidate-identity",
-                    {
-                        **repeat_common,
-                        "graph_requirement_digest": authority.graph_requirement.digest,
-                    },
-                )
-                repeat_binding = (
-                    repeat_raw.qualification_identity_digest,
-                    repeat_raw.reference_manifest_digest,
-                    repeat_raw.calibration_digest,
-                    repeat_raw.selection_digest,
-                    repeat_raw.selected_prompt_digests,
-                    repeat_raw.t_session_digest,
-                    repeat_raw.t_request_sha256,
-                    repeat_raw.support_policy_digest,
-                    repeat_raw.hidden_task_plan_digest,
-                    repeat_raw.nll_tail_threshold,
-                    repeat_raw.topk_width,
-                    repeat_raw.hidden_tasks_per_prompt,
-                )
-                repeat_expected_binding = (
-                    repeat_identity,
-                    authority.profile.reference.digest,
-                    calibration.digest,
-                    attempt.selection.digest,
-                    attempt.selection.selected_prompt_digests,
-                    attempt.reference_session_digest,
-                    report.repeat_quality.t_request_sha256,
-                    authority.profile.support_policy_digest,
-                    derived_hidden_task_plan_digest(
-                        authority.profile, attempt.selection.selected_prompt_digests
-                    ),
-                    authority.profile.nll_tail_threshold,
-                    authority.profile.topk_width,
-                    authority.profile.hidden_tasks_per_prompt,
-                )
-                repeat_matches = (
-                    repeat_binding == repeat_expected_binding
-                    and repeat_raw.tokens_per_prompt <= authority.profile.tokens_per_prompt
-                    and (
-                        report.repeat_quality.quality_evidence_digest,
-                        report.repeat_quality.quality_decision,
-                        report.repeat_quality.candidate_mean_teacher_nll,
-                    )
-                    == (
-                        repeat_quality.evidence_digest,
-                        _decision(repeat_quality.decision),
-                        repeat_quality.candidate_mean_teacher_nll,
-                    )
-                )
             if (
                 binding != expected_binding
                 or raw.tokens_per_prompt > authority.profile.tokens_per_prompt
                 or headline != expected_headline
-                or not repeat_matches
             ):
                 raise QualificationRunnerError("candidate qualification does not independently regrade")
         return attempt
@@ -3136,9 +2571,9 @@ def run_causal_qualification(
 
     if value.speed_evidence_policy.version != 3:
         # Marginal (nonresident) execution was retired after the retained-corpus
-        # census proved zero marginal records. Historical v1/v2 witnesses stay
-        # reopenable through SpeedWitness; a fresh nonresident qualification
-        # must fail loudly here rather than reach a retired executor.
+        # census proved zero marginal records; its readers left with the M3
+        # history seal. The policy type admits only version 3, so this fence is
+        # the loud failure for an untyped or forged input.
         raise QualificationRunnerError(
             "causal qualification requires the resident speed policy"
         )
@@ -3286,8 +2721,6 @@ def run_causal_qualification(
         if continuation is not None:
             continuation.record_final(reference)
         return reference
-    quality_reads = 2 if crossover.escalated else 1
-
     continuation_stage = run_continuation_quality_stage(
         value=value,
         executor=executor,
@@ -3296,7 +2729,6 @@ def run_causal_qualification(
         make_id=make_id,
         continuation=continuation,
         quality_state=quality_state,
-        quality_reads=quality_reads,
         resident_lifecycle=lifecycle,
         resident_speed_witness=resident_speed_witness,
         seams=QualificationContinuationRunnerSeams(
@@ -3347,90 +2779,49 @@ def run_causal_qualification(
         raise QualificationRunnerError("T exchange coverage differs from the candidate cohort")
     exchange_index = 0
     for authority in value.candidates:
-        quality_legs: list[
-            tuple[
-                ReferenceQualityVerdict,
-                EvidenceArtifactRef,
-                ReferenceQualityRawBinding,
-                str,
-            ]
-        ] = []
-        for candidate_read in range(1, quality_reads + 1):
-            exchange = exchanges[exchange_index]
-            exchange_index += 1
-            if candidate_read == 1:
-                raw = _raw_artifact(
-                    lifecycle,
-                    authority,
-                    calibration,
-                    selection,
-                    reference_execution,
-                    exchange,
-                    judge_once,  # type: ignore[arg-type]
-                )
-            else:
-                raw = _raw_artifact(
-                    lifecycle,
-                    authority,
-                    calibration,
-                    selection,
-                    reference_execution,
-                    exchange,
-                    judge_once,  # type: ignore[arg-type]
-                    candidate_read=candidate_read,
-                )
-            validation_kwargs = {
-                "selected_delta_digest": authority.selected_delta_digest,
-                "commitment": value.commitment,
-                "entropy": entropy,
-                "selection": selection,
-                "calibration": calibration,
-                "graph_requirement": _requirement(authority),
-                "reference_execution": reference_execution,
-                "reference_request_sha256": exchange.request_sha256,
-            }
-            if candidate_read != 1:
-                validation_kwargs["candidate_read"] = candidate_read
-            validate_quality_binding(
-                authority.profile,
-                raw,
-                lifecycle,
-                **validation_kwargs,
-            )
-            raw_ref = publish_evidence(
-                value.evidence_root,
-                canonical_json_bytes(raw.to_dict()),
-                domain=RAW_QUALITY_DOMAIN,
-                media_type="application/json",
-                schema=RAW_QUALITY_SCHEMA,
-            )
-            quality_evidence = reopen_reference_quality_evidence(
-                value.evidence_root,
-                raw_ref,
-                expected_binding=raw.binding,
-            )
-            quality_leg = score_reference_quality(
-                quality_evidence,
-                calibration=calibration,
-                expected_context=value.calibration_context,
-            )
-            quality_legs.append(
-                (quality_leg, raw_ref, raw.binding, exchange.request_sha256)
-            )
-        quality, raw_ref, raw_binding, t_request_sha256 = quality_legs[0]
-        repeat_quality_verdict = quality_legs[1][0] if len(quality_legs) == 2 else None
-        repeat_quality = (
-            RepeatQualityWitness(
-                quality_legs[1][0].evidence_digest,
-                _decision(quality_legs[1][0].decision),
-                quality_legs[1][0].candidate_mean_teacher_nll,
-                quality_legs[1][1],
-                quality_legs[1][2],
-                quality_legs[1][3],
-            )
-            if len(quality_legs) == 2
-            else None
+        exchange = exchanges[exchange_index]
+        exchange_index += 1
+        raw = _raw_artifact(
+            lifecycle,
+            authority,
+            calibration,
+            selection,
+            reference_execution,
+            exchange,
+            judge_once,  # type: ignore[arg-type]
         )
+        validate_quality_binding(
+            authority.profile,
+            raw,
+            lifecycle,
+            selected_delta_digest=authority.selected_delta_digest,
+            commitment=value.commitment,
+            entropy=entropy,
+            selection=selection,
+            calibration=calibration,
+            graph_requirement=_requirement(authority),
+            reference_execution=reference_execution,
+            reference_request_sha256=exchange.request_sha256,
+        )
+        raw_ref = publish_evidence(
+            value.evidence_root,
+            canonical_json_bytes(raw.to_dict()),
+            domain=RAW_QUALITY_DOMAIN,
+            media_type="application/json",
+            schema=RAW_QUALITY_SCHEMA,
+        )
+        quality_evidence = reopen_reference_quality_evidence(
+            value.evidence_root,
+            raw_ref,
+            expected_binding=raw.binding,
+        )
+        quality = score_reference_quality(
+            quality_evidence,
+            calibration=calibration,
+            expected_context=value.calibration_context,
+        )
+        raw_binding = raw.binding
+        t_request_sha256 = exchange.request_sha256
         if resident_speed_witness is None:
             raise QualificationRunnerError(
                 "resident qualification produced no speed witness"
@@ -3444,14 +2835,8 @@ def run_causal_qualification(
         speed_evidence_digest = resident_speed_witness.evidence_digest
         if speed_witness.policy != value.speed_evidence_policy:
             raise QualificationRunnerError("projected speed policy differs from authority")
-        quality_grade = _quality_decision_pair(
-            _decision(quality.decision),
-            None if repeat_quality is None else repeat_quality.quality_decision,
-        )
-        candidate_mean_teacher_nll = max(
-            (row[0].candidate_mean_teacher_nll for row in quality_legs),
-            key=float,
-        )
+        quality_grade = _decision(quality.decision)
+        candidate_mean_teacher_nll = quality.candidate_mean_teacher_nll
         candidate = next(
             row for row in lifecycle.candidates
             if row.arm.selected_delta_digest == authority.selected_delta_digest
@@ -3488,10 +2873,9 @@ def run_causal_qualification(
                 decision,
                 _report_reason(
                     graph, speed_grade, quality, audit_witness,
-                    repeat_quality_verdict, speed_reason=speed_reason,
+                    speed_reason=speed_reason,
                 ),
                 decision is QualificationDecision.NO_DECISION,
-                repeat_quality,
             ))
         else:
             raise QualificationRunnerError("candidate authority has an unsupported type")
@@ -3544,9 +2928,9 @@ __all__ = [
     "HiddenJudge", "HiddenJudgeBinding", "HiddenJudgeReceipt",
     "QualificationRunnerError", "QualificationStageExit",
     "QualificationTimingWitness",
-    "ReferenceExecutionWitness", "RepeatQualityWitness", "SpeedEvidencePolicy",
+    "ReferenceExecutionWitness", "SpeedEvidencePolicy",
     "SpeedStageDisposition",
-    "ResidentSpeedWitness", "SpeedWitness", "hidden_judge_output_digest",
+    "ResidentSpeedWitness", "hidden_judge_output_digest",
     "publish_causal_qualification", "qualification_authority_digest",
     "publish_qualification_stage_exit", "reopen_causal_qualification",
     "reopen_qualification_stage_exit", "run_causal_qualification",

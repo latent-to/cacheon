@@ -20,18 +20,6 @@ class SpeedupVerdict:
 class RawSpeedEvidenceError(ValueError):
     pass
 
-@dataclass(frozen=True)
-class ChargedExecutionRate:
-    launch_digest: str
-    session_id: str
-    conditioning_tokens: int
-    timed_tokens: int
-    charged_tokens: int
-    conditioning_seconds: float
-    timed_seconds: float
-    charged_seconds: float
-    tokens_per_second: float
-
 def _finite_time(value: object, *, field: str) -> float:
     if (
         isinstance(value, bool)
@@ -99,34 +87,6 @@ def planned_prompt_texts(plan: object) -> dict[str, str]:
         for batch_index, prompts in enumerate(plan.prompt_batches)
         for prompt_index, prompt in enumerate(prompts)
     }
-
-
-def _projection_digest(selected: str, candidate: str, calibration: str, context: str,
-                       workload: str, runtime_policy: str, rates: tuple[ChargedExecutionRate, ...]) -> str:
-    from cacheon.stack_identity import canonical_digest
-    def row(rate: ChargedExecutionRate) -> list[object]:
-        return [
-            rate.launch_digest,
-            rate.session_id,
-            rate.conditioning_tokens,
-            rate.timed_tokens,
-            rate.charged_tokens,
-            *(format(value, ".17g") for value in (
-                rate.conditioning_seconds, rate.timed_seconds, rate.charged_seconds
-            )),
-        ]
-    return canonical_digest(
-        "cacheon.qualification.marginal-speed-evidence.v1",
-        {
-            "selected_delta_digest": selected,
-            "candidate_launch_digest": candidate,
-            "calibration_digest": calibration,
-            "calibration_context_digest": context,
-            "workload_digest": workload,
-            "runtime_resource_policy_digest": runtime_policy,
-            "rates": [row(rate) for rate in rates],
-        },
-    )
 
 
 def relative_spread(samples: list[float]) -> float:

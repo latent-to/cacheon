@@ -181,8 +181,7 @@ fixture:
 - `test_stack_manifest.py`, stack-planning tests, and `test_engine_tree.py`
   cover canonical composition and integration materialization;
 - qualification, OCI, audit, and reference-protocol tests cover the two-process
-  B/C/B′ schedule, registered eager audit A, and pristine T, while
-  historical-policy tests preserve older witness shapes;
+  B/C/B′ schedule, registered eager audit A, and pristine T;
 - chain-intake, settlement, economics, and weight-publication tests cover
   durable economic transitions;
 - `test_chain_publish.py` and `test_chain_archive.py` cover public proposal

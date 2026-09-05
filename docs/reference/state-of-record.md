@@ -33,6 +33,17 @@ arena. Pair-native M3 products (stage exits `v2`/`v3`, cohort attempts `v4`)
 are no longer decodable by this tree; per the 2026-09-06 ruling no M3
 settlement is regraded.
 
+Later on **2026-09-06**, under the same ruling, the readers that existed only
+to decode MiniMax-M3 products were deleted: the legacy `SpeedWitness` lane
+(speed evidence policy versions 1 and 2), the repeat-quality leg, the adaptive
+five-read escalation, and the version-6 conditional-bookend grader.
+`SpeedEvidencePolicy` constructs only the resident version, the crossover
+runtime and its evidence refuse policies below version 8 at run and regrade,
+and settlement refuses a non-resident speed witness. The v8/v9 wire shapes and
+digest domains are unchanged and the settlement goldens did not move. The
+weight loop's settlement-history reader was kept by ruling so retained M3
+settlements still project into the served vector; the store is unchanged.
+
 The GLM-5.3 branch moved the source compatibility target to SGLang `0.5.18` on
 2026-08-30. Exact-image 8xB300 controls now establish full-model generation,
 all-rank seam activation, graph capture, deliberately broken and faithful
@@ -571,7 +582,8 @@ Production providers previously selected qualification policy version 3:
 6. an eligible reproduction exchanges the physical incumbent and candidate
    lane roles.
 
-Version 1 and version 2 evidence remain readable for historical compatibility.
+Version 1 and version 2 evidence remained readable until 2026-09-06, when the
+pre-v8 readers were deleted (see the 2026-09-06 entry above).
 Screen measurements do not enter this authority. Candidate-attributable
 failure can produce `FAIL`; infrastructure, drift, missing evidence, or broken
 authority produces `NO_DECISION`.
@@ -648,8 +660,8 @@ authoritative only when the frozen plan registers the matching requirement.
 ### Settlement
 
 Settlement requires two complete PASS attempts over the same economic identity
-with distinct authority/evidence commitments and, for version-3 resident-family
-evidence including current v7/v8 witnesses, the required physical-lane role
+with distinct authority/evidence commitments and, for resident evidence (v8/v9
+witnesses; anything older is refused), the required physical-lane role
 swap. It uses the lower accepted speedup, reopens exact
 evidence, and commits the candidate disposition, hash-chained events, claims,
 and optional evaluation-stack transition transactionally.

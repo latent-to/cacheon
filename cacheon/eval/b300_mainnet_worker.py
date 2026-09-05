@@ -557,14 +557,7 @@ class B300MainnetWorker:
                     expected=plan,
                 )
                 supporting_evidence_refs += tuple(
-                    reference
-                    for report in attempt.reports
-                    for reference in (
-                        report.raw_quality_artifact,
-                        *(() if report.repeat_quality is None else (
-                            report.repeat_quality.raw_quality_artifact,
-                        )),
-                    )
+                    report.raw_quality_artifact for report in attempt.reports
                 )
             supporting_evidence_refs = tuple(sorted(
                 set(supporting_evidence_refs),

@@ -1116,24 +1116,14 @@ def _trajectory_rows(lifecycle: object):
     return workload, tuple(rows)
 
 
-def _quality_leg_lifecycle(lifecycle: object, candidate_read: int):
-    """Return the exact three-role lifecycle for one candidate read.
-
-    The raw pristine-T protocol deliberately stays baseline/candidate/control.
-    A repeat referee therefore produces two independently gradeable triplets:
-    B/C/B-prime and B-prime/C-prime/B-double-prime.
-    """
+def _resident_lifecycle(lifecycle: object):
+    """Return the exact B/C/B-prime lifecycle, refusing anything untyped."""
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
 
     if type(lifecycle) is not ResidentMarginalLifecycleEvidence:
         raise QualificationError("quality lifecycle is not typed")
-    if type(candidate_read) is not int or candidate_read not in (1, 2):
-        raise QualificationError("candidate read must be exactly 1 or 2")
-    try:
-        return lifecycle.quality_leg(candidate_read)
-    except (TypeError, ValueError, RuntimeError) as exc:
-        raise QualificationError(str(exc)) from None
+    return lifecycle
 
 
 def lifecycle_prompt_digests(lifecycle: object) -> tuple[str, ...]:
@@ -1154,22 +1144,6 @@ def cohort_trajectory_digest(lifecycle: object) -> str:
     """Bind every retained token/top-k frame in complete execution order."""
 
     workload, rows = _trajectory_rows(lifecycle)
-    if lifecycle.candidates_repeat:
-        repeat_workload, repeat_rows = _trajectory_rows(
-            _quality_leg_lifecycle(lifecycle, 2)
-        )
-        if repeat_workload != workload or tuple(row[0] for row in repeat_rows) != tuple(
-            row[0] for row in rows
-        ):
-            raise QualificationError("repeat trajectory workload differs")
-        return canonical_digest(
-            "cacheon.qualification.cohort-trajectories.v2",
-            {
-                "workload_digest": workload,
-                "primary": [[key, frames] for key, frames in rows],
-                "repeat": [[key, frames] for key, frames in repeat_rows],
-            },
-        )
     return canonical_digest(
         "cacheon.qualification.cohort-trajectories",
         {"workload_digest": workload, "prompts": [[key, frames] for key, frames in rows]},
@@ -1252,11 +1226,10 @@ def selected_trajectory_digest(
     *,
     selected_delta_digest: str,
     selected_prompt_digests: tuple[str, ...],
-    candidate_read: int = 1,
 ) -> str:
     """Bind selected B/C/B-prime frames for one exact candidate arm."""
 
-    lifecycle = _quality_leg_lifecycle(lifecycle, candidate_read)
+    lifecycle = _resident_lifecycle(lifecycle)
 
     candidates = tuple(row.arm.selected_delta_digest for row in lifecycle.candidates)
     if candidates.count(selected_delta_digest) != 1:
@@ -1285,11 +1258,10 @@ def selected_trajectory_projection_digest(
     *,
     selected_delta_digest: str,
     selected_prompt_digests: tuple[str, ...],
-    candidate_read: int = 1,
 ) -> str:
     """Bind raw-quality-checkable token, support, and true-argmax facts."""
 
-    lifecycle = _quality_leg_lifecycle(lifecycle, candidate_read)
+    lifecycle = _resident_lifecycle(lifecycle)
 
     candidates = tuple(row.arm.selected_delta_digest for row in lifecycle.candidates)
     if candidates.count(selected_delta_digest) != 1:
@@ -1467,7 +1439,6 @@ def validate_quality_binding(
     graph_requirement: GraphVerificationRequirement,
     reference_execution: object,
     reference_request_sha256: str,
-    candidate_read: int = 1,
 ):
     """Project frozen workload/trajectory coverage onto one raw T binding."""
 
@@ -1489,7 +1460,7 @@ def validate_quality_binding(
     binding = raw_artifact.binding
     t_session = reference_execution.session
     selection.reopen(commitment, entropy)
-    quality_lifecycle = _quality_leg_lifecycle(lifecycle, candidate_read)
+    quality_lifecycle = _resident_lifecycle(lifecycle)
     plan = lifecycle.prepared.baseline_session_plan
     candidates = tuple(
         row for row in quality_lifecycle.candidates
@@ -1555,14 +1526,12 @@ def validate_quality_binding(
             lifecycle,
             selected_delta_digest=selected_delta_digest,
             selected_prompt_digests=selection.selected_prompt_digests,
-            candidate_read=candidate_read,
         )
         or binding.selected_trajectory_projection_digest
         != selected_trajectory_projection_digest(
             lifecycle,
             selected_delta_digest=selected_delta_digest,
             selected_prompt_digests=selection.selected_prompt_digests,
-            candidate_read=candidate_read,
         )
         or binding.selected_prompt_digests != selection.selected_prompt_digests
         or binding.hidden_task_plan_digest
