@@ -302,7 +302,10 @@ contributor and subagent:
   `scripts/island_baseline.txt`. Shrinking the baseline is cleanup; growing it
   is a reviewed decision that must be justified in the pull request.
 - `python scripts/check_loc_ratchet.py` enforces per-directory tracked-line
-  ceilings against `scripts/loc_baseline.txt`, and
+  ceilings against `scripts/loc_baseline.txt` and per-file ceilings for
+  every Python file at or above 900 lines against
+  `scripts/file_ceilings.txt` (a listed file may only shrink; a file that
+  reaches the band is added and justified in the same diff, or split), and
   `python scripts/check_assert_ratchet.py` enforces per-test-file assertion
   floors against `scripts/assert_baseline.json`. Raising a ceiling or
   lowering a floor happens in the same diff that needs it and is justified
