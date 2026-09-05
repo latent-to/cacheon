@@ -117,7 +117,9 @@ def _text(value: Decimal, field: str, maximum: Decimal = _MAX_DECIMAL) -> str:
         raise ReferenceQualityError(f"computed {field} is nonfinite or out of range")
     with localcontext() as context:
         context.prec = 96
-        text = format(value.normalize(), "f")
+        # The wire limit counts the decimal point and leading zero as well.
+        quantum = Decimal(1).scaleb(max(0, value.adjusted()) - 94)
+        text = format(value.quantize(quantum, rounding=ROUND_HALF_EVEN).normalize(), "f")
     if text in {"", "-0"}:
         text = "0"
     if "." in text:
