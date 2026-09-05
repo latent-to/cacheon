@@ -283,11 +283,8 @@ def _emit_execution_summary(receipt_dir: str) -> None:
     stock instead — dies with the worker. Every one of those is what a miner is
     asking for when they ask what happened to their bundle.
 
-    Stderr is the channel that outlives the container: the host drains it, hashes
-    every byte, and retains a bounded prefix with its own receipt. Emitted on
-    success as well as failure, because "it passed but lost on speed" needs this
-    evidence just as much as "it never ran" — and today only the failure path
-    says anything at all.
+    The host retains stderr. Batch completion emits before ordinary OCI teardown
+    can terminate the worker; graceful teardown also preserves later failures.
 
     Never raises. This runs in a teardown path where an exception would mask the
     real outcome of the run.
@@ -387,6 +384,7 @@ def _complete_candidate_execution(
             expected_slots=expected_slots,
             expected_member_count=expected_member_count,
         )
+        _emit_execution_summary(receipt_dir)
     except CandidateExecutionCoverageError as exc:
         if audit_policy is None:
             raise

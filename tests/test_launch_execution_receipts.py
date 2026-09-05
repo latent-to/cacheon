@@ -48,6 +48,27 @@ def test_teardown_summary_retains_failed_receipts(tmp_path, capsys):
     assert summary["failed"][0]["line"] == 17
 
 
+def test_completion_retains_rank_and_graph_facts_before_oci_reaps_worker(tmp_path, capsys):
+    active = [_active(10, 0), _active(11, 1)]
+    for rank, member in enumerate(active):
+        _write(tmp_path, "active", member, rank)
+        for slot in member["slots"]:
+            _write(tmp_path, "completed", {
+                "pid": member["pid"], "rank": rank, "world_size": 2,
+                "slot": slot, "calls": 32, "captured": True,
+            }, f"{rank}-{slot}")
+    engine_worker._complete_candidate_execution(
+        str(tmp_path), active_receipts=active, expected_slots=["a", "b"],
+        expected_member_count=2, audit_policy=None,
+    )
+    # OCI may terminate the process after its batch response; no teardown runs.
+    summary = json.loads(capsys.readouterr().err.split(engine_worker.EXECUTION_SUMMARY_PREFIX)[1])
+    assert {(r["slot"], r["rank"]) for r in summary["completed"]} == {
+        (slot, rank) for slot in ("a", "b") for rank in (0, 1)
+    }
+    assert all(r["captured"] is True and r["calls"] == 32 for r in summary["completed"])
+
+
 def test_only_candidate_owned_receipts_type_the_engine_failure(tmp_path):
     candidate = tmp_path / "candidate"
     runtime = tmp_path / "runtime"
