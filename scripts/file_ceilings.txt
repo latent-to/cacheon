@@ -11,7 +11,7 @@ cacheon/chain/recoverable_qualification_dispatcher.py 1216
 cacheon/chain/remote_evaluation_dispatcher.py 1072
 cacheon/chain/remote_worker_pod_service.py 1114
 cacheon/chain/remote_worker_request_plan.py 940
-cacheon/chain/remote_worker_spool.py 1000
+cacheon/chain/remote_worker_spool.py 998
 cacheon/chain/weight_share.py 1528
 cacheon/chain/weights.py 1069
 cacheon/cli.py 3288

@@ -33,6 +33,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NoReturn
 
+from cacheon._strict import duplicate_key_pairs
+from cacheon._strict import require_digest as _strict_require_digest
+from cacheon._strict import require_int as _strict_require_int
 from cacheon.chain.evaluation_leases import (
     EvaluationLease,
     EvaluationLeaseError,
@@ -197,12 +200,7 @@ def _reject_constant(value: str) -> NoReturn:
 
 
 def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            fail(f"JSON contains duplicate key: {key}")
-        result[key] = value
-    return result
+    return duplicate_key_pairs(pairs, label="JSON", error=RemoteWorkerError)
 
 
 def spool_canonical_json(value: object) -> bytes:
@@ -232,9 +230,11 @@ def file_sha256(path: Path) -> str:
 
 
 def require_digest(value: object, field: str) -> str:
-    if not isinstance(value, str) or HEX64.fullmatch(value) is None:
-        fail(f"{field} is not lowercase SHA-256")
-    return value
+    # allow_zero keeps the pre-fold admission set: the spool never treated the
+    # all-zero digest as a placeholder, and tightening that is a separate decision.
+    return _strict_require_digest(
+        value, field=field, error=RemoteWorkerError, allow_zero=True
+    )
 
 
 def require_int(
@@ -244,11 +244,9 @@ def require_int(
     minimum: int = 0,
     maximum: int | None = None,
 ) -> int:
-    if type(value) is not int or value < minimum:
-        fail(f"{field} is outside its integer bounds")
-    if maximum is not None and value > maximum:
-        fail(f"{field} is outside its integer bounds")
-    return value
+    return _strict_require_int(
+        value, field=field, error=RemoteWorkerError, minimum=minimum, maximum=maximum
+    )
 
 
 def require_text(
