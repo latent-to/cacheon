@@ -1,3 +1,3 @@
 {
- "modules": ["cacheon.eval.b300_qualification_graph_evidence_store","cacheon.eval.tokenizer_identity"]
+ "modules": ["cacheon.eval.b300_prepared_graph_oci","cacheon.eval.b300_prepared_graph_probe","cacheon.eval.b300_qualification_graph_evidence_store","cacheon.eval.tokenizer_identity"]
 }
