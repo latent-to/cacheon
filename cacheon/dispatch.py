@@ -647,8 +647,7 @@ def make_moe_deferred_finalize_dispatcher(
             raise RuntimeError(
                 "deferred MoE shared output does not match the selected routed output"
             )
-        with torch.inference_mode():
-            routed.add_(shared_output)
+        routed.add_(shared_output)
         _log_once_active(_ROUTED_MOE_SLOT)
         _receipts.completed(_ROUTED_MOE_SLOT)
         return routed

@@ -238,3 +238,5 @@ def test_reduce_owning_kernel_runs_when_layer_reduces(monkeypatch):
     layer = _moe_layer(inputs, moe_tp_size=2, reduce_results=True)
     out = dispatched(layer, inputs["x"], topk)
     assert out is not _BASELINE and calls == [True]
+    out.add_(1)
+    assert torch.equal(out, torch.ones_like(out))

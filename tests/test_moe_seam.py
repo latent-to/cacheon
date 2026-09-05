@@ -261,6 +261,9 @@ def test_routed_workspace_and_deferred_output_survive_inference_capture(
         actual = finalize(actual, shared)
     assert torch.equal(actual, inputs["x"] + 1 if deferred else inputs["x"])
     assert prepares == [True]
+    # SGLang's immediate path adds shared experts after the slot scope returns.
+    assert not actual.is_inference()
+    actual.add_(1)
 
 
 def test_routed_moe_dispatches_on_bypassed_routing(monkeypatch):
