@@ -15,14 +15,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Iterable, Mapping
 
-from cacheon.chain.reserved_schema import (
-    DebtPublicationError,
-    FiniteDebtStoreError,
-    IncentiveCompositionStoreError,
-    ensure_debt_publication_schema,
-    migrate_schema3_to4,
-    migrate_schema4_to5,
-)
 from cacheon.chain.evaluation_lease_store import (
     EvaluationLeaseStoreError,
     EvaluationLeaseStoreMixin,
@@ -829,21 +821,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
             self._db.execute("UPDATE metadata SET value='3' WHERE key='schema'")
         elif schema["value"] not in {"3", "4", "5", "6"}:
+            # Databases opened by controllers before 2026-09-05 carry the stamps
+            # 4 and 5 (and their retired V2 tables); every value here stays
+            # accepted so those databases keep opening unchanged.
             raise IntakeError("intake database schema is unsupported")
-        try:
-            migrate_schema3_to4(self._db)
-        except FiniteDebtStoreError as exc:
-            raise IntakeError(f"intake schema-4 migration failed: {exc}") from None
-        try:
-            migrate_schema4_to5(self._db)
-        except IncentiveCompositionStoreError as exc:
-            raise IntakeError(f"intake schema-5 migration failed: {exc}") from None
-        try:
-            ensure_debt_publication_schema(self._db)
-        except DebtPublicationError as exc:
-            raise IntakeError(
-                f"debt publication schema cannot open: {exc}"
-            ) from None
     def _bind_scope(self) -> None:
         encoded = json.dumps(self.scope.to_dict(), separators=(",", ":"), sort_keys=True)
         row = self._db.execute(

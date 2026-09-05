@@ -98,9 +98,10 @@ AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
 - Evaluation-stack settlement, incentive activation, weight publication,
   integration review, release signing, and serving are distinct authorities.
 - Legacy V1 weights are a fenced state machine. The V2 finite-debt economics
-  were extracted from the tree on 2026-08-09; only their reserved durable
-  schema remains, and reintroduction requires a new reviewed change. Do not
-  infer registered discovery promotion from implemented arithmetic.
+  were extracted from the tree on 2026-08-09 and their reserved durable
+  schema was retired on 2026-09-05; reintroduction requires a new reviewed
+  change. Do not infer registered discovery promotion from implemented
+  arithmetic.
 
 If a change weakens one of these statements, it requires an explicit design and
 security review—not a local implementation shortcut.

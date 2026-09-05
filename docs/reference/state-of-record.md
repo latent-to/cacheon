@@ -775,15 +775,15 @@ The design intent is retained (a bounded post-activation claim paid down over
 confirmed epochs) and the complete implementation is recoverable from Git
 history at [`dc158fb4`](https://github.com/latent-to/cacheon/commit/dc158fb4).
 
-Two durable-compatibility artifacts remain in the tree:
-
-- [`chain/reserved_schema.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
-  preserves the schema-4/5/6 migrations and V2 table DDL verbatim, so every
-  existing intake database keeps validating and fresh databases keep
-  producing byte-identical schemas; and
-- the shared-weight offer wire schema keeps its `lane`/`debt_binding` fields
-  with `lane` restricted to `legacy_v1` and any debt-lane payload rejected,
-  so historical stored offers reopen byte-identically.
+One durable-compatibility artifact remains in the tree: the shared-weight
+offer wire schema keeps its `lane`/`debt_binding` fields with `lane`
+restricted to `legacy_v1` and any debt-lane payload rejected, so historical
+stored offers reopen byte-identically. The reserved schema-4/5/6 migrations
+and V2 table DDL were retired on **2026-09-05**: no reader of those tables
+existed anywhere in the tree. Intake keeps accepting metadata stamps 3 through
+6, so a database created before that date opens unchanged with its 108 V2
+objects untouched (16 tables, 60 indexes, 32 triggers; never dropped), while a
+fresh database now holds 68 schema objects at stamp 3 instead of 176 at stamp 5.
 
 Reintroducing V2 is a new reviewed change, not a revert switch.
 
@@ -1254,4 +1254,3 @@ in for that proof.
 - [Audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 - [Settlement](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
 - [Legacy publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
-- [Reserved V2 schema](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)

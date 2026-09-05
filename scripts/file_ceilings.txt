@@ -6,7 +6,7 @@ cacheon/chain/archive.py 1349
 cacheon/chain/evaluation_coordinator.py 1038
 cacheon/chain/evaluation_lease_store.py 1015
 cacheon/chain/evaluation_recovery_store.py 1229
-cacheon/chain/intake.py 4707
+cacheon/chain/intake.py 4688
 cacheon/chain/recoverable_qualification_dispatcher.py 1216
 cacheon/chain/remote_evaluation_dispatcher.py 1072
 cacheon/chain/remote_worker_pod_service.py 1114

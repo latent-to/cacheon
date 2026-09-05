@@ -91,7 +91,6 @@ evaluation and economic state.
 | Transactional settlement state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) |
 | Pure emissions projection | [`economics.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py) |
 | Weight publication reconciliation | [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py) |
-| Reserved V2 durable schema | [`chain/reserved_schema.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py) |
 | Copy and attribution evidence | [`copy_fingerprint.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/copy_fingerprint.py) |
 
 ## Engine integration
