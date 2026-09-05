@@ -143,6 +143,23 @@ def test_faithful_candidate_passes_frozen_familywise_policy() -> None:
     assert not verdict.failed_metrics and not verdict.overlapping_metrics
 
 
+@pytest.mark.parametrize("nll_sum, prefix", [("1", "0."), ("4", "1.")])
+def test_repeating_mean_nll_fits_canonical_verdict(nll_sum, prefix):
+    calibration = _calibration()
+    rollout = replace(
+        _rollout(tokens=3), teacher_nll=TeacherNLLEvidence(3, nll_sum, "2", 0)
+    )
+    evidence = _evidence(calibration, (
+        PromptQualityEvidence(_digest("6"), rollout, rollout, rollout, 3, 3),
+    ))
+    verdict = score_reference_quality(
+        evidence, calibration=calibration, expected_context=_context()
+    )
+    assert verdict.decision == "PASS"
+    assert verdict.candidate_mean_teacher_nll == prefix + "3" * 94
+    assert not verdict.failed_metrics and not verdict.overlapping_metrics
+
+
 def test_teacher_nll_regression_fails() -> None:
     calibration = _calibration()
     bad = _rollout(nll="1.5")
