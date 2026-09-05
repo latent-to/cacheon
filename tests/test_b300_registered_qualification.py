@@ -73,9 +73,6 @@ class _EmptyResolver:
     def resolve_proposal(self, artifact_digest: str) -> Path:
         raise KeyError(artifact_digest)
 
-    def resolve_integrated(self, source_tree_digest: str) -> Path:
-        raise KeyError(source_tree_digest)
-
 
 def _private_directory(path: Path) -> Path:
     path.mkdir(parents=True)

@@ -35,7 +35,7 @@ and evaluation identity and coordinate a pin transition.
 That requirement binds authoritative measurement, not a miner's workstation. Miners may
 develop with another SGLang revision—or without SGLang when a slot reference is
 sufficient—and target Cacheon's typed slot ABI. Qualification always re-runs the submitted
-delta in the validator's pinned arena, and an Engine release binds its own exact pin.
+delta in the validator's pinned arena.
 A pin bump remeasures existing contributions against a changed baseline and execution
 context; it does not automatically make a portable contribution's source invalid.
 Contributions that depended on an old runtime quirk can fail or lose their advantage

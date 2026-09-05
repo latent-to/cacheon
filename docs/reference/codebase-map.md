@@ -19,8 +19,7 @@ flowchart LR
     A --> Q["isolated qualification evidence"]
     Q --> S["settlement + evaluation stack"]
     S --> W["emissions + weight journal"]
-    Q --> R["integration review"]
-    R --> E["Engine tree"]
+    S --> E["Engine tree"]
     N --> Q
     N --> E
 ```
@@ -88,7 +87,7 @@ evaluation and economic state.
 
 | Area | Primary source |
 |---|---|
-| Evaluation/release stack identities | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) |
+| Evaluation stack identities | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) |
 | Transactional settlement state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) |
 | Pure emissions projection | [`economics.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py) |
 | Weight publication reconciliation | [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py) |

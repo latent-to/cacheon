@@ -1,8 +1,8 @@
 # Stacks and manifests
 
-Cacheon represents evaluation state, product state, and semantic reference state as separate content-addressed objects. This makes it impossible to confuse “currently winning in the referee” with “reviewed and shipped.”
+Cacheon represents evaluation state and semantic reference state as separate content-addressed objects. Neither is a product: nothing that wins in the referee ships by that fact.
 
-## The three manifest roles
+## The two manifest roles
 
 ### Evaluation stack
 
@@ -14,15 +14,9 @@ Cacheon represents evaluation state, product state, and semantic reference state
 - the exact target-catalog snapshot and digest;
 - the active contribution reference for each target.
 
-An evaluation entry may be a hostile `ProposalContributionRef` or an already integrated contribution. Proposal references remain legal only because the whole stack is materialized and executed inside the hostile evaluation boundary.
+Every evaluation entry is a hostile `ProposalContributionRef`. Proposal references are legal only because the whole stack is materialized and executed inside the hostile evaluation boundary.
 
 The evaluation stack is arena-specific. A result against one runtime, base engine, catalog, or arena cannot update another stack by name alone.
-
-### Engine release stack
-
-`EngineReleaseManifest` is the chain-independent product identity. It binds the runtime, base engine, catalog, and active entries but accepts `IntegratedContributionRef` values only. Each reference must be covered by an exact approved `IntegrationReviewRecord`.
-
-The release manifest is not mutated when the referee crowns a proposal. It changes only through a reviewed product decision.
 
 ### Reference manifest
 
@@ -30,13 +24,13 @@ The release manifest is not mutated when the referee crowns a proposal. It chang
 
 The reference does not compete on speed and is not the incumbent B′. This prevents an untrusted incumbent from becoming its own correctness oracle.
 
-| Property | Evaluation stack | Engine release stack | Reference |
-|---|---:|---:|---:|
-| Hostile proposal entries allowed | Yes | No | No |
-| Bound to one arena | Yes | No | Quality profile |
-| Timed | Versioned B/C/[B′] speed work | Release checks only | Never |
-| Can update after a crown | Transactionally | No | No |
-| Can be served as product | No | Yes, after signed publication | No |
+| Property | Evaluation stack | Reference |
+|---|---:|---:|
+| Hostile proposal entries allowed | Yes | No |
+| Bound to one arena | Yes | Quality profile |
+| Timed | Versioned B/C/[B′] speed work | Never |
+| Can update after a crown | Transactionally | No |
+| Can be served as product | No | No |
 
 ## Canonical identity
 
@@ -46,7 +40,6 @@ This closes several ambiguity classes:
 
 - a target cannot change meaning while retaining its name;
 - an arena cannot silently change workload or topology under retained evidence;
-- an integrated contribution cannot be substituted for another source tree with matching labels;
 - manifest map order cannot alter identity;
 - a candidate cannot claim a different target after measurement.
 
@@ -64,9 +57,6 @@ These three identities answer different questions and should appear together in 
 
 Equal stack digests are not enough to claim equal execution if launch inputs differ. Equal
 tree digests are not enough if a different model, native publication, or topology ran.
-Conversely, a proposal tree and a reviewed release tree can preserve the same crowned
-selected payload while differing in reviewed packaging and therefore having different
-tree identities.
 
 ## Exact marginal substitution
 
@@ -160,9 +150,7 @@ authoritative qualification rather than inheriting a synthetic screen result.
 4. rewrite local Python and native names into deterministic contribution namespaces;
 5. emit one canonical runtime manifest and rebuild plan;
 6. record every emitted file and compute the logical tree digest;
-7. reopen the emitted tree before it is accepted by launch or release code.
-
-Integrated contributions take a stricter path. Promotion binds reviewed repository state, the byte-preserved selected payload, surrounding packaging, artifacts, tests, license/provenance assertions, and immutable attribution into an `IntegrationReviewRecord`. A release tree can resolve source only through approved integrated references.
+7. reopen the emitted tree before it is accepted by launch code.
 
 The resulting tree digest is separate from the stack digest. The stack identifies semantic composition; the tree identifies the exact emitted filesystem used to build and launch it. Both are retained.
 
@@ -242,23 +230,15 @@ An operator should never “repair” these cases by editing a manifest digest o
 directory into the expected path. The mismatch is the evidence that the attempted state
 transition lacks authority.
 
-## Release promotion
+## No release path
 
-Promotion does not copy a hostile proposal reference into a release manifest. It produces a new integrated reference from reviewed source, then requires exact review coverage for every release entry. The engine tree is rematerialized from those integrated sources and bound into the release descriptor.
-
-This yields a one-way authority boundary:
-
-```text
-proposal reference -> crown evidence -> integration review -> integrated reference -> release manifest
-```
-
-There is no supported arrow from a mutable miner URL, chain record, or evaluation bundle directly to serving.
+There is no supported arrow from a mutable miner URL, chain record, evaluation bundle, or crown to serving. Integration into maintained source and any release are decisions made outside this repository; see [After a crown](../engine/integration.md).
 
 ## Source map
 
 - [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — strict manifest and contribution-reference types
 - [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) — marginal arms, cohorts, transitions, and rollback
-- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic source materialization and integration promotion
+- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic source materialization
 - [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — singleton, atomic, displacement, and conflict policy
 - [`eval/reference_quality.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_quality.py) — pristine reference quality products
 - [`eval/calibration.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/calibration.py) — calibrated qualification/reference policy

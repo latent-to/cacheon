@@ -59,9 +59,6 @@ class StubSourceResolver:
     def resolve_proposal(self, *_args, **_kwargs):
         raise AssertionError("capability stubs must not resolve sources")
 
-    def resolve_integrated(self, *_args, **_kwargs):
-        raise AssertionError("capability stubs must not resolve sources")
-
 
 def qualification_capabilities(**overrides: object) -> B300QualificationCapabilities:
     values: dict[str, object] = {

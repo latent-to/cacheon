@@ -191,9 +191,6 @@ class _CandidateSourceResolver:
             return self._candidate_root
         return self._fallback.resolve_proposal(artifact_digest)
 
-    def resolve_integrated(self, source_tree_digest: str) -> str | Path:
-        return self._fallback.resolve_integrated(source_tree_digest)
-
 
 class B300RegisteredQualificationFactory:
     """Closed registered-target registry plus deterministic candidate plan builder."""

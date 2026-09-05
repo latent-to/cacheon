@@ -70,14 +70,14 @@ The subnet is a market for proposals. The referee is the measurement system that
 The referee may update the untrusted evaluation incumbent. It cannot update a signed
 serving release.
 
-## The four objects
+## The two objects
 
 | Object | Trust level | What it establishes |
 |---|---|---|
 | **Proposal** | Hostile input | A miner asks the validator to evaluate one target-scoped delta. |
 | **Crown** | Retained measurement evidence | Two independent qualifications show that the same delta improved one registered arena and target. |
-| **Integrated contribution** | Reviewed Cacheon source | Maintainers preserve the crowned selected-payload bytes while approving provenance, tests, fallbacks, compatibility, and surrounding packaging. |
-| **Engine release** | Signed deployment artifact | A reproducible product assembles reviewed contributions and a sealed model for serving. |
+
+Integration into maintained source, release, and serving are separate authorities outside this repository.
 
 No transition is implicit. In particular, a crown is not permission to run miner source
 in production.
@@ -143,15 +143,11 @@ the entire engine. For a live call outside its declared capability domain, the i
 implementation remains selected. That is safe, but an implementation which never routes
 onto material arena calls cannot contribute measurable speedup.
 
-## Two stacks and a reference
+## One stack and a reference
 
 `EvaluationStackManifest`
 : The referee's incumbent. It may refer to crowned but unintegrated hostile proposals and
   is executed only inside isolation.
-
-`EngineReleaseManifest`
-: The serving-stack contract. Every entry in a valid completed manifest is a reviewed
-  integrated contribution.
 
 `ReferenceManifest`
 : A pristine validator-owned semantic reference. It contains no proposal and never

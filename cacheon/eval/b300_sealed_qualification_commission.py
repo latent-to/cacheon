@@ -155,14 +155,11 @@ class B300QualificationCapabilities:
     incumbent_entries: dict[str, object]
 
     def __post_init__(self) -> None:
-        from cacheon.stack_manifest import (
-            IntegratedContributionRef,
-            ProposalContributionRef,
-        )
+        from cacheon.stack_manifest import ProposalContributionRef
 
         if type(self.incumbent_entries) is not dict or any(
             type(target) is not str
-            or type(ref) not in (ProposalContributionRef, IntegratedContributionRef)
+            or type(ref) is not ProposalContributionRef
             for target, ref in self.incumbent_entries.items()
         ):
             raise B300QualificationCommissionError(
@@ -178,7 +175,6 @@ class B300QualificationCapabilities:
             or not callable(self.graph_facts_builder)
             or not callable(self.resident_count_quality_builder)
             or not callable(getattr(self.source_resolver, "resolve_proposal", None))
-            or not callable(getattr(self.source_resolver, "resolve_integrated", None))
         ):
             raise B300QualificationCommissionError(
                 "qualification capabilities are not callable"

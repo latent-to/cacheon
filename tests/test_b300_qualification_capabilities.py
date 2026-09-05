@@ -171,24 +171,21 @@ def test_entropy_corruption_partial_state_and_source_substitution_fail(tmp_path:
         wrong_source(commitment, _teardown())
 
 
-def test_closed_resolver_binds_both_source_kinds_and_detects_stale_bytes(
+def test_closed_resolver_binds_proposal_sources_and_detects_stale_bytes(
     tmp_path: Path,
 ) -> None:
-    proposal, integrated = tmp_path / "proposal", tmp_path / "integrated"
+    proposal = tmp_path / "proposal"
     proposal.mkdir()
-    integrated.mkdir()
     (proposal / "manifest.toml").write_text("proposal = 1\n")
-    (integrated / "manifest.toml").write_text("integrated = 1\n")
-    proposal_digest, integrated_digest = _h("proposal"), _h("integrated")
-    resolver = capabilities.ClosedContributionSourceResolver(
-        {proposal_digest: proposal}, {integrated_digest: integrated}
-    )
-    reopened = capabilities.ClosedContributionSourceResolver(
-        {proposal_digest: proposal}, {integrated_digest: integrated}
-    )
+    proposal_digest = _h("proposal")
+    resolver = capabilities.ClosedContributionSourceResolver({proposal_digest: proposal}, {})
+    reopened = capabilities.ClosedContributionSourceResolver({proposal_digest: proposal}, {})
 
     assert resolver.resolve_proposal(proposal_digest) == proposal
-    assert resolver.resolve_integrated(integrated_digest) == integrated
+    with pytest.raises(capabilities.B300QualificationCapabilityError, match="not a resolvable"):
+        capabilities.ClosedContributionSourceResolver(
+            {proposal_digest: proposal}, {_h("integrated"): proposal}
+        )
     assert resolver.digest == reopened.digest
     with pytest.raises(capabilities.B300QualificationCapabilityError, match="closed"):
         resolver.resolve_proposal(_h("missing"))
@@ -201,17 +198,15 @@ def test_closed_resolver_binds_both_source_kinds_and_detects_stale_bytes(
 def test_empty_resolver_is_the_genesis_authority_and_fails_closed(tmp_path: Path) -> None:
     empty = capabilities.ClosedContributionSourceResolver({}, {})
     with pytest.raises(capabilities.B300QualificationCapabilityError, match="closed"):
-        empty.resolve_integrated(_h("incumbent"))
-    with pytest.raises(capabilities.B300QualificationCapabilityError, match="closed"):
         empty.resolve_proposal(_h("incumbent"))
+    with pytest.raises(capabilities.B300QualificationCapabilityError, match="not a resolvable"):
+        capabilities.ClosedContributionSourceResolver({}, {_h("incumbent"): tmp_path})
     assert empty.digest == capabilities.ClosedContributionSourceResolver({}, {}).digest
 
     source = tmp_path / "source"
     source.mkdir()
-    with pytest.raises(capabilities.B300QualificationCapabilityError, match="ambiguous"):
-        capabilities.ClosedContributionSourceResolver(
-            {_h("same"): source}, {_h("same"): source}
-        )
+    with pytest.raises(capabilities.B300QualificationCapabilityError, match="explicit mappings"):
+        capabilities.ClosedContributionSourceResolver([(_h("same"), source)], {})
 
 
 def _shape(

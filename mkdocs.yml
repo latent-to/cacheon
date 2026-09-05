@@ -109,7 +109,7 @@ nav:
       - Product model: architecture/product-model.md
       - Proposal to release: architecture/pipeline.md
       - Target and slot contract: architecture/slot-contract.md
-      - Evaluation and release stacks: architecture/stacks.md
+      - Stacks and manifests: architecture/stacks.md
       - Runtime injection seam: architecture/seam.md
   - Miner guide:
       - Overview: miner-guide/overview.md
@@ -137,7 +137,7 @@ nav:
       - Verification and diagnostics: validator-guide/running-evals.md
       - Testnet: validator-guide/testnet.md
   - Cacheon Engine:
-      - Integrating a contribution: engine/integration.md
+      - After a crown: engine/integration.md
       - Model provisioning: engine/model-provision.md
   - Security:
       - Threat model: security/threat-model.md

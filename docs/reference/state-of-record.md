@@ -734,6 +734,20 @@ envelope can still be replayed within the bounded follower freshness window,
 and storage, gateway, push-secret, response-hotkey, signer-wallet, and host-root
 availability/custody remain deployment responsibilities.
 
+### Removed reviewed-release manifest lane (2026-09-05)
+
+On **2026-09-05** the reviewed-release manifest lane in `stack_manifest.py` —
+the engine release manifest, the release context, the integration review record
+and its artifact references, and the integrated contribution reference — was
+removed together with the integrated-source branches in the engine tree
+materializer, the stack planner, the marginal runtime, the sealed commission,
+and the closed source resolver. Nothing in the tree constructed a review record,
+no retained manifest ever carried an integrated entry, and the signed release
+product those types fed had already been removed on 2026-08-19. The closed
+source resolver keeps its two-argument call shape and its recorded digest bytes
+because the sealed qualification packets construct it; the second argument must
+now be empty and goes when the packet template stops passing it.
+
 ### Removed discovery lane (2026-08-19)
 
 On **2026-08-19** the fenced discovery lane — the separate discovery proposal

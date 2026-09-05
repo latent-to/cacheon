@@ -34,7 +34,6 @@ from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
-    IntegratedContributionRef,
     ProposalContributionRef,
 )
 from cacheon.stack_plan import CohortPlan, MarginalArmPlan, StackPlanError
@@ -85,9 +84,6 @@ def _expected_contributions(
         if type(ref) is ProposalContributionRef:
             source_kind = "proposal_artifact"
             source_digest = ref.artifact_digest
-        elif type(ref) is IntegratedContributionRef:
-            source_kind = "integrated_source"
-            source_digest = ref.integrated_source_tree_digest
         else:  # pragma: no cover - EvaluationStackManifest is already closed
             raise MarginalRuntimeError("stack contains an unsupported contribution ref")
         rows.append(

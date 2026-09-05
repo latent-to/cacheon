@@ -35,19 +35,9 @@
   evaluation stack; it does not ship code. Digest distinctness does not attest separate
   operators, hosts, or infrastructure failure domains.
 
-**Engine release**
-: A signed, chain-independent, integrated-only Cacheon Engine artifact with
-  reproducible runtime builds, exact model receipt, native artifacts, SBOM,
-  provenance, policy manifests, and a deterministic serving context.
-
 **Evaluation stack**
 : Content-addressed arena incumbent that may contain hostile crowned proposal
   references. It exists only inside the referee system.
-
-**Integrated contribution**
-: Reviewed Cacheon-owned source with immutable attribution and an integration
-  record. Integration is a separate human/release-engineering decision after a
-  crown.
 
 **NO_DECISION**
 : Qualification outcome indicating that valid authority could not be
@@ -71,10 +61,6 @@
 : State after one authoritative PASS. Settlement requires a second independent
   matching PASS under the seven digest-distinctness checks; the lower reproduced
   speedup is used.
-
-**Release stack**
-: Chain-independent `EngineReleaseManifest` containing only integrated
-  contribution references. It has no arena or proposal content.
 
 **Slot**
 : Validator-owned execution ABI inside the pinned engine. Slots define how a

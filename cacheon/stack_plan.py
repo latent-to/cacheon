@@ -15,7 +15,6 @@ from cacheon.stack_manifest import (
     ContributionRef,
     EvaluationStackContext,
     EvaluationStackManifest,
-    IntegratedContributionRef,
     ProposalContributionRef,
 )
 from cacheon.target_catalog import TargetCatalog, TargetResolutionError
@@ -43,7 +42,7 @@ def _ref_dict(ref: ContributionRef) -> dict[str, object]:
 
 
 def _require_ref(value: object, *, field: str) -> ContributionRef:
-    if not isinstance(value, (ProposalContributionRef, IntegratedContributionRef)):
+    if not isinstance(value, ProposalContributionRef):
         raise StackPlanError(f"{field} must be a contribution ref")
     return value
 

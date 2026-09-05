@@ -171,7 +171,7 @@ A bundle cannot choose:
 
 - its reward family, overlap, or displacement;
 - arena hardware, workload, thresholds, or hidden tasks;
-- the incumbent, reference, or release stack;
+- the incumbent or reference stack;
 - isolation or network policy;
 - qualification, reproduction, or settlement outcomes.
 
