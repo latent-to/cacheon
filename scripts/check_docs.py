@@ -9,7 +9,7 @@ retired-repository references.
 
 from __future__ import annotations
 
-import ast
+import json
 import re
 import sys
 from collections import Counter
@@ -24,7 +24,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
-CLI_SOURCE = ROOT / "cacheon" / "cli.py"
+SURFACE_CLI = ROOT / "scripts" / "surface_baseline" / "cli.json"
 CLI_REFERENCE = DOCS / "reference" / "cli.md"
 # This gitignored local operations log can contain private infrastructure
 # context. It is deliberately outside both validation and publication.
@@ -407,24 +407,13 @@ def check_nav_coverage(redirects: set[Path], failures: list[str]) -> int:
 
 
 def _cli_source_commands() -> set[str]:
-    tree = ast.parse(CLI_SOURCE.read_text(encoding="utf-8"), filename=str(CLI_SOURCE))
-    commands: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
-            continue
-        function = node.func
-        if not isinstance(function, ast.Attribute) or function.attr != "add_parser":
-            continue
-        owner = function.value
-        command = node.args[0]
-        if (
-            isinstance(owner, ast.Name)
-            and owner.id == "sub"
-            and isinstance(command, ast.Constant)
-            and isinstance(command.value, str)
-        ):
-            commands.add(command.value)
-    return commands
+    """Top-level subcommands from the frozen CLI surface.
+
+    ``scripts/surface_snapshot.py --check`` keeps that file equal to
+    ``cacheon.cli.build_parser()``; nested keys carry a space.
+    """
+    help_texts = json.loads(SURFACE_CLI.read_text(encoding="utf-8"))
+    return {command for command in help_texts if command and " " not in command}
 
 
 def check_cli_inventory(failures: list[str]) -> int:

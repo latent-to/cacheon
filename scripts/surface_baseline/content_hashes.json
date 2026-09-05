@@ -1,0 +1,18 @@
+{
+ "examples/miner_allreduce_torch": "07f4fbb96451e1477eede4c0667ff9dee3060210eb00d23da4017813760a4635",
+ "examples/miner_dense_torch": "d200501fa0a2af77f396965fb47a384d370e868276c95d6a05b4690b68eb7722",
+ "examples/miner_dp_attention_exchange_torch": "3ccc5695615698c3a1493fc24cb7ebb1b18d26df79f1219b3c46ed7f7e7d1dda",
+ "examples/miner_fused_add_rmsnorm_torch": "197db8d56d530dc5a33e39c8a26dcd5915c72ae52d907f75320e53bf7a749107",
+ "examples/miner_moe_fused_experts_reduce_torch": "edf967fe578becaece04c26ece0777fd4e9f600577a1bc34d975d94f0bde248b",
+ "examples/miner_moe_fused_experts_torch": "5376645cb576601d279ab30c890c519dccb72db980e547df531dd21b36d162be",
+ "examples/miner_moe_fused_routed_torch": "72ae0f568323e83545255b0ab472b1b444405ebb3213515caf8afd600d01895b",
+ "examples/miner_rmsnorm_broken": "9d3c91f9eeed12832a78706aab5e2990cf6a997889e12801aa8837de2e581a99",
+ "examples/miner_rmsnorm_triton": "7d2415ec527ed3d5b81622d4fb0d9ccdfc8736fef72c35c6fc3495efefb79eb9",
+ "examples/miner_setup_demo": "f05d468b64f0b76b7b0f5b83337da0ebe3a4d48417179495524cdb11ef16ebc7",
+ "examples/miner_silu_broken": "ef0cbe85fe59b815fbd05b3603381d704c8f6e679186508f1e8b966935761ac7",
+ "examples/miner_silu_broken_torch": "81342e34436b521fcba0613f8c9931f63405d7ae74deb59ab6e93722470bd904",
+ "examples/miner_silu_sparse": "8ceb1a7e48f3b207ab1503826ac6b073343e5c36170b1b556f718c4b92358891",
+ "examples/miner_silu_torch": "3d518dda8356bddd8c18fc2d3d02465a044135caee04853609ccdcb6c35c44db",
+ "examples/miner_silu_triton": "b94303ed254f96cb09c5c65e410b76a5b32d04b2d5d6251bca741db36fa5c92e",
+ "tests/fixtures/stack_norm_singleton": "7a87ddf2a4d03ea4b5f4c9fffc16354a0cefed1b36f00c8db3e694e1573ff80c"
+}

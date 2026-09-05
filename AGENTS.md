@@ -311,6 +311,13 @@ contributor and subagent:
   floors against `scripts/assert_baseline.json`. Raising a ceiling or
   lowering a floor happens in the same diff that needs it and is justified
   in review; lowering a ceiling locks a deletion in.
+- `python scripts/surface_snapshot.py --check` freezes the identity-bearing
+  surfaces (CLI help, seam table, fresh-store DDL, catalog and bundle
+  digests, module exports, digest domains, codec wire keys, settlement
+  goldens) in `scripts/surface_baseline/`. A refactor that only moves code
+  must leave its diff empty; an intended change runs `--write` and explains
+  each changed section with a `surface-change:` line in the pull request
+  body.
 - Removal contract: a change that supersedes a path deletes it in the same
   pull request, or names the concrete change that will. Alias shims are
   acceptable; marking code "legacy" and keeping it indefinitely is not.

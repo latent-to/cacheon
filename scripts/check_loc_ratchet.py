@@ -15,6 +15,8 @@ ceilings in the same diff and justified in review, or split first. This is
 what keeps the files already over the AGENTS.md cap from growing by even one
 line while their decomposition waits.
 
+The generated snapshot under ``scripts/surface_baseline/`` is not counted.
+
 Run: ``python scripts/check_loc_ratchet.py`` (CI runs it beside
 ``check_islands.py``). ``--write`` rewrites both baselines to current counts.
 """
@@ -43,6 +45,9 @@ def _tracked_line_counts() -> dict[str, int]:
         try:
             data = (ROOT / name).read_bytes()
         except OSError:
+            continue
+        if name.startswith("scripts/surface_baseline/"):
+            # Generated identity snapshot, not code; surface_snapshot.py owns it.
             continue
         if b"\0" in data[:8192]:
             continue

@@ -733,6 +733,20 @@ envelope can still be replayed within the bounded follower freshness window,
 and storage, gateway, push-secret, response-hotkey, signer-wallet, and host-root
 availability/custody remain deployment responsibilities.
 
+### Frozen surface snapshot (2026-09-05)
+
+`scripts/surface_snapshot.py --check` runs in the hygiene job and compares
+ten regenerated identity surfaces with `scripts/surface_baseline/`: CLI help
+texts, seam rows, the capability manifest, fresh-store DDL, catalog and
+bundle content digests, per-module exports and exception classes, digest
+domain literals, continuation-codec wire keys, and the empty-store
+settlement, burn-projection and standalone claim digests. It subsumes the
+golden consensus vectors test, whose cross-platform capture history stays
+in Git, and the docs checker now reads the CLI inventory from the frozen
+surface instead of its own source scan. The settled-lineage golden is not
+captured yet; its builders sit behind a pytest import in
+`tests/test_chain_intake.py`.
+
 ### Retired the MiniMax-M3 model-side MoE seam (2026-09-05)
 
 The `moe_reduce` seam row bound `moe.fused_experts_reduce` to
@@ -1163,11 +1177,12 @@ a consensus break or an unreviewed identity epoch, never a routine
 refresh.
 
 These behaviors are retained as standing tests
-(`tests/test_cli_examples_e2e.py`, `tests/test_oci_live_container.py`,
-`tests/test_golden_consensus_vectors.py`) that activate by capability
-probe — CUDA device count and a usable container daemon — and skip
-cleanly elsewhere, so hosted CI keeps the CPU, containment, and golden
-tiers while the GPU tiers re-arm on any future validator host.
+(`tests/test_cli_examples_e2e.py`, `tests/test_oci_live_container.py`)
+that activate by capability probe — CUDA device count and a usable
+container daemon — and skip cleanly elsewhere, so hosted CI keeps the CPU
+and containment tiers while the GPU tiers re-arm on any future validator
+host. The golden vectors moved into
+`scripts/surface_baseline/content_hashes.json` on 2026-09-05.
 
 The live activation demonstration is additionally codified as a
 repeatable, strictly opt-in tier (`tests/test_seam_activation_live.py`):

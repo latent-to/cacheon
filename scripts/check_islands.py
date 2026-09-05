@@ -129,6 +129,9 @@ class RepoGraph:
             if not base.is_dir():
                 continue
             for path in sorted(base.rglob("*.py")):
+                if path.name == "surface_snapshot.py":
+                    # The snapshot observes modules; it must not keep them alive.
+                    continue
                 tree = _parse(path)
                 if tree is not None:
                     roots |= self._import_targets(tree, [])
