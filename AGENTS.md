@@ -344,6 +344,29 @@ contributor and subagent:
   claim is carried by the system executing on real hardware; cite the run,
   not the suite.
 
+## Docstrings and comments
+
+Adopted 2026-09-05 from the PyTorch and Kubernetes contributor conventions,
+trimmed to this tree's prose-only house style.
+
+- Docstring every module, class, and public function; private helpers only
+  when they are non-trivial.
+- Lead with one summary sentence, then add prose only for what the name and
+  the typed signature cannot say: the invariant, the ownership boundary, the
+  failure mode, the reason.
+- A docstring that paraphrases the identifier or repeats the return type is
+  noise. Delete it and let the signature document the call.
+- No `Args:`/`Returns:`/`Raises:` blocks. The tree has none and type hints
+  already carry the shapes; describe a parameter only where its type does not
+  constrain it.
+- Comments say why, not what. One restating the next line is a deletion
+  candidate; one naming the incident, receipt, or invariant behind it is not.
+- Never delete a docstring or comment that cites an incident, sabotage,
+  regression, exploit, or product invariant, however redundant it looks.
+- This is review-enforced, not lint-enforced (ruff runs only `F` and `E9`).
+  A restatement is a valid review comment, and removing one is a same-diff
+  cleanup; do not commission a tree-wide sweep for it.
+
 ## Persistence
 
 Committed code, tests, this file, and `docs/` are the portable context. Keep
