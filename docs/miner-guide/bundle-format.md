@@ -173,7 +173,7 @@ Use the `capabilities` object for named specialization predicates:
 ```json
 {
   "capabilities": {
-    "model": {"exact": "MiniMax-M3-NVFP4"},
+    "model": {"exact": "GLM-5.3-NVFP4"},
     "phase": {"exact": "prefill"},
     "head_dim": {"exact": 128},
     "block_size": {"one_of": [64, 128]},

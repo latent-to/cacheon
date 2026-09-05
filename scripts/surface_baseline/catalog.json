@@ -1,0 +1,15 @@
+{
+ "catalog_digest": "496da244515abe4b7e6207f0d964c30eee20a6c883105cd32cc9aafa463f6dc2",
+ "target:activation.silu_and_mul": {"contract_digest":"e8c1ded7e180825038b807e6c5abab73de5022a8a8763f197712c56da0205def","spec_digest":"8ef0a33e99631239faa754f258d5bbb1d2a2b354de4346a8763234d254436577"},
+ "target:collective.all_gather_into_tensor": {"contract_digest":"4634ecbf98b482e45b4e8952e441c6c9291d4f25286f04acd7cc3b5f828fa0b1","spec_digest":"4c3f6260c3bb0750bbb310c7caf0117df90ee9d92efa970d65166e692730bf68"},
+ "target:collective.all_reduce": {"contract_digest":"f4efa76114d598a7b0398a4e180c4f5d413976762cbdfc64baecd458ada64053","spec_digest":"868e911707a669b9a3738975db2eec98ff6024303bbe9066b233bab27039e207"},
+ "target:collective.ar_residual_rmsnorm": {"contract_digest":"ad5c8aa95c5694b85a4b2583f13ba705962ee1e5e8ec109d1a9a5bbeea9bd3f2","spec_digest":"110701432edd88e854b3ac01a4ec2dd1a11ac8aad1b182f2dc50827b2218f739"},
+ "target:collective.dp_attention_exchange.v1": {"contract_digest":"e02b3b58154855d13d04ba8cc55af6a5c0e565d9bd740019bb3380fa945bb5c1","spec_digest":"aaacff07604b69cffbbb1a283f7a5d14b317383ffa00b4c6688353212def9dca"},
+ "target:collective.reduce_scatter_tensor": {"contract_digest":"2461cdeb3783e61da627770d56d7df85f477a6b45031bfe3b93686030e25abbc","spec_digest":"f49bfe2ccf80f4c274d77a80d8fef36acde3193fa1c8da87affc3750db853753"},
+ "target:linear.dense": {"contract_digest":"e18c454df30f1a22ccc0639723a548ef845ce85a8699930214954f669605c068","spec_digest":"3abd96262f2d4e07d6610a03a95c72a4aeb6b3e6afa69e4a052af39064576d76"},
+ "target:moe.fused_experts": {"contract_digest":"c3b79481711db1ae02bdc971da8abcdbd05a58e80631ec462d06dd75a703484f","spec_digest":"d45335ae14eb3e106d82cf14ab192256c84cd86e0d6382ac7cc7491b45c507d5"},
+ "target:moe.fused_experts_reduce": {"contract_digest":"ceda10d20e8b227831e21f3012f7868c7cae9203c97ea22bef61c0d767be1581","spec_digest":"476817722081cd9a857da52798f1c2b23ca9ce3a5d3d57460c486052eb0344dc"},
+ "target:moe.fused_routed_experts": {"contract_digest":"5f39338d912641b99aa47090f8fd1325be3f71e6e774d15005c264f37804da2b","spec_digest":"c845f33ce56f5a205f67cb6c3b7b2794d9e29f4515aff71b45cb6a480a96a311"},
+ "target:norm.fused_add_rmsnorm": {"contract_digest":"ad397a60d740153113da5db16a4eae915cc3d3c0798e0e1d144d12ceebd36c5f","spec_digest":"959a04eceacf9a440954a3b591c6e08278f90e3503764378bbca1dc9dca9099d"},
+ "target:norm.rmsnorm": {"contract_digest":"05c7846ae5bb062cf62b58fe93986353fee31c794c2a449c80dc4ae88afce2ba","spec_digest":"be4636841b5f87662f9dfcfade6d1c038a39b7b34a8ded853a9ee5fe504663e3"}
+}

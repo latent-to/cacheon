@@ -25,7 +25,7 @@ release tooling.
 | Understand why miners participate and how rewards work | [How miners earn rewards](docs/miner-guide/incentives.md) |
 | Build a miner contribution | [Miner guide](docs/miner-guide/overview.md) |
 | Operate a validator | [Validator guide](docs/validator-guide/overview.md) |
-| Integrate an approved contribution | [Cacheon Engine](docs/engine/integration.md) |
+| See what a crown does and does not authorize | [After a crown](docs/engine/integration.md) |
 | Review trust boundaries | [Security model](docs/security/threat-model.md) |
 | Contribute to the repository | [Contributing](CONTRIBUTING.md) |
 
@@ -50,8 +50,8 @@ python -m cacheon.cli verify examples/miner_silu_torch \
 
 `scan` and `verify` are development checks. They do not establish serving
 throughput, end-to-end quality, settlement eligibility, or a production
-release. Those decisions belong to the validator-owned qualification and
-release paths described in the documentation.
+release. Those decisions belong to the validator-owned qualification path
+described in the documentation.
 
 ## Design boundaries
 
@@ -62,9 +62,9 @@ release paths described in the documentation.
 - A single passing qualification is not a crown. Settlement requires an
   independently reproduced pair bound to the same contribution and evaluation
   context.
-- Evaluation acceptance and serving release are different decisions. Engine
-  releases contain reviewed, integrated artifacts and do not include chain,
-  wallet, intake, or settlement code.
+- Evaluation acceptance and serving are different decisions. Nothing in the
+  repository turns a crown into a release; that is a maintainer decision made
+  outside it.
 
 See the [product model](docs/architecture/product-model.md) and
 [slot contract](docs/architecture/slot-contract.md) for the normative

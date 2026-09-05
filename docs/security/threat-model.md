@@ -76,7 +76,7 @@ proves registered measurement, not safe production source.
 | Recovery archive leaks sensitive state | Closed automatic scope excludes wallets, credentials, models, OCI images, caches, unredacted logs, and unrelated evidence; sealed inputs require explicit names; operational journal is redacted | Explicit sealed inputs and source-path metadata may still be sensitive; no client-side encryption is provided, so bucket policy and deployment encryption remain required |
 | Weight publication ambiguity | Separate signer; live metagraph refresh; intent-before-submit journal; exact recipient-set plus fixed-tolerance normalized-value readback and `last_update`; held state | Hotkey theft, malicious operator, chain faults, and policy disagreement remain external risks |
 | Shared-weight forgery, rollback, or replay | Eval push and its fresh exact acknowledgement are HMAC-authenticated; push-enabled storage retains an HMAC envelope over credential id and offer digest which the gateway verifies before response signing; current-offer writes reject block rollback/same-block conflict; followers pin gateway authority, require live permit, bound initial staleness, verify stable UIDs, and retain a monotonic signer journal | Network/object-store writers can deny service, and object-store writers can replay a previously valid envelope; a fresh follower may accept that replay within the configured freshness window; push-secret, gateway-hotkey, wallet, or host-root compromise remains authoritative. Push-disabled raw storage deliberately trusts its operator |
-| Crown automatically reaches production | Integrated-only release manifest, model seal, deterministic artifacts, SBOM/provenance, Ed25519 signature, expected key, registry reproducibility attestation | Integration review, key custody, base image/toolchain security, registry, and rollout policy remain human/operational authorities |
+| Crown automatically reaches production | No release path exists in the repository: a crown updates only the arena's evaluation stack, whose entries execute inside isolation | Integration into maintained source, release, key custody, and rollout are human/operational authorities outside this repository |
 
 ## Candidate isolation boundary
 
@@ -124,10 +124,10 @@ must be drained. Kernel/driver escape remains residual risk.
 
 ### “I will turn a crown into production code”
 
-Evaluation manifests may name hostile proposals; release manifests cannot. Integration
-must preserve the selected payload identity while separately approving provenance,
-license, security, compatibility, and tests. The signed release, external expected key,
-reproducible registry identity, host authorization, and serve receipts are later gates.
+Evaluation manifests name hostile proposals and execute only inside isolation. There is
+no manifest type a crown can be promoted into. Integrating crowned source into maintained
+code, with its own provenance, license, security, compatibility, and test review, is a
+decision made outside this repository.
 
 ## Control-plane separation
 

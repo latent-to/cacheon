@@ -34,7 +34,7 @@ cooperating surfaces with different trust boundaries.
 <div class="cacheon-grid" markdown>
 <a class="cacheon-card" href="engine/integration/">
 <strong>Cacheon Engine</strong>
-<span>Integration review: how a reproduced crown becomes ordinary reviewed source, and how model bytes are provisioned.</span>
+<span>What a crown does and does not authorize, and how model bytes are provisioned.</span>
 </a>
 <a class="cacheon-card" href="architecture/pipeline/">
 <strong>The referee</strong>
@@ -48,20 +48,18 @@ cooperating surfaces with different trust boundaries.
 
 ## One idea, four objects
 
-The system keeps four objects deliberately separate:
+The system keeps two objects deliberately separate, and keeps both away from serving:
 
 ```mermaid
 flowchart LR
   P["Proposal<br/>hostile input"] --> Q["Crown<br/>measured contribution"]
-  Q --> I["Integrated contribution<br/>reviewed source"]
-  I --> R["Engine release<br/>signed product"]
-  Q -. "does not ship automatically" .-> R
+  Q -. "never automatic" .-> R["Integration, release, serving<br/>outside this repository"]
 ```
 
 A miner submits a **proposal** for one registered target delta. The referee may
-establish a **crown** after two independent passing qualifications. Cacheon
-maintainers may then turn the proposal into an **integrated contribution** after
-security, provenance, compatibility, and maintenance review. Work that does not fit
+establish a **crown** after two independent passing qualifications. Whether crowned
+source is ever integrated into maintained code is a maintainer decision outside this
+repository. Work that does not fit
 a registered target is not a valid proposal; widening the catalog is a reviewed
 validator-side change.
 
@@ -102,7 +100,7 @@ copying them.
 | Write a Triton, CuTeDSL, or Python reference kernel | [Miner guide](miner-guide/overview.md) |
 | Validate the repository locally without a GPU | [Local quickstart](get-started/quickstart.md) |
 | Deploy intake, an arena provider, and qualification workers | [Validator guide](validator-guide/overview.md) |
-| Integrate a reproduced crown into reviewed source | [Cacheon Engine](engine/integration.md) |
+| See what a crown does and does not authorize | [After a crown](engine/integration.md) |
 | Audit trust boundaries and failure behavior | [Security model](security/threat-model.md) |
 | Check what is implemented, measured, and still unproven | [State of record](reference/state-of-record.md) |
 

@@ -1,20 +1,14 @@
 # Stack manifests
 
-Cacheon represents evaluation and serving composition with separate canonical
-manifest types. They are deliberately not interchangeable.
+Cacheon represents the referee's incumbent and the pristine reference with
+separate canonical manifest types. They are deliberately not interchangeable.
 
-## The three questions they answer
+## The two questions they answer
 
 | Manifest | Question | Proposal source? | Arena identity? | Timed? |
 |---|---|---:|---:|---:|
 | `EvaluationStackManifest` | What complete incumbent does this arena evaluate? | allowed | yes | as the policy-required B and optional/required B′ reads |
-| `EngineReleaseManifest` | What reviewed set may be materialized and shipped? | rejected | no | serving policy is separate |
 | `ReferenceManifest` | What pristine candidate-free engine grades sealed trajectories? | rejected | yes, with reference identities | no |
-
-An evaluation stack and a release stack may name similar semantic
-improvements, but equality of intent is not equality of identity. The former
-can point at hostile content because it is confined to the referee; the latter
-must resolve through integration review records.
 
 ## Evaluation stack
 
@@ -26,10 +20,9 @@ arena. It binds:
 - the full target-catalog snapshot and digest; and
 - one content-addressed contribution reference per active target.
 
-Its entries may be hostile `ProposalContributionRef` values or reviewed
-`IntegratedContributionRef` values. That is why an evaluation stack is never a
-serving release. `with_contribution()` creates a new immutable identity; it does
-not mutate a signed release.
+Its entries are hostile `ProposalContributionRef` values, executed only inside
+the referee's isolation. `with_contribution()` creates a new immutable identity;
+it never edits the old one.
 
 Conceptual shape:
 
@@ -76,39 +69,6 @@ rollback point.
 That transition changes the stack digest even when runtime, base engine,
 arena, and every unrelated contribution remain fixed.
 
-## Engine release stack
-
-`EngineReleaseManifest` binds runtime, base engine, catalog, and active targets
-without an arena. Every entry must be an `IntegratedContributionRef` backed by
-a complete `IntegrationReviewRecord`. Proposal references are rejected.
-
-That makes it chain-independent and suitable for deterministic materialization:
-
-```json
-{
-  "type": "engine_release",
-  "schema_version": 1,
-  "stack_policy_version": "...",
-  "runtime_digest": "<sha256>",
-  "base_engine_digest": "<sha256>",
-  "catalog_digest": "<sha256>",
-  "catalog_snapshot": {},
-  "entries": {
-    "moe.fused_experts": { "type": "integrated", "...": "..." }
-  }
-}
-```
-
-The missing `arena_digest` is intentional. Release identity must not depend on
-the validator market that discovered an improvement. Arena measurements remain
-provenance in integration records, while the serving stack is reconstructed
-from reviewed source, catalog context, and release inputs.
-
-Before materialization, integration validation requires exact one-to-one
-coverage between active integrated references and their review records. A
-record for the wrong target, selected payload, attribution identity, or source
-tree does not count as close enough.
-
 ## Pristine reference
 
 `ReferenceManifest` is the separate quality authority used by pristine T. It
@@ -128,9 +88,9 @@ logical hardware, tokenizer, workload, hidden-corpus commitment, judge, and
 selection policy. If any of those changes, old quality evidence cannot be
 silently attached to the new reference.
 
-## Proposal and integrated references
+## Proposal references
 
-Both reference kinds preserve the same economic core:
+A proposal reference separates the whole artifact from the economic core:
 
 ```text
 selected_delta_digest = H(
@@ -140,11 +100,10 @@ selected_delta_digest = H(
 )
 ```
 
-`ProposalContributionRef` additionally names the hostile artifact digest.
-`IntegratedContributionRef` instead names the reviewed source-tree digest and
-the approving integration-record digest. Attribution remains explicit in both
-forms. Promotion changes trust and source ownership without changing the
-selected crowned payload under the current contract.
+`ProposalContributionRef` names the hostile artifact digest beside the
+selected-payload, target-spec, and attribution digests, so padding or
+re-attributing an archive changes the artifact identity without changing the
+selected delta.
 
 ## Canonical identity rules
 
@@ -165,8 +124,6 @@ selected crowned payload under the current contract.
 | Entry key differs from `ref.target_id` | The mapping tries to relabel a contribution |
 | Target-spec digest differs | Qualification used another semantic contract |
 | Overlapping active targets | Catalog displacement/conflict exclusion was not applied canonically |
-| Proposal reference in a release manifest | Hostile evaluation content crossed the serving boundary |
-| Integration record missing or mismatched | Reviewed-source authority is incomplete |
 | Runtime/base/arena context mismatch | The stack is being reopened under a different environment |
 
 Treat these as identity failures, not migration hints. The safe response is to
@@ -179,10 +136,6 @@ old identity for audit and rollback.
   call `validate_against()` before planning the versioned speed schedule.
 - Use `with_contribution()` only for a catalog-valid evaluation transition; it
   returns a new manifest and never edits the old one.
-- Construct a `ReleaseStackContext` from reviewed release inputs and validate
-  an `EngineReleaseManifest` before Engine-tree materialization.
-- Reopen integration records from retained evidence and require exact coverage
-  before accepting integrated entries.
 - Construct and reopen `ReferenceManifest` independently of candidate engines;
   never derive T from the current evaluation stack.
 

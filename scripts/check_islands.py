@@ -23,9 +23,9 @@ become reachable or has been deleted is reported for removal. The goal is a
 ratchet: shrinking the baseline is cleanup, growing it is a reviewed decision
 visible in the diff.
 
-The checker also reports (without failing) files above the physical-line
-watermark and test files using a ``_part<N>`` suffix, both of which are
-design smells under the repository's code-volume discipline in ``AGENTS.md``.
+The checker also reports (without failing) test files using a ``_part<N>``
+suffix, a design smell under the repository's code-volume discipline in
+``AGENTS.md``. Per-file line ceilings live in ``check_loc_ratchet.py``.
 """
 
 from __future__ import annotations
@@ -40,8 +40,6 @@ DOTTED_REFERENCE = re.compile(r"[\"']((?:cacheon)(?:\.\w+)+)[\"']")
 FILENAME_REFERENCE = re.compile(r"[\"'](\w+\.py)[\"']")
 PART_SUFFIX = re.compile(r"_part\d+\.py\Z")
 MAIN_GUARD = re.compile(r"if\s+__name__\s*==")
-
-LINE_WATERMARK = 900
 
 # Module families consumed through mechanisms a static scan cannot follow.
 # Each entry names its wiring; do not extend this list without one.
@@ -131,6 +129,9 @@ class RepoGraph:
             if not base.is_dir():
                 continue
             for path in sorted(base.rglob("*.py")):
+                if path.name == "surface_snapshot.py":
+                    # The snapshot observes modules; it must not keep them alive.
+                    continue
                 tree = _parse(path)
                 if tree is not None:
                     roots |= self._import_targets(tree, [])
@@ -228,31 +229,8 @@ def read_baseline(path: Path) -> set[str]:
     return entries
 
 
-def volume_warnings(root: Path, verbose: bool) -> list[str]:
-    oversized: list[tuple[int, Path]] = []
-    for directory in ("cacheon", "tests"):
-        base = root / directory
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*.py")):
-            rel = path.relative_to(root)
-            lines = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
-            if lines > LINE_WATERMARK:
-                oversized.append((lines, rel))
+def volume_warnings(root: Path) -> list[str]:
     warnings: list[str] = []
-    if oversized:
-        oversized.sort(reverse=True)
-        if verbose:
-            warnings.extend(
-                f"{rel} has {lines} lines (watermark {LINE_WATERMARK})"
-                for lines, rel in oversized
-            )
-        else:
-            largest, rel = oversized[0]
-            warnings.append(
-                f"{len(oversized)} files exceed {LINE_WATERMARK} lines "
-                f"(largest: {rel} at {largest}); rerun with --verbose for the list"
-            )
     tests = root / "tests"
     if tests.is_dir():
         for path in sorted(tests.rglob("*.py")):
@@ -270,11 +248,6 @@ def main() -> int:
         type=Path,
         default=Path(__file__).resolve().parents[1],
         help="repository root to scan (defaults to this repository)",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="list every file above the line watermark instead of a summary",
     )
     args = parser.parse_args()
     root = args.root.resolve()
@@ -298,7 +271,7 @@ def main() -> int:
             f"{baseline_path.relative_to(root)}"
         )
 
-    warnings = volume_warnings(root, args.verbose)
+    warnings = volume_warnings(root)
     for entry in sorted(baseline):
         if entry not in islands:
             warnings.append(

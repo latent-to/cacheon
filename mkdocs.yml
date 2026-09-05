@@ -1,7 +1,7 @@
 site_name: Cacheon
 site_description: >-
   Engineering documentation for Cacheon's contribution, evaluation, settlement,
-  and release systems.
+  and weight-publication systems.
 site_url: https://cacheon.ai/docs/
 docs_dir: docs
 site_dir: site
@@ -107,9 +107,9 @@ nav:
   - Architecture:
       - System overview: architecture/overview.md
       - Product model: architecture/product-model.md
-      - Proposal to release: architecture/pipeline.md
+      - Evaluation pipeline: architecture/pipeline.md
       - Target and slot contract: architecture/slot-contract.md
-      - Evaluation and release stacks: architecture/stacks.md
+      - Stacks and manifests: architecture/stacks.md
       - Runtime injection seam: architecture/seam.md
   - Miner guide:
       - Overview: miner-guide/overview.md
@@ -137,7 +137,7 @@ nav:
       - Verification and diagnostics: validator-guide/running-evals.md
       - Testnet: validator-guide/testnet.md
   - Cacheon Engine:
-      - Integrating a contribution: engine/integration.md
+      - After a crown: engine/integration.md
       - Model provisioning: engine/model-provision.md
   - Security:
       - Threat model: security/threat-model.md

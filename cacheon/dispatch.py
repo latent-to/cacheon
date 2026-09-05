@@ -27,48 +27,6 @@ from cacheon.tensor_spec import (
 
 logger = logging.getLogger("cacheon.dispatch")
 _MOE_LOGGED_ACTIVE = False
-_MOE_OUTER_REDUCE_ATTR = "_cacheon_outer_reduce_owner"
-_MOE_OUTER_REDUCE_TOKEN = object()
-_MOE_REDUCED_ATTR = "_cacheon_already_reduced"
-_MOE_REDUCED_TOKEN = object()
-_MOE_REDUCE_MODES = frozenset({"immediate", "deferred"})
-
-
-def _moe_reduce_owner(layer: object) -> str | None:
-    state = getattr(layer, _MOE_OUTER_REDUCE_ATTR, None)
-    if (
-        isinstance(state, tuple)
-        and len(state) == 2
-        and state[0] is _MOE_OUTER_REDUCE_TOKEN
-        and state[1] in _MOE_REDUCE_MODES
-    ):
-        return state[1]
-    return None
-
-
-def _clear_moe_reduced(output: object) -> None:
-    if torch.is_tensor(output) and hasattr(output, _MOE_REDUCED_ATTR):
-        delattr(output, _MOE_REDUCED_ATTR)
-
-
-def _consume_moe_reduced(output: object, mode: str) -> bool:
-    state = getattr(output, _MOE_REDUCED_ATTR, None) if torch.is_tensor(output) else None
-    if state is None:
-        return False
-    if (
-        not isinstance(state, tuple)
-        or len(state) != 3
-        or state[0] is not _MOE_REDUCED_TOKEN
-        or state[1] != mode
-        or state[2] is not _tp_device_group()
-    ):
-        raise RuntimeError("invalid reduce-owning MoE completion context")
-    delattr(output, _MOE_REDUCED_ATTR)
-    _log_once_active("moe.fused_experts_reduce")
-    _receipts.completed("moe.fused_experts_reduce")
-    return True
-
-
 def _arch_tag(device_index: int = 0) -> Optional[str]:
     if not torch.cuda.is_available():
         return None
@@ -449,10 +407,7 @@ def make_moe_dispatcher(
                                 and topk_weights.device == x.device
                             ):
                                 continue
-                            if not (
-                                getattr(self, "reduce_results", False)
-                                or _moe_reduce_owner(self) is not None
-                            ):
+                            if not getattr(self, "reduce_results", False):
                                 continue
                             group = _tp_device_group()
                             group_size = _process_group_size(group)
@@ -555,27 +510,15 @@ def make_moe_dispatcher(
                         )
                         if aud:
                             def stock_reference():
-                                stock_result = stock(
-                                    self, a_x, topk_output, pre_quant_input
-                                )
-                                if reduce_slot and _moe_reduce_owner(self) is not None:
-                                    from sglang.srt.distributed.communication_op import (
-                                        tensor_model_parallel_all_reduce,
-                                    )
-
-                                    stock_result = tensor_model_parallel_all_reduce(
-                                        stock_result
-                                    )
-                                return stock_result
+                                return stock(self, a_x, topk_output, pre_quant_input)
 
                             _audit.run(
                                 slot,
                                 (out,) if torch.is_tensor(out) else tuple(out),
                                 stock_reference,
                             )
-                        if not (reduce_slot and _moe_reduce_owner(self) is not None):
-                            _log_once_active(slot)
-                            _receipts.completed(slot)
+                        _log_once_active(slot)
+                        _receipts.completed(slot)
                         return out
         return stock(self, hidden_states, topk_output, pre_quant_input)
 
@@ -886,14 +829,10 @@ def _run_routed_moe_kernel(
         self, impl, _ROUTED_MOE_SLOT,
         extra_prepare_args=(top_k, routed_scaling),
     )
-    _clear_moe_reduced(out)
-    try:
-        _receipts.invoke(
-            _ROUTED_MOE_SLOT, impl.entry,
-            x, router_logits, correction_bias, prepared, out,
-        )
-    finally:
-        _clear_moe_reduced(out)
+    _receipts.invoke(
+        _ROUTED_MOE_SLOT, impl.entry,
+        x, router_logits, correction_bias, prepared, out,
+    )
     _validate_live_outputs(
         contract, allocation, tensor_inputs, input_bindings, like=x
     )
@@ -967,25 +906,14 @@ def _run_moe_kernel(
         # The caller has already made this route non-recoverable before entering
         # any rank-local fallible prelude.
         prepared = _moe_prepared(self, impl, slot)
-        _clear_moe_reduced(out)
-        try:
-            _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out, group)
-        finally:
-            _clear_moe_reduced(out)
+        _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out, group)
         _validate_live_outputs(
             contract, allocation, tensor_inputs, input_bindings, like=x
         )
-        owner = _moe_reduce_owner(self)
-        if owner is not None:
-            setattr(out, _MOE_REDUCED_ATTR, (_MOE_REDUCED_TOKEN, owner, group))
         return out
 
     prepared = _moe_prepared(self, impl, slot)
-    _clear_moe_reduced(out)
-    try:
-        _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out)
-    finally:
-        _clear_moe_reduced(out)
+    _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out)
     _validate_live_outputs(
         contract, allocation, tensor_inputs, input_bindings, like=x
     )

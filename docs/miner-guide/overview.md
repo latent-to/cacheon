@@ -88,20 +88,17 @@ See [Slots and targets](slots.md) and the authoritative
 
 ## What happens to a submission
 
-Cacheon keeps four objects distinct:
+Cacheon keeps two objects distinct, and keeps both away from serving:
 
 1. A **proposal** is the source archive you publish and commit on-chain. It is
    untrusted input, not an engine dependency.
 2. A **crown** is an independently reproduced marginal win for one registered
    target in one evaluation stack. It can receive standing reward under the
    active emissions policy.
-3. An **integrated contribution** is reviewed Cacheon-owned source whose selected
-   payload remains bound byte-for-byte to the crown, with maintained surrounding
-   packaging, tests, and attribution. Crowning does not perform this review
-   automatically.
-4. A conforming **Engine release** is a signed, chain-independent software release
-   built from integrated source. A crown is not permission to ship miner code. The
-   current revision does not claim a completed production release.
+
+Nothing after a crown is automatic. Integrating crowned source into maintained code and
+any release are maintainer decisions outside this repository; a crown is not permission to
+ship miner code.
 
 That separation is part of the product contract, not release ceremony. Read
 the full [product model](../architecture/product-model.md)

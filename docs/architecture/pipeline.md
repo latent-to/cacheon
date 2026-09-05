@@ -51,7 +51,7 @@ flowchart TD
     G -->|"stale or not selected"| H["HOLD / no stack transition"]
     T --> W["Reward projection and journaled weights"]
     J --> W
-    T -. "separate decision" .-> I["Integration review and signed release"]
+    T -. "separate authorities, outside this repository" .-> I["Integration, release, serving"]
 ```
 
 ## 1. Finalized intake
@@ -363,7 +363,7 @@ See the [emissions policy](../reference/emissions-policy.md).
 
 ## 11. Integration
 
-A settled crown may enter integration review, but serving remains a separate state machine. Reviewed source is promoted to an integrated contribution; the signed chain-independent release product was removed on 2026-08-19 because no release was ever produced or consumed.
+A settled crown changes the evaluation stack and nothing else. Integration into maintained source, release, and serving are separate authorities that this repository does not implement; see [After a crown](../engine/integration.md).
 
 The dated
 [State of record](../reference/state-of-record.md) tracks implementation and validation

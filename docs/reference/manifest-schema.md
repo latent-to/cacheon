@@ -155,10 +155,9 @@ dtypes = ["bfloat16"]
 architectures = ["sm103"]
 ```
 
-This example demonstrates variant syntax only. `norm.rmsnorm` is unavailable
-for paid submission in the current MiniMax-M3 mainnet arena because that model
-does not execute the registered RMSNorm callsite. See
-[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+This example demonstrates variant syntax only; check
+[Arena availability](../miner-guide/slots.md#arena-availability) before paying
+for `norm.rmsnorm`.
 
 CUDA source declarations behave similarly. Listing `.cu`/`.cuh` paths makes
 them inspectable inputs to the sanctioned build lane; it is not permission to
@@ -171,7 +170,7 @@ A bundle cannot choose:
 
 - its reward family, overlap, or displacement;
 - arena hardware, workload, thresholds, or hidden tasks;
-- the incumbent, reference, or release stack;
+- the incumbent or reference stack;
 - isolation or network policy;
 - qualification, reproduction, or settlement outcomes.
 

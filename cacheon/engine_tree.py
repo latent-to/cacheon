@@ -1,7 +1,7 @@
 """Deterministic, data-only assembly of a complete Cacheon engine bundle.
 
 The materializer never imports contribution Python or loads native code.  It resolves
-content-addressed proposal/integrated sources, selects only the registered target payload,
+content-addressed proposal sources, selects only the registered target payload,
 rewrites bundle-local module identities, and emits one validator-owned runtime manifest.
 Execution, publication, and crown authority intentionally live elsewhere.
 """
@@ -17,7 +17,6 @@ import posixpath
 import re
 import shutil
 import stat
-import subprocess
 import tempfile
 from contextlib import contextmanager
 from collections.abc import Mapping
@@ -58,8 +57,6 @@ class EngineTreeError(ValueError):
 
 class ContributionSourceResolver(Protocol):
     def resolve_proposal(self, artifact_digest: str) -> str | Path: ...
-
-    def resolve_integrated(self, source_tree_digest: str) -> str | Path: ...
 
 
 @dataclass(frozen=True)
@@ -201,20 +198,22 @@ def _staged_source_tree(source: Path) -> Iterator[Path]:
                 raise EngineTreeError("contribution source changed during materialization")
 
 
-def _integrated_source_tree_digest(path: Path) -> str:
+def _source_tree_digest(path: Path) -> str:
     rows = [
         {"mode": _FILE_MODE, "path": rel, "sha256": digest}
         for rel, _source_mode, digest in _tree_snapshot(path)
     ]
+    # The domain literal predates the retired reviewed-release lane and is part
+    # of every recorded source_resolver_digest; it must not change.
     return canonical_digest("cacheon.integrated-source-tree", {"files": rows})
 
 
-def integrated_source_tree_digest(root: str | Path) -> str:
-    """Canonical identity of one reviewed integrated contribution source tree."""
+def source_tree_digest(root: str | Path) -> str:
+    """Canonical, mode-independent identity of one contribution source tree."""
 
-    source = _source_directory(root, field="integrated source tree")
+    source = _source_directory(root, field="source tree")
     with _staged_source_tree(source) as staged:
-        return _integrated_source_tree_digest(staged)
+        return _source_tree_digest(staged)
 
 
 def _canonical_metadata(raw: bytes, *, relative: str) -> tuple[dict[str, object], bytes]:
@@ -1003,26 +1002,6 @@ def inspect_contribution(
         return replace(_inspect_contribution(staged, catalog=catalog), root=source)
 
 
-def _git_output(repository: Path, *arguments: str) -> bytes:
-    try:
-        result = subprocess.run(
-            ("git", "-C", str(repository), *arguments),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise EngineTreeError(f"cannot inspect integration review commit: {exc}") from None
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise EngineTreeError(
-            f"integration review commit inspection failed: {detail or result.returncode}"
-        )
-    return result.stdout
-
-
 def _put_file(files: dict[str, bytes], path: str, data: bytes) -> None:
     path = _logical_path(path, field="emitted path")
     if path in files:
@@ -1034,16 +1013,12 @@ def _resolve_contribution_source(
     resolver: ContributionSourceResolver | Mapping[tuple[str, str], str | Path],
     ref: object,
 ) -> Path:
-    from cacheon.stack_manifest import IntegratedContributionRef, ProposalContributionRef
+    from cacheon.stack_manifest import ProposalContributionRef
 
     if isinstance(ref, ProposalContributionRef):
         digest = ref.artifact_digest
         source_type = "proposal"
         method = "resolve_proposal"
-    elif isinstance(ref, IntegratedContributionRef):
-        digest = ref.integrated_source_tree_digest
-        source_type = "integrated"
-        method = "resolve_integrated"
     else:
         raise EngineTreeError("contribution ref has no registered source identity")
     try:
@@ -1298,7 +1273,7 @@ def _validate_contribution_rows(rows: object) -> list[dict[str, object]]:
             raise EngineTreeError("materialized selected-delta identity mismatch")
         if row["namespace"] != f"cacheon_c_{expected_delta}":
             raise EngineTreeError("materialized contribution namespace mismatch")
-        if row["source_kind"] not in {"proposal_artifact", "integrated_source"}:
+        if row["source_kind"] != "proposal_artifact":
             raise EngineTreeError("materialized contribution source kind is invalid")
     if targets != sorted(targets) or len(set(targets)) != len(targets):
         raise EngineTreeError("materialized contribution targets are not canonical")
@@ -1404,7 +1379,7 @@ def _reopen_engine_tree(
     *,
     expected_tree_digest: str | None = None,
 ) -> MaterializedEngineTree:
-    """Structurally reopen one static evaluation/release stack tree."""
+    """Structurally reopen one static evaluation stack tree."""
 
     path = _source_directory(root, field="materialized tree")
     if stat.S_IMODE(path.stat().st_mode) != _DIR_MODE:
@@ -1503,7 +1478,7 @@ def reopen_materialized_engine_tree(
     *,
     expected_tree_digest: str | None = None,
 ) -> MaterializedEngineTree:
-    """Reopen an exact evaluation/release stack tree.
+    """Reopen an exact evaluation stack tree.
 
     A live launch authority must supply ``expected_tree_digest``. Without it this
     is structural validation only.
@@ -1524,36 +1499,17 @@ def materialize_engine_tree(
     catalog: object,
     resolver: ContributionSourceResolver | Mapping[tuple[str, str], str | Path],
     destination: str | Path,
-    integration_records: object | None = None,
 ) -> MaterializedEngineTree:
-    """Assemble one validated evaluation or release stack without executing it."""
+    """Assemble one validated evaluation stack without executing it."""
 
-    from cacheon.stack_manifest import (
-        EngineReleaseManifest,
-        EvaluationStackManifest,
-        IntegratedContributionRef,
-        ProposalContributionRef,
-    )
+    from cacheon.stack_manifest import EvaluationStackManifest, ProposalContributionRef
     from cacheon.target_catalog import TargetCatalog
 
     if not isinstance(catalog, TargetCatalog):
         raise TypeError("catalog must be a TargetCatalog")
-    if not isinstance(stack, (EvaluationStackManifest, EngineReleaseManifest)):
-        raise TypeError("stack must be an EvaluationStackManifest or EngineReleaseManifest")
+    if not isinstance(stack, EvaluationStackManifest):
+        raise TypeError("stack must be an EvaluationStackManifest")
     stack.validate_against(context)
-    if isinstance(stack, EngineReleaseManifest):
-        if integration_records is None:
-            raise EngineTreeError(
-                "release materialization requires approved integration records"
-            )
-        try:
-            stack.validate_integrations(integration_records)  # type: ignore[arg-type]
-        except (TypeError, ValueError) as exc:
-            raise EngineTreeError(f"release integration authority is invalid: {exc}") from None
-    elif integration_records is not None:
-        raise EngineTreeError(
-            "evaluation materialization must not accept release integration records"
-        )
     if stack.catalog_digest != catalog.digest or stack.catalog_snapshot != catalog.snapshot():
         raise EngineTreeError("stack catalog does not match materializer catalog")
     entries = stack.entries
@@ -1593,13 +1549,6 @@ def materialize_engine_tree(
                         raise EngineTreeError(
                             f"proposal artifact digest mismatch for {target_id!r}"
                         ) from None
-            elif isinstance(ref, IntegratedContributionRef):
-                source_kind = "integrated_source"
-                source_digest = ref.integrated_source_tree_digest
-                if _integrated_source_tree_digest(staged) != source_digest:
-                    raise EngineTreeError(
-                        f"integrated source digest mismatch for {target_id!r}"
-                    )
             else:  # pragma: no cover - stack manifest already enforces this
                 raise EngineTreeError(f"unsupported contribution ref for {target_id!r}")
 

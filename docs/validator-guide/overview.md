@@ -40,9 +40,7 @@ flowchart LR
     Evidence -. "referenced artifacts" .-> Recovery
     Store --> Signer["Weight reconciler<br/>hotkey only"]
     Signer --> Chain
-    Store -. "reviewed crown input" .-> Integration["Integration and release authority"]
-    Integration --> Registry["Signed engine release / registry"]
-    Registry --> Serving["Production serving fleet<br/>no chain access"]
+    Store -. "never automatic" .-> Integration["Integration, release, serving<br/>outside this repository"]
 ```
 
 The boxes imply operational boundaries:
@@ -214,8 +212,8 @@ validator passes or stop the controller cleanly for reconciliation; do not add a
 writer, copy a live WAL database into place, or remove the lock file to force access.
 
 Immutable publications and evidence roots are durable dependencies of standing state.
-Deleting them after a crown can make later settlement reopening, reward projection, or
-integration review fail closed. Treat retention, backup, and restore as part of consensus
+Deleting them after a crown can make later settlement reopening or reward projection
+fail closed. Treat retention, backup, and restore as part of consensus
 operations, not log rotation.
 
 `chain-snapshot` supplies the implemented off-pod recovery format: a SQLite online

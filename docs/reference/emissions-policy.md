@@ -177,13 +177,13 @@ The design intent retained for a future reintroduction:
 - activation is an explicit, independently approved one-way cutover, never an
   inference from implemented arithmetic.
 
-Two compatibility artifacts remain in the tree:
-[`chain/reserved_schema.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
-preserves the schema-4/5/6 migrations and V2 table DDL verbatim so existing
-intake databases keep validating, and the shared-weight offer wire schema
-keeps its `lane`/`debt_binding` fields with debt-lane payloads rejected.
-Reintroducing V2 is a new reviewed change with its own design and security
-review, not a revert switch.
+One compatibility artifact remains in the tree: the shared-weight offer wire
+schema keeps its `lane`/`debt_binding` fields with debt-lane payloads
+rejected. The reserved schema-4/5/6 migrations and V2 table DDL were retired on
+2026-09-05; intake still accepts the metadata stamps 3 through 6, so databases
+created earlier open unchanged with their V2 tables untouched, and a fresh
+database now stops at stamp 3. Reintroducing V2 is a new reviewed change with
+its own design and security review, not a revert switch.
 
 ## Operational invariants
 
@@ -216,6 +216,5 @@ operator flow.
 ## Source anchors
 
 - [Legacy economics](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py)
-- [Reserved V2 schema](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
 - [V1 publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
 - [CLI](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py)

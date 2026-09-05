@@ -27,14 +27,14 @@ The arrows are evidence-bearing handoffs, not automatic conversions. This is why
 same implementation can simultaneously be a valid crown, an unresolved integration
 candidate, and absent from the current production release without contradiction.
 
-## Four objects, four authorities
+## Two objects, two authorities
 
 | Object | Contents | Authority | May enter production? |
 |---|---|---|---|
 | Proposal | A miner-supplied target delta | Hostile input identified by finalized intake and content digests | No |
 | Crown | Reopened evidence that the proposal improved one arena and attributable target | Referee qualification, independent reproduction, and settlement | Not by itself |
-| Integrated contribution | Reviewed source and tests that preserve the crowned selected payload, with immutable contributor identity | Source control and integration review | Yes, as release input |
-| Engine release | Pinned upstream runtime plus a canonical reviewed stack and sealed release inputs | Signed release descriptor and publication | Yes |
+
+There is no third row. Integrating crowned source into maintained code, releasing, and serving are separate authorities outside this repository; nothing here is an object a crown can be promoted into.
 
 No step may silently substitute one object for another:
 
@@ -48,21 +48,7 @@ No step may silently substitute one object for another:
 
 A crown answers an economic question: **did this exact attributable delta improve the frozen evaluation incumbent under the registered arena policy?**
 
-Shipping answers a product question: **can reviewed source, still bound to the crowned selected payload, be maintained and safely included in a chain-independent engine release?**
-
-The ship decision separately requires:
-
-- reproduction against the crowned evaluation stack and the current release context;
-- correctness and maintained fallback behavior;
-- security review;
-- license and provenance approval;
-- compatibility with active contributions and the pinned SGLang revision;
-- reviewed Cacheon source that preserves the crowned selected payload, plus
-  maintained surrounding packaging and tests;
-- immutable contribution attribution;
-- exact release, native, model, and policy identities.
-
-This permits emissions to follow crown policy while production deployment follows a separate review.
+Shipping is a product question this repository does not answer. Whether crowned source can be maintained and safely served is decided outside it, with its own reproduction, correctness, security, license, provenance, compatibility, packaging, and attribution review. Emissions follow crown policy; production deployment follows that separate review.
 
 ## Marginal contribution, complete execution
 
@@ -108,26 +94,22 @@ that may add another 3%:
    reference. The earlier contribution A is not allowed to grade B merely because it is
    in the incumbent.
 5. If two independent qualifications pass, settlement may update the evaluation stack to
-   contain both A and B. The release stack is still unchanged.
-6. If B later passes integration review, a new integrated reference can be selected for a
-   future signed release. That product decision does not alter A's or B's historical crown
-   evidence.
+   contain both A and B. Nothing outside the evaluation stack changes.
 
 This example is conceptual; the percentages are not claims about a recorded Cacheon run.
 Its point is the identity split: the worker executes a complete A+B engine, while the
-economic transition and integration record describe only B's registered delta.
+economic transition describes only B's registered delta.
 
-## Two stacks and a trusted reference
+## One stack and a trusted reference
 
 The product model is reflected directly in manifest types:
 
 | Manifest | May contain hostile proposal code? | Arena-bound? | Used for timing? | Used for serving? |
 |---|---:|---:|---:|---:|
 | `EvaluationStackManifest` | Yes | Yes | Yes | No |
-| `EngineReleaseManifest` | No; integrated contributions only | No | Release validation only | Yes |
 | `ReferenceManifest` | No; validator-owned | Quality profile-bound | No | No |
 
-The evaluation stack is an economic hill-climb state. The release manifest is a product state. The reference manifest is semantic authority. A crown can transactionally update the first; only reviewed promotion and signing can create a new instance of the second. See [Stacks and manifests](stacks.md).
+The evaluation stack is an economic hill-climb state; the reference manifest is semantic authority. A crown can transactionally update the first and never touches the second. See [Stacks and manifests](stacks.md).
 
 ## Registered targets
 
@@ -188,9 +170,7 @@ Keeping the service plane outside normal submissions limits the blast radius of 
 
 ## Chain independence
 
-A valid engine release has no runtime dependency on Bittensor, wallets, miner endpoints, current weights, or referee databases. The chain determines proposal priority and reward state; it does not dynamically choose production code.
-
-The release build consumes reviewed source and exact, signed inputs. The serving container consumes the signed release publication and a sealed model tree. If chain access and miner hosting disappear, the released engine remains rebuildable, verifiable, and deployable from its retained artifacts.
+The chain determines proposal priority and reward state; it does not choose production code. No serving artifact is produced from referee state, and nothing that runs outside the referee depends on Bittensor, wallets, miner endpoints, current weights, or referee databases.
 
 ## Architectural acceptance test
 

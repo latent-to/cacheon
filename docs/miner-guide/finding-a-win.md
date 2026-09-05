@@ -101,8 +101,8 @@ critical-path overlap.
 ## Compare against the incumbent, not “stock”
 
 An active stack can already contain crowned contributions on other targets. The
-marginal baseline is that exact incumbent stack, with its exact engine release,
-build products, model assets, and launch controls.
+marginal baseline is that exact incumbent stack, with its exact engine build
+products, model assets, and launch controls.
 
 The authoritative bracket is:
 

@@ -19,11 +19,10 @@ flowchart LR
     I["Finalized intake\nfetch, hash, copy disposition"]
     Q["Isolated referee\nrouting screen + resident adaptive qualification"]
     C["Crown\nreproduced evidence + attribution"]
-    R["Integration review\nbyte-bound source + tests"]
-    E["Signed Cacheon Engine release\nchain-independent artifact"]
-    S["Managed serving\npinned model and runtime"]
+    R["Integration, release, serving\nseparate authorities outside this repository"]
 
-    M --> I --> Q --> C --> R --> E --> S
+    M --> I --> Q --> C
+    C -. "never automatic" .-> R
     Q -->|"transactional target update"| Q
     C -. "reward projection" .-> W["Chain weights"]
     W -. "never enters serving" .-> E
@@ -46,12 +45,12 @@ Execution isolation does not imply whole-engine economic ownership. Conversely, 
 
 ## Architectural objects
 
-Four objects must remain distinct throughout the system:
+Two objects must remain distinct throughout the system:
 
 1. A **proposal** is hostile input: a target-scoped delta.
 2. A **crown** is retained evidence that the proposal improved one registered arena and target.
-3. An **integrated contribution** is reviewed Cacheon source that preserves the crowned selected payload and is bound to an immutable contribution identity.
-4. An **engine release** is a signed artifact containing the pinned runtime, reviewed stack, model identity, native artifacts, policy inputs, SBOM, and provenance.
+
+Integration into maintained source, release, and serving are separate authorities that this repository does not implement. A crown never ships by itself.
 
 See [Product model](product-model.md) for the authority and lifecycle of each object.
 
@@ -62,11 +61,11 @@ See [Product model](product-model.md) for the authority and lifecycle of each ob
 | Submission ABI | Stable typed replacement boundaries and validator-owned correctness contracts | [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py), [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py) |
 | Economic identity | Registered singleton and atomic targets, displacement, and conflict policy | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
 | Runtime integration | Version-pinned SGLang chokepoints, bootstrap, dispatch, and execution evidence | [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py), [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py), [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py) |
-| Stack identity | Content-addressed evaluation and release manifests, exact marginal substitutions, rollback | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py), [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) |
+| Stack identity | Content-addressed evaluation manifests, exact marginal substitutions, rollback | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py), [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) |
 | Engine construction | Deterministic source closure, namespacing, native build identity, isolated OCI execution | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py), [`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/engine_launch.py), [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py) |
 | Qualification | Registered routing-only resident screen; v7 resident B/C with conditional B′ or v8 two-process B/C/B′; eager audit; pristine T; retained evidence | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py), [`eval/resident_pair_crossover.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_pair_crossover.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py) |
 | Chain authority | Finalized ordering, immutable publication, state transitions, settlement, legacy V1 projection, and publication journals | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py), [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py), [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py) |
-| Integration | Integration review and model sealing | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py), [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py) |
+| Model provisioning | Model sealing and provisioning receipts | [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py) |
 
 ## Trust model
 
@@ -89,13 +88,12 @@ The slot boundary adds a second layer of defense: the validator allocates the ou
 
 ## Stack model
 
-The referee, the product, and the semantic reference use separate manifests:
+The referee and the semantic reference use separate manifests:
 
 - `EvaluationStackManifest` may name hostile crowned proposal artifacts and is valid only inside isolated evaluation.
-- `EngineReleaseManifest` accepts reviewed integrated contributions only and is the serving product identity.
 - `ReferenceManifest` names pristine validator-owned semantic authority used for untimed quality grading.
 
-All identities are canonical and content-addressed. A candidate arm is the incumbent evaluation stack with one registered target transition. A crown updates the evaluation stack transactionally; it does not mutate an engine release. See [Stacks and manifests](stacks.md).
+All identities are canonical and content-addressed. A candidate arm is the incumbent evaluation stack with one registered target transition. A crown updates the evaluation stack transactionally and nothing else. See [Stacks and manifests](stacks.md).
 
 ## Data plane scope
 
@@ -122,8 +120,7 @@ The authoritative path is:
 5. independent reproduction of the exact candidate identity with the required
    physical-lane role swap;
 6. evidence reopening, conservative settlement, and transactional stack update;
-7. journaled reward projection and weight publication;
-8. independent integration review and signed engine release.
+7. journaled reward projection and weight publication.
 
 `scan` and `verify` are contributor diagnostics. Matched A/B profiling on
 contributor-controlled hardware may test a performance mechanism, but none of these paths

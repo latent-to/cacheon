@@ -200,16 +200,15 @@ from the cross-arena catalog. Historical evaluation records embed their own
 catalog snapshots and are unaffected. The deployed M3 lane runs from its pinned
 source trees and is unaffected by repository-side retirement.
 
-The table records contracts, not deployment availability. As of 2026-08-30,
-three targets are unavailable in the MiniMax-M3 arena: `norm.rmsnorm`
-(GemmaRMSNorm outside the registered seam), `activation.silu_and_mul` (the
-model activates inside the MoE GEMM epilogue; the dense-layer swigluoai
-callsite is unpatched — measured never-called on 2026-08-23), and
-`moe.fused_experts_reduce` (sealed closed pending its full-engine
-outer-reduction proof). Their computation stays claimable inside open fused
-targets; closure keys on the submitted target name only. The miner-facing
-notice is
-[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+The table records contracts, not deployment availability. In the retired
+MiniMax-M3 arena three targets were unavailable: `norm.rmsnorm` (GemmaRMSNorm
+outside the registered seam), `activation.silu_and_mul` (the model activated
+inside the MoE GEMM epilogue; the dense-layer swigluoai callsite was unpatched,
+measured never-called on 2026-08-23), and `moe.fused_experts_reduce` (sealed
+closed pending a full-engine outer-reduction proof that was never produced).
+Their computation stayed claimable inside open fused targets; closure keys on
+the submitted target name only. The miner-facing notice is
+[Arena availability](../miner-guide/slots.md#arena-availability).
 
 The full GLM-5.3 arena instead registers exactly
 `moe.fused_routed_experts`, `linear.dense`, `norm.fused_add_rmsnorm`,
@@ -734,6 +733,52 @@ envelope can still be replayed within the bounded follower freshness window,
 and storage, gateway, push-secret, response-hotkey, signer-wallet, and host-root
 availability/custody remain deployment responsibilities.
 
+### Frozen surface snapshot (2026-09-05)
+
+`scripts/surface_snapshot.py --check` runs in the hygiene job and compares
+ten regenerated identity surfaces with `scripts/surface_baseline/`: CLI help
+texts, seam rows, the capability manifest, fresh-store DDL, catalog and
+bundle content digests, per-module exports and exception classes, digest
+domain literals, continuation-codec wire keys, and the empty-store
+settlement, burn-projection and standalone claim digests. It subsumes the
+golden consensus vectors test, whose cross-platform capture history stays
+in Git, and the docs checker now reads the CLI inventory from the frozen
+surface instead of its own source scan. The settled-lineage golden is not
+captured yet; its builders sit behind a pytest import in
+`tests/test_chain_intake.py`.
+
+### Retired the MiniMax-M3 model-side MoE seam (2026-09-05)
+
+The `moe_reduce` seam row bound `moe.fused_experts_reduce` to
+`MiniMaxM3MoE.forward_normal`, and its two-sided completion handshake (the
+model-side wrapper in `integrations/sglang_moe.py` and the reduce-owner marker
+protocol in `dispatch.py`) was the only model-specific code in the seam table.
+With the M3 arena formally retired, both sides were deleted together, along
+with the `requires` skip field on `SeamAdapter` that existed only for that
+row, the importerless `integrations/_by_value_function.py` helper, and the
+M3 availability notices in the miner guide. The `moe.fused_experts_reduce`
+contract stays registered in the catalog, since its bytes are part of every
+recorded catalog digest, but no arena binds it: a reduce-owning MoE kernel
+needs the serving model's outer reduction suppressed, and that hook belongs
+to the arena that registers the target. The change is inert on the GLM-5.3
+arena, whose registered set never included the target and whose seam-binding
+derivation is identical without the row; the deployed M3 lane runs from its
+own pinned source tree and is untouched.
+
+### Removed reviewed-release manifest lane (2026-09-05)
+
+On **2026-09-05** the reviewed-release manifest lane in `stack_manifest.py` —
+the engine release manifest, the release context, the integration review record
+and its artifact references, and the integrated contribution reference — was
+removed together with the integrated-source branches in the engine tree
+materializer, the stack planner, the marginal runtime, the sealed commission,
+and the closed source resolver. Nothing in the tree constructed a review record,
+no retained manifest ever carried an integrated entry, and the signed release
+product those types fed had already been removed on 2026-08-19. The closed
+source resolver keeps its two-argument call shape and its recorded digest bytes
+because the sealed qualification packets construct it; the second argument must
+now be empty and goes when the packet template stops passing it.
+
 ### Removed discovery lane (2026-08-19)
 
 On **2026-08-19** the fenced discovery lane — the separate discovery proposal
@@ -761,15 +806,21 @@ The design intent is retained (a bounded post-activation claim paid down over
 confirmed epochs) and the complete implementation is recoverable from Git
 history at [`dc158fb4`](https://github.com/latent-to/cacheon/commit/dc158fb4).
 
-Two durable-compatibility artifacts remain in the tree:
-
-- [`chain/reserved_schema.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
-  preserves the schema-4/5/6 migrations and V2 table DDL verbatim, so every
-  existing intake database keeps validating and fresh databases keep
-  producing byte-identical schemas; and
-- the shared-weight offer wire schema keeps its `lane`/`debt_binding` fields
-  with `lane` restricted to `legacy_v1` and any debt-lane payload rejected,
-  so historical stored offers reopen byte-identically.
+One durable-compatibility artifact remains in the tree: the shared-weight
+offer wire schema keeps its `lane`/`debt_binding` fields with `lane`
+restricted to `legacy_v1` and any debt-lane payload rejected, so historical
+stored offers reopen byte-identically. The reserved schema-4/5/6 migrations
+and V2 table DDL were retired on **2026-09-05**: no reader of those tables
+existed anywhere in the tree. Intake keeps accepting metadata stamps 3 through
+6, so a database created before that date opens unchanged with its 108 V2
+objects untouched (16 tables, 32 triggers, 5 named indexes and 55 automatic
+primary-key indexes; never dropped), while a fresh database now holds 68
+schema objects at stamp 3 instead of 176 at stamp 5. A validator archive
+records whichever shape it captured: archives of existing databases are
+byte-identical to before, and an archive of a fresh database now carries stamp
+3 and 16 fewer table counts. A stamp-3 database later opened by a controller
+built before this date gains the V2 objects and stamp 5; both shapes open under
+either build.
 
 Reintroducing V2 is a new reviewed change, not a revert switch.
 
@@ -1126,11 +1177,12 @@ a consensus break or an unreviewed identity epoch, never a routine
 refresh.
 
 These behaviors are retained as standing tests
-(`tests/test_cli_examples_e2e.py`, `tests/test_oci_live_container.py`,
-`tests/test_golden_consensus_vectors.py`) that activate by capability
-probe — CUDA device count and a usable container daemon — and skip
-cleanly elsewhere, so hosted CI keeps the CPU, containment, and golden
-tiers while the GPU tiers re-arm on any future validator host.
+(`tests/test_cli_examples_e2e.py`, `tests/test_oci_live_container.py`)
+that activate by capability probe — CUDA device count and a usable
+container daemon — and skip cleanly elsewhere, so hosted CI keeps the CPU
+and containment tiers while the GPU tiers re-arm on any future validator
+host. The golden vectors moved into
+`scripts/surface_baseline/content_hashes.json` on 2026-09-05.
 
 The live activation demonstration is additionally codified as a
 repeatable, strictly opt-in tier (`tests/test_seam_activation_live.py`):
@@ -1240,4 +1292,3 @@ in for that proof.
 - [Audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 - [Settlement](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
 - [Legacy publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
-- [Reserved V2 schema](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)

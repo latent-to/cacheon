@@ -305,21 +305,6 @@ was extracted from the tree on 2026-08-09; see
 [Emissions policy](../reference/emissions-policy.md) for the retained design
 intent and the reserved durable schema.
 
-## 10. Commission release operations independently
-
-If this validator also operates the release plane, prove that an active crown can be
-reopened, reviewed source can be promoted into an integrated contribution, a model tree
-can be sealed, and an existing signed release can be verified against an externally
-pinned public key. Release construction, signing, registry publication, and serving-host
-launch are reviewed programmatic deployment APIs, not public CLI commands.
-
-Do not call the validator commissioned merely because unit and slice tests pass. The
-serving plane requires the complete publication checklist: clean-wheel
-closure, provider-specific native proof, builder-authenticated reproducible OCI outputs,
-closed effective serving policy, serving at the approved topology, and bound serve
-receipts. The evaluation plane separately requires a reviewed production
-`ArenaServiceProvider`; neither boundary is supplied by passing the library test suite.
-
 ## Production-readiness checklist
 
 Before enabling full validation, an operator still needs to supply and review:

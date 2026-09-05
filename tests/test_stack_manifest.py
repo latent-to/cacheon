@@ -7,7 +7,6 @@ from dataclasses import replace
 
 import pytest
 
-from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.stack_identity import (
     StackIdentityError,
     canonical_digest,
@@ -16,14 +15,9 @@ from cacheon.stack_identity import (
     sha256_hex,
 )
 from cacheon.stack_manifest import (
-    EngineReleaseManifest,
     EvaluationStackContext,
     EvaluationStackManifest,
-    IntegratedContributionRef,
-    IntegrationReviewArtifacts,
-    IntegrationReviewRecord,
     ProposalContributionRef,
-    ReleaseStackContext,
     StackManifestError,
     contribution_ref_from_dict,
 )
@@ -31,12 +25,6 @@ from cacheon.stack_manifest import (
 
 def _d(char: str) -> str:
     return char * 64
-
-
-def _evidence(domain: str, digest: str) -> EvidenceArtifactRef:
-    return EvidenceArtifactRef(
-        domain, digest, 1, "application/json", f"cacheon.{domain}.v1"
-    )
 
 
 TARGET_A = "attention.msa_prefill_block_score"
@@ -84,25 +72,6 @@ def _proposal(
         artifact_digest=artifact,
         selected_payload_digest=selected,
         attribution_digest=attribution,
-    )
-
-
-def _integrated(
-    target: str = TARGET_B,
-    *,
-    spec: str = SPEC_B,
-    source: str = _d("6"),
-    selected: str = _d("7"),
-    attribution: str = _d("8"),
-    integration: str = _d("9"),
-) -> IntegratedContributionRef:
-    return IntegratedContributionRef(
-        target_id=target,
-        target_spec_digest=spec,
-        integrated_source_tree_digest=source,
-        selected_payload_digest=selected,
-        attribution_digest=attribution,
-        integration_record_digest=integration,
     )
 
 
@@ -180,33 +149,19 @@ def test_contribution_identities_keep_artifact_selected_and_attribution_separate
     assert reattributed.selected_delta_digest == base.selected_delta_digest
     assert changed_payload.selected_delta_digest != base.selected_delta_digest
 
-    reviewed = _integrated(
-        target=base.target_id,
-        spec=base.target_spec_digest,
-        selected=base.selected_payload_digest,
-    )
-    assert reviewed.selected_delta_digest == base.selected_delta_digest
-    assert reviewed.digest != base.digest
 
-
-def test_contribution_parsing_is_discriminated_and_rejects_cross_type_fields() -> None:
+def test_contribution_parsing_is_discriminated_and_rejects_foreign_fields() -> None:
     proposal = _proposal()
-    integrated = _integrated()
     assert contribution_ref_from_dict(proposal.to_dict()) == proposal
-    assert contribution_ref_from_dict(integrated.to_dict()) == integrated
 
-    proposal_with_integration = {
+    proposal_with_extra_field = {
         **proposal.to_dict(),
         "integration_record_digest": _d("a"),
     }
-    integrated_with_artifact = {
-        **integrated.to_dict(),
-        "artifact_digest": _d("b"),
-    }
     with pytest.raises(StackManifestError, match="fields mismatch"):
-        contribution_ref_from_dict(proposal_with_integration)
-    with pytest.raises(StackManifestError, match="fields mismatch"):
-        contribution_ref_from_dict(integrated_with_artifact)
+        contribution_ref_from_dict(proposal_with_extra_field)
+    with pytest.raises(StackManifestError, match="requires type"):
+        contribution_ref_from_dict({**proposal.to_dict(), "type": "integrated"})
     with pytest.raises(StackManifestError, match="requires type"):
         contribution_ref_from_dict({"target_id": TARGET_A})
 
@@ -239,16 +194,16 @@ def test_proposal_ref_rejects_every_malformed_identity(field: str, value: object
 
 def test_evaluation_manifest_is_canonical_immutable_and_round_trips() -> None:
     proposal = _proposal()
-    integrated = _integrated()
-    left = _eval(entries=[(TARGET_B, integrated), (TARGET_A, proposal)])
-    right = _eval(entries={TARGET_A: proposal, TARGET_B: integrated})
+    second = _proposal(TARGET_B, spec=SPEC_B)
+    left = _eval(entries=[(TARGET_B, second), (TARGET_A, proposal)])
+    right = _eval(entries={TARGET_A: proposal, TARGET_B: second})
 
     assert left == right
     assert left.digest == right.digest
     assert list(left.entries) == sorted((TARGET_A, TARGET_B))
 
     with pytest.raises(TypeError):
-        left.entries[TARGET_A] = integrated  # type: ignore[index]
+        left.entries[TARGET_A] = second  # type: ignore[index]
     detached = left.catalog_snapshot
     detached["targets"] = []
     assert left.catalog_snapshot["targets"]
@@ -258,7 +213,7 @@ def test_stock_only_manifest_and_pure_replacement() -> None:
     incumbent = _eval()
     first = incumbent.with_contribution(_proposal())
     second = first.with_contribution(
-        _integrated(target=TARGET_B), remove=(TARGET_A,)
+        _proposal(TARGET_B, spec=SPEC_B), remove=(TARGET_A,)
     )
 
     assert not incumbent.entries
@@ -339,156 +294,6 @@ def test_structural_parse_is_context_free_then_expected_context_authorizes() -> 
 
     current = _eval(entries={TARGET_A: _proposal()})
     assert current.validate_against(_eval_context()) is None
-
-
-def test_release_is_integrated_only_round_trips_and_has_no_arena() -> None:
-    snapshot = _catalog()
-    integrated = _integrated()
-    release = EngineReleaseManifest(
-        runtime_digest=_d("a"),
-        base_engine_digest=_d("b"),
-        catalog_snapshot=snapshot,
-        catalog_digest=_catalog_digest(snapshot),
-        entries={TARGET_B: integrated},
-    )
-    context = ReleaseStackContext(
-        runtime_digest=_d("a"),
-        base_engine_digest=_d("b"),
-        catalog_snapshot=snapshot,
-        catalog_digest=_catalog_digest(snapshot),
-        target_spec_digests={TARGET_A: SPEC_A, TARGET_B: SPEC_B},
-    )
-
-    assert "arena_digest" not in release.to_dict()
-    assert not hasattr(release, "with_contribution")
-    assert EngineReleaseManifest.from_dict(release.to_dict()) == release
-    assert release.validate_against(context) is None
-
-    with pytest.raises(StackManifestError, match="integrated contributions only"):
-        EngineReleaseManifest(
-            runtime_digest=_d("a"),
-            base_engine_digest=_d("b"),
-            catalog_snapshot=snapshot,
-            catalog_digest=_catalog_digest(snapshot),
-            entries={TARGET_A: _proposal()},  # type: ignore[dict-item]
-        )
-
-
-def test_integration_review_is_exact_reproduced_and_authorizes_one_ref() -> None:
-    record = IntegrationReviewRecord(
-        target_id=TARGET_B,
-        target_spec_digest=SPEC_B,
-        proposal_contribution_digest=_d("1"),
-        settlement_candidate_digest=_d("e"),
-        settlement_evidence_digest=_d("f"),
-        crown_event_digest=_d("2"),
-        primary_attempt_digest=_d("3"),
-        reproduction_attempt_digest=_d("4"),
-        integrated_source_tree_digest=_d("5"),
-        selected_payload_digest=_d("6"),
-        attribution_digest=_d("7"),
-        license_evidence_digest=_d("8"),
-        provenance_evidence_digest=_d("9"),
-        security_review_digest=_d("a"),
-        compatibility_evidence_digest=_d("b"),
-        test_evidence_digest=_d("c"),
-        artifacts=IntegrationReviewArtifacts(
-            _evidence("qualification.cohort-attempt", _d("3")),
-            _evidence("qualification.cohort-attempt", _d("4")),
-            _evidence("integration.license", _d("8")),
-            _evidence("integration.provenance", _d("9")),
-            _evidence("integration.security-review", _d("a")),
-            _evidence("integration.compatibility", _d("b")),
-            _evidence("integration.tests", _d("c")),
-        ),
-        reviewer="release-reviewer",
-        review_commit="d" * 40,
-    )
-    ref = record.integrated_ref()
-    assert IntegrationReviewRecord.from_dict(record.to_dict()) == record
-    assert ref.integration_record_digest == record.digest
-    record.require_ref(ref)
-    with pytest.raises(StackManifestError, match="wrong domain/schema"):
-        replace(
-            record.artifacts,
-            license_evidence_ref=_evidence("integration.tests", _d("f")),
-        )
-    with pytest.raises(StackManifestError, match="pairwise distinct"):
-        replace(
-            record.artifacts,
-            test_evidence_ref=_evidence(
-                "integration.tests",
-                record.artifacts.license_evidence_ref.sha256,
-            ),
-        )
-
-    snapshot = _catalog()
-    release = EngineReleaseManifest(
-        runtime_digest=_d("d"),
-        base_engine_digest=_d("e"),
-        catalog_snapshot=snapshot,
-        catalog_digest=_catalog_digest(snapshot),
-        entries={TARGET_B: ref},
-    )
-    release.validate_integrations({TARGET_B: record})
-    with pytest.raises(StackManifestError, match="coverage"):
-        release.validate_integrations({})
-    with pytest.raises(StackManifestError, match="independent attempts"):
-        replace(record, reproduction_attempt_digest=record.primary_attempt_digest)
-    with pytest.raises(StackManifestError, match="differs"):
-        release.validate_integrations(
-            {TARGET_B: replace(record, security_review_digest=_d("f"))}
-        )
-    hostile = release.to_dict()
-    hostile["entries"] = {TARGET_A: _proposal().to_dict()}
-    with pytest.raises(StackManifestError, match="integrated contributions only"):
-        EngineReleaseManifest.from_dict(hostile)
-
-
-def test_release_context_rejects_runtime_base_catalog_and_target_spec() -> None:
-    snapshot = _catalog()
-    release = EngineReleaseManifest(
-        runtime_digest=_d("a"),
-        base_engine_digest=_d("b"),
-        catalog_snapshot=snapshot,
-        catalog_digest=_catalog_digest(snapshot),
-        entries={TARGET_B: _integrated()},
-    )
-
-    for context in (
-        ReleaseStackContext(
-            runtime_digest=_d("c"),
-            base_engine_digest=_d("b"),
-            catalog_snapshot=snapshot,
-            catalog_digest=_catalog_digest(snapshot),
-            target_spec_digests={TARGET_A: SPEC_A, TARGET_B: SPEC_B},
-        ),
-        ReleaseStackContext(
-            runtime_digest=_d("a"),
-            base_engine_digest=_d("c"),
-            catalog_snapshot=snapshot,
-            catalog_digest=_catalog_digest(snapshot),
-            target_spec_digests={TARGET_A: SPEC_A, TARGET_B: SPEC_B},
-        ),
-        ReleaseStackContext(
-            runtime_digest=_d("a"),
-            base_engine_digest=_d("b"),
-            catalog_snapshot=_catalog(marker="stale"),
-            catalog_digest=_catalog_digest(_catalog(marker="stale")),
-            target_spec_digests=_catalog_specs(_catalog(marker="stale")),
-        ),
-    ):
-        with pytest.raises(StackManifestError):
-            release.validate_against(context)
-
-    with pytest.raises(StackManifestError, match="complete catalog_snapshot"):
-        ReleaseStackContext(
-            runtime_digest=_d("a"),
-            base_engine_digest=_d("b"),
-            catalog_snapshot=snapshot,
-            catalog_digest=_catalog_digest(snapshot),
-            target_spec_digests={TARGET_A: SPEC_A, TARGET_B: _d("c")},
-        )
 
 
 def test_import_surface_is_stdlib_only_and_does_not_require_bittensor_or_torch() -> None:

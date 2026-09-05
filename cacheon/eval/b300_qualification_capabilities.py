@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from cacheon.engine_tree import EngineTreeError, integrated_source_tree_digest
+from cacheon.engine_tree import EngineTreeError, source_tree_digest
 from cacheon.eval.b300_registered_qualification_inputs import B300FocusedGraphFacts
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.qualification import (
@@ -536,7 +536,7 @@ def _source_tree(path_value: object) -> tuple[Path, str, tuple[int, int]]:
             raise B300QualificationCapabilityError(
                 "contribution source must be a canonical nonsymlink directory"
             )
-        tree_digest = integrated_source_tree_digest(path)
+        tree_digest = source_tree_digest(path)
         after = path.lstat()
     except B300QualificationCapabilityError:
         raise
@@ -564,16 +564,20 @@ class ClosedContributionSourceResolver:
     ) -> None:
         if not isinstance(proposal_sources, Mapping) or not isinstance(integrated_sources, Mapping):
             raise B300QualificationCapabilityError("resolver mappings are not explicit mappings")
-        if set(proposal_sources) & set(integrated_sources):
+        # The sealed qualification packets construct this resolver with a second,
+        # always-empty mapping from the retired reviewed-release lane. The
+        # parameter and the empty "integrated" digest row stay so the deployed
+        # packet keeps its call shape and its recorded source_resolver_digest;
+        # drop both when the packet template stops passing the argument.
+        if integrated_sources:
             raise B300QualificationCapabilityError(
-                "proposal and integrated resolver identities are ambiguous"
+                "integrated contribution sources are not a resolvable kind"
             )
         self._proposal = self._snapshots(proposal_sources, field="proposal")
-        self._integrated = self._snapshots(integrated_sources, field="integrated")
         self.digest = canonical_digest(
             RESOLVER_SCHEMA,
             {
-                "integrated": [row.identity_data("integrated") for row in self._integrated.values()],
+                "integrated": [],
                 "policy": "closed-explicit-mappings",
                 "proposal": [row.identity_data("proposal") for row in self._proposal.values()],
             },
@@ -613,9 +617,6 @@ class ClosedContributionSourceResolver:
 
     def resolve_proposal(self, artifact_digest: str) -> Path:
         return self._resolve(self._proposal, artifact_digest, "proposal")
-
-    def resolve_integrated(self, source_tree_digest: str) -> Path:
-        return self._resolve(self._integrated, source_tree_digest, "integrated")
 
 
 @dataclass(frozen=True)

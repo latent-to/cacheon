@@ -106,10 +106,9 @@ Copy the printed content hash and the public HTTPS URL. Set `URL` to that
 exact URL. Bucket variables, CDN origins, and fetch limits are under
 [Publish from the miner's object store](#publish-from-the-miners-object-store).
 
-!!! warning "Unavailable MiniMax-M3 target"
-    Do not pay for or submit `norm.rmsnorm`: MiniMax-M3 uses `GemmaRMSNorm`,
-    outside its registered seam. See
-    [Current MiniMax-M3 availability](slots.md#current-minimax-m3-availability).
+!!! warning "Check the arena's registered targets"
+    A registered slot can be absent from the current arena. See
+    [Arena availability](slots.md#arena-availability) before paying.
 
 ### 4. Dry-run the unpaid payload
 

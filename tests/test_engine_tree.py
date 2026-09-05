@@ -15,26 +15,20 @@ import pytest
 import cacheon.engine_tree as engine_tree
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
-from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.engine_tree import (
     EngineTreeError,
     inspect_contribution,
-    integrated_source_tree_digest,
+    source_tree_digest,
     materialize_engine_tree,
     reopen_materialized_engine_tree,
 )
 from cacheon.manifest import load_manifest
 from cacheon.sandbox import load_module
 from cacheon.stack_manifest import (
-    EngineReleaseManifest,
     EvaluationStackContext,
     EvaluationStackManifest,
-    IntegrationReviewRecord,
-    IntegrationReviewArtifacts,
-    IntegratedContributionRef,
     ProposalContributionRef,
-    ReleaseStackContext,
 )
 from cacheon.stack_plan import RollbackPlan, plan_candidate_stack, plan_marginal_arm
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
@@ -52,12 +46,6 @@ def _digest(label: str) -> str:
 
 def _audit_policy(label: str, slots: tuple[str, ...]) -> SlotAuditPolicy:
     return SlotAuditPolicy(_digest(f"audit-seed:{label}")[:32], 100_000, 32, slots, 1)
-
-
-def _evidence(domain: str, digest: str) -> EvidenceArtifactRef:
-    return EvidenceArtifactRef(
-        domain, digest, 1, "application/json", f"cacheon.{domain}.v1"
-    )
 
 
 def _spec_digests(catalog: TargetCatalog) -> dict[str, str]:
@@ -91,18 +79,8 @@ def _proposal_ref(source: Path, catalog: TargetCatalog) -> ProposalContributionR
     )
 
 
-def _sources(
-    *rows: tuple[ProposalContributionRef | IntegratedContributionRef, Path]
-) -> dict[tuple[str, str], Path]:
-    result: dict[tuple[str, str], Path] = {}
-    for ref, source in rows:
-        key = (
-            ("proposal", ref.artifact_digest)
-            if isinstance(ref, ProposalContributionRef)
-            else ("integrated", ref.integrated_source_tree_digest)
-        )
-        result[key] = source
-    return result
+def _sources(*rows: tuple[ProposalContributionRef, Path]) -> dict[tuple[str, str], Path]:
+    return {("proposal", ref.artifact_digest): source for ref, source in rows}
 
 
 def _evaluation_stack(
@@ -494,94 +472,6 @@ def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
             if name.startswith(("cacheon_c_", "cacheon_kernel_cacheon_c_")):
                 sys.modules.pop(name, None)
 
-
-def test_integrated_release_revalidates_reviewed_source(tmp_path: Path) -> None:
-    catalog = default_target_catalog()
-    inspected = inspect_contribution(SINGLETON, catalog=catalog)
-    record = IntegrationReviewRecord(
-        target_id=inspected.target_id,
-        target_spec_digest=inspected.target_spec_digest,
-        proposal_contribution_digest=_digest("proposal"),
-        settlement_candidate_digest=_digest("candidate"),
-        settlement_evidence_digest=_digest("settlement-evidence"),
-        crown_event_digest=_digest("crown"),
-        primary_attempt_digest=_digest("primary"),
-        reproduction_attempt_digest=_digest("reproduction"),
-        integrated_source_tree_digest=integrated_source_tree_digest(SINGLETON),
-        selected_payload_digest=inspected.selected_payload_digest,
-        attribution_digest=_digest("attribution"),
-        license_evidence_digest=_digest("license"),
-        provenance_evidence_digest=_digest("provenance"),
-        security_review_digest=_digest("security"),
-        compatibility_evidence_digest=_digest("compatibility"),
-        test_evidence_digest=_digest("tests"),
-        artifacts=IntegrationReviewArtifacts(
-            _evidence("qualification.cohort-attempt", _digest("primary")),
-            _evidence("qualification.cohort-attempt", _digest("reproduction")),
-            _evidence("integration.license", _digest("license")),
-            _evidence("integration.provenance", _digest("provenance")),
-            _evidence("integration.security-review", _digest("security")),
-            _evidence("integration.compatibility", _digest("compatibility")),
-            _evidence("integration.tests", _digest("tests")),
-        ),
-        reviewer="cacheon-test-reviewer",
-        review_commit="a" * 40,
-    )
-    ref = record.integrated_ref()
-    context = ReleaseStackContext(
-        runtime_digest=_digest("runtime"),
-        base_engine_digest=_digest("base"),
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        target_spec_digests=_spec_digests(catalog),
-    )
-    release = EngineReleaseManifest(
-        runtime_digest=context.runtime_digest,
-        base_engine_digest=context.base_engine_digest,
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        entries={ref.target_id: ref},
-    )
-
-    result = _materialize(
-        release,
-        context,
-        catalog,
-        _sources((ref, SINGLETON)),
-        tmp_path / "release",
-        integration_records={record.target_id: record},
-    )
-    assert result.stack_digest == release.digest
-
-    padded = _copy(tmp_path, name="padded")
-    (padded / "padding.txt").write_text("reviewed source changed\n")
-    with pytest.raises(EngineTreeError, match="integrated source digest mismatch"):
-        _materialize(
-            release,
-            context,
-            catalog,
-            _sources((ref, padded)),
-            tmp_path / "wrong-source",
-            integration_records={record.target_id: record},
-        )
-
-    wrong_payload = replace(ref, selected_payload_digest=_digest("wrong-payload"))
-    wrong_release = EngineReleaseManifest(
-        runtime_digest=context.runtime_digest,
-        base_engine_digest=context.base_engine_digest,
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        entries={wrong_payload.target_id: wrong_payload},
-    )
-    with pytest.raises(EngineTreeError, match="integration authority is invalid"):
-        _materialize(
-            wrong_release,
-            context,
-            catalog,
-            _sources((wrong_payload, SINGLETON)),
-            tmp_path / "wrong-payload",
-            integration_records={record.target_id: record},
-        )
 
 def test_inert_padding_changes_artifact_not_selected_payload(tmp_path: Path) -> None:
     padded = _copy(tmp_path, name="padded")
@@ -987,7 +877,7 @@ def test_materialization_is_location_mode_and_umask_independent(tmp_path: Path) 
     shutil.copytree(SINGLETON, right)
     os.chmod(left / "kernels" / "blockscore.py", 0o600)
     os.chmod(right / "kernels" / "blockscore.py", 0o755)
-    assert integrated_source_tree_digest(left) == integrated_source_tree_digest(right)
+    assert source_tree_digest(left) == source_tree_digest(right)
 
     catalog = default_target_catalog()
     context = _evaluation_context(catalog)

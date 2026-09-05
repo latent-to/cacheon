@@ -61,9 +61,10 @@ product. The MoE and collective families use this to keep every version-pinned
 chokepoint under one validator-selected gate.
 
 The catalog can contain a verified slot before the pinned runtime exposes a safe
-live chokepoint. `norm.rmsnorm` remains such a case because MiniMax-M3 uses
-`GemmaRMSNorm`, not the registered `RMSNorm.forward_cuda`. See
-[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+live chokepoint, and a model can bypass a registered chokepoint entirely: a model
+that normalizes through `GemmaRMSNorm` never reaches the registered
+`RMSNorm.forward_cuda`. See
+[Arena availability](../miner-guide/slots.md#arena-availability).
 
 `resident_swap` is deliberately outside the crown path. It is inert unless the
 validator supplies `CACHEON_RESIDENT_SWAP` to a persistent screening engine. The

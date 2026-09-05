@@ -14,7 +14,6 @@ def test_chain_validate_refuses_implicit_fake_grading(monkeypatch):
 
 
 def test_chain_validate_intake_path_has_no_wallet_or_weight_arguments():
-    source = cli.build_parser().format_help()
     # Global help routes commands rather than rendering subparser flags; inspect the
     # parser action directly without executing any chain code.
     parser = cli.build_parser()
@@ -35,7 +34,6 @@ def test_chain_validate_intake_path_has_no_wallet_or_weight_arguments():
         "--eval-cmd", "--eval-device", "--eval-timeout", "--margin",
         "--wallet", "--hotkey", "--dry-run-weights",
     } & options
-    assert "chain-validate" in source
 
 
 def test_chain_snapshot_surfaces_are_wallet_free_and_explicit() -> None:

@@ -25,8 +25,7 @@ from typing import Optional
 # 0.5.18 (CUDA 13). This is the GLM-5.3 branch's source compatibility target.
 # The exact release source and served GLM image were inspected on 2026-08-30;
 # runtime seam activation, broken/faithful controls, and arena rebaseline remain
-# pending. The deployed MiniMax-M3 packet binds its own source-built runtime and
-# is not rewritten by this repository default.
+# pending.
 PINNED_SGLANG = "0.5.18"
 
 
@@ -80,28 +79,10 @@ def run_checks() -> list[Check]:
     # a seam to that table auto-adds this canary (no separate edit here). The bespoke
     # signature checks below enrich these for the known seams.
     import importlib
-    import importlib.util
 
     from cacheon.seams import SEAM_ADAPTERS
 
-    def _requires_present(name: str) -> bool:
-        # find_spec on a DOTTED name imports the parent packages, so a missing parent
-        # RAISES (ModuleNotFoundError) instead of returning None — only top-level names
-        # degrade gracefully. A dotted `requires` (e.g. the M3-only minimax_sparse_ops
-        # subpackage) must mean SKIP on boxes without the parent, not a canary crash.
-        try:
-            return importlib.util.find_spec(name) is not None
-        except ModuleNotFoundError:
-            return False
-
     for adapter in SEAM_ADAPTERS:
-        if adapter.requires is not None and not _requires_present(adapter.requires):
-            # Row not assessable here (e.g. flashinfer only exists on engine boxes).
-            # SKIP-as-ok so dev/intake boxes stay green; the pinned engine env — the
-            # place a chokepoint break actually matters — always has the package.
-            add(f"seam table: {adapter.name} ({adapter.chokepoint})", True,
-                f"SKIP: {adapter.requires} not installed on this box")
-            continue
         try:
             mod = importlib.import_module(adapter.target_module)
             ok = _chokepoint_present(mod, adapter.chokepoint)
