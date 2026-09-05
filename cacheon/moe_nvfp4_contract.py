@@ -14,6 +14,7 @@ from cacheon_kernels import codec
 NVFP4_PREPARE_TAG = "nvfp4_layer"
 NVFP4_GATE_UP_LAYOUT = "gate_up"
 NVFP4_INTERLEAVED_LAYOUT = "up_gate_interleaved_64+sf_swizzled_128x4"
+NVFP4_TRTLLM_LAYOUT = "trtllm_fp4_shuffled"
 _NVFP4_TENSORS = (
     "w13_weight", "w2_weight", "w13_blockscale_swizzled",
     "w2_blockscale_swizzled", "g1_scale_c", "g1_alphas", "g2_alphas",
@@ -111,10 +112,11 @@ def _value(source: object, name: str) -> Any:
 
 
 def _context(source: object, name: str, default: object) -> object:
-    key = f"__moe_{name}__"
     if isinstance(source, Mapping):
-        return source.get(key, default)
+        return source.get(f"__moe_{name}__", default)
     attr = f"moe_{name}" if name in {"tp_size", "ep_size", "ep_rank"} else name
+    if name == "activation":
+        source = getattr(source, "moe_runner_config", source)
     return getattr(source, attr, default)
 
 
@@ -157,7 +159,7 @@ def _layer_view(
         top_k = int(_value(source, "top_k"))
     tp_size = int(_context(source, "tp_size", 1))
     fused_shared = int(_context(source, "num_fused_shared_experts", 0))
-    view = SimpleNamespace(
+    return SimpleNamespace(
         w13_weight=w13, w2_weight=w2,
         w13_weight_scale=w13_sf, w2_weight_scale=w2_sf,
         w13_blockscale_swizzled=w13_sf, w2_blockscale_swizzled=w2_sf,
@@ -178,14 +180,11 @@ def _layer_view(
             is_gated=True, num_experts=experts, top_k=top_k,
             hidden_size=int(w13.shape[-1]) * 2,
             intermediate_size_per_partition=intermediate,
-            # A MODEL fact, carried by the arena profile through the verification
-            # inputs (__moe_activation__). The swigluoai default preserves the
-            # live-layer path on M3, where sglang's own runner config is authoritative.
+            # Verification supplies model facts; live layers use their runner config.
             activation=str(_context(source, "activation", "swigluoai")),
             num_fused_shared_experts=fused_shared,
         ),
     )
-    return view
 
 
 def prepare_args_from_layer(layer: object) -> tuple[object, ...]:
@@ -199,16 +198,17 @@ def prepare_args_from_layer(layer: object) -> tuple[object, ...]:
         return w13, _value(layer, "w2_weight")
     if not supports_layer(layer):
         raise ValueError("NVFP4 MoE layer is outside the canonical weight contract")
-    view = _layer_view(
+    if getattr(getattr(layer, "quant_method", None), "enable_flashinfer_trtllm_moe", False):
+        layout = NVFP4_TRTLLM_LAYOUT
+    elif getattr(layer, "w13_blockscale_mma", None) is not None:
+        layout = NVFP4_INTERLEAVED_LAYOUT
+    else:
+        layout = NVFP4_GATE_UP_LAYOUT
+    return NVFP4_PREPARE_TAG, _layer_view(
         layer,
-        layout=(
-            NVFP4_INTERLEAVED_LAYOUT
-            if getattr(layer, "w13_blockscale_mma", None) is not None
-            else NVFP4_GATE_UP_LAYOUT
-        ),
+        layout=layout,
         scale_names=("w13_blockscale_swizzled", "w2_blockscale_swizzled"),
     )
-    return NVFP4_PREPARE_TAG, view
 
 
 def prepare_args_from_inputs(inputs: Mapping[str, object]) -> tuple[object, ...]:

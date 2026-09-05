@@ -49,8 +49,9 @@ lanes. KV-cache, radix, batching, and speculative policy remain engine-owned.
 Sealed profiles replace generic shapes with local `6/32/4096`, TP-gathered
 `24/128/16384`, prefill all-reduce `(16384, 6144)`, and decode DP-exchange
 `(6, 6144)/(32, 6144)`. Dense also binds dimensions, role, and local TP.
-Routed MoE uses bounded exact-geometry probes; mixed-cell qualification covers
-its full prefill path.
+Routed MoE includes the 16,384-token prefill shape; its untimed reference groups
+tokens by expert without duplicating weights. Mixed-cell qualification remains
+the full-model quality and performance gate.
 
 ## Current MiniMax-M3 availability
 

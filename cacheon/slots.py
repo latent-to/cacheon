@@ -351,18 +351,16 @@ def _moe_reference(x, w13, w2, topk_ids, topk_weights, act: Activation = _SILU):
     # x:(M,H) w13:(E,2I,H)[gate;up] w2:(E,H,I) topk_ids:(M,K) topk_weights:(M,K) -> (M,H)
     M, H = x.shape
     I = w13.shape[1] // 2
-    K = topk_ids.shape[1]
     x32 = x.float()
     out = torch.zeros(M, H, device=x.device, dtype=torch.float32)
-    for k in range(K):
-        e = topk_ids[:, k].long()
-        wk = topk_weights[:, k].float()
-        w13_e = w13[e].float()                          # (M,2I,H)
-        w2_e = w2[e].float()                            # (M,H,I)
-        fc1 = torch.einsum("mh,mih->mi", x32, w13_e)    # (M,2I)
-        gate, up = fc1[:, :I], fc1[:, I:]
-        act_out = _gated_activation(gate, up, act)      # (M,I)
-        out += wk[:, None] * torch.einsum("mi,mhi->mh", act_out, w2_e)
+    # This untimed oracle groups tokens, never replicates expert weights per token.
+    for expert in range(w13.shape[0]):
+        tokens, choices = torch.where(topk_ids == expert)
+        if not tokens.numel():
+            continue
+        gate, up = (x32[tokens] @ w13[expert].float().T).split(I, dim=-1)
+        values = _gated_activation(gate, up, act) @ w2[expert].float().T
+        out.index_add_(0, tokens, topk_weights[tokens, choices].float()[:, None] * values)
     return out
 
 

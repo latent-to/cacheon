@@ -60,6 +60,9 @@ def test_glm53_registered_profiles_cover_the_measured_call_regimes():
         (16384, 6144),
     }
     assert {s["num_tokens"] for s in dense} >= {6, 24, 32, 128, 4096, 16384}
+    assert {s["num_tokens"] for s in profiles["moe.fused_routed_experts"]} == {
+        1, 8, 24, 32, 128, 16384,
+    }
 
 
 def test_slot_for_model_glm53_correctness_is_calibrated_cosine():

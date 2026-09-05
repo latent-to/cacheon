@@ -159,12 +159,9 @@ _GLM53_MOE_NVFP4_PROFILE = SlotProfile(
     # moe_intermediate 2048 -> 512/rank; shared experts remain separate.
     correctness=Correctness("cosine", min_cosine=0.985, max_rel_norm_err=0.05),
     quant="nvfp4",
-    shapes=(
-        {"num_tokens": 1, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
-        {"num_tokens": 8, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
-        {"num_tokens": 24, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
-        {"num_tokens": 32, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
-        {"num_tokens": 128, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8},
+    shapes=tuple(
+        {"num_tokens": tokens, "num_experts": 256, "hidden": 6144, "inter": 512, "topk": 8}
+        for tokens in (1, 8, 24, 32, 128, 16384)
     ),
     num_fused_shared_experts=0,
     routed_weight_scale=2.5,

@@ -238,7 +238,9 @@ rejects the bundle rather than inventing priority.
 This matters because variant selection is a semantic decision, not a source-order
 convenience. If two rows match the same call, the validator cannot know which selected
 delta was measured or which implementation would later serve. Conversely, a gap is
-allowed: the trusted incumbent remains the fallback outside all candidate domains.
+allowed: the stock slot implementation runs outside all candidate domains. A new
+contribution replaces the prior contribution to that target as a whole; preserving
+its optimized behavior in another shape domain requires including it in the bundle.
 
 ## What the content hash binds
 

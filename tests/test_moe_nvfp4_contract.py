@@ -29,6 +29,28 @@ WEIGHT_FIELDS = (
 )
 
 
+@pytest.mark.parametrize("kind", ("silu", "swigluoai"))
+def test_expert_grouped_reference_preserves_duplicate_routes_and_raw_weights(kind):
+    generator = torch.Generator().manual_seed(19)
+    x, w13, w2 = (torch.randn(*s, generator=generator) * 3 for s in
+                  ((3, 4), (4, 6, 4), (4, 4, 3)))
+    ids = torch.tensor([[1, 1], [2, 0], [1, 2]])  # repeated route and unused expert3
+    weights = torch.tensor([[0.4, 0.7], [-0.2, 0.0], [1.5, 0.3]])
+    expected = torch.zeros_like(x)
+    for token in range(3):
+        for choice in range(2):
+            expert = int(ids[token, choice])
+            gate, up = (w13[expert] @ x[token]).chunk(2)
+            if kind == "silu":
+                value = gate * torch.sigmoid(gate) * up
+            else:
+                gate, up = gate.clamp(max=7), up.clamp(-7, 7)
+                value = gate * torch.sigmoid(1.702 * gate) * (up + 1)
+            expected[token] += weights[token, choice] * (w2[expert] @ value)
+    actual = _moe_reference(x, w13, w2, ids, weights, Activation(kind, 1.702, 7.0))
+    torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-5)
+
+
 def _candidate(corrupt: bool = False):
     seen = []
 
@@ -154,6 +176,29 @@ def test_glm_routed_example_executes_the_nvfp4_prepare_contract():
     case = result.shape_results[0].case_descriptor
     assert result.passed and result.shape_results[0].applicable and case is not None
     assert dict(case.calls[0])["quant"] == "nvfp4"
+
+
+@pytest.mark.parametrize(
+    ("trtllm", "mma", "expected"),
+    ((False, False, "gate_up"),
+     (False, True, "up_gate_interleaved_64+sf_swizzled_128x4"),
+     (True, False, "trtllm_fp4_shuffled")),
+)
+@pytest.mark.parametrize("activation", ("swigluoai", "silu"))
+def test_live_nvfp4_prepare_identifies_the_backend_layout(trtllm, mma, expected, activation):
+    slot = slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4")
+    inputs = slot.make_inputs(**SHAPE, dtype=torch.float32, device="cpu", seed=3)
+    layer = _live_layer(inputs)
+    layer.quant_method = SimpleNamespace(enable_flashinfer_trtllm_moe=trtllm)
+    layer.moe_runner_config = SimpleNamespace(activation=activation)
+    if mma:
+        layer.w13_blockscale_mma = inputs["w13_weight_scale"]
+
+    _, view = prepare_args_from_layer(layer)
+    assert view.cacheon_w13_layout == expected
+    assert view.moe_runner_config.activation == activation
+    assert view.w13_weight.data_ptr() == layer.w13_weight.data_ptr()
+    assert view.w2_weight.data_ptr() == layer.w2_weight.data_ptr()
 
 
 def test_m3_reduce_profile_uses_live_shape_topology_and_nvfp4_prepare():
