@@ -994,7 +994,7 @@ def _logprob_entry(value: object, *, label: str) -> tuple[float, int]:
         or not math.isfinite(float(logprob))
         or type(token_id) is not int
     ):
-        raise SessionProtocolError(f"pristine reference {label} entry is invalid")
+        raise SessionProtocolError(f"pristine reference {label} entry is invalid: logprob={logprob!r}, token_id={token_id!r}")
     return float(logprob), token_id
 
 
