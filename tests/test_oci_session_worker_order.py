@@ -35,7 +35,6 @@ from cacheon.eval.oci_session_protocol import (
     validate_audit_evidence,
 )
 from cacheon.eval.reference_protocol import (
-    EVIDENCE_MAGIC as REFERENCE_EVIDENCE_MAGIC,
     ReferencePromptInput,
     ReferenceRequest,
     ReferenceRoleInput,
@@ -184,7 +183,7 @@ class _ReferenceEngine:
         for full_ids, requested in zip(
             kwargs["input_ids"], kwargs["token_ids_logprob"], strict=True
         ):
-            response = full_ids[-2:]
+            response = full_ids[2:]
             targets = [[None, 2, None]]
             top_one = [None]
             targeted = [None]
@@ -702,6 +701,11 @@ def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monke
         _reference_request(session=session, launch=launch, index=index)
         for index in range(2)
     )
+    # The second request mixes short and long outputs in the same pristine engine.
+    short = requests[1].prompts[0]
+    long_role = ReferenceRoleInput((7, 8, 9, 10), ((7, 9), (8, 10)) * 2)
+    long = replace(short, prompt_digest=_digest("7"), roles=(long_role,) * 3)
+    requests = (requests[0], replace(requests[1], tokens_per_prompt=4, prompts=(short, long)))
     _bind_init(monkeypatch, config, launch)
     monkeypatch.setenv("CACHEON_SESSION_PROTOCOL", "reference")
     payload = (
@@ -736,9 +740,10 @@ def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monke
         )["type"] == "ready"
         for request in requests:
             frame = _read_frame(output_read)
-            assert frame[:4] == REFERENCE_EVIDENCE_MAGIC
+            assert frame[:4] == request.evidence_magic
             evidence = decode_reference_evidence(frame, request)
             assert evidence.request_index == request.request_index
+            assert tuple(len(prompt.roles[0].tokens) for prompt in evidence.prompts) == request.token_counts
             assert evidence.prompts[0].prompt_token_count == 2
             assert evidence.prompts[0].roles[0].tokens[0].target_logprob == pytest.approx(-0.07)
         terminal = parse_frame_bytes(
@@ -747,6 +752,7 @@ def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monke
         assert terminal["type"] == "session_error"
         assert terminal["stage"] == "reference"
         assert len(engine.calls) == 6
+        assert [len(call["input_ids"]) for call in engine.calls] == [1, 1, 1, 2, 2, 2]
         assert all(call["top_logprobs_num"] == 1 for call in engine.calls)
         assert os.read(output_read, 1) == b""
     finally:

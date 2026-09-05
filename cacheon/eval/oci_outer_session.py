@@ -373,7 +373,6 @@ class SessionExecutionPlan:
     audit_policy: SlotAuditPolicy | None = None
     batch_max_new_tokens: tuple[int, ...] = ()
     batch_expected_prompt_tokens: tuple[int | None, ...] = ()
-    quality_max_new_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.engine_config, EngineSessionConfig):
@@ -436,21 +435,6 @@ class SessionExecutionPlan:
             raise OuterSessionInfrastructureError(
                 "per-batch request geometry must exactly cover prompt batches"
             )
-        object.__setattr__(self, "batch_max_new_tokens", batch_tokens)
-        object.__setattr__(self, "batch_expected_prompt_tokens", batch_prompts)
-        quality_tokens = (
-            self.max_new_tokens
-            if self.quality_max_new_tokens is None
-            else self.quality_max_new_tokens
-        )
-        if type(quality_tokens) is not int or quality_tokens < 1:
-            raise OuterSessionInfrastructureError(
-                "quality_max_new_tokens must be a positive integer"
-            )
-        if batch_tokens and quality_tokens not in batch_tokens:
-            raise OuterSessionInfrastructureError(
-                "quality request geometry is absent from the session"
-            )
         # Validate every controller-owned frame before any OCI/GPU resource starts.
         try:
             probe_session = "1" * 32
@@ -507,11 +491,8 @@ class SessionExecutionPlan:
 
     @property
     def quality_tokens_per_prompt(self) -> int:
-        return (
-            self.max_new_tokens
-            if self.quality_max_new_tokens is None
-            else self.quality_max_new_tokens
-        )
+        """Maximum teacher work per selected prompt, derived from sealed geometry."""
+        return max(self.batch_max_new_tokens or (self.max_new_tokens,))
 
 
 @dataclass(frozen=True)

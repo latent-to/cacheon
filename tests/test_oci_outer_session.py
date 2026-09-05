@@ -253,7 +253,6 @@ def test_session_executes_sealed_request_geometry_per_batch() -> None:
     plan = _plan(
         batch_max_new_tokens=(2, 4, 4),
         batch_expected_prompt_tokens=(8, 65, 65),
-        quality_max_new_tokens=2,
     )
     clock = _Clock()
     transport = _FakeTransport(clock, plan.expected_preflight)
@@ -269,18 +268,25 @@ def test_session_executes_sealed_request_geometry_per_batch() -> None:
     assert [row.max_new_tokens for row in transport.requests] == [2, 4, 4]
     assert [row.expected_prompt_tokens for row in transport.requests] == [8, 65, 65]
     assert [row.token_numerator for row in result.batches] == [4, 8, 8]
-    assert plan.quality_tokens_per_prompt == 2
+    assert plan.quality_tokens_per_prompt == 4
+    assert replace(plan, batch_max_new_tokens=(4, 2, 2)).quality_tokens_per_prompt == 4
+    from types import SimpleNamespace
+    from cacheon.eval.qualification_runner import _planned_prompt_digests
+    from cacheon.eval.scoring import planned_prompt_texts
+
+    pool = planned_prompt_texts(plan)
+    assert tuple(pool.values()) == ("a", "b", "c", "d", "e", "f")
+    assert _planned_prompt_digests(SimpleNamespace(baseline_session_plan=plan)) == tuple(sorted(pool))
 
     with pytest.raises(OuterSessionInfrastructureError, match="exactly cover"):
         _plan(
             batch_max_new_tokens=(2, 4),
             batch_expected_prompt_tokens=(8, 65),
         )
-    with pytest.raises(OuterSessionInfrastructureError, match="absent"):
+    with pytest.raises(OuterSessionInfrastructureError, match="controller batch"):
         _plan(
-            batch_max_new_tokens=(2, 4, 4),
+            batch_max_new_tokens=(2, 0, 4),
             batch_expected_prompt_tokens=(8, 65, 65),
-            quality_max_new_tokens=3,
         )
 
 

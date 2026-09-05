@@ -18,6 +18,8 @@ from cacheon._strict import require_digest, require_int
 
 REQUEST_MAGIC = b"ORQ1"
 EVIDENCE_MAGIC = b"ORE1"
+MIXED_REQUEST_MAGIC = b"ORQ2"
+MIXED_EVIDENCE_MAGIC = b"ORE2"
 FRAME_HEADER_BYTES = 8
 MAX_REQUEST_BYTES = 128 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 512 * 1024 * 1024
@@ -169,9 +171,11 @@ class ReferenceRequest:
         total_text = sum(len(row.prompt.encode("utf-8")) for row in prompts)
         if total_text > MAX_TOTAL_PROMPT_BYTES:
             raise ReferenceProtocolError("reference prompt bytes exceed the aggregate bound")
-        for prompt in prompts:
+        if max(self.token_counts) != self.tokens_per_prompt:
+            raise ReferenceProtocolError("request token maximum differs from its geometry")
+        for prompt, count in zip(prompts, self.token_counts, strict=True):
             for role in prompt.roles:
-                if len(role.output_ids) != self.tokens_per_prompt or any(
+                if len(role.output_ids) != count or any(
                     len(row) != self.support_width for row in role.supports
                 ):
                     raise ReferenceProtocolError("request role geometry differs from its header")
@@ -186,6 +190,18 @@ class ReferenceRequest:
             raise ReferenceProtocolError("reference derived logprob work exceeds its hard bound")
         object.__setattr__(self, "prompts", prompts)
         _request_payload_size(self)
+
+    @property
+    def token_counts(self) -> tuple[int, ...]:
+        return tuple(len(prompt.roles[0].output_ids) for prompt in self.prompts)
+
+    @property
+    def request_magic(self) -> bytes:
+        return MIXED_REQUEST_MAGIC if len(set(self.token_counts)) > 1 else REQUEST_MAGIC
+
+    @property
+    def evidence_magic(self) -> bytes:
+        return MIXED_EVIDENCE_MAGIC if self.request_magic == MIXED_REQUEST_MAGIC else EVIDENCE_MAGIC
 
 
 @dataclass(frozen=True)
@@ -255,9 +271,10 @@ class ReferenceEvidence:
 
 def _request_payload_size(request: ReferenceRequest) -> int:
     total = _REQUEST_HEADER.size
-    geometry = _ROLE_COUNT * request.tokens_per_prompt * (1 + request.support_width) * _U32.size
-    for prompt in request.prompts:
-        total += _PROMPT_HEADER.size + len(prompt.prompt.encode("utf-8")) + geometry
+    for prompt, count in zip(request.prompts, request.token_counts, strict=True):
+        geometry = _ROLE_COUNT * count * (1 + request.support_width) * _U32.size
+        total += (_PROMPT_HEADER.size + len(prompt.prompt.encode("utf-8")) + geometry
+                  + (_U32.size if request.request_magic == MIXED_REQUEST_MAGIC else 0))
     if total > MAX_REQUEST_BYTES:
         raise ReferenceProtocolError("reference request exceeds its hard byte bound")
     return total
@@ -289,9 +306,11 @@ def encode_reference_request(request: ReferenceRequest) -> bytes:
         bytes.fromhex(request.nonce), request.request_index, len(request.prompts),
         request.tokens_per_prompt, request.support_width,
     ))
-    for prompt in request.prompts:
+    for prompt, count in zip(request.prompts, request.token_counts, strict=True):
         text = prompt.prompt.encode("utf-8")
         payload.extend(_PROMPT_HEADER.pack(bytes.fromhex(prompt.prompt_digest), len(text)))
+        if request.request_magic == MIXED_REQUEST_MAGIC:
+            payload.extend(_U32.pack(count))
         payload.extend(text)
         for role in prompt.roles:
             for token in role.output_ids:
@@ -301,11 +320,12 @@ def encode_reference_request(request: ReferenceRequest) -> bytes:
                     payload.extend(_U32.pack(token))
     if len(payload) != _request_payload_size(request):  # pragma: no cover
         raise AssertionError("reference request encoder violated its size table")
-    return _frame(REQUEST_MAGIC, bytes(payload), MAX_REQUEST_BYTES)
+    return _frame(request.request_magic, bytes(payload), MAX_REQUEST_BYTES)
 
 
 def decode_reference_request(frame: bytes) -> ReferenceRequest:
-    payload = _payload(frame, REQUEST_MAGIC, MAX_REQUEST_BYTES, "reference request")
+    magic = MIXED_REQUEST_MAGIC if isinstance(frame, bytes) and frame[:4] == MIXED_REQUEST_MAGIC else REQUEST_MAGIC
+    payload = _payload(frame, magic, MAX_REQUEST_BYTES, "reference request")
     if len(payload) < _REQUEST_HEADER.size:
         raise ReferenceProtocolError("reference request binding is truncated")
     (session, launch, plan, request_id, nonce, request_index, prompt_count,
@@ -328,6 +348,8 @@ def decode_reference_request(frame: bytes) -> ReferenceRequest:
     prompts = []
     for _ in range(prompt_count):
         prompt_digest, text_size = _PROMPT_HEADER.unpack(take(_PROMPT_HEADER.size))
+        count = _U32.unpack(take(_U32.size))[0] if magic == MIXED_REQUEST_MAGIC else token_count
+        _integer(count, "prompt token count", 1, token_count)
         if text_size > MAX_PROMPT_BYTES:
             raise ReferenceProtocolError("reference prompt exceeds its byte bound")
         try:
@@ -336,10 +358,10 @@ def decode_reference_request(frame: bytes) -> ReferenceRequest:
             raise ReferenceProtocolError(f"reference prompt is not UTF-8: {exc}") from None
         roles = []
         for _role in range(_ROLE_COUNT):
-            outputs = tuple(_U32.unpack(take(_U32.size))[0] for _ in range(token_count))
+            outputs = tuple(_U32.unpack(take(_U32.size))[0] for _ in range(count))
             supports = tuple(tuple(
                 _U32.unpack(take(_U32.size))[0] for _ in range(support_width)
-            ) for _ in range(token_count))
+            ) for _ in range(count))
             roles.append(ReferenceRoleInput(outputs, supports))
         prompts.append(ReferencePromptInput(prompt_digest.hex(), text, tuple(roles)))
     if offset != len(payload):
@@ -361,9 +383,8 @@ def expected_evidence_payload_bytes(request: ReferenceRequest) -> int:
     if type(request) is not ReferenceRequest:
         raise ReferenceProtocolError("reference request is not typed")
     per_token = _TOKEN_EVIDENCE.size + request.support_width * _F32.size
-    total = _EVIDENCE_HEADER.size + len(request.prompts) * (
-        _EVIDENCE_PROMPT.size + _ROLE_COUNT * request.tokens_per_prompt * per_token
-    )
+    total = (_EVIDENCE_HEADER.size + len(request.prompts) * _EVIDENCE_PROMPT.size
+             + _ROLE_COUNT * sum(request.token_counts) * per_token)
     if total > MAX_EVIDENCE_BYTES:
         raise ReferenceProtocolError("reference evidence exceeds its hard byte bound")
     return total
@@ -386,9 +407,9 @@ def _bind_evidence(evidence: ReferenceEvidence, request: ReferenceRequest) -> No
         row.prompt_digest for row in request.prompts
     ):
         raise ReferenceProtocolError("reference evidence prompt order differs from request")
-    for prompt in evidence.prompts:
+    for prompt, count in zip(evidence.prompts, request.token_counts, strict=True):
         for role in prompt.roles:
-            if len(role.tokens) != request.tokens_per_prompt or any(
+            if len(role.tokens) != count or any(
                 len(token.support_logprobs) != request.support_width for token in role.tokens
             ):
                 raise ReferenceProtocolError("reference evidence geometry differs from request")
@@ -421,11 +442,11 @@ def encode_reference_evidence(evidence: ReferenceEvidence, request: ReferenceReq
                     payload.extend(_F32.pack(value))
     if len(payload) != expected_evidence_payload_bytes(request):  # pragma: no cover
         raise AssertionError("reference evidence encoder violated its size table")
-    return _frame(EVIDENCE_MAGIC, bytes(payload), MAX_EVIDENCE_BYTES)
+    return _frame(request.evidence_magic, bytes(payload), MAX_EVIDENCE_BYTES)
 
 
 def decode_reference_evidence(frame: bytes, request: ReferenceRequest) -> ReferenceEvidence:
-    payload = _payload(frame, EVIDENCE_MAGIC, MAX_EVIDENCE_BYTES, "reference evidence")
+    payload = _payload(frame, request.evidence_magic, MAX_EVIDENCE_BYTES, "reference evidence")
     expected = expected_evidence_payload_bytes(request)
     if len(payload) != expected:
         raise ReferenceProtocolError("reference evidence has the wrong exact size")
@@ -437,13 +458,13 @@ def decode_reference_evidence(frame: bytes, request: ReferenceRequest) -> Refere
         raise ReferenceProtocolError("reference evidence geometry binding mismatch")
     offset = _EVIDENCE_HEADER.size
     prompts = []
-    for _ in range(prompt_count):
+    for count in request.token_counts:
         prompt_digest, prompt_tokens, prompt_token_digest = _EVIDENCE_PROMPT.unpack_from(payload, offset)
         offset += _EVIDENCE_PROMPT.size
         roles = []
         for _role in range(_ROLE_COUNT):
             tokens = []
-            for _position in range(token_count):
+            for _position in range(count):
                 target, argmax = _TOKEN_EVIDENCE.unpack_from(payload, offset)
                 offset += _TOKEN_EVIDENCE.size
                 support = []
@@ -471,7 +492,7 @@ def decode_reference_evidence(frame: bytes, request: ReferenceRequest) -> Refere
 __all__ = [
     "EVIDENCE_MAGIC", "FRAME_HEADER_BYTES", "MAX_EVIDENCE_BYTES",
     "MAX_DERIVED_LOGPROBS", "MAX_REQUEST_BYTES", "MAX_SUPPORT_UNION",
-    "REQUEST_MAGIC", "ROLE_NAMES", "ReferenceEvidence",
+    "REQUEST_MAGIC", "MIXED_REQUEST_MAGIC", "MIXED_EVIDENCE_MAGIC", "ROLE_NAMES", "ReferenceEvidence",
     "ReferencePromptEvidence",
     "ReferencePromptInput", "ReferenceProtocolError", "ReferenceRequest",
     "ReferenceRoleEvidence", "ReferenceRoleInput", "ReferenceTokenEvidence",

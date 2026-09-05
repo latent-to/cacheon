@@ -419,7 +419,6 @@ def _workload(plan: SessionExecutionPlan) -> tuple[object, ...]:
         plan.temperature,
         plan.batch_max_new_tokens,
         plan.batch_expected_prompt_tokens,
-        plan.quality_max_new_tokens,
     )
 
 

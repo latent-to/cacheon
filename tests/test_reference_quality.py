@@ -500,6 +500,29 @@ def test_raw_artifact_cannot_shrink_registered_quality_coverage(field, value):
         replace(artifact, binding=replace(artifact.binding, **{field: value}))
 
 
+def test_mixed_raw_quality_preserves_each_full_rollout_and_rejects_shortened_roles(tmp_path):
+    artifact = _raw_artifact(_calibration())
+    short = artifact.prompts[0]
+    roles = tuple(
+        replace(role, tokens=role.tokens + tuple(replace(t, position=t.position + 2) for t in role.tokens))
+        for role in (short.baseline, short.candidate, short.stock_control)
+    )
+    long = RawPromptQualityEvidence(_digest("7"), *roles)
+    prompts = (short, long)
+    binding = replace(_raw_binding(_calibration(), prompts), tokens_per_prompt=4)
+    mixed = ReferenceQualityRawArtifact(binding, prompts)
+    reference = _publish(tmp_path / "evidence", mixed)
+    reopened = reopen_reference_quality_evidence(
+        tmp_path / "evidence", reference, expected_binding=binding
+    )
+    assert tuple(row.candidate.teacher_nll.token_count for row in reopened.prompts) == (2, 4)
+    assert ReferenceQualityRawArtifact.from_dict(mixed.to_dict()) == mixed
+    for role in ("baseline", "candidate", "stock_control"):
+        with pytest.raises(ReferenceQualityError, match="coverage"):
+            shortened = replace(long, **{role: replace(getattr(long, role), tokens=getattr(long, role).tokens[:2])})
+            replace(mixed, prompts=(short, shortened))
+
+
 def test_raw_artifact_cannot_substitute_selected_prompts_or_retained_trajectory():
     artifact = _raw_artifact(_calibration())
     prompt = artifact.prompts[0]

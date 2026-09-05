@@ -57,8 +57,8 @@ def _evidence(request=None):
     prompts = []
     for index, prompt in enumerate(request.prompts):
         roles = tuple(
-            ReferenceRoleEvidence(tuple(_token(index * 3 + role) for _ in range(2)))
-            for role in range(3)
+            ReferenceRoleEvidence(tuple(_token(index * 3 + role) for _ in inputs.output_ids))
+            for role, inputs in enumerate(prompt.roles)
         )
         prompts.append(ReferencePromptEvidence(
             prompt.prompt_digest, 3 + index, f"{8 + index:x}" * 64, roles
@@ -90,7 +90,33 @@ def test_request_roundtrip_is_exact_binary_and_canonical():
     assert decode_reference_request(frame) == request
     assert encode_reference_request(decode_reference_request(frame)) == frame
     assert request_sha256(request) == __import__("hashlib").sha256(frame).hexdigest()
+    # Retained homogeneous v1 bytes, independently checked against dcd360e3.
+    assert request_sha256(request) == "0c1fa8eaa102841f83549f90c71e269d5088fe73957fab8cb251a2560f8cb1b2"
     assert b"first prompt" in frame and b"second \xce\xbb" in frame
+
+
+def test_mixed_output_lengths_roundtrip_without_padding_or_truncation():
+    request = _request()
+    long = dataclasses.replace(request.prompts[1], roles=tuple(
+        ReferenceRoleInput(role.output_ids + (101, 102), role.supports + ((101, 103), (102, 104)))
+        for role in request.prompts[1].roles
+    ))
+    request = dataclasses.replace(request, prompts=(request.prompts[0], long), tokens_per_prompt=4)
+    frame = encode_reference_request(request)
+    assert frame[:4] == b"ORQ2"
+    assert decode_reference_request(frame) == request
+    evidence = _evidence(request)
+    encoded = encode_reference_evidence(evidence, request)
+    assert encoded[:4] == b"ORE2"
+    assert len(encoded) == expected_evidence_payload_bytes(request) + FRAME_HEADER_BYTES
+    assert decode_reference_evidence(encoded, request) == evidence
+    assert [len(p.roles[0].tokens) for p in evidence.prompts] == [2, 4]
+    with pytest.raises(ReferenceProtocolError):
+        decode_reference_evidence(encoded[:-4], request)
+    shortened = dataclasses.replace(evidence.prompts[1].roles[1], tokens=evidence.prompts[1].roles[1].tokens[:-1])
+    wrong_prompt = dataclasses.replace(evidence.prompts[1], roles=(evidence.prompts[1].roles[0], shortened, evidence.prompts[1].roles[2]))
+    with pytest.raises(ReferenceProtocolError, match="geometry"):
+        encode_reference_evidence(dataclasses.replace(evidence, prompts=(evidence.prompts[0], wrong_prompt)), request)
 
 
 @pytest.mark.parametrize("mutation,match", [

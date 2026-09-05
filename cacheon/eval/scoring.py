@@ -1,6 +1,7 @@
 """Recompute calibrated B/C/B-prime speed evidence from sealed lifecycle rows."""
 from __future__ import annotations
 
+import hashlib
 import math
 import statistics
 from dataclasses import dataclass
@@ -62,7 +63,7 @@ def marginal_workload_digest(plan: object) -> str:
         "top_logprobs_num": plan.top_logprobs_num,
         "warmup_count": plan.warmup_count,
     }
-    if not plan.batch_max_new_tokens and plan.quality_max_new_tokens is None:
+    if not plan.batch_max_new_tokens:
         # Retained one-shape evidence keeps its exact v2 identity.
         return canonical_digest(
             "cacheon.qualification.marginal-workload.v2", payload
@@ -79,9 +80,25 @@ def marginal_workload_digest(plan: object) -> str:
                     strict=True,
                 )
             ],
-            "quality_max_new_tokens": plan.quality_tokens_per_prompt,
         },
     )
+
+
+def planned_prompt_texts(plan: object) -> dict[str, str]:
+    """Bind every sealed prompt occurrence, including each mixed-workload cell."""
+    from cacheon.stack_identity import canonical_digest
+
+    workload = marginal_workload_digest(plan)
+    return {
+        canonical_digest("cacheon.qualification.prompt-occurrence", {
+            "batch_index": batch_index,
+            "prompt_index": prompt_index,
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "workload_digest": workload,
+        }): prompt
+        for batch_index, prompts in enumerate(plan.prompt_batches)
+        for prompt_index, prompt in enumerate(prompts)
+    }
 
 
 def _projection_digest(selected: str, candidate: str, calibration: str, context: str,

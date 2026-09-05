@@ -540,11 +540,12 @@ class ReferenceQualityRawArtifact(_Record):
         hidden = {bool(row.baseline.hidden_tasks) for row in prompts}
         if len(hidden) != 1:
             raise ReferenceQualityError("hidden-task coverage must be all-or-none across prompts")
+        if max(len(prompt.baseline.tokens) for prompt in prompts) != self.binding.tokens_per_prompt:
+            raise ReferenceQualityError("raw token coverage differs from its bound maximum")
         for prompt in prompts:
             for rollout in (prompt.baseline, prompt.candidate, prompt.stock_control):
                 if (
-                    len(rollout.tokens) != self.binding.tokens_per_prompt
-                    or len(rollout.hidden_tasks) != self.binding.hidden_tasks_per_prompt
+                    len(rollout.hidden_tasks) != self.binding.hidden_tasks_per_prompt
                     or (
                         self.binding.topk_width == 0
                         and any(

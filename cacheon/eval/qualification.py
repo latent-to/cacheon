@@ -1151,29 +1151,11 @@ def _quality_leg_lifecycle(lifecycle: object, candidate_read: int):
 def lifecycle_prompt_digests(lifecycle: object) -> tuple[str, ...]:
     """Canonical prompt-occurrence pool fixed before any quality selection."""
 
+    from cacheon.eval.scoring import planned_prompt_texts
+
     plan = lifecycle.prepared.baseline_session_plan
-    workload, rows = _trajectory_rows(lifecycle)
-    eligible = set()
-    for batch_index, prompts in enumerate(plan.prompt_batches):
-        if (
-            plan.request_geometry(batch_index)[0]
-            != plan.quality_tokens_per_prompt
-        ):
-            continue
-        for prompt_index, prompt in enumerate(prompts):
-            eligible.add(
-                canonical_digest(
-                    "cacheon.qualification.prompt-occurrence",
-                    {
-                        "batch_index": batch_index,
-                        "prompt_index": prompt_index,
-                        "prompt_sha256": hashlib.sha256(
-                            prompt.encode("utf-8")
-                        ).hexdigest(),
-                        "workload_digest": workload,
-                    },
-                )
-            )
+    _workload, rows = _trajectory_rows(lifecycle)
+    eligible = set(planned_prompt_texts(plan))
     observed = {row[0] for row in rows}
     if not eligible or not eligible <= observed:
         raise QualificationError("quality prompt geometry is absent from trajectories")
@@ -1427,24 +1409,9 @@ def derived_hidden_task_plan_digest(
 
 
 def _selected_prompt_texts(lifecycle: object) -> dict[str, str]:
-    from cacheon.eval.scoring import marginal_workload_digest
+    from cacheon.eval.scoring import planned_prompt_texts
 
-    plan = lifecycle.prepared.baseline_session_plan
-    workload = marginal_workload_digest(plan)
-    result = {}
-    for batch_index, prompts in enumerate(plan.prompt_batches):
-        for prompt_index, prompt in enumerate(prompts):
-            occurrence = canonical_digest(
-                "cacheon.qualification.prompt-occurrence",
-                {
-                    "batch_index": batch_index,
-                    "prompt_index": prompt_index,
-                    "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-                    "workload_digest": workload,
-                },
-            )
-            result[occurrence] = prompt
-    return result
+    return planned_prompt_texts(lifecycle.prepared.baseline_session_plan)
 
 
 def _validate_teacher_source(
@@ -1657,8 +1624,9 @@ def validate_quality_binding(
         or graph_requirement.digest != profile_requirement_digest
         or actual_requirement_binding != expected_requirement_binding
         or binding.selection_digest != selection.digest
-        or (binding.tokens_per_prompt, binding.topk_width, binding.hidden_tasks_per_prompt)
-        != (profile.tokens_per_prompt, profile.topk_width, profile.hidden_tasks_per_prompt)
+        or binding.tokens_per_prompt > profile.tokens_per_prompt
+        or (binding.topk_width, binding.hidden_tasks_per_prompt)
+        != (profile.topk_width, profile.hidden_tasks_per_prompt)
         or (plan.quality_tokens_per_prompt, plan.top_logprobs_num)
         != (profile.tokens_per_prompt, profile.topk_width)
         or binding.support_policy_digest != profile.support_policy_digest

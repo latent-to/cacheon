@@ -1151,11 +1151,12 @@ def _read_reference_request(fd: int) -> object:
         FRAME_HEADER_BYTES as REFERENCE_HEADER_BYTES,
         MAX_REQUEST_BYTES,
         REQUEST_MAGIC,
+        MIXED_REQUEST_MAGIC,
         decode_reference_request,
     )
 
     header = _read_exact(fd, REFERENCE_HEADER_BYTES)
-    if header[:4] != REQUEST_MAGIC:
+    if header[:4] not in (REQUEST_MAGIC, MIXED_REQUEST_MAGIC):
         raise SessionProtocolError("reference request magic/version mismatch")
     size = struct.unpack(">I", header[4:8])[0]
     if size > MAX_REQUEST_BYTES:

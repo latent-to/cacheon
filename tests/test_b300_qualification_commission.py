@@ -486,8 +486,13 @@ def test_compose_rejects_a_session_that_differs_from_the_declared_cell() -> None
         prompt_batch_cells=("s8", "s8", "s8", "l65", "l65", "l65"),
     )
     commission._require_cell_conformance(
-        mixed_inputs, policy, {"warmup_count": 1}, {"min_windows": 5}
+        mixed_inputs, SimpleNamespace(tokens_per_prompt=4096),
+        {"warmup_count": 1}, {"min_windows": 5}
     )
+    with pytest.raises(commission.B300QualificationCommissionError, match="conform"):
+        commission._require_cell_conformance(
+            mixed_inputs, policy, {"warmup_count": 1}, {"min_windows": 5}
+        )
 
 
 def test_qualification_swap_root_is_runtime_traversable(tmp_path: Path) -> None:

@@ -2271,26 +2271,10 @@ class CohortQualificationAttempt:
 QualificationAttempt = CohortQualificationAttempt
 
 def _planned_prompt_digests(prepared: PreparedMarginalRuntime) -> tuple[str, ...]:
-    plan = prepared.baseline_session_plan
-    workload = marginal_workload_digest(plan)
-    rows = []
-    for batch_index, prompts in enumerate(plan.prompt_batches):
-        if (
-            plan.request_geometry(batch_index)[0]
-            != plan.quality_tokens_per_prompt
-        ):
-            continue
-        for prompt_index, prompt in enumerate(prompts):
-            rows.append(canonical_digest(
-                "cacheon.qualification.prompt-occurrence",
-                {
-                    "batch_index": batch_index,
-                    "prompt_index": prompt_index,
-                    "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-                    "workload_digest": workload,
-                },
-            ))
-    return tuple(sorted(rows))
+    from cacheon.eval.scoring import planned_prompt_texts
+
+    return tuple(sorted(planned_prompt_texts(prepared.baseline_session_plan)))
+
 
 def _validate_pre_execution(
     value: CausalQualificationInput,
@@ -2415,7 +2399,7 @@ def _reference_request(
         request_id,
         nonce,
         index,
-        authority.profile.tokens_per_prompt,
+        max(len(prompt.roles[0].output_ids) for prompt in prompts),
         authority.profile.topk_width,
         tuple(prompts),
     )
@@ -2586,7 +2570,7 @@ def _raw_artifact(
         profile.support_policy_digest,
         derived_hidden_task_plan_digest(profile, selection.selected_prompt_digests),
         profile.nll_tail_threshold,
-        profile.tokens_per_prompt,
+        request.tokens_per_prompt,
         profile.topk_width,
         profile.hidden_tasks_per_prompt,
     )
@@ -3483,7 +3467,7 @@ def reopen_causal_qualification(
                 raw.qualification_identity_digest, raw.reference_manifest_digest,
                 raw.calibration_digest, raw.selection_digest, raw.selected_prompt_digests,
                 raw.t_session_digest, raw.t_request_sha256, raw.support_policy_digest,
-                raw.hidden_task_plan_digest, raw.nll_tail_threshold, raw.tokens_per_prompt,
+                raw.hidden_task_plan_digest, raw.nll_tail_threshold,
                 raw.topk_width, raw.hidden_tasks_per_prompt,
             )
             expected_binding = (
@@ -3492,7 +3476,7 @@ def reopen_causal_qualification(
                 attempt.reference_session_digest, report.t_request_sha256,
                 authority.profile.support_policy_digest,
                 derived_hidden_task_plan_digest(authority.profile, attempt.selection.selected_prompt_digests),
-                authority.profile.nll_tail_threshold, authority.profile.tokens_per_prompt,
+                authority.profile.nll_tail_threshold,
                 authority.profile.topk_width, authority.profile.hidden_tasks_per_prompt,
             )
             repeat_matches = repeat_raw is None and repeat_quality is None
@@ -3528,7 +3512,6 @@ def reopen_causal_qualification(
                     repeat_raw.support_policy_digest,
                     repeat_raw.hidden_task_plan_digest,
                     repeat_raw.nll_tail_threshold,
-                    repeat_raw.tokens_per_prompt,
                     repeat_raw.topk_width,
                     repeat_raw.hidden_tasks_per_prompt,
                 )
@@ -3545,7 +3528,6 @@ def reopen_causal_qualification(
                         authority.profile, attempt.selection.selected_prompt_digests
                     ),
                     authority.profile.nll_tail_threshold,
-                    authority.profile.tokens_per_prompt,
                     authority.profile.topk_width,
                     authority.profile.hidden_tasks_per_prompt,
                 )
@@ -3577,6 +3559,7 @@ def reopen_causal_qualification(
                     )
                 repeat_matches = (
                     repeat_binding == repeat_expected_binding
+                    and repeat_raw.tokens_per_prompt <= authority.profile.tokens_per_prompt
                     and (
                         report.repeat_quality.quality_evidence_digest,
                         report.repeat_quality.quality_decision,
@@ -3590,6 +3573,7 @@ def reopen_causal_qualification(
                 )
             if (
                 binding != expected_binding
+                or raw.tokens_per_prompt > authority.profile.tokens_per_prompt
                 or headline != expected_headline
                 or not repeat_matches
             ):

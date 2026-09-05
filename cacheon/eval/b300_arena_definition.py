@@ -185,7 +185,7 @@ def prompt_batch_cells(
 
 
 def scored_cell(parsed: Workload) -> WorkloadCell:
-    """The first cell owns abbreviated screening and hidden-quality geometry."""
+    """The first cell owns abbreviated screening geometry."""
 
     return parsed.cells[0]
 

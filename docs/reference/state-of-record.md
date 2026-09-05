@@ -493,9 +493,13 @@ Mixed-cell arenas use resident speed policy **version 9** on the same
 two-process B/C/B′ substrate. A median of heterogeneous per-batch rates would
 erase the minority cell, so v9 grades total timed output tokens over the full
 host-observed mixture makespan while retaining the individual windows as raw
-evidence. Hidden quality draws only from batches with the sealed quality-cell
-output budget; every cell's outputs remain trajectory-bound. Single-cell M3
-authorities keep their prior policy and digest shape.
+evidence. Hidden quality samples the full sealed prompt pool, including long
+requests. Each selected prompt retains its complete B/C/B′ output length; the
+quality profile bounds the largest declared output budget. Mixed-length pristine
+reference requests use ORQ2/ORE2 frames with per-prompt lengths. Uniform requests
+retain their ORQ1/ORE1 bytes, and single-cell M3 authorities retain their prior
+policy and digest shape. Selection remains a random sample, so a small sample
+does not guarantee that every workload cell appears in each attempt.
 
 Since **2026-08-10** measurement-reuse identity is controller-blind: the
 calibration context binds `ReferenceManifest.measured_digest` and no longer

@@ -462,7 +462,7 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
         for cell in inputs.workload.cells
     }
     if (
-        policy.tokens_per_prompt != quality_cell.output_tokens
+        policy.tokens_per_prompt != max(cell.output_tokens for cell in inputs.workload.cells)
         or type(batch_cells) is not tuple
         or len(batch_cells) != len(inputs.prompt_batches)
         or observed_counts != expected_counts
@@ -627,7 +627,6 @@ def _compose_locked(
             if mixed_cells
             else ()
         ),
-        quality_max_new_tokens=(quality_cell.output_tokens if mixed_cells else None),
     )
     pristine_launch, pristine_session_plan = _pristine_reference_authority(
         incumbent_launch,
