@@ -30,7 +30,7 @@ The production SQLite state machine currently exposes these statuses:
 | `published` | immutable worker publication and selected-delta identity exist; waiting for primary screens |
 | `screening` | the registered arena service is running the ordered non-crown screen prefix |
 | `promoted` | every non-crown screen passed; waiting to enter qualification |
-| `qualifying` | one authority-bound version-3 attempt—current v7 resident B/C/[B′] or v8 two-process B/C/B′, registered eager audit A, then pristine T—is active |
+| `qualifying` | one authority-bound version-3 attempt—two-process B/C/B′, registered eager audit A, then pristine T—is active |
 | `reproduction_pending` | one complete PASS is retained; a fresh independent screen/qualification pass is still required |
 | `qualified` | two consistent independent PASS attempts are retained; settlement is separate |
 | `no_decision` | retryable qualification evidence/failure product was retained |
@@ -266,8 +266,8 @@ tree and pinned build image that a local combined rebuild did not reproduce.
 
 Qualification aggregates mandatory graph, marginal speed, registered eager
 audit A when required by the plan, and pristine T quality evidence. The current
-speed order is v7 resident B/C/[B′] or v8 two-process B/C/B′, followed by A and
-T. Any FAIL makes the attempt fail; any `NO_DECISION` prevents PASS.
+speed order is two-process B/C/B′, followed by A and T. Any FAIL makes the
+attempt fail; any `NO_DECISION` prevents PASS.
 
 Speed problems:
 

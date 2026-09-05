@@ -74,8 +74,8 @@ flowchart TB
 
     E --> I
     E --> C
-    I -->|"v7 resident or v8 request process"| L0
-    C -->|"v7 resident or v8 request process"| L1
+    I -->|"request process"| L0
+    C -->|"request process"| L1
     L0 -->|"serialized host-timed reads"| V["Qualification verdict"]
     L1 -->|"serialized host-timed reads + sealed trajectory"| V
     C --> A
@@ -102,8 +102,7 @@ Planning produces:
 ```text
 incumbent = materialize(E0)                         # A + R0 on baseline lane
 candidate = materialize(replace(E0, rmsnorm, R1))  # A + R1 on candidate lane
-v7        = B, C, then B′ only if B/C cannot decide
-v8        = B, C, B′ unconditionally
+v8        = B, C, B′ unconditionally (v9: same reads, mixed cells)
 A         = separate eager, untimed candidate audit
 T         = materialize(pristine reference)        # neither proposal is a grading oracle
 ```
@@ -174,9 +173,8 @@ Materialized source is only one part of a running engine. The launch authority a
 
 The controller prepares these inputs before timed execution. Production
 qualification binds two isolated physical TP lanes and serializes GPU work
-across them. Current v7 uses the standing resident pair for B/C and takes B′
-only when needed; current v8 uses separate engine processes and always takes
-B/C/B′. Independent reproduction must exchange the physical incumbent and
+across them. Current v8 (v9 for mixed cells) uses separate engine processes and
+always takes B/C/B′. Independent reproduction must exchange the physical incumbent and
 candidate lane roles.
 
 A separate

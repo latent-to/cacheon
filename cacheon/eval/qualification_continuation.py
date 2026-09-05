@@ -18,24 +18,14 @@ from cacheon.eval.continuation_codec import (
     ContinuationCodecError,
 )
 from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence
-from cacheon.eval.device_state import DeviceStateReceipt
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_backend import (
-    CandidateFreeRuntimeIdentity,
     EngineExecutionEvidence,
     PristineReferenceExecutionEvidence,
 )
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.qualification import SelectionEntropyReceipt
 from cacheon.eval.reference_protocol import ReferenceRequest
-from cacheon.eval.resident_pair_crossover import (
-    ResidentPairCrossoverError,
-    ResidentPairCrossoverEvidence,
-    ResidentPairCrossoverPlan,
-)
-from cacheon.eval.resident_pair_binding import (
-    ResidentPairRuntimeBinding,
-)
 from cacheon.stack_identity import (
     canonical_digest,
     canonical_json_bytes,
@@ -44,20 +34,7 @@ from cacheon.stack_identity import (
 
 
 RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v2"
-RESIDENT_COUNT_QUALITY_CHECKPOINT_SCHEMA = (
-    "cacheon.eval.resident-count-quality-checkpoint.v2"
-)
-RESIDENT_COUNT_QUALITY_PAYLOAD_SCHEMA = (
-    "cacheon.eval.resident-count-quality-continuation-payload.v2"
-)
-RESIDENT_PAIR_RETIREMENT_CHECKPOINT_SCHEMA = (
-    "cacheon.eval.resident-pair-retirement-checkpoint.v1"
-)
-RESIDENT_PAIR_RETIREMENT_PAYLOAD_SCHEMA = (
-    "cacheon.eval.resident-pair-retirement-continuation-payload.v1"
-)
-_STAGES = ("speed", "resident_count", "retirement", "audit_armed",
-           "audit_completed", "t_armed", "quality", "final")
+_STAGES = ("speed", "audit_armed", "audit_completed", "t_armed", "quality", "final")
 
 
 def _decimal(value: object, where: str) -> str:
@@ -97,162 +74,6 @@ class QualificationContinuationError(RuntimeError):
     """
 
 
-@dataclass(frozen=True)
-class ResidentCountQualityCheckpoint:
-    """Artifact and authority bindings for one completed resident count run."""
-
-    raw_execution_evidence: EvidenceArtifactRef
-    raw_execution_evidence_semantic_digest: str
-    candidate_observation: EvidenceArtifactRef
-    candidate_observation_semantic_digest: str
-    execution_plan_digest: str
-    fixed_stock_authority_digest: str
-    pair_binding_digest: str
-    schema: str = RESIDENT_COUNT_QUALITY_CHECKPOINT_SCHEMA
-
-    def __post_init__(self) -> None:
-        if self.schema != RESIDENT_COUNT_QUALITY_CHECKPOINT_SCHEMA:
-            raise QualificationContinuationError(
-                "resident count quality checkpoint schema is unsupported"
-            )
-        for field, value in (
-            ("raw execution evidence", self.raw_execution_evidence),
-            ("candidate observation", self.candidate_observation),
-        ):
-            if type(value) is not EvidenceArtifactRef:
-                raise QualificationContinuationError(
-                    f"resident count {field} is not an exact evidence reference"
-                )
-        for field, value in (
-            (
-                "raw execution evidence semantic digest",
-                self.raw_execution_evidence_semantic_digest,
-            ),
-            (
-                "candidate observation semantic digest",
-                self.candidate_observation_semantic_digest,
-            ),
-            ("resident count execution-plan digest", self.execution_plan_digest),
-            ("fixed-stock authority digest", self.fixed_stock_authority_digest),
-            ("resident pair binding digest", self.pair_binding_digest),
-        ):
-            if type(value) is not str:
-                raise QualificationContinuationError(f"{field} is not exactly str")
-            try:
-                require_sha256_hex(value, field=field)
-            except ValueError as exc:
-                raise QualificationContinuationError(str(exc)) from None
-
-
-@dataclass(frozen=True)
-class ResidentPairLaneRetirement:
-    """Path-free projection of one stock lifetime and its empty namespace."""
-
-    lane_id: str
-    commissioning_digest: str
-    runtime_identity: CandidateFreeRuntimeIdentity
-    runtime_preflight_receipt_sha256: str
-    arena_model_receipt_digest: str
-    resource_policy_digest: str
-    native_publication_digest: str
-    runtime_argv_sha256: str
-    recovered_lease_ids: tuple[str, ...]
-    device_receipts: tuple[DeviceStateReceipt, DeviceStateReceipt]
-    session_ready_completed_at: float
-    session_completed_at: float
-    session_digest: str
-    quiescence: OCIQuiescenceReceipt
-
-    def __post_init__(self) -> None:
-        if (
-            self.lane_id not in ("A", "B")
-            or type(self.runtime_identity) is not CandidateFreeRuntimeIdentity
-            or type(self.recovered_lease_ids) is not tuple
-            or any(not isinstance(row, str) or not row for row in self.recovered_lease_ids)
-            or len(set(self.recovered_lease_ids)) != len(self.recovered_lease_ids)
-            or type(self.device_receipts) is not tuple
-            or len(self.device_receipts) != 2
-            or any(type(row) is not DeviceStateReceipt for row in self.device_receipts)
-            or type(self.quiescence) is not OCIQuiescenceReceipt
-        ):
-            raise QualificationContinuationError("resident pair lane retirement is malformed")
-        for field in (
-            "commissioning_digest", "runtime_preflight_receipt_sha256",
-            "arena_model_receipt_digest", "resource_policy_digest",
-            "native_publication_digest", "runtime_argv_sha256", "session_digest",
-        ):
-            try:
-                object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
-            except (TypeError, ValueError) as exc:
-                raise QualificationContinuationError(str(exc)) from None
-        for field in ("session_ready_completed_at", "session_completed_at"):
-            if type(getattr(self, field)) is not float or not math.isfinite(getattr(self, field)):
-                raise QualificationContinuationError("resident pair session time is malformed")
-        if self.session_ready_completed_at > self.session_completed_at:
-            raise QualificationContinuationError("resident pair session time is reordered")
-
-
-@dataclass(frozen=True)
-class ResidentPairRetirementCheckpoint:
-    """One immutable request-bound A/B retirement product."""
-
-    authenticated_request_digest: str
-    qualification_authority_digest: str
-    target_profile_digest: str
-    request_epoch_digest: str
-    pair_binding: ResidentPairRuntimeBinding
-    speed_plan_digest: str
-    speed_evidence_digest: str
-    count_plan_digest: str | None
-    count_evidence_digest: str | None
-    request_history_slice_digests: tuple[str, ...]
-    lanes: tuple[ResidentPairLaneRetirement, ResidentPairLaneRetirement]
-    schema: str = RESIDENT_PAIR_RETIREMENT_CHECKPOINT_SCHEMA
-
-    def __post_init__(self) -> None:
-        if (
-            self.schema != RESIDENT_PAIR_RETIREMENT_CHECKPOINT_SCHEMA
-            or type(self.pair_binding) is not ResidentPairRuntimeBinding
-            or type(self.request_history_slice_digests) is not tuple
-            or not self.request_history_slice_digests
-            or type(self.lanes) is not tuple
-            or len(self.lanes) != 2
-            or any(type(row) is not ResidentPairLaneRetirement for row in self.lanes)
-            or tuple(row.lane_id for row in self.lanes) != ("A", "B")
-        ):
-            raise QualificationContinuationError("resident pair retirement is malformed")
-        for field in (
-            "authenticated_request_digest", "qualification_authority_digest",
-            "target_profile_digest", "request_epoch_digest", "speed_plan_digest",
-            "speed_evidence_digest",
-        ):
-            try:
-                object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
-            except (TypeError, ValueError) as exc:
-                raise QualificationContinuationError(str(exc)) from None
-        if (self.count_plan_digest is None) != (self.count_evidence_digest is None):
-            raise QualificationContinuationError("resident pair count retirement is partial")
-        for field in ("count_plan_digest", "count_evidence_digest"):
-            if getattr(self, field) is not None:
-                try:
-                    object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
-                except (TypeError, ValueError) as exc:
-                    raise QualificationContinuationError(str(exc)) from None
-        for row in self.request_history_slice_digests:
-            try:
-                require_sha256_hex(row, field="request history slice digest")
-            except (TypeError, ValueError) as exc:
-                raise QualificationContinuationError(str(exc)) from None
-
-    @property
-    def digest(self) -> str:
-        try:
-            payload = _codec().encode(self)
-        except ContinuationCodecError as exc:
-            raise QualificationContinuationError(str(exc)) from None
-        return canonical_digest(RESIDENT_PAIR_RETIREMENT_CHECKPOINT_SCHEMA, payload)
-
-
 def _codec() -> ContinuationCodec:
     # Deferred import breaks the cycle with qualification_runner (AuditWitness).
     from cacheon.eval.qualification_runner import AuditWitness
@@ -267,9 +88,6 @@ def _codec() -> ContinuationCodec:
             ReferenceRequest,
             AuditWitness,
             EvidenceArtifactRef,
-            ResidentCountQualityCheckpoint,
-            ResidentPairRetirementCheckpoint,
-            ResidentPairCrossoverEvidence,
         )
     )
 
@@ -505,168 +323,6 @@ class QualificationContinuation:
             )
         return crossover
 
-    def record_resident_pair_speed(
-        self, crossover: ResidentPairCrossoverEvidence
-    ) -> None:
-        if type(crossover) is not ResidentPairCrossoverEvidence:
-            raise QualificationContinuationError(
-                "resident pair speed continuation requires exact crossover evidence"
-            )
-        try:
-            encoded = self._codec.encode(crossover)
-        except ContinuationCodecError as exc:
-            raise QualificationContinuationError(str(exc)) from None
-        self._record(
-            "speed",
-            {"mode": "resident_pair", "crossover": encoded},
-        )
-
-    def load_resident_pair_speed(
-        self, plan: ResidentPairCrossoverPlan
-    ) -> ResidentPairCrossoverEvidence | None:
-        if type(plan) is not ResidentPairCrossoverPlan:
-            raise QualificationContinuationError(
-                "resident pair speed continuation requires the exact crossover plan"
-            )
-        crossover = self.load_resident_pair_speed_raw()
-        if crossover is None:
-            return None
-        try:
-            crossover.regrade(plan)
-        except ResidentPairCrossoverError as exc:
-            raise QualificationContinuationError(
-                f"resident pair speed continuation is invalid: {exc}"
-            ) from None
-        return crossover
-
-    def load_resident_pair_speed_raw(
-        self,
-    ) -> ResidentPairCrossoverEvidence | None:
-        """Reopen the frozen binding; callers must still regrade with a plan."""
-
-        payload = self._load("speed")
-        if payload is None:
-            return None
-        if (
-            type(payload) is not dict
-            or set(payload) != {"crossover", "mode"}
-            or payload.get("mode") != "resident_pair"
-        ):
-            raise QualificationContinuationError(
-                "speed continuation record is not the resident pair shape"
-            )
-        try:
-            crossover = self._codec.decode(payload["crossover"])
-        except ContinuationCodecError as exc:
-            raise QualificationContinuationError(str(exc)) from None
-        if type(crossover) is not ResidentPairCrossoverEvidence:
-            raise QualificationContinuationError(
-                "speed continuation reopened another evidence type"
-            )
-        return crossover
-
-    # -- resident fixed-stock count quality -----------------------------------
-
-    def _load_quality_stage_without_legacy_count(self) -> object | None:
-        """Require explicit migration of the ambiguous old quality-stage shape."""
-
-        legacy_payload = self._load("quality")
-        if (
-            type(legacy_payload) is dict
-            and legacy_payload.get("mode") == "resident_count"
-        ):
-            raise QualificationContinuationError(
-                "legacy quality.json carries resident_count evidence; explicit "
-                "migration is required because the continuation shape is ambiguous"
-            )
-        return legacy_payload
-
-    def record_resident_count_quality(
-        self, value: ResidentCountQualityCheckpoint
-    ) -> None:
-        if type(value) is not ResidentCountQualityCheckpoint:
-            raise QualificationContinuationError(
-                "resident count quality continuation requires the exact checkpoint type"
-            )
-        self._load_quality_stage_without_legacy_count()
-        self._record(
-            "resident_count",
-            {
-                "mode": "resident_count",
-                "schema": RESIDENT_COUNT_QUALITY_PAYLOAD_SCHEMA,
-                "checkpoint": self._codec.encode(value),
-            },
-        )
-
-    def load_resident_count_quality(
-        self,
-    ) -> ResidentCountQualityCheckpoint | None:
-        self._load_quality_stage_without_legacy_count()
-        payload = self._load("resident_count")
-        if payload is None:
-            return None
-        if (
-            type(payload) is not dict
-            or set(payload) != {"checkpoint", "mode", "schema"}
-            or payload.get("mode") != "resident_count"
-            or payload.get("schema") != RESIDENT_COUNT_QUALITY_PAYLOAD_SCHEMA
-        ):
-            raise QualificationContinuationError(
-                "quality continuation record is not the resident count shape"
-            )
-        try:
-            checkpoint = self._codec.decode(payload["checkpoint"])
-        except ContinuationCodecError as exc:
-            raise QualificationContinuationError(str(exc)) from None
-        if type(checkpoint) is not ResidentCountQualityCheckpoint:
-            raise QualificationContinuationError(
-                "quality continuation reopened another checkpoint type"
-            )
-        return checkpoint
-
-    # -- exact resident-pair retirement --------------------------------------
-
-    def record_resident_pair_retirement(
-        self, value: ResidentPairRetirementCheckpoint
-    ) -> None:
-        if type(value) is not ResidentPairRetirementCheckpoint:
-            raise QualificationContinuationError(
-                "resident pair retirement requires the exact checkpoint type"
-            )
-        self._record(
-            "retirement",
-            {
-                "mode": "resident_pair",
-                "schema": RESIDENT_PAIR_RETIREMENT_PAYLOAD_SCHEMA,
-                "checkpoint": self._codec.encode(value),
-            },
-        )
-
-    def load_resident_pair_retirement(
-        self,
-    ) -> ResidentPairRetirementCheckpoint | None:
-        payload = self._load("retirement")
-        if payload is None:
-            return None
-        if (
-            type(payload) is not dict
-            or set(payload) != {"checkpoint", "mode", "schema"}
-            or payload.get("mode") != "resident_pair"
-            or payload.get("schema") != RESIDENT_PAIR_RETIREMENT_PAYLOAD_SCHEMA
-        ):
-            raise QualificationContinuationError(
-                "retirement continuation record is not the resident-pair shape"
-            )
-        try:
-            checkpoint = self._codec.decode(payload["checkpoint"])
-        except ContinuationCodecError as exc:
-            raise QualificationContinuationError(str(exc)) from None
-        if type(checkpoint) is not ResidentPairRetirementCheckpoint:
-            raise QualificationContinuationError(
-                "retirement continuation reopened another checkpoint type"
-            )
-        return checkpoint
-
     # -- at-most-once evaluator claims ---------------------------------------
 
     def arm_evaluator(self, stage: str, operation_digest: str) -> str:
@@ -751,7 +407,6 @@ class QualificationContinuation:
             raise QualificationContinuationError(
                 "quality continuation requires the exact checkpoint type"
             )
-        self._load_quality_stage_without_legacy_count()
         self._require_evaluator_arm("t", value.t_nonce, value.t_operation_digest)
         encode = self._codec.encode
         self._record(
@@ -771,7 +426,7 @@ class QualificationContinuation:
         )
 
     def load_quality(self) -> QualityContinuation | None:
-        payload = self._load_quality_stage_without_legacy_count()
+        payload = self._load("quality")
         if payload is None:
             return None
         expected_keys = {
@@ -857,9 +512,4 @@ __all__ = [
     "AuditContinuation", "QualificationContinuation",
     "QualificationContinuationError", "QualificationContinuationStore",
     "QualityContinuation", "RECORD_SCHEMA",
-    "RESIDENT_PAIR_RETIREMENT_CHECKPOINT_SCHEMA",
-    "RESIDENT_PAIR_RETIREMENT_PAYLOAD_SCHEMA",
-    "RESIDENT_COUNT_QUALITY_CHECKPOINT_SCHEMA",
-    "RESIDENT_COUNT_QUALITY_PAYLOAD_SCHEMA", "ResidentCountQualityCheckpoint",
-    "ResidentPairLaneRetirement", "ResidentPairRetirementCheckpoint",
 ]

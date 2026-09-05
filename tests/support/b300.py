@@ -69,8 +69,6 @@ def qualification_capabilities(**overrides: object) -> B300QualificationCapabili
         "source_resolver_digest": sha("source-resolver"),
         "graph_facts_builder": lambda *_args: None,
         "graph_facts_builder_digest": sha("graph-facts"),
-        "resident_count_quality_builder": lambda *_args: None,
-        "resident_count_quality_builder_digest": sha("resident-count-builder"),
         "incumbent_entries": {},
     }
     values.update(overrides)

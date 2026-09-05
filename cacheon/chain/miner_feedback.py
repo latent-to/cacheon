@@ -20,7 +20,6 @@ than being narrated into a failure.
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -214,45 +213,6 @@ def _compile_defect(publication_root: object) -> str | None:
     return None
 
 
-def _execution_artifacts(
-    evidence_roots: tuple[Path, ...], publication_digest: object
-) -> list[dict[str, Any]]:
-    """Every published record of what the ranks did with this bundle.
-
-    The durable row points at the attempt artifact only; the execution rows are
-    a separate unsealed artifact the run published beside it, keyed by the
-    bundle they describe. The store is content-addressed, so each file is
-    authenticated against its own name before it is believed.
-    """
-
-    from cacheon.eval.b300_resident_qualification import EXECUTION_EVIDENCE_DOMAIN
-    from cacheon.eval.evidence_store import DEFAULT_MAX_EVIDENCE_BYTES
-
-    found: list[dict[str, Any]] = []
-    if not isinstance(publication_digest, str) or not publication_digest:
-        return found
-    for root in evidence_roots:
-        domain = Path(root) / EXECUTION_EVIDENCE_DOMAIN
-        for path in sorted(domain.glob("??/*")) if domain.is_dir() else ():
-            try:
-                raw = path.read_bytes()
-                if (
-                    len(raw) > DEFAULT_MAX_EVIDENCE_BYTES
-                    or hashlib.sha256(raw).hexdigest() != path.name
-                    or json.loads(raw).get("bundle_digest") != publication_digest
-                ):
-                    continue
-            except (OSError, ValueError, AttributeError):
-                continue
-            found.append(
-                {
-                    "reference": {"domain": EXECUTION_EVIDENCE_DOMAIN},
-                    "payload_base64": base64.b64encode(raw).decode("ascii"),
-                }
-            )
-    return found
-
-
 def _attempt_evidence(
     dispositions: list[dict[str, Any]],
     evidence_roots: tuple[Path, ...],
@@ -281,7 +241,6 @@ def _attempt_evidence(
     )
     from cacheon.eval.explain import candidate_failure_lines, explain
 
-    execution = _execution_artifacts(evidence_roots, publication_digest)
     reports: list[dict[str, Any]] = []
     for row in dispositions:
         reference = row.get("attempt_ref")
@@ -318,7 +277,6 @@ def _attempt_evidence(
                                 "reference": {"domain": typed.domain},
                                 "payload_base64": base64.b64encode(payload).decode("ascii"),
                             },
-                            *execution,
                         ]
                     }
                 )

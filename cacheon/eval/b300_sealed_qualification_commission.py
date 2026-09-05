@@ -66,7 +66,6 @@ _COMMISSION_FIELDS = frozenset(
         "graph_facts_builder_digest",
         "policy",
         "resident_speed",
-        "resident_count_quality_builder_digest",
         "schema",
         "selection_store_digest",
         "session",
@@ -150,8 +149,6 @@ class B300QualificationCapabilities:
     source_resolver_digest: str
     graph_facts_builder: object
     graph_facts_builder_digest: str
-    resident_count_quality_builder: object
-    resident_count_quality_builder_digest: str
     incumbent_entries: dict[str, object]
 
     def __post_init__(self) -> None:
@@ -173,7 +170,6 @@ class B300QualificationCapabilities:
                 or callable(getattr(self.hidden_judge, "bind_prompt_plan", None))
             )
             or not callable(self.graph_facts_builder)
-            or not callable(self.resident_count_quality_builder)
             or not callable(getattr(self.source_resolver, "resolve_proposal", None))
         ):
             raise B300QualificationCommissionError(
@@ -183,11 +179,7 @@ class B300QualificationCapabilities:
             raise B300QualificationCommissionError(
                 "hidden judge capability lacks an exact sealed binding"
             )
-        for field in (
-            "source_resolver_digest",
-            "graph_facts_builder_digest",
-            "resident_count_quality_builder_digest",
-        ):
+        for field in ("source_resolver_digest", "graph_facts_builder_digest"):
             value = getattr(self, field)
             if (
                 type(value) is not str
@@ -335,7 +327,6 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
         "builder_source_digest",
         "candidate_binding_builder_digest",
         "graph_facts_builder_digest",
-        "resident_count_quality_builder_digest",
         "selection_store_digest",
         "source_resolver_digest",
         "support_policy_digest",
@@ -458,7 +449,6 @@ def predicted_qualification_builder_digest(
     registered_target_ids: tuple[str, ...],
     builder_source_digest: str,
     selection_store_digest: str,
-    resident_count_quality_builder_digest: str,
 ) -> str:
     return canonical_digest(
         QUALIFICATION_CONSTRUCTION_SCHEMA,
@@ -471,10 +461,6 @@ def predicted_qualification_builder_digest(
                 catalog,
                 registered_target_ids=registered_target_ids,
                 builder_source_digest=builder_source_digest,
-            ),
-            "resident_count_quality_builder_digest": _digest(
-                resident_count_quality_builder_digest,
-                "resident count quality builder digest",
             ),
             "selection_store_digest": _digest(
                 selection_store_digest, "selection store digest"
@@ -492,7 +478,6 @@ def predicted_qualification_policy_digest(
     selection_store_digest: str,
     hidden_judge_binding_digest: str,
     selection_policy_digest: str,
-    resident_count_quality_builder_digest: str,
 ) -> str:
     return canonical_digest(
         QUALIFICATION_POLICY_SCHEMA,
@@ -502,9 +487,6 @@ def predicted_qualification_policy_digest(
                 registered_target_ids=registered_target_ids,
                 builder_source_digest=builder_source_digest,
                 selection_store_digest=selection_store_digest,
-                resident_count_quality_builder_digest=(
-                    resident_count_quality_builder_digest
-                ),
             ),
             "deadline_policy_digest": declared_qualification_deadline_digest(),
             "entropy_provider_digest": declared_qualification_entropy_digest(

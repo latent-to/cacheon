@@ -52,12 +52,6 @@ from cacheon.eval.qualification_runner import (
     HiddenJudgeBinding,
     SpeedStageDisposition,
 )
-from cacheon.eval.registered_resident_count_quality import (
-    B300ResidentCountQualityCapability,
-)
-from cacheon.eval.b300_resident_pair_factory import (
-    B300CommissionedResidentPairFactory,
-)
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.stack_plan import MarginalArmPlan
@@ -298,8 +292,6 @@ class B300QualificationConstructionAuthority:
     evidence_policy_digest: str
     builder_source_digest: str
     selection_store_digest: str
-    resident_count_quality_builder_digest: str
-    resident_count_quality: B300ResidentCountQualityCapability
     secret_loader: SecretLoader
     plan_builder: QualificationPlanBuilder
     entropy_provider_digest: str
@@ -422,7 +414,6 @@ class B300QualificationConstructionAuthority:
             "evidence_policy_digest",
             "builder_source_digest",
             "selection_store_digest",
-            "resident_count_quality_builder_digest",
             "entropy_provider_digest",
             "deadline_policy_digest",
         ):
@@ -439,10 +430,6 @@ class B300QualificationConstructionAuthority:
         ):
             raise B300QualificationDeploymentError(
                 "qualification construction authorities are not callable"
-            )
-        if type(self.resident_count_quality) is not B300ResidentCountQualityCapability:
-            raise B300QualificationDeploymentError(
-                "resident count quality capability is not exact"
             )
         if type(getattr(self.hidden_judge, "binding", None)) is not HiddenJudgeBinding:
             raise B300QualificationDeploymentError(
@@ -474,9 +461,6 @@ class B300QualificationConstructionAuthority:
                 "builder_source_digest": self.builder_source_digest,
                 "evidence_policy_digest": self.evidence_policy_digest,
                 "profile_registry_digest": self.profile_registry_digest,
-                "resident_count_quality_builder_digest": (
-                    self.resident_count_quality_builder_digest
-                ),
                 "selection_store_digest": self.selection_store_digest,
                 "speed_evidence_policy": QUALIFICATION_SPEED_EVIDENCE_POLICY,
             },
@@ -509,7 +493,6 @@ class B300QualificationConstructionAuthority:
                 "policy_digest": self.qualification_policy_digest,
                 "pristine_stack_digest": self.pristine_stack.digest,
                 "pristine_tree_digest": self.pristine_tree_digest,
-                "resident_count_quality_digest": self.resident_count_quality.digest,
             },
         )
 
@@ -930,7 +913,6 @@ def compose_b300_qualification_deployment(
     construction: B300QualificationConstructionAuthority,
     candidate_executor: OCIEngineExecutor,
     resident_baseline_executor: OCIEngineExecutor,
-    resident_pair_factory: B300CommissionedResidentPairFactory,
     screen_lane: str,
 ) -> B300QualificationDeployment:
     """Compose one exact full worker authority from validator-owned inputs.
@@ -952,10 +934,6 @@ def compose_b300_qualification_deployment(
     if type(construction) is not B300QualificationConstructionAuthority:
         raise B300QualificationDeploymentError(
             "qualification construction authority is not exact"
-        )
-    if type(resident_pair_factory) is not B300CommissionedResidentPairFactory:
-        raise B300QualificationDeploymentError(
-            "resident pair factory is not exactly commissioned"
         )
     if screen_lane not in _STAGES:
         raise B300QualificationDeploymentError(
@@ -1008,8 +986,6 @@ def compose_b300_qualification_deployment(
             ),
             qualification_lane_pair=screen_authorities.qualification.lane_pair,
             qualification_stage=screen_lane,
-            resident_pair_factory=resident_pair_factory,
-            resident_count_quality=construction.resident_count_quality,
         )
     except B300ArenaProviderError as exc:
         raise B300QualificationDeploymentError(

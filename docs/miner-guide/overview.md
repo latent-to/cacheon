@@ -111,14 +111,14 @@ For a registered target, the validator constructs an exact marginal comparison:
 - **B**: the opening read from the exact incumbent on the baseline lane;
 - **C**: the read from the one-target-transition candidate on the disjoint
   candidate lane;
-- **B′**: a second incumbent read, conditional for a hot-swappable v7
-  candidate and mandatory for a non-swappable v8 candidate;
+- **B′**: a mandatory second incumbent read, the quality gate's stock-drift
+  control;
 - **A**: a registered eager, untimed audit role for the candidate delta; and
 - **T**: a candidate-free pristine reference used after candidate teardown.
 
 The candidate does not choose the rest of the stack. The validator materializes
-the exact incumbent and candidate engines, selects the v7 standing-pair or v8
-two-process substrate from manifest features, and serializes timed work.
+the exact incumbent and candidate engines on the two-process substrate and
+serializes timed work.
 Bookending detects drift, A supplies the
 registered sampled slot regrade, and T prevents “fast because behavior changed”
 from becoming a win. Static, build, ABI, graph, and abbreviated-serving checks

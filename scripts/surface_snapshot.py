@@ -242,22 +242,11 @@ def domain_surface() -> dict[str, list[str]]:
 
 
 def codec_surface() -> dict[str, object]:
-    from cacheon.eval import qualification_continuation, qualification_runner
-    from cacheon.eval import resident_count_continuation, resident_execution_evidence
-    from cacheon.eval import resident_pair_retirement_checkpoint, resident_pair_speed_witness
-    from cacheon.eval.continuation_codec import ContinuationCodec
-    from cacheon.eval.resident_pair_crossover import ResidentPairCrossoverEvidence
+    from cacheon.eval import qualification_continuation, resident_execution_evidence
 
     codecs = {
         "qualification_continuation": qualification_continuation._codec(),
-        "registered_count": qualification_runner._registered_count_codec(),
-        "resident_closure": qualification_runner._resident_closure_codec(),
         "resident_execution": resident_execution_evidence.EXECUTION_CODEC,
-        "resident_count_raw": resident_count_continuation._RAW_CODEC,
-        "speed_witness_slice": resident_pair_speed_witness._SLICE_CODEC,
-        "retirement_session": resident_pair_retirement_checkpoint._SESSION_CODEC,
-        "retirement_slice": resident_pair_retirement_checkpoint._SLICE_CODEC,
-        "crossover": ContinuationCodec((ResidentPairCrossoverEvidence,)),
     }
     out: dict[str, object] = {}
     for name, codec in codecs.items():

@@ -52,19 +52,8 @@ from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
     B300QualificationGraphEvidenceStoreError,
 )
-from cacheon.eval.b300_resident_qualification import (
-    B300ResidentQualificationError,
-    execution_evidence_refs,
-    run_b300_resident_qualification_prefix,
-)
-from cacheon.eval.resident_pair_quality_lifecycle import (
-    ResidentPairMarginalLifecycleEvidence,
-    ResidentPairQualityLifecycleError,
-)
 from cacheon.eval.evidence_store import EvidenceArtifactRef
-from cacheon.eval.candidate_failure_product import candidate_failure_batch
 from cacheon.eval.oci_backend import OCIEngineExecutor
-from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
@@ -79,7 +68,6 @@ from cacheon.eval.qualification_intake import (
 )
 from cacheon.eval.qualification_runner import (
     ATTEMPT_SCHEMA_V3,
-    ATTEMPT_SCHEMA_V4,
     reopen_causal_qualification,
 )
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
@@ -210,16 +198,6 @@ class B300MainnetWorker:
         self._provider = provider
         self._remote_qualification_lane = (
             authorities.qualification_stage
-            if type(authorities) is B300DeploymentAuthorities
-            else None
-        )
-        self._resident_pair_factory = (
-            authorities.resident_pair_factory
-            if type(authorities) is B300DeploymentAuthorities
-            else None
-        )
-        self._resident_count_quality = (
-            authorities.resident_count_quality
             if type(authorities) is B300DeploymentAuthorities
             else None
         )
@@ -364,8 +342,6 @@ class B300MainnetWorker:
         with self._lock:
             if self._closed:
                 return
-            if self._resident_pair_factory is not None:
-                self._resident_pair_factory.close()
             self._provider.close()
             self._closed = True
 
@@ -465,61 +441,19 @@ class B300MainnetWorker:
                     ],
                 },
             )
-            retired = False
-            if self._resident_pair_factory is not None:
-                try:
-                    retired = (
-                        self._resident_pair_factory.retire_released_pair()
-                    )
-                except Exception:
-                    _LOG.exception(
-                        "released resident pair retirement failed after a "
-                        "graph evidence hold while planning for request %s",
-                        request_digest,
-                    )
-            if not retired:
-                _LOG.exception(
-                    "qualification graph evidence unavailable while planning for "
-                    "request %s; the qualification is held without a candidate decision",
-                    request_digest,
-                )
-                return qualification_graph_gate_hold(
-                    RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
-                    authenticated_request_digest=request_digest,
-                    authority_context_digest=planning_context_digest,
-                    code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
-                )
-            _LOG.warning(
-                "graph evidence capture held on busy devices while planning "
-                "for request %s; retired the released resident pair and "
-                "retrying the qualification plan once",
+            _LOG.exception(
+                "qualification graph evidence unavailable while planning for "
+                "request %s; the qualification is held without a candidate decision",
                 request_digest,
             )
-            try:
-                work = self.service.plan_qualification(
-                    candidates,
-                    screen_receipts,
-                    state=None,
-                )
-            except (
-                B300QualificationGraphEvidenceHold,
-                B300QualificationGraphEvidenceStoreError,
-            ):
-                _LOG.exception(
-                    "qualification graph evidence still unavailable after pair "
-                    "retirement while planning for request %s; the "
-                    "qualification is held without a candidate decision",
-                    request_digest,
-                )
-                return qualification_graph_gate_hold(
-                    RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
-                    authenticated_request_digest=request_digest,
-                    authority_context_digest=planning_context_digest,
-                    code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
-                )
+            return qualification_graph_gate_hold(
+                RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
+                authenticated_request_digest=request_digest,
+                authority_context_digest=planning_context_digest,
+                code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+            )
         self._validate_work(work, candidates)
         supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
-        resident_pair_lifecycle = None
         graph_root = self._remote_qualification_graph_root
         if request_digest is not None:
             if graph_root is None:
@@ -535,60 +469,18 @@ class B300MainnetWorker:
                 B300QualificationGraphEvidenceHold,
                 B300QualificationGraphEvidenceStoreError,
             ):
-                retired = False
-                if self._resident_pair_factory is not None:
-                    try:
-                        retired = (
-                            self._resident_pair_factory.retire_released_pair()
-                        )
-                    except Exception:
-                        _LOG.exception(
-                            "released resident pair retirement failed after a "
-                            "graph evidence hold for request %s",
-                            request_digest,
-                        )
-                if not retired:
-                    _LOG.exception(
-                        "qualification graph evidence unavailable while building "
-                        "the plan for request %s; the qualification is held "
-                        "without a candidate decision",
-                        request_digest,
-                    )
-                    return qualification_graph_gate_hold(
-                        RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
-                        authenticated_request_digest=request_digest,
-                        authority_context_digest=work.factory.manifest.digest,
-                        code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
-                    )
-                _LOG.warning(
-                    "graph evidence capture held on busy devices for request %s; "
-                    "retired the released resident pair and retrying the plan "
-                    "build once",
+                _LOG.exception(
+                    "qualification graph evidence unavailable while building "
+                    "the plan for request %s; the qualification is held "
+                    "without a candidate decision",
                     request_digest,
                 )
-                try:
-                    plan = work.factory.build()
-                except (
-                    B300QualificationGraphEvidenceHold,
-                    B300QualificationGraphEvidenceStoreError,
-                ):
-                    _LOG.exception(
-                        "qualification graph evidence still unavailable after "
-                        "pair retirement for request %s; the qualification is "
-                        "held without a candidate decision",
-                        request_digest,
-                    )
-                    return qualification_graph_gate_hold(
-                        RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
-                        authenticated_request_digest=request_digest,
-                        authority_context_digest=work.factory.manifest.digest,
-                        code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
-                    )
-                except QualificationIntakeError as exc:
-                    raise B300MainnetWorkerError(
-                        "remote graph gate could not reopen the prebuilt "
-                        "qualification plan"
-                    ) from exc
+                return qualification_graph_gate_hold(
+                    RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
+                    authenticated_request_digest=request_digest,
+                    authority_context_digest=work.factory.manifest.digest,
+                    code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+                )
             except QualificationIntakeError as exc:
                 raise B300MainnetWorkerError(
                     "remote graph gate could not reopen the prebuilt qualification plan"
@@ -629,73 +521,6 @@ class B300MainnetWorker:
                     work.factory.manifest,
                     supporting_evidence_refs,
                 )
-            assert continuation_store is not None
-            continuation = continuation_store.scope(
-                request_digest=request_digest,
-                authority_digest=work.factory.manifest.authority_digest,
-                source_digest=plan.prepared.source.digest,
-            )
-            # Route on the version the sealed plan carries: the plan builder
-            # already decided pair-native vs two-process (swappability plus
-            # the incumbent-injection conditions), so re-deriving any of it
-            # here could only disagree with the substrate the plan encodes.
-            if plan.resident_speed_plan.policy.version < 8:
-                try:
-                    resident_prefix = run_b300_resident_qualification_prefix(
-                        factory=self._resident_pair_factory,
-                        capability=self._resident_count_quality,
-                        candidate=candidates[0],
-                        plan=plan,
-                        continuation=continuation,
-                        screen_lane=self._remote_qualification_lane,
-                        deadline=float(work.deadline),
-                    )
-                    supporting_evidence_refs += execution_evidence_refs(
-                        resident_prefix.speed,
-                        evidence_root=plan.evidence_root,
-                        request_digest=request_digest,
-                        authority_digest=work.factory.manifest.authority_digest,
-                        source_digest=plan.prepared.source.digest,
-                    )
-                    resident_pair_lifecycle = ResidentPairMarginalLifecycleEvidence(
-                        plan.prepared,
-                        resident_prefix.speed_plan,
-                        resident_prefix.speed,
-                        resident_prefix.retirement,
-                        resident_prefix.count_result,
-                        resident_prefix.count_checkpoint,
-                        (
-                            None if resident_prefix.count_result is None
-                            else self._resident_count_quality.stock_authority
-                        ),
-                    )
-                except OuterSessionCandidateError as exc:
-                    batch = candidate_failure_batch(
-                        work.factory.manifest,
-                        plan,
-                        exc,
-                    )
-                    self._validate_batch(batch, work, candidates)
-                    return (
-                        batch,
-                        work.factory.manifest,
-                        supporting_evidence_refs,
-                    )
-                except (
-                    B300ResidentQualificationError,
-                    ResidentPairQualityLifecycleError,
-                ) as exc:
-                    _LOG.exception(
-                        "resident qualification prefix failed for request %s; the "
-                        "qualification is held without a candidate decision",
-                        request_digest,
-                    )
-                    return _resident_evidence_hold(
-                        request_digest,
-                        work.factory.manifest.authority_digest,
-                        plan.prepared.source.digest,
-                        exc,
-                    )
         try:
             batch = run_qualification_intake(
                 work.factory,
@@ -707,9 +532,6 @@ class B300MainnetWorker:
                 continuation_store=continuation_store,
                 request_digest=request_digest,
                 prebuilt_plan=plan if request_digest is not None else None,
-                resident_pair_lifecycle=(
-                    resident_pair_lifecycle if request_digest is not None else None
-                ),
             )
         except QualificationContinuationError:
             if request_digest is None:
@@ -725,35 +547,14 @@ class B300MainnetWorker:
                 plan.prepared.source.digest,
             )
         if request_digest is not None:
-            count_checkpoint = (
-                None
-                if resident_pair_lifecycle is None
-                else resident_pair_lifecycle.count_checkpoint
-            )
-            if count_checkpoint is not None and resident_pair_lifecycle is not None:
-                assert resident_pair_lifecycle.stock_authority is not None
-                supporting_evidence_refs += (
-                    count_checkpoint.raw_execution_evidence,
-                    count_checkpoint.candidate_observation,
-                    resident_pair_lifecycle.stock_authority.artifact,
-                )
             if (
                 batch.attempt_ref is not None
-                and batch.attempt_ref.schema in {ATTEMPT_SCHEMA_V3, ATTEMPT_SCHEMA_V4}
+                and batch.attempt_ref.schema == ATTEMPT_SCHEMA_V3
             ):
-                attempt = (
-                    reopen_causal_qualification(
-                        plan.evidence_root,
-                        batch.attempt_ref,
-                        expected=plan,
-                        resident_pair_lifecycle=resident_pair_lifecycle,
-                    )
-                    if resident_pair_lifecycle is not None
-                    else reopen_causal_qualification(
-                        plan.evidence_root,
-                        batch.attempt_ref,
-                        expected=plan,
-                    )
+                attempt = reopen_causal_qualification(
+                    plan.evidence_root,
+                    batch.attempt_ref,
+                    expected=plan,
                 )
                 supporting_evidence_refs += tuple(
                     reference

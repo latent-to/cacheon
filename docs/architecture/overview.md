@@ -63,7 +63,7 @@ See [Product model](product-model.md) for the authority and lifecycle of each ob
 | Runtime integration | Version-pinned SGLang chokepoints, bootstrap, dispatch, and execution evidence | [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py), [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py), [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py) |
 | Stack identity | Content-addressed evaluation manifests, exact marginal substitutions, rollback | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py), [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) |
 | Engine construction | Deterministic source closure, namespacing, native build identity, isolated OCI execution | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py), [`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/engine_launch.py), [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py) |
-| Qualification | Registered routing-only resident screen; v7 resident B/C with conditional B′ or v8 two-process B/C/B′; eager audit; pristine T; retained evidence | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py), [`eval/resident_pair_crossover.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_pair_crossover.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py) |
+| Qualification | Registered routing-only resident screen; two-process B/C/B′ (v8, v9 mixed-cell); eager audit; pristine T; retained evidence | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py) |
 | Chain authority | Finalized ordering, immutable publication, state transitions, settlement, legacy V1 projection, and publication journals | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py), [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py), [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py) |
 | Model provisioning | Model sealing and provisioning receipts | [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py) |
 
@@ -76,8 +76,8 @@ The production referee follows these rules:
 - the controller never imports candidate Python or native extensions;
 - every timed arm runs as a complete engine in a disposable, no-egress OCI session;
 - the candidate engine cannot choose its incumbent, role, workload, target identity, or evidence schema;
-- B and C, plus the policy-required B′, are timed under a sealed lane
-  authority; current v7 makes B′ conditional and current v8 precommits it;
+- B, C, and B′ are timed under a sealed lane authority; current policy
+  precommits all three reads;
 - any required sampled audit runs in a separate eager, untimed candidate role
   and is regraded by the trusted host;
 - T is pristine, candidate-free, untimed, and used only for semantic quality;

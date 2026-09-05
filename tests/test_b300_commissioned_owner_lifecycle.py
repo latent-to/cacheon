@@ -15,7 +15,6 @@ import tests.test_b300_arena_provider as provider_fixtures
 import tests.test_b300_qualification_deployment as deployment_fixtures
 import tests.test_b300_remote_qualification_adapter as remote_fixtures
 import tests.test_b300_remote_worker_adapter as worker_fixtures
-import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaQualificationWork,
@@ -121,20 +120,12 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     manifest = deployment_fixtures._manifest(screen)
     construction = remote_fixtures._bind_construction(construction, manifest)
-    resident_pair_factory, pair_executors = (
-        authority_fixtures._resident_pair_factory(
-            tmp_path / "pair",
-            monkeypatch,
-            manifest.digest,
-        )
-    )
     deployment = compose_b300_qualification_deployment(
         manifest=manifest,
         screen_authorities=screen,
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
-        resident_pair_factory=resident_pair_factory,
         screen_lane="primary",
     )
     reproduction_deployment = compose_b300_qualification_deployment(
@@ -143,7 +134,6 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         construction=construction,
         candidate_executor=baseline_executor,
         resident_baseline_executor=candidate_executor,
-        resident_pair_factory=resident_pair_factory,
         screen_lane="reproduction",
     )
     readiness = remote_fixtures._readiness(deployment)
@@ -164,7 +154,6 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         commission,
         reproduction_commission,
         (candidate_executor, baseline_executor),
-        pair_executors,
         resident,
     )
 
@@ -181,7 +170,6 @@ def owner(
         commission,
         reproduction_commission,
         executors,
-        pair_executors,
         resident,
     ) = _deployment(tmp_path, monkeypatch)
     composition = _CompositionReceipt()
@@ -235,8 +223,6 @@ def owner(
     )
     yield harness
     service.close()
-    for executor in pair_executors:
-        executor.manager.close()
 
 
 def _target_candidate(

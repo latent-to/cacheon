@@ -91,11 +91,9 @@ def run_continuation_quality_stage(
     make_id: Callable[[], str],
     continuation: Any | None,
     quality_state: Any | None,
-    resident_pair_mode: bool,
     quality_reads: int,
     resident_lifecycle: Any | None,
     resident_speed_witness: Any | None,
-    resident_accept: bool,
     seams: QualificationContinuationRunnerSeams,
 ) -> QualificationContinuationStageResult:
     """Resume or execute speed, audit, and pristine-T exactly as before."""
@@ -106,41 +104,20 @@ def run_continuation_quality_stage(
         audit_started: float,
         audit_completed: float,
         teardown: Any,
-        *,
-        passed: bool,
     ) -> QualificationContinuationStageResult:
         audit = audit_witnesses[value.candidates[0].selected_delta_digest]
-        closure = (
-            resident_lifecycle.closure
-            if passed and resident_lifecycle is not None
-            else None
-        )
-        if passed and (
-            not resident_pair_mode
-            or closure is None
-            or resident_speed_witness is None
-        ):
-            raise seams.qualification_runner_error(
-                "resident acceptance lacks its completed speed/count authority"
-            )
-        extra = (None, None, closure) if passed else ()
         terminal = seams.qualification_stage_exit_type(
             seams.qualification_authority_digest(value),
             value.prepared.source.digest,
             value.candidates[0].selected_delta_digest,
-            "resident_accept" if passed else "audit",
-            (
-                seams.qualification_decision.PASS
-                if passed
-                else seams.qualification_decision.FAIL
-            ),
-            "qualified" if passed else "slot_audit_failed",
+            "audit",
+            seams.qualification_decision.FAIL,
+            "slot_audit_failed",
             resident_speed_witness,
             audit,
             audit_started,
             audit_completed,
             teardown.digest,
-            *extra,
         )
         reference = seams.publish_qualification_stage_exit(
             value.evidence_root, terminal
@@ -149,9 +126,6 @@ def run_continuation_quality_stage(
             value.evidence_root,
             reference,
             expected=value,
-            resident_pair_lifecycle=(
-                resident_lifecycle if resident_pair_mode else None
-            ),
         )
         if continuation is not None:
             continuation.record_final(reference)
@@ -224,14 +198,6 @@ def run_continuation_quality_stage(
                 "quality continuation differs from its pristine-T claim"
             )
         t_pre, t_post = reference_execution.device_receipts
-        if resident_accept:
-            return finish_resident_audit(
-                audit_witnesses,
-                audit_started,
-                audit_completed,
-                teardown_before,
-                passed=True,
-            )
     else:
         with executor.exclusive_transaction():
             audit_operation = _audit_operation_digest(value, lifecycle, seams)
@@ -285,7 +251,6 @@ def run_continuation_quality_stage(
                     audit_started,
                     audit_completed,
                     teardown,
-                    passed=False,
                 )
             teardown_before = executor.prove_quiescent()
             # Bind quiescence to the FINAL executed baseline (B'' under repeat
@@ -297,14 +262,6 @@ def run_continuation_quality_stage(
             if teardown_before.observed_monotonic_s < last_post:
                 raise seams.qualification_runner_error(
                     "pre-T quiescence predates the final baseline teardown"
-                )
-            if resident_accept:
-                return finish_resident_audit(
-                    audit_witnesses,
-                    audit_started,
-                    audit_completed,
-                    teardown_before,
-                    passed=True,
                 )
             entropy = entropy_provider(value.commitment, teardown_before)
             if type(entropy) is not seams.selection_entropy_receipt_type:

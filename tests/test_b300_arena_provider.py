@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaCandidateBinding,
@@ -231,19 +230,6 @@ def _authorities(
             "B", baseline_executor.device_policy
         ),
     )
-    authority_index = len(executor_factory.managed_executors)
-    resident_pair_factory, pair_executors = (
-        authority_fixtures._resident_pair_factory(
-            tmp_path / f"resident-pair-{authority_index}",
-            executor_factory.monkeypatch,
-            _h(f"resident-pair-placeholder-{authority_index}"),
-        )
-    )
-    executor_factory.managed_executors.extend(pair_executors)
-    resident_count_quality = authority_fixtures._resident_count_quality(
-        authority_fixtures.default_target_catalog(),
-        tmp_path / f"count-evidence-{authority_index}",
-    )
     authorities = B300DeploymentAuthorities(
         runtime_identity=_runtime(),
         screen_handlers=handlers,
@@ -264,16 +250,6 @@ def _authorities(
         deadline_provider=lambda _request, _state: time.monotonic() + 600.0,
         qualification_lane_pair=lane_pair,
         qualification_stage="primary",
-        resident_pair_factory=resident_pair_factory,
-        resident_count_quality=resident_count_quality,
-    )
-    manifest = _manifest(authorities)
-    authorities = dataclasses.replace(
-        authorities,
-        resident_pair_factory=authority_fixtures._rebind_resident_pair_factory(
-            resident_pair_factory,
-            manifest.digest,
-        ),
     )
     return authorities, runner, resident, factory_builder
 

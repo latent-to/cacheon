@@ -512,12 +512,9 @@ class SettlementQualification:
         from cacheon.eval.qualification import QualificationDecision
         from cacheon.eval.qualification_intake import QualificationAuthorityManifest
         from cacheon.eval.qualification_runner import (
-            CausalQualificationInput,
             CandidateQualificationReport,
             CohortQualificationAttempt,
-            QualificationStageExit,
             ResidentSpeedWitness,
-            STAGE_EXIT_SCHEMA_V3,
         )
         from cacheon.stack_plan import MarginalArmPlan
 
@@ -537,21 +534,7 @@ class SettlementQualification:
             raise SettlementError("authority does not bind exactly one reservation")
         reservation = reservations[0]
         arm = prepared.arm
-        resident_accept = type(report) is QualificationStageExit
-        if resident_accept:
-            if (
-                type(arm) is not MarginalArmPlan
-                or type(attempt) is not CausalQualificationInput
-                or attempt.prepared.candidates != (prepared,)
-                or attempt_ref.schema != STAGE_EXIT_SCHEMA_V3
-                or report.stage != "resident_accept"
-                or type(report.speed_witness) is not ResidentSpeedWitness
-                or report.resident_pair_closure is None
-                or arm.transition.target_id != target_id
-            ):
-                raise SettlementError("resident acceptance projection is not exact")
-            lane, manifest = "registered", arm.candidate
-        elif type(arm) is MarginalArmPlan:
+        if type(arm) is MarginalArmPlan:
             lane = "registered"
             if (
                 type(report) is not CandidateQualificationReport
@@ -569,43 +552,23 @@ class SettlementQualification:
             raise SettlementError("qualification arm is unsupported")
         if authority.lane != lane:
             raise SettlementError("qualification authority lane differs from its arm")
-        if resident_accept:
-            closure = report.resident_pair_closure
-            if (
-                len(authority.reservations) != 1
-                or report.authority_digest != authority.authority_digest
-                or report.source_digest != attempt.prepared.source.digest
-                or report.selected_delta_digest != arm.selected_delta_digest
-                or report.speed_witness.candidate_launch_digest != prepared.launch.digest
-                or attempt.commitment.digest != authority.commitment_digest
-            ):
-                raise SettlementError(
-                    "resident acceptance differs from its plan or authority"
-                )
-            selection_evidence_digest = closure.count_result.digest
-            audit_evidence_digest = (
-                _LEGACY_AUDIT_EVIDENCE_DIGEST
-                if report.audit_witness is None
-                else report.audit_witness.digest
+        if (
+            attempt.authority_digest != authority.authority_digest
+            or attempt.commitment.digest != authority.commitment_digest
+            or sum(row.digest == report.digest for row in attempt.reports) != 1
+        ):
+            raise SettlementError(
+                "qualification attempt differs from its authority/report"
             )
-        else:
-            if (
-                attempt.authority_digest != authority.authority_digest
-                or attempt.commitment.digest != authority.commitment_digest
-                or sum(row.digest == report.digest for row in attempt.reports) != 1
-            ):
-                raise SettlementError(
-                    "qualification attempt differs from its authority/report"
-                )
-            selection_evidence_digest = canonical_digest(
-                "cacheon.settlement.selection-evidence",
-                {
-                    "commitment_digest": attempt.commitment.digest,
-                    "entropy_digest": attempt.entropy.digest,
-                    "selection_digest": attempt.selection.digest,
-                },
-            )
-            audit_evidence_digest = report.audit_evidence_digest
+        selection_evidence_digest = canonical_digest(
+            "cacheon.settlement.selection-evidence",
+            {
+                "commitment_digest": attempt.commitment.digest,
+                "entropy_digest": attempt.entropy.digest,
+                "selection_digest": attempt.selection.digest,
+            },
+        )
+        audit_evidence_digest = report.audit_evidence_digest
         resident_witness = (
             report.speed_witness
             if type(report.speed_witness) is ResidentSpeedWitness
@@ -614,7 +577,7 @@ class SettlementQualification:
         if resident_witness is not None and (
             lane != "registered"
             or len(authority.reservations) != 1
-            or (not resident_accept and len(attempt.reports) != 1)
+            or len(attempt.reports) != 1
         ):
             raise SettlementError(
                 "resident crossover settlement requires one registered candidate"
@@ -653,11 +616,7 @@ class SettlementQualification:
             incumbent_tree_digest=arm.baseline_before.tree_digest,
             candidate_stack_digest=arm.challenger.stack_digest,
             candidate_tree_digest=arm.challenger.tree_digest,
-            speedup=(
-                report.speed_witness.accepted_speedup()
-                if resident_accept
-                else report.speedup
-            ),
+            speedup=report.speedup,
             incumbent_manifest=arm.incumbent,
             proposal_digest="",
             candidate_manifest=manifest,

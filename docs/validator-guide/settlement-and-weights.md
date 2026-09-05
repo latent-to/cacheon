@@ -34,9 +34,9 @@ catalog, incumbent entries, candidate entries, selected delta, and speed policy 
 unchanged. The prior measurement and authority remain intact while only the new
 commission-derived arena, stack/tree, and physical-lane labels are adopted.
 
-Each production version-3 attempt runs its sealed speed subpolicy — current v7
-resident B/C with conditional B′ or current v8 two-process B/C/B′ — followed by
-registered eager audit A and pristine T when required. For reproduction, the
+Each production version-3 attempt runs its sealed speed subpolicy — two-process
+B/C/B′ (v8, or v9 for a mixed-cell workload) — followed by registered eager
+audit A and pristine T when required. For reproduction, the
 baseline and candidate physical TP-lane orientations must exact-swap. The
 speed-policy and settlement-control digests remain equal; fresh process names
 on the same lane orientation do not satisfy independence.

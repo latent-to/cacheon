@@ -202,7 +202,7 @@ For a long-prefill target, make the workload genuinely prefill-heavy; repeated p
 with a live radix cache can silently turn later iterations into decode/cache-hit work.
 
 This local bracket is a performance hypothesis, not crown authority. The validator binds
-the current v7 resident B/C/[B′] or v8 two-process B/C/B′ schedule,
+the two-process B/C/B′ schedule (v8, or v9 for a mixed-cell workload),
 registered eager audit A, then pristine T, together with resources, graph
 evidence, hidden inputs, and calibrated policies, and requires a separately
 bound reproduction.

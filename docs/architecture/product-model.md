@@ -56,11 +56,9 @@ Cacheon deliberately separates economic identity from process identity.
 
 The **execution unit** is a complete engine. Production version-3 qualification
 materializes the exact incumbent and one-target-transition candidate engines and
-selects a speed substrate from the candidate's manifest features. Hot-swappable
-candidates use speed policy v7 on two disjoint standing TP lanes: serialized B/C,
-with B′ only when the first comparison cannot decide. Non-swappable candidates
-use v8's separate baseline and candidate engine processes and always collect
-B/C/B′. Mixed-cell arenas use the same two-process B/C/B′ schedule under v9,
+measures them on the two-process substrate: speed policy v8 launches separate
+baseline and candidate engine processes on two disjoint TP lanes and always
+collects B/C/B′. Mixed-cell arenas use the same two-process B/C/B′ schedule under v9,
 which grades total timed tokens over the complete sealed mixture. The candidate
 then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
@@ -85,8 +83,7 @@ that may add another 3%:
    onto the resident baseline lane.
 2. It materializes the candidate engine from that same stack, replacing only B's
    declared registered target, and loads it once onto the disjoint candidate lane.
-   Timed work is serialized. A hot-swappable v7 attempt takes B/C and adds B′
-   only when needed; a non-swappable v8 attempt takes B/C/B′ unconditionally.
+   Timed work is serialized. Every attempt takes B/C/B′ unconditionally.
 3. B's hosted bundle does not need to contain A. The validator supplies A from the
    incumbent manifest and gives B attribution only for the selected delta introduced by B.
 4. The registered eager audit role checks the candidate delta outside the timed resident

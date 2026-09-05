@@ -30,7 +30,7 @@ flowchart LR
     Private --> Publication["Immutable worker publication"]
     Publication --> Screen["Resident screen<br/>routing only"]
     Screen --> Arena["Injected arena service<br/>trusted provider"]
-    Arena --> OCI["Current speed substrate<br/>v7 B/C/[B′] or v8 B/C/B′"]
+    Arena --> OCI["Two-process speed substrate<br/>B/C/B′ (v8, v9 mixed-cell)"]
     OCI --> Audit["Audit-only role"]
     Audit --> T["Pristine T reference<br/>candidate-free"]
     T --> Evidence["Content-addressed evidence"]
@@ -79,9 +79,8 @@ The current validator path is deliberately staged:
 5. Copy the private intake tree into an immutable worker publication.
 6. Run registered, non-crownable screens, using the routing-only resident screen for
    swappable candidates and an explicit waiver for non-swappable candidates.
-7. Qualify promoted candidates under the version-3 protocol: v7 resident B/C
-   with B′ only when inconclusive, or v8 two-process B/C/B′, then audit and
-   pristine T.
+7. Qualify promoted candidates under the version-3 protocol: two-process
+   B/C/B′ (v8, or v9 for a mixed-cell workload), then audit and pristine T.
 8. Require an independent reproduction of the same candidate identity with the exact
    physical TP-lane role swap.
 9. Apply target and evaluation-stack changes in one settlement transaction.

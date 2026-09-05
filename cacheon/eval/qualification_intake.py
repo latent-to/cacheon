@@ -44,8 +44,6 @@ from cacheon.eval.qualification_runner import (
     QualificationStageExit,
     QualificationRunnerError,
     STAGE_EXIT_SCHEMA,
-    STAGE_EXIT_SCHEMA_V2,
-    STAGE_EXIT_SCHEMA_V3,
     SpeedStageDisposition,
     qualification_authority_digest,
     reopen_causal_qualification,
@@ -58,9 +56,6 @@ from cacheon.eval.oci_outer_session import (
     OuterSessionProcessError,
 )
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
-from cacheon.eval.resident_pair_quality_lifecycle import (
-    ResidentPairMarginalLifecycleEvidence,
-)
 from cacheon.eval.scoring import RawSpeedEvidenceError
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 
@@ -807,7 +802,6 @@ def run_qualification_intake(
     continuation_store: QualificationContinuationStore | None = None,
     request_digest: str | None = None,
     prebuilt_plan: CausalQualificationInput | None = None,
-    resident_pair_lifecycle: ResidentPairMarginalLifecycleEvidence | None = None,
 ) -> QualificationIntakeBatch:
     """Run, reopen, and project one finalized cohort without settlement authority.
 
@@ -834,14 +828,6 @@ def run_qualification_intake(
         (
             prebuilt_plan is not None
             and type(prebuilt_plan) is not CausalQualificationInput
-        )
-        or (
-            resident_pair_lifecycle is not None
-            and (
-                prebuilt_plan is None
-                or type(resident_pair_lifecycle)
-                is not ResidentPairMarginalLifecycleEvidence
-            )
         )
     ):
         raise QualificationIntakeError(
@@ -882,30 +868,12 @@ def run_qualification_intake(
             "deadline": deadline,
             "continuation": continuation,
         }
-        if resident_pair_lifecycle is not None:
-            runner_kwargs.update(
-                {
-                    "resident_baseline_executor": None,
-                    "resident_pair_lifecycle": resident_pair_lifecycle,
-                }
-            )
         reference = run_causal_qualification(value, **runner_kwargs)
         if type(reference) is not EvidenceArtifactRef:
             raise QualificationIntakeError("qualification runner returned no typed artifact")
-        if reference.schema in {
-            STAGE_EXIT_SCHEMA,
-            STAGE_EXIT_SCHEMA_V2,
-            STAGE_EXIT_SCHEMA_V3,
-        }:
+        if reference.schema == STAGE_EXIT_SCHEMA:
             terminal = (
                 reopen_qualification_stage_exit(
-                    value.evidence_root,
-                    reference,
-                    expected=value,
-                    resident_pair_lifecycle=resident_pair_lifecycle,
-                )
-                if resident_pair_lifecycle is not None
-                else reopen_qualification_stage_exit(
                     value.evidence_root, reference, expected=value
                 )
             )
@@ -957,13 +925,6 @@ def run_qualification_intake(
             )
         attempt = (
             reopen_causal_qualification(
-                value.evidence_root,
-                reference,
-                expected=value,
-                resident_pair_lifecycle=resident_pair_lifecycle,
-            )
-            if resident_pair_lifecycle is not None
-            else reopen_causal_qualification(
                 value.evidence_root, reference, expected=value
             )
         )

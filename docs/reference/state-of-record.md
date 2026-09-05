@@ -20,6 +20,19 @@ These source changes require a fresh GLM runtime commission.
 The distribution also drops the retired MiniMax SGLang overlay copies and their
 packaging exceptions. The GLM worker consumes the pinned upstream SGLang image.
 
+On **2026-09-06**, the pair-native speed lane (resident speed policy v7 and the
+standing resident pair, count-quality, retirement, and pair-witness modules
+behind it) was deleted from the tree. No GLM candidate could reach it: the GLM
+workload is mixed-cell, which routes every candidate to the two-process v9
+schedule, and a coverage census over the CPU suite found no production caller
+outside the lane itself. Every candidate is now measured on the two-process
+B/C/B′ substrate (v8 single-cell, v9 mixed-cell). The commission no longer
+seals a resident count builder digest, so the deployment authority digest
+moves: this source deploys only at the next recommission, never into a frozen
+arena. Pair-native M3 products (stage exits `v2`/`v3`, cohort attempts `v4`)
+are no longer decodable by this tree; per the 2026-09-06 ruling no M3
+settlement is regraded.
+
 The GLM-5.3 branch moved the source compatibility target to SGLang `0.5.18` on
 2026-08-30. Exact-image 8xB300 controls now establish full-model generation,
 all-rank seam activation, graph capture, deliberately broken and faithful
@@ -541,8 +554,9 @@ terminating arithmetic. Bracket drift therefore resolves to a decision at
 the initial grade instead of escalating or re-queueing. Sealed version-4
 evidence continues to regrade under bookend invariance without the
 exclusion. The 2026-08-10 commission selected version 5 prospectively at that
-time; current swappable work selects v7, single-cell non-swappable work selects
-v8, and mixed-cell work selects v9. Already sealed providers and evidence keep
+time; from 2026-08-16 swappable work selected v7 until the pair lane's deletion
+on 2026-09-06; single-cell work now selects v8 and mixed-cell work v9. Already
+sealed providers and evidence keep
 their original policy identity.
 
 Production providers previously selected qualification policy version 3:
@@ -1286,7 +1300,6 @@ in for that proof.
 - [Standing CPU supervisor](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/standing_cpu_supervisor.py)
 - [Persistent B300 remote adapter](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_worker_adapter.py)
 - [Resident screening](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py)
-- [Resident-pair crossover](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_pair_crossover.py)
 - [Adaptive resident runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)
 - [Qualification](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
 - [Audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
