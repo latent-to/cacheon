@@ -1,48 +1,47 @@
 # State of record
 
-On **2026-09-06**, source registration consolidates GLM into six family targets:
-routed MoE, dense GEMM, normalization, all-reduce, atomic DP exchange, and
-atomic `attention.sparse_mla.v1`. Sparse attention requires its query-preparation/
-attend and merged indexer-selection members together. Separate score/top-k
-targets are retired. Dense includes FP32 gates and absorbed BMM, while the
-normalization family includes plain 512/2048/6144-wide calls. The widened ABI,
-reference and verification identities rotate; existing commissioned targets
-and retained catalog snapshots are not rewritten. Final-family runtime
-acceptance and a new commission remain pending.
+On **2026-09-06**, frozen source `68da3066` completed full-model functional
+acceptance of all six GLM-5.3 family targets: routed MoE, dense GEMM,
+normalization, all-reduce, atomic DP exchange, and atomic
+`attention.sparse_mla.v1`. The attention target requires both query-preparation/
+attend and merged indexer-selection members. Dense includes FP32 gates and
+absorbed BMM; normalization includes plain and residual-add RMSNorm.
+Separate score/top-k targets are retired. K preparation/cache writes remain
+engine-owned. Existing catalog snapshots and expensive evidence keep their
+original identities.
 
-Earlier component work on **2026-09-06** added `attention.indexer_topk` selection and
-compact-page translation; `attention.indexer_scores` adds weighted-ReLU FP8 MQA
-scores. Top-k native acceptance passes prefill/decode at 8k/65k with 12 CUDA
-graph replays and 20 actual candidate calls. Sparse MLA native acceptance
-passes BF16/FP8 at 6/128 queries with 12 replays, independent math and 20 candidate
-calls. Both use the accepted SGLang 0.5.18/FlashInfer 0.6.17 image with the
-18be7e0 package mounted; neither proves full-model or TP4 rank acceptance.
-Subsequent TP4 model controls established top-k execution and an old sparse-core
-PASS with 9,985 candidate calls per rank. Those results are retained evidence
-for their exact code, not acceptance of the widened atomic family above.
+The final run used the unchanged GLM image with source `68da3066` mounted as the
+worker package, SGLang 0.5.18, FlashInfer 0.6.17, Torch 2.13.0+cu130, NVFP4
+weights, FP8 KV, and two physical TP4/DP4 lanes. Its six batches contained
+128/128/128/24/24/24 requests, with 8,192/65,536 input tokens and 1,024/4,096
+output tokens. All eight member operations completed and were captured on
+ranks 0–3. Retained call counts are snapshots; they do not count CUDA graph
+replays or establish exhaustive branch coverage.
 
+| Final positive control | Candidate | Stock | Stock repeat |
+|---|---:|---:|---:|
+| GSM8K, all prompts | 410/456 | 403/456 | 413/456 |
+| GSM8K, timed prompts | 293/328 | 295/328 | 294/328 |
 
-This page is the dated capability and evidence ledger for Cacheon. Evergreen
-pages define contracts and procedures; this page identifies the implementation
-revision, evidence class, and unresolved limits behind readiness claims.
+Pristine-teacher fidelity **passed**, with no failed or inconclusive metrics.
+A stale selected-prompt ID stopped teacher setup after generation. Recovery
+preserved the same eight precommitted prompt positions, verified unchanged
+prompt bytes, and derived their current workload-bound IDs. Only the previously
+unrun teacher executed; completed generation was reused. The generation driver
+now rejects stale selections before GPU entry. The final positive mirror has
+58 files and 25,193,947 bytes, all independently hash-verified off-pod; its raw
+quality artifact SHA-256 is
+`cc274d2ca68bc00e5166f85e5bfc08fa55b3fbbb0574756588cd9cd5574c5d7c`.
 
-Passing tests, completing an empirical qualification, activating an incentive
-policy, publishing weights, and producing a deployable engine release are
-different events. Evidence for one does not authorize another.
-
-On **2026-09-05**, the attention continuation added `attention.sparse_mla`:
-a generic sparse-core ABI, independent reference, GLM model profiles and the
-adapter shared by TRTLLM DSA prefill/decode. B300 component verification passed
-two generic BF16 shapes and four GLM FP8 shapes, with three CUDA graph replays
-per shape. The largest jittered case used 21,847 query tokens. These runs used
-the attention patch on `35eb162c` mounted over the accepted SGLang 0.5.18 image;
-the subsequent port onto PR #112 has CPU coverage only. These runs do not
-prove full-model seam execution or two-lane TP4 qualification. CPU math and
-negative controls also passed. This slot has not been deployed or enabled for
-public intake. Query preparation and merged indexer selection now belong to the
-source attention family; K preparation/cache writes remain engine-owned.
-Final-family runtime and automatic public-loop proof remain open. The previously accepted five-target
-image does not qualify these changed worker bytes.
+The final source/image/READY/registration/adapter composition replays with all
+six targets. CPU dispatcher and supervisor configurations are staged and parse
+successfully. The final-runtime wrong-output norm control was rejected on
+`worst_nll`: candidate 0/456 versus stock 410/456 and repeat 408/456. Its
+B/C/B′ and pristine-teacher execution completed normally; infrastructure errors
+were not converted into a candidate failure. Both acceptance runs are retained.
+Public intake, independent reproduction, FIFO/restart/terminal continuation,
+settlement and release-provider proof remain separate work. This positive
+functional control is not a competitive kernel win or a settled PASS pair.
 
 On **2026-09-05**, the GLM branch incorporated PR #110's source-build-only
 execution path while preserving the GLM catalog's exclusive overlap policy and
