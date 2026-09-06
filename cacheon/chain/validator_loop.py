@@ -30,8 +30,10 @@ from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
     IntakePolicy,
+    IntakeError,
     IntakeReservation,
     IntakeScope,
+    is_lock_collision,
 )
 from cacheon.chain.eval_cost import (
     EvalCostFetchError,
@@ -462,7 +464,7 @@ def run_pass(
         service = arena_registry.require(arena_id)
 
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), netuid)
-    with FinalizedIntakeStore(intake_db, policy, scope=scope) as store:
+    with _open_store(intake_db, policy, scope) as store:
         cursor = store.finalized_cursor()
         if retained_only:
             if cursor is None:
@@ -647,6 +649,38 @@ def run_pass(
         )
     result.held = sorted(set(result.held))
     return result
+
+
+_LOCK_RETRY_ATTEMPTS = 8
+_LOCK_RETRY_PAUSE_S = 0.25
+
+
+def _open_store(
+    intake_db: str | Path,
+    policy: IntakePolicy,
+    scope: IntakeScope,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> FinalizedIntakeStore:
+    """Open the intake store, waiting out a peer controller's short lock hold.
+
+    The screen dispatcher and the standing supervisor take the same exclusive
+    lock for a fraction of a second on every poll. On 2026-09-06 the intake
+    pass met that hold on roughly every other pass and counted each one as a
+    validator fault, so ten unlucky passes in a row would have stopped intake
+    over nothing. The bounded wait spans one dispatcher poll; a collision that
+    outlasts it still raises the original error, and no other store error is
+    retried.
+    """
+
+    for attempt in range(1, _LOCK_RETRY_ATTEMPTS + 1):
+        try:
+            return FinalizedIntakeStore(intake_db, policy, scope=scope)
+        except IntakeError as exc:
+            if not is_lock_collision(exc) or attempt == _LOCK_RETRY_ATTEMPTS:
+                raise
+        sleep(_LOCK_RETRY_PAUSE_S)
+    raise AssertionError("unreachable")
 
 
 def run_validator(

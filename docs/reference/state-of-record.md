@@ -33,7 +33,13 @@ operator held the reservation again so the new arena's qualification lane
 stays clear. The boundary now rebinds evidence-free rows left on a retired
 arena to the live stack and re-screens their promoted rows under the live
 identity (`cacheon/chain/baseline_segments.py`), so a redeployment no longer
-strands queued submissions until they expire.
+strands queued submissions until they expire. The deployed loop proved it the
+same night: released on the rebind deployment, the row was rebound within one
+supervisor pass, re-screened under the live identity, and rejected by the
+qualification graph verification of its wrong-output normalization member, so
+both self-test controls end in FAIL through the public loop. The intake pass
+now waits out a peer controller's sub-second lock hold instead of counting it
+as a validator fault.
 
 Late on **2026-09-06**, before public intake, the attention-family verification
 gates were tightened: indexer histories span the declared context so selection

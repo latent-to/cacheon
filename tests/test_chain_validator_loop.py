@@ -617,6 +617,66 @@ def test_once_mode_propagates_validator_fault(monkeypatch, tmp_path):
         )
 
 
+def _colliding_store(monkeypatch, collisions):
+    """Install a store factory that reports a peer's lock hold ``collisions`` times."""
+
+    from cacheon.chain.intake import IntakeError, _LOCK_COLLISION_MESSAGE
+
+    attempts = []
+
+    class Store:
+        def __init__(self, *_args, **_kwargs):
+            attempts.append(1)
+            if len(attempts) <= collisions:
+                raise IntakeError(_LOCK_COLLISION_MESSAGE)
+
+    monkeypatch.setattr(loop, "FinalizedIntakeStore", Store)
+    return Store, attempts
+
+
+def test_intake_pass_waits_out_a_peer_controllers_lock_hold(monkeypatch, tmp_path):
+    store_type, attempts = _colliding_store(monkeypatch, collisions=2)
+    naps = []
+
+    store = loop._open_store(tmp_path / "i.sqlite3", None, None, sleep=naps.append)
+
+    assert isinstance(store, store_type)
+    assert len(attempts) == 3
+    assert naps == [loop._LOCK_RETRY_PAUSE_S] * 2
+
+
+def test_intake_pass_gives_up_on_a_lock_that_outlasts_the_wait(monkeypatch, tmp_path):
+    from cacheon.chain.intake import IntakeError
+
+    _store_type, attempts = _colliding_store(monkeypatch, collisions=10_000)
+    naps = []
+
+    with pytest.raises(IntakeError, match="another intake controller"):
+        loop._open_store(tmp_path / "i.sqlite3", None, None, sleep=naps.append)
+
+    assert len(attempts) == loop._LOCK_RETRY_ATTEMPTS
+    assert len(naps) == loop._LOCK_RETRY_ATTEMPTS - 1
+
+
+def test_intake_pass_does_not_retry_other_store_errors(monkeypatch, tmp_path):
+    from cacheon.chain.intake import IntakeError
+
+    attempts = []
+
+    class Store:
+        def __init__(self, *_args, **_kwargs):
+            attempts.append(1)
+            raise IntakeError("intake store schema is corrupt")
+
+    monkeypatch.setattr(loop, "FinalizedIntakeStore", Store)
+    naps = []
+
+    with pytest.raises(IntakeError, match="corrupt"):
+        loop._open_store(tmp_path / "i.sqlite3", None, None, sleep=naps.append)
+
+    assert attempts == [1] and naps == []
+
+
 def test_intake_only_pass_never_moves_the_incumbent(tmp_path, monkeypatch):
     calls = []
 
