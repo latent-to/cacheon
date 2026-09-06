@@ -147,6 +147,19 @@ def test_family_literal_math_and_two_new_profiles(dtype):
     assert verify.passed
 
 
+def test_fp32_output_shape_is_graded_at_fp32_tolerance():
+    # Regression: the tolerance used to follow the BF16 verification dtype, so an
+    # FP32 router projection could drift 2% (enough to flip expert routing) and pass.
+    slot = get_slot("linear.dense")
+    shape = {"num_tokens": 3, "input_dim": 17, "output_dim": 5, "output_dtype": "float32"}
+    def sloppy(x, prepared, out):
+        _ENTRY(x, prepared, out)
+        out.mul_(1.005)
+    common = dict(prepare=_PREPARE, dtype=torch.bfloat16, device="cpu", seed=7, shapes=(shape,))
+    assert verify_entry(slot, _ENTRY, **common).passed
+    assert not verify_entry(slot, sloppy, **common).passed
+
+
 def test_family_stale_activation_is_rejected_on_graph_replay():
     backend, saved = FakeGraphBackend(), None
     def stale(x, prepared, out):
@@ -159,19 +172,14 @@ def test_family_stale_activation_is_rejected_on_graph_replay():
         _graph_backend=backend).passed
 
 
-def test_family_install_uses_pinned_indexer_name_and_keeps_compiled_consumers(monkeypatch, layer):
+def test_family_install_binds_router_projection_and_keeps_compiled_consumers(monkeypatch, layer):
     monkeypatch.setenv("CACHEON_DENSE_SEAM", "1")
-    class Indexer:
-        def _weights_proj_bf16_in_fp32_out(self, x):
-            raise AssertionError("head projection used stock")
     class MoEGate:
         def forward(self, x, gemm_output_zero_allocator=None, forward_batch=None):
             raise AssertionError("router projection used stock")
-    head_module = SimpleNamespace(Indexer=Indexer, _is_cuda=True)
     router_module = SimpleNamespace(MoEGate=MoEGate, _is_cuda=True, get_exec=lambda:
         SimpleNamespace(deterministic=SimpleNamespace(enable_deterministic_inference=False)))
     bmm_module = SimpleNamespace(torch=torch)
-    monkeypatch.setitem(sys.modules, "sglang.srt.layers.attention.dsa.dsa_indexer", head_module)
     monkeypatch.setitem(sys.modules, "sglang.srt.models.deepseek_v2", router_module)
     monkeypatch.setitem(sys.modules, dense_seam._BMM_MODULE, bmm_module)
     calls = []
@@ -180,11 +188,9 @@ def test_family_install_uses_pinned_indexer_name_and_keeps_compiled_consumers(mo
         _ENTRY(x, prepared, out)
     dense_seam.install(_registry(entry))
     dense_seam.install(_registry(entry))
-    head, router = Indexer(), MoEGate()
-    head.weights_proj = SimpleNamespace(weight=torch.ones(5, 3, dtype=torch.bfloat16))
+    router = MoEGate()
     router.weight = torch.ones(5, 3, dtype=torch.bfloat16)
-    compiled = torch.compile(lambda x: head._weights_proj_bf16_in_fp32_out(x) * .5,
-                             dynamic=True, backend="eager")
+    compiled = torch.compile(lambda x: router.forward(x) * .5, dynamic=True, backend="eager")
     assert torch.equal(compiled(torch.ones(2, 3, dtype=torch.bfloat16)), torch.full((2, 5), 1.5))
     assert torch.equal(compiled(torch.full((4, 3), 2., dtype=torch.bfloat16)), torch.full((4, 5), 3.))
     assert router.forward(torch.ones(2, 3, dtype=torch.bfloat16)).dtype == torch.float32
@@ -238,10 +244,11 @@ def test_family_new_consumers_propagate_failures_and_reject_output_rebinding(mon
         raise AssertionError("candidate failure retried stock")
     with pytest.raises(RuntimeError, match="family candidate failed"):
         dense_seam._make_bmm(stock, _registry(broken))(a, b)
-    module = SimpleNamespace(_is_cuda=True)
-    head = SimpleNamespace(weights_proj=SimpleNamespace(weight=torch.ones(5, 4)))
+    module = SimpleNamespace(_is_cuda=True, get_exec=lambda: SimpleNamespace(
+        deterministic=SimpleNamespace(enable_deterministic_inference=False)))
+    router = SimpleNamespace(weight=torch.ones(5, 4))
     with pytest.raises(RuntimeError, match="family candidate failed"):
-        dense_seam._make_projection(stock, _registry(broken), module, "weights_proj")(head, a[0])
+        dense_seam._make_projection(stock, _registry(broken), module)(router, a[0])
     def rebind(x, prepared, out):
         out.set_(torch.zeros_like(out))
     with pytest.raises(ValueError, match="storage"):

@@ -10,6 +10,7 @@ import torch
 from cacheon import slots
 from cacheon.indexer_select_contract import DYNAMIC_INPUTS, SLOT, invoke_entry, reference, slot_spec
 from cacheon.integrations import sglang_indexer_select as seam
+from cacheon.model_profiles import slot_for_model
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 from cacheon.sandbox import load_entry
 from cacheon.verify import verify_entry
@@ -76,6 +77,41 @@ def test_stale_graph_input_is_rejected(name, dtype):
                             graph_replays=3, _graph_backend=backend).passed
 
 
+def test_profile_histories_exceed_top_k_and_pages_are_engine_views():
+    spec = slot_for_model(SLOT, "GLM-5.3")
+    for shape in spec.shapes:
+        inputs = spec.make_inputs(**shape, dtype=torch.bfloat16, device="cpu", seed=7)
+        assert int((inputs["lengths"] > shape["top_k"]).sum()) >= shape["num_tokens"] // 2
+        assert not inputs["key_pages"].is_contiguous() and not inputs["key_scales"].is_contiguous()
+        assert inputs["key_pages"].untyped_storage().data_ptr() == inputs["key_scales"].untyped_storage().data_ptr()
+
+
+def test_returning_every_valid_position_fails_the_registered_profile():
+    spec = slot_for_model(SLOT, "GLM-5.3")
+
+    def everything(q, key_pages, key_scales, weights, page_table, row_to_batch, lengths,
+                   page_offsets, positions, cos_sin_cache, gate, init, local, top_k, out):
+        size = key_pages.shape[1]
+        out.fill_(-1)
+        for row in range(q.shape[0]):
+            logical = torch.arange(int(lengths[row])) + page_offsets[row]
+            physical = page_table[row_to_batch[row].long(), logical // size].long() * size + logical % size
+            width = min(top_k, physical.numel())
+            out[row, :width] = physical[:width].int()
+
+    result = verify_entry(spec, everything, dtype=torch.bfloat16, device="cpu", seed=7, shapes=spec.shapes[:1])
+    assert not result.passed and "topk_overlap" in result.shape_results[0].detail
+
+
+def test_out_of_range_selection_is_rejected():
+    def wild(*args):
+        ENTRY(*args)
+        args[-1][1, 0] = 2 ** 30
+
+    result = verify_entry(slot_spec(), wild, dtype=torch.float8_e4m3fn, device="cpu", seed=7)
+    assert not result.passed and "outside declared range" in result.shape_results[0].detail
+
+
 @pytest.mark.parametrize("bad", ["input_mutation", "no_write"])
 def test_bad_candidate_is_rejected(bad):
     def broken(*args):
@@ -103,7 +139,8 @@ def test_actual_indexer_class_mapping_output_identity_exception_and_restore(monk
                    positions=full["positions"][:count] if raw_query else None)
     expected = reference(logical)[0]
     raw = torch.cat((full["key_pages"].view(torch.uint8).flatten(1), full["key_scales"].view(torch.uint8)), 1)
-    metadata = SimpleNamespace(topk_transform_method="PAGED", attn_metadata=SimpleNamespace(cu_seqlens_k=cu_k, cu_seqlens_q=cu_q),
+    metadata = SimpleNamespace(topk_transform_method="PAGED", force_unfused_topk=False,
+        attn_metadata=SimpleNamespace(cu_seqlens_k=cu_k, cu_seqlens_q=cu_q),
         get_indexer_kvcache_range=lambda: (cu_k[batches] + offsets, cu_k[batches] + offsets + lengths),
         get_dsa_extend_len_cpu=lambda: [count // 2] * 2, get_seqlens_expanded=lambda: lengths,
         get_page_table_64=lambda: full["page_table"])
@@ -146,18 +183,22 @@ def test_actual_indexer_class_mapping_output_identity_exception_and_restore(monk
     monkeypatch.setattr(seam, "_flashinfer_tuning", lambda: False)
     monkeypatch.setattr(seam, "_runtime_parallel_sizes", lambda: (4, 4))
     monkeypatch.setattr(seam, "_audit", SimpleNamespace(sampled=lambda: False))
-    events = []
+    events, declines, wild = [], [], []
 
     def candidate(*args):
         assert args[1].untyped_storage().data_ptr() == raw.untyped_storage().data_ptr()
         assert args[2].untyped_storage().data_ptr() == raw.untyped_storage().data_ptr()
         ENTRY(*args)
+        if wild:
+            args[-1][0, 0] = 2 ** 30
 
     registry = KernelRegistry()
     registry.register(KernelImpl(slot=SLOT, bundle_id="select", entry=candidate,
                                  eligibility=Eligibility(quant=frozenset({"fp8_e4m3"}))))
     registry.enable()
-    monkeypatch.setattr(seam, "_receipts", SimpleNamespace(is_invoking=lambda: False, invoke=lambda s, e, *a: e(*a), completed=events.append))
+    monkeypatch.setattr(seam, "_receipts", SimpleNamespace(
+        is_invoking=lambda: False, invoke=lambda s, e, *a: e(*a), completed=events.append,
+        not_selected=lambda slot, outcome, mismatches: declines.append((outcome, [m.field for m in mismatches]))))
     seam.install(registry)
     installed = Indexer._get_topk_paged
     seam.install(registry)
@@ -178,6 +219,10 @@ def test_actual_indexer_class_mapping_output_identity_exception_and_restore(monk
     result = method(*args, **kwargs)
     assert torch.equal(result[:count], expected) and (result[count:] == (-7 if supplied else -1)).all()
     assert (not supplied or result is destination) and events == [SLOT] and not native_calls
+    # A hostile address is clamped into the cache before the engine can dereference it.
+    wild.append(True)
+    assert int(method(*args, **kwargs)[0, 0]) == raw.shape[0] * 32 - 1
+    wild.clear()
     audits = []
 
     @wraps(originals[seam._FUNCTIONS[1 if ragged else 0]])
@@ -204,6 +249,11 @@ def test_actual_indexer_class_mapping_output_identity_exception_and_restore(monk
     monkeypatch.setattr(seam._receipts, "invoke", lambda *a: (_ for _ in ()).throw(RuntimeError("candidate failure")))
     with pytest.raises(RuntimeError, match="candidate failure"):
         method(*args, **kwargs)
-    assert events == [SLOT, SLOT] and len(native_calls) == native_before
+    assert events == [SLOT, SLOT, SLOT] and len(native_calls) == native_before
+    # Unfused top-k returns row-local positions, so the seam declines and says why.
+    metadata.force_unfused_topk = True
+    with pytest.raises(RuntimeError, match="original selection"):
+        method(*args, **kwargs)
+    assert declines == [("seam_declined", ["top_k"])] and len(native_calls) == native_before + int(raw_query)
     seam.uninstall()
     assert not seam.is_installed() and all(getattr(Indexer, n) is f for n, f in originals.items())

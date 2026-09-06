@@ -56,8 +56,8 @@ def test_glm53_registered_profiles_cover_the_measured_call_regimes():
     dense = profiles["linear.dense"]
     assert {(s["input_dim"], s["output_dim"]) for s in dense} == {
         (512, 6144), (2048, 4096), (2048, 16384), (3072, 6144),
-        (6144, 128), (6144, 160), (6144, 1024), (6144, 2624), (6144, 6144),
-        (16384, 6144), (6144, 32), (6144, 256), (192, 512), (512, 256),
+        (6144, 160), (6144, 1024), (6144, 2624), (6144, 6144),
+        (16384, 6144), (6144, 256), (192, 512), (512, 256),
     }
     assert {s["num_tokens"] for s in dense} >= {6, 24, 32, 128, 4096, 16384}
     assert {s["num_tokens"] for s in profiles["moe.fused_routed_experts"]} == {
@@ -93,7 +93,10 @@ def test_glm53_profiles_cover_six_families_without_standalone_small_targets():
     dense = profiles["linear.dense"].shapes
     assert {(s["batch_size"], s["input_dim"], s["output_dim"])
             for s in dense if "batch_size" in s} == {(64, 192, 512), (64, 512, 256)}
-    assert {s["output_dim"] for s in dense if s.get("output_dtype") == "float32"} == {32, 256}
+    # The indexer's fusion-off 6144->32 head projection and 6144->128 key projection
+    # are never issued by the GLM engine, so they are not verification shapes.
+    assert {s["output_dim"] for s in dense if s.get("output_dtype") == "float32"} == {256}
+    assert (6144, 128) not in {(s["input_dim"], s["output_dim"]) for s in dense}
     assert all(s["input_dtype"] == "bfloat16" for s in profiles["attention.sparse_mla"].shapes)
 
 

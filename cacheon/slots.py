@@ -122,17 +122,17 @@ class SlotSpec:
     # Additive typed-output ABI. Existing slots inherit dtype/device and remain
     # contiguous through ``out_shapes``.
     output_spec: Optional[Callable[[dict], OutputSpec]] = None
+    # Closed value range for integer index outputs: verify rejects anything outside
+    # it and the live seam clamps before the engine dereferences a hostile index.
+    output_bounds: Optional[Callable[[dict], tuple[int, int]]] = None
     # Optional 2nd miner callable for (prepare, forward) slots: `prepare` runs ONCE at
     # load on the raw weights (quant/layout transform); the validator holds the result
     # and passes it to `entry` each step as `prepared`. None -> a plain forward-only slot.
     prepare: Optional[str] = None
     invoke_prepare: Optional[Callable] = None  # (prepare_fn, inputs) -> prepared (None for forward-only)
-    # Live seam: build the args for the miner's prepare() from the actual sglang layer
-    # (validator-owned layer->contract mapping). The dispatcher calls
-    # prepare(*prepare_from_layer(layer)); invoke_prepare mirrors the SAME call shape for
-    # verify. This is how a slot carries more than two dense tensors (biases, the
-    # interleaving flag, quant scales) without widening the generic contract. None ->
-    # the dispatcher defaults to (layer.w13_weight.data, layer.w2_weight.data).
+    # Live seam: the dispatcher calls prepare(*prepare_from_layer(layer)) and
+    # invoke_prepare mirrors the SAME call shape for verify, so a slot can carry more
+    # than two dense tensors. None -> (layer.w13_weight.data, layer.w2_weight.data).
     prepare_from_layer: Optional[Callable] = None
     correctness: Correctness = field(default_factory=Correctness)
     tolerances: dict[torch.dtype, Tolerance] = field(default_factory=dict)

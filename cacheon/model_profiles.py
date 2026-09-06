@@ -186,14 +186,17 @@ _GLM53_DENSE_PROFILE = SlotProfile(
         for tokens, tp, matrices in (
             ((32, 4096), 1, ((6144, 2624, "replicated"),)),
             ((6, 32, 4096), 1, ((2048, 16384, "column"), (16384, 6144, "row"),
-                                (2048, 4096, "replicated"), (6144, 160, "replicated"), (6144, 128, "replicated"))),
+                                (2048, 4096, "replicated"), (6144, 160, "replicated"))),
             ((24, 128, 16384), 4, ((6144, 6144, "column"), (3072, 6144, "row"),
                                     (6144, 1024, "column"), (512, 6144, "row"))),
         )
         for m in tokens for k, n, role in matrices
     ) + tuple(
-        dict(num_tokens=tokens, input_dim=6144, output_dim=n, output_dtype="float32")
-        for sizes, n in (((1, 6, 32, 4096), 32), ((1, 8, 24, 128, 16384), 256)) for tokens in sizes
+        # The FP32 router gate over 256 routed experts. The indexer's separate
+        # 6144->128 key and FP32 6144->32 head projections exist only with indexer
+        # fusion off; GLM runs fusion on, so those GEMMs are never issued.
+        dict(num_tokens=tokens, input_dim=6144, output_dim=256, output_dtype="float32")
+        for tokens in (1, 8, 24, 128, 16384)
     ) + tuple(
         dict(num_tokens=tokens, input_dim=k, output_dim=n, batch_size=64)
         for tokens in (6, 32, 4096) for k, n in ((192, 512), (512, 256))

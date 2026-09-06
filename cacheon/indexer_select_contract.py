@@ -18,6 +18,12 @@ def output_spec(inputs: dict) -> OutputSpec:
                                   dtype=torch.int32, name="indices"),))
 
 
+def output_bounds(inputs: dict) -> tuple[int, int]:
+    """Physical indices address the paged key cache; -1 marks an unused position."""
+    keys = inputs["key_pages"]
+    return -1, keys.shape[0] * keys.shape[1] - 1
+
+
 def call_descriptor(inputs: dict, **context) -> CallDescriptor:
     """Describe the combined computation without exposing engine metadata objects."""
     q, keys = inputs["q"], inputs["key_pages"]
@@ -34,13 +40,20 @@ def make_inputs(*, num_tokens, num_heads, head_dim, kv_len, page_size, top_k,
     pages = (kv_len + page_size - 1) // page_size + 1
     rand = lambda *s: torch.randn(*s, generator=g, device=device)
     rows = torch.arange(num_tokens, device=device)
-    lengths = (rows * 7 + seed) % kv_len + 1
+    # Histories span the declared context so most rows exceed top_k: a candidate
+    # that skips scoring and returns every valid position cannot pass.
+    lengths = (rows * 7919 + seed * 104729) % kv_len + 1
     lengths[0] = 0
     angles = rand(137, head_dim // 4)
     raw = dtype != torch.float8_e4m3fn
-    return dict(q=rand(num_tokens, num_heads, head_dim).to(dtype),
-                key_pages=rand(num_batches * pages, page_size, head_dim).to(torch.float8_e4m3fn),
-                key_scales=rand(num_batches * pages, page_size).abs() + .125,
+    # Keys and scales are column views of one interleaved page buffer, exactly as
+    # the engine's index-K cache hands them to the live seam; neither is contiguous.
+    packed = torch.empty(num_batches * pages, page_size * (head_dim + 4), dtype=torch.uint8, device=device)
+    key_pages = packed[:, :page_size * head_dim].view(torch.float8_e4m3fn).view(-1, page_size, head_dim)
+    key_scales = packed[:, page_size * head_dim:].view(torch.float32)
+    key_pages.copy_(rand(num_batches * pages, page_size, head_dim).to(torch.float8_e4m3fn))
+    key_scales.copy_(rand(num_batches * pages, page_size).abs() + .125)
+    return dict(q=rand(num_tokens, num_heads, head_dim).to(dtype), key_pages=key_pages, key_scales=key_scales,
                 weights=rand(num_tokens, num_heads).to(dtype if raw else torch.float32),
                 positions=torch.randint(0, 137, (num_tokens,), generator=g, device=device) if raw else None,
                 cos_sin_cache=torch.cat((angles.cos(), angles.sin()), -1) if raw else None,
@@ -94,7 +107,7 @@ def slot_spec():
 
     return SlotSpec(name=SLOT, entry="indexer_select", kind="block",
                     summary="Optional leading RoPE, query FP8 quantization and head gates; weighted-ReLU scores, forced tokens and physical-index selection.",
-                    make_inputs=make_inputs, output_spec=output_spec,
+                    make_inputs=make_inputs, output_spec=output_spec, output_bounds=output_bounds,
                     out_shapes=lambda i: [(i["q"].shape[0], i["top_k"])],
                     invoke_reference=reference, invoke_entry=invoke_entry, graph_dynamic_inputs=DYNAMIC_INPUTS,
                     shapes=(dict(num_tokens=5, num_heads=8, head_dim=128, kv_len=97, page_size=32, top_k=7),

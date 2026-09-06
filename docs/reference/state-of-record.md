@@ -1,5 +1,20 @@
 # State of record
 
+Late on **2026-09-06**, before public intake, the attention-family verification
+gates were tightened: indexer histories span the declared context so selection
+is exercised on every registered shape; emitted indices are range-checked
+offline and clamped live; verification inputs carry the engine's strided
+key-page, scale and query layouts; FP32-output GEMM shapes are graded at the
+FP32 tolerance the live audit already used; the seam refuses unfused top-k;
+pre-selection refusals are receipted; and the fusion-shadowed indexer
+projection adapter with its two dead dense shapes was deleted. Worker bytes
+change, so the six-target GPU evidence recorded earlier that day predates this
+source and a new commission must re-run before intake. The same evening the
+attention control bundle passed the tightened offline gate inside the fixed
+image on all four registered GLM shapes per member with three CUDA graph
+replays each, including the 16,384-token sparse MLA shape and the 65,536-token
+indexer histories; that is component evidence only, not model evidence.
+
 On **2026-09-06**, frozen source `68da3066` completed full-model functional
 acceptance of all six GLM-5.3 family targets: routed MoE, dense GEMM,
 normalization, all-reduce, atomic DP exchange, and atomic

@@ -136,6 +136,17 @@ def test_inactive_selection_retains_joint_preparation(runtime, monkeypatch, reas
     assert runtime.events == [("prepare", inputs["q"].shape[1]), "write", "stock"]
 
 
+def test_refused_calls_receipt_their_reason(runtime, monkeypatch):
+    inputs, call = _call(runtime)
+    declines = []
+    monkeypatch.setattr(seam._receipts, "not_selected", lambda slot, outcome, mismatches:
+                        declines.append((slot, outcome, [m.field for m in mismatches])))
+    seam.install(_registry(lambda *args: pytest.fail("refused candidate")))
+    runtime.module.envs.SGLANG_SKIP_SOFTMAX_DECODE_THRESHOLD_SCALE_FACTOR = SimpleNamespace(get=lambda: 0.5)
+    assert (call() == -7).all()
+    assert declines == [(SLOT, "seam_declined", ["skip_softmax_threshold"])]
+
+
 @pytest.mark.parametrize("corruption", ["raise", "storage", "shape", "input_storage"])
 def test_selected_failure_is_terminal(runtime, corruption):
     _, call = _call(runtime)

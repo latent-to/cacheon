@@ -59,7 +59,7 @@ Routed MoE includes the 16,384-token prefill shape; its untimed reference groups
 tokens by expert without duplicating weights. Mixed-cell qualification remains
 the full-model quality and performance gate.
 
-Dense family profiles include router/head FP32 outputs and 64-head absorbed
+Dense family profiles include the router's FP32 output and 64-head absorbed
 BMMs `192 → 512` and `512 → 256`. The norm family includes plain widths
 512/2048/6144. Attention profiles supply raw BF16 queries, 64 latent-attention
 heads and 32 indexer heads, with independent FP8 key caches. Prefill and decode

@@ -39,8 +39,8 @@ cacheon/receipts.py 908
 cacheon/settlement.py 1344
 cacheon/slots.py 915
 cacheon/target_catalog.py 964
-cacheon/verify.py 994
-cacheon/verify_collective.py 1068
+cacheon/verify.py 986
+cacheon/verify_collective.py 1067
 dashboard/app.py 1455
 tests/test_b300_remote_worker_adapter.py 1123
 tests/test_chain_intake.py 2126

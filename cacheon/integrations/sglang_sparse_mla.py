@@ -14,6 +14,7 @@ from functools import partial, wraps
 
 import torch
 
+from cacheon.capabilities import CapabilityMismatch
 from cacheon.dispatch import (
     _allocate_live_outputs, _arch_tag, _audit, _in_cuda_graph, _receipts,
     _runtime_parallel_sizes, _validate_live_outputs,
@@ -27,14 +28,24 @@ _FUNCTION = "_forward_trtllm"
 _ORIGINAL = "_cacheon_original_sparse_mla"
 
 
+def _declined(registry, field, reason, expected):
+    """Receipt a refusal made before selection, so a registered candidate that never ran is explained."""
+    if registry.active and registry.variants(SLOT):
+        _receipts.not_selected(SLOT, "seam_declined", (CapabilityMismatch(field, reason, expected),))
+
+
 def _prepare(q, q_rope, k, k_rope, positions, cache, neox, value_dim, rope_dim,
              *, backend, layer, forward_batch, registry, baseline, module):
     """Select before splitting Q work out of the engine's joint Q/K producer."""
     args = (q, q_rope, k, k_rope, positions, cache, neox, value_dim, rope_dim)
-    if (os.environ.get("CACHEON_SPARSE_MLA_SEAM") != "1" or _receipts.is_invoking()
-        or q.dtype not in (torch.bfloat16, torch.float16)
-        or module.dsa_use_prefill_cp(forward_batch)
-        or module.envs.SGLANG_SKIP_SOFTMAX_DECODE_THRESHOLD_SCALE_FACTOR.get() is not None):
+    if os.environ.get("CACHEON_SPARSE_MLA_SEAM") != "1" or _receipts.is_invoking():
+        return (*baseline(*args), None)
+    refusal = (("dtype", "outside_domain", "bfloat16/float16") if q.dtype not in (torch.bfloat16, torch.float16)
+               else ("context_parallel", "unsupported", "none") if module.dsa_use_prefill_cp(forward_batch)
+               else ("skip_softmax_threshold", "unsupported", "none")
+               if module.envs.SGLANG_SKIP_SOFTMAX_DECODE_THRESHOLD_SCALE_FACTOR.get() is not None else None)
+    if refusal is not None:
+        _declined(registry, *refusal)
         return (*baseline(*args), None)
     kv = backend.token_to_kv_pool.get_key_buffer(layer.layer_id).view(
         -1, backend.real_page_size, backend.kv_cache_dim)
