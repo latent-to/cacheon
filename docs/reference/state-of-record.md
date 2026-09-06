@@ -9,7 +9,11 @@ FP32 tolerance the live audit already used; the seam refuses unfused top-k;
 pre-selection refusals are receipted; and the fusion-shadowed indexer
 projection adapter with its two dead dense shapes was deleted. Worker bytes
 change, so the six-target GPU evidence recorded earlier that day predates this
-source and a new commission must re-run before intake.
+source and a new commission must re-run before intake. The same evening the
+attention control bundle passed the tightened offline gate inside the fixed
+image on all four registered GLM shapes per member with three CUDA graph
+replays each, including the 16,384-token sparse MLA shape and the 65,536-token
+indexer histories; that is component evidence only, not model evidence.
 
 On **2026-09-06**, source registration consolidates GLM into six family targets:
 routed MoE, dense GEMM, normalization, all-reduce, atomic DP exchange, and
