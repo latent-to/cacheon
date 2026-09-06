@@ -13,7 +13,6 @@ import pytest
 
 from cacheon.eval.continuation_codec import ContinuationCodec
 from cacheon.eval.scoring import (
-    ChargedExecutionRate,
     RawSpeedEvidenceError,
     SpeedupVerdict,
     relative_spread,
@@ -23,10 +22,6 @@ from cacheon.eval.scoring import (
 
 def _digest(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
-
-
-def _binding(label: str) -> str:
-    return _digest(label)[:32]
 
 
 def test_relative_spread_two_reads_is_range_over_mean():
@@ -169,58 +164,3 @@ def test_speed_samples_fail_closed_without_filtering(baselines, candidate):
 def test_speed_policy_fails_closed(policy):
     with pytest.raises(RawSpeedEvidenceError):
         score_speedup([100.0, 101.0], 110.0, **policy)
-
-
-def test_speed_witness_shape_decides_policy_and_recomputes():
-    # The settlement byte contract: 3 rates = the historical B/C/B-prime shape,
-    # 5 rates = repeat reads in run order, anything else refuses; the evidence
-    # digest must recompute from the rates or construction fails closed.
-    from cacheon.eval.qualification_runner import (
-        QualificationRunnerError,
-        SpeedEvidencePolicy,
-        SpeedWitness,
-    )
-    from cacheon.eval.scoring import _projection_digest
-
-    def rate(label: str) -> ChargedExecutionRate:
-        return ChargedExecutionRate(
-            _digest("launch:" + label),
-            _binding("session:" + label),
-            10, 20, 30, 1.0, 2.0, 3.0, 10.0,
-        )
-
-    heads = tuple(
-        _digest("witness:" + name)
-        for name in (
-            "delta", "candidate-launch", "calibration",
-            "context", "workload", "runtime-policy",
-        )
-    )
-    legacy_rates = tuple(rate(role) for role in ("B", "C", "B-prime"))
-    witness = SpeedWitness(
-        *heads, _projection_digest(*heads, legacy_rates), legacy_rates
-    )
-    assert witness.policy == SpeedEvidencePolicy.legacy()
-    assert SpeedWitness.from_dict(witness.to_dict()) == witness
-
-    repeat_rates = legacy_rates + tuple(
-        rate(role) for role in ("C-prime", "B-double-prime")
-    )
-    repeat = SpeedWitness(
-        *heads, _projection_digest(*heads, repeat_rates), repeat_rates
-    )
-    assert repeat.policy == SpeedEvidencePolicy.repeat()
-    assert SpeedWitness.from_dict(repeat.to_dict()) == repeat
-
-    with pytest.raises(QualificationRunnerError, match="B/C/B-prime"):
-        SpeedWitness(
-            *heads, _projection_digest(*heads, legacy_rates[:2]), legacy_rates[:2]
-        )
-    with pytest.raises(QualificationRunnerError, match="does not recompute"):
-        SpeedWitness(*heads, _digest("forged evidence"), legacy_rates)
-    # A 3-rate witness can never be regraded under the repeat authority (and
-    # vice versa): the policy check refuses before any calibration is read.
-    with pytest.raises(QualificationRunnerError, match="policy differs"):
-        witness.regrade(None, None, expected_policy=SpeedEvidencePolicy.repeat())
-    with pytest.raises(QualificationRunnerError, match="policy differs"):
-        repeat.regrade(None, None, expected_policy=SpeedEvidencePolicy.legacy())

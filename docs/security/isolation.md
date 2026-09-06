@@ -27,23 +27,12 @@ sequenceDiagram
 
     H->>P: Read-only engine tree + lease-scoped staging
     P-->>H: Sealed native publication + inventory
-    alt v7 hot-swappable candidate
-        H->>L0: stock-to-stock swap + B
-        L0-->>H: Opening timed rate
-        H->>L1: candidate swap + C
-        L1-->>H: Candidate rate + sealed trajectory
-        opt B/C cannot decide
-            H->>L0: stock-to-stock swap + B′
-            L0-->>H: Bookend rate
-        end
-    else v8 non-swappable candidate
-        H->>L0: launch/read B
-        L0-->>H: Opening timed rate
-        H->>L1: launch/read C
-        L1-->>H: Candidate rate + sealed trajectory
-        H->>L0: read B′ unconditionally
-        L0-->>H: Stock-drift control
-    end
+    H->>L0: launch/read B
+    L0-->>H: Opening timed rate
+    H->>L1: launch/read C
+    L1-->>H: Candidate rate + sealed trajectory
+    H->>L0: read B′ unconditionally
+    L0-->>H: Stock-drift control
     H->>H: Prove resident speed lanes quiescent
     H->>A: Run registered eager, untimed audit
     A-->>H: Sampled slot × rank evidence
@@ -129,9 +118,8 @@ working directory, referee source, wallet, or other ambient host data.
 Production speed qualification uses two isolated physical TP lanes under one
 frozen authority while the controller serializes GPU work. The primary attempt
 fixes incumbent and candidate roles; an eligible reproduction must exchange
-them. Current v7 uses the standing resident pair and reads B/C plus B′ only when
-needed. Current v8 launches separate engine processes and always reads B/C/B′.
-Neither residency nor a request-local launch relaxes containment: mount,
+them. Qualification launches separate engine processes for the request and
+always reads B/C/B′. A request-local launch does not relax containment: mount,
 protocol, device, deadline, and evidence identities remain exact.
 
 The earlier resident **screen** is a different lifetime and authority. Its hot-swap
@@ -163,7 +151,7 @@ The outer controller owns:
 - session framing and bounded outputs;
 - pre/active/post device-state receipts;
 - timers and speed recomputation;
-- physical-lane assignment and adaptive escalation;
+- physical-lane assignment;
 - typed audit coverage and host regrade;
 - candidate destruction before T; and
 - final cleanup and quiescence proof.

@@ -352,7 +352,6 @@ def test_audit_authority_does_not_leak_into_speed_or_pristine_t(
         monkeypatch,
         harness,
         speed_decision=QualificationDecision.PASS,
-        escalated=False,
     )
     audit = harness.value.resident_audit_plan
     _run_resident_harness(harness, baseline)

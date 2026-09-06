@@ -19,9 +19,6 @@ from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorker,
     B300RemoteQualificationRun,
 )
-from cacheon.eval.b300_resident_qualification import (
-    B300ResidentQualificationError,
-)
 from cacheon.eval.b300_qualification_graph_gate import (
     B300QualificationGraphGateHold,
 )
@@ -29,12 +26,7 @@ from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
-from cacheon.eval.candidate_failure_product import (
-    CANDIDATE_FAILURE_SCHEMA,
-    reopen_candidate_failure,
-)
 from cacheon.eval.oci_backend import OCIEngineExecutor
-from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
@@ -165,45 +157,6 @@ def _run(case: _Case):
     )
 
 
-def _install_resident_bridge(monkeypatch):
-    calls = []
-    count_refs = (
-        _ref("resident-count-raw"),
-        _ref("resident-count-candidate"),
-        _ref("resident-count-stock"),
-    )
-    prefix = SimpleNamespace(
-        speed_plan=object(),
-        speed=object(),
-        retirement=object(),
-        count_result=SimpleNamespace(decision="FAIL"),
-        count_checkpoint=SimpleNamespace(
-            raw_execution_evidence=count_refs[0],
-            candidate_observation=count_refs[1],
-        ),
-    )
-    lifecycle = SimpleNamespace(
-        count_checkpoint=prefix.count_checkpoint,
-        stock_authority=SimpleNamespace(artifact=count_refs[2]),
-    )
-
-    def resident_prefix(**kwargs):
-        calls.append(kwargs)
-        return prefix
-
-    monkeypatch.setattr(
-        worker_module,
-        "run_b300_resident_qualification_prefix",
-        resident_prefix,
-    )
-    monkeypatch.setattr(
-        worker_module,
-        "ResidentPairMarginalLifecycleEvidence",
-        lambda *args: (calls.append(args), lifecycle)[1],
-    )
-    return calls, lifecycle, count_refs
-
-
 def test_graph_pass_reuses_one_plan_callback_and_exact_factory(
     tmp_path: Path,
     executor_factory,
@@ -224,7 +177,6 @@ def test_graph_pass_reuses_one_plan_callback_and_exact_factory(
         return mainnet_fixtures._systemic_batch(factory)
 
     monkeypatch.setattr(worker_module, "run_b300_qualification_graph_gate", gate)
-    resident_calls, lifecycle, count_refs = _install_resident_bridge(monkeypatch)
     monkeypatch.setattr(worker_module, "run_qualification_intake", intake)
     try:
         result = _run(case)
@@ -238,15 +190,9 @@ def test_graph_pass_reuses_one_plan_callback_and_exact_factory(
     assert gate_calls[0][1] is case.plan
     assert len(intake_calls) == 1
     assert intake_calls[0][0] is case.factory
-    assert len(resident_calls) == 2
-    assert resident_calls[0]["plan"] is case.plan
-    assert resident_calls[1][0] is case.plan.prepared
-    assert resident_calls[1][4].decision == "FAIL"
     assert intake_calls[0][1]["prebuilt_plan"] is case.plan
-    assert intake_calls[0][1]["resident_pair_lifecycle"] is lifecycle
     assert set(result.supporting_evidence_refs) == {
         case.authority.graph_artifact_ref,
-        *count_refs,
     }
     assert case.resident.created == 0
 
@@ -286,9 +232,6 @@ def test_native_rebuild_uses_dedicated_candidate_launch(
     )
     raw_quality_ref = _ref("native-direct-raw-quality")
 
-    def forbidden_pair(**_kwargs):
-        raise AssertionError("native qualification must not enter resident pair swap")
-
     def intake(factory, **kwargs):
         intake_calls.append((factory, kwargs))
         reservation = factory.manifest.reservations[0]
@@ -309,11 +252,6 @@ def test_native_rebuild_uses_dedicated_candidate_launch(
             attempt_ref,
         )
 
-    monkeypatch.setattr(
-        worker_module,
-        "run_b300_resident_qualification_prefix",
-        forbidden_pair,
-    )
     monkeypatch.setattr(worker_module, "run_qualification_intake", intake)
     monkeypatch.setattr(
         worker_module,
@@ -322,7 +260,6 @@ def test_native_rebuild_uses_dedicated_candidate_launch(
             reports=(
                 SimpleNamespace(
                     raw_quality_artifact=raw_quality_ref,
-                    repeat_quality=None,
                 ),
             )
         ),
@@ -337,7 +274,6 @@ def test_native_rebuild_uses_dedicated_candidate_launch(
     assert intake_calls[0][0] is case.factory
     kwargs = intake_calls[0][1]
     assert kwargs["prebuilt_plan"] is case.plan
-    assert kwargs["resident_pair_lifecycle"] is None
     assert kwargs["executor"] is case.authorities.executor
     assert (
         kwargs["resident_baseline_executor"]
@@ -353,7 +289,6 @@ def test_durable_resident_ambiguity_returns_authenticated_hold(
 ) -> None:
     case = _case(tmp_path, executor_factory, failure=False)
     _install_plan(case, monkeypatch)
-    resident_calls, _lifecycle, _count_refs = _install_resident_bridge(monkeypatch)
 
     def interrupted(*_args, **_kwargs):
         raise QualificationContinuationError("durable resident state is partial")
@@ -366,76 +301,6 @@ def test_durable_resident_ambiguity_returns_authenticated_hold(
 
     assert type(result) is B300QualificationGraphGateHold
     assert result.reason is RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE
-    assert len(resident_calls) == 2
-
-
-def test_resident_authority_mismatch_is_an_authenticated_hold(
-    tmp_path: Path,
-    executor_factory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    case = _case(tmp_path, executor_factory, failure=False)
-    _install_plan(case, monkeypatch)
-    intake_calls = []
-    monkeypatch.setattr(
-        worker_module,
-        "run_b300_resident_qualification_prefix",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            B300ResidentQualificationError("foreign pair authority")
-        ),
-    )
-    monkeypatch.setattr(
-        worker_module,
-        "run_qualification_intake",
-        lambda *args, **kwargs: intake_calls.append((args, kwargs)),
-    )
-    try:
-        result = _run(case)
-    finally:
-        case.worker.close()
-
-    assert type(result) is B300QualificationGraphGateHold
-    assert result.reason is RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE
-    assert intake_calls == []
-
-
-def test_resident_candidate_exception_is_a_terminal_failure_product(
-    tmp_path: Path,
-    executor_factory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    case = _case(tmp_path, executor_factory, failure=False)
-    _install_plan(case, monkeypatch)
-    worker_error = OuterSessionCandidateError(
-        "batch: CandidateExecutionFailure: rank 2 failed",
-        candidate_failure="rank 2 RuntimeError at kernels/moe.py:17: boom",
-    )
-    monkeypatch.setattr(
-        worker_module,
-        "run_b300_resident_qualification_prefix",
-        lambda **_kwargs: (_ for _ in ()).throw(worker_error),
-    )
-    monkeypatch.setattr(
-        worker_module,
-        "run_qualification_intake",
-        lambda *_args, **_kwargs: pytest.fail(
-            "a proved resident candidate exception must stop before intake"
-        ),
-    )
-    try:
-        result = _run(case)
-    finally:
-        case.worker.close()
-
-    assert type(result) is B300RemoteQualificationRun
-    batch = result.run.payload
-    assert batch.retry_plan is None
-    assert batch.attempt_ref is not None
-    assert batch.attempt_ref.schema == CANDIDATE_FAILURE_SCHEMA
-    assert batch.outcomes[0].decision is QualificationDecision.FAIL
-    assert batch.outcomes[0].reason == "candidate_exception"
-    failure = reopen_candidate_failure(case.plan.evidence_root, batch.attempt_ref)
-    assert failure["failure"].endswith("kernels/moe.py:17: boom")
 
 
 def test_graph_fail_returns_terminal_without_intake_pair_or_settlement(

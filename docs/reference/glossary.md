@@ -16,9 +16,9 @@
 
 **B / B′**
 : Complete-engine reads of the frozen incumbent evaluation stack. B opens the
-  comparison. Current v7 takes B′ only when B/C cannot decide; current v8
-  always takes B′ because pristine-quality control consumes the second stock
-  read. Historical policies used additional bookends.
+  comparison. Current v8/v9 always take B′ because pristine-quality control
+  consumes the second stock read. Historical policies made B′ conditional or
+  used additional bookends.
 
 **C**
 : A complete isolated candidate engine equal to the incumbent stack except for
@@ -53,7 +53,7 @@
 
 **Qualification**
 : The complete registered evidence procedure: screens; a sealed current speed
-  schedule (v7 resident B/C with conditional B′, or v8 two-process B/C/B′);
+  schedule (two-process B/C/B′, v8 or v9);
   registered eager audit A; candidate teardown; pristine T quality grading;
   exact-schema decision; and retained evidence.
 

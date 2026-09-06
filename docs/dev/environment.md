@@ -97,8 +97,8 @@ Use the narrowest test that can falsify the change, then widen the boundary:
    intake restart, and evidence reopening.
 4. **GPU seam tests** for the exact SGLang pin, architecture, graph replay,
    collectives, model, and tensor-parallel topology.
-5. **Arena qualification** for the current v7 resident B/C/[B′] or v8
-   two-process B/C/B′ schedule, registered eager audit A, and candidate-free
+5. **Arena qualification** for the two-process B/C/B′ schedule, registered
+   eager audit A, and candidate-free
    pristine T quality. Only this layer can create qualification authority.
 
 If a lower layer fails, stop there. A model benchmark cannot excuse an invalid

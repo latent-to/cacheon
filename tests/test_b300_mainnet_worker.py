@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 import cacheon.eval.b300_mainnet_worker as worker_module
-import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaCandidateBinding,
@@ -215,19 +214,6 @@ def _authorities(tmp_path: Path, executor_factory):
             "B", baseline_executor.device_policy
         ),
     )
-    authority_index = len(executor_factory.managed_executors)
-    resident_pair_factory, pair_executors = (
-        authority_fixtures._resident_pair_factory(
-            tmp_path / f"resident-pair-{authority_index}",
-            executor_factory.monkeypatch,
-            _h(f"resident-pair-placeholder-{authority_index}"),
-        )
-    )
-    executor_factory.managed_executors.extend(pair_executors)
-    resident_count_quality = authority_fixtures._resident_count_quality(
-        authority_fixtures.default_target_catalog(),
-        tmp_path / f"count-evidence-{authority_index}",
-    )
     authorities = B300DeploymentAuthorities(
         runtime_identity=_runtime(),
         screen_handlers=handlers,
@@ -248,16 +234,6 @@ def _authorities(tmp_path: Path, executor_factory):
         deadline_provider=lambda _request, _state: time.monotonic() + 600.0,
         qualification_lane_pair=lane_pair,
         qualification_stage="primary",
-        resident_pair_factory=resident_pair_factory,
-        resident_count_quality=resident_count_quality,
-    )
-    manifest = _manifest(authorities)
-    authorities = dataclasses.replace(
-        authorities,
-        resident_pair_factory=authority_fixtures._rebind_resident_pair_factory(
-            resident_pair_factory,
-            manifest.digest,
-        ),
     )
     return authorities, resident, builder
 
@@ -758,74 +734,7 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
         worker.close()
 
 
-def test_remote_qualification_retires_released_pair_and_retries_plan_build(
-    tmp_path: Path,
-    executor_factory,
-    monkeypatch,
-) -> None:
-    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
-    manifest = _manifest(authorities)
-    readiness = _readiness(manifest, authorities)
-    claim = _qualification_claim(tmp_path / "cohort", manifest)
-    continuation = QualificationContinuationStore(tmp_path / "continuation")
-    request_digest = _h("remote-request")
-
-    build_calls: list[object] = []
-    sentinel_plan = object()
-
-    def flaky_build(self):
-        build_calls.append(self)
-        if len(build_calls) == 1:
-            raise worker_module.B300QualificationGraphEvidenceHold(
-                "capture devices busy"
-            )
-        return sentinel_plan
-
-    gate_hold = worker_module.qualification_graph_gate_hold(
-        RemoteQualificationHoldReason.GRAPH_EVIDENCE_INCOMPLETE,
-        authenticated_request_digest=request_digest,
-        authority_context_digest=manifest.digest,
-        code=worker_module.B300QualificationGraphHoldCode.RAW_EVIDENCE_INCOMPLETE,
-    )
-    gate_calls = []
-
-    def fake_gate(factory, plan, *, evidence_root, candidates, authenticated_request_digest):
-        assert plan is sentinel_plan
-        gate_calls.append(factory)
-        return gate_hold
-
-    monkeypatch.setattr(QualificationPlanFactory, "build", flaky_build)
-    monkeypatch.setattr(
-        worker_module, "run_b300_qualification_graph_gate", fake_gate
-    )
-    worker = B300MainnetWorker(manifest, authorities, readiness)
-    retires = []
-    monkeypatch.setattr(
-        worker._resident_pair_factory,
-        "retire_released_pair",
-        lambda: retires.append(True) or True,
-        raising=False,
-    )
-    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
-    try:
-        result = worker.run_remote_qualification(
-            claim.lease,
-            claim.candidates,
-            claim.screen_receipts,
-            screen_lane="primary",
-            continuation_store=continuation,
-            request_digest=request_digest,
-        )
-
-        assert result is gate_hold
-        assert len(build_calls) == 2
-        assert retires == [True]
-        assert len(gate_calls) == 1
-    finally:
-        worker.close()
-
-
-def test_remote_qualification_holds_when_no_released_pair_can_be_retired(
+def test_remote_qualification_holds_when_plan_build_capture_is_busy(
     tmp_path: Path,
     executor_factory,
     monkeypatch,

@@ -257,7 +257,7 @@ result = run_validator(
 
 Do not substitute a shell command, dynamic import path, or fake provider that declares
 success. A commissioned provider must return real typed screen evidence and construct the
-sealed current v7 B/C/[B′] or v8 B/C/B′ speed work, audit, and pristine-T
+sealed two-process B/C/B′ speed work, audit, and pristine-T
 qualification work.
 
 ## 8. Observe one complete reservation lifecycle
@@ -282,9 +282,8 @@ evidence reopening. They cannot satisfy the production-provider, GPU-performance
 calibration requirements of this commissioning step.
 
 For resident authority, also confirm that timed GPU work never overlaps between lanes,
-both lanes prove quiescence before audit/T, v7 alone makes B′ conditional while
-v8 takes it unconditionally, and the reproduction exact-swaps the physical
-baseline and candidate lane roles.
+both lanes prove quiescence before audit/T, B′ is read unconditionally, and the
+reproduction exact-swaps the physical baseline and candidate lane roles.
 
 ## 9. Commission the signer separately
 

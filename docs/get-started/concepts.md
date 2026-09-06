@@ -102,11 +102,10 @@ that registered singleton target and declare that it applies to BF16 calls on `s
    trusting the manifest to grant itself permissions.
 4. Static, build, ABI, graph, and abbreviated-serving screens decide only whether the
    candidate should consume full qualification capacity.
-5. Version-3 qualification chooses the speed substrate from the candidate's
-   manifest features. A hot-swappable candidate uses speed policy v7 on the
-   standing resident pair: serialized B/C, followed by B′ only when B/C cannot
-   decide. A non-swappable candidate uses v8's separate baseline and candidate
-   engines and always collects B/C/B′. A registered eager, untimed audit role
+5. Version-3 qualification measures every candidate on the two-process
+   substrate: speed policy v8 (v9 for a mixed-cell workload) launches separate
+   baseline and candidate engines and always collects B/C/B′. A registered
+   eager, untimed audit role
    (**A**) then checks the candidate delta; after candidate teardown, the
    pristine reference (**T**) supplies candidate-free quality evidence.
 6. One complete PASS is retained as `reproduction_pending`. A fresh independent attempt

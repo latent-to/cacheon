@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 import time
 from dataclasses import replace
@@ -30,7 +28,6 @@ from cacheon.eval.qualification_runner import (
     _resident_speed_projection_digest,
 )
 from cacheon.eval.qualification import QualificationDecision
-from cacheon.eval.scoring import score_speedup
 from cacheon.settlement import ResidentLaneOrientation
 from tests.test_oci_backend import _case, _manager
 
@@ -241,7 +238,7 @@ def _rig(
     *,
     distinct_runtime_policies: bool = False,
     policy: ResidentSpeedPolicy | None = None,
-    timed_batches: int = 1,
+    timed_batches: int = 3,
     candidate_conditioning: float = 0.1,
     baseline_durations: tuple[float, ...] = (1.0, 1.0, 1.0),
 ):
@@ -374,9 +371,7 @@ def _rig(
         "7" * 64,
         baseline,
         candidate,
-        policy
-        if policy is not None
-        else ResidentSpeedPolicy(60, 0.005, 2.0, 0.1, "8" * 64, "9" * 64),
+        policy if policy is not None else _policy_v8(),
     )
     return (
         plan,
@@ -386,66 +381,6 @@ def _rig(
         trace,
         overlap,
     )
-
-
-@pytest.mark.parametrize(
-    ("candidate_durations", "expected_decision"),
-    (
-        ((1.02, 1.02), SpeedStageDecision.FAIL),
-        ((0.90, 0.90), SpeedStageDecision.PASS),
-    ),
-)
-def test_clear_result_stops_after_three_serialized_reads(
-    tmp_path: Path,
-    candidate_durations: tuple[float, ...],
-    expected_decision: SpeedStageDecision,
-) -> None:
-    plan, baseline, candidate, mount, trace, overlap = _rig(
-        tmp_path, candidate_durations
-    )
-    result = _speed(plan, baseline, candidate, mount)
-
-    assert result.decision is expected_decision
-    assert not result.escalated
-    assert tuple(row.role for row in result.rates) == ("B", "C", "B_prime")
-    assert trace[:6] == [
-        "left:0",
-        "left:1",
-        "right:0",
-        "right:1",
-        "left:2",
-        "left:3",
-    ]
-    assert trace.index("right:close") > trace.index("left:3")
-    assert not overlap[0]
-    assert len(result.baseline_execution.session.batches) == 4
-    assert len(result.candidate_execution.session.batches) == 2
-    assert result.regrade(plan) == result.final_verdict
-    assert result.digest
-
-
-def test_borderline_result_adds_only_candidate_and_baseline_repeat(
-    tmp_path: Path,
-) -> None:
-    plan, baseline, candidate, mount, trace, overlap = _rig(
-        tmp_path, (0.993, 0.993)
-    )
-    result = _speed(plan, baseline, candidate, mount)
-
-    assert result.escalated
-    assert result.decision is SpeedStageDecision.PASS
-    assert tuple(row.role for row in result.rates) == (
-        "B",
-        "C",
-        "B_prime",
-        "C_prime",
-        "B_double_prime",
-    )
-    assert trace.index("right:2") < trace.index("left:4")
-    assert trace.index("right:close") > trace.index("left:5")
-    assert not overlap[0]
-    assert len(result.baseline_execution.session.batches) == 6
-    assert len(result.candidate_execution.session.batches) == 4
 
 
 def test_plan_rejects_overlapping_physical_lanes(tmp_path: Path) -> None:
@@ -472,67 +407,9 @@ def test_plan_rejects_overlapping_physical_lanes(tmp_path: Path) -> None:
         )
 
 
-def test_plan_seals_the_baseline_bundle_only_under_symmetric_swap(
-    tmp_path: Path,
-) -> None:
-    """The injected-baseline identity is a v7 pair-native concept only.
-
-    Slots without a digest, unsorted or duplicate slots, and any policy
-    version other than 7 (v8 boots the incumbent; pre-v7 has no baseline
-    swap) are plan construction errors, and the sealed fields participate in
-    the plan digest.
-    """
-
-    plan, *_ = _rig(tmp_path, (1.0, 1.0))
-
-    def policy(version: int) -> ResidentSpeedPolicy:
-        return ResidentSpeedPolicy(
-            60,
-            0.005,
-            2.0,
-            0.002,
-            "8" * 64,
-            "9" * 64,
-            version=version,
-            min_windows=3,
-            max_window_scatter=0.05,
-            max_conditioning_slowdown=1.5,
-        )
-
-    sealed = replace(
-        plan,
-        policy=policy(7),
-        baseline_bundle_digest="a" * 64,
-        baseline_bundle_slots=("a.slot", "b.slot"),
-    )
-    assert sealed.digest != replace(plan, policy=policy(7)).digest
-    for bad in (
-        dict(baseline_bundle_slots=("a.slot",)),  # slots without a digest
-        dict(baseline_bundle_digest="a" * 64),  # digest without slots
-        dict(
-            baseline_bundle_digest="a" * 64,
-            baseline_bundle_slots=("b.slot", "a.slot"),
-        ),
-        dict(
-            baseline_bundle_digest="a" * 64,
-            baseline_bundle_slots=("a.slot", "a.slot"),
-        ),
-    ):
-        with pytest.raises(CrossoverRuntimeError):
-            replace(plan, policy=policy(7), **bad)
-    for version in (6, 8):
-        with pytest.raises(CrossoverRuntimeError, match="symmetric-swap"):
-            replace(
-                plan,
-                policy=policy(version),
-                baseline_bundle_digest="a" * 64,
-                baseline_bundle_slots=("a.slot",),
-            )
-
-
 def test_retained_rate_span_is_independently_regraded(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.90, 0.90)
+        tmp_path, (0.90,)
     )
     result = _speed(plan, baseline, candidate, mount)
     first = result.rates[0]
@@ -555,7 +432,7 @@ def test_retained_rate_span_is_independently_regraded(tmp_path: Path) -> None:
         tampered.regrade(plan)
 
 
-@pytest.mark.parametrize("candidate_durations", ((0.90, 0.90), (1.02, 1.02)))
+@pytest.mark.parametrize("candidate_durations", ((0.90,), (1.02,)))
 def test_resident_speed_witness_round_trips_pass_or_fail_raw_stage(
     tmp_path: Path, candidate_durations: tuple[float, ...]
 ) -> None:
@@ -605,7 +482,7 @@ def test_resident_speed_witness_binds_distinct_numa_lane_policies(
 ) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path,
-        (0.90, 0.90),
+        (0.90,),
         distinct_runtime_policies=True,
     )
     assert baseline.config.runtime.cpuset_cpus == "0-7"
@@ -645,7 +522,7 @@ def test_resident_settlement_control_accepts_exact_lane_policy_swap(
 ) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path,
-        (0.90, 0.90),
+        (0.90,),
         distinct_runtime_policies=True,
     )
     result = _speed(plan, baseline, candidate, mount)
@@ -719,73 +596,6 @@ def test_resident_policy_binds_total_qualification_budget() -> None:
     assert ResidentSpeedPolicy.from_dict(policy.to_dict()) == policy
     with pytest.raises(CrossoverRuntimeError, match="unsupported"):
         replace(policy, max_qualification_seconds=599)
-
-
-def test_speed_verdict_v2_regrades_the_sealed_b300_stage_exit_both_ways() -> None:
-    """The 2026-07-24 B300 joined-primary stage-exit — the first production v3
-    speed verdict ever issued — pinned both ways. Version-1 charged-basis
-    arithmetic must reproduce the shipped FAIL exactly; version-2 timed-basis
-    arithmetic must grade the same sealed reads as a clear PASS. The warm/cold
-    conditioning split between B (fresh session, cold first read) and B_prime
-    (warm continuation of B's session) is accounting structure, not noise, and
-    only the charged basis scores it: it inflated baseline noise to 6.3% and
-    the required bar to 1.126 against a candidate faster on every timed
-    window."""
-
-    fixture = Path(__file__).parent / "fixtures" / "speed_stage_exit_97eb1808.json"
-    raw = fixture.read_bytes()
-    assert (
-        hashlib.sha256(raw).hexdigest()
-        == "97eb1808b908d0704bbddc350dacf8f1a051fb72f87c70a1ec9ba1cd61d13152"
-    )
-    exit_ = QualificationStageExit.from_dict(json.loads(raw))
-    assert exit_.stage == "speed"
-    assert exit_.decision is QualificationDecision.FAIL
-    assert exit_.reason == "speed_regression"
-
-    witness = exit_.speed_witness
-    policy_v1 = witness.resident_policy
-    assert policy_v1.version == 1
-    baselines = [row for row in witness.rates if row.role.startswith("B")]
-    candidates = [row for row in witness.rates if row.role.startswith("C")]
-    assert [row.role for row in witness.rates] == ["B", "C", "B_prime"]
-
-    shipped = score_speedup(
-        [policy_v1.scored_tokens_per_second(row) for row in baselines[:2]],
-        [policy_v1.scored_tokens_per_second(row) for row in candidates[:1]],
-        min_margin=policy_v1.min_margin,
-        k=policy_v1.noise_multiplier,
-        max_noise=policy_v1.max_noise,
-    )
-    assert shipped.confident and not shipped.passed_speedup
-    assert shipped.speedup == pytest.approx(0.992288407418, rel=1e-9)
-    assert shipped.noise == pytest.approx(0.063093295300, rel=1e-9)
-    assert shipped.required == pytest.approx(1.126186590600, rel=1e-9)
-    # Clear FAIL (outside the min_margin band around required), so the shipped
-    # 3-read shape with no C_prime/B_double_prime extension regrades.
-    assert shipped.speedup <= shipped.required - policy_v1.min_margin
-
-    policy_v2 = ResidentSpeedPolicy.from_dict(
-        {**policy_v1.to_dict(), "version": 2, "max_noise": "0.02"}
-    )
-    regraded = score_speedup(
-        [policy_v2.scored_tokens_per_second(row) for row in baselines[:2]],
-        [policy_v2.scored_tokens_per_second(row) for row in candidates[:1]],
-        min_margin=policy_v2.min_margin,
-        k=policy_v2.noise_multiplier,
-        max_noise=policy_v2.max_noise,
-    )
-    assert regraded.confident and regraded.passed_speedup
-    assert regraded.speedup == pytest.approx(1.031639399357, rel=1e-9)
-    assert regraded.noise == pytest.approx(0.006904721491, rel=1e-9)
-    assert regraded.required == pytest.approx(1.013809442981, rel=1e-9)
-    # Also clear: the verdict would not have needed the repeat-read extension.
-    assert regraded.speedup >= regraded.required + policy_v2.min_margin
-
-    # Flipping the version on the sealed policy without tightening the noise
-    # ceiling is refused outright — a v2 policy cannot carry the v1 ceiling.
-    with pytest.raises(CrossoverRuntimeError, match="max_noise <= 0.02"):
-        ResidentSpeedPolicy.from_dict({**policy_v1.to_dict(), "version": 2})
 
 
 def _policy_v3(**overrides) -> ResidentSpeedPolicy:
@@ -975,17 +785,11 @@ def test_v8_conditioning_regression_fails_a_fast_candidate(tmp_path: Path) -> No
     assert result.regrade(plan) == result.final_verdict
 
 
-def test_v8_settled_speedup_is_not_graded_by_v6_arithmetic(
-    tmp_path: Path,
-) -> None:
-    """Settlement must dispatch on version, not call ``v6_result`` by hand.
+def test_v8_settled_speedup_is_the_bookend_grade(tmp_path: Path) -> None:
+    """Settlement's accepted speedup is the same grade the runner regrades.
 
-    ``v6_result`` does not refuse a v8 witness up front -- its own guard is
-    ``version < 6``. It fails deeper, inside ``v6_grade``, on v6's invariant
-    that a *clear* decision never carries a third read. v8 precommits B-prime,
-    so a clear v8 verdict is exactly the shape v6 calls impossible: settlement
-    reaching for ``v6_result`` raises instead of settling. Native bundles are
-    the only ones v8 ever grades, so this is the CUDA payout path.
+    Native bundles are the only ones v8 ever grades, so this is the CUDA
+    payout path: the number settlement carries must come from the one grader.
     """
 
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
@@ -997,14 +801,8 @@ def test_v8_settled_speedup_is_not_graded_by_v6_arithmetic(
     result = _speed(plan, baseline, candidate, mount)
     witness = ResidentSpeedWitness.from_evidence(result, plan)
     assert witness.resident_policy.version == 8
-
-    # The settled number is the v8 one, and it is a real speedup.
     assert witness.accepted_speedup() == witness.always_bookend_result()[1]
     assert float(witness.accepted_speedup()) > 0.0
-
-    # Reaching for v6 by hand does not settle this witness at all.
-    with pytest.raises(QualificationRunnerError, match="clear decision added"):
-        witness.v6_result()
 
 
 def test_v8_evidence_cannot_claim_the_retired_five_arm_schedule(
@@ -1020,30 +818,30 @@ def test_v8_evidence_cannot_claim_the_retired_five_arm_schedule(
         replace(result, escalated=True, exit_reason="borderline_pass")
 
 
-@pytest.mark.parametrize("version", (6, 7))
-def test_conditional_bookend_policies_cannot_serve_this_substrate(
+@pytest.mark.parametrize("version", (3, 7))
+def test_pre_v8_policies_cannot_serve_this_substrate(
     tmp_path: Path, version: int
 ) -> None:
-    # v6/v7 read the bookend only when the speed call is close, so a clear PASS
-    # under them seals two reads and leaves the quality gate with no stock-drift
-    # control to harvest. They belong to the pair-native crossover; refuse them
-    # here rather than produce evidence the next stage cannot use.
+    # The adaptive five-read schedule (v1-v5) and the conditional bookend
+    # (v6/v7) left with the MiniMax-M3 history seal. A sealed policy below
+    # version 8 is refused before any read rather than measured under a
+    # schedule this tree no longer runs.
     plan, baseline, candidate, mount, trace, _overlap = _rig(
         tmp_path,
         (0.9,),
         policy=replace(_policy_v3(), version=version),
         timed_batches=3,
     )
-    with pytest.raises(CrossoverRuntimeError, match="conditional-bookend"):
+    with pytest.raises(CrossoverRuntimeError, match="precommitted B/C/B-prime"):
         _speed(plan, baseline, candidate, mount)
     assert trace == []
 
 
-def test_v3_crossover_scores_window_medians_and_retains_windows(
+def test_v8_crossover_scores_window_medians_and_retains_windows(
     tmp_path: Path,
 ) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.90, 0.90), policy=_policy_v3(), timed_batches=3
+        tmp_path, (0.90,), policy=_policy_v8(), timed_batches=3
     )
     result = _speed(plan, baseline, candidate, mount)
 
@@ -1071,9 +869,9 @@ def test_v3_crossover_scores_window_medians_and_retains_windows(
     assert ResidentSpeedWitness.from_dict(witness.to_dict()) == witness
 
 
-def test_v3_tampered_window_fails_independent_regrade(tmp_path: Path) -> None:
+def test_v8_tampered_window_fails_independent_regrade(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.90, 0.90), policy=_policy_v3(), timed_batches=3
+        tmp_path, (0.90,), policy=_policy_v8(), timed_batches=3
     )
     result = _speed(plan, baseline, candidate, mount)
     first = result.rates[0]
@@ -1089,23 +887,9 @@ def test_v3_tampered_window_fails_independent_regrade(tmp_path: Path) -> None:
         tampered.regrade(plan)
 
 
-def test_v3_scatter_blowout_refuses_the_stage_not_the_candidate(
-    tmp_path: Path,
-) -> None:
+def test_v8_witness_refuses_window_retention_mismatch(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.90, 0.90), policy=_policy_v3(max_window_scatter=0.0005),
-        timed_batches=3,
-    )
-    # The rig's +-0.1% window wobble exceeds a 0.05% sealed scatter bound:
-    # the read refuses to produce a scored number, so the stage dies as
-    # typed infrastructure before any verdict exists.
-    with pytest.raises(CrossoverRuntimeError, match="window scatter exceeds"):
-        _speed(plan, baseline, candidate, mount)
-
-
-def test_v3_witness_refuses_window_retention_mismatch(tmp_path: Path) -> None:
-    plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.90, 0.90), policy=_policy_v3(), timed_batches=3
+        tmp_path, (0.90,), policy=_policy_v8(), timed_batches=3
     )
     result = _speed(plan, baseline, candidate, mount)
     witness = ResidentSpeedWitness.from_evidence(result, plan)
@@ -1129,7 +913,7 @@ def test_timed_window_rows_are_exact_and_tiled() -> None:
         TimedWindow.from_dict({**window.to_dict(), "seconds": "0.250"})
 
 
-def test_v3_conditioning_regression_fails_a_fast_but_prefill_slow_candidate(
+def test_v8_conditioning_regression_fails_a_fast_but_prefill_slow_candidate(
     tmp_path: Path,
 ) -> None:
     # Candidate decodes 10% faster but its conditioning (the only span where
@@ -1138,8 +922,8 @@ def test_v3_conditioning_regression_fails_a_fast_but_prefill_slow_candidate(
     # the graded numbers are already sealed in every read.
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path,
-        (0.90, 0.90),
-        policy=_policy_v3(),
+        (0.90,),
+        policy=_policy_v8(),
         timed_batches=3,
         candidate_conditioning=0.2,
     )
@@ -1152,13 +936,13 @@ def test_v3_conditioning_regression_fails_a_fast_but_prefill_slow_candidate(
     assert ResidentSpeedWitness.from_dict(witness.to_dict()) == witness
 
 
-def test_v3_conditioning_within_bound_does_not_disturb_the_verdict(
+def test_v8_conditioning_within_bound_does_not_disturb_the_verdict(
     tmp_path: Path,
 ) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path,
-        (0.90, 0.90),
-        policy=_policy_v3(),
+        (0.90,),
+        policy=_policy_v8(),
         timed_batches=3,
         candidate_conditioning=0.12,  # 1.2x, inside the sealed 1.25 bound
     )

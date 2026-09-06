@@ -75,11 +75,10 @@ evaluation and economic state.
 | Physical qualification lane pair | [`eval/b300_qualification_lanes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_qualification_lanes.py) |
 | Remote qualification evidence products | [`chain/remote_qualification_evidence.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_qualification_evidence.py) |
 | Remote qualification adapter | [`eval/b300_remote_qualification_adapter.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_qualification_adapter.py) |
-| Standing resident-pair lifecycle | [`eval/resident_evaluation_pair.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_evaluation_pair.py) |
 | Bundle and committed-source identity | [`bundle_hash.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bundle_hash.py) |
 | Host audit grading | [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py) |
 | OCI lifecycle and protocol | [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_session_protocol.py) |
-| Current speed substrates | v7 standing-pair B/C/[B′] in [`eval/resident_pair_crossover.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_pair_crossover.py); v8 two-process B/C/B′ in [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py) and [`eval/oci_outer_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_outer_session.py) |
+| Current speed substrate | Two-process B/C/B′ (v8, v9 mixed-cell) in [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py) and [`eval/oci_outer_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_outer_session.py) |
 | Immutable native prebuild | [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
 | Device conditioning/cleanup | [`eval/device_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/device_state.py) |
 
@@ -181,9 +180,8 @@ fixture:
   input and target admission;
 - `test_stack_manifest.py`, stack-planning tests, and `test_engine_tree.py`
   cover canonical composition and integration materialization;
-- qualification, OCI, audit, and reference-protocol tests cover current v7
-  resident B/C/[B′], v8 two-process B/C/B′, registered eager audit A, and
-  pristine T, while historical-policy tests preserve older witness shapes;
+- qualification, OCI, audit, and reference-protocol tests cover the two-process
+  B/C/B′ schedule, registered eager audit A, and pristine T;
 - chain-intake, settlement, economics, and weight-publication tests cover
   durable economic transitions;
 - `test_chain_publish.py` and `test_chain_archive.py` cover public proposal

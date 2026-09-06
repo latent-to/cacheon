@@ -9,7 +9,7 @@ not provide a local qualification substitute.
 | `scan` | Does the declared bundle tree satisfy the static intake policy? | Local admission diagnostic |
 | `verify` | Do applicable variants satisfy the registered component ABI, reference, and graph checks? | Local component diagnostic |
 | Arena screen | Can the exact materialized delta pass static, build, ABI, graph, and abbreviated-serving routing gates? | Promotion eligibility only |
-| Current v7 resident B/C (+ B′ only when inconclusive) or v8 two-process B/C/B′ + audit/T | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
+| Two-process B/C/B′ (v8, or v9 mixed-cell) + audit/T | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
 | Independent reproduction | Do two separately bound PASS attempts reopen and agree? | Settlement prerequisite |
 
 The static arena screen also rejects a candidate whose declared eligibility cannot
@@ -130,8 +130,8 @@ contributor-controlled run cannot provide
 finalized intake identity, validator-owned materialization, hidden work, frozen
 calibration, no-egress worker authority, or a validator-bound durable attempt with its
 aggregate speed witness and referenced graph/quality/T products. The production attempt
-uses two isolated physical TP lanes, serializes current v7 B/C/[B′] or v8
-B/C/B′, validates richer raw frames and device state, and runs a distinct
+uses two isolated physical TP lanes, serializes the two-process B/C/B′
+schedule, validates richer raw frames and device state, and runs a distinct
 audit-only role before pristine T. Those raw frames are not serialized into
 `CohortQualificationAttempt`. A
 local run cannot provide the required second PASS, exact physical-lane swap, or its

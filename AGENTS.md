@@ -91,10 +91,10 @@ AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
 - The resident hot-swap screen is routing-only. Its measurements cannot crown,
   settle, or authorize rewards.
 - Production version-3 qualification binds two physical TP lanes. Current
-  speed policy uses v7 resident B/C with B′ only when inconclusive for
-  hot-swappable candidates, or v8 two-process B/C/B′ for non-swappable
-  candidates; both retain a separate eager/untimed audit role when registered,
-  pristine T, and a physical-lane role swap across reproduction.
+  speed policy is the two-process B/C/B′ schedule for every candidate (v8, or
+  v9 for a mixed-cell workload); it retains a separate eager/untimed audit role
+  when registered, pristine T, and a physical-lane role swap across
+  reproduction. The pair-native v7 schedule was deleted on 2026-09-06.
 - Evaluation-stack settlement, incentive activation, weight publication,
   integration review, release signing, and serving are distinct authorities.
 - Legacy V1 weights are a fenced state machine. The V2 finite-debt economics

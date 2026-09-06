@@ -109,8 +109,7 @@ The authoritative bracket is:
 ```text
 incumbent = exact incumbent engine on the assigned baseline lane
 candidate = same stack with exactly the selected target delta on the disjoint lane
-v7 = B → C [→ B′ only when B/C cannot decide], on the standing pair
-v8 = B → C → B′ unconditionally, with separate engine processes
+v8 = B → C → B′ unconditionally, with separate engine processes (v9: mixed cells)
 A = registered eager, untimed candidate audit
 T = candidate-free pristine quality reference after candidate teardown
 ```

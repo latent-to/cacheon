@@ -514,7 +514,7 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.resident_audit_plan.launch.digest != (
         first.prepared.candidates[0].launch.digest
     )
-    assert first.resident_speed_plan.policy.version == 3
+    assert first.resident_speed_plan.policy.version == 8
     assert first.resident_speed_plan.selected_delta_digest == (
         harness.candidate.reservation.selected_delta_digest
     )
@@ -541,10 +541,18 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.evidence_root == harness.inputs.evidence_root
 
 
-@pytest.mark.parametrize("version", (5, 6))
-def test_registered_plan_accepts_commissioned_resident_policy(
+@pytest.mark.parametrize("version", (5, 6, 7))
+def test_registered_plan_measures_every_commissioned_policy_on_two_process(
     tmp_path: Path, version: int
 ) -> None:
+    """The sealed plan always carries the two-process schedule.
+
+    The commission seals the policy's thresholds; the schedule version is
+    fixed by the plan builder because every candidate is measured by the
+    two-process crossover (8, or 9 for a mixed-cell workload), whatever
+    version an older commission block declared.
+    """
+
     harness = _harness(tmp_path)
     current = harness.inputs.resident_speed_policy
     commissioned = ResidentSpeedPolicy.from_calibration(
@@ -563,80 +571,7 @@ def test_registered_plan_accepts_commissioned_resident_policy(
     ).plan_builder(harness.cohort, b"v" * 32)
 
     assert value.resident_speed_plan is not None
-    assert value.resident_speed_plan.policy.version == version
-
-
-def test_pair_native_routing_requires_swap_reachability_and_same_target() -> None:
-    """v7 measures both arms by injection over stock-booted engines.
-
-    That comparison is exact only at genesis or when the candidate replaces
-    the incumbent's own registered target and the incumbent itself is a
-    single injectable bundle; everything else boots real trees on v8.
-    """
-
-    bundle = registered.SealedIncumbentBundle(
-        "norm.rmsnorm",
-        _h("crowned"),
-        ("norm.rmsnorm",),
-    )
-    route = registered.resident_pair_native
-    assert route(
-        swappable=True, genesis=True, incumbent_bundle=None,
-        candidate_target_id="any.target",
-    )
-    assert route(
-        swappable=True, genesis=False, incumbent_bundle=bundle,
-        candidate_target_id="norm.rmsnorm",
-    )
-    # Non-swappable candidates always boot.
-    assert not route(
-        swappable=False, genesis=True, incumbent_bundle=None,
-        candidate_target_id="any.target",
-    )
-    # A different-target candidate composed over stock would omit the
-    # incumbent's win from its own arm.
-    assert not route(
-        swappable=True, genesis=False, incumbent_bundle=bundle,
-        candidate_target_id="moe.fused_experts_reduce",
-    )
-    # An incumbent one swap cannot realize routes everyone to v8.
-    assert not route(
-        swappable=True, genesis=False, incumbent_bundle=None,
-        candidate_target_id="norm.rmsnorm",
-    )
-
-
-def test_sealed_incumbent_bundle_binds_to_the_declared_stack_entry(
-    tmp_path: Path,
-) -> None:
-    harness = _harness(tmp_path)
-    foreign = registered.SealedIncumbentBundle(
-        "norm.rmsnorm",
-        _h("not-in-the-stack"),
-        ("norm.rmsnorm",),
-    )
-    with pytest.raises(
-        registered.B300RegisteredQualificationError,
-        match="differs from the incumbent stack entry",
-    ):
-        replace(harness.inputs, incumbent_bundle=foreign)
-
-    with pytest.raises(
-        registered.B300RegisteredQualificationError,
-        match="sorted distinct slots",
-    ):
-        registered.SealedIncumbentBundle(
-            "norm.rmsnorm",
-            _h("crowned"),
-            ("b.slot", "a.slot"),
-        )
-    with pytest.raises(
-        registered.B300RegisteredQualificationError,
-        match="incumbent bundle digest",
-    ):
-        registered.SealedIncumbentBundle(
-            "norm.rmsnorm", "nothex", ("a.slot",)
-        )
+    assert value.resident_speed_plan.policy == replace(commissioned, version=8)
 
 
 def test_native_candidate_is_planned_on_the_two_process_schedule(

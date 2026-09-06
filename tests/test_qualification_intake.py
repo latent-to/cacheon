@@ -191,7 +191,7 @@ def test_plan_factory_reopens_exact_secret_and_public_authority(monkeypatch) -> 
         ).build()
 
 
-def test_prebuilt_plan_can_run_without_resident_pair_lifecycle(monkeypatch) -> None:
+def test_prebuilt_plan_is_handed_to_the_runner_unchanged(monkeypatch) -> None:
     plan, manifest = _fake_plan(monkeypatch, count=1)
     calls = []
 
@@ -212,7 +212,6 @@ def test_prebuilt_plan_can_run_without_resident_pair_lifecycle(monkeypatch) -> N
 
     assert len(calls) == 1
     assert calls[0][0] is plan
-    assert "resident_pair_lifecycle" not in calls[0][1]
     assert result.outcomes[0].reason == "qualification_runner"
 
 

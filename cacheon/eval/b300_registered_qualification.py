@@ -108,39 +108,10 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     B300RegisteredQualificationInputs,
     B300RegisteredQualificationPolicy,
     B300RegisteredTargetProjection,
-    SealedIncumbentBundle,
     _digest,
     registered_b300_member_contract_projection,
     registered_b300_profile_resolver_digest,
 )
-
-
-def resident_pair_native(
-    *,
-    swappable: bool,
-    genesis: bool,
-    incumbent_bundle: SealedIncumbentBundle | None,
-    candidate_target_id: str,
-) -> bool:
-    """Whether one candidate is measured on the pair-native (v7) substrate.
-
-    Pair-native requires the candidate to be hot-swappable AND its measured
-    comparison to be exact with both arms composed over stock-booted engines:
-    at genesis both arms are literally stock, and past genesis the baseline
-    injection must realize the complete incumbent stack (a sealed single
-    bundle) while the candidate replaces that same registered target.
-    Everything else routes to the version-8 two-process schedule, which boots
-    real trees for both arms.
-    """
-
-    if not swappable:
-        return False
-    if genesis:
-        return True
-    return (
-        incumbent_bundle is not None
-        and candidate_target_id == incumbent_bundle.target_id
-    )
 
 
 @dataclass(frozen=True)
@@ -568,58 +539,18 @@ class B300RegisteredQualificationFactory:
             inputs.candidate_runtime_resource_policy_digest,
             inputs.candidate_device_configuration_digest,
         )
-        # A candidate that cannot be hot-swapped into a resident engine -- a
-        # CUDA, C++ or PTX bundle, whose kernels must be compiled and linked
-        # into the engine that runs them -- is measured by the two-process
-        # crossover in `crossover_runtime`, not by the pair-native one. That
-        # substrate reads its bookend unconditionally, because the quality
-        # gate's stock-drift control is harvested from the second baseline
-        # read. Version 8 is that schedule, and its baseline process boots the
-        # commissioned incumbent tree. The pair-native schedule keeps both
-        # engines stock-booted and realizes each arm by injection, so it also
-        # requires the incumbent stack to be reachable by one swap and the
-        # candidate to replace the incumbent's own registered target — a
-        # different-target candidate composed over stock would omit the
-        # incumbent's win from its own arm and be penalized for it. The worker
-        # routes on the sealed version this plan carries, so the plan and the
-        # execution path cannot disagree about which substrate applies.
-        try:
-            swappable = (
-                screen_swappability(load_manifest(candidate.publication.root))
-                is None
-            )
-        except (OSError, TypeError, ValueError) as exc:
-            raise B300RegisteredQualificationError(
-                f"candidate manifest failed swappability inspection: {exc}"
-            ) from None
+        # Every candidate is measured by the two-process crossover in
+        # `crossover_runtime`, which boots real trees for both arms and reads
+        # its bookend unconditionally because the quality gate's stock-drift
+        # control is harvested from the second baseline read. Version 8 is
+        # that schedule and version 9 its mixed-cell form. The worker routes
+        # on the sealed version this plan carries.
         mixed_cells = bool(prepared_candidate.session_plan.batch_max_new_tokens)
-        pair_native = resident_pair_native(
-            # The pair-native lane swaps one fixed-shape resident read. Mixed
-            # cells use the existing two-process B/C/B-prime scheduler until
-            # that swap substrate can retain request-local geometry itself.
-            swappable=swappable and not mixed_cells,
-            genesis=not inputs.incumbent_stack.entries,
-            incumbent_bundle=inputs.incumbent_bundle,
-            candidate_target_id=candidate.reservation.target_id,
-        )
-        injected_incumbent = inputs.incumbent_bundle if pair_native else None
         resident_plan = ResidentCrossoverPlan(
             candidate.reservation.selected_delta_digest,
             inputs.resident_baseline_arm,
             candidate_resident_arm,
-            inputs.resident_speed_policy
-            if pair_native
-            else replace(
-                inputs.resident_speed_policy,
-                version=9 if mixed_cells else 8,
-            ),
-            baseline_bundle_digest=(
-                None if injected_incumbent is None
-                else injected_incumbent.bundle_digest
-            ),
-            baseline_bundle_slots=(
-                () if injected_incumbent is None else injected_incumbent.slots
-            ),
+            replace(inputs.resident_speed_policy, version=9 if mixed_cells else 8),
         )
         audit_seed = hashlib.sha256(
             AUDIT_SEED_DOMAIN
@@ -728,9 +659,7 @@ __all__ = [
     "POLICY_SCHEMA",
     "PRODUCTION_AUTHORITY_BLOCKERS",
     "RESOLVER_SCHEMA",
-    "SealedIncumbentBundle",
     "build_b300_registered_qualification_factory",
     "registered_b300_member_contract_projection",
     "registered_b300_profile_resolver_digest",
-    "resident_pair_native",
 ]

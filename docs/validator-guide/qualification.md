@@ -4,9 +4,9 @@ Qualification asks a narrow question: does one exact submitted delta improve one
 evaluation stack, in one registered arena, at acceptable quality?
 
 The production answer comes from the version-3 qualification protocol executed
-by a trusted host controller. Hot-swappable candidates use the standing pair of
-isolated TP lanes; non-swappable candidates use separate baseline and candidate
-engine processes on the same sealed physical-lane authority. Timed GPU work is
+by a trusted host controller. Every candidate is measured by separate baseline
+and candidate engine processes on two isolated TP lanes under one sealed
+physical-lane authority. Timed GPU work is
 serialized in either case. The answer does not come from a routing screen, local
 diagnostic launch, candidate-side self-audit, miner report, or arbitrary
 evaluator command.
@@ -47,47 +47,45 @@ Retained attempts identify the speed policy that created them:
 
 | Version | Timed reads | Purpose |
 |---|---|---|
-| v1 | B/C/B′ | Historical byte-compatible authority |
-| v2 | B/C/B′/C′/B″ | Fixed repeat-read authority |
-| v3 | B/C/B′, then C′/B″ only when borderline | Resident adaptive authority |
-| v4 | as v3 | Every read graded; bookend invariance decides |
-| v5 | as v3 | Adds the bracket-drift exclusion |
-| v6 | B/C, then B′ only when a legal bookend could reverse it | Conditional bookend |
-| v7 | as v6 | Adds the symmetric baseline swap |
-| v8 | B/C/B′, always three | Two-process substrate for non-swappable candidates |
+| v8 | B/C/B′, always three | Two-process substrate, every single-cell candidate |
+| v9 | B/C/B′, always three | Two-process substrate, mixed-cell workloads |
 
-Versions 6 and 7 belong to the resident pair, where the candidate is hot-swapped
-into a loaded engine. A candidate that cannot be hot-swapped — one declaring CUDA,
-C++ or PTX sources, AOT artifacts, dependency patches, or engine setup — is
-measured by the two-process crossover instead, which launches its own baseline and
-candidate engines. That substrate binds v8 and reads B′ unconditionally: the
-quality gate takes its stock-drift control from the second baseline read, and a
-conditional bookend leaves a clear PASS with no control to harvest. Reading it
-regardless of the outcome also preserves what the conditional versions enforce — a
-read taken regardless of a result cannot be a read taken because of one.
+Versions 1–7 were the MiniMax-M3 era's schedules: the adaptive five-read
+bracket (v1–v5) and the conditional bookend on the standing resident pair
+(v6/v7). Their graders, the legacy `SpeedWitness` lane, and the repeat-quality
+leg were deleted on 2026-09-06 with the pair-native lane. No MiniMax-M3
+product will be re-run or re-graded, so the runtime, evidence readers, and
+settlement refuse a witness below version 8 instead of decoding it. Every
+candidate is now measured by the two-process crossover, which launches its own
+baseline and candidate engines. That substrate binds v8 (v9 for a mixed-cell
+workload) and reads B′
+unconditionally: the quality gate takes its stock-drift control from the second
+baseline read, and a conditional bookend leaves a clear PASS with no control to
+harvest. Reading it regardless of the outcome also preserves what the
+conditional versions enforced — a read taken regardless of a result cannot be a
+read taken because of one.
 
-The version is selected per candidate when the qualification plan is built, from
-the same swappability predicate the worker routes execution on, so the plan and
-the execution substrate cannot disagree. Only the read order differs: every
-calibrated threshold is the one the provider sealed.
+The plan builder stamps the schedule version when the qualification plan is
+built, and the worker executes the version the sealed plan carries, so the plan
+and the execution substrate cannot disagree. Every calibrated threshold is the
+one the provider sealed.
 
-C′ and B″ are unreachable under v6, v7 and v8. The five-arm bracket survives only
-in v2–v5 evidence.
+C′ and B″ do not exist under v8 or v9; no code path in this tree reads them.
 
 Fresh execution is resident-only: the runner refuses any other speed-evidence
 policy at entry, and the constructor default is the resident policy — the only
-one a fresh plan can run. Versions 1 and 2 survive as reopen vocabulary: a
-reopen binds the retained evidence's own policy explicitly, and historical
-serialized artifacts regrade byte-for-byte without reinterpretation. Merely
-changing the policy label does not upgrade old evidence.
+one a fresh plan can run. A reopen binds the retained evidence's own policy
+explicitly, and retained v8/v9 artifacts regrade byte-for-byte without
+reinterpretation. Merely changing the policy label does not upgrade old
+evidence.
 
 ## Current adaptive timeline
 
 The version-3 protocol binds two non-overlapping physical TP lanes, equivalent
 topology, separate runtime namespaces, lane-specific NUMA policy, exact
-workload, and a total qualification budget. V7 keeps the standing pair resident;
-v8 launches its baseline and candidate processes for the request. The controller
-permits only one lane to execute timed GPU work at a time.
+workload, and a total qualification budget. The baseline and candidate
+processes are launched for the request. The controller permits only one lane to
+execute timed GPU work at a time.
 
 Every read's evidence carries the engine-observed prompt token count for each request,
 and the protocol layer rejects any read whose counts differ from the sealed workload
@@ -102,23 +100,12 @@ sequenceDiagram
     participant L1 as Physical lane 1
     participant A as Audit-only role
     participant T as Pristine reference
-    alt v7 hot-swappable candidate
-        H->>L0: stock-to-stock swap + B
-        L0-->>H: timed rate + witness
-        H->>L1: candidate swap + C
-        L1-->>H: timed rate + sealed trajectory
-        opt B/C is inside the inconclusive band
-            H->>L0: stock-to-stock swap + B′
-            L0-->>H: timed rate + bookend witness
-        end
-    else v8 non-swappable candidate
-        H->>L0: launch/read B
-        L0-->>H: timed rate + witness
-        H->>L1: launch/read C
-        L1-->>H: timed rate + sealed trajectory
-        H->>L0: read B′ unconditionally
-        L0-->>H: timed rate + stock-drift control
-    end
+    H->>L0: launch/read B
+    L0-->>H: timed rate + witness
+    H->>L1: launch/read C
+    L1-->>H: timed rate + sealed trajectory
+    H->>L0: read B′ unconditionally
+    L0-->>H: timed rate + stock-drift control
     H->>H: prove both speed executors quiescent
     H->>A: run sealed audit-only plan
     A-->>H: exact slot × rank witness
@@ -128,10 +115,8 @@ sequenceDiagram
     H->>H: prove final quiescence and regrade
 ```
 
-V7 decides clear wins and losses from B/C under precommitted invariant bounds;
-only the inconclusive band authorizes B′. V8 always reads B/C/B′ because the
-quality stage requires a second stock observation. C′/B″ are unreachable in
-both current policies. The candidate cannot request extra reads. The retained
+V8 and v9 always read B/C/B′ because the quality stage requires a second stock
+observation. C′/B″ are unreachable. The candidate cannot request extra reads. The retained
 witness records which reads occurred, lane identities, operational timing, and
 the stage and total budgets.
 
@@ -282,7 +267,7 @@ It must differ in qualification authority, attempt evidence, report, and selecti
 evidence. Reusing the first attempt under a new filename is rejected. Settlement uses the
 lower of the two measured speedups.
 
-For version-3 resident-family evidence, including current v7/v8 witnesses, the
+For version-3 resident-family evidence, including current v8/v9 witnesses, the
 reproduction must also use the exact physical-lane role swap: the primary
 candidate lane becomes the reproduction baseline lane, and the primary baseline
 lane becomes the reproduction candidate lane. The resident speed policy and
@@ -330,13 +315,10 @@ dispositions; it does not invoke the full causal regrader.
 
 The final report is derived from the serialized attempt, referenced graph/quality
 artifacts, and calibration manifests. Reopen can regrade graph and raw quality evidence.
-Speed regrading uses the retained witness type registered by the speed-policy
-version. Legacy v1/v2 use `SpeedWitness`: v1 contains three aggregate B/C/B′
-`ChargedExecutionRate` rows and v2 contains a fixed five B/C/B′/C′/B″ rows.
-Version-3 resident-family attempts use `ResidentSpeedWitness`, which retains the
-actual schedule: historical three-or-five-read v3–v5, current v7 B/C with
-optional B′, or current v8 B/C/B′. It also retains physical-lane authority,
-operational timings, and budget. Regrading recomputes rates and the frozen
+Speed regrading uses the retained `ResidentSpeedWitness`, which retains the
+v8/v9 B/C/B′ schedule, physical-lane authority, operational timings, and
+budget. A witness below version 8 is sealed MiniMax-M3 history and is refused
+rather than decoded. Regrading recomputes rates and the frozen
 decision from those typed facts; it does not reconstruct them from raw session
 frames. A summary JSON line without these products is not authority.
 
@@ -413,35 +395,19 @@ one-shot adapter mode still refuse qualification before resident work.
 The commission measures B against the durable incumbent stack the
 capabilities factory declares (`incumbent_entries`, resolved through the same
 closed source resolver); at genesis the declaration is empty and the baseline
-is the stock tree. How that baseline is realized depends on the schedule.
-Both standing pair-native lane engines always boot plain stock; on the v7
-schedule the baseline read injects the sealed incumbent bundle through the
-same swap path the candidate uses — the digest and registered slot set are
-sealed at commission from the stack entry and its resolver-verified manifest,
-staged content-addressed into the swap intake, re-hashed inside the container
-at swap time, and the read holds unless the incumbent's execution is proven
-on every rank. The v7 schedule therefore serves only hot-swappable candidates
-that replace the incumbent's own registered target (or genesis); every other
-candidate — non-swappable bundles, different-target challengers, or an
-incumbent stack one swap cannot realize — runs the version-8 two-process
-schedule, whose baseline process boots the materialized incumbent tree. The
-worker routes on the sealed version the plan carries, so plan and execution
-cannot disagree. Pristine T stays anchored to the empty stock stack
-regardless of the declared incumbent, so the untimed audit reference never
-inherits crowned contributions. A declaration that does not reproduce the
+is the stock tree. The two-process schedule's baseline process boots the
+materialized incumbent tree, and the worker executes the sealed version the
+plan carries, so plan and execution cannot disagree. Pristine T stays anchored
+to the empty stock stack regardless of the declared incumbent, so the untimed
+audit reference never inherits crowned contributions. A declaration that does not reproduce the
 durable stack identity fails closed at the dispatcher's incumbent pin and at
 the durable commit. Screens keep the stock baseline: the resident hot-swap
 screen is routing-only and cannot crown.
 
-`eval/resident_evaluation_pair.py` is a distinct authority in this design: it owns
-the standing resident-pair service lifecycle — two persistent sessions, request
-admission and history, capability revocation, and one explicit close — while
-`eval/crossover_runtime.py` owns qualification planning and scoring. The two are
-not interchangeable and must not be merged: one is lifecycle, the other is
-evidence policy. The commissioned service now constructs the standing pair through
-the tracked resident-pair factory and shares it with the remote qualification
-worker. Deployment-private capability bytes still supply sealed identities and
-must match their configured source digest; they do not create a second evaluator.
+`eval/crossover_runtime.py` owns qualification planning and scoring for the
+two-process schedule. Deployment-private capability bytes still supply sealed
+identities and must match their configured source digest; they do not create a
+second evaluator.
 
 ## Nonclaims
 

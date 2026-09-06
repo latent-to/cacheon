@@ -202,8 +202,8 @@ defines the required inputs and local result record; no repository command mater
 this complete-engine bracket.
 
 Production version-3 qualification materializes the exact incumbent and
-candidate engines through an injected arena service and selects current v7
-resident B/C/[B′] or v8 two-process B/C/B′ from candidate features. It then
+candidate engines through an injected arena service and measures them on the
+two-process B/C/B′ schedule (v8, or v9 for a mixed-cell workload). It then
 runs registered eager audit A, tears down candidate lifetimes, and obtains
 candidate-free pristine T quality evidence. A contributor-controlled model run
 cannot substitute for that authority.

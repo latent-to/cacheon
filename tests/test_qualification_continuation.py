@@ -310,7 +310,7 @@ def _final_ref(label: str) -> EvidenceArtifactRef:
         _d(label),
         2,
         "application/json",
-        runner.ATTEMPT_SCHEMA,
+        runner.ATTEMPT_SCHEMA_V3,
     )
 
 
@@ -653,17 +653,6 @@ def _run(
     )
 
 
-def _pass_harness(monkeypatch) -> _Harness:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    monkeypatch.setattr(runner, "QualificationContinuation", _MemoryContinuation)
-    return harness
-
-
 def _crash_after_completion(producer, message):
     def wrapped(*args, completion_sink=None, **kwargs):
         assert completion_sink is not None
@@ -698,7 +687,6 @@ def _resident_pass_harness(monkeypatch):
         monkeypatch,
         harness,
         speed_decision=QualificationDecision.PASS,
-        escalated=False,
     )
     monkeypatch.setattr(runner, "QualificationContinuation", _MemoryContinuation)
     clock = iter(3.05 + index * 0.05 for index in range(64))
@@ -807,7 +795,6 @@ def test_resident_audit_completion_survives_a_crash_before_producer_return(
         monkeypatch,
         harness,
         speed_decision=QualificationDecision.PASS,
-        escalated=False,
     )
     monkeypatch.setattr(runner, "QualificationContinuation", _MemoryContinuation)
     clock = iter(3.05 + index * 0.05 for index in range(16))
@@ -884,19 +871,6 @@ def test_continuation_identity_mismatch_holds_before_any_execution(
     assert harness.reference_calls == 0
 
 
-def test_nonresident_qualification_is_refused_at_entry(monkeypatch) -> None:
-    # D8: the marginal (nonresident) execution path is retired; a non-v3 speed
-    # policy is refused before prevalidation, execution, or any durable write.
-    harness = _pass_harness(monkeypatch)
-    with pytest.raises(
-        runner.QualificationRunnerError,
-        match="causal qualification requires the resident speed policy",
-    ):
-        _run(harness, _MemoryContinuation())
-    assert harness.calls == []
-    assert harness.reference_calls == 0
-
-
 def test_untyped_continuation_is_rejected_before_any_execution(monkeypatch) -> None:
     harness = _Harness(
         monkeypatch,
@@ -908,7 +882,6 @@ def test_untyped_continuation_is_rejected_before_any_execution(monkeypatch) -> N
         monkeypatch,
         harness,
         speed_decision=QualificationDecision.PASS,
-        escalated=False,
     )
     with pytest.raises(
         runner.QualificationRunnerError, match="not exactly typed"
@@ -930,7 +903,6 @@ def test_quality_record_without_speed_record_holds(
         monkeypatch,
         resident_harness,
         speed_decision=QualificationDecision.PASS,
-        escalated=False,
     )
     monkeypatch.setattr(runner, "QualificationContinuation", _MemoryContinuation)
     resident_continuation = _MemoryContinuation()

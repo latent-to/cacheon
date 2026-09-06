@@ -25,7 +25,7 @@ slots -> scan -> verify -> chain-package -> host -> chain-submit -> chain-status
 
 Local measurements are useful for iteration. They do not select a production arena
 authority, reserve a finalized cohort position, retain authenticated resident
-speed evidence under the current v7 B/C/[B′] or v8 B/C/B′ schedule, perform
+speed evidence under the two-process B/C/B′ schedule, perform
 the registered eager audit A and pristine-reference T stages, or satisfy
 independent reproduction.
 
@@ -170,21 +170,18 @@ Principal code: [`eval/qualification_intake.py`](https://github.com/latent-to/ca
 
 ## 6. Version-3 adaptive qualification
 
-The production evidence protocol is version 3. Inside it, the provider selects
-the resident-speed subpolicy from candidate features under the same predicate the
-worker uses to choose its execution substrate:
+The production evidence protocol is version 3. Inside it, every candidate is
+measured on the two-process substrate:
 
-- a hot-swappable candidate uses v7 on the standing resident pair, reads B/C,
-  and takes B′ only when the B/C ratio cannot decide under the sealed bounds;
-- a non-swappable candidate (CUDA, C++, PTX, AOT, dependency-patch, or setup
-  surface) uses v8's separate baseline and candidate processes and always reads
-  B/C/B′ because the quality gate consumes the second stock read; and
-- C′/B″ remain readable only in historical v2–v5 evidence. Nothing currently
-  commissioned seals those reads.
+- the plan seals v8 (v9 for a mixed-cell workload): separate baseline and
+  candidate processes always read B/C/B′ because the quality gate consumes the
+  second stock read; and
+- C′/B″ do not exist; the pre-v8 schedules that read them were deleted with
+  the MiniMax-M3 history seal, and their evidence is refused.
 
-Both current subpolicies retain stage and total budgets and the required
-physical-lane role assignment. Old evidence reopens under its own versioned
-arithmetic; a label change cannot upgrade it.
+The current subpolicy retains stage and total budgets and the required
+physical-lane role assignment. Evidence reopens under the arithmetic that
+produced it; a label change cannot upgrade it and pre-v8 witnesses are refused.
 
 The authoritative work is staged. Speed is decided first; audit and pristine-reference
 quality run only after the speed stage remains eligible, apart from an explicitly
@@ -194,8 +191,7 @@ registered calibration-observation continuation.
 |---|---|---:|---|
 | B | Exact frozen incumbent on the assigned baseline lane/process | Yes | Opening performance read |
 | C | Incumbent plus one exact target delta on the disjoint candidate lane/process | Yes | Candidate measurement and sealed trajectory |
-| B′ | The same incumbent authority as B | Yes | Conditional v7 decision bookend; mandatory v8 stock-drift control |
-| C′ / B″ | Historical v2–v5 candidate/baseline repeats | Yes | Reopen old evidence only; unreachable in current v7/v8 work |
+| B′ | The same incumbent authority as B | Yes | Mandatory stock-drift control |
 | A | Candidate in a separate eager, untimed role | No | Registered sampled slot audit and typed host regrade |
 | T | Pristine candidate-free reference | No | Teacher-forced semantic quality and hidden tasks |
 
@@ -209,11 +205,9 @@ runtime ranks may validate and load native products but may never compile or
 repair them. Both stages use read-only roots, bounded mounts and protocols, and
 host-owned cleanup; the trusted controller also owns timing.
 
-V7 precommits the mathematical bounds that make a B/C result invariant to every
-legal B′. It stops after B/C for a clear result and collects B′ only inside the
-inconclusive band. V8 precommits all three reads, so B′ is taken regardless of
-the observed B/C result. Neither path can request a favorable extra read after
-seeing an outcome. When later brackets drift beyond the v5+ sealed ceiling,
+V8 and v9 precommit all three reads, so B′ is taken regardless of the observed
+B/C result. The candidate cannot request a favorable extra read after seeing an
+outcome. When later brackets drift beyond the v5+ sealed ceiling,
 they are excluded and the adjacent C/B comparison decides; the drift is retained
 as evidence rather than converted into an indefinite `NO_DECISION`.
 
@@ -229,12 +223,11 @@ trajectory under a separate pristine lifetime. T never contains the candidate an
 not compete on speed. Hidden reference work, quality policy, and selected prompt identity
 are bound into retained evidence.
 
-The host applies the exact versioned policy. Conceptually, a v7 clear decision
-uses C/B; an inconclusive v7 result and every v8 result use the registered B/B′
-bookend unless the later bracket is excluded by the sealed drift rule:
+The host applies the exact versioned policy. Conceptually, every current result
+uses the registered B/B′ bookend unless the later bracket is excluded by the
+sealed drift rule:
 
 ```text
-v7_clear_speedup = C / B
 bookended_speedup = C / mean(B, B′)
 required_bar      = 1 + max(margin_floor, noise_multiplier × measured_noise)
 ```
@@ -270,12 +263,12 @@ Consider a hypothetical candidate for one registered singleton target:
 
 1. Intake fixes its finalized priority and immutable publication. It clears all five
    non-crown screens.
-2. Its first v7 attempt produces valid B/C work inside the inconclusive band, but
-   the required B′ evidence cannot be authenticated. The attempt is
-   `NO_DECISION`. The proposal remains retryable; it has neither lost nor passed.
-3. A later fresh authority reopens the same candidate identity. This time B/C
-   clears the precommitted v7 pass bound, so no outcome-dependent B′ is taken.
-   The registered audit and T products accept the candidate. The attempt becomes
+2. Its first attempt produces valid B/C work, but the required B′ evidence
+   cannot be authenticated. The attempt is `NO_DECISION`. The proposal remains
+   retryable; it has neither lost nor passed.
+3. A later fresh authority reopens the same candidate identity. This time all
+   three reads authenticate and C clears the bookended bar. The registered audit
+   and T products accept the candidate. The attempt becomes
    the first `PASS` and state becomes `reproduction_pending`.
 4. A second independently selected authority repeats the exact reproduction identity,
    swaps the incumbent and candidate physical-lane roles, and also passes. A pass against
@@ -307,7 +300,7 @@ selection-secret commitment, and selection evidence. Authority therefore does
 **not** belong inside the equal core identity; distinct authority is a separate
 pair constraint.
 
-For version-3 resident-family evidence, including current v7/v8 witnesses, the
+For version-3 resident-family evidence, including current v8/v9 witnesses, the
 pair must also prove the exact physical-lane role swap required by the
 registered plan. Two nominally independent attempts that assign stock and
 candidate to the same physical lanes do not satisfy production reproduction.
@@ -379,7 +372,7 @@ able to reopen, rather than merely observe, each handoff:
 - registered arena, target catalog, incumbent manifest, candidate transition, and screen
   receipt;
 - lane identities and a versioned `ResidentSpeedWitness` containing exactly the
-  scheduled rows (current v7 B/C with optional B′, or current v8 B/C/B′), plus
+  scheduled rows (v8/v9 B/C/B′), plus
   retained graph/quality/pristine-T references and witnesses; richer raw
   session/device frames are validated in-run but are not serialized into the
   attempt;

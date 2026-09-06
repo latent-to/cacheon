@@ -242,8 +242,8 @@ Commission the composition in four stages:
    record; do not populate digests from human labels.
 2. Run each non-crown screen against known faithful, known broken, timeout, and provider-
    error fixtures, retaining evidence for all grades.
-3. Run isolated qualification controls that demonstrate current v7 B/C/[B′],
-   v8 B/C/B′, and mixed-cell v9 B/C/B′ ordering on their respective substrates,
+3. Run isolated qualification controls that demonstrate v8 B/C/B′ and
+   mixed-cell v9 B/C/B′ ordering on the two-process substrate,
    serialized physical lanes, audit/T stage exits, cleanup, evidence reopen, and
    `PASS`/`FAIL`/`NO_DECISION` separation.
 4. Inject the registry into a one-pass controller, then test restart during primary
