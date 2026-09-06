@@ -54,6 +54,17 @@ def singleton_contracts() -> dict:
 
 
     return {
+        "attention.indexer_topk": _contract_ref(
+            "attention.indexer_topk", kind="block", entry="indexer_topk", prepare=None,
+            graph_dynamic_inputs=("scores", "lengths", "row_starts", "page_table", "row_to_batch", "page_offsets"),
+            input_abi_id="attention.indexer-topk.paged.input.v1",
+            output_abi_id="attention.indexer-topk.physical-indices.output.v1",
+            reference_id="attention.indexer-topk.reference.v1",
+            verification_profile_id="attention.indexer-topk.verify.v1",
+            binding_family_id="sglang.attention.indexer-topk.v1",
+            tolerances=tuple(ToleranceContractRef(t, "0", "0") for t in ("bfloat16", "float16", "float32")),
+            correctness=CorrectnessContractRef(mode="topk_overlap", min_overlap="0.99"),
+        ),
         "attention.sparse_mla": _contract_ref(
             "attention.sparse_mla", kind="block", entry="sparse_mla", prepare=None,
             graph_dynamic_inputs=("q", "kv_cache", "indices", "seq_lens"),

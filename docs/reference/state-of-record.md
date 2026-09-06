@@ -1,5 +1,11 @@
 # State of record
 
+On **2026-09-06**, `attention.indexer_topk` adds independent score selection
+and compact-page translation for paged DSA prefill/decode. CPU causal/history,
+padding, dispatch and replay-orchestration controls pass. Exact-image native
+and full-model acceptance are still pending; this is not arena availability.
+
+
 This page is the dated capability and evidence ledger for Cacheon. Evergreen
 pages define contracts and procedures; this page identifies the implementation
 revision, evidence class, and unresolved limits behind readiness claims.

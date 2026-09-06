@@ -160,7 +160,9 @@ def record(slot: str, actual: Sequence[torch.Tensor],
                 if not bool(rows.any()):
                     baseline_refused(slot)  # nothing selected: coverage note only
                     return
-                hit = (ei.unsqueeze(-1) == ai.unsqueeze(-2)).any(dim=-1)
+                ordered = ai.sort(dim=-1).values
+                positions = torch.searchsorted(ordered, ei.contiguous()).clamp(max=ai.shape[-1] - 1)
+                hit = ordered.gather(-1, positions) == ei
                 per_row = ((hit & valid).sum(-1).float()
                            / valid.sum(-1).clamp(min=1).float())
                 ov = float(per_row[rows].mean())

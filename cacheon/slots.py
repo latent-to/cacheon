@@ -34,13 +34,12 @@ from cacheon.norm_contract import (
 )
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 from cacheon.sparse_mla_contract import slot_spec as _sparse_mla_slot
-
+from cacheon.indexer_topk_contract import slot_spec as _indexer_topk_slot
 
 @dataclass(frozen=True)
 class Tolerance:
     atol: float
     rtol: float
-
 
 @dataclass(frozen=True)
 class Correctness:
@@ -82,7 +81,6 @@ class Correctness:
     top_k: int = 0  # topk_overlap mode: the K of the selection (e.g. 16 blocks)
     min_overlap: float = 0.0  # topk_overlap mode: required mean per-row set overlap
 
-
 @dataclass(frozen=True)
 class Activation:
     """The gated-MLP activation a model's MoE/FFN uses — a MODEL fact (read from the
@@ -93,7 +91,6 @@ class Activation:
     kind: str = "silu"  # "silu" | "swigluoai"
     alpha: float = 1.702  # swigluoai sigmoid gain (config swiglu_alpha)
     limit: float = 7.0  # swigluoai clamp (config swiglu_limit)
-
 
 _SILU = Activation("silu")
 
@@ -833,9 +830,11 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 
 
 SPARSE_MLA = _sparse_mla_slot()
+INDEXER_TOPK = _indexer_topk_slot()
 
 
 SLOTS: dict[str, SlotSpec] = {
+    INDEXER_TOPK.name: INDEXER_TOPK,
     SPARSE_MLA.name: SPARSE_MLA,
     SILU_AND_MUL.name: SILU_AND_MUL,
     RMSNORM.name: RMSNORM,

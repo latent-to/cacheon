@@ -66,6 +66,7 @@ The current API contains **12 slots**.
 | Slot | Kind | Entry point | Semantic boundary |
 |---|---|---|---|
 | `activation.silu_and_mul` | `op` | `silu_and_mul` | Gated MLP activation product |
+| `attention.indexer_topk` | `block` | `indexer_topk` | Masked selection and physical-page translation |
 | `attention.sparse_mla` | `block` | `sparse_mla` | Selected-token sparse attention core with BF16 latent output |
 | `collective.all_gather_into_tensor` | `collective` | `all_gather_into_tensor` | Equal-size all-gather into a validator-owned output |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |

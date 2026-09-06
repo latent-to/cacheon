@@ -25,14 +25,12 @@ from cacheon.manifest import CompetitionEntry, DEFAULT_VARIANT, Manifest
 from cacheon.stack_identity import canonical_digest
 from cacheon.target_contracts import singleton_contracts as _singleton_contracts
 
-
 # Catalog identities are consensus-bearing and survive the product/package
 # rename. Existing crowns and evaluation stacks bind these exact domains.
 _TARGET_CONTRACT_DOMAIN = "cacheon.target-contract"
 _TARGET_CATALOG_DOMAIN = "cacheon.target-catalog"
 _ATOMIC_TARGET_CONTRACT_DOMAIN = "cacheon.atomic-target-contract"
 _TARGET_SPEC_DOMAIN = "cacheon.target-spec"
-
 
 class TargetKind(str, Enum):
     SLOT = "slot"
@@ -887,6 +885,7 @@ class TargetCatalog:
 # live SlotSpec has exactly one singleton target and vice versa.
 SINGLETON_TARGET_IDS = (
     "activation.silu_and_mul",
+    "attention.indexer_topk",
     "attention.sparse_mla",
     "collective.all_gather_into_tensor",
     "collective.all_reduce",

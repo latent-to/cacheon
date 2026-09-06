@@ -38,10 +38,7 @@ from cacheon.verification_outcomes import (
 
 
 def _as_list(x) -> list:
-    """Normalize a slot's reference/out_shapes return to a list.
-
-    Accepts a bare tensor or bare shape-tuple (single-output slots may return one
-    directly) as well as an explicit sequence (multi-output blocks)."""
+    """Accept bare tensors/shapes and explicit multi-output sequences."""
     if isinstance(x, (list, tuple)) and (len(x) == 0 or not isinstance(x[0], int)):
         return list(x)
     return [x]
@@ -61,7 +58,9 @@ def _compare(
         rows = valid.any(dim=-1)
         if not bool(rows.any()):
             return False, 0.0, 0.0, 0.0, "reference selected no blocks", "overlap"
-        hit = (ei.unsqueeze(-1) == ai.unsqueeze(-2)).any(dim=-1)
+        ordered = ai.sort(dim=-1).values
+        positions = torch.searchsorted(ordered, ei.contiguous()).clamp(max=ai.shape[-1] - 1)
+        hit = ordered.gather(-1, positions) == ei
         overlap = (hit & valid).sum(-1).float() / valid.sum(-1).clamp(min=1)
         score = float(overlap[rows].mean())
         passed = score >= correctness.min_overlap

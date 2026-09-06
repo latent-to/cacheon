@@ -9,6 +9,7 @@ import torch
 
 from cacheon.capabilities import CallDescriptor
 from cacheon.sparse_mla_contract import call_descriptor as _sparse_mla_descriptor
+from cacheon.indexer_topk_contract import call_descriptor as _indexer_topk_descriptor
 from cacheon.moe_nvfp4_contract import (
     call_descriptor as _moe_call_descriptor,
     prepare_args_from_inputs as _moe_prepare_args_from_inputs,
@@ -219,6 +220,11 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
         "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
     },
     "GLM-5.3": {
+        "attention.indexer_topk": SlotProfile(shapes=tuple(
+            dict(num_tokens=tokens, kv_len=length, top_k=2048, page_size=64,
+                 input_dtype="float32")
+            for tokens, length in ((6, 8192), (32, 65536), (128, 8192), (512, 65536))
+        )),
         "attention.sparse_mla": _GLM53_SPARSE_MLA_PROFILE,
         "collective.all_gather_into_tensor": _GLM53_DP_EXCHANGE_PROFILE,
         "collective.all_reduce": _GLM53_ALL_REDUCE_PROFILE,
@@ -271,8 +277,9 @@ def verification_call_descriptor(
             intermediate_dim=int(inputs["w2"].shape[-1]),
             tp_size=tp_size, world_size=world_size,
         )
-    if slot.name == "attention.sparse_mla":
-        return _sparse_mla_descriptor(
+    if slot.name in ("attention.sparse_mla", "attention.indexer_topk"):
+        descriptor = _sparse_mla_descriptor if slot.name == "attention.sparse_mla" else _indexer_topk_descriptor
+        return descriptor(
             inputs, architecture=architecture, graph_mode=graph_mode,
             tp_size=tp_size, world_size=world_size,
         )

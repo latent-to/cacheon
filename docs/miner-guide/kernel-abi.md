@@ -131,6 +131,38 @@ uses bounded shape-based chunks and tensor-valued masks. It is a correctness
 example, not performance evidence. CPU verification does not establish GPU
 capture, rank coverage, exact-image fidelity or public arena availability.
 
+### `attention.indexer_topk`
+
+```python
+def indexer_topk(scores, lengths, row_starts, page_table, row_to_batch,
+                 page_offsets, out, page_size, top_k):
+    ...
+```
+
+Scores have shape `(T,N)`; all five metadata tensors are int32. For query `t`,
+select up to `top_k` highest scores inside
+`[row_starts[t], row_starts[t] + lengths[t])`, intersected with the score row.
+Negative infinity is invalid; positive infinity represents priority tokens.
+Translate a selected column `c` to logical token
+`c - row_starts[t] + page_offsets[t]`, then through
+`page_table[row_to_batch[t], logical // page_size] * page_size + logical % page_size`.
+Write physical indices into contiguous int32 `out:(T,top_k)`, with unused
+trailing entries set to `-1`. Selection order is immaterial. The correctness
+contract requires mean valid-row set overlap of at least 0.99; duplicates do
+not count as extra matches and padding must be rewritten.
+
+Prefill and decode use this same ABI. Ragged prefill carries explicit query
+ownership and chunk/history offsets; decode normally has one query per page-table
+row and zero offsets. All six input tensors change across graph replay.
+Scores may have padded row strides. The pinned SGLang adapter uses the producer's
+compact page table and mapping helper at `DSATopKBackend.topk_transform` for
+fused PAGED output. It owns selection and physical translation only; indexer
+score GEMMs and sparse attention are separate operations.
+
+The [Torch example](https://github.com/latent-to/cacheon/tree/main/examples/miner_indexer_topk_torch)
+is a correctness starting point. A miner may implement this one operation with
+CUDA, Triton or installed libraries without implementing the entire indexer.
+
 ### `linear.dense`
 
 ```python

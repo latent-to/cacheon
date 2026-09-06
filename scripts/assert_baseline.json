@@ -78,6 +78,7 @@
 "tests/test_fixed_incumbent_rewards.py": 9,
 "tests/test_follow_expected_authority.py": 8,
 "tests/test_fused_ar_rmsnorm_lib.py": 10,
+"tests/test_indexer_topk.py": 14,
 "tests/test_intake_rescreen.py": 14,
 "tests/test_isolation.py": 10,
 "tests/test_kernel_trace_arming.py": 14,
