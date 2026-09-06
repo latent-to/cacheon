@@ -23,6 +23,7 @@ from typing import Iterable, Mapping
 
 from cacheon.manifest import CompetitionEntry, DEFAULT_VARIANT, Manifest
 from cacheon.stack_identity import canonical_digest
+from cacheon.target_contracts import singleton_contracts as _singleton_contracts
 
 
 # Catalog identities are consensus-bearing and survive the product/package
@@ -886,6 +887,7 @@ class TargetCatalog:
 # live SlotSpec has exactly one singleton target and vice versa.
 SINGLETON_TARGET_IDS = (
     "activation.silu_and_mul",
+    "attention.sparse_mla",
     "collective.all_gather_into_tensor",
     "collective.all_reduce",
     "collective.ar_residual_rmsnorm",
@@ -898,12 +900,6 @@ SINGLETON_TARGET_IDS = (
     "norm.rmsnorm",
 )
 
-_STANDARD_TOLERANCES = (
-    ToleranceContractRef("bfloat16", "0.02", "0.02"),
-    ToleranceContractRef("float16", "0.01", "0.01"),
-    ToleranceContractRef("float32", "0.00001", "0.00001"),
-)
-
 DP_ATTENTION_EXCHANGE_TARGET = "collective.dp_attention_exchange.v1"
 DP_ATTENTION_EXCHANGE_MEMBERS = (
     "collective.all_gather_into_tensor",
@@ -911,186 +907,7 @@ DP_ATTENTION_EXCHANGE_MEMBERS = (
 )
 
 
-def _contract_ref(
-    slot_id: str,
-    *,
-    kind: str,
-    entry: str,
-    prepare: str | None,
-    graph_dynamic_inputs: tuple[str, ...],
-    input_abi_id: str,
-    output_abi_id: str,
-    reference_id: str,
-    verification_profile_id: str,
-    binding_family_id: str,
-    correctness: CorrectnessContractRef,
-    kl_threshold: str | None = None,
-) -> TargetContractRef:
-    return TargetContractRef(
-        schema_version=1,
-        slot_id=slot_id,
-        kind=kind,
-        entry=entry,
-        prepare=prepare,
-        graph_dynamic_inputs=graph_dynamic_inputs,
-        input_abi_id=input_abi_id,
-        output_abi_id=output_abi_id,
-        reference_id=reference_id,
-        verification_profile_id=verification_profile_id,
-        binding_family_id=binding_family_id,
-        correctness=correctness,
-        tolerances=_STANDARD_TOLERANCES,
-        kl_threshold=kl_threshold,
-    )
-
-
-_SINGLETON_CONTRACTS = {
-    "activation.silu_and_mul": _contract_ref(
-        "activation.silu_and_mul",
-        kind="op",
-        entry="silu_and_mul",
-        prepare=None,
-        graph_dynamic_inputs=("x",),
-        input_abi_id="activation.silu_and_mul.input.v1",
-        output_abi_id="activation.silu_and_mul.output.v1",
-        reference_id="activation.silu_and_mul.reference.v1",
-        verification_profile_id="activation.silu_and_mul.verify.v1",
-        binding_family_id="sglang.activation.silu_and_mul.v1",
-        correctness=CorrectnessContractRef(),
-    ),
-    "collective.all_reduce": _contract_ref(
-        "collective.all_reduce",
-        kind="collective",
-        entry="all_reduce",
-        prepare=None,
-        graph_dynamic_inputs=("x",),
-        input_abi_id="collective.all_reduce.input.v1",
-        output_abi_id="collective.all_reduce.output.v1",
-        reference_id="collective.all_reduce.reference.v1",
-        verification_profile_id="collective.all_reduce.verify.v1",
-        binding_family_id="sglang.collective.all_reduce.v1",
-        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
-    ),
-    "collective.all_gather_into_tensor": _contract_ref(
-        "collective.all_gather_into_tensor",
-        kind="collective",
-        entry="all_gather_into_tensor",
-        prepare=None,
-        graph_dynamic_inputs=("x",),
-        input_abi_id="collective.all_gather_into_tensor.input.v1",
-        output_abi_id="collective.all_gather_into_tensor.output.v1",
-        reference_id="collective.all_gather_into_tensor.reference.v1",
-        verification_profile_id="collective.all_gather_into_tensor.verify.v1",
-        binding_family_id="sglang.collective.dp-attention-exchange.v1",
-        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
-    ),
-    "collective.reduce_scatter_tensor": _contract_ref(
-        "collective.reduce_scatter_tensor",
-        kind="collective",
-        entry="reduce_scatter_tensor",
-        prepare=None,
-        graph_dynamic_inputs=("x",),
-        input_abi_id="collective.reduce_scatter_tensor.input.v1",
-        output_abi_id="collective.reduce_scatter_tensor.output.v1",
-        reference_id="collective.reduce_scatter_tensor.reference.v1",
-        verification_profile_id="collective.reduce_scatter_tensor.verify.v1",
-        binding_family_id="sglang.collective.dp-attention-exchange.v1",
-        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
-    ),
-    "collective.ar_residual_rmsnorm": _contract_ref(
-        "collective.ar_residual_rmsnorm",
-        kind="collective",
-        entry="ar_residual_rmsnorm",
-        prepare=None,
-        graph_dynamic_inputs=("x", "residual"),
-        input_abi_id="collective.ar_residual_rmsnorm.input.v1",
-        output_abi_id="collective.ar_residual_rmsnorm.output.v1",
-        reference_id="collective.ar_residual_rmsnorm.reference.v1",
-        verification_profile_id="collective.ar_residual_rmsnorm.verify.v1",
-        binding_family_id="sglang.collective.ar-fusion.v1",
-        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
-    ),
-    "linear.dense": _contract_ref(
-        "linear.dense",
-        kind="block",
-        entry="dense",
-        prepare="prepare",
-        graph_dynamic_inputs=("x",),
-        input_abi_id="linear.dense.weight-out-in.input.v1",
-        output_abi_id="linear.dense.output.v1",
-        reference_id="linear.dense.reference.v1",
-        verification_profile_id="linear.dense.verify.v1",
-        binding_family_id="sglang.linear.unquantized.v1",
-        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
-    ),
-    "moe.fused_experts": _contract_ref(
-        "moe.fused_experts",
-        kind="block",
-        entry="fused_experts",
-        prepare="prepare",
-        graph_dynamic_inputs=("x", "topk_ids", "topk_weights"),
-        input_abi_id="moe.fused_experts.modelopt-nvfp4-gate-up.input.v3",
-        output_abi_id="moe.fused_experts.output.v1",
-        reference_id="moe.fused_experts.m3-swigluoai.reference.v2",
-        verification_profile_id="moe.fused_experts.m3-nvfp4.verify.v3",
-        binding_family_id="sglang.moe.fused-experts.dispatch.v1",
-        correctness=CorrectnessContractRef(mode="cosine", min_cosine="0.985"),
-    ),
-    "moe.fused_routed_experts": _contract_ref(
-        "moe.fused_routed_experts",
-        kind="block",
-        entry="fused_routed_experts",
-        prepare="prepare",
-        graph_dynamic_inputs=("x", "router_logits"),
-        input_abi_id="moe.fused_routed_experts.input.v1",
-        output_abi_id="moe.fused_routed_experts.output.v1",
-        reference_id="moe.fused_routed_experts.reference.v1",
-        verification_profile_id="moe.fused_routed_experts.verify.v1",
-        binding_family_id="sglang.moe.fused-experts.dispatch.v1",
-        # Generic contract projection; the GLM arena registration bumps the
-        # verify id and swaps in the measured NVFP4 cosine floor.
-        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.97"),
-    ),
-    "moe.fused_experts_reduce": _contract_ref(
-        "moe.fused_experts_reduce",
-        kind="collective",
-        entry="fused_experts_reduce",
-        prepare="prepare",
-        graph_dynamic_inputs=("x", "topk_ids", "topk_weights"),
-        input_abi_id="moe.fused_experts_reduce.modelopt-nvfp4-gate-up.input.v3",
-        output_abi_id="moe.fused_experts_reduce.output.v1",
-        reference_id="moe.fused_experts_reduce.m3-swigluoai.reference.v2",
-        verification_profile_id="moe.fused_experts_reduce.m3-nvfp4.verify.v3",
-        binding_family_id="sglang.moe.fused-experts.dispatch.v1",
-        correctness=CorrectnessContractRef(mode="cosine", min_cosine="0.985"),
-    ),
-    "norm.rmsnorm": _contract_ref(
-        "norm.rmsnorm",
-        kind="op",
-        entry="rmsnorm",
-        prepare=None,
-        graph_dynamic_inputs=("x",),
-        input_abi_id="norm.rmsnorm.input.v1",
-        output_abi_id="norm.rmsnorm.output.v1",
-        reference_id="norm.rmsnorm.reference.v1",
-        verification_profile_id="norm.rmsnorm.verify.v1",
-        binding_family_id="sglang.norm.rmsnorm.v1",
-        correctness=CorrectnessContractRef(),
-    ),
-    "norm.fused_add_rmsnorm": _contract_ref(
-        "norm.fused_add_rmsnorm",
-        kind="block",
-        entry="fused_add_rmsnorm",
-        prepare=None,
-        graph_dynamic_inputs=("x", "residual"),
-        input_abi_id="norm.fused_add_rmsnorm.input.v1",
-        output_abi_id="norm.fused_add_rmsnorm.output.v1",
-        reference_id="norm.fused_add_rmsnorm.reference.v1",
-        verification_profile_id="norm.fused_add_rmsnorm.verify.v1",
-        binding_family_id="sglang.norm.rmsnorm.v1",
-        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
-    ),
-}
+_SINGLETON_CONTRACTS = _singleton_contracts()
 
 
 @lru_cache(maxsize=1)

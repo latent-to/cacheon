@@ -1,0 +1,13 @@
+bundle_id = "example-sparse-mla-torch"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "attention.sparse_mla"
+mode = "slot"
+
+[[ops]]
+slot = "attention.sparse_mla"
+source = "kernels/sparse_mla.py"
+entry = "sparse_mla"
+dtypes = ["float32", "float16", "bfloat16", "float8_e4m3fn"]
+metadata = "metadata/sparse_mla.json"

@@ -1,6 +1,7 @@
 {
- "catalog_digest": "496da244515abe4b7e6207f0d964c30eee20a6c883105cd32cc9aafa463f6dc2",
+ "catalog_digest": "dc4c746ce7d818cbc016b0e6f6e9b2b6f701749836b1efd4ab20001d868f89f3",
  "target:activation.silu_and_mul": {"contract_digest":"e8c1ded7e180825038b807e6c5abab73de5022a8a8763f197712c56da0205def","spec_digest":"8ef0a33e99631239faa754f258d5bbb1d2a2b354de4346a8763234d254436577"},
+ "target:attention.sparse_mla": {"contract_digest":"14b14f936a3e91352bedf4db0712082ab9fbf60ba9a3c3f8cc91789eb776b7a0","spec_digest":"cd8db36034b5dc75e0cf46f5233a621b4325289f2362417269a21631aac26e6b"},
  "target:collective.all_gather_into_tensor": {"contract_digest":"4634ecbf98b482e45b4e8952e441c6c9291d4f25286f04acd7cc3b5f828fa0b1","spec_digest":"4c3f6260c3bb0750bbb310c7caf0117df90ee9d92efa970d65166e692730bf68"},
  "target:collective.all_reduce": {"contract_digest":"f4efa76114d598a7b0398a4e180c4f5d413976762cbdfc64baecd458ada64053","spec_digest":"868e911707a669b9a3738975db2eec98ff6024303bbe9066b233bab27039e207"},
  "target:collective.ar_residual_rmsnorm": {"contract_digest":"ad5c8aa95c5694b85a4b2583f13ba705962ee1e5e8ec109d1a9a5bbeea9bd3f2","spec_digest":"110701432edd88e854b3ac01a4ec2dd1a11ac8aad1b182f2dc50827b2218f739"},

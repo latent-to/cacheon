@@ -61,11 +61,12 @@ The live catalog supports three kinds. Kind changes the breadth and capability o
 
 ## Current catalog
 
-The current API contains **11 slots**.
+The current API contains **12 slots**.
 
 | Slot | Kind | Entry point | Semantic boundary |
 |---|---|---|---|
 | `activation.silu_and_mul` | `op` | `silu_and_mul` | Gated MLP activation product |
+| `attention.sparse_mla` | `block` | `sparse_mla` | Selected-token sparse attention core with BF16 latent output |
 | `collective.all_gather_into_tensor` | `collective` | `all_gather_into_tensor` | Equal-size all-gather into a validator-owned output |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |
 | `collective.ar_residual_rmsnorm` | `collective` | `ar_residual_rmsnorm` | Fused all-reduce, residual add, and RMSNorm |

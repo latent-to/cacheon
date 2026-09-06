@@ -215,6 +215,7 @@ def test_tracked_examples_preserve_legacy_or_name_modern_target_identity():
             "collective.all_reduce", "slot"
         ),
         "miner_dense_torch": CompetitionEntry("linear.dense", "slot"),
+        "miner_sparse_mla_torch": CompetitionEntry("attention.sparse_mla", "slot"),
         "miner_dp_attention_exchange_torch": CompetitionEntry(
             "collective.dp_attention_exchange.v1", "atomic"
         ),

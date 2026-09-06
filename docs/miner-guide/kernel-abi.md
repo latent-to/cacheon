@@ -83,6 +83,54 @@ This is pure RMSNorm. The slot does not grant ownership of a residual add.
 
 ## Block slots
 
+### `attention.sparse_mla`
+
+```python
+def sparse_mla(q, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale):
+    ...
+```
+
+The sparse core consumes already prepared queries `q:(T,H,D)`, paged
+latent-plus-positional keys `kv_cache:(P,S,D)`, physical token indices
+`indices:(T,K)` and nonnegative per-query `seq_lens:(T)`. Indices and lengths
+are int32. Queries/cache share float32, float16, bfloat16 or float8-e4m3fn
+storage; `out:(T,H,V)` is always contiguous **bfloat16**, with `V=value_dim`.
+A physical index `i` addresses cache row `[i // S, i % S]`.
+
+For each query/head, use only the first `min(seq_lens[t], K)` indices,
+discarding `-1` entries. The remaining indices must address the cache.
+Trailing entries outside that prefix are ignored, even if they look valid.
+Compute `softmax(q @ selected_keys.T * qk_scale)`, multiply by the first
+`V` components of the selected cache rows, then apply `value_scale`.
+No selected keys means zero output. The two scales are capture-static Python
+scalars. Candidates preserve all inputs and fill the supplied output.
+
+The independent FP32 reference dequantizes only selected rows, bounding its
+temporary storage by top-k and head geometry. Component verification requires
+matched ratio at least 0.99 with absolute/relative tolerance 0.02/0.02 for
+every input dtype because output is BF16. This component policy does not
+replace or relax the sealed full-model quality gate.
+
+Both TRTLLM DSA prefill and decode in pinned SGLang reach the same
+`flashinfer.decode.trtllm_batch_decode_with_kv_cache_mla` symbol. The adapter
+normalizes its one-query-per-row layout into this ABI. Its current domain is
+explicit `trtllm-gen`, 32/64-token cache pages, scalar scales, and ordinary
+output allocation. Dense MLA, multi-query native rows, LSE/sinks, DCP,
+tensor scales and supplied-output variants remain outside that binding.
+Compilation/tactic-profiling calls do not count as candidate execution.
+
+This slot owns sparse QK, softmax and latent-value combination. It does not own
+index scoring/selection, logical-to-physical translation, RoPE, quantization,
+cache writes, projections or absorbed BMMs. The producer supplies per-query
+causal selections, including earlier chunks and KV history. Positions affect
+the already prepared query/cache tensors. Those tensors, indices and lengths
+are all graph-dynamic; changing addresses is not the replay contract.
+
+The [faithful example](https://github.com/latent-to/cacheon/tree/main/examples/miner_sparse_mla_torch)
+uses bounded shape-based chunks and tensor-valued masks. It is a correctness
+example, not performance evidence. CPU verification does not establish GPU
+capture, rank coverage, exact-image fidelity or public arena availability.
+
 ### `linear.dense`
 
 ```python

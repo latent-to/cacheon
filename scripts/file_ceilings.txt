@@ -36,8 +36,8 @@ cacheon/eval/qualification_runner.py 2937
 cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1203
 cacheon/settlement.py 1344
-cacheon/slots.py 950
-cacheon/target_catalog.py 1160
+cacheon/slots.py 920
+cacheon/target_catalog.py 977
 cacheon/verify.py 997
 cacheon/verify_collective.py 1068
 dashboard/app.py 1455

@@ -357,7 +357,7 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     # Epoch 2026-09-01: priority fallback composition was replaced by explicit
     # target conflict/displacement and symmetric challenger transitions.
     # Epoch 2026-09-05: the merged GLM catalog retires the artifact-provider
-    # registry and preserves the exclusive target composition policy.
+    # registry; sparse MLA adds one target without changing existing target specs.
     # Historical records are unaffected: they embed their own catalog snapshot.
     catalog = default_target_catalog()
     candidate = _candidate(
@@ -366,10 +366,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "63c65128ace99e51f95e666aaaf1e8242eeb4b2413bfba535384321fc40af561"
+        "9345d481f508e805473b6de8c5577576aebeb293d08fabcfbee7c9424114f38e"
     )
     assert candidate.digest == (
-        "a28d61de8b177eff8022f489e346ee543ef12c0235d069f510aa6c9b4b0691d7"
+        "a906d9c7ebbf8bd3854a04c6e80419d1d8f740d4117f53fca7bcf322c39e3128"
     )
 
 

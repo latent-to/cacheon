@@ -20,12 +20,13 @@ The authoritative sources are
 
 ## Current slot catalog
 
-There are 11 semantic slots. `entry` below means the callable named by your
+There are 12 semantic slots. `entry` below means the callable named by your
 manifest; it does not require the Python function itself to be named `entry`.
 
 | Slot | Kind | Required call boundary | What the validator retains |
 |---|---|---|---|
 | `activation.silu_and_mul` | op | `entry(x, out)` | MLP activation output |
+| `attention.sparse_mla` | block | `entry(q, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale)` | BF16 latent attention output; selection and cache preparation stay outside |
 | `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | rank-ordered gathered tensor |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | sum across the supplied process group |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | reduced residual and normalized output |
@@ -53,6 +54,12 @@ Routed MoE includes the 16,384-token prefill shape; its untimed reference groups
 tokens by expert without duplicating weights. Mixed-cell qualification remains
 the full-model quality and performance gate.
 
+The source catalog also contains `attention.sparse_mla` with GLM verification
+profiles. It has not been added to the commissioned five-target arena.
+Its adapter and CPU controls are implementation work; exact-image hardware and
+full-model acceptance remain required. Indexer and cache preparation coverage
+are still unfinished. See the [sparse MLA ABI](kernel-abi.md#attentionsparse_mla).
+
 ## Arena availability
 
 The catalog registers contracts; each arena's pinned data seals which of them
@@ -79,7 +86,7 @@ See [Kernel ABI](kernel-abi.md) for tensor semantics and
 ## Singleton targets
 
 The current default target catalog registers one singleton target for each of
-the 11 slots. Its target ID is the slot ID. A normal proposal therefore names
+the 12 slots. Its target ID is the slot ID. A normal proposal therefore names
 the slot target explicitly:
 
 ```toml

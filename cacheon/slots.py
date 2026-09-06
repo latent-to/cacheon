@@ -1,48 +1,13 @@
-"""Typed op-slot catalog — the submission ABI.
+"""Validator-owned slot catalog shared by verification and live dispatch.
 
-A *slot* is a replaceable, narrowly-typed region of the fixed model graph. The
-validator owns this catalog; a miner may only target a slot that exists here, and
-provides the small ``entry`` callable described by the slot's contract. Everything
-around the slot (tensor allocation, the call site, the rest of the model) stays
-validator-owned.
+Slots expose bounded, upstream-of-sampler tensor computation. The validator
+allocates every output; a candidate only fills it. References express independent
+high-precision math, while correctness policies allow registered numerical error.
+Graph-dynamic inputs are refreshed in place between captured replays.
 
-A slot comes in two ``kind``s, and the difference is only the *breadth* of the
-typed boundary — the cheat-resistance story is identical for both: the validator
-allocates the outputs, the miner only fills them, and the miner never produces the
-final tokens/logprobs (so there is nothing to substitute, the attack that bites
-whole-model submissions).
-
-* ``"op"`` — a single fused op. ``silu_and_mul`` (``entry(x, out)``), ``rmsnorm``
-  (``entry(x, weight, out, eps)``).
-* ``"block"`` — a region that fuses several ops behind one tensor-in/tensor-out
-  contract, for bigger wins. ``moe.fused_experts`` (dispatch + expert GEMMs +
-  activation + combine behind one call) is the canonical one. A block has the *same
-  shape* of contract as an op (named tensor inputs -> validator-allocated outputs),
-  just wider — which is exactly why the seam / verify / registry machinery is
-  unchanged. The breadth is bounded: a slot must stay strictly upstream of the
-  logprobs/sampler, or the output-substitution attack reappears.
-
-Each slot carries everything the validator needs to verify a submission without
-trusting it: a trusted high-precision ``invoke_reference``, a deterministic input
-generator, the standard shapes, per-dtype tolerances, explicit
-``invoke_reference`` / ``invoke_entry`` (so non-uniform call shapes work), and a
-``Correctness`` policy. The policy matters once a kernel legitimately changes
-numerics (flash-style softmax reductions, fp8, MLA weight absorption): such kernels
-are NOT bit-exact to the reference, so the gate is a *matched ratio* (>= rho of
-elements within tolerance against high-precision ground truth) rather than
-all-close — the deterministic-vs-low-precision tiering from FlashInfer-Bench. The
-reference is always high-precision ground truth, never the stock kernel.
-
-Some slots are a **(prepare, forward) pair**: a quantized / layout-sensitive kernel
-(MoE experts, a quant GEMM) needs the *weights* in a custom layout, and that layout
-transform is part of the kernel. Such a slot names a second miner callable via
-``prepare`` — it runs ONCE at load on the raw checkpoint weights, the validator holds
-the result, and ``entry`` (forward) consumes it each step as ``prepared``. A quantized
-fused-MoE (repack the expert weights, interleave the FP4 block scales, then a fused
-GEMM) fits *one* slot this way: the repack/interleave is ``prepare``, the kernel is
-``forward``.
-
-Adding a slot is a validator action (a code change here), never a miner action.
+A prepared slot may additionally transform validator-supplied weights once at
+load. Model geometry and quantization specializations live in model_profiles;
+version-pinned engine callsites live in the seam adapter registry.
 """
 
 from __future__ import annotations
@@ -68,6 +33,7 @@ from cacheon.norm_contract import (
     make_fused_add_rmsnorm_inputs,
 )
 from cacheon.tensor_spec import OutputSpec, TensorSpec
+from cacheon.sparse_mla_contract import slot_spec as _sparse_mla_slot
 
 
 @dataclass(frozen=True)
@@ -866,7 +832,11 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 )
 
 
+SPARSE_MLA = _sparse_mla_slot()
+
+
 SLOTS: dict[str, SlotSpec] = {
+    SPARSE_MLA.name: SPARSE_MLA,
     SILU_AND_MUL.name: SILU_AND_MUL,
     RMSNORM.name: RMSNORM,
     MOE_FUSED_EXPERTS.name: MOE_FUSED_EXPERTS,

@@ -4,7 +4,7 @@ A slot is a validator-owned semantic boundary inside the pinned engine. A
 contribution supplies an implementation for that boundary; the validator owns
 the call site, inputs, output allocation, reference, and verification policy.
 
-The registered API contains **11 slots**. The registry in
+The registered API contains **12 slots**. The registry in
 [`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
 is authoritative; print it with `python -m cacheon.cli slots`.
 
@@ -13,6 +13,7 @@ is authoritative; print it with `python -m cacheon.cli slots`.
 | Slot | Kind | Entry contract | Correctness |
 |---|---|---|---|
 | `activation.silu_and_mul` | op | `entry(x, out)` | allclose |
+| `attention.sparse_mla` | block | `entry(q, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale)` | matched ratio ≥ 0.99 |
 | `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | matched ratio ≥ 0.99 |
@@ -87,6 +88,9 @@ it but may not create a private group or let only some ranks fall back.
 
 The standard registered tolerances are `0.02/0.02` for bfloat16,
 `0.01/0.01` for float16, and `1e-5/1e-5` for float32. These component checks
+are necessary but not sufficient. Sparse MLA instead uses 0.02/0.02 for all
+input dtypes because its output is always BF16; see the
+[sparse MLA ABI](../miner-guide/kernel-abi.md#attentionsparse_mla). These checks
 are necessary but not sufficient: production quality authority belongs to the
 complete qualification profile and pristine reference engine.
 

@@ -61,6 +61,9 @@ class SeamBinding:
 # THE table. Add a seam here and the bootstrap watch-list, the activate() install loop,
 # and the compat canary all pick it up — no parallel list to keep in sync.
 SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
+    SeamAdapter("sparse_mla", "flashinfer.decode", "sglang_sparse_mla",
+                "trtllm_batch_decode_with_kv_cache_mla", ("attention.sparse_mla",),
+                binding_id="sparse_mla", environment_gate="CACHEON_SPARSE_MLA_SEAM"),
     SeamAdapter("activation", "sglang.srt.layers.activation",
                 "sglang_silu", "SiluAndMul.forward_cuda", ("activation.silu_and_mul",)),
     SeamAdapter("layernorm", "sglang.srt.layers.layernorm",

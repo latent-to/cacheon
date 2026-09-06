@@ -8,6 +8,7 @@ from typing import Optional
 import torch
 
 from cacheon.capabilities import CallDescriptor
+from cacheon.sparse_mla_contract import call_descriptor as _sparse_mla_descriptor
 from cacheon.moe_nvfp4_contract import (
     call_descriptor as _moe_call_descriptor,
     prepare_args_from_inputs as _moe_prepare_args_from_inputs,
@@ -202,12 +203,23 @@ _GLM53_DP_EXCHANGE_PROFILE = SlotProfile(shapes=tuple(
     {"num_tokens": tokens, "hidden": 6144} for tokens in (6, 32)
 ))
 
+# TP4 / attention-DP4 leaves all 64 query heads on each attention rank.
+_GLM53_SPARSE_MLA_PROFILE = SlotProfile(shapes=tuple(
+    dict(num_tokens=tokens, num_heads=64, value_dim=512, rope_dim=64,
+         num_pages=pages, page_size=64, top_k=2048, query_chunk=chunk,
+         input_dtype="float8_e4m3fn")
+    for tokens, pages, chunk in (
+        (6, 128, 1), (32, 1024, 1), (128, 128, 128), (16384, 1024, 16384),
+    )
+))
+
 MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
     "MiniMax-M3": {
         "moe.fused_experts": _M3_MOE_NVFP4_PROFILE,
         "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
     },
     "GLM-5.3": {
+        "attention.sparse_mla": _GLM53_SPARSE_MLA_PROFILE,
         "collective.all_gather_into_tensor": _GLM53_DP_EXCHANGE_PROFILE,
         "collective.all_reduce": _GLM53_ALL_REDUCE_PROFILE,
         "collective.reduce_scatter_tensor": _GLM53_DP_EXCHANGE_PROFILE,
@@ -257,6 +269,11 @@ def verification_call_descriptor(
             graph_mode=graph_mode, quant=str(inputs.get("__moe_quant__", "dense")),
             num_experts=int(inputs["w13"].shape[0]),
             intermediate_dim=int(inputs["w2"].shape[-1]),
+            tp_size=tp_size, world_size=world_size,
+        )
+    if slot.name == "attention.sparse_mla":
+        return _sparse_mla_descriptor(
+            inputs, architecture=architecture, graph_mode=graph_mode,
             tp_size=tp_size, world_size=world_size,
         )
     if slot.name == "linear.dense":

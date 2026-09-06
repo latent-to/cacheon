@@ -424,22 +424,10 @@ def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identi
     # The B300 arena's registered set is PINNED arena data: it excludes catalog
     # rows that belong to other arenas (the GLM fat MoE slot) and must not grow
     # when the cross-arena catalog does.
-    expected = tuple(
-        sorted(
-            (
-                *(
-                        target
-                        for target in SINGLETON_TARGET_IDS
-                        if target not in {
-                            "collective.all_gather_into_tensor",
-                            "collective.reduce_scatter_tensor",
-                            "linear.dense",
-                            "moe.fused_routed_experts",
-                        "norm.fused_add_rmsnorm",
-                    }
-                ),
-            )
-        )
+    expected = (
+        "activation.silu_and_mul", "collective.all_reduce",
+        "collective.ar_residual_rmsnorm", "moe.fused_experts",
+        "moe.fused_experts_reduce", "norm.rmsnorm",
     )
     snapshot_ids = tuple(
         row["target_id"]
@@ -454,6 +442,7 @@ def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identi
     assert tuple(row.target_id for row in harness.factory.profiles) == (
         tuple(row.target_id for row in projection)
     )
+    assert "attention.sparse_mla" not in (*expected, *GLM53_REGISTERED_TARGET_IDS)
     assert "moe.fused_routed_experts" not in expected
     assert "norm.rmsnorm" in expected
     assert "collective.dp_attention_exchange.v1" not in expected

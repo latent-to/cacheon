@@ -8,6 +8,19 @@ Passing tests, completing an empirical qualification, activating an incentive
 policy, publishing weights, and producing a deployable engine release are
 different events. Evidence for one does not authorize another.
 
+On **2026-09-05**, the attention continuation added `attention.sparse_mla`:
+a generic sparse-core ABI, independent reference, GLM model profiles and the
+adapter shared by TRTLLM DSA prefill/decode. B300 component verification passed
+two generic BF16 shapes and four GLM FP8 shapes, with three CUDA graph replays
+per shape. The largest jittered case used 21,847 query tokens. These runs used
+the attention patch on `35eb162c` mounted over the accepted SGLang 0.5.18 image;
+the subsequent port onto PR #112 has CPU coverage only. These runs do not
+prove full-model seam execution or two-lane TP4 qualification. CPU math and
+negative controls also passed. This slot has not been deployed or enabled for
+public intake. Indexer, RoPE/quantization/cache-write ownership, remaining coverage and
+automatic public-loop proof remain open. The previously accepted five-target
+image does not qualify these changed worker bytes.
+
 On **2026-09-05**, the GLM branch incorporated PR #110's source-build-only
 execution path while preserving the GLM catalog's exclusive overlap policy and
 retirement of the M3 attention and dependency-patch surfaces. Reward projection
@@ -201,12 +214,12 @@ does not establish that a paid OCI lifetime has mounted or executed that model.
 
 ### Slots and targets
 
-The executable catalog contains 11 slots and one registered atomic target:
+The executable catalog contains 12 slots and one registered atomic target:
 
 | Kind | Registered identifiers |
 |---|---|
 | Op | `activation.silu_and_mul`, `norm.rmsnorm` |
-| Block | `linear.dense`, `moe.fused_experts`, `moe.fused_routed_experts`, `norm.fused_add_rmsnorm` |
+| Block | `attention.sparse_mla`, `linear.dense`, `moe.fused_experts`, `moe.fused_routed_experts`, `norm.fused_add_rmsnorm` |
 | Collective | `collective.all_gather_into_tensor`, `collective.all_reduce`, `collective.ar_residual_rmsnorm`, `collective.reduce_scatter_tensor`, `moe.fused_experts_reduce` |
 | Atomic target | `collective.dp_attention_exchange.v1` over all-gather and reduce-scatter |
 

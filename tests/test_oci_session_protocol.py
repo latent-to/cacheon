@@ -156,6 +156,7 @@ def test_seam_binding_table_is_closed() -> None:
         "collective": "CACHEON_COLLECTIVE_SEAM",
         "dense": "CACHEON_DENSE_SEAM",
         "moe": "CACHEON_MOE_SEAM",
+        "sparse_mla": "CACHEON_SPARSE_MLA_SEAM",
     }
     bindings = {binding.binding_id: binding for binding in SEAM_BINDINGS}
     assert bindings["arfusion"].adapters == ("arfusion",)
@@ -184,12 +185,14 @@ def test_seam_bindings_normalize_and_emit_complete_explicit_environment() -> Non
         "CACHEON_COLLECTIVE_SEAM": "0",
         "CACHEON_DENSE_SEAM": "0",
         "CACHEON_MOE_SEAM": "1",
+        "CACHEON_SPARSE_MLA_SEAM": "0",
     }
     assert seam_binding_environment(()) == {
         "CACHEON_ARFUSION_SEAM": "0",
         "CACHEON_COLLECTIVE_SEAM": "0",
         "CACHEON_DENSE_SEAM": "0",
         "CACHEON_MOE_SEAM": "0",
+        "CACHEON_SPARSE_MLA_SEAM": "0",
     }
 
 

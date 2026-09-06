@@ -50,6 +50,7 @@ checks for the most consequential surfaces:
 |---|---|---|
 | `SiluAndMul` and `RMSNorm` | Narrow component call sites | Argument order, residual semantics, fallback routing |
 | `FusedMoE.forward_impl` | MoE waist that survives piecewise capture | Expert inputs, routing outputs, reduction ownership |
+| `flashinfer.decode.trtllm_batch_decode_with_kv_cache_mla` | Shared TRTLLM DSA sparse-core call | Physical-token indexing, active lengths, FP8 scales, BF16 output and per-query layout |
 | GLM dense linear call sites | Validator-owned projection boundary | Quantized-weight layout, row geometry, and return type |
 | `fused_add_rmsnorm` | Residual-plus-norm boundary | In-place residual ownership and tuple semantics |
 | `GroupCoordinator.all_reduce` | Validator-owned TP collective boundary | Process-group ownership and all-rank behavior |

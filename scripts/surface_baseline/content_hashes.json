@@ -14,5 +14,6 @@
  "examples/miner_silu_sparse": "8ceb1a7e48f3b207ab1503826ac6b073343e5c36170b1b556f718c4b92358891",
  "examples/miner_silu_torch": "3d518dda8356bddd8c18fc2d3d02465a044135caee04853609ccdcb6c35c44db",
  "examples/miner_silu_triton": "b94303ed254f96cb09c5c65e410b76a5b32d04b2d5d6251bca741db36fa5c92e",
+ "examples/miner_sparse_mla_torch": "d6fa7cdb383ef65a45eb390c583d5991cc84041397a6804e51e4e9c53732f23a",
  "tests/fixtures/stack_norm_singleton": "7a87ddf2a4d03ea4b5f4c9fffc16354a0cefed1b36f00c8db3e694e1573ff80c"
 }
