@@ -24,8 +24,15 @@ attempt failed closed before GPU entry: the planner passed the registered
 policy's model profile to a graph-facts builder that did not accept it, a
 mismatch introduced with the GLM arena surface and never executed before, and
 the supervisor held the reservation after three infrastructure releases. The
-builder now takes the profile and keys accepted evidence by it; the held
-reservation is re-queued on the corrected commission.
+builder now takes the profile and keys accepted evidence by it, and the
+corrected source was re-commissioned and re-activated the same night.
+Re-queuing the held reservation on the new commission then met the documented
+segment boundary: its baseline segment had been bound at screen time to the
+retired stack, the dispatcher refused to claim across the boundary, and the
+operator held the reservation again so the new arena's qualification lane
+stays clear. A promoted reservation bound to a retired stack has no product
+path to rebind, so the wrong-output rejection through the public loop remains
+proven only by the off-chain control on the merged source.
 
 Late on **2026-09-06**, before public intake, the attention-family verification
 gates were tightened: indexer histories span the declared context so selection
