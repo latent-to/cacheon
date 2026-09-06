@@ -584,8 +584,8 @@ def test_reopened_row_binds_to_the_stack_that_rescreens_it(tmp_path):
         assert store.reservation_baseline_segment(rid) is None
         assert store.rebind_remeasurement_segment(rid) is None
 
-        # Reproduce the trap the way it happened: the stale service digest was
-        # still on the row when the backfill ran.
+        # Reproduce the trap the way it happened (stale service digest on the row
+        # when the backfill ran); the fresh screen under the live arena rebinds it.
         with store._transaction():
             store._db.execute(
                 "UPDATE reservations SET arena_service_digest=? WHERE reservation_id=?",
@@ -595,8 +595,8 @@ def test_reopened_row_binds_to_the_stack_that_rescreens_it(tmp_path):
         assert store.reservation_baseline_segment(rid).arena_digest == pair.arena_digest
         _promote(store, rid, service=live_arena)
         assert store.get(rid).arena_service_digest == live_arena
-        assert store.reservation_baseline_segment(rid).arena_digest == pair.arena_digest
-        assert store.qualification_queue_baseline().arena_digest == pair.arena_digest
+        assert store.reservation_baseline_segment(rid).arena_digest == live_arena
+        assert store.qualification_queue_baseline().arena_digest == live_arena
 
         state = store.rebind_remeasurement_segment(rid)
         assert state is not None

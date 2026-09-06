@@ -39,6 +39,7 @@ from cacheon.chain.execution_disposition import (
     WORKER_INFRASTRUCTURE_REQUEUE_FAILURE,
     resolve_infrastructure_result,
 )
+from cacheon.chain.baseline_segments import commission_boundary
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.screen_identity_rotation import (
@@ -428,45 +429,24 @@ class RecoverableQualificationDispatcher:
     def _bind_commissioned_incumbent(
         self, store: RecoverableFinalizedIntakeStore,
     ) -> QualificationCommissionRequired | None:
-        """Install genesis or verify the FIFO segment before any claim.
+        """Type the segment boundary from ``cacheon.chain.baseline_segments``.
 
-        Settlement may advance durable lineage while older reservations remain
-        queued. Those reservations retain their exact baseline segment and run
-        under the still-resident commission. No completed evidence is erased.
-        Once FIFO reaches a segment with a different stack, return a typed
-        commission boundary before a lease, request, publication, or GPU action.
+        Once FIFO reaches a segment with a different stack of the live arena,
+        the typed commission boundary halts the evaluator before a lease,
+        request, publication, or GPU action. No completed evidence is erased.
         """
 
         try:
-            try:
-                store.evaluation_stack(
-                    self.qualification_incumbent_stack.arena_digest
-                )
-            except IntakeError as exc:
-                if str(exc) != "evaluation stack is not initialized":
-                    raise
-                store.initialize_evaluation_stack(
-                    self.qualification_incumbent_stack,
-                    tree_digest=self.qualification_incumbent_tree_digest,
-                )
-            store.backfill_reservation_baseline_segments()
-            required = store.qualification_queue_baseline()
+            boundary = commission_boundary(
+                store,
+                self.qualification_incumbent_stack,
+                tree_digest=self.qualification_incumbent_tree_digest,
+            )
         except IntakeError as exc:
             raise RecoverableQualificationDispatcherError(
                 f"qualification baseline queue authority is invalid: {exc}"
             ) from exc
-        if required is None:
-            return None
-        if (
-            required.manifest.digest == self.qualification_incumbent_stack.digest
-            and required.tree_digest == self.qualification_incumbent_tree_digest
-        ):
-            return None
-        return QualificationCommissionRequired(
-            self.qualification_incumbent_stack.digest,
-            required.manifest.digest,
-            required.tree_digest,
-        )
+        return None if boundary is None else QualificationCommissionRequired(*boundary)
 
     def _claim_or_reopen(
         self,

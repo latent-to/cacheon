@@ -2159,189 +2159,25 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         *,
         reason: str,
     ) -> None:
-        if (
-            type(state) is not EvaluationStackState
-            or not isinstance(reason, str)
-            or not reason
-            or len(reason) > 128
-        ):
-            raise IntakeError("reservation baseline binding is malformed")
-        reservation = self._db.execute(
-            "SELECT retry_group_digest FROM reservations WHERE reservation_id=?",
-            (reservation_id,),
-        ).fetchone()
-        if reservation is None:
-            raise IntakeError("reservation baseline binding lost its reservation")
-        group = reservation["retry_group_digest"]
-        reservation_ids = (reservation_id,)
-        if group:
-            reservation_ids = tuple(
-                row["reservation_id"]
-                for row in self._db.execute(
-                    "SELECT reservation_id FROM reservations "
-                    "WHERE status='promoted' AND retry_group_digest=? "
-                    "ORDER BY retry_position",
-                    (group,),
-                )
-            )
-            existing = tuple(
-                self.reservation_baseline_segment(row_id)
-                for row_id in reservation_ids
-                if self._db.execute(
-                    "SELECT 1 FROM reservation_baseline_segments "
-                    "WHERE reservation_id=?",
-                    (row_id,),
-                ).fetchone()
-                is not None
-            )
-            if existing:
-                if any(row != existing[0] for row in existing[1:]):
-                    raise IntakeError(
-                        "qualification retry group spans baseline segments"
-                    )
-                state = existing[0]
-        for row_id in reservation_ids:
-            self._db.execute(
-                "INSERT OR IGNORE INTO reservation_baseline_segments("
-                "reservation_id,arena_id,generation,stack_digest,tree_digest,"
-                "stack_json,transition_event_id,binding_reason) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (
-                    row_id,
-                    state.arena_digest,
-                    state.generation,
-                    state.manifest.digest,
-                    state.tree_digest,
-                    self._encoded_stack_manifest(state),
-                    state.transition_event_id,
-                    reason,
-                ),
-            )
+        from cacheon.chain.baseline_segments import bind_reservation_baseline_segment
+
+        bind_reservation_baseline_segment(self, reservation_id, state, reason=reason)
 
     def _bind_unbound_queue_to_stack(
         self, state: EvaluationStackState, *, reason: str
     ) -> None:
-        stack_count = self._db.execute(
-            "SELECT COUNT(*) AS n FROM evaluation_stacks"
-        ).fetchone()["n"]
-        active_marks = ",".join("?" for _ in _ACTIVE)
-        if stack_count == 1:
-            authority = "(r.arena_service_digest=? OR r.arena_service_digest='')"
-        else:
-            authority = "r.arena_service_digest=?"
-        rows = tuple(
-            self._db.execute(
-                "SELECT r.reservation_id FROM reservations AS r WHERE "
-                f"r.status IN ({active_marks}) AND {authority} AND NOT EXISTS ("
-                "SELECT 1 FROM reservation_baseline_segments AS b "
-                "WHERE b.reservation_id=r.reservation_id)",
-                (*_ACTIVE, state.arena_digest),
-            )
-        )
-        for row in rows:
-            self._bind_reservation_baseline_segment(
-                row["reservation_id"], state, reason=reason
-            )
+        from cacheon.chain.baseline_segments import bind_unbound_queue_to_stack
+
+        bind_unbound_queue_to_stack(self, state, reason=reason)
 
     def backfill_reservation_baseline_segments(self) -> tuple[str, ...]:
-        """Bind pre-upgrade queue rows to the stack active when they arrived.
+        """Bind pre-upgrade queue rows to the stack active when they arrived."""
 
-        Each CROWN snapshots every reservation already present. The first
-        target-lineage transition containing a reservation therefore identifies
-        the exact incumbent segment that must drain it. Rows arriving after the
-        latest transition bind to the current durable stack.
-        """
+        from cacheon.chain.baseline_segments import (
+            backfill_reservation_baseline_segments,
+        )
 
-        from cacheon.settlement import SettlementCandidate
-
-        bound: list[str] = []
-        active_marks = ",".join("?" for _ in _ACTIVE)
-        with self._transaction():
-            pending = tuple(
-                self._db.execute(
-                    "SELECT r.reservation_id,r.target_id,r.arena_service_digest "
-                    "FROM reservations AS r WHERE "
-                    f"r.status IN ({active_marks}) AND NOT EXISTS (SELECT 1 FROM "
-                    "reservation_baseline_segments AS b WHERE "
-                    "b.reservation_id=r.reservation_id) "
-                    "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,"
-                    "r.content_hash",
-                    _ACTIVE,
-                )
-            )
-            for reservation in pending:
-                transition = self._db.execute(
-                    "SELECT n.arena_id,se.sequence,se.reservation_id AS winner_id "
-                    "FROM target_lineage_pretransition_reservations AS p "
-                    "JOIN target_lineage_nodes AS n "
-                    "ON n.transition_event_id=p.transition_event_id "
-                    "JOIN settlement_events AS se "
-                    "ON se.event_id=n.transition_event_id "
-                    "WHERE p.reservation_id=? "
-                    "ORDER BY se.sequence LIMIT 1",
-                    (reservation["reservation_id"],),
-                ).fetchone()
-                if transition is None:
-                    state = self._unambiguous_evaluation_stack(
-                        reservation["arena_service_digest"]
-                    )
-                    reason = "backfill_current_stack"
-                else:
-                    candidate_row = self._db.execute(
-                        "SELECT * FROM settlement_candidates WHERE reservation_id=?",
-                        (transition["winner_id"],),
-                    ).fetchone()
-                    if candidate_row is None:
-                        raise IntakeError(
-                            "baseline segment backfill lost its crown candidate"
-                        )
-                    candidate = self._settlement_candidate(candidate_row)
-                    if (
-                        type(candidate) is not SettlementCandidate
-                        or candidate.arena_digest != transition["arena_id"]
-                    ):
-                        raise IntakeError(
-                            "baseline segment backfill candidate is malformed"
-                        )
-                    previous = self._db.execute(
-                        "SELECT event_id FROM settlement_events WHERE arena_id=? "
-                        "AND event_type='STACK_TRANSITION' AND sequence<? "
-                        "ORDER BY sequence DESC LIMIT 1",
-                        (transition["arena_id"], transition["sequence"]),
-                    ).fetchone()
-                    generation = self._db.execute(
-                        "SELECT COUNT(*) AS n FROM settlement_events "
-                        "WHERE arena_id=? AND event_type='STACK_TRANSITION' "
-                        "AND sequence<?",
-                        (transition["arena_id"], transition["sequence"]),
-                    ).fetchone()["n"]
-                    event_id = (
-                        previous["event_id"]
-                        if previous is not None
-                        else canonical_digest(
-                            _EVALUATION_STACK_GENESIS_DOMAIN,
-                            {
-                                "arena_digest": candidate.arena_digest,
-                                "stack_digest": candidate.incumbent_manifest.digest,
-                                "tree_digest": candidate.incumbent_tree_digest,
-                            },
-                        )
-                    )
-                    state = EvaluationStackState(
-                        candidate.arena_digest,
-                        generation,
-                        candidate.incumbent_manifest,
-                        candidate.incumbent_tree_digest,
-                        event_id,
-                    )
-                    reason = "backfill_pretransition_stack"
-                if state is None:
-                    continue
-                self._bind_reservation_baseline_segment(
-                    reservation["reservation_id"], state, reason=reason
-                )
-                bound.append(reservation["reservation_id"])
-        return tuple(bound)
+        return backfill_reservation_baseline_segments(self)
 
     def initialize_evaluation_stack(
         self,
@@ -2587,31 +2423,14 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
     def reservation_baseline_segment(
         self, reservation_id: str
     ) -> EvaluationStackState | None:
-        require_sha256_hex(reservation_id, field="reservation_id")
-        row = self._db.execute(
-            "SELECT * FROM reservation_baseline_segments WHERE reservation_id=?",
-            (reservation_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._evaluation_stack_state_from_row(
-            row, context="reservation baseline segment"
-        )
+        from cacheon.chain.baseline_segments import reservation_baseline_segment
+
+        return reservation_baseline_segment(self, reservation_id)
 
     def qualification_queue_baseline(self) -> EvaluationStackState | None:
-        active_marks = ",".join("?" for _ in _ACTIVE)
-        row = self._db.execute(
-            "SELECT b.* FROM reservations AS r LEFT JOIN "
-            "reservation_baseline_segments AS b USING(reservation_id) "
-            f"WHERE r.status IN ({active_marks}) ORDER BY r.block,r.event_index,"
-            "r.event_subindex,r.hotkey,r.content_hash LIMIT 1",
-            _ACTIVE,
-        ).fetchone()
-        if row is None or row["arena_id"] is None:
-            return None
-        return self._evaluation_stack_state_from_row(
-            row, context="qualification queue baseline"
-        )
+        from cacheon.chain.baseline_segments import qualification_queue_baseline
+
+        return qualification_queue_baseline(self)
 
     @staticmethod
     def _settlement_candidate(row: sqlite3.Row) -> SettlementCandidate:

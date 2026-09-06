@@ -30,9 +30,10 @@ Re-queuing the held reservation on the new commission then met the documented
 segment boundary: its baseline segment had been bound at screen time to the
 retired stack, the dispatcher refused to claim across the boundary, and the
 operator held the reservation again so the new arena's qualification lane
-stays clear. A promoted reservation bound to a retired stack has no product
-path to rebind, so the wrong-output rejection through the public loop remains
-proven only by the off-chain control on the merged source.
+stays clear. The boundary now rebinds evidence-free rows left on a retired
+arena to the live stack and re-screens their promoted rows under the live
+identity (`cacheon/chain/baseline_segments.py`), so a redeployment no longer
+strands queued submissions until they expire.
 
 Late on **2026-09-06**, before public intake, the attention-family verification
 gates were tightened: indexer histories span the declared context so selection

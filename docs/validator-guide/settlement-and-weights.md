@@ -164,10 +164,17 @@ pre-transition ancestor rule above, but it never erases a completed evaluation j
 because the tip changed.
 
 The evaluator requests recommission only when the oldest active queue segment is
-bound to a different stack. The boundary is checked before a qualification lease,
-request publication, or GPU action. Screening can continue because it is not
-baseline-relative. After recommissioning, the next segment runs against its own
-persisted stack; one qualification cohort can never mix stack segments. A completed
+bound to a different stack of the live arena. The boundary is checked before a
+qualification lease, request publication, or GPU action. Screening can continue
+because it is not baseline-relative. After recommissioning, the next segment runs
+against its own persisted stack; one qualification cohort can never mix stack
+segments. A segment that names a retired arena, left behind when the validator
+redeployed on new worker bytes, is not a boundary: before the check, every
+evidence-free row on it (published, in transport retry, screening, or promoted)
+is rebound to the live durable stack, and a promoted row whose screen receipt
+came from the retired identity is re-screened under the live one by the
+screen-identity rotation rule. Rows holding a lease or a PASS half keep their
+segment, so that boundary stays visible to the operator. A completed
 remote product that differs from the baseline assigned to its own lease is still
 released through a digest-bound stale-incumbent recovery event because that is an
 execution-authority mismatch, not a normal queue transition. The projector derives
