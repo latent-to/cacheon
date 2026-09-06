@@ -895,7 +895,7 @@ DP_ATTENTION_EXCHANGE_MEMBERS = (
     "collective.reduce_scatter_tensor",
 )
 SPARSE_ATTENTION_TARGET = "attention.sparse_mla.v1"
-SPARSE_ATTENTION_MEMBERS = ("attention.sparse_mla", "attention.indexer_select")
+SPARSE_ATTENTION_MEMBERS = ("attention.indexer_select", "attention.sparse_mla")
 
 
 _SINGLETON_CONTRACTS = _singleton_contracts()

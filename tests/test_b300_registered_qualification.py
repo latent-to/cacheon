@@ -447,10 +447,15 @@ def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identi
     assert "norm.rmsnorm" in expected
     assert "collective.dp_attention_exchange.v1" not in expected
     assert "collective.moe_finalize_ar_rmsnorm" not in expected
+    glm_targets = ("attention.sparse_mla.v1", *GLM53_REGISTERED_TARGET_IDS)
+    assert len(glm_targets) == 6
     glm_projection = registered.registered_b300_member_contract_projection(
-        harness.inputs.catalog, GLM53_REGISTERED_TARGET_IDS
+        harness.inputs.catalog, glm_targets
     )
-    assert tuple(row.target_id for row in glm_projection) == GLM53_REGISTERED_TARGET_IDS
+    assert tuple(row.target_id for row in glm_projection) == glm_targets
+    assert glm_projection[0].members == (
+        "attention.indexer_select", "attention.sparse_mla"
+    )
     assert harness.factory.components.profiles == harness.factory.profiles
     assert (
         harness.factory.components.builder_source_digest

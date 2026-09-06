@@ -1,9 +1,9 @@
 {
- "catalog_digest": "6b340728076ffeac8a72d31dacec70b40d46097587fdb003cac373ab65a3891f",
+ "catalog_digest": "4ca0c74dbf669d48a2e6bcc85c7b6c35ccd37082c960a3e508b22aa1107ba19b",
  "target:activation.silu_and_mul": {"contract_digest":"e8c1ded7e180825038b807e6c5abab73de5022a8a8763f197712c56da0205def","spec_digest":"8ef0a33e99631239faa754f258d5bbb1d2a2b354de4346a8763234d254436577"},
  "target:attention.indexer_select": {"contract_digest":"1b9420060a9e17a6f892b98f810b7648f5bf91faa40a7cb547078e3c96a47009","spec_digest":"f592352653a32b38e484b741a0e10a3554c63c0c304f202d0ea7fdaef4675169"},
  "target:attention.sparse_mla": {"contract_digest":"83eb2bede785c432371683a0aa0a18aa2553fdd54f8dfb7f63bffae78477de24","spec_digest":"e3098202b733d3a624fe54c49ccdb7e04ebb8f13b2d54619666c8265ce9ce035"},
- "target:attention.sparse_mla.v1": {"contract_digest":"57ff5d461ef25f321efa6d694397a413fda6c06b19b7fa6b0d0dcd24d136a3d9","spec_digest":"9cec0cdc0c12e2323daf7d5c76e4146a18d5c0a57fb241134567f1f79aca3413"},
+ "target:attention.sparse_mla.v1": {"contract_digest":"8631dd0964ae2486ca73676dc7bbe3c78cdb38f2babfb87a6b2f39e1066a811e","spec_digest":"4898e5f16151e3938fb2b23ef4f2c5a1b3977de970e722ee1430d14c81b1aaae"},
  "target:collective.all_gather_into_tensor": {"contract_digest":"4634ecbf98b482e45b4e8952e441c6c9291d4f25286f04acd7cc3b5f828fa0b1","spec_digest":"4c3f6260c3bb0750bbb310c7caf0117df90ee9d92efa970d65166e692730bf68"},
  "target:collective.all_reduce": {"contract_digest":"f4efa76114d598a7b0398a4e180c4f5d413976762cbdfc64baecd458ada64053","spec_digest":"868e911707a669b9a3738975db2eec98ff6024303bbe9066b233bab27039e207"},
  "target:collective.ar_residual_rmsnorm": {"contract_digest":"ad5c8aa95c5694b85a4b2583f13ba705962ee1e5e8ec109d1a9a5bbeea9bd3f2","spec_digest":"110701432edd88e854b3ac01a4ec2dd1a11ac8aad1b182f2dc50827b2218f739"},
