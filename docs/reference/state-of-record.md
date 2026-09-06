@@ -1,5 +1,20 @@
 # State of record
 
+On the night of **2026-09-06**, the merged source `1750693c` (the tightened
+gates below on top of `68da3066`) was commissioned on the unchanged GLM image
+as a new worker epoch and re-ran the six-target full-model acceptance end to
+end. All eight member operations completed and were captured on ranks 0–3
+with no failed rows, pristine-teacher fidelity passed with no failed or
+inconclusive metrics, and GSM8K read 409/456 for the candidate against
+404/456 and 404/456 for the two stock arms (timed prompts 297, 294 and 284
+of 328). GSM8K answers were graded by the `68da3066` CPU grader; the GPU
+source was the commissioned one. The wrong-output normalization control was
+then re-run on the same runtime and was rejected: fidelity failed on
+`worst_nll`, the broken candidate scored 0/456 against 412/456 and 399/456
+for stock, and its faster timing (1.24×) is not a kernel claim. Monday's
+dispatcher and supervisor configurations were regenerated against the new
+registration. This is the source public intake runs.
+
 Late on **2026-09-06**, before public intake, the attention-family verification
 gates were tightened: indexer histories span the declared context so selection
 is exercised on every registered shape; emitted indices are range-checked
