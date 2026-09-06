@@ -42,8 +42,11 @@ def _rms_registry():
 def _fused_rms_registry(entry=None):
     if entry is None:
         def entry(x, residual, weight, eps, out_norm, out_residual):
-            out_residual.copy_(x + residual)
-            fp32 = out_residual.float()
+            if residual is None:
+                fp32 = x.float()
+            else:
+                out_residual.copy_(x + residual)
+                fp32 = out_residual.float()
             variance = fp32.square().mean(-1, keepdim=True)
             out_norm.copy_(
                 (fp32 * torch.rsqrt(variance + eps) * weight.float()).to(x.dtype)
@@ -75,13 +78,19 @@ def test_rmsnorm_plain_layer_routes_to_kernel():
     assert out is not _BASELINE and torch.is_tensor(out)
 
 
-def test_rmsnorm_residual_layer_routes_to_fused_kernel():
+@pytest.mark.parametrize("has_residual", [False, True])
+def test_rmsnorm_residual_layer_routes_to_fused_kernel(has_residual):
     dispatched = make_rmsnorm_dispatcher(
         lambda *_args: _BASELINE, registry=_fused_rms_registry()
     )
-    x, residual = torch.randn(4, 16), torch.randn(4, 16)
-    out, new_residual = dispatched(_rms_self(), x, residual)
-    assert torch.equal(new_residual, x + residual)
+    x = torch.randn(4, 16)
+    residual = torch.randn(4, 16) if has_residual else None
+    result = dispatched(_rms_self(), x, residual)
+    if has_residual:
+        out, new_residual = result
+        assert torch.equal(new_residual, x + residual)
+    else:
+        out = result
     expected = get_slot("norm.fused_add_rmsnorm").invoke_reference(
         {"x": x, "residual": residual, "weight": torch.ones(16), "eps": 1e-6}
     )

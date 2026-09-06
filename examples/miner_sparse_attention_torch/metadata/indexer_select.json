@@ -1,0 +1,7 @@
+{
+  "op": "attention.indexer_select",
+  "dtypes": ["float8_e4m3fn", "bfloat16", "float16"],
+  "quant": ["fp8_e4m3"],
+  "cuda_graph_safe": true,
+  "notes": "Internal attention-family member; no standalone GLM reward target. GPU acceptance is separate from CPU verification."
+}

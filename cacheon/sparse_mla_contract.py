@@ -15,7 +15,7 @@ from cacheon.capabilities import CallDescriptor
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 
 SLOT = "attention.sparse_mla"
-DYNAMIC_INPUTS = ("q", "kv_cache", "indices", "seq_lens")
+DYNAMIC_INPUTS = ("q", "q_rope", "positions", "cos_sin_cache", "kv_cache", "indices", "seq_lens")
 _INPUT_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.float8_e4m3fn)
 
 
@@ -33,14 +33,14 @@ def call_descriptor(
     tp_size: int | None, world_size: int | None,
 ) -> CallDescriptor:
     """Use identical observable geometry in verification and live selection."""
-    q, cache, indices = (inputs[k] for k in ("q", "kv_cache", "indices"))
+    q, cache = inputs["q"], inputs["kv_cache"]
     return CallDescriptor(
         architecture=architecture, dtype=str(q.dtype).removeprefix("torch."),
         graph_mode=graph_mode, num_tokens=q.shape[0], num_q_heads=q.shape[1],
-        num_kv_heads=1, head_dim=q.shape[2], last_dim=q.shape[2],
+        num_kv_heads=1, head_dim=q.shape[2] + inputs["q_rope"].shape[-1], last_dim=q.shape[2],
         output_dim=inputs["value_dim"], page_size=cache.shape[1],
-        top_k=indices.shape[1], q_len=1, layout="paged_latent_rope",
-        quant="fp8_e4m3" if q.dtype == torch.float8_e4m3fn else "dense",
+        top_k=inputs["indices"].shape[1] if "indices" in inputs else inputs["top_k"], q_len=1, layout="paged_latent_rope",
+        quant="fp8_e4m3" if cache.dtype == torch.float8_e4m3fn else "dense",
         tp_size=tp_size, world_size=world_size,
     )
 
@@ -49,7 +49,7 @@ def make_inputs(
     *, num_tokens: int, num_heads: int, value_dim: int, rope_dim: int,
     num_pages: int, page_size: int, top_k: int, dtype: torch.dtype,
     device: str, seed: int, query_chunk: int = 1,
-    input_dtype: str | None = None,
+    input_dtype: str | None = None, is_neox: bool = False,
 ) -> dict:
     """Generate scrambled physical cache rows with per-query causal histories.
 
@@ -66,11 +66,14 @@ def make_inputs(
     head_dim = value_dim + rope_dim
     generator = torch.Generator(device=device).manual_seed(seed)
     q = torch.randn(
-        num_tokens, num_heads, head_dim, generator=generator, device=device,
+        num_tokens, num_heads, value_dim, generator=generator, device=device,
     ).to(storage_dtype)
     cache = torch.randn(
         num_pages, page_size, head_dim, generator=generator, device=device,
-    ).to(storage_dtype)
+    ).to(torch.float8_e4m3fn)
+    q_rope = torch.randn(num_tokens, num_heads, rope_dim, generator=generator, device=device).to(storage_dtype)
+    angles = torch.randn(137, rope_dim // 2, generator=generator, device=device)
+    positions = torch.randint(0, 137, (num_tokens,), generator=generator, device=device)
     # Construct selection metadata on CPU; generation is outside candidate timing
     # and must not synchronize once per query on a GPU.
     metadata_rng = torch.Generator().manual_seed(seed + 97)
@@ -93,11 +96,25 @@ def make_inputs(
         tail = torch.arange(count, top_k, 2)
         indices[row, tail] = physical[(tail + length) % capacity].to(torch.int32)
     return {
-        "q": q, "kv_cache": cache, "indices": indices.to(device),
+        "q": q, "q_rope": q_rope, "positions": positions,
+        "cos_sin_cache": torch.cat((angles.cos(), angles.sin()), -1), "is_neox": is_neox,
+        "kv_cache": cache, "indices": indices.to(device),
         "seq_lens": lengths.to(device=device, dtype=torch.int32),
         "value_dim": value_dim, "qk_scale": 1 / math.sqrt(head_dim),
         "value_scale": 1.0,
     }
+
+
+def query_reference(inputs: dict) -> torch.Tensor:
+    """Apply declared RoPE in FP64 and saturating unit-scale E4M3 quantization."""
+    q, rope = inputs["q"], inputs["q_rope"].double()
+    half = rope.shape[-1] // 2
+    angles = inputs["cos_sin_cache"][inputs["positions"].long()].double()[:, None]
+    cosine, sine = angles[..., :half], angles[..., half:]
+    a, b = (rope[..., :half], rope[..., half:]) if inputs["is_neox"] else (rope[..., ::2], rope[..., 1::2])
+    left, right = a * cosine - b * sine, b * cosine + a * sine
+    rotated = torch.cat((left, right), -1) if inputs["is_neox"] else torch.stack((left, right), -1).flatten(-2)
+    return torch.cat((q.double(), rotated), -1).clamp(-448, 448).to(torch.float8_e4m3fn)
 
 
 def reference(inputs: dict) -> list[torch.Tensor]:
@@ -106,7 +123,8 @@ def reference(inputs: dict) -> list[torch.Tensor]:
     Only selected cache rows are dequantized. Temporary memory scales with
     top-k times head dimension, never with queries times the complete KV pool.
     """
-    q, cache, indices, lengths = (inputs[k] for k in DYNAMIC_INPUTS)
+    q = query_reference(inputs)
+    cache, indices, lengths = (inputs[k] for k in ("kv_cache", "indices", "seq_lens"))
     value_dim = inputs["value_dim"]
     result = torch.zeros(
         q.shape[0], q.shape[1], value_dim, device=q.device, dtype=torch.float32,
@@ -134,7 +152,8 @@ def reference(inputs: dict) -> list[torch.Tensor]:
 def invoke_entry(entry, inputs: dict, outputs: list, prepared=None) -> None:
     """Pass only declared tensors/scalars and validator-owned output."""
     entry(
-        inputs["q"], inputs["kv_cache"], inputs["indices"], inputs["seq_lens"],
+        inputs["q"], inputs["q_rope"], inputs["positions"], inputs["cos_sin_cache"], inputs["is_neox"],
+        inputs["kv_cache"], inputs["indices"], inputs["seq_lens"],
         outputs[0], inputs["value_dim"], inputs["qk_scale"], inputs["value_scale"],
     )
 
@@ -146,10 +165,10 @@ def slot_spec():
     return SlotSpec(
         name=SLOT, entry="sparse_mla", kind="block",
         summary=(
-            "Selected-token sparse MLA: q:(T,H,D), paged latent+RoPE KV:(P,S,D), "
+            "Raw-query sparse MLA: q:(T,H,V), q_rope:(T,H,R), positions and RoPE table, KV:(P,S,V+R), "
             "physical indices:(T,K), seq_lens:(T) -> BF16 out:(T,H,V). "
-            "Owns sparse QK, softmax and latent-value combine; selection, RoPE, "
-            "quantization and cache updates stay outside."
+            "Owns query RoPE/FP8 preparation, sparse QK, softmax and latent-value combine. "
+            "Engine-owned K preparation and cache writes precede this call."
         ),
         make_inputs=make_inputs,
         out_shapes=lambda i: [(i["q"].shape[0], i["q"].shape[1], i["value_dim"])],

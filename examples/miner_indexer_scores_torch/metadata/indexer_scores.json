@@ -1,7 +1,0 @@
-{
-  "op": "attention.indexer_scores",
-  "dtypes": ["float8_e4m3fn"],
-  "quant": ["fp8_e4m3"],
-  "cuda_graph_safe": true,
-  "notes": "Faithful score-only control. Full-model GPU acceptance remains separate from CPU verification."
-}

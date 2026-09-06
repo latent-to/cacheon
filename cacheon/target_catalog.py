@@ -882,20 +882,11 @@ class TargetCatalog:
 # must not import Torch through cacheon.slots; a focused test checks that every
 # live SlotSpec has exactly one singleton target and vice versa.
 SINGLETON_TARGET_IDS = (
-    "activation.silu_and_mul",
-    "attention.indexer_topk",
-    "attention.indexer_scores",
-    "attention.sparse_mla",
-    "collective.all_gather_into_tensor",
-    "collective.all_reduce",
-    "collective.ar_residual_rmsnorm",
-    "collective.reduce_scatter_tensor",
-    "linear.dense",
-    "moe.fused_experts",
-    "moe.fused_experts_reduce",
-    "moe.fused_routed_experts",
-    "norm.fused_add_rmsnorm",
-    "norm.rmsnorm",
+    "activation.silu_and_mul", "attention.indexer_select", "attention.sparse_mla",
+    "collective.all_gather_into_tensor", "collective.all_reduce",
+    "collective.ar_residual_rmsnorm", "collective.reduce_scatter_tensor",
+    "linear.dense", "moe.fused_experts", "moe.fused_experts_reduce",
+    "moe.fused_routed_experts", "norm.fused_add_rmsnorm", "norm.rmsnorm",
 )
 
 DP_ATTENTION_EXCHANGE_TARGET = "collective.dp_attention_exchange.v1"
@@ -903,6 +894,8 @@ DP_ATTENTION_EXCHANGE_MEMBERS = (
     "collective.all_gather_into_tensor",
     "collective.reduce_scatter_tensor",
 )
+SPARSE_ATTENTION_TARGET = "attention.sparse_mla.v1"
+SPARSE_ATTENTION_MEMBERS = ("attention.sparse_mla", "attention.indexer_select")
 
 
 _SINGLETON_CONTRACTS = _singleton_contracts()
@@ -939,18 +932,14 @@ def default_target_catalog() -> TargetCatalog:
                 contract_ref=_SINGLETON_CONTRACTS[target_id],
             )
         )
-    specs.append(
-        TargetSpec(
-            target_id=DP_ATTENTION_EXCHANGE_TARGET,
-            kind=TargetKind.ATOMIC,
-            members=DP_ATTENTION_EXCHANGE_MEMBERS,
-            displaces=frozenset(DP_ATTENTION_EXCHANGE_MEMBERS),
+    for target, members in ((DP_ATTENTION_EXCHANGE_TARGET, DP_ATTENTION_EXCHANGE_MEMBERS),
+                            (SPARSE_ATTENTION_TARGET, SPARSE_ATTENTION_MEMBERS)):
+        specs.append(TargetSpec(
+            target_id=target, kind=TargetKind.ATOMIC, members=members,
+            displaces=frozenset(members),
             allowed_features=_STANDARD_COMPONENT_FEATURES,
-            atomic_semantics_id=(
-                "collective.dp_attention_exchange.v1.atomic-semantics.v1"
-            ),
-        )
-    )
+            atomic_semantics_id=f"{target}.atomic-semantics.v1",
+        ))
     return TargetCatalog(specs)
 
 

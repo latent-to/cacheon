@@ -36,18 +36,14 @@ from cacheon.verification_outcomes import (
     VerifyResult,
 )
 
-
 def _as_list(x) -> list:
-    """Accept bare tensors/shapes and explicit multi-output sequences."""
     if isinstance(x, (list, tuple)) and (len(x) == 0 or not isinstance(x[0], int)):
         return list(x)
     return [x]
 
-
 def _compare(
     actual: torch.Tensor, expected: torch.Tensor, *, atol: float, rtol: float, correctness
 ) -> tuple[bool, float, float, float, str, str]:
-    # Returns (passed, max_abs, max_rel, score, detail, metric_label).
     if actual.shape != expected.shape:
         return False, float("inf"), float("inf"), 0.0, f"shape mismatch {tuple(actual.shape)} vs {tuple(expected.shape)}", "ratio"
     if correctness.mode == "topk_overlap" and not actual.dtype.is_floating_point:
@@ -337,6 +333,8 @@ def _graph_case_inputs(slot: SlotSpec, trusted: dict, generated: dict) -> dict:
     for name in names:
         base = trusted.get(name)
         fresh = generated.get(name)
+        if name in trusted and name in generated and base is None and fresh is None:
+            continue
         if not torch.is_tensor(base) or not torch.is_tensor(fresh):
             raise RuntimeError(
                 f"slot {slot.name!r} graph-dynamic input {name!r} is not a tensor"

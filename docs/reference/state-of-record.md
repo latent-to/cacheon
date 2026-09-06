@@ -1,14 +1,25 @@
 # State of record
 
-On **2026-09-06**, `attention.indexer_topk` adds independent selection and
+On **2026-09-06**, source registration consolidates GLM into six family targets:
+routed MoE, dense GEMM, normalization, all-reduce, atomic DP exchange, and
+atomic `attention.sparse_mla.v1`. Sparse attention requires its query-preparation/
+attend and merged indexer-selection members together. Separate score/top-k
+targets are retired. Dense includes FP32 gates and absorbed BMM, while the
+normalization family includes plain 512/2048/6144-wide calls. The widened ABI,
+reference and verification identities rotate; existing commissioned targets
+and retained catalog snapshots are not rewritten. Final-family runtime
+acceptance and a new commission remain pending.
+
+Earlier component work on **2026-09-06** added `attention.indexer_topk` selection and
 compact-page translation; `attention.indexer_scores` adds weighted-ReLU FP8 MQA
 scores. Top-k native acceptance passes prefill/decode at 8k/65k with 12 CUDA
 graph replays and 20 actual candidate calls. Sparse MLA native acceptance
 passes BF16/FP8 at 6/128 queries with 12 replays, independent math and 20 candidate
 calls. Both use the accepted SGLang 0.5.18/FlashInfer 0.6.17 image with the
 18be7e0 package mounted; neither proves full-model or TP4 rank acceptance.
-Scores and the invocation scope that preserves ordinary vendor-library calls
-inside candidates still require native acceptance on their combined build.
+Subsequent TP4 model controls established top-k execution and an old sparse-core
+PASS with 9,985 candidate calls per rank. Those results are retained evidence
+for their exact code, not acceptance of the widened atomic family above.
 
 
 This page is the dated capability and evidence ledger for Cacheon. Evergreen
@@ -28,8 +39,9 @@ the attention patch on `35eb162c` mounted over the accepted SGLang 0.5.18 image;
 the subsequent port onto PR #112 has CPU coverage only. These runs do not
 prove full-model seam execution or two-lane TP4 qualification. CPU math and
 negative controls also passed. This slot has not been deployed or enabled for
-public intake. Indexer, RoPE/quantization/cache-write ownership, remaining coverage and
-automatic public-loop proof remain open. The previously accepted five-target
+public intake. Query preparation and merged indexer selection now belong to the
+source attention family; K preparation/cache writes remain engine-owned.
+Final-family runtime and automatic public-loop proof remain open. The previously accepted five-target
 image does not qualify these changed worker bytes.
 
 On **2026-09-05**, the GLM branch incorporated PR #110's source-build-only
@@ -225,14 +237,15 @@ does not establish that a paid OCI lifetime has mounted or executed that model.
 
 ### Slots and targets
 
-The executable catalog contains 12 slots and one registered atomic target:
+The executable catalog contains 13 slots and two registered atomic targets:
 
 | Kind | Registered identifiers |
 |---|---|
 | Op | `activation.silu_and_mul`, `norm.rmsnorm` |
-| Block | `attention.sparse_mla`, `linear.dense`, `moe.fused_experts`, `moe.fused_routed_experts`, `norm.fused_add_rmsnorm` |
+| Block | `attention.sparse_mla`, `attention.indexer_select`, `linear.dense`, `moe.fused_experts`, `moe.fused_routed_experts`, `norm.fused_add_rmsnorm` |
 | Collective | `collective.all_gather_into_tensor`, `collective.all_reduce`, `collective.ar_residual_rmsnorm`, `collective.reduce_scatter_tensor`, `moe.fused_experts_reduce` |
 | Atomic target | `collective.dp_attention_exchange.v1` over all-gather and reduce-scatter |
+| Atomic target | `attention.sparse_mla.v1` over query preparation/attend and indexer selection |
 
 On 2026-08-30 the four M3 attention slots (`attention.sdpa`,
 `attention.decode`, `attention.msa_block_score`,

@@ -4,7 +4,7 @@ A slot is a validator-owned semantic boundary inside the pinned engine. A
 contribution supplies an implementation for that boundary; the validator owns
 the call site, inputs, output allocation, reference, and verification policy.
 
-The registered API contains **12 slots**. The registry in
+The registered API contains **13 slots**. The registry in
 [`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
 is authoritative; print it with `python -m cacheon.cli slots`.
 
@@ -13,18 +13,17 @@ is authoritative; print it with `python -m cacheon.cli slots`.
 | Slot | Kind | Entry contract | Correctness |
 |---|---|---|---|
 | `activation.silu_and_mul` | op | `entry(x, out)` | allclose |
-| `attention.indexer_scores` | block | `entry(q, key_pages, key_scales, weights, starts, ends, page_table, row_to_batch, out)` | FP32 weighted-ReLU MQA scores |
-| `attention.indexer_topk` | block | `entry(scores, lengths, row_starts, page_table, row_to_batch, page_offsets, out, page_size, top_k)` | int32 physical indices; set overlap ≥ 0.99 |
-| `attention.sparse_mla` | block | `entry(q, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale)` | matched ratio ≥ 0.99 |
+| `attention.indexer_select` | block | `entry(q, key_pages, key_scales, weights, page_table, row_to_batch, lengths, page_offsets, positions, cos_sin_cache, q_scale_gate, num_init_tokens, num_local_tokens, top_k, out)` | query preparation through physical selection; set overlap ≥ 0.99 |
+| `attention.sparse_mla` | block | `entry(q, q_rope, positions, cos_sin_cache, is_neox, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale)` | query preparation plus attention; matched ratio ≥ 0.99 |
 | `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | matched ratio ≥ 0.99 |
 | `collective.reduce_scatter_tensor` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
-| `linear.dense` | block | `prepare(weight)` + `entry(x, prepared, out)` | matched ratio ≥ 0.99 |
+| `linear.dense` | block | `prepare(weight)` + `entry(x, prepared, out)`; rank-2/rank-3, input-dtype/FP32 output | matched ratio ≥ 0.99 |
 | `moe.fused_experts` | block | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out)` | cosine ≥ 0.985 |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out, group)` | cosine ≥ 0.985 |
 | `moe.fused_routed_experts` | block | `prepare(w13, w2, topk, routed_scaling)` + `entry(x, router_logits, correction_bias, prepared, out)` | matched ratio ≥ 0.97 |
-| `norm.fused_add_rmsnorm` | block | `entry(x, residual, weight, eps, out_norm, out_residual)` | matched ratio ≥ 0.99 |
+| `norm.fused_add_rmsnorm` | block | `entry(x, residual, weight, eps, out_norm, out_residual)`; plain mode uses residual arguments `None` | matched ratio ≥ 0.99 |
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | allclose |
 
 The callable names in a bundle are selected by its manifest; the signatures
@@ -59,8 +58,8 @@ Collective slots add the validator-owned process group; candidate code may use
 it but may not create a private group or let only some ranks fall back.
 
 !!! warning "Arena availability is narrower than the catalog"
-    Each arena seals its own subset of this table; GLM-5.3 registers five
-    targets. See
+    Each arena seals its own subset of this table. GLM source profiles cover six
+    families; the widened runtime still requires acceptance. See
     [Arena availability](../miner-guide/slots.md#arena-availability).
 
 ## Kinds
@@ -142,7 +141,7 @@ qualifying execution receipt.
 
 Slots define execution ABIs. Targets define reward identities. Most targets
 map one-to-one to slots, but the target catalog also contains the atomic
-`collective.dp_attention_exchange.v1` target and explicit exclusion between
+`collective.dp_attention_exchange.v1` and `attention.sparse_mla.v1` targets, with exclusion between
 overlapping wide and narrow targets. See [Target catalog](target-catalog.md).
 
 For the invariant waist behind every slot, read

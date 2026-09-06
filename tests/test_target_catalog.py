@@ -26,6 +26,10 @@ from cacheon.target_catalog import (
     FEATURE_SETUP,
     FEATURE_VARIANTS,
     SINGLETON_TARGET_IDS,
+    DP_ATTENTION_EXCHANGE_TARGET,
+    DP_ATTENTION_EXCHANGE_MEMBERS,
+    SPARSE_ATTENTION_TARGET,
+    SPARSE_ATTENTION_MEMBERS,
     ResolvedTarget,
     TargetCatalog,
     TargetCatalogError,
@@ -216,8 +220,8 @@ def test_tracked_examples_preserve_legacy_or_name_modern_target_identity():
         ),
         "miner_dense_torch": CompetitionEntry("linear.dense", "slot"),
         "miner_sparse_mla_torch": CompetitionEntry("attention.sparse_mla", "slot"),
-        "miner_indexer_topk_torch": CompetitionEntry("attention.indexer_topk", "slot"),
-        "miner_indexer_scores_torch": CompetitionEntry("attention.indexer_scores", "slot"),
+        "miner_indexer_select_torch": CompetitionEntry("attention.indexer_select", "slot"),
+        "miner_sparse_attention_torch": CompetitionEntry("attention.sparse_mla.v1", "atomic"),
         "miner_dp_attention_exchange_torch": CompetitionEntry(
             "collective.dp_attention_exchange.v1", "atomic"
         ),
@@ -358,6 +362,27 @@ def test_default_catalog_has_exactly_one_singleton_per_live_slot():
     assert set(SINGLETON_TARGET_IDS) == set(SLOTS)
     for target_id in SINGLETON_TARGET_IDS:
         assert catalog.require(target_id).target_id == target_id
+
+
+@pytest.mark.parametrize("target, members", [
+    (DP_ATTENTION_EXCHANGE_TARGET, DP_ATTENTION_EXCHANGE_MEMBERS),
+    (SPARSE_ATTENTION_TARGET, SPARSE_ATTENTION_MEMBERS),
+])
+def test_registered_atomic_families_require_exact_members_and_exclude_double_claims(tmp_path, target, members):
+    catalog = default_target_catalog()
+    full = load_manifest(_bundle(tmp_path / "full", rows=tuple({"slot": s} for s in members),
+                                 competition=_competition(target, "atomic")))
+    resolved = resolve_intake_target(full, observed_features=())
+    assert resolved.target_id == target and resolved.members == members
+    assert catalog.require(target).displaces == frozenset(members)
+    for index, member in enumerate(members):
+        partial = load_manifest(_bundle(tmp_path / str(index), rows=({"slot": member},),
+                                        competition=_competition(target, "atomic")))
+        with pytest.raises(TargetResolutionError, match="requires exact members"):
+            resolve_target(partial)
+        with pytest.raises(TargetResolutionError, match="displaces"):
+            catalog.validate_active_targets((target, member))
+    assert catalog.validate_active_targets((target, "linear.dense")) == tuple(sorted((target, "linear.dense")))
 
 
 def _decimal(value: object) -> str:

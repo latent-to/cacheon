@@ -15,7 +15,7 @@ cacheon/chain/remote_worker_spool.py 998
 cacheon/chain/weight_share.py 1528
 cacheon/chain/weights.py 1069
 cacheon/cli.py 3288
-cacheon/dispatch.py 1298
+cacheon/dispatch.py 1207
 cacheon/engine_tree.py 1607
 cacheon/eval/b300_qualification_deployment.py 1023
 cacheon/eval/b300_qualification_graph_evidence_store.py 939
@@ -37,9 +37,9 @@ cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1203
 cacheon/receipts.py 908
 cacheon/settlement.py 1344
-cacheon/slots.py 918
-cacheon/target_catalog.py 975
-cacheon/verify.py 996
+cacheon/slots.py 915
+cacheon/target_catalog.py 964
+cacheon/verify.py 994
 cacheon/verify_collective.py 1068
 dashboard/app.py 1455
 tests/test_b300_remote_worker_adapter.py 1123

@@ -1,0 +1,20 @@
+bundle_id = "sparse-attention-family-torch"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "attention.sparse_mla.v1"
+mode = "atomic"
+
+[[ops]]
+slot = "attention.sparse_mla"
+source = "kernels/sparse_mla.py"
+entry = "sparse_mla"
+dtypes = ["float32", "float16", "bfloat16", "float8_e4m3fn"]
+metadata = "metadata/sparse_mla.json"
+
+[[ops]]
+slot = "attention.indexer_select"
+source = "kernels/indexer_select.py"
+entry = "indexer_select"
+dtypes = ["float32", "float16", "bfloat16", "float8_e4m3fn"]
+metadata = "metadata/indexer_select.json"

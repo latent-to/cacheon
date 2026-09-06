@@ -89,142 +89,116 @@ recognize execution inside a candidate and call the underlying library directly;
 they do not recursively select another candidate. Exceptions still propagate,
 and the invocation scope is reset on both success and failure.
 
+### Atomic sparse-attention family
+
+GLM proposals target `attention.sparse_mla.v1` and implement both internal
+members below. Indexer-query preparation, scores and top-k selection are one
+member; attention-query preparation and sparse attention are the other. The separate score/top-k
+proposal surfaces are retired. Key preparation and cache writes remain
+engine-owned; unquantized projections and absorbed BMMs belong to `linear.dense`.
+
 ### `attention.sparse_mla`
 
 ```python
-def sparse_mla(q, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale):
+def sparse_mla(q, q_rope, positions, cos_sin_cache, is_neox,
+               kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale):
     ...
 ```
 
-The sparse core consumes already prepared queries `q:(T,H,D)`, paged
-latent-plus-positional keys `kv_cache:(P,S,D)`, physical token indices
-`indices:(T,K)` and nonnegative per-query `seq_lens:(T)`. Indices and lengths
-are int32. Queries/cache share float32, float16, bfloat16 or float8-e4m3fn
-storage; `out:(T,H,V)` is always contiguous **bfloat16**, with `V=value_dim`.
-A physical index `i` addresses cache row `[i // S, i % S]`.
+Raw queries are `q:(T,H,V)` and `q_rope:(T,H,R)`. Positions select rows from the
+cosine/sine table. Rotate split halves when `is_neox=True`, adjacent pairs
+otherwise; concatenate the latent query and rotated query, clamp to
+`[-448,448]` and convert to FP8-e4m3fn at unit scale. The existing cache
+`kv_cache:(P,S,V+R)` is FP8-e4m3fn. Supplied `out:(T,H,V)` is BF16. Generic
+inputs support float32, float16, BF16 and FP8; the GLM profile supplies raw BF16
+queries and an independent FP8 cache.
 
-For each query/head, use only the first `min(seq_lens[t], K)` indices,
-discarding `-1` entries. The remaining indices must address the cache.
-Trailing entries outside that prefix are ignored, even if they look valid.
-Compute `softmax(q @ selected_keys.T * qk_scale)`, multiply by the first
-`V` components of the selected cache rows, then apply `value_scale`.
-No selected keys means zero output. The two scales are capture-static Python
-scalars. Candidates preserve all inputs and fill the supplied output.
+For each query/head, consume only the first `min(seq_lens[t], K)` int32 indices,
+discarding `-1`. Physical index `i` addresses cache `[i // S, i % S]`; valid-looking
+tail indices outside that prefix are ignored. Compute
+`softmax(prepared_q @ selected_keys.T * qk_scale)`, combine the first `V` cache
+components and apply `value_scale`. No selected keys means zero output.
+`is_neox`, `value_dim` and the scales are capture-static; the seven tensors are
+graph-dynamic. The reference rotates in FP64 and dequantizes only selected
+cache rows for FP32 attention. BF16 output uses matched ratio ≥ 0.99 and
+absolute/relative tolerance 0.02/0.02.
 
-The independent FP32 reference dequantizes only selected rows, bounding its
-temporary storage by top-k and head geometry. Component verification requires
-matched ratio at least 0.99 with absolute/relative tolerance 0.02/0.02 for
-every input dtype because output is BF16. This component policy does not
-replace or relax the sealed full-model quality gate.
+The pinned consumer is `DeepseekSparseAttnBackend._forward_trtllm` for prefill
+and decode. Its boundary receives queries before RoPE/FP8 preparation and
+runs after engine-owned key-cache updates. Positions and query values must
+change correctly across replay. The [component example](https://github.com/latent-to/cacheon/tree/main/examples/miner_sparse_mla_torch)
+is a development callable; it alone is not a complete GLM proposal.
 
-Both TRTLLM DSA prefill and decode in pinned SGLang reach the same
-`flashinfer.decode.trtllm_batch_decode_with_kv_cache_mla` symbol. The adapter
-normalizes its one-query-per-row layout into this ABI. Its current domain is
-explicit `trtllm-gen`, 32/64-token cache pages, scalar scales, and ordinary
-output allocation. Dense MLA, multi-query native rows, LSE/sinks, DCP,
-tensor scales and supplied-output variants remain outside that binding.
-Compilation/tactic-profiling calls do not count as candidate execution.
-
-This slot owns sparse QK, softmax and latent-value combination. It does not own
-index scoring/selection, logical-to-physical translation, RoPE, quantization,
-cache writes, projections or absorbed BMMs. The producer supplies per-query
-causal selections, including earlier chunks and KV history. Positions affect
-the already prepared query/cache tensors. Those tensors, indices and lengths
-are all graph-dynamic; changing addresses is not the replay contract.
-
-The [faithful example](https://github.com/latent-to/cacheon/tree/main/examples/miner_sparse_mla_torch)
-uses bounded shape-based chunks and tensor-valued masks. It is a correctness
-example, not performance evidence. CPU verification does not establish GPU
-capture, rank coverage, exact-image fidelity or public arena availability.
-
-### `attention.indexer_scores`
+### `attention.indexer_select`
 
 ```python
-def indexer_scores(q, key_pages, key_scales, weights, starts, ends,
-                   page_table, row_to_batch, out):
+def indexer_select(q, key_pages, key_scales, weights, page_table,
+                   row_to_batch, lengths, page_offsets, positions, cos_sin_cache,
+                   q_scale_gate, num_init_tokens, num_local_tokens, top_k, out):
     ...
 ```
 
-Queries `q:(T,H,D)` and key pages `(P,S,D)` use FP8-e4m3fn storage. Per-key
-scales `(P,S)`, head weights `(T,H)` and supplied output `(T,N)` use FP32.
-The four window/mapping tensors are int32. For each query `t` and logical
-key `j` in `[starts[t], ends[t])`, resolve physical page
-`page_table[row_to_batch[t], j // S]`. Compute the FP32 score as the sum over
-heads of `weights[t,h] * max(dot(q[t,h], key) * key_scale, 0)`. Query scales
-are already folded into weights by the producer. Set every invalid cell to zero;
-the producer masks its causal window before selecting top-k.
+Queries `(T,H,D)` may be raw BF16/FP16/FP32 or prepared FP8-e4m3fn. Raw queries
+and raw head weights use the same dtype: rotate the leading dimensions with
+adjacent-pair RoPE, compute per-head scale `max(abs(q), 1e-4) / 448`, quantize
+to FP8 and fold `q_scale_gate * scale` into FP32 head weights. For prepared FP8
+queries, positions/table are `None`, weights are already FP32 and the gate is
+one. Key pages `(P,S,D)` remain FP8 and per-key scales `(P,S)` are FP32.
+For each logical position in the row's
+`lengths[t]` prefix, add `page_offsets[t]`, resolve its physical page through
+`page_table[row_to_batch[t]]`, and sum over heads:
+`weights[t,h] * max(dot(q[t,h], key) * key_scale, 0)` after query preparation.
+Initial and trailing local token
+counts mark priority scores as positive infinity. Select up to `top_k`,
+translate directly to physical cache indices, and fill unused int32 output
+positions with `-1`. Selection order does not matter; valid-row set overlap
+must reach 0.99. Duplicate indices do not earn additional matches.
 
-Ragged prefill uses a single page containing the concatenated keys and explicit
-per-query windows. Paged decode supplies zero-copy key/scale views of the packed
-cache, a compact page table and query ownership. Key pages and scales can be
-strided. No engine or schedule object crosses the miner ABI. All eight inputs
-are dynamic during replay. The independent reference evaluates the declared
-math in FP64; verification uses absolute/relative tolerance 0.001/0.001.
-
-The pinned binding covers the DeepGEMM score functions consumed by SGLang.
-Top-k, RoPE and cache preparation are separate boundaries. The source
-[example](https://github.com/latent-to/cacheon/tree/main/examples/miner_indexer_scores_torch)
-uses small Torch tiles as a correctness starting point.
-
-### `attention.indexer_topk`
-
-```python
-def indexer_topk(scores, lengths, row_starts, page_table, row_to_batch,
-                 page_offsets, out, page_size, top_k):
-    ...
-```
-
-Scores have shape `(T,N)`; all five metadata tensors are int32. For query `t`,
-select up to `top_k` highest scores inside
-`[row_starts[t], row_starts[t] + lengths[t])`, intersected with the score row.
-Negative infinity is invalid; positive infinity represents priority tokens.
-Translate a selected column `c` to logical token
-`c - row_starts[t] + page_offsets[t]`, then through
-`page_table[row_to_batch[t], logical // page_size] * page_size + logical % page_size`.
-Write physical indices into contiguous int32 `out:(T,top_k)`, with unused
-trailing entries set to `-1`. Selection order is immaterial. The correctness
-contract requires mean valid-row set overlap of at least 0.99; duplicates do
-not count as extra matches and padding must be rewritten.
-
-Prefill and decode use this same ABI. Ragged prefill carries explicit query
-ownership and chunk/history offsets; decode normally has one query per page-table
-row and zero offsets. All six input tensors change across graph replay.
-Scores may have padded row strides. The pinned SGLang adapter uses the producer's
-compact page table and mapping helper at `DSATopKBackend.topk_transform` for
-fused PAGED output. It owns selection and physical translation only; indexer
-score GEMMs and sparse attention are separate operations.
-
-The [Torch example](https://github.com/latent-to/cacheon/tree/main/examples/miner_indexer_topk_torch)
-is a correctness starting point. A miner may implement this one operation with
-CUDA, Triton or installed libraries without implementing the entire indexer.
+The ten tensor inputs are graph-dynamic when present; the gate, priority counts
+and `top_k` are capture-static. Paged decode and ragged prefill both use the producer's real
+page table and query mapping. No serving object crosses the ABI. The pinned
+consumers are `Indexer._get_topk_paged` and `Indexer._get_topk_ragged`, after
+index-cache writes. `Indexer._fused_q_prepare_and_store` defers only query
+preparation to this member while preserving engine-owned key writes.
+A miner may fuse query preparation, scoring and selection without creating
+an intermediate score matrix. The [component example](https://github.com/latent-to/cacheon/tree/main/examples/miner_indexer_select_torch)
+is for development; the [complete atomic example](https://github.com/latent-to/cacheon/tree/main/examples/miner_sparse_attention_torch)
+implements both required members. CPU checks do not establish CUDA capture,
+rank coverage, full-model fidelity or arena availability.
 
 ### `linear.dense`
 
 ```python
 def prepare(weight):
-    # weight: (N, K)
+    # Canonical weight: (N, K) or (B, N, K).
     return build_layout(weight)
 
 def dense(x, prepared, out):
-    # x: (M, K); out: (M, N)
+    # x: (M, K) or (B, M, K); out: (..., M, N).
     ...
 ```
 
-This boundary owns one unquantized local GEMM. Bias and any surrounding
-row/column-parallel communication remain engine-owned.
+The unquantized GEMM family includes ordinary projections, FP32 router/head
+projections and absorbed attention BMMs. Respect actual input/output strides.
+The supplied output uses the input dtype or FP32 as required by its consumer.
+Weights remain static after preparation; activations change during graph
+replay. The independent reference accumulates in FP64 before output rounding.
+Bias, gate scaling and surrounding communication remain engine-owned.
+Candidates may call ordinary Torch and installed vendor APIs inside the entry.
 
 ### `norm.fused_add_rmsnorm`
 
 ```python
 def fused_add_rmsnorm(x, residual, weight, eps, out_norm, out_residual):
-    # out_residual = (x + residual) rounded to the input dtype
-    # out_norm = rmsnorm(out_residual, weight, eps)
+    # residual=None and out_residual=None select plain RMSNorm.
     ...
 ```
 
-Both outputs are validator-allocated and must be filled. The registered
-reference preserves the input-dtype residual-add rounding before the fp32
-variance reduction.
+For a residual call, fill both outputs: round `x + residual` in the input dtype,
+then compute the FP32 variance and normalized result. For a plain call, preserve
+`x` and fill only `out_norm`; both residual arguments are `None`. GLM's plain
+512/2048/6144-wide normalizations belong to this existing family, with no
+separate GLM RMSNorm proposal lane.
 
 ## Prepare/forward MoE slots
 

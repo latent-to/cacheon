@@ -1,6 +1,0 @@
-{
-  "op": "attention.indexer_topk",
-  "dtypes": ["float32", "float16", "bfloat16"],
-  "quant": ["dense"],
-  "cuda_graph_safe": true
-}

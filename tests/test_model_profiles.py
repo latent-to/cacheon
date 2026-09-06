@@ -56,8 +56,8 @@ def test_glm53_registered_profiles_cover_the_measured_call_regimes():
     dense = profiles["linear.dense"]
     assert {(s["input_dim"], s["output_dim"]) for s in dense} == {
         (512, 6144), (2048, 4096), (2048, 16384), (3072, 6144),
-        (6144, 160), (6144, 1024), (6144, 2624), (6144, 6144),
-        (16384, 6144),
+        (6144, 128), (6144, 160), (6144, 1024), (6144, 2624), (6144, 6144),
+        (16384, 6144), (6144, 32), (6144, 256), (192, 512), (512, 256),
     }
     assert {s["num_tokens"] for s in dense} >= {6, 24, 32, 128, 4096, 16384}
     assert {s["num_tokens"] for s in profiles["moe.fused_routed_experts"]} == {
@@ -76,6 +76,44 @@ def test_slot_for_model_glm53_correctness_is_calibrated_cosine():
         assert c.mode == "cosine"
         assert c.min_cosine == 0.985
         assert c.max_rel_norm_err == 0.05
+
+
+def test_glm53_profiles_cover_six_families_without_standalone_small_targets():
+    from cacheon.model_profiles import MODEL_PROFILES
+    from cacheon.target_catalog import default_target_catalog
+
+    targets = ("moe.fused_routed_experts", "linear.dense", "norm.fused_add_rmsnorm",
+               "collective.all_reduce", "collective.dp_attention_exchange.v1", "attention.sparse_mla.v1")
+    catalog, profiles = default_target_catalog(), MODEL_PROFILES["GLM-5.3"]
+    assert profiles is MODEL_PROFILES["GLM-5.3-NVFP4"]
+    assert set(profiles) == {member for target in targets for member in catalog.require(target).members}
+    assert catalog.validate_active_targets(targets) == tuple(sorted(targets))
+    plain = [s for s in profiles["norm.fused_add_rmsnorm"].shapes if not s.get("use_residual", True)]
+    assert {s["hidden"] for s in plain} == {512, 2048, 6144}
+    dense = profiles["linear.dense"].shapes
+    assert {(s["batch_size"], s["input_dim"], s["output_dim"])
+            for s in dense if "batch_size" in s} == {(64, 192, 512), (64, 512, 256)}
+    assert {s["output_dim"] for s in dense if s.get("output_dtype") == "float32"} == {32, 256}
+    assert all(s["input_dtype"] == "bfloat16" for s in profiles["attention.sparse_mla"].shapes)
+
+
+@pytest.mark.parametrize("extra, layout", [
+    ({}, "weight_out_in_row_major"),
+    ({"output_dtype": "float32"}, "weight_out_in_fp32_output"),
+    ({"batch_size": 2}, "batched_weight_out_in_strided"),
+])
+def test_dense_profile_descriptor_matches_the_live_family(extra, layout):
+    from cacheon.dense_contract import call_descriptor
+    from cacheon.model_profiles import verification_call_descriptor
+
+    slot = get_slot("linear.dense")
+    inputs = slot.make_inputs(num_tokens=3, input_dim=7, output_dim=5,
+                             dtype=torch.bfloat16, device="cpu", seed=7, **extra)
+    live = call_descriptor(inputs, architecture="sm103", graph_mode="cuda_graph",
+                           parallel_role="replicated", tp_size=1, world_size=4)
+    verify = verification_call_descriptor(slot, inputs, dtype_name="bfloat16",
+        architecture="sm103", graph_mode="cuda_graph", tp_size=4, world_size=4)
+    assert live == verify and verify["layout"] == layout
 
 
 def test_m3_specialized_routing_draw_follows_profile():

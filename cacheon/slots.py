@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from cacheon.moe_nvfp4_contract import (
     prepare_args_from_layer as _moe_prepare_args_from_layer,
 )
-from cacheon.dense_contract import dense_reference, make_dense_inputs
+from cacheon.dense_contract import dense_reference, make_dense_inputs, output_spec as _dense_output_spec
 from cacheon.collective_exchange_contract import (
     all_gather_reference,
     make_all_gather_inputs,
@@ -34,8 +34,7 @@ from cacheon.norm_contract import (
 )
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 from cacheon.sparse_mla_contract import slot_spec as _sparse_mla_slot
-from cacheon.indexer_topk_contract import slot_spec as _indexer_topk_slot
-from cacheon.indexer_scores_contract import slot_spec as _indexer_scores_slot
+from cacheon.indexer_select_contract import slot_spec as _indexer_select_slot
 
 @dataclass(frozen=True)
 class Tolerance:
@@ -209,7 +208,6 @@ _BF16_TOL = {
 def _silu_reference(x: torch.Tensor) -> torch.Tensor:
     d = x.shape[-1] // 2
     return F.silu(x[..., :d].float()).to(x.dtype) * x[..., d:]
-
 
 def _silu_inputs(*, num_tokens: int, d: int, dtype: torch.dtype, device: str, seed: int) -> dict:
     g = torch.Generator(device=device).manual_seed(seed)
@@ -718,20 +716,21 @@ FUSED_ADD_RMSNORM = SlotSpec(
     name="norm.fused_add_rmsnorm",
     entry="fused_add_rmsnorm",
     summary=(
-        "fused residual add + RMSNorm at SGLang's RMSNorm.forward_cuda waist: "
+        "RMSNorm with optional fused residual add at SGLang's RMSNorm waist: "
         "entry(x, residual, weight, eps, out_norm, out_residual). The validator "
-        "owns both outputs; the residual add rounds in the input dtype before "
+        "owns outputs; residual=None and out_residual=None select plain RMSNorm. The add rounds before "
         "the fp32 variance reduction."
     ),
     kind="block",
     make_inputs=make_fused_add_rmsnorm_inputs,
-    out_shapes=lambda i: [tuple(i["x"].shape), tuple(i["x"].shape)],
+    out_shapes=lambda i: [tuple(i["x"].shape)] * (1 if i["residual"] is None else 2),
     invoke_reference=fused_add_rmsnorm_reference,
     invoke_entry=lambda entry, i, outs, prepared: entry(
-        i["x"], i["residual"], i["weight"], i["eps"], outs[0], outs[1]
+        i["x"], i["residual"], i["weight"], i["eps"], outs[0], outs[1] if len(outs) == 2 else None
     ),
     graph_dynamic_inputs=("x", "residual"),
     shapes=(
+        {"num_tokens": 6, "hidden": 512, "use_residual": False},
         {"num_tokens": 8, "hidden": 6144},
         {"num_tokens": 32, "hidden": 6144},
         {"num_tokens": 128, "hidden": 6144},
@@ -747,14 +746,13 @@ DENSE_LINEAR = SlotSpec(
     entry="dense",
     prepare="prepare",
     summary=(
-        "unquantized local dense GEMM with validator-owned output: "
-        "prepare(weight[N,K]) -> prepared; entry(x[M,K], prepared, out[M,N]). "
-        "Bias and the surrounding row/column-parallel communication stay outside "
-        "the slot."
+        "Unquantized GEMM family: prepare(weight[...,N,K]); entry(x[...,M,K], prepared, out[...,M,N]). "
+        "Rank-2 or head-batched rank-3 inputs, supplied strided output in input dtype or FP32. "
+        "Bias, gate scaling and communication stay outside."
     ),
     kind="block",
     make_inputs=make_dense_inputs,
-    out_shapes=lambda i: [(i["x"].shape[0], i["weight"].shape[0])],
+    out_shapes=lambda i: [_dense_output_spec(i).outputs[0].shape], output_spec=_dense_output_spec,
     invoke_reference=dense_reference,
     invoke_prepare=lambda prepare_fn, i: prepare_fn(i["weight"]),
     prepare_from_layer=lambda layer: (layer.weight.data,),
@@ -762,8 +760,9 @@ DENSE_LINEAR = SlotSpec(
     graph_dynamic_inputs=("x",),
     shapes=(
         {"num_tokens": 8, "input_dim": 256, "output_dim": 384},
-        {"num_tokens": 32, "input_dim": 512, "output_dim": 256},
-        {"num_tokens": 128, "input_dim": 384, "output_dim": 512},
+        {"num_tokens": 32, "input_dim": 512, "output_dim": 256}, {"num_tokens": 128, "input_dim": 384, "output_dim": 512},
+        {"num_tokens": 3, "input_dim": 17, "output_dim": 5, "output_dtype": "float32"},
+        {"num_tokens": 5, "input_dim": 11, "output_dim": 9, "batch_size": 2},
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
@@ -827,13 +826,11 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 
 
 SPARSE_MLA = _sparse_mla_slot()
-INDEXER_TOPK = _indexer_topk_slot()
-INDEXER_SCORES = _indexer_scores_slot()
+INDEXER_SELECT = _indexer_select_slot()
 
 
 SLOTS: dict[str, SlotSpec] = {
-    INDEXER_TOPK.name: INDEXER_TOPK,
-    INDEXER_SCORES.name: INDEXER_SCORES,
+    INDEXER_SELECT.name: INDEXER_SELECT,
     SPARSE_MLA.name: SPARSE_MLA,
     SILU_AND_MUL.name: SILU_AND_MUL,
     RMSNORM.name: RMSNORM,

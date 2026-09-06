@@ -61,28 +61,30 @@ The live catalog supports three kinds. Kind changes the breadth and capability o
 
 ## Current catalog
 
-The current API contains **12 slots**.
+The current API contains **13 slots**.
 
 | Slot | Kind | Entry point | Semantic boundary |
 |---|---|---|---|
 | `activation.silu_and_mul` | `op` | `silu_and_mul` | Gated MLP activation product |
-| `attention.indexer_scores` | `block` | `indexer_scores` | Weighted-ReLU FP8 MQA scores, independent of selection |
-| `attention.indexer_topk` | `block` | `indexer_topk` | Masked selection and physical-page translation |
-| `attention.sparse_mla` | `block` | `sparse_mla` | Selected-token sparse attention core with BF16 latent output |
+| `attention.indexer_select` | `block` | `indexer_select` | Query RoPE/quantization, scoring, priority tokens and physical selection; internal atomic member |
+| `attention.sparse_mla` | `block` | `sparse_mla` | Query RoPE/FP8 preparation and sparse attention; internal atomic member |
 | `collective.all_gather_into_tensor` | `collective` | `all_gather_into_tensor` | Equal-size all-gather into a validator-owned output |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |
 | `collective.ar_residual_rmsnorm` | `collective` | `ar_residual_rmsnorm` | Fused all-reduce, residual add, and RMSNorm |
 | `collective.reduce_scatter_tensor` | `collective` | `reduce_scatter_tensor` | Equal-size SUM reduce-scatter into a validator-owned output |
-| `linear.dense` | `block` | `prepare` + `dense` | Unquantized local dense GEMM; surrounding communication stays outside |
+| `linear.dense` | `block` | `prepare` + `dense` | Unquantized GEMM family, including FP32 gates and absorbed BMM; communication stays outside |
 | `moe.fused_experts` | `block` | `prepare` + `fused_experts` | Prepared MoE expert execution |
 | `moe.fused_experts_reduce` | `collective` | `prepare` + `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
 | `moe.fused_routed_experts` | `block` | `prepare` + `fused_routed_experts` | Routing, expert execution, and weighted combine |
-| `norm.fused_add_rmsnorm` | `block` | `fused_add_rmsnorm` | Residual add plus RMSNorm with two validator-owned outputs |
+| `norm.fused_add_rmsnorm` | `block` | `fused_add_rmsnorm` | Plain or residual-add RMSNorm with optional residual input/output |
 | `norm.rmsnorm` | `op` | `rmsnorm` | RMS normalization; residual addition remains outside |
 
 This table defines cross-arena ABI contracts, not deployment availability. An
 arena seals its own registered target set and the complete closed complement.
 See [current arena availability](../miner-guide/slots.md#current-glm-53-availability).
+GLM's sparse-attention proposal is the atomic `attention.sparse_mla.v1`, which
+requires both attention members. Neither internal member is a standalone GLM
+proposal lane; small computations are owned by the larger family contracts.
 
 Run `cacheon slots` against the installed code for the human-readable live list.
 The command prints multi-line summaries rather than a JSON/structured schema;

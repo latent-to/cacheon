@@ -9,8 +9,8 @@ import torch
 
 from cacheon.capabilities import CallDescriptor
 from cacheon.sparse_mla_contract import call_descriptor as _sparse_mla_descriptor
-from cacheon.indexer_topk_contract import call_descriptor as _indexer_topk_descriptor
-from cacheon.indexer_scores_contract import call_descriptor as _indexer_scores_descriptor
+from cacheon.indexer_select_contract import call_descriptor as _indexer_select_descriptor
+from cacheon.dense_contract import call_descriptor as _dense_descriptor
 from cacheon.moe_nvfp4_contract import (
     call_descriptor as _moe_call_descriptor,
     prepare_args_from_inputs as _moe_prepare_args_from_inputs,
@@ -186,18 +186,25 @@ _GLM53_DENSE_PROFILE = SlotProfile(
         for tokens, tp, matrices in (
             ((32, 4096), 1, ((6144, 2624, "replicated"),)),
             ((6, 32, 4096), 1, ((2048, 16384, "column"), (16384, 6144, "row"),
-                                (2048, 4096, "replicated"), (6144, 160, "replicated"))),
+                                (2048, 4096, "replicated"), (6144, 160, "replicated"), (6144, 128, "replicated"))),
             ((24, 128, 16384), 4, ((6144, 6144, "column"), (3072, 6144, "row"),
                                     (6144, 1024, "column"), (512, 6144, "row"))),
         )
         for m in tokens for k, n, role in matrices
+    ) + tuple(
+        dict(num_tokens=tokens, input_dim=6144, output_dim=n, output_dtype="float32")
+        for sizes, n in (((1, 6, 32, 4096), 32), ((1, 8, 24, 128, 16384), 256)) for tokens in sizes
+    ) + tuple(
+        dict(num_tokens=tokens, input_dim=k, output_dim=n, batch_size=64)
+        for tokens in (6, 32, 4096) for k, n in ((192, 512), (512, 256))
     ),
 )
 
 _GLM53_NORM_PROFILE = SlotProfile(shapes=tuple(
     {"num_tokens": tokens, "hidden": 6144}
     for tokens in (6, 24, 32, 128, 4096, 16384)
-))
+) + tuple(dict(num_tokens=tokens, hidden=hidden, use_residual=False)
+          for tokens in (6, 32, 4096) for hidden in (512, 2048, 6144)))
 _GLM53_ALL_REDUCE_PROFILE = SlotProfile(
     shapes=({"num_tokens": 16384, "hidden": 6144},),
 )
@@ -209,7 +216,7 @@ _GLM53_DP_EXCHANGE_PROFILE = SlotProfile(shapes=tuple(
 _GLM53_SPARSE_MLA_PROFILE = SlotProfile(shapes=tuple(
     dict(num_tokens=tokens, num_heads=64, value_dim=512, rope_dim=64,
          num_pages=pages, page_size=64, top_k=2048, query_chunk=chunk,
-         input_dtype="float8_e4m3fn")
+         input_dtype="bfloat16")
     for tokens, pages, chunk in (
         (6, 128, 1), (32, 1024, 1), (128, 128, 128), (16384, 1024, 16384),
     )
@@ -221,13 +228,9 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
         "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
     },
     "GLM-5.3": {
-        "attention.indexer_scores": SlotProfile(shapes=tuple(
-            dict(num_tokens=tokens, num_heads=32, head_dim=128, kv_len=length, page_size=64)
-            for tokens, length in ((6, 8192), (32, 65536), (128, 8192), (512, 65536))
-        )),
-        "attention.indexer_topk": SlotProfile(shapes=tuple(
-            dict(num_tokens=tokens, kv_len=length, top_k=2048, page_size=64,
-                 input_dtype="float32")
+        "attention.indexer_select": SlotProfile(shapes=tuple(
+            dict(num_tokens=tokens, num_heads=32, head_dim=128, kv_len=length,
+                 page_size=64, top_k=2048, num_init_tokens=0, num_local_tokens=0)
             for tokens, length in ((6, 8192), (32, 65536), (128, 8192), (512, 65536))
         )),
         "attention.sparse_mla": _GLM53_SPARSE_MLA_PROFILE,
@@ -282,21 +285,17 @@ def verification_call_descriptor(
             intermediate_dim=int(inputs["w2"].shape[-1]),
             tp_size=tp_size, world_size=world_size,
         )
-    if slot.name in ("attention.sparse_mla", "attention.indexer_topk", "attention.indexer_scores"):
-        descriptor = {"attention.sparse_mla": _sparse_mla_descriptor, "attention.indexer_topk": _indexer_topk_descriptor, "attention.indexer_scores": _indexer_scores_descriptor}[slot.name]
+    if slot.name in ("attention.sparse_mla", "attention.indexer_select"):
+        descriptor = _sparse_mla_descriptor if slot.name == "attention.sparse_mla" else _indexer_select_descriptor
         return descriptor(
             inputs, architecture=architecture, graph_mode=graph_mode,
             tp_size=tp_size, world_size=world_size,
         )
     if slot.name == "linear.dense":
-        x, weight = inputs["x"], inputs["weight"]
-        return CallDescriptor(
-            architecture=architecture, dtype=dtype_name, graph_mode=graph_mode,
-            input_dim=int(weight.shape[1]), last_dim=int(x.shape[-1]),
-            layout="weight_out_in_row_major", num_tokens=int(x.shape[0]),
-            output_dim=int(weight.shape[0]),
+        return _dense_descriptor(
+            inputs, architecture=architecture, graph_mode=graph_mode,
             parallel_role=str(inputs.get("parallel_role", "replicated")),
-            quant="dense", tp_size=int(inputs.get("local_tp_size", tp_size or 1)),
+            tp_size=int(inputs.get("local_tp_size", 1)),
             world_size=int(world_size or tp_size or 1),
         )
     primary = next((inputs[name] for name in (

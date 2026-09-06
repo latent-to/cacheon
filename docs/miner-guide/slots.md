@@ -20,34 +20,37 @@ The authoritative sources are
 
 ## Current slot catalog
 
-There are 14 semantic slots. `entry` below means the callable named by your
+There are 13 semantic slots. `entry` below means the callable named by your
 manifest; it does not require the Python function itself to be named `entry`.
 
 | Slot | Kind | Required call boundary | What the validator retains |
 |---|---|---|---|
 | `activation.silu_and_mul` | op | `entry(x, out)` | MLP activation output |
-| `attention.indexer_scores` | block | `entry(q, key_pages, key_scales, weights, starts, ends, page_table, row_to_batch, out)` | FP32 weighted-ReLU MQA scores |
-| `attention.indexer_topk` | block | `entry(scores, lengths, row_starts, page_table, row_to_batch, page_offsets, out, page_size, top_k)` | int32 physical indices; set overlap ≥ 0.99 |
-| `attention.sparse_mla` | block | `entry(q, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale)` | BF16 latent attention output; selection and cache preparation stay outside |
+| `attention.indexer_select` | block | `entry(q, key_pages, key_scales, weights, page_table, row_to_batch, lengths, page_offsets, positions, cos_sin_cache, q_scale_gate, num_init_tokens, num_local_tokens, top_k, out)` | query preparation, scores, top-k and int32 physical indices; internal atomic member |
+| `attention.sparse_mla` | block | `entry(q, q_rope, positions, cos_sin_cache, is_neox, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale)` | query RoPE/FP8 preparation and BF16 latent attention output; internal atomic member |
 | `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | rank-ordered gathered tensor |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | sum across the supplied process group |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | reduced residual and normalized output |
 | `collective.reduce_scatter_tensor` | collective | `entry(x, out, group)` | this rank's SUM-reduced shard |
-| `linear.dense` | block | `prepare(weight)` plus `entry(x, prepared, out)` | local dense output; row/column-parallel communication stays outside |
+| `linear.dense` | block | `prepare(weight)` plus `entry(x, prepared, out)` | ordinary GEMM, FP32 gate projection and strided absorbed BMM; communication stays outside |
 | `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
 | `moe.fused_routed_experts` | block | `prepare(w13, w2, topk, routed_scaling)` plus `entry(x, router_logits, correction_bias, prepared, out)` | routed, combined expert result; the implementation owns the routing head |
-| `norm.fused_add_rmsnorm` | block | `entry(x, residual, weight, eps, out_norm, out_residual)` | dtype-rounded residual and normalized output |
+| `norm.fused_add_rmsnorm` | block | `entry(x, residual, weight, eps, out_norm, out_residual)` | plain or residual-add RMSNorm; plain calls supply both residual arguments as `None` |
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
 
 ## Current GLM-5.3 availability
 
-The GLM-5.3 arena seals `moe.fused_routed_experts`, `linear.dense`,
-`norm.fused_add_rmsnorm`, `collective.all_reduce`, and atomic
-`collective.dp_attention_exchange.v1` (all-gather plus reduce-scatter).
+The GLM-5.3 source profiles cover six family targets: `moe.fused_routed_experts`,
+`linear.dense`, `norm.fused_add_rmsnorm`, `collective.all_reduce`, atomic
+`collective.dp_attention_exchange.v1`, and atomic `attention.sparse_mla.v1`.
+The last target requires both `attention.indexer_select` and `attention.sparse_mla`.
+An existing commissioned arena's five-target set does not change until the
+widened families pass runtime acceptance and a new commission seals them.
 
-Pure SiLU/RMSNorm remain claimable inside wider fused targets, not separate GLM
-lanes. KV-cache, radix, batching, and speculative policy remain engine-owned.
+Small operations belong to these families; there are no standalone GLM lanes
+for score computation, top-k, plain RMSNorm, FP32 gates, BMM or cache writes.
+Key-cache writes, radix, batching and speculative policy remain engine-owned.
 
 Sealed profiles replace generic shapes with local `6/32/4096`, TP-gathered
 `24/128/16384`, prefill all-reduce `(16384, 6144)`, and decode DP-exchange
@@ -56,11 +59,12 @@ Routed MoE includes the 16,384-token prefill shape; its untimed reference groups
 tokens by expert without duplicating weights. Mixed-cell qualification remains
 the full-model quality and performance gate.
 
-The source catalog also contains `attention.sparse_mla` with GLM verification
-profiles. It has not been added to the commissioned five-target arena.
-Its adapter and CPU controls are implementation work; exact-image hardware and
-full-model acceptance remain required. Indexer and cache preparation coverage
-are still unfinished. See the [sparse MLA ABI](kernel-abi.md#attentionsparse_mla).
+Dense family profiles include router/head FP32 outputs and 64-head absorbed
+BMMs `192 → 512` and `512 → 256`. The norm family includes plain widths
+512/2048/6144. Attention profiles supply raw BF16 queries, 64 latent-attention
+heads and 32 indexer heads, with independent FP8 key caches. Prefill and decode
+share the family ABIs. Exact-image full-model acceptance remains required for
+these widened consumers. See the [attention family ABI](kernel-abi.md#atomic-sparse-attention-family).
 
 ## Arena availability
 
@@ -88,7 +92,7 @@ See [Kernel ABI](kernel-abi.md) for tensor semantics and
 ## Singleton targets
 
 The current default target catalog registers one singleton target for each of
-the 12 slots. Its target ID is the slot ID. A normal proposal therefore names
+the 13 slots. Its target ID is the slot ID. A normal proposal therefore names
 the slot target explicitly:
 
 ```toml
@@ -101,13 +105,14 @@ The catalog, not your manifest, binds that target to its member slot, ABI,
 reference, verification profile, serving binding, correctness policy, and
 allowed implementation features.
 
-## The registered atomic target
+## The registered atomic targets
 
 The default catalog also registers:
 
 | Target | Mode | Members | Displaces |
 |---|---|---|---|
 | `collective.dp_attention_exchange.v1` | `atomic` | `collective.all_gather_into_tensor`, `collective.reduce_scatter_tensor` | both corresponding singleton targets |
+| `attention.sparse_mla.v1` | `atomic` | `attention.sparse_mla`, `attention.indexer_select` | both corresponding singleton targets |
 
 Use an atomic target only when the optimization's semantics genuinely require
 the coupled boundary and your bundle implements all registered members:

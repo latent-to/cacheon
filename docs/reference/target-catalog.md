@@ -25,12 +25,14 @@ integration, and releases; a target ID alone cannot reopen authority.
 
 ## Registered targets
 
-The `target-catalog.v2` policy contains the 11 singleton slot targets plus one
-atomic target:
+The `target-catalog.v2` policy contains 13 singleton contract identities and two
+atomic targets. GLM opens family targets, not every internal member identity:
 
 | Target | Kind | Members / effect |
 |---|---|---|
 | `activation.silu_and_mul` | slot | Same-named slot |
+| `attention.indexer_select` | slot | Internal sparse-attention member: indexer query preparation through physical selection |
+| `attention.sparse_mla` | slot | Internal sparse-attention member: query preparation and sparse attention |
 | `collective.all_gather_into_tensor` | slot | Same-named slot |
 | `collective.all_reduce` | slot | Same-named slot |
 | `collective.ar_residual_rmsnorm` | slot | Same-named slot |
@@ -39,15 +41,19 @@ atomic target:
 | `moe.fused_experts` | slot | Experts without ownership of the trailing reduction |
 | `moe.fused_experts_reduce` | slot | Experts plus their trailing reduction |
 | `moe.fused_routed_experts` | slot | Routing head plus experts plus combine (the fat MoE boundary) |
-| `norm.fused_add_rmsnorm` | slot | Residual add plus RMSNorm |
+| `norm.fused_add_rmsnorm` | slot | Plain or residual-add RMSNorm |
 | `norm.rmsnorm` | slot | Same-named slot |
 | `collective.dp_attention_exchange.v1` | atomic | Owns both DP-attention exchange members below |
+| `attention.sparse_mla.v1` | atomic | Owns `attention.sparse_mla` and `attention.indexer_select` together |
 
-The atomic target owns and displaces both
+The DP atomic target owns and displaces both
 `collective.all_gather_into_tensor` and
 `collective.reduce_scatter_tensor`. Those overlapping identities cannot be
 active alongside the atomic target. This prevents one semantic change from
 creating duplicate permanent reward titles.
+The sparse-attention atomic target likewise requires and displaces both of its
+members. A partial bundle does not satisfy either atomic contract; the family
+and one of its members cannot be active together.
 
 Catalog registration defines identity and admission; it does not by itself
 prove that a serving seam is installed or that an arena opens the target. See

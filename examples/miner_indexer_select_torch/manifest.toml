@@ -1,0 +1,13 @@
+bundle_id = "example-indexer-select-torch"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "attention.indexer_select"
+mode = "slot"
+
+[[ops]]
+slot = "attention.indexer_select"
+source = "kernels/indexer_select.py"
+entry = "indexer_select"
+dtypes = ["float8_e4m3fn", "bfloat16", "float16"]
+metadata = "metadata/indexer_select.json"
