@@ -1,4 +1,4 @@
-"""Bind unquantized GEMMs, FP32 projections and absorbed BMM to one family."""
+"""Bind unquantized GEMMs, the FP32 router projection and absorbed BMM to one family."""
 
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from cacheon.tensor_spec import tensor_bindings, validate_tensor_bindings
 _MODULE = "sglang.srt.layers.quantization.unquant"
 _PATCH_FLAG = "_cacheon_dense_patched"
 _SLOT = "linear.dense"
-_PROJECTIONS = (("sglang.srt.models.deepseek_v2", "MoEGate", "forward", "weight"),
-                ("sglang.srt.layers.attention.dsa.dsa_indexer", "Indexer",
-                 "_weights_proj_bf16_in_fp32_out", "weights_proj"))
+# The indexer's separate FP32 head projection exists only with indexer fusion
+# off; GLM runs fusion on, so binding it would install a consumer that never fires.
+_PROJECTIONS = (("sglang.srt.models.deepseek_v2", "MoEGate", "forward"),)
 _BMM_MODULE = "sglang.srt.models.deepseek_common.attention_forward_methods.forward_mla"
 _ORIGINAL = "_cacheon_dense_original"
 
@@ -99,16 +99,14 @@ def _make_apply(baseline, registry: KernelRegistry, *, stock_apply=None):
     return apply
 
 
-def _make_projection(baseline, registry, module, weight_attr):
+def _make_projection(baseline, registry, module):
     @wraps(baseline)
     def project(self, x, *args, **kwargs):
         stock = lambda: baseline(self, x, *args, **kwargs)
         # The deterministic router branch returns input dtype, outside this FP32 consumer.
-        if (not module._is_cuda or (weight_attr == "weight" and
-            module.get_exec().deterministic.enable_deterministic_inference)):
+        if not module._is_cuda or module.get_exec().deterministic.enable_deterministic_inference:
             return stock()
-        layer = getattr(self, "weights_proj", None) if weight_attr == "weights_proj" else self
-        return _dispatch(layer, x, getattr(layer, "weight", None), registry, stock, output_dtype=torch.float32)
+        return _dispatch(self, x, getattr(self, "weight", None), registry, stock, output_dtype=torch.float32)
     return project
 
 
@@ -147,13 +145,13 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
         cls.apply = _make_apply(cls.apply, registry)
         cls.apply_into = _make_apply(cls.apply_into, registry, stock_apply=cls._cacheon_orig_apply)
         setattr(cls, _PATCH_FLAG, True)
-    for name, class_name, method, weight_attr in _PROJECTIONS:
+    for name, class_name, method in _PROJECTIONS:
         module = sys.modules.get(name)
         cls = getattr(module, class_name, None)
         if cls is not None and not hasattr(cls, _ORIGINAL):
             baseline = getattr(cls, method)
             setattr(cls, _ORIGINAL, baseline)
-            setattr(cls, method, _make_projection(baseline, registry, module, weight_attr))
+            setattr(cls, method, _make_projection(baseline, registry, module))
     module = sys.modules.get(_BMM_MODULE)
     if module is not None and not hasattr(module, _ORIGINAL):
         original = module.torch
@@ -169,7 +167,7 @@ def uninstall() -> None:
         delattr(cls, "_cacheon_orig_apply")
         delattr(cls, "_cacheon_orig_apply_into")
         setattr(cls, _PATCH_FLAG, False)
-    for name, class_name, method, _ in _PROJECTIONS:
+    for name, class_name, method in _PROJECTIONS:
         cls = getattr(sys.modules.get(name), class_name, None)
         if cls is not None and hasattr(cls, _ORIGINAL):
             setattr(cls, method, getattr(cls, _ORIGINAL))
@@ -184,4 +182,4 @@ def is_installed() -> bool:
     """Report any installed consumer of the GEMM family."""
     cls = getattr(sys.modules.get(_MODULE), "UnquantizedLinearMethod", None)
     return bool(getattr(cls, _PATCH_FLAG, False) or hasattr(sys.modules.get(_BMM_MODULE), _ORIGINAL)
-                or any(hasattr(getattr(sys.modules.get(n), c, None), _ORIGINAL) for n, c, _, _ in _PROJECTIONS))
+                or any(hasattr(getattr(sys.modules.get(n), c, None), _ORIGINAL) for n, c, _ in _PROJECTIONS))

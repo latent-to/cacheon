@@ -1,5 +1,16 @@
 # State of record
 
+Late on **2026-09-06**, before public intake, the attention-family verification
+gates were tightened: indexer histories span the declared context so selection
+is exercised on every registered shape; emitted indices are range-checked
+offline and clamped live; verification inputs carry the engine's strided
+key-page, scale and query layouts; FP32-output GEMM shapes are graded at the
+FP32 tolerance the live audit already used; the seam refuses unfused top-k;
+pre-selection refusals are receipted; and the fusion-shadowed indexer
+projection adapter with its two dead dense shapes was deleted. Worker bytes
+change, so the six-target GPU evidence recorded earlier that day predates this
+source and a new commission must re-run before intake.
+
 On **2026-09-06**, source registration consolidates GLM into six family targets:
 routed MoE, dense GEMM, normalization, all-reduce, atomic DP exchange, and
 atomic `attention.sparse_mla.v1`. Sparse attention requires its query-preparation/

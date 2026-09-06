@@ -12,11 +12,12 @@ from types import FunctionType
 
 import torch
 
+from cacheon.capabilities import CapabilityMismatch
 from cacheon.dispatch import (
     _allocate_live_outputs, _arch_tag, _audit, _dynamo_compiling, _flashinfer_tuning,
     _in_cuda_graph, _receipts, _runtime_parallel_sizes, _validate_live_outputs,
 )
-from cacheon.indexer_select_contract import SLOT, call_descriptor, invoke_entry
+from cacheon.indexer_select_contract import SLOT, call_descriptor, invoke_entry, output_bounds
 from cacheon.registry import REGISTRY, KernelRegistry
 
 _MODULE = "sglang.srt.layers.attention.dsa.dsa_indexer"
@@ -47,7 +48,13 @@ def _bind_prepare(baseline, module, registry=REGISTRY):
     return wraps(baseline)(bound)
 
 
-def _inputs(call, module, *, ragged):
+def _declined(registry, field, reason, expected):
+    """Receipt a refusal made before selection, so a registered candidate that never ran is explained."""
+    if registry.active and registry.variants(SLOT):
+        _receipts.not_selected(SLOT, "seam_declined", (CapabilityMismatch(field, reason, expected),))
+
+
+def _inputs(call, module, registry, *, ragged):
     """Reuse the producer's PAGED mapping and expose zero-copy key/scale views."""
     from sglang.srt.layers.attention.dsa.dsa_topk_backend import TopkTransformMethod, _build_flashinfer_paged_args
 
@@ -56,15 +63,20 @@ def _inputs(call, module, *, ragged):
     raw_query = isinstance(weights, tuple)
     if raw_query:
         weights, positions, cache, gate = weights
-    if (metadata.topk_transform_method != TopkTransformMethod.PAGED
-        or call["forward_batch"].attn_cp_metadata is not None
-        or q.dtype not in ((torch.bfloat16, torch.float16) if raw_query else (torch.float8_e4m3fn,))):
-        return None
+    if metadata.topk_transform_method != TopkTransformMethod.PAGED:
+        return _declined(registry, "layout", "unsupported", "paged_indexer_select")
+    if metadata.force_unfused_topk:
+        # Unfused top-k hands the consumer row-local positions; this ABI emits physical slots.
+        return _declined(registry, "top_k", "unfused", "fused_physical_selection")
+    if call["forward_batch"].attn_cp_metadata is not None:
+        return _declined(registry, "context_parallel", "unsupported", "none")
+    if q.dtype not in ((torch.bfloat16, torch.float16) if raw_query else (torch.float8_e4m3fn,)):
+        return _declined(registry, "dtype", "outside_domain", "raw bfloat16/float16 or prepared float8_e4m3fn")
     pool = module.get_token_to_kv_pool()
     size, dim = pool.page_size, q.shape[-1]
     raw = owner._get_index_k_read_buffer(pool, call["layer_id"])
     if raw.ndim != 2 or raw.dtype != torch.uint8 or raw.shape[1] != size * (dim + 4):
-        return None
+        return _declined(registry, "index_cache_layout", "unsupported", "packed key/scale pages")
     starts = metadata.get_indexer_kvcache_range()[0] if ragged else None
     count = starts.numel() if ragged else sum(metadata.get_dsa_extend_len_cpu())
     batches, offsets = _build_flashinfer_paged_args(
@@ -103,7 +115,7 @@ def _make_dispatch(baseline, registry, module, *, ragged):
         if (os.environ.get("CACHEON_INDEXER_SELECT_SEAM") != "1" or _receipts.is_invoking()
             or _dynamo_compiling() or _flashinfer_tuning()):
             return stock()
-        inputs = _inputs(call, module, ragged=ragged)
+        inputs = _inputs(call, module, registry, ragged=ragged)
         if inputs is None:
             return stock()
         q = inputs["q"]
@@ -119,7 +131,9 @@ def _make_dispatch(baseline, registry, module, *, ragged):
         with torch.inference_mode():
             invoke_entry(lambda *a: _receipts.invoke(SLOT, impl.entry, *a), inputs, allocation.outputs)
         _validate_live_outputs(spec, allocation, tensors, bindings, like=q)
-        result = allocation.outputs[0]
+        # A hostile index must never reach the vendor kernel as a cache address;
+        # a clamped entry only counts as a wrong selection in the audit.
+        result = allocation.outputs[0].clamp_(*output_bounds(inputs))
         if expected is not None:
             _audit.run(SLOT, (result,), lambda: expected)
         destination = call.get("topk_result")

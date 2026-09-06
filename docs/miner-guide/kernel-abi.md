@@ -105,16 +105,19 @@ def sparse_mla(q, q_rope, positions, cos_sin_cache, is_neox,
     ...
 ```
 
-Raw queries are `q:(T,H,V)` and `q_rope:(T,H,R)`. Positions select rows from the
-cosine/sine table. Rotate split halves when `is_neox=True`, adjacent pairs
+Raw queries are `q:(T,H,V)` and `q_rope:(T,H,R)`. Both arrive as strided views of
+engine buffers, never contiguous, and verification supplies the same layouts.
+Positions select rows from the cosine/sine table. Rotate split halves when `is_neox=True`, adjacent pairs
 otherwise; concatenate the latent query and rotated query, clamp to
 `[-448,448]` and convert to FP8-e4m3fn at unit scale. The existing cache
 `kv_cache:(P,S,V+R)` is FP8-e4m3fn. Supplied `out:(T,H,V)` is BF16. Generic
 inputs support float32, float16, BF16 and FP8; the GLM profile supplies raw BF16
 queries and an independent FP8 cache.
 
-For each query/head, consume only the first `min(seq_lens[t], K)` int32 indices,
-discarding `-1`. Physical index `i` addresses cache `[i // S, i % S]`; valid-looking
+For each query/head, consume only the first `min(seq_lens[t], K)` int32 indices.
+The producer writes its selections first and pads after them; verification
+never places `-1` inside that prefix, and the reference contributes nothing for
+one. Physical index `i` addresses cache `[i // S, i % S]`; valid-looking
 tail indices outside that prefix are ignored. Compute
 `softmax(prepared_q @ selected_keys.T * qk_scale)`, combine the first `V` cache
 components and apply `value_scale`. No selected keys means zero output.
@@ -143,7 +146,9 @@ and raw head weights use the same dtype: rotate the leading dimensions with
 adjacent-pair RoPE, compute per-head scale `max(abs(q), 1e-4) / 448`, quantize
 to FP8 and fold `q_scale_gate * scale` into FP32 head weights. For prepared FP8
 queries, positions/table are `None`, weights are already FP32 and the gate is
-one. Key pages `(P,S,D)` remain FP8 and per-key scales `(P,S)` are FP32.
+one. Key pages `(P,S,D)` remain FP8 and per-key scales `(P,S)` are FP32. Both
+are column views of one interleaved engine page buffer, so neither is
+contiguous; verification hands over the same layout.
 For each logical position in the row's
 `lengths[t]` prefix, add `page_offsets[t]`, resolve its physical page through
 `page_table[row_to_batch[t]]`, and sum over heads:
@@ -152,7 +157,11 @@ Initial and trailing local token
 counts mark priority scores as positive infinity. Select up to `top_k`,
 translate directly to physical cache indices, and fill unused int32 output
 positions with `-1`. Selection order does not matter; valid-row set overlap
-must reach 0.99. Duplicate indices do not earn additional matches.
+must reach 0.99. Duplicate indices do not earn additional matches. Every emitted
+index must lie in `[-1, P*S)`: verification rejects any other value, and the
+live seam clamps before the engine dereferences it, so a clamped entry only
+counts as a wrong selection. Verification histories span the declared context,
+so most rows exceed `top_k` and selection is exercised on every registered shape.
 
 The ten tensor inputs are graph-dynamic when present; the gate, priority counts
 and `top_k` are capture-static. Paged decode and ragged prefill both use the producer's real
@@ -178,8 +187,8 @@ def dense(x, prepared, out):
     ...
 ```
 
-The unquantized GEMM family includes ordinary projections, FP32 router/head
-projections and absorbed attention BMMs. Respect actual input/output strides.
+The unquantized GEMM family includes ordinary projections, the FP32 router
+projection and absorbed attention BMMs. Respect actual input/output strides.
 The supplied output uses the input dtype or FP32 as required by its consumer.
 Weights remain static after preparation; activations change during graph
 replay. The independent reference accumulates in FP64 before output rounding.

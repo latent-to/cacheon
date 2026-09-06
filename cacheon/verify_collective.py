@@ -276,7 +276,6 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
             raise ValueError("single collective verify mode requires exactly one shape")
         if run_mode != "single" and len(steps) < 2:
             raise ValueError(f"{run_mode} requires at least two shapes")
-        tol = slot.tolerance_for(dtype)
 
         # PHASE 1 — launch every step's kernel BACK-TO-BACK with no intervening
         # collective/sync. A sequence must reproduce the ENGINE's concurrency regime:
@@ -562,7 +561,7 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                         else [summed]
                     )
                 current = _compare_outputs(
-                    checked_outs, list(refs), tol=tol, correctness=slot.correctness
+                    checked_outs, list(refs), tolerance_for=slot.tolerance_for, correctness=slot.correctness
                 )
                 passed = passed and current.passed
                 if output_phase == "eager":

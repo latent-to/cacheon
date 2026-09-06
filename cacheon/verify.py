@@ -16,6 +16,7 @@ import torch
 from cacheon.capabilities import CONTEXT_FIELDS, CallDescriptor
 from cacheon.model_profiles import verification_call_descriptor
 from cacheon.registry import Eligibility
+from cacheon.selection_overlap import selection_overlap
 from cacheon.slots import SlotSpec
 from cacheon.tensor_spec import (
     allocate_output_spec,
@@ -42,30 +43,16 @@ def _as_list(x) -> list:
     return [x]
 
 def _compare(
-    actual: torch.Tensor, expected: torch.Tensor, *, atol: float, rtol: float, correctness
+    actual: torch.Tensor, expected: torch.Tensor, *, atol: float, rtol: float, correctness,
+    bounds=None,
 ) -> tuple[bool, float, float, float, str, str]:
     if actual.shape != expected.shape:
         return False, float("inf"), float("inf"), 0.0, f"shape mismatch {tuple(actual.shape)} vs {tuple(expected.shape)}", "ratio"
     if correctness.mode == "topk_overlap" and not actual.dtype.is_floating_point:
-        ai, ei = actual.to(torch.long), expected.to(torch.long)
-        valid = ei >= 0
-        if bool((ai[~valid] != -1).any()):
-            return False, 0.0, 0.0, 0.0, "selection padding was not rewritten to -1", "overlap"
-        rows = valid.any(dim=-1)
-        if not bool(rows.any()):
-            return False, 0.0, 0.0, 0.0, "reference selected no blocks", "overlap"
-        ordered = ai.sort(dim=-1).values
-        positions = torch.searchsorted(ordered, ei.contiguous()).clamp(max=ai.shape[-1] - 1)
-        hit = ordered.gather(-1, positions) == ei
-        overlap = (hit & valid).sum(-1).float() / valid.sum(-1).clamp(min=1)
-        score = float(overlap[rows].mean())
-        passed = score >= correctness.min_overlap
-        detail = (
-            ""
-            if passed
-            else f"topk_overlap {score:.4f} < min_overlap {correctness.min_overlap}"
-        )
-        return passed, 0.0, 0.0, score, detail, "overlap"
+        score, detail = selection_overlap(actual, expected, bounds=bounds)
+        if not detail and score < correctness.min_overlap:
+            detail = f"topk_overlap {score:.4f} < min_overlap {correctness.min_overlap}"
+        return not detail, 0.0, 0.0, score, detail, "overlap"
     a = actual.float()
     e = expected.float()
     if correctness.mode == "topk_overlap":
@@ -132,14 +119,16 @@ class _OutputCheck:
     metric: str
 
 
-def _compare_outputs(outs: list[torch.Tensor], expected: list[torch.Tensor], *, tol,
-                     correctness) -> _OutputCheck:
+def _compare_outputs(outs: list[torch.Tensor], expected: list[torch.Tensor], *, tolerance_for,
+                     correctness, bounds=None) -> _OutputCheck:
     """Compare every declared output and retain the worst result.
 
     Kept separate from ``verify_entry`` because CUDA-graph replay must apply the
     exact same comparator as eager verification on every replay.  A different or
     weaker graph comparator would recreate the very eager-vs-captured gap this gate
-    is intended to close.
+    is intended to close. Tolerance follows each output's own dtype, exactly as
+    the in-engine audit grades it: an FP32 router projection verified with BF16
+    inputs must not inherit the BF16 envelope that lets expert routing flip.
     """
     if len(outs) != len(expected):
         return _OutputCheck(
@@ -154,8 +143,9 @@ def _compare_outputs(outs: list[torch.Tensor], expected: list[torch.Tensor], *, 
     metric = "ratio"
     details: list[str] = []
     for j, (out, reference) in enumerate(zip(outs, expected)):
+        tol = tolerance_for(out.dtype)
         p, ma, mr, score, detail, metric = _compare(
-            out, reference, atol=tol.atol, rtol=tol.rtol, correctness=correctness
+            out, reference, atol=tol.atol, rtol=tol.rtol, correctness=correctness, bounds=bounds
         )
         passed = passed and p
         max_abs = max(max_abs, ma)
@@ -363,7 +353,8 @@ def _verify_graph_replays(
     input_bindings: dict,
     replay_cases: list[_GraphReplayCase],
     *,
-    tol,
+    tolerance_for,
+    bounds=None,
     replay_count: int = _DEFAULT_GRAPH_REPLAYS,
     backend: Optional[_GraphBackend] = None,
     fallback_dtype: torch.dtype,
@@ -466,7 +457,7 @@ def _verify_graph_replays(
 
         completed = replay + 1
         current = _compare_outputs(
-            outs, case.expected, tol=tol, correctness=slot.correctness
+            outs, case.expected, tolerance_for=tolerance_for, correctness=slot.correctness, bounds=bounds
         )
         max_abs = max(max_abs, current.max_abs)
         max_rel = max(max_rel, current.max_rel)
@@ -580,7 +571,6 @@ def verify_entry(
         )
     if graph_required and graph_replays < 2:
         raise ValueError("CUDA graph verification requires at least two replays")
-    tol = slot.tolerance_for(dtype)
     catalog_shapes = list(shapes) if shapes is not None else list(slot.shapes)
     domain_coverage_complete = True
     domain_coverage_detail = ""
@@ -595,6 +585,7 @@ def verify_entry(
     ):
         shape = jittered_shape
         inputs = slot.make_inputs(dtype=dtype, device=device, seed=seed + i, **shape)
+        bounds = slot.output_bounds(inputs) if slot.output_bounds else None
         descriptor = verification_call_descriptor(
             slot,
             inputs,
@@ -778,7 +769,8 @@ def verify_entry(
             )
             continue
 
-        eager = _compare_outputs(outs, expected, tol=tol, correctness=slot.correctness)
+        eager = _compare_outputs(outs, expected, tolerance_for=slot.tolerance_for,
+                                 correctness=slot.correctness, bounds=bounds)
         passed = eager.passed
         max_abs = eager.max_abs
         max_rel = eager.max_rel
@@ -799,7 +791,7 @@ def verify_entry(
             graph = _verify_graph_replays(
                 slot, entry, inputs, output_contract, allocation, prepared,
                 trusted_inputs, input_bindings, replay_cases,
-                tol=tol,
+                tolerance_for=slot.tolerance_for, bounds=bounds,
                 replay_count=graph_replays, backend=_graph_backend,
                 fallback_dtype=dtype, fallback_device=device,
             )

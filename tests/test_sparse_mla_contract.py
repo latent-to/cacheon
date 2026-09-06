@@ -102,6 +102,17 @@ def test_two_profiles_have_independent_math_and_mutable_graph_inputs(storage_dty
             assert out.dtype == torch.bfloat16
 
 
+def test_generated_queries_are_engine_strided_views_without_interior_holes():
+    slot = get_slot(SLOT)
+    inputs = slot.make_inputs(**slot.shapes[0], dtype=torch.bfloat16, device="cpu", seed=7)
+    q, rope = inputs["q"], inputs["q_rope"]
+    assert not q.is_contiguous() and q.stride() == (q.shape[2], q.shape[0] * q.shape[2], 1)
+    assert not rope.is_contiguous() and rope.stride(-1) == 1 and rope.stride(1) == 3 * rope.shape[-1]
+    for row, length in enumerate(inputs["seq_lens"].tolist()):
+        prefix = inputs["indices"][row, :min(length, inputs["indices"].shape[1])]
+        assert bool((prefix >= 0).all())
+
+
 def test_ordinary_verifier_accepts_faithful_and_rejects_wrong_output():
     result = verify_entry(get_slot(SLOT), ENTRY, dtype=torch.float32, device="cpu", seed=7)
     assert result.passed and result.graph_required and not result.graph_verified

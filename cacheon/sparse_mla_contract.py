@@ -65,13 +65,16 @@ def make_inputs(
     capacity = num_pages * page_size
     head_dim = value_dim + rope_dim
     generator = torch.Generator(device=device).manual_seed(seed)
+    # Live queries are strided views: the latent part is transposed out of a
+    # head-major BMM and the rotary part is sliced from a wider projection.
     q = torch.randn(
-        num_tokens, num_heads, value_dim, generator=generator, device=device,
-    ).to(storage_dtype)
+        num_heads, num_tokens, value_dim, generator=generator, device=device,
+    ).to(storage_dtype).transpose(0, 1)
     cache = torch.randn(
         num_pages, page_size, head_dim, generator=generator, device=device,
     ).to(torch.float8_e4m3fn)
-    q_rope = torch.randn(num_tokens, num_heads, rope_dim, generator=generator, device=device).to(storage_dtype)
+    q_rope = torch.randn(num_tokens, num_heads, 3 * rope_dim, generator=generator,
+                         device=device).to(storage_dtype)[..., rope_dim:2 * rope_dim]
     angles = torch.randn(137, rope_dim // 2, generator=generator, device=device)
     positions = torch.randint(0, 137, (num_tokens,), generator=generator, device=device)
     # Construct selection metadata on CPU; generation is outside candidate timing
@@ -90,8 +93,8 @@ def make_inputs(
         selected = priority[priority < length][:top_k]
         count = selected.numel()
         indices[row, :count] = physical[selected].to(torch.int32)
-        if count > 2:
-            indices[row, count // 2] = -1
+        # The producer writes selections first and pads after them; a hole inside
+        # the consumed prefix is not a shape the pinned top-k emits.
         # Valid-looking tail addresses must be ignored by the length bound.
         tail = torch.arange(count, top_k, 2)
         indices[row, tail] = physical[(tail + length) % capacity].to(torch.int32)
