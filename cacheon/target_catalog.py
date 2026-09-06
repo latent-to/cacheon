@@ -36,7 +36,6 @@ class TargetKind(str, Enum):
     SLOT = "slot"
     ATOMIC = "atomic"
 
-
 # Feature names are validator vocabulary, never miner-selected permissions.
 # Dynamic/unknown manifest fields and rebuild steps are still observed, but no
 # registered target admits them until validator code names the capability here.
@@ -74,7 +73,6 @@ _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CATALOG_SCHEMA_VERSION = 2
 _CATALOG_POLICY_VERSION = "target-catalog.v2"
-
 
 class TargetCatalogError(ValueError):
     """Validator target policy is internally invalid."""
@@ -886,6 +884,7 @@ class TargetCatalog:
 SINGLETON_TARGET_IDS = (
     "activation.silu_and_mul",
     "attention.indexer_topk",
+    "attention.indexer_scores",
     "attention.sparse_mla",
     "collective.all_gather_into_tensor",
     "collective.all_reduce",

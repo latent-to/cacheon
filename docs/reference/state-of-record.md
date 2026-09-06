@@ -1,9 +1,14 @@
 # State of record
 
-On **2026-09-06**, `attention.indexer_topk` adds independent score selection
-and compact-page translation for paged DSA prefill/decode. CPU causal/history,
-padding, dispatch and replay-orchestration controls pass. Exact-image native
-and full-model acceptance are still pending; this is not arena availability.
+On **2026-09-06**, `attention.indexer_topk` adds independent selection and
+compact-page translation; `attention.indexer_scores` adds weighted-ReLU FP8 MQA
+scores. Top-k native acceptance passes prefill/decode at 8k/65k with 12 CUDA
+graph replays and 20 actual candidate calls. Sparse MLA native acceptance
+passes BF16/FP8 at 6/128 queries with 12 replays, independent math and 20 candidate
+calls. Both use the accepted SGLang 0.5.18/FlashInfer 0.6.17 image with the
+18be7e0 package mounted; neither proves full-model or TP4 rank acceptance.
+Scores and the invocation scope that preserves ordinary vendor-library calls
+inside candidates still require native acceptance on their combined build.
 
 
 This page is the dated capability and evidence ledger for Cacheon. Evergreen

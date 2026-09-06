@@ -20,12 +20,13 @@ The authoritative sources are
 
 ## Current slot catalog
 
-There are 13 semantic slots. `entry` below means the callable named by your
+There are 14 semantic slots. `entry` below means the callable named by your
 manifest; it does not require the Python function itself to be named `entry`.
 
 | Slot | Kind | Required call boundary | What the validator retains |
 |---|---|---|---|
 | `activation.silu_and_mul` | op | `entry(x, out)` | MLP activation output |
+| `attention.indexer_scores` | block | `entry(q, key_pages, key_scales, weights, starts, ends, page_table, row_to_batch, out)` | FP32 weighted-ReLU MQA scores |
 | `attention.indexer_topk` | block | `entry(scores, lengths, row_starts, page_table, row_to_batch, page_offsets, out, page_size, top_k)` | int32 physical indices; set overlap ≥ 0.99 |
 | `attention.sparse_mla` | block | `entry(q, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale)` | BF16 latent attention output; selection and cache preparation stay outside |
 | `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | rank-ordered gathered tensor |

@@ -83,6 +83,7 @@ def _make_dispatch(baseline, registry: KernelRegistry):
     def dispatch(*args, **kwargs):
         if (
             os.environ.get("CACHEON_SPARSE_MLA_SEAM") != "1"
+            or _receipts.is_invoking()
             or _dynamo_compiling() or _flashinfer_tuning()
         ):
             return baseline(*args, **kwargs)

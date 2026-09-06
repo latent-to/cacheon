@@ -83,6 +83,12 @@ This is pure RMSNorm. The slot does not grant ownership of a residual add.
 
 ## Block slots
 
+A candidate may call installed vendor libraries, compile CUDA with inline PTX,
+or use Triton to implement its registered computation. Vendor-function adapters
+recognize execution inside a candidate and call the underlying library directly;
+they do not recursively select another candidate. Exceptions still propagate,
+and the invocation scope is reset on both success and failure.
+
 ### `attention.sparse_mla`
 
 ```python
@@ -130,6 +136,35 @@ The [faithful example](https://github.com/latent-to/cacheon/tree/main/examples/m
 uses bounded shape-based chunks and tensor-valued masks. It is a correctness
 example, not performance evidence. CPU verification does not establish GPU
 capture, rank coverage, exact-image fidelity or public arena availability.
+
+### `attention.indexer_scores`
+
+```python
+def indexer_scores(q, key_pages, key_scales, weights, starts, ends,
+                   page_table, row_to_batch, out):
+    ...
+```
+
+Queries `q:(T,H,D)` and key pages `(P,S,D)` use FP8-e4m3fn storage. Per-key
+scales `(P,S)`, head weights `(T,H)` and supplied output `(T,N)` use FP32.
+The four window/mapping tensors are int32. For each query `t` and logical
+key `j` in `[starts[t], ends[t])`, resolve physical page
+`page_table[row_to_batch[t], j // S]`. Compute the FP32 score as the sum over
+heads of `weights[t,h] * max(dot(q[t,h], key) * key_scale, 0)`. Query scales
+are already folded into weights by the producer. Set every invalid cell to zero;
+the producer masks its causal window before selecting top-k.
+
+Ragged prefill uses a single page containing the concatenated keys and explicit
+per-query windows. Paged decode supplies zero-copy key/scale views of the packed
+cache, a compact page table and query ownership. Key pages and scales can be
+strided. No engine or schedule object crosses the miner ABI. All eight inputs
+are dynamic during replay. The independent reference evaluates the declared
+math in FP64; verification uses absolute/relative tolerance 0.001/0.001.
+
+The pinned binding covers the DeepGEMM score functions consumed by SGLang.
+Top-k, RoPE and cache preparation are separate boundaries. The source
+[example](https://github.com/latent-to/cacheon/tree/main/examples/miner_indexer_scores_torch)
+uses small Torch tiles as a correctness starting point.
 
 ### `attention.indexer_topk`
 

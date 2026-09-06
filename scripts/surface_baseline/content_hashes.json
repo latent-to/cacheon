@@ -3,6 +3,7 @@
  "examples/miner_dense_torch": "d200501fa0a2af77f396965fb47a384d370e868276c95d6a05b4690b68eb7722",
  "examples/miner_dp_attention_exchange_torch": "3ccc5695615698c3a1493fc24cb7ebb1b18d26df79f1219b3c46ed7f7e7d1dda",
  "examples/miner_fused_add_rmsnorm_torch": "197db8d56d530dc5a33e39c8a26dcd5915c72ae52d907f75320e53bf7a749107",
+ "examples/miner_indexer_scores_torch": "dd6ce9aa73d5e6300046711c7f38c8cab0cc84deaa77db366e2519f716590331",
  "examples/miner_indexer_topk_torch": "6e38e8f47abd4b9b1c4f84ece28278639fe227bc9b73cfca8ab6b8d95b7e0c6d",
  "examples/miner_moe_fused_experts_reduce_torch": "edf967fe578becaece04c26ece0777fd4e9f600577a1bc34d975d94f0bde248b",
  "examples/miner_moe_fused_experts_torch": "5376645cb576601d279ab30c890c519dccb72db980e547df531dd21b36d162be",

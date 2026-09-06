@@ -117,7 +117,7 @@ def test_pinned_call_routes_tensor_abi_and_failure_never_retries_stock(monkeypat
     monkeypatch.setattr(seam, "_flashinfer_tuning", lambda: False)
     monkeypatch.setattr(seam, "_runtime_parallel_sizes", lambda: (4, 4))
     monkeypatch.setattr(seam, "_audit", SimpleNamespace(sampled=lambda: False))
-    monkeypatch.setattr(seam, "_receipts", SimpleNamespace(invoke=lambda s, e, *a: e(*a), completed=calls.append))
+    monkeypatch.setattr(seam, "_receipts", SimpleNamespace(is_invoking=lambda: False, invoke=lambda s, e, *a: e(*a), completed=calls.append))
     dispatch = seam._make_dispatch(stock, registry, module)
     actual = dispatch(None, scores, lengths, 3, "paged", metadata, **kw)
     expected = [[17, 16, -1], [6, 17, 16], [13, 12, -1]] if prefill else [[7, 6, 17], [4, 13, 12]]

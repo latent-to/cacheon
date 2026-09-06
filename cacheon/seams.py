@@ -61,6 +61,10 @@ class SeamBinding:
 # THE table. Add a seam here and the bootstrap watch-list, the activate() install loop,
 # and the compat canary all pick it up — no parallel list to keep in sync.
 SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
+    SeamAdapter("indexer_scores", "deep_gemm", "sglang_indexer_scores", "fp8_mqa_logits",
+                ("attention.indexer_scores",), binding_id="indexer_scores", environment_gate="CACHEON_INDEXER_SCORES_SEAM"),
+    SeamAdapter("indexer_scores_paged", "deep_gemm", "sglang_indexer_scores", "fp8_paged_mqa_logits",
+                ("attention.indexer_scores",), binding_id="indexer_scores", environment_gate="CACHEON_INDEXER_SCORES_SEAM"),
     SeamAdapter("indexer_topk", "sglang.srt.layers.attention.dsa.dsa_topk_backend", "sglang_indexer_topk",
                 "DSATopKBackend.topk_transform", ("attention.indexer_topk",),
                 binding_id="indexer_topk", environment_gate="CACHEON_INDEXER_TOPK_SEAM"),

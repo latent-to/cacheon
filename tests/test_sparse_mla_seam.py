@@ -52,7 +52,7 @@ def runtime(monkeypatch):
         return entry(*args)
 
     monkeypatch.setattr(seam, "_receipts", SimpleNamespace(
-        invoke=invoke, completed=completed.append,
+        is_invoking=lambda: False, invoke=invoke, completed=completed.append,
     ))
     yield module, calls, completed
     seam.uninstall()
@@ -216,3 +216,36 @@ def test_single_seam_registry_owns_bootstrap_and_activation_gate():
     assert row.slots == (SLOT,)
     assert seam_binding_environment(())["CACHEON_SPARSE_MLA_SEAM"] == "0"
     assert seam_binding_environment(("sparse_mla",))["CACHEON_SPARSE_MLA_SEAM"] == "1"
+
+
+def test_candidate_can_call_installed_vendor_api_without_recursive_selection(runtime, monkeypatch):
+    from cacheon import receipts
+
+    module, _, _ = runtime
+    monkeypatch.setattr(seam, "_receipts", receipts)
+    monkeypatch.setattr(receipts, "_CALLS", {})
+    _, kwargs = _call()
+    candidate_calls = []
+
+    def entry(q, cache, indices, lengths, out, *rest):
+        candidate_calls.append(1)
+        out.copy_(getattr(module, seam._FUNCTION)(**kwargs)[:, 0])
+
+    seam.install(_registry(entry))
+    actual = getattr(module, seam._FUNCTION)(**kwargs)
+    assert candidate_calls == [1] and len(_STOCK_CALLS) == 1
+    assert (actual == -7).all()
+    assert receipts._CALLS[SLOT][0] == 1
+    assert not receipts.is_invoking()
+
+
+def test_vendor_call_scope_is_reset_after_candidate_failure():
+    from cacheon import receipts
+
+    def fail():
+        assert receipts.is_invoking()
+        raise RuntimeError("vendor failed")
+
+    with pytest.raises(RuntimeError, match="vendor failed"):
+        receipts.invoke(SLOT, fail)
+    assert not receipts.is_invoking()

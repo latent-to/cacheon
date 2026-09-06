@@ -35,6 +35,7 @@ from cacheon.norm_contract import (
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 from cacheon.sparse_mla_contract import slot_spec as _sparse_mla_slot
 from cacheon.indexer_topk_contract import slot_spec as _indexer_topk_slot
+from cacheon.indexer_scores_contract import slot_spec as _indexer_scores_slot
 
 @dataclass(frozen=True)
 class Tolerance:
@@ -93,7 +94,6 @@ class Activation:
     limit: float = 7.0  # swigluoai clamp (config swiglu_limit)
 
 _SILU = Activation("silu")
-
 
 @dataclass(frozen=True)
 class SlotSpec:
@@ -194,20 +194,17 @@ class SlotSpec:
             )
         )
 
-
 _BF16_TOL = {
     torch.bfloat16: Tolerance(2e-2, 2e-2),
     torch.float16: Tolerance(1e-2, 1e-2),
     torch.float32: Tolerance(1e-5, 1e-5),
 }
 
-
 # ---------------------------------------------------------------------------
 # Slot (op): activation.silu_and_mul   (Qwen/Llama-class MLP)
 #   x:(...,2d) -> out:(...,d) = silu(x[...,:d]) * x[...,d:]
 #   contract: entry(x, out)
 # ---------------------------------------------------------------------------
-
 
 def _silu_reference(x: torch.Tensor) -> torch.Tensor:
     d = x.shape[-1] // 2
@@ -831,10 +828,12 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 
 SPARSE_MLA = _sparse_mla_slot()
 INDEXER_TOPK = _indexer_topk_slot()
+INDEXER_SCORES = _indexer_scores_slot()
 
 
 SLOTS: dict[str, SlotSpec] = {
     INDEXER_TOPK.name: INDEXER_TOPK,
+    INDEXER_SCORES.name: INDEXER_SCORES,
     SPARSE_MLA.name: SPARSE_MLA,
     SILU_AND_MUL.name: SILU_AND_MUL,
     RMSNORM.name: RMSNORM,

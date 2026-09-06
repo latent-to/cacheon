@@ -52,6 +52,7 @@ def _make_dispatch(baseline, registry: KernelRegistry, module):
     @wraps(baseline)
     def dispatch(*args, **kwargs):
         if (os.environ.get("CACHEON_INDEXER_TOPK_SEAM") != "1"
+            or _receipts.is_invoking()
             or _dynamo_compiling() or _flashinfer_tuning()):
             return baseline(*args, **kwargs)
         call = signature.bind(*args, **kwargs)

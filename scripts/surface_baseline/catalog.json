@@ -1,6 +1,7 @@
 {
- "catalog_digest": "b56c6d74dc5311c0798b0b2ea4fcd9a1e9c23b5f5fc51aa564ba05095f11962a",
+ "catalog_digest": "4500ca413ad1d7ab0717e94f3428b41200e8070cb9180223f3c348a2ed6d14b3",
  "target:activation.silu_and_mul": {"contract_digest":"e8c1ded7e180825038b807e6c5abab73de5022a8a8763f197712c56da0205def","spec_digest":"8ef0a33e99631239faa754f258d5bbb1d2a2b354de4346a8763234d254436577"},
+ "target:attention.indexer_scores": {"contract_digest":"9d173ed041e864f5275ef803fe74209fbb590ffc21f96598049e4303f1873679","spec_digest":"eecf472f86a11d4edc4563b781bd5d384dae7e2ace25b8dd4124faf5ed0d5da9"},
  "target:attention.indexer_topk": {"contract_digest":"63a9ee5f555131aef42e6d9bede3082e9fff5f46491907b5737d49c3f3206863","spec_digest":"cd95ebd7b66e39c944b48406ea8988a1aa5c7f3ad13abba2324efc9351f985e1"},
  "target:attention.sparse_mla": {"contract_digest":"14b14f936a3e91352bedf4db0712082ab9fbf60ba9a3c3f8cc91789eb776b7a0","spec_digest":"cd8db36034b5dc75e0cf46f5233a621b4325289f2362417269a21631aac26e6b"},
  "target:collective.all_gather_into_tensor": {"contract_digest":"4634ecbf98b482e45b4e8952e441c6c9291d4f25286f04acd7cc3b5f828fa0b1","spec_digest":"4c3f6260c3bb0750bbb310c7caf0117df90ee9d92efa970d65166e692730bf68"},

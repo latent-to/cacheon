@@ -54,6 +54,17 @@ def singleton_contracts() -> dict:
 
 
     return {
+        "attention.indexer_scores": _contract_ref(
+            "attention.indexer_scores", kind="block", entry="indexer_scores", prepare=None,
+            graph_dynamic_inputs=("q", "key_pages", "key_scales", "weights", "starts", "ends", "page_table", "row_to_batch"),
+            input_abi_id="attention.indexer-scores.paged-fp8.input.v1",
+            output_abi_id="attention.indexer-scores.fp32.output.v1",
+            reference_id="attention.indexer-scores.reference.v1",
+            verification_profile_id="attention.indexer-scores.verify.v1",
+            binding_family_id="sglang.attention.indexer-scores.v1",
+            tolerances=tuple(ToleranceContractRef(t, "0.001", "0.001") for t in ("float32", "float8_e4m3fn")),
+            correctness=CorrectnessContractRef(mode="allclose"),
+        ),
         "attention.indexer_topk": _contract_ref(
             "attention.indexer_topk", kind="block", entry="indexer_topk", prepare=None,
             graph_dynamic_inputs=("scores", "lengths", "row_starts", "page_table", "row_to_batch", "page_offsets"),

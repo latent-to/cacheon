@@ -46,11 +46,13 @@ import os
 import re
 import threading
 from collections.abc import Callable, Iterable
+from contextvars import ContextVar
 from pathlib import Path
 from types import FunctionType
 from typing import Optional
 
 logger = logging.getLogger("cacheon.receipts")
+_INVOKING: ContextVar[bool] = ContextVar("cacheon_invoking", default=False)
 
 _SAFE_RE = re.compile(r"[^0-9A-Za-z._\-]+")
 _SAFE_SOURCE_RE = re.compile(r"[^0-9A-Za-z._/\-]+")
@@ -483,6 +485,11 @@ def failed(
     )
 
 
+def is_invoking() -> bool:
+    """Let a candidate call its installed library without recursively selecting itself."""
+    return _INVOKING.get()
+
+
 def invoke(
     slot: str,
     entry: Callable[..., object],
@@ -496,11 +503,14 @@ def invoke(
     <Type> in <slot>" instead of reporting the lane as broken.
     """
 
+    token = _INVOKING.set(True)
     try:
         return entry(*args)
     except BaseException as exc:
         failed(slot, exc, phase=phase, entry=entry)
         raise
+    finally:
+        _INVOKING.reset(token)
 
 
 def not_selected(slot: str, outcome: str, mismatches: Iterable) -> None:
