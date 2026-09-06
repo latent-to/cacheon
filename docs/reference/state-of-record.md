@@ -13,7 +13,19 @@ then re-run on the same runtime and was rejected: fidelity failed on
 `worst_nll`, the broken candidate scored 0/456 against 412/456 and 399/456
 for stock, and its faster timing (1.24×) is not a kernel claim. Monday's
 dispatcher and supervisor configurations were regenerated against the new
-registration. This is the source public intake runs.
+registration.
+
+The public loop was then activated a day early for a validator self-test with
+two owner-submitted control bundles, one fee credit each. The faithful
+attention control was admitted, screened, and rejected on speed (0.66× against
+the 1.0075× routing floor). The deliberately wrong normalization control was
+promoted by the routing screen, as designed, and then every qualification
+attempt failed closed before GPU entry: the planner passed the registered
+policy's model profile to a graph-facts builder that did not accept it, a
+mismatch introduced with the GLM arena surface and never executed before, and
+the supervisor held the reservation after three infrastructure releases. The
+builder now takes the profile and keys accepted evidence by it; the held
+reservation is re-queued on the corrected commission.
 
 Late on **2026-09-06**, before public intake, the attention-family verification
 gates were tightened: indexer histories span the declared context so selection

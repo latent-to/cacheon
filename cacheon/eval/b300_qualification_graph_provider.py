@@ -712,9 +712,16 @@ class B300QualificationGraphFactsBuilder:
         self,
         candidate: ArenaCandidateBinding,
         prepared: PreparedCandidateRuntime,
+        model_profile_key: str,
     ) -> B300FocusedGraphFacts:
+        # The registered policy's model profile keys the acceptance index, so
+        # evidence accepted under one commissioned model profile never answers
+        # for another. The 2026-09-06 mock mainnet run found the planner passing
+        # this argument to a two-argument builder: every GLM qualification
+        # failed closed before GPU entry and the reservation was held.
+        profile = _identifier(model_profile_key, "model profile key")
         binding = B300QualificationGraphBinding.derive(candidate, prepared)
-        key = binding.digest
+        key = profile + ":" + binding.digest
         # The commissioned callbacks are serialized with acceptance.  This
         # makes a same-binding race observe one ordered evidence history and
         # prevents two concurrent artifacts from both becoming authoritative.
