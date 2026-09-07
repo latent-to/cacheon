@@ -13,9 +13,8 @@ release tooling.
 
 > [!IMPORTANT]
 > Cacheon is pre-release software. Implemented paths, retained empirical evidence,
-> and production readiness are separate claims. The
-> [state of record](docs/reference/state-of-record.md) identifies what has been
-> exercised, what is covered only by tests, and what remains unproven.
+> and production readiness are separate claims. Start with the
+> [validator first hour](docs/validator-guide/first-hour.md) for what a deployment must prove.
 
 ## Start here
 
