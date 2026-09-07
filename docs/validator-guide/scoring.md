@@ -2,7 +2,7 @@
 
 Production Cacheon does not reduce a proposal to one self-reported score. It derives a
 three-way qualification decision from retained execution, graph, speed, and pristine
-quality evidence, then requires independent reproduction before settlement.
+quality evidence, then reopens that complete audited PASS for settlement.
 
 ## Screens are not scores
 
@@ -20,7 +20,7 @@ features:
 - C: that same stack with one registered target replaced; and
 - B′: a mandatory second incumbent read.
 
-Every candidate is measured by v8's separate baseline and candidate engine
+Every candidate is measured by v10's separate baseline and candidate engine
 processes (v9 for a mixed-cell workload), which always read B/C/B′ because the
 quality gate consumes the second stock read. C′/B″ do not exist on this
 substrate. During execution, the controller fixes prompt
@@ -39,12 +39,16 @@ The speed estimate is conceptually:
 
 ```text
 scored_rate = timed_tokens / timed_seconds
-bookended speedup = C / mean(B, B′)
+bookended speedup = C / max(B, B′)
 noise       = relative spread of the baseline scored rates
 bar         = 1 + max(min_margin, noise_multiplier * noise)
 ```
 
-Current v8/v9 policy grades the median over steady-state timed windows.
+Version 10 uses the median timed-window rate for a single cell. Version 11
+uses total timed output tokens divided by total timed seconds across all cells,
+so heterogeneous short and long batches are not treated as exchangeable samples.
+The commissioner warms every declared cell before any scored batch in B, C, or B′.
+It reuses the producer-owned prompt batches without changing the scored workload.
 The first read of a resident session pays residual cold-start inside its
 conditioning window while a continuation read does not; a scored rate that
 charges conditioning turns that positional split into apparent baseline noise
@@ -58,10 +62,13 @@ refused.
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
 Provenance still records the exact controller, but measurement reuse is not
-invalidated by an unrelated controller revision. The grader treats every
-retained read as gradable and terminates an undetermined final spread as
-`FAIL valid_not_faster`; it excludes later baseline brackets that drift past
-the sealed ceiling and decides from the adjacent C/B pair. V8 and v9 precommit
+invalidated by an unrelated controller revision. Both stock brackets must remain inside the sealed drift limit, and matching
+B/B′ windows must satisfy the window stability bound. No stock read is dropped.
+A candidate passes only when it clears the bar against both observations, and
+fails the speed floor only when it misses against both. Invalid measurement or
+a boundary-crossing uncertainty yields `NO_DECISION`, never a fabricated miner
+loss or reward. This validity rule does not replace complete workload warmup.
+V10 and v11 precommit
 B′ on the two-process substrate. Retained evidence regrades under the version
 that produced it; evidence sealed below version 8 belongs to the MiniMax-M3
 era and is refused rather than regraded.
@@ -91,7 +98,7 @@ stage. Evaluation work never shares the clock with a speed measurement. A versio
 conditioning slowdown bound: the conditioning span is the only place a
 candidate's prefill cost is host-visible, so the candidate's conditioning
 seconds must stay within the bound of the baseline's, compared at equal
-warmth position. V8/v9 have no C′ and grade the initial C/B pair.
+warmth position. V10/v11 have no C′ and grade the initial C/B pair.
 Conditioning spans carry warm/cold session structure and positions must never
 be mixed. A violation is a clear
 candidate `FAIL`: a decode win cannot hide a prefill regression. The check
@@ -113,30 +120,15 @@ A candidate can pass only when all required products agree:
 | Identity checks | Evidence does not describe the committed arena, stack, target, or delta |
 
 Attributable violations yield `FAIL`. Infrastructure, missing evidence, or stale
-identity yields `NO_DECISION`; current v5+ bracket drift is retained and handled
-by the registered exclusion rule rather than automatically becoming a non-answer.
+identity yields `NO_DECISION`; current v10/v11 never discard an inconvenient baseline bracket.
 Only complete green evidence yields `PASS`.
 
-## Independent reproduction
+## One qualification per bundle
 
-The first `PASS` moves the reservation to `reproduction_pending`. A second `PASS` must
-match the economic identity while using distinct authority, attempt, report, and
-selection evidence. The settlement candidate's conservative speedup is:
-
-```text
-settled_speedup = min(primary_speedup, reproduction_speedup)
-```
-
-There is no single-pass fast path to a crown.
-
-For version-3 resident-family evidence, including current v8/v9 witnesses,
-reproduction must also swap the baseline and candidate physical TP-lane
-orientations exactly while retaining the same speed-policy and
-settlement-control digests.
-
-Here “independent” means the seven required authority, plan, attempt, report, commitment,
-secret-commitment, and selection-evidence digests differ. It does not by itself prove
-separate operators, hosts, or infrastructure failure domains.
+One complete audited `PASS` becomes `qualified` and supplies the settlement
+candidate. No independent second qualification is scheduled. Settlement reopens
+the exact speed, graph, audit, and pristine-quality artifacts before accepting
+its score. Historical pairs retain their original identities and lower score.
 
 ## Settlement cohort over one incumbent authority
 
@@ -154,7 +146,7 @@ manifest order and bundle packaging never decide overlap.
 ## Reward policy follows the activated generation
 
 Under retained legacy V1 authority, each active registered target defines one
-reward family. The policy derives standing credit from reproduced marginal
+reward family. The policy derives standing credit from qualified marginal
 improvement and age. The normative conversion, decay equation, and integer
 rules live in
 [Legacy V1](../reference/emissions-policy.md#legacy-v1).

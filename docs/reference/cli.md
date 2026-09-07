@@ -37,7 +37,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-snapshot-verify` | validator | recovery verification | Download and semantically reopen one snapshot, optionally into fresh staging |
 | `chain-archive-schema3-hold` | validator | durable state transition | Terminally archive one exact legacy schema-3 reproduction hold |
 | `chain-release-hold` | validator | durable state transition | Return one held or no-decision reservation to its queue under a stated reason |
-| `chain-reopen-qualification` | validator | durable state transition | Return one unsettled two-PASS reservation to the screen queue for a fresh pair when retained evidence shows its credited half read the baseline lane under the arena band |
+| `chain-reopen-qualification` | validator | durable state transition | Return one unsettled PASS reservation to the screen queue for a fresh qualification when retained evidence shows its credited half read the baseline lane under the arena band |
 | `chain-backfill-lineage` | validator | durable state transition | Rebuild the per-target lineage ledger from the newest recorded crown; idempotent |
 | `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation, or run the subnet-owner burn bypass |
 | `mint-push-credentials` | operator | weight-share push auth | Create/rotate HMAC secrets for eval → serve-weights |
@@ -107,7 +107,7 @@ requested rank count; a host without enough CUDA devices falls back to CPU/Gloo 
 `--device cuda` makes the requirement explicit.
 
 Verification proves only the exercised component contract. It does not establish model
-integration, serving throughput, pristine quality, isolation, independent reproduction,
+integration, serving throughput, pristine quality, isolation, audited qualification,
 or settlement.
 
 ### `explain`
@@ -537,11 +537,11 @@ python -m cacheon.cli chain-reopen-qualification \
   --dry-run
 ```
 
-Returns one `qualified` two-PASS reservation whose settlement candidate is
+Returns one `qualified` PASS reservation whose settlement candidate is
 still `pending` to the screen queue as `published`, exactly like a fresh
 submission: the live worker screens it again, binds it to the live stack, and
-measures a new independent pair against the current incumbent. The retained
-candidate and both halves move to `settlement_reopenings`, so the pair stops
+measures a new complete qualification against the current incumbent. The retained
+candidate and its accepted attempts move to `settlement_reopenings`, so the contribution stops
 earning the moment it leaves `qualified`. The command refuses unless the
 retained stage-exit artifacts show that the half which set the credited (lower)
 speedup read the baseline lane under the arena band — the median of every
@@ -550,7 +550,7 @@ reads — and it prints that evidence either way. `--dry-run` prints the evidenc
 and changes nothing. Crowned or otherwise settled candidates are lineage and
 are refused. A reopened row binds to the stack whose service re-screens it,
 never to the stack current at its original arrival; running the command again
-on a reopened row that is still waiting for its fresh pair repairs that
+on a reopened row that is still waiting for its fresh qualification repairs that
 binding (or leaves the row unbound for the screen to bind) and changes nothing
 else. It never signs, settles, or crowns.
 

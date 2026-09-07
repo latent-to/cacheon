@@ -109,7 +109,7 @@ The authoritative bracket is:
 ```text
 incumbent = exact incumbent engine on the assigned baseline lane
 candidate = same stack with exactly the selected target delta on the disjoint lane
-v8 = B → C → B′ unconditionally, with separate engine processes (v9: mixed cells)
+v10 = B → C → B′ unconditionally, with separate engine processes (v11: mixed cells)
 A = registered eager, untimed candidate audit
 T = candidate-free pristine quality reference after candidate teardown
 ```
@@ -168,7 +168,7 @@ path and the domain's routing frequency are specified.
    larger than normal variance.
 
 Steps 1–7 are miner-side diagnostics. Only finalized, isolated, identity-bound,
-independently reproduced validator qualification can crown the proposal.
+complete audited validator qualification can crown the proposal.
 
 ## Interpret local outcomes correctly
 
@@ -178,7 +178,7 @@ independently reproduced validator qualification can crown the proposal.
 - A speed gain with failed quality is a failed candidate, not a tradeoff score.
 - A graph-off gain is evidence about debugging mode, not the arena.
 - A pass on one topology is not evidence for an undeclared topology.
-- A first production PASS becomes `reproduction_pending`, not crowned.
+- A complete audited production PASS becomes `qualified`; settlement decides the crown.
 
 Also distinguish failure from uncertainty. A consistently slower C or a quality
 regression is a candidate `FAIL`; revise the source and create a new identity.

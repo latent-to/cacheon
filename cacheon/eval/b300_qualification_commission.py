@@ -388,6 +388,31 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
         )
 
 
+def _warm_each_cell(inputs, session_block):
+    """Prepare every declared workload cell before either arm starts scored work.
+
+    The original prefix warmed only the quality cell. In the mixed workload,
+    that left the long-context cell's first execution inside the timed region.
+    Reuse the producer's exact batches and preserve every timed batch and order.
+    """
+
+    count = session_block["warmup_count"]
+    batches = tuple(inputs.prompt_batches)
+    cells = tuple(inputs.prompt_batch_cells)
+    prefix = list(batches[:count])
+    prefix_cells = list(cells[:count])
+    for cell in inputs.workload.cells:
+        if cell.cell_id not in prefix_cells:
+            index = cells.index(cell.cell_id, count)
+            prefix.append(batches[index])
+            prefix_cells.append(cell.cell_id)
+    return (
+        tuple(prefix) + batches[count:],
+        tuple(prefix_cells) + cells[count:],
+        len(prefix),
+    )
+
+
 def _compose_locked(
     inputs,
     manifest,
@@ -514,7 +539,7 @@ def _compose_locked(
     pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
     quality_cell = screen_deployment._scored_cell(inputs.workload)
     cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
-    batch_cells = tuple(inputs.prompt_batch_cells)
+    prompt_batches, batch_cells, warmup_count = _warm_each_cell(inputs, session_block)
     mixed_cells = len(inputs.workload.cells) > 1
     baseline_session_plan = SessionExecutionPlan(
         launch_digest=incumbent_launch.digest,
@@ -523,8 +548,8 @@ def _compose_locked(
         expected_preflight=expected_runtime_preflight(
             incumbent_launch, inputs.preflight
         ),
-        prompt_batches=inputs.prompt_batches,
-        warmup_count=session_block["warmup_count"],
+        prompt_batches=prompt_batches,
+        warmup_count=warmup_count,
         conditioning_count=session_block["conditioning_count"],
         max_new_tokens=policy.tokens_per_prompt,
         top_logprobs_num=policy.topk_width,
@@ -650,10 +675,10 @@ def _compose_locked(
         max_qualification_seconds=speed_block["max_qualification_seconds"],
         calibration=calibration_manifest,
         context=calibration_context,
-        # Version 8 is the two-process B/C/B-prime schedule; version 9 is its
-        # mixed-cell form. The registered plan seals the same choice per
+        # Versions 10/11 retain B/C/B-prime and require valid stock brackets.
+        # The registered plan seals the same single-cell/mixed-cell choice per
         # candidate, so the worker never re-derives a substrate.
-        version=9 if mixed_cells else 8,
+        version=11 if mixed_cells else 10,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),

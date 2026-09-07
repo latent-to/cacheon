@@ -78,7 +78,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (1, 2, 3, 4, 5, 6, 7, 8, 9)
+            or self.version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -205,7 +205,7 @@ class ResidentSpeedPolicy:
         exceeds the sealed bound, so no consumer anywhere can grade an unfit
         measurement."""
 
-        if self.version >= 9:
+        if self.version in (9, 11):
             # Mixed-cell qualification deliberately contains heterogeneous
             # batch widths and output budgets. A median of per-batch rates
             # would erase the minority cell; total timed tokens over the
@@ -1204,7 +1204,7 @@ class ResidentCrossoverEvidence:
             [candidate_rates[0]],
             concluding=True,
         )
-        if plan.policy.conditioning_regression(
+        if decision is not SpeedStageDecision.NO_DECISION and plan.policy.conditioning_regression(
             baseline_rates[0], candidate_rates[0]
         ):
             decision = SpeedStageDecision.FAIL
@@ -1413,7 +1413,7 @@ def run_resident_crossover_speed(
             # Conditioning pairs by warmth position: C against B, the cold
             # first reads. A regression there is a clear FAIL -- the
             # candidate's unscored work already blew its sealed bound.
-            if plan.policy.conditioning_regression(before, candidate):
+            if disposition is not SpeedStageDecision.NO_DECISION and plan.policy.conditioning_regression(before, candidate):
                 disposition = SpeedStageDecision.FAIL
             schedule.put("initial", final)
             schedule.put("escalate", False)

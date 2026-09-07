@@ -18,7 +18,7 @@ plane. The current revision does not claim a completed production Engine release
 
 ## Why miners participate
 
-Cacheon rewards independently reproduced performance improvements, not uploads or
+Cacheon rewards fully qualified performance improvements, not uploads or
 self-reported benchmarks. If settlement crowns a proposal for a published target, it
 records the corresponding reward claim in the same transaction. The validator later
 combines eligible claims into a weight vector and publishes it on-chain; realized token
@@ -57,7 +57,7 @@ flowchart LR
 ```
 
 A miner submits a **proposal** for one registered target delta. The referee may
-establish a **crown** after two independent passing qualifications. Whether crowned
+establish a **crown** after one complete audited passing qualification. Whether crowned
 source is ever integrated into maintained code is a maintainer decision outside this
 repository. Work that does not fit
 a registered target is not a valid proposal; widening the catalog is a reviewed
@@ -78,7 +78,7 @@ smallest validator-controlled delta it contributes. Authoritative qualification 
 - **T** — a candidate-free pristine reference that grades sealed trajectories after
   candidate destruction.
 
-Every candidate is measured by the two-process schedule: v8 (v9 for a
+Every candidate is measured by the two-process schedule: v10 (v11 for a
 mixed-cell workload) launches separate baseline and candidate engines and
 always takes B′. The earlier schedules (v1–v7) are sealed MiniMax-M3 history that
 this tree no longer decodes. Primary and reproduction

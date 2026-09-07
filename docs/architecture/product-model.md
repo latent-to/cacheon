@@ -32,7 +32,7 @@ candidate, and absent from the current production release without contradiction.
 | Object | Contents | Authority | May enter production? |
 |---|---|---|---|
 | Proposal | A miner-supplied target delta | Hostile input identified by finalized intake and content digests | No |
-| Crown | Reopened evidence that the proposal improved one arena and attributable target | Referee qualification, independent reproduction, and settlement | Not by itself |
+| Crown | Reopened evidence that the proposal improved one arena and attributable target | Complete audited qualification and settlement | Not by itself |
 
 There is no third row. Integrating crowned source into maintained code, releasing, and serving are separate authorities outside this repository; nothing here is an object a crown can be promoted into.
 
@@ -56,9 +56,9 @@ Cacheon deliberately separates economic identity from process identity.
 
 The **execution unit** is a complete engine. Production version-3 qualification
 materializes the exact incumbent and one-target-transition candidate engines and
-measures them on the two-process substrate: speed policy v8 launches separate
+measures them on the two-process substrate: speed policy v10 launches separate
 baseline and candidate engine processes on two disjoint TP lanes and always
-collects B/C/B′. Mixed-cell arenas use the same two-process B/C/B′ schedule under v9,
+collects B/C/B′. Mixed-cell arenas use the same two-process B/C/B′ schedule under v11,
 which grades total timed tokens over the complete sealed mixture. The candidate
 then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
@@ -94,7 +94,7 @@ that may add another 3%:
    reads. T then grades the sealed candidate trajectory using a pristine candidate-free
    reference. The earlier contribution A is not allowed to grade B merely because it is
    in the incumbent.
-5. If two independent qualifications pass, settlement may update the evaluation stack to
+5. If one complete audited qualification passes, settlement may update the evaluation stack to
    contain both A and B. Nothing outside the evaluation stack changes.
 
 This example is conceptual; the percentages are not claims about a recorded Cacheon run.

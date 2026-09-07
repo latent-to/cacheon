@@ -25,6 +25,11 @@ Version 8 precommits the B/C/B-prime schedule and grades it once, concluding.
 The pre-version-8 graders (the adaptive five-read escalation and the version-6
 conditional bookend) were deleted with the MiniMax-M3 history seal on
 2026-09-06; no policy below version 8 can be constructed or graded.
+
+Versions 10 and 11 implement the owner's 2026-09-07 single-run contract.
+Both baseline observations must be stable, including matched timed windows;
+neither may be discarded. The credited estimate uses the faster baseline.
+An invalid or unresolved measurement cannot become a candidate failure.
 """
 
 from __future__ import annotations
@@ -99,6 +104,8 @@ def speed_grade(
 
     baseline_rates = [policy.scored_tokens_per_second(row) for row in baselines]
     candidate_rates = [policy.scored_tokens_per_second(row) for row in candidates]
+    if policy.version >= 10:
+        return _single_run_grade(policy, baselines, candidates, baseline_rates, candidate_rates)
     dropped_brackets = 0
     bracket_drift = 0.0
     if policy.version >= 5 and len(baseline_rates) >= 2:
@@ -130,6 +137,53 @@ def speed_grade(
         # decision the miner can act on, never a non-answer.
         decision = SpeedStageDecision.FAIL
     return verdict, decision
+
+
+def _single_run_grade(policy, baselines, candidates, baseline_rates, candidate_rates):
+    """Keep all stock observations and separate measurement validity from competition."""
+
+    verdict = score_speedup(
+        baseline_rates, candidate_rates, min_margin=policy.min_margin,
+        k=policy.noise_multiplier, max_noise=policy.max_noise,
+    )
+    invalid = ""
+    if len(baselines) != 2 or len(candidates) != 1:
+        invalid = "single-run qualification requires complete B/C/B-prime evidence"
+    elif any(row.first_timed_batch_index <= row.first_batch_index
+             or row.conditioning_tokens <= 0 for row in (*baselines, *candidates)):
+        invalid = "measurement lacks the declared conditioning before timing"
+    elif not verdict.confident:
+        invalid = "baseline brackets exceed the sealed drift limit; no baseline was discarded"
+    else:
+        before, after = (row.windows for row in baselines)
+        current = candidates[0].windows
+        if len(before) != len(after) or len(before) != len(current):
+            invalid = "B/C/B-prime windows do not cover the same workload"
+        else:
+            for b, bp, c in zip(before, after, current, strict=True):
+                if b.tokens != bp.tokens or b.tokens != c.tokens:
+                    invalid = "B/C/B-prime token numerators differ"
+                    break
+                if relative_spread([b.tokens / b.seconds, bp.tokens / bp.seconds]) > policy.max_window_scatter:
+                    invalid = "matched baseline windows exceed the sealed stability limit"
+                    break
+    if invalid:
+        return replace(verdict, confident=False, passed_speedup=False, detail=invalid), SpeedStageDecision.NO_DECISION
+    lower = candidate_rates[0] / max(baseline_rates)
+    upper = candidate_rates[0] / min(baseline_rates)
+    if lower >= verdict.required:
+        decision = SpeedStageDecision.PASS
+        detail = "candidate clears the bound against both stable baseline observations"
+    elif upper < 1.0 + policy.min_margin:
+        decision = SpeedStageDecision.FAIL
+        detail = "candidate does not clear the speed floor against either stable baseline"
+    else:
+        decision = SpeedStageDecision.NO_DECISION
+        detail = "measurement uncertainty crosses the speed decision boundary"
+    return replace(
+        verdict, speedup=lower, passed_speedup=decision is SpeedStageDecision.PASS,
+        detail=detail,
+    ), decision
 
 
 __all__ = [

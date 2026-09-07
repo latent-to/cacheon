@@ -174,7 +174,7 @@ commands, scoring policy, chain-signing credentials, and weight publication belo
 separate authorities and must not be added to the intake service definition.
 
 With an injected deployment registry, the same testnet loop may screen, qualify, retain a
-two-PASS pair, and settle. That does not move qualification onto chain: the chain supplies
+complete audited PASS, and settle. That does not move qualification onto chain: the chain supplies
 arrival and current metagraph authority, while the registered OCI/referee fleet produces
 and retains the evidence. Production version-3 qualification uses the
 two-process B/C/B′ schedule, then audit and pristine T. Verify the primary and
@@ -258,7 +258,7 @@ Before treating a deployment as production-capable, require evidence for all of:
 - HTTPS intake limits, committed hash, publication reopen, copy ordering, and restart;
 - registered arena manifest/provider identity and queue behavior;
 - faithful and broken non-crown screen controls;
-- real isolated primary and independent reproduction attempts with evidence restore;
+- one real complete isolated qualification with evidence restore and no duplicate evaluator run;
 - settlement lease expiry, blocker, atomic-commit, and stale-incumbent controls;
 - live V1 dry-run projection plus signer journal/readback drills under approved policy;
   and

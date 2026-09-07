@@ -802,7 +802,7 @@ class ResidentSpeedWitness:
             conditioning = self.resident_policy.conditioning_regression(
                 self.rates[0], self.rates[1]
             )
-            if conditioning:
+            if conditioning and decision is not SpeedStageDecision.NO_DECISION:
                 decision = SpeedStageDecision.FAIL
         except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
             raise QualificationRunnerError(str(exc)) from None

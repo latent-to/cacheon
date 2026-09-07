@@ -156,7 +156,7 @@ Interpret the one-pass summary by stage:
 | `rejected` | Terminal attributable intake failures |
 | `held` | Work requiring operator or bounded retry disposition |
 | `screens`, `decisions` | Disabled in intake-only mode |
-| `settlements` | Committed settlement leases; runs in every mode over retained PASS pairs |
+| `settlements` | Committed settlement leases; runs in every mode over retained accepted PASS evidence |
 
 Run the identical command a second time. With no newly finalized reveals, it should not
 refetch or republish the same arrival. That checks the finalized cursor and idempotent
@@ -211,7 +211,7 @@ targets, and treat all results as diagnostic.
 
 Do not make a diagnostic pass crownable by wrapping it in a shell script. Production
 qualification requires the registered arena, immutable engine trees, OCI execution,
-pristine reference, retained evidence, and independent reproduction described in
+pristine reference, retained evidence, and audited qualification described in
 [Qualification](qualification.md).
 
 ## 7. Commission the arena integration
@@ -267,15 +267,12 @@ these transitions in order:
 
 ```text
 reserved → fetching → published → screening → promoted → qualifying
-         → reproduction_pending → screening → promoted → qualifying
          → qualified → leased settlement → crowned/held/discovery_bounty
 ```
 
 A controlled negative should terminate as `failed`; an induced validator-side outage
-should become retryable or `NO_DECISION`/`held`, never an economic loss. Confirm that the
-second PASS uses the reproduction lane and different authority, selection, attempt,
-report, and evidence identities. Confirm that both evidence roots reopen before a
-settlement candidate is admitted.
+should become retryable or `NO_DECISION`/`held`, never an economic loss. Confirm that the one complete audited PASS creates a settlement candidate,
+its exact retained evidence reopens, and no second qualification is scheduled.
 
 Structural qualification fixtures can validate transitions, independence checks, and
 evidence reopening. They cannot satisfy the production-provider, GPU-performance, or

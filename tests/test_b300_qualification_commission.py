@@ -489,6 +489,21 @@ def test_compose_rejects_a_session_that_differs_from_the_declared_cell() -> None
         mixed_inputs, SimpleNamespace(tokens_per_prompt=4096),
         {"warmup_count": 1}, {"min_windows": 5}
     )
+    batches, cells, warmed = commission._warm_each_cell(mixed_inputs, {"warmup_count": 1})
+    assert warmed == 2
+    assert cells[:warmed] == ("s8", "l65")
+    assert batches[:warmed] == (mixed_inputs.prompt_batches[0], mixed_inputs.prompt_batches[3])
+    assert batches[warmed:] == mixed_inputs.prompt_batches[1:]
+    assert cells[warmed:] == mixed_inputs.prompt_batch_cells[1:]
+    single_batches, single_cells, single_warmed = commission._warm_each_cell(
+        SimpleNamespace(workload=SimpleNamespace(cells=(mixed.cells[0],)),
+                        prompt_batches=mixed_inputs.prompt_batches[:3],
+                        prompt_batch_cells=("s8", "s8", "s8")),
+        {"warmup_count": 1},
+    )
+    assert single_warmed == 1
+    assert single_batches == mixed_inputs.prompt_batches[:3]
+    assert single_cells == ("s8", "s8", "s8")
     with pytest.raises(commission.B300QualificationCommissionError, match="conform"):
         commission._require_cell_conformance(
             mixed_inputs, policy, {"warmup_count": 1}, {"min_windows": 5}

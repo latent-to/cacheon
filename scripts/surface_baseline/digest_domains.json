@@ -60,7 +60,7 @@
  "cacheon/model_provision.py": ["cacheon.model-content","cacheon.model-provision-receipt"],
  "cacheon/patchers/build_cuda_ext.py": ["cacheon.cuda-extension-set.v3"],
  "cacheon/registry.py": ["out_of_domain"],
- "cacheon/settlement.py": ["cacheon.qualification.speed-evidence-policy","cacheon.settlement.event","cacheon.settlement.evidence","cacheon.settlement.legacy-audit-control","cacheon.settlement.legacy-audit-evidence","cacheon.settlement.plan","cacheon.settlement.reproduction-identity","cacheon.settlement.resident-lane-control.v1","cacheon.settlement.resident-lane-orientation.v1","cacheon.settlement.selection-evidence"],
+ "cacheon/settlement.py": ["cacheon.qualification.speed-evidence-policy","cacheon.settlement.event","cacheon.settlement.legacy-audit-control","cacheon.settlement.legacy-audit-evidence","cacheon.settlement.plan","cacheon.settlement.reproduction-identity","cacheon.settlement.resident-lane-control.v1","cacheon.settlement.resident-lane-orientation.v1","cacheon.settlement.selection-evidence"],
  "cacheon/stack_manifest.py": ["cacheon.contribution.proposal","cacheon.contribution.selected_delta","cacheon.stack.evaluation","cacheon.target-catalog","cacheon.target-spec"],
  "cacheon/stack_plan.py": ["cacheon.stack.cohort-execution-key","cacheon.stack.cohort-plan","cacheon.stack.marginal-arm-plan","cacheon.stack.rollback-plan"],
  "cacheon/target_catalog.py": ["cacheon.atomic-target-contract","cacheon.target-catalog","cacheon.target-contract","cacheon.target-spec"]

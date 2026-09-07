@@ -64,7 +64,7 @@ The subnet is a market for proposals. The referee is the measurement system that
 3. screens invalid or unpromising work without creating economic authority;
 4. evaluates finalists as one exact marginal substitution;
 5. retains and reopens the evidence;
-6. requires an independent reproduction before settlement; and
+6. reopens the complete audited qualification before settlement; and
 7. projects rewards for active, verifiable contributions.
 
 The referee may update the untrusted evaluation incumbent. It cannot update a signed
@@ -103,14 +103,14 @@ that registered singleton target and declare that it applies to BF16 calls on `s
 4. Static, build, ABI, graph, and abbreviated-serving screens decide only whether the
    candidate should consume full qualification capacity.
 5. Version-3 qualification measures every candidate on the two-process
-   substrate: speed policy v8 (v9 for a mixed-cell workload) launches separate
+   substrate: speed policy v10 (v11 for a mixed-cell workload) launches separate
    baseline and candidate engines and always collects B/C/B′. A registered
    eager, untimed audit role
    (**A**) then checks the candidate delta; after candidate teardown, the
    pristine reference (**T**) supplies candidate-free quality evidence.
-6. One complete PASS is retained as `reproduction_pending`. A fresh independent attempt
-   must reproduce the result. If it does, settlement retains the lower reproduced
-   speedup and may create the target crown.
+6. One complete audited PASS becomes `qualified` and eligible for settlement.
+   Settlement reopens its retained evidence and may create the target crown;
+   it does not schedule another qualification.
 7. If settlement creates the crown, it also creates the corresponding reward claim
    for the miner's hotkey. The active incentive policy determines how that claim
    contributes to the validator's weight vector, which a separate publisher later
@@ -165,12 +165,12 @@ Cacheon exposes contributor diagnostics that do not create crowns:
   throughput without producing validator evidence.
 
 Production authority begins only after finalized intake, immutable publication, a closed
-arena service, isolated qualification, retained evidence, and independent reproduction.
+arena service, isolated qualification, retained evidence, and audited qualification.
 See [Proposal to release](../architecture/pipeline.md) for the complete sequence.
 
 Use this rule when reading the rest of the documentation: a command is not authoritative
 merely because it performs similar math. Authority comes from the identities, isolation,
-policies, evidence, and independent reproduction bound to the production path.
+policies, evidence, and audited qualification bound to the production path.
 
 ## Read next
 

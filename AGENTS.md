@@ -86,15 +86,14 @@ AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
 - Candidate build and execution remain outside the trusted controller in
   validator-owned, no-egress OCI lifetimes.
 - CUDA graphs are part of the scored contract.
-- A first PASS is `reproduction_pending`. Settlement requires an independently
-  bound PASS pair and uses the lower accepted speedup.
+- One complete audited PASS qualifies for settlement. Each new bundle receives one
+  B/C/B′ qualification; historical PASS pairs retain their existing identities and credit.
 - The resident hot-swap screen is routing-only. Its measurements cannot crown,
   settle, or authorize rewards.
 - Production version-3 qualification binds two physical TP lanes. Current
-  speed policy is the two-process B/C/B′ schedule for every candidate (v8, or
-  v9 for a mixed-cell workload); it retains a separate eager/untimed audit role
-  when registered, pristine T, and a physical-lane role swap across
-  reproduction. The pair-native v7 schedule was deleted on 2026-09-06.
+  speed policy is the two-process B/C/B′ schedule for every candidate (v10, or
+  v11 for a mixed-cell workload); it warms every workload cell and retains a
+  separate eager/untimed audit role when registered and pristine T. The pair-native v7 schedule was deleted on 2026-09-06.
 - Evaluation-stack settlement, incentive activation, weight publication,
   integration review, release signing, and serving are distinct authorities.
 - Legacy V1 weights are a fenced state machine. The V2 finite-debt economics

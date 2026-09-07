@@ -197,9 +197,9 @@ def baseline_band_verdict(
         (half for half in halves if half.reservation_id == reservation_id),
         key=lambda half: half.index,
     )
-    if len(own) != 2 or {half.index for half in own} != {0, 1}:
+    if len(own) not in (1, 2) or {half.index for half in own} != set(range(len(own))):
         raise BaselineBandError(
-            "retained evidence does not hold lane rates for both halves"
+            "retained evidence does not hold lane rates for its accepted attempts"
         )
     arena_digest = own[0].arena_digest
     reads = [

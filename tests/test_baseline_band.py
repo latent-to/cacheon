@@ -46,8 +46,8 @@ def test_credited_half_is_the_lower_speedup_and_its_reads_decide():
     assert "inside the band" in peer.describe()
 
 
-def test_band_needs_both_halves_and_enough_arena_reads():
-    with pytest.raises(BaselineBandError, match="both halves"):
+def test_band_needs_an_accepted_attempt_and_enough_arena_reads():
+    with pytest.raises(BaselineBandError, match="baseline reads"):
         baseline_band_verdict((_half("x", 0, "1.05", 2000.0),), "x")
     thin = (
         _half("x", 0, "1.05", 2000.0),
@@ -57,5 +57,5 @@ def test_band_needs_both_halves_and_enough_arena_reads():
     )
     with pytest.raises(BaselineBandError, match="baseline reads"):
         baseline_band_verdict(thin, "x")
-    with pytest.raises(BaselineBandError, match="both halves"):
+    with pytest.raises(BaselineBandError, match="accepted attempts"):
         baseline_band_verdict(thin, "z")

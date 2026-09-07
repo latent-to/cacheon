@@ -26,8 +26,7 @@ slots -> scan -> verify -> chain-package -> host -> chain-submit -> chain-status
 Local measurements are useful for iteration. They do not select a production arena
 authority, reserve a finalized cohort position, retain authenticated resident
 speed evidence under the two-process B/C/B′ schedule, perform
-the registered eager audit A and pristine-reference T stages, or satisfy
-independent reproduction.
+the registered eager audit A and pristine-reference T stages, or authorize settlement.
 
 ## Production path at a glance
 
@@ -37,15 +36,11 @@ flowchart TD
     B --> C["Registered arena and target resolution"]
     C --> D["Non-crown screens and routing"]
     D -->|"reject"| F["Terminal invalid or attributable failure"]
-    D -->|"promote or waive"| Q["Resident adaptive speed<br/>audit, then pristine T"]
+    D -->|"promote or waive"| Q["B/C/B′ speed<br/>audit, then pristine T"]
     D -->|"infrastructure or ambiguous"| N["NO_DECISION / retry"]
     Q -->|"FAIL"| F
     Q -->|"NO_DECISION"| N
-    Q -->|"first PASS"| P["reproduction_pending"]
-    P --> R["Independent second qualification"]
-    R -->|"attributable FAIL"| F
-    R -->|"NO_DECISION"| N
-    R -->|"matching PASS"| S["Reopen both evidence roots"]
+    Q -->|"complete audited PASS"| S["Reopen retained evidence"]
     S --> G["Same-authority cohort planning"]
     G -->|"selected current registered winner"| T["Transactional settlement and stack update"]
     G -->|"stale or not selected"| H["HOLD / no stack transition"]
@@ -173,7 +168,7 @@ Principal code: [`eval/qualification_intake.py`](https://github.com/latent-to/ca
 The production evidence protocol is version 3. Inside it, every candidate is
 measured on the two-process substrate:
 
-- the plan seals v8 (v9 for a mixed-cell workload): separate baseline and
+- the plan seals v10 (v11 for a mixed-cell workload): separate baseline and
   candidate processes always read B/C/B′ because the quality gate consumes the
   second stock read; and
 - C′/B″ do not exist; the pre-v8 schedules that read them were deleted with
@@ -205,11 +200,10 @@ runtime ranks may validate and load native products but may never compile or
 repair them. Both stages use read-only roots, bounded mounts and protocols, and
 host-owned cleanup; the trusted controller also owns timing.
 
-V8 and v9 precommit all three reads, so B′ is taken regardless of the observed
+V10 and v11 precommit all three reads, so B′ is taken regardless of the observed
 B/C result. The candidate cannot request a favorable extra read after seeing an
-outcome. When later brackets drift beyond the v5+ sealed ceiling,
-they are excluded and the adjacent C/B comparison decides; the drift is retained
-as evidence rather than converted into an indefinite `NO_DECISION`.
+outcome. Versions 10/11 warm every cell, validate both stock observations, and
+retain both. Invalid baseline evidence cannot produce a candidate verdict.
 
 When the registered plan requires sampled slot audit, a separate eager, untimed candidate
 role emits bounded raw facts. The trusted host grades exact slot × TP-rank/process coverage
@@ -224,11 +218,10 @@ not compete on speed. Hidden reference work, quality policy, and selected prompt
 are bound into retained evidence.
 
 The host applies the exact versioned policy. Conceptually, every current result
-uses the registered B/B′ bookend unless the later bracket is excluded by the
-sealed drift rule:
+uses both valid B/B′ observations and the faster baseline:
 
 ```text
-bookended_speedup = C / mean(B, B′)
+bookended_speedup = C / max(B, B′)
 required_bar      = 1 + max(margin_floor, noise_multiplier × measured_noise)
 ```
 
@@ -245,7 +238,7 @@ Qualification has three outcomes:
 
 ### `PASS`
 
-The candidate clears the registered speed, quality, graph, evidence, and whole-stack requirements under a stable cohort authority. A first pass is retained as `reproduction_pending`; it does not settle alone.
+The candidate clears the registered speed, quality, graph, evidence, and whole-stack requirements under a stable cohort authority. One complete audited pass becomes `qualified` and is eligible for settlement.
 
 ### `FAIL`
 
@@ -257,67 +250,30 @@ The evaluator cannot make a valid attributable decision. Infrastructure failure,
 
 The distinction is load-bearing: treating evaluator failure as candidate failure would let infrastructure state rewrite economic truth.
 
-### Worked lifecycle: retry, reproduce, settle
+### Worked lifecycle: qualify and settle
 
-Consider a hypothetical candidate for one registered singleton target:
+Intake freezes one contribution and its finalized priority. The registered
+screen promotes it to a complete B/C/B′ qualification with eager audit and
+pristine T. One complete audited PASS becomes `qualified`. Settlement reopens
+that attempt's retained evidence and atomically records its result before the
+next ordinary intake continues. Incomplete evidence remains `NO_DECISION` and
+cannot create a miner loss or reward.
 
-1. Intake fixes its finalized priority and immutable publication. It clears all five
-   non-crown screens.
-2. Its first attempt produces valid B/C work, but the required B′ evidence
-   cannot be authenticated. The attempt is `NO_DECISION`. The proposal remains
-   retryable; it has neither lost nor passed.
-3. A later fresh authority reopens the same candidate identity. This time all
-   three reads authenticate and C clears the bookended bar. The registered audit
-   and T products accept the candidate. The attempt becomes
-   the first `PASS` and state becomes `reproduction_pending`.
-4. A second independently selected authority repeats the exact reproduction identity,
-   swaps the incumbent and candidate physical-lane roles, and also passes. A pass against
-   a newer incumbent, different target specification, or the same lane-role assignment
-   would not count as this reproduction.
-5. Settlement reopens both evidence roots and makes the pair eligible for its
-   same-authority cohort. If the candidate is selected as that cohort's current registered
-   winner, settlement takes the lower accepted speedup, revalidates the live target
-   transition, and atomically updates the evaluation stack; otherwise the pair is held.
-6. If crowned, reward projection can now see the active claim. Product integration remains
-   a separate review; no proposal bytes have entered a release merely because settlement
-   completed.
+## 8. Qualification acceptance
 
-The values and candidate in this walkthrough are illustrative. The state transitions and
-failure semantics are the important part.
-
-## 8. Independent reproduction
-
-Settlement requires a second `PASS` for the exact same core reproduction
-identity. `SettlementReproductionIdentity` contains exactly the arena digest,
-target ID, selected-delta digest, hotkey, incumbent stack/tree digests, and
-candidate stack/tree digests.
-
-The settlement pair applies additional rules around that core identity. The two
-qualification rows must match the same contribution, reservation, finalized
-priority, manifests, members, and arm, while seven independence fields must all
-differ: qualification authority, plan, attempt, report, selection commitment,
-selection-secret commitment, and selection evidence. Authority therefore does
-**not** belong inside the equal core identity; distinct authority is a separate
-pair constraint.
-
-For version-3 resident-family evidence, including current v8/v9 witnesses, the
-pair must also prove the exact physical-lane role swap required by the
-registered plan. Two nominally independent attempts that assign stock and
-candidate to the same physical lanes do not satisfy production reproduction.
-
-An attributable second-attempt `FAIL` terminates the proposal. A
-`NO_DECISION` follows the registered bounded retry/hold policy. In either case,
-the retained first pass cannot update the incumbent by itself.
+A single complete audited PASS supplies `SettlementCandidate`. Its contribution
+identity binds the arena, target, delta, hotkey, and incumbent/candidate stack
+and tree digests. There is no automatic second qualification. Historical pairs
+retain their original distinct-authority, physical-lane-swap, and lower-score
+checks when reopened.
 
 ## 9. Settlement
 
-Settlement reopens both recorded attempt references instead of trusting an in-memory
+Settlement reopens every accepted attempt reference instead of trusting an in-memory
 verdict. The references may live under the same content-addressed store root. It verifies:
 
-- both reports are complete `PASS` results;
-- all seven required authority, attempt, report, commitment, and selection digests are
-  pairwise distinct across the two passes;
-- reproduction identities match exactly;
+- the report is a complete audited `PASS`;
+- the retained authority, attempt, report, and selection identities match the candidate;
 - the incumbent and target transition are still current;
 - target displacement, conflicts, and requirements remain valid;
 - the requested stack update matches the measured candidate.
@@ -329,7 +285,7 @@ held as `conflict_lost` or `incumbent_advanced`; a stale pair is held as
 `stale_incumbent`.
 
 For the selected winner, the conservative settled speedup is the lower accepted speedup
-from the two passes. The stack transition and settlement evidence are committed
+from the accepted qualification. The stack transition and settlement evidence are committed
 transactionally; a partial write cannot expose a half-updated incumbent.
 
 Principal code: [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py).
@@ -368,7 +324,7 @@ able to reopen, rather than merely observe, each handoff:
 - registered arena, target catalog, incumbent manifest, candidate transition, and screen
   receipt;
 - lane identities and a versioned `ResidentSpeedWitness` containing exactly the
-  scheduled rows (v8/v9 B/C/B′), plus
+  scheduled rows (v10/v11 B/C/B′), plus
   retained graph/quality/pristine-T references and witnesses; richer raw
   session/device frames are validated in-run but are not serialized into the
   attempt;

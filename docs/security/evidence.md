@@ -71,7 +71,7 @@ chain, not a claim that every row is embedded in the attempt or SQLite:
 | Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm/cohort plans |
 | Arena | Service manifest, capacity decision, ordered screen-stage evidence and receipt |
 | Launch | Runtime preflight, model mount, native build/publication, hardware/resource/seccomp identity |
-| Execution | Versioned `ResidentSpeedWitness` rows (v8/v9 B/C/B′), physical-lane roles, and the richer session/device observations validated against the frozen plan. Current source requires complete per-rank execution evidence before speed grading. Witnesses below version 8 are sealed MiniMax-M3 history and are refused |
+| Execution | Versioned `ResidentSpeedWitness` rows (v10/v11 B/C/B′), physical-lane roles, and the richer session/device observations validated against the frozen plan. Current source requires complete per-rank execution evidence before speed grading. Witnesses below version 8 are sealed MiniMax-M3 history and are refused |
 | Slot audit | Bounded raw eager/untimed candidate facts, exact slot × rank/process coverage, canonical decimal receipt identity, and trusted-host grade when the plan registers an audit requirement |
 | Graph | Member, variant, shape, capture, and replay observations |
 | Selection | Pre-execution commitment, post-commit entropy, secret reveal, selected prompts, sealed trajectory digest |
@@ -112,7 +112,7 @@ desired verdict:
 2. Reopen the exact target catalog, stack/tree, launch, model, and native identities.
 3. Authenticate each evidence artifact by domain, schema, size, and digest.
 4. Validate the exact schedule required by the witness version (including
-   current v8/v9 B/C/B′), physical-lane roles, counts, and
+   current v10/v11 B/C/B′), physical-lane roles, counts, and
    intervals, then regrade speed under frozen calibration.
 5. Regrade graph observations against the frozen requirement.
 6. When the registered plan requires slot audit, reopen the bounded raw audit

@@ -3182,8 +3182,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser(
         "chain-reopen-qualification",
         help=(
-            "operator: return one unsettled two-PASS reservation to the screen "
-            "queue for a fresh pair when retained evidence shows its credited "
+            "operator: return one unsettled PASS reservation to the screen "
+            "queue for a fresh qualification when retained evidence shows its credited "
             "half read the baseline lane under the arena band; never signs, "
             "settles, or crowns"
         ),

@@ -202,7 +202,7 @@ this complete-engine bracket.
 
 Production version-3 qualification materializes the exact incumbent and
 candidate engines through an injected arena service and measures them on the
-two-process B/C/B′ schedule (v8, or v9 for a mixed-cell workload). It then
+two-process B/C/B′ schedule (v10, or v11 for a mixed-cell workload). It then
 runs registered eager audit A, tears down candidate lifetimes, and obtains
 candidate-free pristine T quality evidence. A contributor-controlled model run
 cannot substitute for that authority.
@@ -214,9 +214,9 @@ Move upward only after the lower layer is green:
 | Layer | Required observation | Still does not prove |
 |---|---|---|
 | Component `verify` | Registered reference and graph replay for exercised cases | Model integration or speedup |
-| Local complete-engine A/B | Model can load and the selected delta can improve the matched workload | Validator isolation, hidden quality, crown authority, independent reproduction |
+| Local complete-engine A/B | Model can load and the selected delta can improve the matched workload | Validator isolation, hidden quality, crown authority, settlement |
 | Arena screen | Static/build/ABI/graph/abbreviated-serving gates all promote | B/C/B′ drift, T quality, settlement |
-| Qualification PASS | Exact marginal complete-engine delta clears all registered gates | Crown until independent reproduction |
+| Qualification PASS | Exact marginal complete-engine delta clears all registered gates | Crown until settlement |
 | Two matching PASSes | Candidate is eligible for cohort settlement; the current registered cohort winner may be crowned while another valid pair is held | Integration safety or release readiness |
 
 Keep local A/B results as engineering evidence, labeled with their exact environment and

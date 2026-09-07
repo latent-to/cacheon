@@ -20,42 +20,31 @@ lock file.
 
 ## Settlement inputs
 
-`SettlementCandidate` requires two complete passing qualifications:
+`SettlementCandidate` accepts one complete audited PASS. The production
+version-3 attempt runs B/C/B′ (v10, or v11 for mixed cells), then registered
+eager audit A and pristine T. Every cell is warmed before timing, both stock
+observations remain in the evidence, and the faster valid stock rate sets the
+credited speedup.
 
-- a primary attempt; and
-- an independent reproduction of the same arena, target, delta, hotkey, incumbent, and
-  challenger identity.
-
-The attempts must use distinct qualification authority and evidence. The candidate's
-settlement speedup is the lower of the two measured speedups.
-
-A completed PASS carries across a source-only recommission when runtime, engine,
-catalog, incumbent entries, candidate entries, selected delta, and speed policy are
-unchanged. The prior measurement and authority remain intact while only the new
-commission-derived arena, stack/tree, and physical-lane labels are adopted.
-
-Each production version-3 attempt runs its sealed speed subpolicy — two-process
-B/C/B′ (v8, or v9 for a mixed-cell workload) — followed by registered eager
-audit A and pristine T when required. For reproduction, the
-baseline and candidate physical TP-lane orientations must exact-swap. The
-speed-policy and settlement-control digests remain equal; fresh process names
-on the same lane orientation do not satisfy independence.
+Historical paired candidates remain byte-compatible and use their original
+lower score. A retained complete primary PASS left by an older controller is
+accepted transactionally on restart after its evidence reopens; no GPU work is
+repeated and no authority is relabeled.
 
 Settlement planning is pure: it receives typed candidates plus the exact current
 `EvaluationStackManifest` and tree digest. It reads no database, chain, wallet, or mutable
 host state.
 
-## From two PASSes to one atomic commit
+## From one complete PASS to one atomic commit
 
 ```mermaid
 flowchart LR
     P1["Primary PASS<br/>retained evidence root"] --> Pair["SettlementCandidate"]
-    P2["Independent PASS<br/>retained evidence root"] --> Pair
     Pair --> Pending["pending"]
     Pending --> Blockers{"Earlier overlapping<br/>work resolved?"}
     Blockers -- no --> Pending
     Blockers -- yes --> Lease["leased<br/>authority + generation + expiry"]
-    Lease --> Reopen["Reopen both attempts<br/>and current stack"]
+    Lease --> Reopen["Reopen accepted evidence<br/>and current stack"]
     Reopen --> Plan["Pure deterministic plan"]
     Plan --> Commit{"Transaction re-plans and<br/>rechecks lease, head, blockers"}
     Commit --> Events["Hash-chained events + claims"]
@@ -71,7 +60,7 @@ the old lease from committing.
 The controller reads a fresh finalized height immediately before requesting each lease
 and refuses a regressed clock. It refreshes the height again immediately before commit.
 Inside the transaction the store verifies that the lease has not expired, the incumbent
-stack and event-journal head have not advanced, economic blockers have not changed, both
+stack and event-journal head have not advanced, economic blockers have not changed, all
 retained evidence products are still byte-identical, and the plan exactly equals a
 freshly recomputed plan. Any disagreement aborts the transaction. A pass with no pending
 settlement work does not make these extra finalized-height reads.
@@ -155,7 +144,7 @@ event, candidate pair, evidence receipt, and resulting stack state as one author
 
 ## Legacy V1 CROWN rewards
 
-Two independently bound PASSes make a contribution eligible for settlement; they
+One complete audited PASS makes a contribution eligible for settlement; it
 do not make it an earning claim. Only the settlement `CROWN` earns. When that
 transition advances the incumbent, existing reservations keep their durable queue
 baseline. Qualification drains the contiguous old-baseline segment in finalized
@@ -196,7 +185,7 @@ promotion, integration, or release cannot renew the same bounty.
 
 ## Legacy V1 global projection
 
-The reward builder reopens every retained crowned PASS pair plus the active stacks
+The reward builder reopens every retained accepted PASS contribution plus the active stacks
 and standing claims, then binds:
 
 - chain genesis scope and netuid;

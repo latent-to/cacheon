@@ -102,7 +102,7 @@ Planning produces:
 ```text
 incumbent = materialize(E0)                         # A + R0 on baseline lane
 candidate = materialize(replace(E0, rmsnorm, R1))  # A + R1 on candidate lane
-v8        = B, C, B′ unconditionally (v9: same reads, mixed cells)
+v10       = B, C, B′ unconditionally (v11: same reads, mixed cells)
 A         = separate eager, untimed candidate audit
 T         = materialize(pristine reference)        # neither proposal is a grading oracle
 ```
@@ -173,7 +173,7 @@ Materialized source is only one part of a running engine. The launch authority a
 
 The controller prepares these inputs before timed execution. Production
 qualification binds two isolated physical TP lanes and serializes GPU work
-across them. Current v8 (v9 for mixed cells) uses separate engine processes and
+across them. Current v10 (v11 for mixed cells) uses separate engine processes and
 always takes B/C/B′. Independent reproduction must exchange the physical incumbent and
 candidate lane roles.
 
@@ -193,9 +193,9 @@ and [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cache
 
 ## Transactional stack updates
 
-A passing qualification does not immediately mutate the incumbent. The settlement path requires two independently selected and reopened passing qualifications for the exact same reproduction identity.
+A passing qualification does not immediately mutate the incumbent. The settlement path reopens one complete audited passing qualification for the exact measured contribution identity. Historical paired evidence remains reopenable with its original identities and lower speedup.
 
-The equal core `SettlementReproductionIdentity` contains the arena digest,
+For historical pairs, the equal core `SettlementReproductionIdentity` contains the arena digest,
 target ID, selected-delta digest, hotkey, incumbent stack/tree digests, and
 candidate stack/tree digests. The pair must also match broader contribution,
 reservation, finalized-priority, manifest, member, and arm fields. Separately,
@@ -204,7 +204,7 @@ plan, attempt, report, selection commitment, selection-secret commitment, and
 selection evidence. Settlement conservatively uses the lower of the two
 accepted speedups.
 
-Only after both evidence roots reopen and agree does settlement:
+After the accepted qualification evidence reopens, settlement:
 
 1. revalidate the target transition against the current stack;
 2. project the crown and attributable credit;

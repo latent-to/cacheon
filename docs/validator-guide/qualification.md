@@ -36,7 +36,7 @@ There are three nested identities to keep straight:
 |---|---|---|
 | Reservation | Finalized arrival, hotkey, publication, target members, submitted delta | Prevents a later file tree or miner from inheriting the attempt |
 | Qualification authority | Frozen source/plan, candidate order, selection commitment, arena/calibration/runtime identities | Prevents the evaluator from changing the experiment after admission |
-| Reproduction identity | Arena, target, delta, hotkey, and exact incumbent/candidate stack and tree digests | Defines what the second independent PASS must reproduce |
+| Contribution identity | Arena, target, delta, hotkey, and exact incumbent/candidate stack and tree digests | Binds the retained measured contribution |
 
 Paths are not identities. Moving the same publication or evidence store does not change
 the content digests, while rebuilding “equivalent” source under new bytes does.
@@ -47,8 +47,9 @@ Retained attempts identify the speed policy that created them:
 
 | Version | Timed reads | Purpose |
 |---|---|---|
-| v8 | B/C/B′, always three | Two-process substrate, every single-cell candidate |
-| v9 | B/C/B′, always three | Two-process substrate, mixed-cell workloads |
+| v10 | B/C/B′, always three | Every cell warmed; both stock reads valid; single-cell median rate |
+| v11 | B/C/B′, always three | Every cell warmed; mixed-cell total tokens / total time |
+| v8/v9 | B/C/B′, always three | Retained historical arithmetic only |
 
 Versions 1–7 were the MiniMax-M3 era's schedules: the adaptive five-read
 bracket (v1–v5) and the conditional bookend on the standing resident pair
@@ -57,7 +58,7 @@ leg were deleted on 2026-09-06 with the pair-native lane. No MiniMax-M3
 product will be re-run or re-graded, so the runtime, evidence readers, and
 settlement refuse a witness below version 8 instead of decoding it. Every
 candidate is now measured by the two-process crossover, which launches its own
-baseline and candidate engines. That substrate binds v8 (v9 for a mixed-cell
+baseline and candidate engines. That substrate binds v10 (v11 for a mixed-cell
 workload) and reads B′
 unconditionally: the quality gate takes its stock-drift control from the second
 baseline read, and a conditional bookend leaves a clear PASS with no control to
@@ -70,7 +71,7 @@ built, and the worker executes the version the sealed plan carries, so the plan
 and the execution substrate cannot disagree. Every calibrated threshold is the
 one the provider sealed.
 
-C′ and B″ do not exist under v8 or v9; no code path in this tree reads them.
+C′ and B″ do not exist under v10 or v11; no code path in this tree reads them.
 
 Fresh execution is resident-only: the runner refuses any other speed-evidence
 policy at entry, and the constructor default is the resident policy — the only
@@ -79,7 +80,7 @@ explicitly, and retained v8/v9 artifacts regrade byte-for-byte without
 reinterpretation. Merely changing the policy label does not upgrade old
 evidence.
 
-## Current adaptive timeline
+## Current qualification timeline
 
 The version-3 protocol binds two non-overlapping physical TP lanes, equivalent
 topology, separate runtime namespaces, lane-specific NUMA policy, exact
@@ -115,7 +116,7 @@ sequenceDiagram
     H->>H: prove final quiescence and regrade
 ```
 
-V8 and v9 always read B/C/B′ because the quality stage requires a second stock
+V10 and v11 always read B/C/B′ because the quality stage requires a second stock
 observation. C′/B″ are unreachable. The candidate cannot request extra reads. The retained
 witness records which reads occurred, lane identities, operational timing, and
 the stage and total budgets.
@@ -254,54 +255,19 @@ accidental non-invocation as a verdict condition, but it is not proof against a
 deliberate forger; complete-engine isolation and external qualification remain
 the boundary.
 
-## Independent reproduction
+## Qualification acceptance
 
-One passing qualification is persisted as `reproduction_pending`. Settlement requires a
-second passing qualification that matches:
+One complete audited PASS becomes `qualified` and creates a `SettlementCandidate`
+in the same intake transaction. Settlement reopens the exact retained attempt,
+report, disposition, graph, audit, and quality evidence. No second qualification
+is scheduled.
 
-- arena, target, selected delta, and hotkey;
-- incumbent and candidate stack/tree identities; and
-- reproduction identity.
-
-It must differ in qualification authority, attempt evidence, report, and selection
-evidence. Reusing the first attempt under a new filename is rejected. Settlement uses the
-lower of the two measured speedups.
-
-For version-3 resident-family evidence, including current v8/v9 witnesses, the
-reproduction must also use the exact physical-lane role swap: the primary
-candidate lane becomes the reproduction baseline lane, and the primary baseline
-lane becomes the reproduction candidate lane. The resident speed policy and
-settlement control digest remain equal. Using fresh process labels on the same
-orientation is not an independent resident reproduction.
-
-More precisely, the pair must keep the contribution identity equal while all seven
-independence fields differ:
-
-| Must match | Must differ |
-|---|---|
-| Lane, arena, reservation and finalized order | Qualification authority digest |
-| Hotkey, target, members, selected delta | Qualification plan digest |
-| Arm and incumbent/candidate stack + tree digests | Attempt artifact digest |
-| Incumbent and candidate manifests | Qualification report digest |
-|  | Selection commitment digest |
-|  | Selection-secret commitment digest |
-|  | Selection evidence digest |
-
-Registered resident qualifications additionally match the audit-control digest and use
-distinct audit seed/evidence while binding the exact swapped physical-lane orientation.
-
-“Independent” in this state-machine contract means those seven digest distinctions. The
-schema does not attest that the attempts used different operators, hosts, organizations,
-or infrastructure failure domains; a deployment that requires those properties must bind
-and audit them separately.
-
-After the first PASS, the same reservation goes through the five non-crown screens again
-in the reproduction lane. Only the second PASS creates a `SettlementCandidate`. Before
-settlement, the store requires exactly two retained qualification rows, reopens both
-attempt references from their recorded store roots, confirms both dispositions still
-carry PASS authority, and binds a new
-settlement-evidence receipt. The slower passing speedup is used even if the primary was
-faster.
+New single-run candidates use `cacheon.settlement.candidate.v5` and encode only
+`primary`. Their existing evidence record uses `cacheon.settlement.evidence.v2`
+and omits reproduction fields. Historical paired records keep their exact wire
+bytes, distinct-authority and lane-swap checks, and lower accepted speedup.
+A complete primary PASS left in `reproduction_pending` by an older controller
+is accepted on restart after its evidence reopens; GPU work is not repeated.
 
 ## Reopen and regrade
 
@@ -316,7 +282,7 @@ dispositions; it does not invoke the full causal regrader.
 The final report is derived from the serialized attempt, referenced graph/quality
 artifacts, and calibration manifests. Reopen can regrade graph and raw quality evidence.
 Speed regrading uses the retained `ResidentSpeedWitness`, which retains the
-v8/v9 B/C/B′ schedule, physical-lane authority, operational timings, and
+v10/v11 B/C/B′ schedule, physical-lane authority, operational timings, and
 budget. A witness below version 8 is sealed MiniMax-M3 history and is refused
 rather than decoded. Regrading recomputes rates and the frozen
 decision from those typed facts; it does not reconstruct them from raw session
@@ -328,7 +294,7 @@ An authoritative attempt is not one headline. Durable authority includes the aut
 manifest; selected plan and commitment/entropy/selection receipts; referenced graph
 evidence; the aggregate speed witness; the pristine-T execution
 witness and raw quality artifact/binding; per-candidate reports; and the enclosing attempt
-artifact. Settlement keeps references to both attempt roots.
+artifact. Settlement keeps every accepted attempt reference.
 
 The live outer session validates richer per-read protocol frames, lifecycle order, device
 state, and cleanup before constructing that attempt. Those raw frames and per-arm device
@@ -355,8 +321,8 @@ replay, the attempt schema must first be extended to retain and bind those produ
 | Audit role misses a slot/rank, reports a violation, or cannot reopen | `FAIL` only for a complete attributable violation; otherwise `NO_DECISION`; never substitute candidate-side audit output |
 | T identity/session mismatch | `NO_DECISION`; T cannot be replaced with B′ or a candidate-side audit |
 | One member poisons a registered cohort | Preserve cohort failure digest and execute the stored bisection groups |
-| First PASS evidence root lost | No reproduction or settlement; restore exact bytes or hold |
-| Reproduction differs in contribution identity or reuses any independence digest | Reject the pair; it is not an independent reproduction |
+| Accepted PASS evidence root lost | No settlement; restore exact bytes or hold |
+| Historical reproduction differs in contribution identity or reuses an independence digest | Reject the retained pair; do not reinterpret its original contract |
 
 Never rerun only the favorable arm, splice evidence from different authorities, or lower
 a threshold after seeing the outcome. A fresh attempt must be a complete, newly bound
@@ -425,7 +391,7 @@ second evaluator.
 - A crown records measurement and attribution. It does not satisfy integration, license,
   provenance, maintainability, or release review.
 - Deployment must supply a reviewed production provider that constructs this work for the
-  registered arena. Structural two-PASS fixtures can test the authority path but cannot
+  registered arena. Structural qualification fixtures can test the authority path but cannot
   establish an empirical GPU crown or production calibration.
 
 Next: [Settlement and weights](settlement-and-weights.md).

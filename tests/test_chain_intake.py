@@ -320,13 +320,6 @@ def _qualified_settlement_candidate(
         media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1",
     )
-    reproduction_attempt = publish_evidence(
-        evidence_root,
-        payloads[1],
-        domain="qualification.cohort-attempt",
-        media_type="application/json",
-        schema="cacheon.qualification.cohort-attempt.v1",
-    )
     row = _reserve_one(
         store, index=index, hotkey="miner" + marker, block=submission_block
     )
@@ -371,55 +364,27 @@ def _qualified_settlement_candidate(
             audit_evidence_digest=_h("audit-evidence-" + marker),
         )
 
-    authorities = (
-        _h("primary-authority" + arena_marker),
-        _h("reproduction-authority" + arena_marker),
+    authority = _h("primary-authority" + arena_marker)
+    settled = qualification("primary" + marker, authority, primary_attempt, speedups[0])
+    store.mark_qualifying(row.reservation_id, authority, AUTHORITY)
+    outcome = QualificationIntakeOutcome(
+        row.reservation_id, arm.selected_delta_digest, authority,
+        QualificationDecision.PASS, "qualified", False,
+        attempt_artifact_sha256=primary_attempt.sha256,
+        report_digest=settled.qualification_report_digest,
+        settlement_qualification=settled,
     )
-    qualifications = (
-        qualification("primary" + marker, authorities[0], primary_attempt, speedups[0]),
-        qualification(
-            "reproduction" + marker,
-            authorities[1],
-            reproduction_attempt,
-            speedups[1],
-        ),
+    store.apply_qualification_batch(
+        QualificationIntakeBatch(authority, (outcome,), primary_attempt),
+        current_finalized_block=retained_block, evidence_root=evidence_root,
     )
-    for index, (authority, attempt, settled) in enumerate(
-        zip(
-            authorities,
-            (primary_attempt, reproduction_attempt),
-            qualifications,
-            strict=True,
-        )
-    ):
-        if index:
-            _promote(store, row.reservation_id, service=arena_digest)
-        store.mark_qualifying(row.reservation_id, authority, AUTHORITY)
-        outcome = QualificationIntakeOutcome(
-            row.reservation_id,
-            arm.selected_delta_digest,
-            authority,
-            QualificationDecision.PASS,
-            "qualified",
-            False,
-            attempt_artifact_sha256=attempt.sha256,
-            report_digest=settled.qualification_report_digest,
-            settlement_qualification=settled,
-        )
-        store.apply_qualification_batch(
-            QualificationIntakeBatch(authority, (outcome,), attempt),
-            current_finalized_block=retained_block,
-            evidence_root=evidence_root,
-        )
-        if index == 0:
-            assert store.get(row.reservation_id).status == "reproduction_pending"
-            if check_single_pass:
-                assert store.lease_settlement_cohort(
-                    current_block=max(11, retained_block)
-                ) is None
-            if primary_only:
-                return row.reservation_id
-    return SettlementCandidate.from_reproductions(*qualifications)
+    if check_single_pass:
+        assert store.get(row.reservation_id).status == "qualified"
+        assert store._db.execute(
+            "SELECT COUNT(*) FROM settlement_qualifications WHERE reservation_id=?",
+            (row.reservation_id,),
+        ).fetchone()[0] == 1
+    return row.reservation_id if primary_only else SettlementCandidate.from_qualification(settled)
 
 
 def _stage_exit(reads: dict[str, float]) -> bytes:
@@ -468,18 +433,25 @@ def test_reopen_for_remeasurement_returns_a_pass_pair_to_the_screen_queue(tmp_pa
                              "B_double_prime": 2250.0}),
             ),
         )
+        stable = _qualified_settlement_candidate(
+            store, index=2, marker="stable", check_single_pass=False,
+            attempt_payloads=(
+                _stage_exit({"B": 2241.0, "C": 2300.0, "B_prime": 2245.0, "B_double_prime": 2243.0}),
+                b"unused historical fixture",
+            ),
+        )
         assert isinstance(slow, SettlementCandidate)
         assert isinstance(peer, SettlementCandidate)
         roots = (store.path.parent / "evidence",)
 
         evidence = remeasurement_evidence(store, slow.reservation_digest, roots)
         assert evidence.out_of_band
-        assert evidence.credited_index == 1
-        assert evidence.baseline_reads == 8
+        assert evidence.credited_index == 0
+        assert evidence.baseline_reads == 7
         assert "OUT OF BAND" in evidence.describe()
         assert not remeasurement_evidence(store, peer.reservation_digest, roots).out_of_band
         assert {claim.hotkey for claim in store.passed_reward_claims()} == {
-            slow.hotkey, peer.hotkey,
+            slow.hotkey, peer.hotkey, stable.hotkey,
         }
 
         with pytest.raises(IntakeError, match="not registered"):
@@ -493,7 +465,7 @@ def test_reopen_for_remeasurement_returns_a_pass_pair_to_the_screen_queue(tmp_pa
             reopened.status, reopened.screen_status, reopened.decision, reopened.reason
         ) == ("published", "", "", "remeasure:baseline_out_of_band")
         assert reopened.arena_service_digest == ""
-        assert {claim.hotkey for claim in store.passed_reward_claims()} == {peer.hotkey}
+        assert {claim.hotkey for claim in store.passed_reward_claims()} == {peer.hotkey, stable.hotkey}
         for table in ("settlement_candidates", "settlement_qualifications"):
             assert store._db.execute(
                 f"SELECT COUNT(*) AS n FROM {table} WHERE reservation_id=?",
@@ -506,12 +478,12 @@ def test_reopen_for_remeasurement_returns_a_pass_pair_to_the_screen_queue(tmp_pa
         ).fetchone()
         assert archived["reason"] == "baseline_out_of_band"
         assert json.loads(archived["candidate_json"])[0]["status"] == "pending"
-        assert len(json.loads(archived["qualifications_json"])) == 2
-        with pytest.raises(IntakeError, match="two-PASS"):
+        assert len(json.loads(archived["qualifications_json"])) == 1
+        with pytest.raises(IntakeError, match="retained PASS"):
             store.reopen_for_remeasurement(
                 slow.reservation_digest, reason="baseline_out_of_band"
             )
-        with pytest.raises(BaselineBandError, match="both halves"):
+        with pytest.raises(BaselineBandError, match="accepted attempts"):
             remeasurement_evidence(store, slow.reservation_digest, roots)
 
         # The row re-enters the screen queue and reaches qualification again.
@@ -544,7 +516,7 @@ def test_reopen_for_remeasurement_refuses_settled_pairs(tmp_path):
                 store.reopen_for_remeasurement(
                     settled.reservation_digest, reason="baseline_out_of_band"
                 )
-        with pytest.raises(IntakeError, match="two-PASS"):
+        with pytest.raises(IntakeError, match="unsettled"):
             store.reopen_for_remeasurement(single, reason="baseline_out_of_band")
 
 
@@ -831,36 +803,19 @@ def test_finalized_sla_removes_old_blocker_but_preserves_settled_candidate(tmp_p
         assert store.get(candidate.reservation_digest).status == "qualified"
 
 
-def test_finalized_sla_resets_on_retained_primary_and_survives_restart(tmp_path):
+def test_completed_primary_is_not_subject_to_pending_evaluation_expiry(tmp_path):
     with _store(tmp_path, expiry_blocks=20) as store:
-        reservation_id = _qualified_settlement_candidate(
-            store, primary_only=True, retained_block=29
-        )
-        assert isinstance(reservation_id, str)
-
-        # Arrival block 10 would expire at 30.  The primary PASS retained at 29
-        # resets the same 20-block SLA, giving reproduction through block 48.
+        reservation_id = _qualified_settlement_candidate(store, primary_only=True, retained_block=29)
         assert store.expire_stale(current_block=30) == ()
-        retained = store.get(reservation_id)
-        assert retained.status == "reproduction_pending"
-        progress = store._db.execute(
-            "SELECT retained_block FROM settlement_qualifications "
-            "WHERE reservation_id=? AND reproduction_index=0",
+        assert store.get(reservation_id).status == "qualified"
+        assert store._db.execute(
+            "SELECT retained_block FROM settlement_qualifications WHERE reservation_id=?",
             (reservation_id,),
-        ).fetchone()
-        assert progress["retained_block"] == 29
-
+        ).fetchone()[0] == 29
     with _store(tmp_path, expiry_blocks=20) as reopened:
         assert reopened.expire_stale(current_block=48) == ()
-        expired = reopened.expire_stale(current_block=49)
-        assert tuple(row.reservation_id for row in expired) == (reservation_id,)
-        assert (
-            expired[0].status,
-            expired[0].decision,
-            expired[0].reason,
-        ) == (
-            "expired", "NO_DECISION", "finalized_block_sla_expired"
-        )
+        assert reopened.expire_stale(current_block=49) == ()
+        assert reopened.get(reservation_id).decision == "PASS"
 
 
 def test_legacy_retained_primary_unknown_block_stays_manual(tmp_path):
@@ -883,16 +838,8 @@ def test_legacy_retained_primary_unknown_block_stays_manual(tmp_path):
         ).fetchone()
         assert progress["retained_block"] == 0
         assert reopened.expire_stale(current_block=100) == ()
-        # A retained_block=0 legacy row is unreachable by the automatic SLA;
-        # the typed operator transition is the only terminalization path.
-        expired = reopened.expire(
-            reservation_id,
-            current_block=100,
-            reason="operator archived legacy retained PASS",
-        )
-        assert (expired.status, expired.reason) == (
-            "expired", "operator archived legacy retained PASS"
-        )
+        assert reopened.get(reservation_id).status == "qualified"
+        assert len(reopened.passed_reward_claims()) == 1
 
 
 def test_schema3_migration_hold_survives_all_generic_expiry_paths(tmp_path):
@@ -1430,12 +1377,12 @@ def test_recommission_preserves_current_loser_evidence_without_requeue(tmp_path)
             "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
             "WHERE reservation_id=?",
             (loser.reservation_digest,),
-        ).fetchone()["n"] == 2
+        ).fetchone()["n"] == 1
         assert store._db.execute(
             "SELECT COUNT(*) AS n FROM settlement_qualifications "
             "WHERE reservation_id=?",
             (loser.reservation_digest,),
-        ).fetchone()["n"] == 2
+        ).fetchone()["n"] == 1
         assert store._db.execute(
             "SELECT status FROM settlement_candidates WHERE reservation_id=?",
             (loser.reservation_digest,),
@@ -1716,7 +1663,7 @@ def test_recommission_preserves_later_stale_incumbent_hold(tmp_path):
             "SELECT COUNT(*) AS n FROM settlement_qualifications "
             "WHERE reservation_id=?",
             (stale.reservation_digest,),
-        ).fetchone()["n"] == 2
+        ).fetchone()["n"] == 1
 
 
 def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp_path):

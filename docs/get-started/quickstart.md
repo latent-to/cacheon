@@ -135,7 +135,7 @@ The quickstart did not exercise:
 - no-egress OCI candidate execution;
 - production version-3 qualification (two-process B/C/B′), registered eager
   audit A, and pristine T;
-- independent reproduction or settlement; or
+- audited qualification or settlement; or
 - release construction and serving.
 
 Those boundaries require validator-owned hardware, runtime identities, policies, and

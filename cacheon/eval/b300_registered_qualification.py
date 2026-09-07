@@ -542,15 +542,15 @@ class B300RegisteredQualificationFactory:
         # Every candidate is measured by the two-process crossover in
         # `crossover_runtime`, which boots real trees for both arms and reads
         # its bookend unconditionally because the quality gate's stock-drift
-        # control is harvested from the second baseline read. Version 8 is
-        # that schedule and version 9 its mixed-cell form. The worker routes
+        # control is harvested from the second baseline read. Versions 10/11
+        # require valid brackets and price from the faster one. The worker routes
         # on the sealed version this plan carries.
         mixed_cells = bool(prepared_candidate.session_plan.batch_max_new_tokens)
         resident_plan = ResidentCrossoverPlan(
             candidate.reservation.selected_delta_digest,
             inputs.resident_baseline_arm,
             candidate_resident_arm,
-            replace(inputs.resident_speed_policy, version=9 if mixed_cells else 8),
+            replace(inputs.resident_speed_policy, version=11 if mixed_cells else 10),
         )
         audit_seed = hashlib.sha256(
             AUDIT_SEED_DOMAIN

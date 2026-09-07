@@ -16,7 +16,7 @@
 
 **B / B′**
 : Complete-engine reads of the frozen incumbent evaluation stack. B opens the
-  comparison. Current v8/v9 always take B′ because pristine-quality control
+  comparison. Current v10/v11 always take B′ because pristine-quality control
   consumes the second stock read. Historical policies made B′ conditional or
   used additional bookends.
 
@@ -53,14 +53,13 @@
 
 **Qualification**
 : The complete registered evidence procedure: screens; a sealed current speed
-  schedule (two-process B/C/B′, v8 or v9);
+  schedule (two-process B/C/B′, v10 or v11);
   registered eager audit A; candidate teardown; pristine T quality grading;
   exact-schema decision; and retained evidence.
 
 **Reproduction pending**
-: State after one authoritative PASS. Settlement requires a second independent
-  matching PASS under the seven digest-distinctness checks; the lower reproduced
-  speedup is used.
+: Historical state after one authoritative PASS. A current controller accepts
+  the retained complete audited PASS on restart without another qualification.
 
 **Slot**
 : Validator-owned execution ABI inside the pinned engine. Slots define how a

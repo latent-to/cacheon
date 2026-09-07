@@ -93,10 +93,9 @@ Before audit evidence can satisfy a production activation gate, run the complete
 qualification path on the exact production image, model, topology, target set, audit
 policy, and runtime identities. Retain the following controls:
 
-1. Run an honest candidate through primary qualification and the required lane-swapped
-   reproduction. Every registered slot on every TP rank must meet the sealed minimum
-   call count with zero violations and comparison errors, and both attempts must reopen
-   independently.
+1. Run an honest candidate through one complete qualification. Every registered slot
+   on every TP rank must meet the sealed minimum call count with zero violations
+   and comparison errors, and the retained attempt must reopen independently.
 2. Run the registered residual-drop sabotage candidate through the same audit path. Its
    typed audit witness must make the aggregate qualification a nonretryable failure.
 3. Inspect every charged speed session. Both audit environment values must be

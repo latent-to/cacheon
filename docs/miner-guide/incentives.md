@@ -1,7 +1,7 @@
 # How miners earn rewards
 
 Cacheon does not reward the act of uploading a kernel. It rewards a measured
-improvement that survives independent reproduction and settlement. When the
+improvement that passes complete qualification and settlement. When the
 operator enables the eval-cost gate, each admitted proposal must also transfer
 the published TAO amount to the current subnet owner coldkey; that transfer is an
 anti-spam admission cost, not a reward.
@@ -14,19 +14,19 @@ paying again. See [Submitting](submitting.md#step-by-step-commands).
     You submit one optimization for a target in a validator-published evaluation
     arena. The validator compares it with that arena's exact evaluation incumbent
     on the registered workload and checks that it remains within the required
-    behavior and quality limits. If the same optimization passes two independently
-    bound qualification attempts, settlement may name it the new **crown** for that
+    behavior and quality limits. If the same optimization passes one complete audited
+    qualification attempt, settlement may name it the new **crown** for that
     target and record the corresponding reward claim in the same transaction.
 
     The active policy determines how that claim contributes to validator weights.
     A separate publisher later combines all eligible claims into a weight vector and
     confirms that vector on-chain. Merely submitting code, reporting a local
-    benchmark, or passing once earns nothing.
+    benchmark, or passing a routing screen earns nothing.
 
 ## Why participate?
 
 The opportunity is simple: make one published part of the validator's inference
-workload faster. If the improvement wins and is independently reproduced, your
+workload faster. If the improvement passes full qualification, your
 miner hotkey—the Bittensor identity used to submit—can receive a share of that
 validator's on-chain weight. Bittensor uses network weights to determine token
 emissions.
@@ -39,7 +39,7 @@ environment. The miner focuses on one published optimization target.
 The value proposition has three parts:
 
 - **Results, not promises.** Reward eligibility follows an end-to-end improvement
-  measured by the validator and reproduced independently. It does not depend on a
+  measured by the validator with retained speed and correctness evidence. It does not depend on a
   self-reported benchmark or how large the submission is.
 - **One focused improvement.** A miner can improve one published kernel or
   multi-kernel target against the manually commissioned incumbent. A crown
@@ -50,14 +50,14 @@ The value proposition has three parts:
 
 This is an opportunity, not a guaranteed payout. It is economically sensible
 only when your expected share under the operator's active policy justifies your
-development and compute costs. A failed or unreproduced proposal has
+development and compute costs. A failed or unqualified proposal has
 no reward claim, and an unconfirmed weight publication does not realize a
 projection on-chain.
 
 ## From proposal to possible emission
 
 ```text
-submit -> pass twice -> retained contribution becomes eligible for V1 credit
+submit -> pass one complete audited qualification -> retained contribution becomes eligible for V1 credit
        -> validator publishes confirmed weights -> network determines emission
 ```
 
@@ -66,26 +66,27 @@ The stages have different meanings:
 | Stage | What it establishes | Reward status |
 |---|---|---|
 | Finalized reveal accepted into intake | Exact proposal identity, miner hotkey, and finalized arrival order | No reward |
-| First qualification `PASS` | One complete attempt succeeded | No reward; the proposal is `reproduction_pending` |
-| Qualified | A fresh independently bound attempt reproduced the result | The distinct retained contribution earns V1 credit |
+| Complete qualification `PASS` / `qualified` | Speed, graph, audit, and pristine quality gates passed | The distinct retained contribution earns V1 credit |
 | Crown settled | Settlement selected the proposal and recorded its crown and standing claim together | Its retained PASS credit continues |
 | Weight publication confirmed | The intended recipients and weight values were read back from finalized chain state within the verifier tolerance | Cacheon's projection is realized; token income remains network-dependent |
-| Crown retired or neutralized | The standing claim is no longer active | Its retained two-PASS credit continues to decay under V1 |
+| Crown retired or neutralized | The standing claim is no longer active | Its retained PASS credit continues to decay under V1 |
 | Active claimant is absent from the metagraph | The claim stays active; that tick's allocated share cannot be paid to the miner | That family's ppm is burned to the validator hotkey; other families keep their ppm |
 | Evidence cannot reopen | Reward authority cannot be projected safely | Publication is held; the missing share is not redistributed |
 
 Settlement rechecks the evidence and selects a crown among competing proposals
 for the same or overlapping work. V1 credit includes every distinct retained
-two-PASS contribution, including a contribution that does not become the crown.
+qualified contribution, including a contribution that does not become the crown.
 Evaluation continues against the operator's commissioned baseline after settlement.
 
 The speedup used for settlement is deliberately conservative:
 
 ```text
-settled speedup = min(primary speedup, reproduction speedup)
+settled speedup = C / max(B, B′)
 ```
 
-This prevents one unusually favorable run from setting the reward basis.
+Both stock observations must be valid. The faster observed stock rate sets the
+comparison, and every workload cell is warmed before timing. Historical paired
+qualifications keep their original lower accepted speedup.
 
 ## What “validator weight” means
 
@@ -141,7 +142,7 @@ cadence.
 
 | Policy | Plain-English model | Current status |
 |---|---|---|
-| **Legacy V1 standing rewards** | The current crown for each active target receives standing credit based on its reproduced improvement. That credit decays with age and is normalized relative to all other live claims. | Implemented and exercised end to end on testnet; this does not establish mainnet economics. Check the operator announcement for the deployment you intend to join. |
+| **Legacy V1 standing rewards** | The current crown for each active target receives standing credit based on its accepted improvement. That credit decays with age and is normalized relative to all other live claims. | Implemented and exercised end to end on testnet; this does not establish mainnet economics. Check the operator announcement for the deployment you intend to join. |
 | **V2 finite debt** | An eligible post-activation crown receives a bounded claim that is paid down over later confirmed epochs. A later crown does not erase the unpaid balance, but the old crown receives no perpetual royalty. | Design retained; the implementation was extracted from the tree on 2026-08-09 and would return as a new reviewed change. It creates no claim and pays nothing today. |
 
 Only legacy V1 can publish weights. Do not estimate a current reward with the
@@ -173,8 +174,8 @@ publication pending or held.
 
 ### A simplified V1 example
 
-Suppose a candidate records `1.040x` in its first passing attempt and `1.034x`
-in independent reproduction. Settlement can use at most `1.034x`.
+Suppose a candidate records a complete audited PASS at `1.034x`, using its
+throughput divided by the faster valid stock rate. Settlement uses `1.034x`.
 
 Under V1, the `3.4%` marginal improvement becomes the input to the claim's
 standing-credit calculation. It does **not** mean the miner receives 3.4% of

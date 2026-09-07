@@ -528,7 +528,7 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.resident_audit_plan.launch.digest != (
         first.prepared.candidates[0].launch.digest
     )
-    assert first.resident_speed_plan.policy.version == 8
+    assert first.resident_speed_plan.policy.version == 10
     assert first.resident_speed_plan.selected_delta_digest == (
         harness.candidate.reservation.selected_delta_digest
     )
@@ -585,7 +585,7 @@ def test_registered_plan_measures_every_commissioned_policy_on_two_process(
     ).plan_builder(harness.cohort, b"v" * 32)
 
     assert value.resident_speed_plan is not None
-    assert value.resident_speed_plan.policy == replace(commissioned, version=8)
+    assert value.resident_speed_plan.policy == replace(commissioned, version=10)
 
 
 def test_native_candidate_is_planned_on_the_two_process_schedule(
@@ -626,7 +626,7 @@ def test_native_candidate_is_planned_on_the_two_process_schedule(
 
     assert value.resident_speed_plan is not None
     planned = value.resident_speed_plan.policy
-    assert planned.version == 8
+    assert planned.version == 10
     # Only the schedule differs. Every calibrated threshold is the sealed one,
     # so this is a different read order, not a different bar.
     assert replace(planned, version=sealed.version) == sealed

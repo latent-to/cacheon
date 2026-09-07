@@ -30,7 +30,7 @@ flowchart LR
     Private --> Publication["Immutable worker publication"]
     Publication --> Screen["Resident screen<br/>routing only"]
     Screen --> Arena["Injected arena service<br/>trusted provider"]
-    Arena --> OCI["Two-process speed substrate<br/>B/C/B′ (v8, v9 mixed-cell)"]
+    Arena --> OCI["Two-process speed substrate<br/>B/C/B′ (v10, v11 mixed-cell)"]
     OCI --> Audit["Audit-only role"]
     Audit --> T["Pristine T reference<br/>candidate-free"]
     T --> Evidence["Content-addressed evidence"]
@@ -80,11 +80,10 @@ The current validator path is deliberately staged:
 6. Run registered, non-crownable screens, using the routing-only resident screen for
    swappable candidates and an explicit waiver for non-swappable candidates.
 7. Qualify promoted candidates under the version-3 protocol: two-process
-   B/C/B′ (v8, or v9 for a mixed-cell workload), then audit and pristine T.
-8. Require an independent reproduction of the same candidate identity with the exact
-   physical TP-lane role swap.
-9. Apply target and evaluation-stack changes in one settlement transaction.
-10. Reconcile the global reward projection from a separate signer process.
+   B/C/B′ (v10, or v11 for a mixed-cell workload), then audit and pristine T.
+8. Reopen the complete audited PASS and apply target and evaluation-stack changes
+   in one settlement transaction.
+9. Reconcile the global reward projection from a separate signer process.
 
 One reservation therefore crosses three different kinds of state:
 
@@ -93,7 +92,7 @@ One reservation therefore crosses three different kinds of state:
 | Arrival | Finalized cursor and `reserved` row | Intake controller |
 | Transport | `fetching` → `transport_retry`, `failed`, or `published` | Intake controller |
 | Screening | `screening` → `promoted`, retry lane, `failed`, or `held` | Registered arena service through the controller |
-| Qualification | `qualifying` → `reproduction_pending`, `qualified`, `failed`, or `no_decision` | Qualification authority plus transactional store projection |
+| Qualification | `qualifying` → `qualified`, `failed`, or `no_decision` | Qualification authority plus transactional store projection |
 | Settlement | Leased candidate, event journal, stack generation, active claims | Pure planner plus SQLite transaction |
 | Emissions | Legacy V1 standing projection and append-only publication journal | Separate weight reconciler |
 | Shipping | Integration record and signed release | Release authority, never the settlement loop |

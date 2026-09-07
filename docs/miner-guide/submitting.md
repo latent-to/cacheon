@@ -358,22 +358,21 @@ The authoritative path is staged:
 5. A promoted candidate receives a complete isolated version-3 qualification
    attempt: two-process B/C/B′,
    registered eager audit A, then pristine T.
-6. One PASS moves the proposal to `reproduction_pending`. It has **not** crowned.
-7. A second independent matching PASS completes qualification; the lower of the
-   two reproduced speedups is retained.
-8. Transactional settlement may crown, neutralize, or hold the qualified
+6. One complete audited PASS moves the proposal to `qualified` and retains its
+   speedup and evidence for settlement. No second qualification is scheduled.
+7. Transactional settlement may crown, neutralize, or hold the qualified
    candidate according to the frozen target/stack authority and competing
    cohort.
-9. Weight projection is a separate audited control-plane action.
+8. Weight projection is a separate audited control-plane action.
 
 !!! info "When a reward begins"
-    `qualified` still means no reward. If settlement crowns the proposal, it
-    records the reward claim in the same transaction. The validator later combines
+    A distinct retained qualified contribution is eligible for V1 credit.
+    Settlement separately selects the crown and records its standing claim. The validator later combines
     eligible claims into a weight vector and publishes it on-chain. See
     [How miners earn rewards](incentives.md).
 
 There is no universal completion time. Finality, queue bounds, arena capacity,
-retry policy, reproduction scheduling, and settlement cadence are operator
+recovery policy and settlement cadence are operator
 configuration.
 
 ### Follow one proposal through the states
@@ -395,15 +394,13 @@ Suppose the revealed content hash is `H` and its target is
 5. `promoted` means all five non-crown screens passed and capacity may now be
    spent on the sealed two-process B/C/B′ schedule, registered eager
    audit A, then pristine T. It carries no speed score and no reward.
-6. `reproduction_pending` means the first full attempt passed. Continue to describe the
-   object as a proposal awaiting independent reproduction.
-7. `qualified` means two matching passes exist. Settlement still reopens evidence and
+6. `qualified` means one complete audited PASS exists. Settlement still reopens evidence and
    considers priority/overlap before creating a crown.
-8. A settlement crown is an economic record for this target and stack authority. It is
+7. A settlement crown is an economic record for this target and stack authority. It is
    still not an Engine release.
 
 At each step, ask whether the next action changes proposal identity. Retrying fetch,
-reopening retained evidence, or rerunning an independent attempt can preserve `H` under
+reopening retained evidence, or an explicitly reviewed recovery attempt can preserve `H` under
 operator policy. Editing source, metadata, the manifest, or any other identity-bearing
 file necessarily creates a new hash and returns to submission.
 

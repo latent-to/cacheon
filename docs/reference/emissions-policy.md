@@ -22,8 +22,8 @@ durable evidence remain reopenable from Git history and the reserved schema.
 
 ## Legacy V1
 
-Every distinct registered contribution with an independently reproduced PASS
-earns from its retained qualification pair, whether or not it becomes the crown.
+Every distinct registered contribution with a complete audited PASS
+earns from its retained qualification, whether or not it becomes the crown.
 Qualification keeps using the manually commissioned incumbent when another
 contribution crowns. Changing that comparison baseline requires an explicit
 operator commission; a crown alone does not change it.
@@ -39,7 +39,7 @@ credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - b) / h) × 10^12)
 
 Submission time, not evaluation completion time, controls age and stall credit.
 Logarithmic units make compounded gains path-independent. Policy version
-`cacheon.emissions.v1.5` retains v1.3's two-PASS rule and replaces v1.4's
+`cacheon.emissions.v1.5` projects every accepted qualification and replaces v1.4's
 CROWN-only restriction. Existing v1.1/v1.3/v1.4 bindings move forward only
 when all numeric policy fields match; the credit formula is unchanged.
 
@@ -47,7 +47,7 @@ The active standing claim validates its evaluation stack against that stack's
 sealed catalog and target-spec bytes. Historical v1 composition and v2 exclusion
 rules retain their active meaning; installing another model's catalog does not
 reinterpret or invalidate an earned claim. Reward
-history is derived from existing settlement candidates and their two retained
+history is derived from existing settlement candidates and their retained
 PASS records; there is no parallel accepted-history table. Missing or corrupt
 evidence holds the projection. If a claimant leaves the metagraph, its share
 goes to the validator for that tick and returns if the claimant re-registers.
@@ -56,7 +56,7 @@ A discovery qualification can create one non-renewable bounded claim. It does no
 install an evaluation-stack contribution or create a standing family. Duplicate
 packaging, promotion, integration, or release cannot renew that claim.
 
-The projector reopens every earning PASS pair, active stack, standing claim, and
+The projector reopens every earning accepted PASS, active stack, standing claim, and
 discovery claim, binds finalized chain scope and membership, aggregates by hotkey,
 and normalizes one positive integer-ppm vector totaling 1,000,000.
 

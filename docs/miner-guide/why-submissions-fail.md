@@ -129,9 +129,9 @@ instead of re-running the evaluation. Resubmitting an unchanged bundle
 therefore changes nothing. Change one byte and you get a new content identity
 and a fresh evaluation.
 
-A `FAIL` replays. A `PASS` does not: a first `PASS` is `reproduction_pending`,
-and settlement requires an independently bound `PASS` pair, so replaying one
-would manufacture the second half of that pair from the first.
+A retained report reopens under its original authority. A complete audited
+`PASS` is sufficient for qualification. Reopening its retained bytes verifies
+that authority; it does not create a new measurement or a duplicate reward.
 
 ## A closed family is parked, not failed
 

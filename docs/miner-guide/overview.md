@@ -3,7 +3,7 @@
 Cacheon accepts source proposals that make a validator-owned inference engine
 faster without changing its required behavior. A miner contributes one
 registered delta, the validator evaluates that delta inside the exact incumbent
-stack, and only independently reproduced wins can become a crown.
+stack, and only fully qualified wins can become a crown.
 
 This is not a contest for self-reported microbenchmarks. The validator owns the
 model, runtime, prompts, reference behavior, build, launch policy, measurements,
@@ -13,13 +13,13 @@ and final decision.
 
 A miner has an opportunity to earn a share of validator weight by becoming the
 independently verified performance frontier for one target in one published
-evaluation arena. Submission itself earns nothing. If two independent validator
-attempts reproduce the improvement and settlement crowns it, settlement records the
+evaluation arena. Submission itself earns nothing. If one complete validator
+qualification proves the improvement and settlement crowns it, settlement records the
 reward claim in the same transaction. The validator later combines eligible claims
 into a weight vector and publishes it on-chain.
 
 ```text
-proposal -> two independent PASSes -> settlement crown -> reward claim -> confirmed weights
+proposal -> one complete audited PASS -> settlement crown -> reward claim -> confirmed weights
 ```
 
 [Read how miner rewards work in plain English →](incentives.md)
@@ -38,7 +38,7 @@ That sentence contains the whole discipline:
 - **exactly that boundary** preserves a causal marginal comparison;
 - **current incumbent** rules out benchmarking against a convenient stock baseline;
 - **end-to-end** accounts for dispatch, synchronization, graph mode, and downstream work;
-- **reproducible** requires two independent qualification attempts; and
+- **reproducible** requires retained counts, intervals, and correctness evidence that reopen under the sealed policy; and
 - **without weakening behavior** keeps pristine quality evidence outside candidate
   control.
 
@@ -92,7 +92,7 @@ Cacheon keeps two objects distinct, and keeps both away from serving:
 
 1. A **proposal** is the source archive you publish and commit on-chain. It is
    untrusted input, not an engine dependency.
-2. A **crown** is an independently reproduced marginal win for one registered
+2. A **crown** is a fully qualified marginal win for one registered
    target in one evaluation stack. It can receive standing reward under the
    active emissions policy.
 
@@ -125,8 +125,8 @@ from becoming a win. Static, build, ABI, graph, and abbreviated-serving checks
 are admission screens only; they cannot crown a proposal.
 
 A promoted proposal must pass two complete, independent qualification attempts.
-The crown records the lower reproduced speedup. After the first passing attempt,
-the durable intake state is `reproduction_pending`; that is not yet a crown.
+The crown records the accepted qualification speedup. After the complete audited attempt,
+the durable intake state is `qualified`; settlement and confirmed weights remain separate.
 
 The evaluation design and evidence objects live in
 [qualification.py](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py),

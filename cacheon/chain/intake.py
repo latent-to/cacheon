@@ -518,7 +518,14 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             sidecar = Path(str(self.path) + suffix)
             if sidecar.exists():
                 os.chmod(sidecar, 0o600)
-        self._recover_interrupted()
+        try:
+            self._recover_interrupted()
+            from cacheon.chain.qualification_settlement import accept_retained_primary_passes
+
+            accept_retained_primary_passes(self)
+        except Exception:
+            self.close()
+            raise
 
     def __enter__(self) -> "FinalizedIntakeStore":
         return self
@@ -1787,7 +1794,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
 
         from cacheon.eval.qualification_intake import QualificationIntakeBatch
         from cacheon.eval.qualification import QualificationDecision
-        from cacheon.settlement import SettlementCandidate, SettlementQualification
+        from cacheon.settlement import SettlementQualification
 
         if type(batch) is not QualificationIntakeBatch:
             raise IntakeError("qualification batch is not exactly typed")
@@ -1913,88 +1920,13 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             "settlement qualification differs from retained PASS"
                         )
                     self.evaluation_stack(qualification.arena_digest)
-                    qualification_json = json.dumps(
-                        qualification.to_dict(), separators=(",", ":"), sort_keys=True
-                    )
                     if attempt_ref is None or root is None:
                         raise IntakeError("retained PASS evidence is incomplete")
-                    retained = self._db.execute(
-                        "SELECT reproduction_index,qualification_digest,qualification_json,"
-                        "attempt_ref_json,evidence_root FROM settlement_qualifications "
-                        "WHERE reservation_id=? ORDER BY reproduction_index",
-                        (reservation_id,),
-                    ).fetchall()
-                    expected_lane = "primary" if not retained else "reproduction"
-                    if row.screen_lane != expected_lane or len(retained) > 1:
-                        raise IntakeError("qualification PASS used the wrong reproduction lane")
-                    reproduction_index = len(retained)
-                    self._db.execute(
-                        "INSERT INTO settlement_qualifications(reservation_id,"
-                        "reproduction_index,qualification_digest,qualification_json,"
-                        "attempt_ref_json,evidence_root,retained_block) "
-                        "VALUES(?,?,?,?,?,?,?)",
-                        (
-                            reservation_id, reproduction_index, qualification.digest,
-                            qualification_json, attempt_json, str(root),
-                            current_finalized_block,
-                        ),
+                    from cacheon.chain.qualification_settlement import retain_complete_pass
+
+                    retain_complete_pass(
+                        self, row, qualification, attempt_ref, root, current_finalized_block
                     )
-                    if reproduction_index == 1:
-                        try:
-                            primary = SettlementQualification.from_dict(
-                                json.loads(retained[0]["qualification_json"])
-                            )
-                            if primary.digest != retained[0]["qualification_digest"]:
-                                raise IntakeError(
-                                    "primary settlement qualification is corrupt"
-                                )
-                            from cacheon.chain.commission_pass_carry import (
-                                carry_primary_pass_forward,
-                            )
-                            carried = carry_primary_pass_forward(primary, qualification)
-                            if carried != primary:
-                                encoded = json.dumps(
-                                    carried.to_dict(), separators=(",", ":"), sort_keys=True
-                                )
-                                changed = self._db.execute(
-                                    "UPDATE settlement_qualifications SET "
-                                    "qualification_digest=?,qualification_json=? WHERE "
-                                    "reservation_id=? AND reproduction_index=0 AND "
-                                    "qualification_digest=?",
-                                    (
-                                        carried.digest, encoded, reservation_id,
-                                        primary.digest,
-                                    ),
-                                )
-                                if changed.rowcount != 1:
-                                    raise IntakeError(
-                                        "primary settlement carry-forward changed"
-                                    )
-                                primary = carried
-                            candidate = SettlementCandidate.from_reproductions(
-                                primary, qualification
-                            )
-                        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                            raise IntakeError(
-                                f"independent reproduction is inconsistent: {exc}"
-                            ) from None
-                        candidate_json = json.dumps(
-                            candidate.to_dict(), separators=(",", ":"), sort_keys=True
-                        )
-                        self._db.execute(
-                            "INSERT INTO settlement_candidates(reservation_id,authority_digest,"
-                            "candidate_digest,candidate_json,evidence_root,"
-                            "reproduction_evidence_root,status) "
-                            "VALUES(?,?,?,?,?,?, 'pending')",
-                            (
-                                reservation_id,
-                                primary.qualification_authority_digest,
-                                candidate.digest,
-                                candidate_json,
-                                retained[0]["evidence_root"],
-                                str(root),
-                            ),
-                        )
                 if reservation_id in retry:
                     group, position, reason = retry[reservation_id]
                     retry_status = (
@@ -2026,16 +1958,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     )
                 else:
                     if outcome.decision is QualificationDecision.PASS:
-                        completed = self._db.execute(
-                            "SELECT COUNT(*) AS n FROM settlement_qualifications "
-                            "WHERE reservation_id=?",
-                            (reservation_id,),
-                        ).fetchone()["n"]
-                        status = "qualified" if completed == 2 else "reproduction_pending"
-                        decision = "PASS" if completed == 2 else ""
-                        reason = (
-                            outcome.reason if completed == 2 else "reproduction_pending"
-                        )
+                        status, decision, reason = "qualified", "PASS", outcome.reason
                     elif outcome.decision is QualificationDecision.FAIL:
                         status, decision, reason = (
                             "failed", "FAIL", outcome.reason
@@ -2450,92 +2373,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ).fetchone()
         return (0, "") if row is None else (row["sequence"] + 1, row["event_digest"])
 
-    def _settlement_evidence_metadata(
-        self,
-        candidate: SettlementCandidate,
-    ):
-        from cacheon.settlement import SettlementEvidence, SettlementQualification
+    def _settlement_evidence_metadata(self, candidate: SettlementCandidate):
+        from cacheon.chain.qualification_settlement import settlement_evidence_metadata
 
-        row = self._db.execute(
-            "SELECT sc.evidence_root,sc.reproduction_evidence_root,"
-            "sc.candidate_digest,r.status,r.decision FROM settlement_candidates sc "
-            "JOIN reservations r USING(reservation_id) WHERE sc.reservation_id=?",
-            (candidate.reservation_digest,),
-        ).fetchone()
-        if (
-            row is None
-            or row["candidate_digest"] != candidate.digest
-            or row["status"] != "qualified"
-            or row["decision"] != "PASS"
-            or not row["evidence_root"]
-            or not row["reproduction_evidence_root"]
-        ):
-            raise IntakeError("settlement evidence no longer has standing authority")
-        retained = tuple(
-            self._db.execute(
-                "SELECT reproduction_index,qualification_digest,qualification_json,"
-                "attempt_ref_json,evidence_root FROM settlement_qualifications "
-                "WHERE reservation_id=? ORDER BY reproduction_index",
-                (candidate.reservation_digest,),
-            )
-        )
-        if len(retained) != 2 or tuple(
-            item["reproduction_index"] for item in retained
-        ) != (0, 1):
-            raise IntakeError("settlement candidate lacks two retained qualifications")
-        qualifications = []
-        references = []
-        try:
-            for item in retained:
-                qualification = SettlementQualification.from_dict(
-                    json.loads(item["qualification_json"])
-                )
-                reference = EvidenceArtifactRef.from_dict(
-                    json.loads(item["attempt_ref_json"])
-                )
-                if (
-                    qualification.digest != item["qualification_digest"]
-                    or reference.sha256
-                    != qualification.qualification_attempt_digest
-                ):
-                    raise IntakeError("retained reproduction identity differs")
-                disposition = self._db.execute(
-                    "SELECT authority_digest,report_digest,decision FROM "
-                    "qualification_dispositions WHERE reservation_id=? "
-                    "AND evidence_digest=?",
-                    (
-                        candidate.reservation_digest,
-                        qualification.qualification_attempt_digest,
-                    ),
-                ).fetchone()
-                if (
-                    disposition is None
-                    or disposition["decision"] != "PASS"
-                    or disposition["authority_digest"]
-                    != qualification.qualification_authority_digest
-                    or disposition["report_digest"]
-                    != qualification.qualification_report_digest
-                ):
-                    raise IntakeError("retained reproduction lost PASS authority")
-                qualifications.append(qualification)
-                references.append(reference)
-        except IntakeError:
-            raise
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise IntakeError(f"settlement reproduction is corrupt: {exc}") from None
-        if tuple(qualifications) != (candidate.primary, candidate.reproduction):
-            raise IntakeError("retained reproductions differ from settlement candidate")
-        roots = (Path(retained[0]["evidence_root"]), Path(retained[1]["evidence_root"]))
-        if roots != (
-            Path(row["evidence_root"]), Path(row["reproduction_evidence_root"])
-        ):
-            raise IntakeError("settlement reproduction roots differ")
-        receipt = SettlementEvidence.bind(
-            candidate,
-            primary_attempt_ref=references[0],
-            reproduction_attempt_ref=references[1],
-        )
-        return roots, tuple(references), receipt
+        return settlement_evidence_metadata(self, candidate)
 
     def reopen_settlement_evidence(
         self,
@@ -3034,7 +2875,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         return tuple(standing), tuple(discovery)
 
     def passed_reward_claims(self) -> tuple[object, ...]:
-        """Derive one reward claim per distinct retained two-PASS contribution."""
+        """Derive one reward claim per distinct retained accepted contribution."""
 
         from cacheon.economics import StandingRewardClaim, WEIGHT_PPM
 
@@ -3839,8 +3680,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
         return self.get(reservation_id)
 
-    def retained_pass_pairs(self) -> tuple[tuple[str, str, tuple[str, str], tuple[tuple[int, str], ...]], ...]:
-        """Every retained two-PASS pair: id, arena, settled half speedups, half artifact refs."""
+    def retained_pass_pairs(self) -> tuple[tuple[str, str, tuple[str, ...], tuple[tuple[int, str], ...]], ...]:
+        """Retained acceptances: id, arena, accepted speedups, and attempt artifact refs."""
 
         from cacheon.settlement import SettlementCandidate
 
@@ -3863,20 +3704,20 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
             pairs.append((
                 row["reservation_id"], candidate.arena_digest,
-                (candidate.primary.speedup, candidate.reproduction.speedup), refs,
+                tuple(value.speedup for value in candidate.qualifications), refs,
             ))
         return tuple(pairs)
 
     def reopen_for_remeasurement(
         self, reservation_id: str, *, reason: str
     ) -> IntakeReservation:
-        """Return one unsettled two-PASS reservation to the screen queue for a fresh pair.
+        """Return one unsettled acceptance to the screen queue after explicit operator review.
 
-        The retained candidate and both qualification halves move to
+        The retained candidate and its qualification attempts move to
         ``settlement_reopenings`` (append-only), so the row stops earning the
         moment it leaves ``qualified`` and re-enters intake like a new
         submission: a fresh screen under the live service identity, a fresh
-        baseline binding to the live stack, and a fresh independent PASS pair
+        baseline binding to the live stack, and a fresh complete qualification
         against the current incumbent. A crowned or otherwise settled candidate
         is lineage and is refused.
         """
@@ -3887,7 +3728,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             self._require_evaluation_mutation_authority(reservation_id)
             row = self.get(reservation_id)
             if row.status != "qualified" or row.decision != "PASS":
-                raise IntakeError("only a retained two-PASS reservation may be reopened")
+                raise IntakeError("only a retained PASS reservation may be reopened")
             if not row.publication_digest or not row.publication_root:
                 raise IntakeError("reopened reservation has no retained publication")
             candidate = self._db.execute(
@@ -3895,14 +3736,15 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 (reservation_id,),
             ).fetchone()
             if candidate is None or candidate["status"] != "pending":
-                raise IntakeError("only an unsettled PASS pair may be reopened")
+                raise IntakeError("only an unsettled PASS reservation may be reopened")
             halves = self._db.execute(
                 "SELECT * FROM settlement_qualifications WHERE reservation_id=? "
                 "ORDER BY reproduction_index",
                 (reservation_id,),
             ).fetchall()
-            if len(halves) != 2:
-                raise IntakeError("reopened reservation does not retain two halves")
+            accepted = self._settlement_candidate(candidate)
+            if len(halves) != len(accepted.qualifications):
+                raise IntakeError("reopened reservation does not retain its accepted attempts")
             sequence = self._db.execute(
                 "SELECT COUNT(*) AS n FROM settlement_reopenings WHERE reservation_id=?",
                 (reservation_id,),
