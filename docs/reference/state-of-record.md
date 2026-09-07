@@ -18,6 +18,10 @@ weight offer and follower lanes onto the GLM tree (the pushed offer matched
 the vector already on chain), and parked the eight M3-era settlement
 candidates so the settlement stage cannot lease them. Both paid rows stay held
 until the sealed speed margin is revised; the parked row is requeued after that.
+By owner decision the same day, the sealed speed floor rises from 0.5% to 1%
+(`min_margin` 0.01; the noise multiplier of 2 and the 2% noise cap are
+unchanged) at the next commission. The +0.6% candidate is expected to fail
+under that bar, and both held rows are released once the new seal is live.
 Earlier the same night, three qualification attempts for another paid row
 (`45404f5e…`, `collective.dp_attention_exchange.v1`) died inside the `e96ca0b6`
 worker with `quality binding differs from frozen workload/trajectories`; that
