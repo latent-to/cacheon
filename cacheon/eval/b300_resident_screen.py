@@ -1,113 +1,23 @@
-"""Bind resident screening to the commissioned workload and stock lifetime."""
-
+"""Compose the resident execution probe without loading candidate code on the host."""
 from __future__ import annotations
 
 import os
-import time
-from collections import Counter
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Sequence
-
+from typing import TYPE_CHECKING, Callable
 from cacheon.arena_service import ArenaServiceManifest
 from cacheon.eval.b300_arena_definition import (
     B300ScreenDeploymentError, data_parallel_size as _data_parallel_size,
-    engine_config as _engine_config,
+    engine_config as _engine_config, scored_cell as _scored_cell,
 )
 from cacheon.eval.b300_arena_provider import B300ResidentScreenFactory, B300ResidentScreenLifetime
-from cacheon.eval.engine_launch import (
-    EngineLaunchSpec, LogicalHardwareSpec, PhysicalHardwareBinding, TrustedLaunchBinding,
-)
-from cacheon.eval.oci_backend import (
-    OCIEngineExecutor, TrustedArenaModelMountReceipt, expected_runtime_preflight,
-)
-from cacheon.eval.oci_outer_session import OuterSessionTimeoutError
-from cacheon.eval.oci_resident_session import (
-    ResidentBatchEvidence, ResidentBatchShape, ResidentOuterSession, ResidentSessionPlan,
-    ResidentSessionEvidence, SwapReceipt,
-)
+from cacheon.eval.engine_launch import EngineLaunchSpec, LogicalHardwareSpec, PhysicalHardwareBinding, TrustedLaunchBinding
+from cacheon.eval.oci_backend import OCIEngineExecutor, TrustedArenaModelMountReceipt, expected_runtime_preflight
+from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.resident_queue import ScreenPolicy
-from cacheon.eval.resident_screen_lane import (
-    ResidentScreenLane, ResidentServingScreenStage, make_backend_lifetime_factory,
-)
+from cacheon.eval.resident_screen_lane import ResidentScreenLane, ResidentServingScreenStage, make_backend_lifetime_factory
 from cacheon.target_catalog import TargetCatalog
 
 if TYPE_CHECKING:
     from cacheon.eval.b300_screen_deployment import _CommissionedInputs
-
-
-def _screen_batches(
-    inputs: _CommissionedInputs,
-) -> tuple[tuple[tuple[str, ...], ResidentBatchShape], ...]:
-    """Retain the sealed timed mix, excluding each cell's leading warmup batches."""
-    cells = {cell.cell_id: cell for cell in inputs.workload.cells}
-    remaining = Counter({name: cell.timed_reads for name, cell in cells.items()})
-    reads = []
-    for prompts, name in reversed(tuple(zip(
-        inputs.prompt_batches, inputs.prompt_batch_cells, strict=True
-    ))):
-        if remaining[name] > 0:
-            cell = cells[name]
-            reads.append((prompts, ResidentBatchShape(
-                cell.output_tokens, 0, 0.0, cell.input_tokens,
-            )))
-            remaining[name] -= 1
-    if any(remaining.values()):
-        raise B300ScreenDeploymentError("screen workload lacks its sealed timed batches")
-    return tuple(reversed(reads))
-
-
-@dataclass(frozen=True)
-class _WorkloadRead:
-    """Aggregate existing raw batch observations without minting wire evidence."""
-
-    batches: tuple[ResidentBatchEvidence, ...]
-
-    @property
-    def batch_index(self) -> int:
-        return self.batches[-1].batch_index
-
-    @property
-    def token_numerator(self) -> int:
-        return sum(row.token_numerator for row in self.batches)
-
-    @property
-    def elapsed_seconds(self) -> float:
-        return sum(row.elapsed_seconds for row in self.batches)
-
-
-class _WorkloadSession:
-    """Use one complete workload for every existing screen or recovery read."""
-
-    def __init__(
-        self, session: ResidentOuterSession,
-        reads: tuple[tuple[tuple[str, ...], ResidentBatchShape], ...],
-    ) -> None:
-        self.session = session
-        self.reads = reads
-        self.session_id = session.session_id
-
-    def swap(self, bundle_digest: str | None) -> SwapReceipt:
-        return self.session.swap(bundle_digest)
-
-    def finish(self) -> ResidentSessionEvidence:
-        return self.session.finish()
-
-    def execute_batch(
-        self, _prompts: Sequence[str], *, canary: bool = False,
-        timeout_s: float | None = None,
-    ) -> _WorkloadRead:
-        """Keep every cell on the current generation and within one read deadline."""
-        # A candidate's existing read deadline covers the whole mixed workload.
-        deadline = None if timeout_s is None else time.monotonic() + timeout_s
-        rows = []
-        for prompts, shape in self.reads:
-            remaining = None if deadline is None else deadline - time.monotonic()
-            if remaining is not None and remaining <= 0:
-                raise OuterSessionTimeoutError("screen workload read exceeded its deadline")
-            rows.append(self.session.execute_batch_with_shape(
-                prompts, shape=shape, canary=canary, timeout_s=remaining,
-            ))
-        return _WorkloadRead(tuple(rows))
 
 
 def _resident_factory(
@@ -127,8 +37,7 @@ def _resident_factory(
         raise B300ScreenDeploymentError("resident factory inputs are not exact")
     if not callable(manifest_provider):
         raise B300ScreenDeploymentError("resident manifest provider is not callable")
-    reads = _screen_batches(inputs)
-    prompts = reads[0][0]
+    prompts = tuple(prompt for batch in inputs.prompt_batches[:1] for prompt in batch)
 
     def create() -> B300ResidentScreenLifetime:
         manifest = manifest_provider()
@@ -186,7 +95,7 @@ def _resident_factory(
         config = _engine_config(
             inputs.engine_template,
             target_members,
-            inputs.workload.cells,
+            _scored_cell(inputs.workload),
             disable_cuda_graph=False,
         )
         launch = EngineLaunchSpec(
@@ -229,8 +138,7 @@ def _resident_factory(
             ),
             max_swaps=10_000,
             max_batches=100_000,
-            max_new_tokens=reads[0][1].max_new_tokens,
-            expected_prompt_tokens=reads[0][1].expected_prompt_tokens,
+            max_new_tokens=4,
             top_logprobs_num=0,
             temperature=0.0,
         )
@@ -252,11 +160,8 @@ def _resident_factory(
             deadline_provider=lambda: float(executor.manager.clock())
             + 30 * 24 * 60 * 60,
         )
-        def workload_lifetime(driver):
-            return lifetime(lambda session: driver(_WorkloadSession(session, reads)))
-
         lane = ResidentScreenLane(
-            workload_lifetime,
+            lifetime,
             prompts=prompts,
             policy=ScreenPolicy(max_candidates_per_lifetime=1_000),
             verdict_timeout_s=3600.0,

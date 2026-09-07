@@ -1271,11 +1271,12 @@ def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_
 
 
 def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
+    from cacheon.chain.baseline_segments import commission_boundary
+
     path = tmp_path / "private" / "intake.sqlite3"
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store)
         old_stack = store.evaluation_stack(candidate.arena_digest)
-
         old_rows = _reserve(
             store,
             (
@@ -1292,7 +1293,7 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
                 root=f"/published/old-{index}",
             )
         _promote(store, old_rows[1].reservation_id, service=old_stack.arena_digest)
-
+        assert commission_boundary(store, old_stack.manifest, tree_digest=old_stack.tree_digest) is None
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
         plan, evidence = _settlement_plan(store, lease)
@@ -1308,10 +1309,7 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
         # Learning the service after the transition cannot rewrite the old
         # reservation's durable baseline.
         _promote(store, old_rows[0].reservation_id, service=old_stack.arena_digest)
-        assert (
-            store.reservation_baseline_segment(old_rows[0].reservation_id)
-            == old_stack
-        )
+        assert store.reservation_baseline_segment(old_rows[0].reservation_id) == old_stack
 
         new_row = _reserve_one(store, index=22, hotkey="new", block=12)
         _publish(
@@ -1322,10 +1320,11 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
             root="/published/new",
         )
         _promote(store, new_row.reservation_id, service=new_stack.arena_digest)
-        assert store.reservation_baseline_segment(new_row.reservation_id) == new_stack
+        assert commission_boundary(store, old_stack.manifest, tree_digest=old_stack.tree_digest) is None
+        assert store.reservation_baseline_segment(new_row.reservation_id) == old_stack
 
-        # A database commissioned before segment persistence reconstructs the
-        # old/new boundary from the CROWN reservation snapshot without reruns.
+        # Old backfill used the crown for later arrivals. The sealed dispatcher
+        # repairs those unmeasured labels before it permits a qualification.
         retry_group = _h("old-retry-group")
         store._db.executemany(
             "UPDATE reservations SET retry_group_digest=?,retry_position=? "
@@ -1344,7 +1343,8 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
             store.reservation_baseline_segment(row.reservation_id) == old_stack
             for row in old_rows
         )
-        assert store.reservation_baseline_segment(new_row.reservation_id) == new_stack
+        assert commission_boundary(store, old_stack.manifest, tree_digest=old_stack.tree_digest) is None
+        assert store.reservation_baseline_segment(new_row.reservation_id) == old_stack
         assert store.qualification_queue_baseline() == old_stack
         assert store.preview_evaluation_claim(
             stage="qualification", max_members=8
@@ -1358,15 +1358,15 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
             "WHERE reservation_id=?",
             ((row.reservation_id,) for row in old_rows),
         )
-        assert store.qualification_queue_baseline() == new_stack
+        assert store.qualification_queue_baseline() == old_stack
         assert store.preview_evaluation_claim(
             stage="qualification", max_members=8
         ) == (new_row.reservation_id,)
 
     with FinalizedIntakeStore(path, IntakePolicy(), scope=SCOPE) as reopened:
         assert reopened.reservation_baseline_segment(old_rows[0].reservation_id) == old_stack
-        assert reopened.reservation_baseline_segment(new_row.reservation_id) == new_stack
-        assert reopened.qualification_queue_baseline() == new_stack
+        assert reopened.reservation_baseline_segment(new_row.reservation_id) == old_stack
+        assert reopened.qualification_queue_baseline() == old_stack
 
 
 def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_path):

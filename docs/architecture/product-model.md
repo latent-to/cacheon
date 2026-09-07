@@ -71,6 +71,10 @@ The **reward unit** is the smallest validator-controlled attributable delta:
 
 The candidate stack is built by the validator. It equals the incumbent stack except for one selected target transition. The miner does not supply the incumbent entries and does not gain attribution for the whole engine simply because the complete engine is the safe execution envelope.
 
+The measurement incumbent is pinned by the operator's commission. Settlement can
+record a new crown while qualification continues against that same baseline;
+changing the measured incumbent requires an explicit operator commission.
+
 This is the core composability property: later work can be evaluated on top of earlier wins without copying earlier contributors' artifacts and without collapsing attribution into winner-take-all engine ownership.
 
 ### Worked example: a later 3% delta on top of an earlier 7% delta

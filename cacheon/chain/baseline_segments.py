@@ -1,9 +1,8 @@
 """Baseline-segment authority for the intake queue.
 
-A reservation drains under the evaluation stack its baseline segment names.
-This module owns how a segment is bound, backfilled, read as the queue head,
-checked as the commission boundary, and rebound when the arena it names has
-been retired. It is split out of ``cacheon.chain.intake`` because that file
+A reservation drains under the incumbent sealed by the operator's commission.
+This module binds unmeasured work to that authority before qualification and
+retains the baseline used by completed evidence across restarts. It is split out of ``cacheon.chain.intake`` because that file
 is at its size ceiling; the store keeps thin delegating methods so every
 existing caller is unchanged.
 
@@ -14,11 +13,10 @@ the qualification fence refused to claim across the segment boundary, the
 selector could never pick it, and the automatic rotated-cohort re-screen sat
 behind that same fence. Left alone the row would have blocked the new arena's
 qualification lane for every later submission until it expired. A segment
-naming a retired arena is therefore not a commission boundary: the live arena
-rebinds it, and the screen-identity rotation rule decides whether its screen
-receipt still stands. A same-arena generation boundary (a crown advancing the
-durable stack) keeps its halt; those rows drain under the still-resident
-commission by design.
+naming a retired arena is rebound before qualification. A crown does not
+replace the operator's measurement incumbent. The commission gate also repairs
+unmeasured rows stamped with a crown by older screen/backfill code; retained
+qualification evidence still protects its exact original baseline.
 """
 
 from __future__ import annotations
@@ -346,15 +344,15 @@ def commission_boundary(
     *,
     tree_digest: str,
 ) -> tuple[str, str, str] | None:
-    """Install genesis or check the queue head's segment before any claim.
+    """Bind unmeasured work to the sealed commission before any claim.
 
     Returns None when the head drains under ``incumbent``, otherwise the
     commissioned, required, and required-tree digests of the boundary.
-    Settlement may advance durable lineage while older reservations remain
-    queued; those keep their exact segment and run under the still-resident
-    commission, and the boundary halts the evaluator before a lease, request,
-    publication, or GPU action. A head bound to a retired arena is rebound to
-    the live durable stack first, because no commission can ever drain it.
+    Settlement advances crown lineage, not the manually commissioned baseline.
+    Old screen/backfill code stamped that mutable crown into queued segments;
+    repair those unmeasured bindings here, where the sealed dispatcher supplies
+    the actual worker incumbent. Retained qualification evidence keeps its
+    binding and still halts a genuinely different manual commission.
     """
 
     try:
@@ -363,13 +361,41 @@ def commission_boundary(
         if str(exc) != "evaluation stack is not initialized":
             raise
         store.initialize_evaluation_stack(incumbent, tree_digest=tree_digest)
-    backfill_reservation_baseline_segments(store)
+    commissioned = EvaluationStackState(
+        incumbent.arena_digest, 0, incumbent, tree_digest,
+        canonical_digest(_EVALUATION_STACK_GENESIS_DOMAIN, {
+            "arena_digest": incumbent.arena_digest,
+            "stack_digest": incumbent.digest,
+            "tree_digest": tree_digest,
+        }),
+    )
+    marks = ",".join("?" for _ in _REBINDABLE)
+    with store._transaction():
+        rows = tuple(store._db.execute(
+            "SELECT r.reservation_id FROM reservations AS r "
+            f"WHERE r.status IN ({marks}) AND NOT EXISTS ("
+            "SELECT 1 FROM evaluation_lease_members AS m "
+            "WHERE m.reservation_id=r.reservation_id AND m.active=1) "
+            "AND NOT EXISTS (SELECT 1 FROM settlement_qualifications AS q "
+            "WHERE q.reservation_id=r.reservation_id)",
+            _REBINDABLE,
+        ))
+        for row in rows:
+            prior = reservation_baseline_segment(store, row["reservation_id"])
+            if prior is not None and (
+                prior.manifest.digest == incumbent.digest
+                and prior.tree_digest == tree_digest
+            ):
+                continue
+            store._db.execute(
+                "DELETE FROM reservation_baseline_segments WHERE reservation_id=?",
+                (row["reservation_id"],),
+            )
+            bind_reservation_baseline_segment(
+                store, row["reservation_id"], commissioned,
+                reason="commissioned_incumbent",
+            )
     required = qualification_queue_baseline(store)
-    if required is not None and required.arena_digest != incumbent.arena_digest:
-        rebind_retired_arena_segments(
-            store, store.evaluation_stack(incumbent.arena_digest)
-        )
-        required = qualification_queue_baseline(store)
     if required is None or (
         required.manifest.digest == incumbent.digest
         and required.tree_digest == tree_digest

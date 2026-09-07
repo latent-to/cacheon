@@ -447,13 +447,15 @@ class TestResidentServingScreenStage:
         assert (root / staged).is_dir()
         lane.close()
 
-    def test_swappable_loser_fails(self, tmp_path) -> None:
+    def test_successful_execution_passes_despite_abbreviated_speed_regression(self, tmp_path) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
         stage, lane, _root, _factory = self._stage(
             tmp_path, lambda _n: FakeResidentSession(100.0, {staged: 80.0})
         )
-        assert stage.run_screen(binding).grade is ScreenGrade.FAIL
+        result = stage.run_screen(binding)
+        assert result.grade is ScreenGrade.PASS
+        assert result.reason == "resident_execution_verified"
         lane.close()
 
     def test_wrong_dispatch_fails(self, tmp_path) -> None:

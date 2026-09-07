@@ -1488,7 +1488,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             if row.status not in {"published", "reproduction_pending"}:
                 raise IntakeError("only screenable intake may begin arena screening")
             stack = self._unambiguous_evaluation_stack(service_digest)
-            if stack is not None:
+            if stack is not None and stack.generation == 0:
                 self._bind_reservation_baseline_segment(
                     reservation_id, stack, reason="begin_screen"
                 )
@@ -2978,9 +2978,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
 
             if commit_plan.transition is not None:
-                self._bind_unbound_queue_to_stack(
-                    lease.stack, reason="settlement_transition"
-                )
                 manifest = commit_plan.transition.manifest
                 encoded = json.dumps(
                     manifest.to_dict(), separators=(",", ":"), sort_keys=True

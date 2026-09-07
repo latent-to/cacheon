@@ -22,10 +22,11 @@ durable evidence remain reopenable from Git history and the reserved schema.
 
 ## Legacy V1
 
-Every independently reproduced registered PASS is eligible for settlement, but
-only a settled `CROWN` earns from its retained qualification pair. A later crown
-changes the evaluation baseline; unresolved measurements against the superseded
-baseline are archived and rerun after the replacement commission.
+Every distinct registered contribution with an independently reproduced PASS
+earns from its retained qualification pair, whether or not it becomes the crown.
+Qualification keeps using the manually commissioned incumbent when another
+contribution crowns. Changing that comparison baseline requires an explicit
+operator commission; a crown alone does not change it.
 Duplicate packaging of the same contribution earns once.
 
 For speedup `s > 1`, finalized submission block `b`, the preceding distinct PASS
@@ -55,7 +56,7 @@ A discovery qualification can create one non-renewable bounded claim. It does no
 install an evaluation-stack contribution or create a standing family. Duplicate
 packaging, promotion, integration, or release cannot renew that claim.
 
-The projector reopens every crowned PASS pair, active stack, standing claim, and
+The projector reopens every earning PASS pair, active stack, standing claim, and
 discovery claim, binds finalized chain scope and membership, aggregates by hotkey,
 and normalizes one positive integer-ppm vector totaling 1,000,000.
 

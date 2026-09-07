@@ -12,7 +12,7 @@ halts because those rows drain under the still-resident commission.
 
 from __future__ import annotations
 
-from cacheon.chain.baseline_segments import RETIRED_ARENA_REBIND, commission_boundary
+from cacheon.chain.baseline_segments import commission_boundary
 from cacheon.chain.screen_identity_rotation import rotated_reservation_ids
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
@@ -90,7 +90,7 @@ def test_a_screen_under_the_live_arena_replaces_a_retired_arena_segment(tmp_path
         ).fetchone()["n"] == 2
 
 
-def test_a_same_arena_generation_advance_keeps_the_segment_and_the_boundary(tmp_path):
+def test_a_crown_does_not_change_the_manually_commissioned_baseline(tmp_path):
     with _store(tmp_path) as store:
         store.initialize_evaluation_stack(_manifest(LIVE), tree_digest=_h("live-tree"))
         rid = _published_row(store)
@@ -119,11 +119,9 @@ def test_a_same_arena_generation_advance_keeps_the_segment_and_the_boundary(tmp_
 
         assert store.reservation_baseline_segment(rid) == bound
         assert _binding(store, rid)["binding_reason"] == "begin_screen"
-        assert commission_boundary(store, advanced, tree_digest=_h("advanced-tree")) == (
-            advanced.digest,
-            bound.manifest.digest,
-            bound.tree_digest,
-        )
+        assert commission_boundary(store, bound.manifest, tree_digest=bound.tree_digest) is None
+        assert store.reservation_baseline_segment(rid) == bound
+        assert store.evaluation_stack(LIVE).manifest == advanced
 
 
 def test_the_boundary_rebinds_evidence_free_rows_left_on_a_retired_arena(tmp_path):
@@ -149,9 +147,7 @@ def test_the_boundary_rebinds_evidence_free_rows_left_on_a_retired_arena(tmp_pat
         assert live_state.generation == 0
         for rid in (head, waiting):
             assert store.reservation_baseline_segment(rid) == live_state
-            assert _binding(store, rid)["binding_reason"] == (
-                RETIRED_ARENA_REBIND + ":rebound_from_" + RETIRED[:16]
-            )
+            assert _binding(store, rid)["binding_reason"] == "commissioned_incumbent"
         # A PASS half keeps its segment: the boundary stays visible to the operator.
         assert _binding(store, passed)["arena_id"] == RETIRED
         # The head's receipt came from the retired identity, so the claim path
@@ -180,6 +176,10 @@ def test_the_dispatcher_claims_a_head_left_on_a_retired_arena(tmp_path):
     live = authority.fixtures._incumbent(authority.service)
     retired = EvaluationStackManifest.from_dict({**live.to_dict(), "arena_digest": RETIRED})
     with _dispatcher_store(authority) as store:
+        store._release_recovery(
+            store.pending_qualification_recovery(), current_block=authority.fixtures.BLOCK,
+            reason="unstarted_fixture",
+        )
         store.initialize_evaluation_stack(
             retired, tree_digest=authority.fixtures._h("retired-tree")
         )
@@ -200,6 +200,46 @@ def test_the_dispatcher_claims_a_head_left_on_a_retired_arena(tmp_path):
         assert store.reservation_baseline_segment(head) == store.evaluation_stack(
             authority.service.identity
         )
-        assert _binding(store, head)["binding_reason"] == (
-            RETIRED_ARENA_REBIND + ":rebound_from_" + RETIRED[:16]
-        )
+        assert _binding(store, head)["binding_reason"] == "commissioned_incumbent"
+
+
+def test_post_crown_misbound_work_qualifies_against_the_manual_incumbent(tmp_path):
+    import json
+
+    for profile in ("alpha", "beta"):
+        fixtures = _fixtures()
+        authority = fixtures._authority(tmp_path / profile, profile=profile, recoverable=True)
+        original = authority.fixtures._incumbent(authority.service)
+        original_tree = authority.fixtures._h("incumbent-tree")
+        crowned = authority.fixtures._incumbent(authority.service, marker="crowned")
+        reservation_id = authority.claim.lease.reservation_ids[0]
+        with _dispatcher_store(authority) as store:
+            store._release_recovery(
+                store.pending_qualification_recovery(),
+                current_block=authority.fixtures.BLOCK, reason="unstarted_fixture",
+            )
+            store.initialize_evaluation_stack(original, tree_digest=original_tree)
+            store._db.execute(
+                "UPDATE evaluation_stacks SET generation=1,stack_digest=?,tree_digest=?,"
+                "stack_json=?,transition_event_id=? WHERE arena_id=?",
+                (crowned.digest, authority.fixtures._h("crowned-tree"),
+                 json.dumps(crowned.to_dict(), separators=(",", ":"), sort_keys=True),
+                 authority.fixtures._h("crown-transition"), authority.service.identity),
+            )
+            store._db.execute("DELETE FROM reservation_baseline_segments")
+            store._bind_reservation_baseline_segment(
+                reservation_id, store.evaluation_stack(authority.service.identity),
+                reason="old_begin_screen",
+            )
+        transport = _Transport(authority, fixtures, complete_on_publish=True)
+
+        outcome = _dispatcher(authority, transport).dispatch_once()
+
+        assert outcome.disposition == "completed"
+        assert transport.plan.remote_request.body["incumbent_stack_digest"] == original.digest
+        assert transport.plan.remote_request.body["incumbent_tree_digest"] == original_tree
+        assert (transport.plans, transport.publications) == (1, 1)
+        with _dispatcher_store(authority) as store:
+            assert store.reservation_baseline_segment(reservation_id).manifest == original
+            assert store.evaluation_stack(authority.service.identity).manifest == crowned
+            assert store.pending_qualification_recovery() is None

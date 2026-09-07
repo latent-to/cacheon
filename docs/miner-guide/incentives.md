@@ -42,23 +42,22 @@ The value proposition has three parts:
   measured by the validator and reproduced independently. It does not depend on a
   self-reported benchmark or how large the submission is.
 - **One focused improvement.** A miner can improve one published kernel or
-  multi-kernel target. Later candidates are measured on top of the current
-  frontier, so contributors do not need to resubmit the rest of the engine to
-  receive credit for one change.
+  multi-kernel target against the manually commissioned incumbent. A crown
+  leaves that comparison baseline unchanged until the operator replaces it.
 - **Verifiable credit.** The chain records which hotkey submitted each exact
   bundle and when. Qualification, settlement, and the reward claim retain that
   identity, creating an auditable record of the measured contribution.
 
 This is an opportunity, not a guaranteed payout. It is economically sensible
 only when your expected share under the operator's active policy justifies your
-development and compute costs. A failed, unreproduced, or unsettled proposal has
+development and compute costs. A failed or unreproduced proposal has
 no reward claim, and an unconfirmed weight publication does not realize a
 projection on-chain.
 
 ## From proposal to possible emission
 
 ```text
-submit -> pass twice -> settlement crowns proposal and records claim
+submit -> pass twice -> retained contribution becomes eligible for V1 credit
        -> validator publishes confirmed weights -> network determines emission
 ```
 
@@ -68,19 +67,17 @@ The stages have different meanings:
 |---|---|---|
 | Finalized reveal accepted into intake | Exact proposal identity, miner hotkey, and finalized arrival order | No reward |
 | First qualification `PASS` | One complete attempt succeeded | No reward; the proposal is `reproduction_pending` |
-| Qualified | A fresh independently bound attempt reproduced the result | No reward yet; settlement is still pending |
-| Crown settled | Settlement selected the proposal and recorded its crown and reward claim together | The claim is eligible under the active policy |
+| Qualified | A fresh independently bound attempt reproduced the result | The distinct retained contribution earns V1 credit |
+| Crown settled | Settlement selected the proposal and recorded its crown and standing claim together | Its retained PASS credit continues |
 | Weight publication confirmed | The intended recipients and weight values were read back from finalized chain state within the verifier tolerance | Cacheon's projection is realized; token income remains network-dependent |
-| Crown retired or neutralized | The standing claim is no longer active | V1 standing credit stops |
+| Crown retired or neutralized | The standing claim is no longer active | Its retained two-PASS credit continues to decay under V1 |
 | Active claimant is absent from the metagraph | The claim stays active; that tick's allocated share cannot be paid to the miner | That family's ppm is burned to the validator hotkey; other families keep their ppm |
 | Evidence cannot reopen | Reward authority cannot be projected safely | Publication is held; the missing share is not redistributed |
 
-Passing twice makes a proposal eligible for settlement; it does not guarantee a
-win. Settlement rechecks the evidence and compares competing proposals for the
-same or overlapping work. It crowns at most one registered candidate before the
-incumbent changes, and other current candidates are held for fresh qualification
-against the new incumbent. The winning transition may also retire or neutralize
-claims displaced by registered target overlap.
+Settlement rechecks the evidence and selects a crown among competing proposals
+for the same or overlapping work. V1 credit includes every distinct retained
+two-PASS contribution, including a contribution that does not become the crown.
+Evaluation continues against the operator's commissioned baseline after settlement.
 
 The speedup used for settlement is deliberately conservative:
 

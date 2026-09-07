@@ -503,9 +503,8 @@ class ResidentServingScreenStage:
     """The ``abbreviated_serving`` stage engine for an arena provider.
 
     Swappable bundles are staged into the content-addressed swap intake and
-    screened through the resident lane; the verdict maps to the stage grade
-    (confident pass -> PASS, confident regression or wrong dispatch -> FAIL,
-    noisy but valid evidence -> PASS to qualification).  A recovered canary
+    screened through the resident lane. Successful execution passes to full
+    qualification regardless of abbreviated throughput; wrong dispatch fails.  A recovered canary
     withdrawal is retried inside the lane; an unrecovered stock canary is a
     measured ``NO_DECISION`` and can never promote the candidate.  Non-swappable
     bundles receive an explicitly recorded
@@ -643,14 +642,7 @@ def _stage_reason(verdict: CandidateScreenVerdict) -> str:
 
     if verdict.rejected_dispatch:
         return _stated(f"rejected_dispatch: {verdict.failure}")
-    speed = verdict.verdict
-    if speed is None:
-        return ""
-    return _stated(
-        f"speedup {speed.speedup:.4f}x vs required {speed.required:.4f}x, "
-        f"noise {speed.noise:.4f}, "
-        + ("confident" if speed.confident else "inconclusive (passed on to qualification)")
-    )
+    return "resident_execution_verified"
 
 
 def _stage_grade(verdict: CandidateScreenVerdict) -> ScreenGrade:
@@ -660,9 +652,7 @@ def _stage_grade(verdict: CandidateScreenVerdict) -> ScreenGrade:
         return ScreenGrade.FAIL
     if verdict.verdict is None:
         raise ResidentScreenLaneError("resident screen returned no speed verdict")
-    if not verdict.verdict.confident:
-        return ScreenGrade.PASS
-    return ScreenGrade.PASS if verdict.passed else ScreenGrade.FAIL
+    return ScreenGrade.PASS
 
 
 __all__ = [
