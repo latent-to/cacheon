@@ -154,6 +154,7 @@ class FinalizedArrival:
     invalid_reason: str = ""
     payment_block: int = 0
     payment_extrinsic_index: int = 0
+    baseline_ref: str = ""
 
     def __post_init__(self) -> None:
         if (
@@ -202,9 +203,12 @@ class FinalizedArrival:
             raise IntakeError("arrival eval-cost payment pointer is malformed")
         if self.payment_block == 0 and self.payment_extrinsic_index != 0:
             raise IntakeError("arrival eval-cost payment pointer is malformed")
+        if self.baseline_ref:
+            require_sha256_hex(self.baseline_ref, field="baseline_ref")
         payload_digest = self.payload_digest or canonical_digest(
             _FINALIZED_PAYLOAD_DOMAIN,
-            {"content_hash": self.content_hash, "url": self.url},
+            {"content_hash": self.content_hash, "url": self.url,
+             **({"baseline_ref": self.baseline_ref} if self.baseline_ref else {})},
         )
         require_sha256_hex(payload_digest, field="payload_digest")
         object.__setattr__(self, "payload_digest", payload_digest)
@@ -478,6 +482,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             self._db.execute("PRAGMA synchronous=FULL")
             self._db.execute("PRAGMA foreign_keys=ON")
             self._create_schema()
+            from cacheon.chain.declared_baseline import create_schema
+            create_schema(self)
+            from cacheon.chain.submission_ranking import create_schema as create_ranking_schema
+            create_ranking_schema(self)
             self._bind_scope()
         except Exception:
             if hasattr(self, "_db"):
@@ -934,6 +942,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         if any(row.block > finalized_block for row in rows):
             raise IntakeError("unfinalized arrival reached durable intake")
 
+        from cacheon.chain.declared_baseline import admission_reason, bind_admitted
+
         inserted: list[str] = []
         with self._transaction():
             # Admission capacity is finalized-chain state, not an operator-maintained
@@ -998,6 +1008,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     and not credit_id
                 ):
                     status, reason = "failed", "missing_eval_cost_payment"
+                elif (baseline_reason := admission_reason(self, arrival.baseline_ref, arrival)):
+                    status, reason = "failed", baseline_reason
                 elif finalized_block - arrival.block >= self.policy.expiry_blocks:
                     status, reason = "expired", _AUTOMATIC_EXPIRY_REASON
                 elif hotkey_count >= self.policy.max_per_hotkey_epoch:
@@ -1020,8 +1032,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 self._db.execute(
                     "INSERT INTO reservations(reservation_id,block,block_hash,event_index,event_subindex,"
                     "hotkey,content_hash,url,payload_digest,invalid_reason,admission_epoch,status,reason,"
-                    "eval_cost_payment_block,eval_cost_payment_extrinsic_index) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "eval_cost_payment_block,eval_cost_payment_extrinsic_index,baseline_ref) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         arrival.reservation_id,
                         arrival.block,
@@ -1038,8 +1050,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         reason,
                         arrival.payment_block,
                         arrival.payment_extrinsic_index,
+                        arrival.baseline_ref,
                     ),
                 )
+                bind_admitted(self, arrival.reservation_id)
                 if (
                     eval_cost_amount_tao_rao > 0
                     and status in {"reserved", "deferred"}
@@ -1103,6 +1117,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             row["payload_digest"], row["invalid_reason"],
             int(row["eval_cost_payment_block"] or 0),
             int(row["eval_cost_payment_extrinsic_index"] or 0),
+            row["baseline_ref"],
         )
         return IntakeReservation(
             row["reservation_id"], arrival, row["admission_epoch"], row["status"],
@@ -1128,6 +1143,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ))
 
     def _activate_deferred_rows(self) -> tuple[str, ...]:
+        from cacheon.chain.declared_baseline import expire_deferred_baselines
+        expire_deferred_baselines(self)
         active = self._db.execute(
             "SELECT COUNT(*) AS n FROM reservations WHERE status IN ("
             "'reserved','fetching','transport_retry','published','screening',"
@@ -2610,6 +2627,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             ):
                 raise IntakeError("settlement priority changed while evidence was open")
             for candidate in lease.candidates:
+                if self._db.execute(
+                    "SELECT 1 FROM submission_rankings WHERE reservation_id=? AND won=0",
+                    (candidate.reservation_digest,),
+                ).fetchone():
+                    raise IntakeError("submission did not beat the strongest winner")
                 _roots, _references, expected_receipt = (
                     self._settlement_evidence_metadata(candidate)
                 )
@@ -2860,6 +2882,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             "JOIN reservations r USING(reservation_id) "
             "WHERE r.status='qualified' AND r.decision='PASS' "
             "AND sc.status!='duplicate_proposal' "
+            "AND NOT EXISTS (SELECT 1 FROM submission_rankings rk "
+            "WHERE rk.reservation_id=sc.reservation_id AND rk.won=0) "
             "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
         )
         for row in rows:
@@ -2977,15 +3001,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             self._reopen_claim_evidence(
                 claim.retained_evidence_digest, "discovery_bounty"
             )
-        authorities = []
-        for state in active_states:
-            authorities.append(
-                ArenaRewardAuthority(
-                    state.manifest,
-                    state.generation,
-                    tuple(by_arena.get(state.arena_digest, ())),
-                )
-            )
+        from cacheon.chain.ranked_rewards import reward_authorities
+        authorities = reward_authorities(self, states, earning)
         projection = project_global_rewards(
             policy, context, tuple(authorities), earning, discovery
         )
@@ -3220,6 +3237,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             _SETTLEMENT_STATE_DOMAIN,
             {
                 "candidates": candidates,
+                "rankings": tuple(tuple(row) for row in self._db.execute(
+                    "SELECT * FROM submission_rankings ORDER BY sequence")),
                 "event_head": event,
                 "event_sequence": sequence,
                 "stacks": stacks,
@@ -3734,7 +3753,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
             for table in (
                 "settlement_qualifications", "settlement_candidates",
-                "reservation_baseline_segments", "reservation_sla_resets",
+                "submission_rankings", "reservation_sla_resets",
             ):
                 self._db.execute(
                     f"DELETE FROM {table} WHERE reservation_id=?", (reservation_id,)
@@ -3768,35 +3787,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             ).fetchone() is None
         )
 
-    def rebind_remeasurement_segment(
-        self, reservation_id: str
-    ) -> EvaluationStackState | None:
-        """Bind a reopened row's baseline segment to the stack that re-screened it.
+    def rebind_remeasurement_segment(self, reservation_id: str) -> EvaluationStackState | None:
+        """Return the original baseline; a remeasurement cannot rewrite a declaration."""
 
-        Idempotent repair for a reopened row the queue backfill bound to its
-        retired arrival stack. Once the fresh screen has stamped the live
-        service digest, that digest names the stack the row must drain under;
-        before the screen the row is left unbound for the screen to bind.
-        """
-
-        with self._transaction():
-            self._require_evaluation_mutation_authority(reservation_id)
-            if not self.remeasurement_pending(reservation_id):
-                raise IntakeError("only a reopened reservation awaiting its fresh pair may be rebound")
-            row = self.get(reservation_id)
-            self._db.execute(
-                "DELETE FROM reservation_baseline_segments WHERE reservation_id=?",
-                (reservation_id,),
-            )
-            if not row.arena_service_digest:
-                return None
-            state = self._unambiguous_evaluation_stack(row.arena_service_digest)
-            if state is None:
-                raise IntakeError("reopened reservation's screen names no evaluation stack")
-            self._bind_reservation_baseline_segment(
-                reservation_id, state, reason="remeasure_rescreen"
-            )
-        return state
+        return self.reservation_baseline_segment(reservation_id)
 
 
 class SQLiteWeightPublicationJournal:

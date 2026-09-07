@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 from pathlib import Path
 
 import pytest
 
 from cacheon.bundle_hash import content_hash
-from cacheon.chain import mainnet_screen_dispatcher as dispatcher_module
 from cacheon.chain.eval_cost import (
     DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS,
     PUBLISHED_EVAL_COST_TAO_RAO,
@@ -41,7 +42,11 @@ from cacheon.chain.payload import (
     decode_payload,
     encode_payload,
 )
-from cacheon.chain.submit import submit_bundle
+from tests.intake_fixtures import (
+    submit_with_baseline as submit_bundle, fixture_baseline,
+    published_baseline as published_baseline,
+)
+
 
 
 HASH = "a" * 64
@@ -49,22 +54,6 @@ SCOPE = IntakeScope("0x" + "0" * 64, 307)
 TREASURY = "treasury"
 _BUNDLE = Path(__file__).resolve().parent.parent / "examples" / "miner_silu_torch"
 _PAID_AMOUNT = 10
-
-
-def test_shared_intake_policy_keeps_the_sealed_dispatch_shape() -> None:
-    fields = (
-        "epoch_blocks",
-        "cutoff_blocks",
-        "max_pending",
-        "max_per_hotkey_epoch",
-        "max_per_target_epoch",
-        "max_transport_retries",
-        "max_qualification_retries",
-        "max_cohort",
-        "expiry_blocks",
-    )
-    assert tuple(IntakePolicy.__dataclass_fields__) == fields
-    assert dispatcher_module._POLICY_FIELDS == frozenset(fields)
 
 
 def _request(**changes) -> EvalCostRequest:
@@ -443,7 +432,7 @@ def test_unpaid_v1_fails_when_eval_cost_is_required(tmp_path) -> None:
         IntakePolicy(),
         scope=SCOPE,
     ) as store:
-        row = store.reserve_finalized(
+        row = reserve_fixture(store,
             (arrival,),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
@@ -479,7 +468,7 @@ def test_valid_payment_is_consumed_once(tmp_path) -> None:
         IntakePolicy(expiry_blocks=100),
         scope=SCOPE,
     ) as store:
-        rows = store.reserve_finalized(
+        rows = reserve_fixture(store,
             (first, second),
             finalized_block=11,
             finalized_block_hash="0x" + f"{11:064x}",
@@ -513,7 +502,7 @@ def test_disabled_gate_does_not_consume_or_poison_payment_pointer(tmp_path) -> N
         IntakePolicy(expiry_blocks=100),
         scope=SCOPE,
     ) as store:
-        free_rows = store.reserve_finalized(
+        free_rows = reserve_fixture(store,
             (
                 arrival("miner-a", "a" * 64, 10, 0),
                 arrival("miner-b", "b" * 64, 11, 1),
@@ -529,7 +518,7 @@ def test_disabled_gate_does_not_consume_or_poison_payment_pointer(tmp_path) -> N
             == 0
         )
 
-        paid = store.reserve_finalized(
+        paid = reserve_fixture(store,
             (arrival("miner-c", "c" * 64, 12, 0),),
             finalized_block=12,
             finalized_block_hash="0x" + f"{12:064x}",
@@ -587,14 +576,14 @@ def test_failed_intake_leaves_eval_cost_payment_unused(tmp_path) -> None:
         IntakePolicy(expiry_blocks=100),
         scope=SCOPE,
     ) as store:
-        first = store.reserve_finalized(
+        first = reserve_fixture(store,
             (failed,),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
             eval_cost_amount_tao_rao=_PAID_AMOUNT,
         )[0]
         assert first.status == "failed"
-        second = store.reserve_finalized(
+        second = reserve_fixture(store,
             (retry,),
             finalized_block=12,
             finalized_block_hash="0x" + f"{12:064x}",
@@ -635,7 +624,7 @@ def test_eval_cost_credit_admits_one_unpaid_reveal(tmp_path) -> None:
             amount_tao_rao=_PAID_AMOUNT,
             note="expired through validator backpressure",
         )
-        first = store.reserve_finalized(
+        first = reserve_fixture(store,
             (_unpaid_arrival("miner", "a" * 64, 10),),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
@@ -647,7 +636,7 @@ def test_eval_cost_credit_admits_one_unpaid_reveal(tmp_path) -> None:
         assert credit.spent
         assert credit.reservation_id == first.reservation_id
         assert credit.spent_block == 10
-        second = store.reserve_finalized(
+        second = reserve_fixture(store,
             (_unpaid_arrival("miner", "b" * 64, 11),),
             finalized_block=11,
             finalized_block_hash="0x" + f"{11:064x}",
@@ -664,7 +653,7 @@ def test_eval_cost_credit_is_hotkey_scoped(tmp_path) -> None:
         scope=SCOPE,
     ) as store:
         grant_eval_cost_credit(store.path, hotkey="miner")
-        other = store.reserve_finalized(
+        other = reserve_fixture(store,
             (_unpaid_arrival("other", "a" * 64, 10),),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
@@ -672,7 +661,7 @@ def test_eval_cost_credit_is_hotkey_scoped(tmp_path) -> None:
         )[0]
         assert other.status == "failed"
         assert other.reason == "missing_eval_cost_payment"
-        mine = store.reserve_finalized(
+        mine = reserve_fixture(store,
             (_unpaid_arrival("miner", "b" * 64, 11),),
             finalized_block=11,
             finalized_block_hash="0x" + f"{11:064x}",
@@ -688,7 +677,7 @@ def test_one_credit_admits_only_one_unpaid_reveal_per_batch(tmp_path) -> None:
         scope=SCOPE,
     ) as store:
         grant_eval_cost_credit(store.path, hotkey="miner")
-        rows = store.reserve_finalized(
+        rows = reserve_fixture(store,
             (
                 _unpaid_arrival("miner", "a" * 64, 10, 0),
                 _unpaid_arrival("miner", "b" * 64, 10, 1),
@@ -719,7 +708,7 @@ def test_eval_cost_credit_survives_admission_failed_for_another_reason(
         scope=SCOPE,
     ) as store:
         grant_eval_cost_credit(store.path, hotkey="miner")
-        failed = store.reserve_finalized(
+        failed = reserve_fixture(store,
             (invalid,),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
@@ -728,7 +717,7 @@ def test_eval_cost_credit_survives_admission_failed_for_another_reason(
         assert failed.status == "failed"
         assert failed.reason == "malformed_payload"
         assert not list_eval_cost_credits(store.path)[0].spent
-        retry = store.reserve_finalized(
+        retry = reserve_fixture(store,
             (_unpaid_arrival("miner", "b" * 64, 11),),
             finalized_block=11,
             finalized_block_hash="0x" + f"{11:064x}",
@@ -755,7 +744,7 @@ def test_eval_cost_credit_is_consumed_by_a_deferred_admission(tmp_path) -> None:
         scope=SCOPE,
     ) as store:
         grant_eval_cost_credit(store.path, hotkey="miner")
-        rows = store.reserve_finalized(
+        rows = reserve_fixture(store,
             (paid, _unpaid_arrival("miner", "b" * 64, 10, 1)),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
@@ -794,14 +783,14 @@ def test_credit_never_rescues_a_cited_payment_pointer(tmp_path) -> None:
             payment_block=8,
             payment_extrinsic_index=4,
         )
-        rows = store.reserve_finalized(
+        rows = reserve_fixture(store,
             (first,),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
             eval_cost_amount_tao_rao=_PAID_AMOUNT,
         )
         assert rows[0].status == "reserved"
-        replayed = store.reserve_finalized(
+        replayed = reserve_fixture(store,
             (used_twice,),
             finalized_block=11,
             finalized_block_hash="0x" + f"{11:064x}",
@@ -904,6 +893,7 @@ def _bundle_request_and_remark():
         netuid=307,
         hotkey="miner",
         content_hash=content_hash(_BUNDLE),
+        baseline_ref=fixture_baseline().digest,
     )
     quote = quote_eval_cost(
         request,

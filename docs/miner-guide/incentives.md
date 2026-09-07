@@ -1,7 +1,8 @@
 # How miners earn rewards
 
 Cacheon does not reward the act of uploading a kernel. It rewards a measured
-improvement that passes complete qualification and settlement. When the
+improvement that passes complete qualification and beats the strongest existing
+same-slot winner. Reward eligibility starts before baseline finalization. When the
 operator enables the eval-cost gate, each admitted proposal must also transfer
 the published TAO amount to the current subnet owner coldkey; that transfer is an
 anti-spam admission cost, not a reward.
@@ -15,8 +16,9 @@ paying again. See [Submitting](submitting.md#step-by-step-commands).
     arena. The validator compares it with that arena's exact evaluation incumbent
     on the registered workload and checks that it remains within the required
     behavior and quality limits. If the same optimization passes one complete audited
-    qualification attempt, settlement may name it the new **crown** for that
-    target and record the corresponding reward claim in the same transaction.
+    qualification attempt and clears the same-slot competition threshold, its
+    retained score becomes eligible for rewards immediately. Finalization means
+    incorporating the winner into the commissioned evaluation baseline.
 
     The active policy determines how that claim contributes to validator weights.
     A separate publisher later combines all eligible claims into a weight vector and
@@ -271,3 +273,15 @@ and operational boundaries live in:
 - [Emissions policy](../reference/emissions-policy.md) — exact V1 and V2 formulas;
 - [Settlement and weights](../validator-guide/settlement-and-weights.md) — validator
   settlement, signing, publication, and recovery;
+
+
+## Declared baselines and stale winners
+
+The [six incentive criteria](../architecture/incentive-criteria.md) define
+baseline admission, queue ordering and competition. A contender is measured
+against its declared baseline and compared with the strongest unfinalized
+same-slot winner using retained absolute speed and the new run's noise margin.
+A **stale** marker records that such a winner already existed when evaluation
+finished; the marker does not remove a valid win. Submission details retain
+the declared/evaluated baseline. Only the standalone weight producer builds
+weight distributions from the recorded winners.

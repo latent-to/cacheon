@@ -84,7 +84,6 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     standing: dict[str, object] = {
         "enable_qualification": True,
         "enable_settlement": False,
-        "enable_weights": False,
         "idle_poll_ms": 25,
         "qualification_evidence_root": str(evidence),
         "qualification_incumbent_stack_path": str(incumbent_path),
@@ -95,7 +94,6 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         "screen_dispatcher_config": str(screen_config_path),
         "settlement_network": "",
         "stall_timeout_ms": 120_000,
-        "weights_stage_config": "",
     }
     standing_path = private / "standing.json"
     _private_file(
@@ -108,7 +106,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
 def test_load_standing_config_closed_and_weights_disabled(tmp_path: Path) -> None:
     standing_path, raw = _setup(tmp_path)
     config = load_standing_config(standing_path)
-    assert config.enable_weights is False
+    assert not hasattr(config, "enable_weights")
     assert config.enable_settlement is False
     assert config.idle_poll_s == 0.025
     assert config.raw == raw
@@ -132,7 +130,7 @@ def test_enable_weights_refused_without_its_push_authority(tmp_path: Path) -> No
     standing_path.chmod(0o600)
     standing_path.write_bytes(spool.spool_canonical_json(bad) + b"\n")
     standing_path.chmod(0o400)
-    with pytest.raises(StandingCpuSupervisorError, match="weights_stage_config"):
+    with pytest.raises(StandingCpuSupervisorError, match="fields are not closed"):
         load_standing_config(standing_path)
 
 
@@ -149,7 +147,7 @@ def test_weights_stage_config_refused_while_weights_are_disabled(
     bad = dict(raw)
     bad["weights_stage_config"] = str(tmp_path / "weights.json")
     _rewrite(standing_path, bad)
-    with pytest.raises(StandingCpuSupervisorError, match="enable_weights is false"):
+    with pytest.raises(StandingCpuSupervisorError, match="fields are not closed"):
         load_standing_config(standing_path)
 
 
@@ -204,7 +202,7 @@ def test_enable_settlement_with_its_clock_loads(tmp_path: Path) -> None:
     config = load_standing_config(standing_path)
     assert config.enable_settlement is True
     assert config.settlement_network == "wss://example.invalid"
-    assert config.enable_weights is False
+    assert not hasattr(config, "enable_weights")
 
 
 def test_backoff_ordering_fail_closed(tmp_path: Path) -> None:
@@ -242,7 +240,7 @@ def test_build_standing_supervisor_omits_weights(tmp_path: Path) -> None:
     config = load_standing_config(standing_path)
     supervisor = build_standing_supervisor(config)
     assert type(supervisor) is StandingCpuSupervisor
-    assert supervisor.weights_once is None
+    assert not hasattr(supervisor, "weights_once")
     assert supervisor.settle_once is None
     assert callable(supervisor.screen_once)
     assert callable(supervisor.qualification_once)
@@ -281,65 +279,18 @@ def test_enabled_settlement_is_actually_wired_into_the_supervisor(
     assert callable(supervisor.settle_once)
     assert dialed == ["wss://example.invalid"]
     # Publication remains a separate authority behind its own flag.
-    assert supervisor.weights_once is None
+    assert not hasattr(supervisor, "weights_once")
 
 
-def test_enabled_weights_is_actually_wired_into_the_supervisor(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """The flag has to reach ``weights_once`` as an HTTP push, not a chain signer."""
-
-    from cacheon import chain
-    from cacheon.chain.standing_weights_stage import WEIGHTS_CONFIG_SCHEMA
-    from cacheon.chain.weight_push_auth import (
-        PushCredentialSet,
-        mint_push_credential,
-        write_push_credentials,
-    )
-
-    dialed: list[str] = []
-
-    def _fake_connect(network: str, **_kwargs: object) -> object:
-        dialed.append(network)
-        return object()
-
-    monkeypatch.setattr(chain, "connect", _fake_connect)
-
+def test_eval_supervisor_refuses_weight_production_even_with_config(tmp_path):
     standing_path, raw = _setup(tmp_path)
-    cred_path = standing_path.parent / "push-credentials.json"
-    write_push_credentials(
-        cred_path,
-        PushCredentialSet((mint_push_credential(credential_id="test"),)),
-    )
-    weights_path = standing_path.parent / "weights-stage.json"
-    _private_file(
-        weights_path,
-        spool.spool_canonical_json(
-            {
-                "attribution_hotkey": "validator",
-                "burn_hotkey": "",
-                "discovery_lifetime_blocks": 2160,
-                "discovery_pool_ppm": 100_000,
-                "fallback_endpoint": "wss://archive-backup.example.invalid",
-                "half_life_blocks": 7200,
-                "network": "wss://archive.example.invalid",
-                "push_credentials": str(cred_path),
-                "push_url": "http://127.0.0.1:8080",
-                "refresh_blocks": 600,
-                "schema": WEIGHTS_CONFIG_SCHEMA,
-            }
-        )
-        + b"\n",
-    )
-    row = dict(raw)
-    row["enable_weights"] = True
-    row["weights_stage_config"] = str(weights_path)
-    weights_standing = standing_path.parent / "standing-weights.json"
-    _private_file(weights_standing, spool.spool_canonical_json(row) + b"\n")
-
-    supervisor = build_standing_supervisor(load_standing_config(weights_standing))
-    assert callable(supervisor.weights_once)
-    assert dialed == ["wss://archive.example.invalid"]
+    raw["enable_weights"] = True
+    raw["weights_stage_config"] = str(tmp_path / "weights.json")
+    standing_path.chmod(0o600)
+    standing_path.write_bytes(spool.spool_canonical_json(raw) + b"\n")
+    standing_path.chmod(0o400)
+    with pytest.raises(StandingCpuSupervisorError, match="fields are not closed"):
+        load_standing_config(standing_path)
 
 
 @pytest.mark.parametrize(
@@ -420,6 +371,9 @@ def test_weights_stage_chooses_burn_or_real_projection_from_store_state(
                 ),
             )
 
+        def passed_reward_claims(self):
+            return tuple(claims)
+
         def active_reward_claims(self):
             return tuple(claims), ()
 
@@ -447,8 +401,8 @@ def test_weights_stage_chooses_burn_or_real_projection_from_store_state(
     publish = compose_weight_offer_push(stage, store_factory=_Store, scope=scope)
     result = publish()
     assert built == [expected_builder]
-    assert result.disposition == "accepted"
-    assert result.request_id == "d" * 64
+    assert result.status == "accepted"
+    assert result.projection_digest == "d" * 64
 
 
 def test_disabled_qualification_gates_the_stage_and_screens_still_claim(

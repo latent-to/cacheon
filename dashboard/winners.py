@@ -140,3 +140,79 @@ def live_offer_shares(path: object) -> tuple[dict[str, Any] | None, dict[str, De
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None, {}
     return summary, shares
+
+
+def with_competitive_results(con, passed):
+    """Filter A/B-only passes and attach immutable completion-time winner details."""
+
+    from dashboard.baseline_api import competition_details
+
+    winners = []
+    for row in passed:
+        competition = competition_details(con, row["reservation_id"])
+        if competition.get("won", True):
+            winners.append(dict(row) | {"competition": competition})
+    return winners
+
+
+def baseline_relationship(con, target_id, baseline_artifact, result, lineage_tables_available=None):
+    """Describe the retained baseline's lineage for submission details."""
+
+    if lineage_tables_available is None:
+        tables = {
+            row["name"]
+            for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('target_lineage_tips','target_lineage_nodes')"
+            )
+        }
+        lineage_tables_available = tables == {
+            "target_lineage_tips",
+            "target_lineage_nodes",
+        }
+    if not lineage_tables_available:
+        return result
+    tip = con.execute(
+        "SELECT artifact_digest FROM target_lineage_tips WHERE target_id=?",
+        (target_id,),
+    ).fetchone()
+    if tip is None:
+        return result
+    tip_artifact = str(tip["artifact_digest"])
+    result["current_tip_artifact_digest"] = tip_artifact
+    if baseline_artifact == tip_artifact:
+        result["relationship"] = "current_tip"
+        result["threshold_speedup"] = 1.0
+        return result
+
+    nodes: list[dict[str, Any]] = []
+    artifact = tip_artifact
+    seen: set[str] = set()
+    while artifact and artifact not in seen:
+        seen.add(artifact)
+        node = con.execute(
+            "SELECT artifact_digest,parent_artifact_digest,winner_speedup "
+            "FROM target_lineage_nodes WHERE target_id=? AND artifact_digest=?",
+            (target_id, artifact),
+        ).fetchone()
+        if node is None:
+            break
+        nodes.append(dict(node))
+        artifact = str(node["parent_artifact_digest"])
+    nodes.reverse()
+    start = next(
+        (
+            index for index, node in enumerate(nodes)
+            if node["parent_artifact_digest"] == baseline_artifact
+        ),
+        None,
+    )
+    if start is None:
+        result["relationship"] = "outside_active_lineage"
+        return result
+    threshold = Decimal(1)
+    for node in nodes[start:]:
+        threshold *= Decimal(str(node["winner_speedup"]))
+    result["relationship"] = "ancestor"
+    result["threshold_speedup"] = float(threshold)
+    return result

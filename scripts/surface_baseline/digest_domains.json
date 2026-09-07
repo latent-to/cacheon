@@ -1,6 +1,7 @@
 {
  "cacheon/arena_service.py": ["cacheon.arena.candidate-binding","cacheon.arena.screen-receipt","cacheon.arena.service","cacheon.arena.service-registry","cacheon.arena.workload-cells.v1"],
  "cacheon/chain/archive.py": ["cacheon.chain.intake-scope","cacheon.validator-archive-restore-map.v1","cacheon.validator-archive.v1","cacheon.validator.archive-manifest","cacheon.validator.archived-evidence-root","cacheon.validator.archived-tree"],
+ "cacheon/chain/declared_baseline.py": ["cacheon.chain.finalized-baseline.v1"],
  "cacheon/chain/eval_cost.py": ["cacheon.chain.eval-cost-payment.v1"],
  "cacheon/chain/evaluation_coordinator.py": ["cacheon.chain.evaluation-result-envelope.v1","cacheon.chain.qualification-result-payload.v1","cacheon.chain.worker-readiness.v1"],
  "cacheon/chain/evaluation_lease_operator.py": ["cacheon-fifo-evaluation-lease-config-v1","cacheon-fifo-evaluation-lease-result-v1","cacheon-validator-downtime-requeue-authority-v1","cacheon.chain.validator-downtime-requeue-authority.v1"],
@@ -13,6 +14,7 @@
  "cacheon/chain/remote_qualification_evidence.py": ["cacheon.chain.remote-qualification-product.v1"],
  "cacheon/chain/standing_cpu_supervisor.py": ["cacheon-standing-cpu-supervisor-event-v1","cacheon-standing-cpu-supervisor-status-v1","cacheon-standing-supervisor-config-v1","cacheon.chain.standing-supervisor-config.v1"],
  "cacheon/chain/standing_weights_stage.py": ["cacheon-standing-weights-config-v1","cacheon.chain.standing-weights-config.v1"],
+ "cacheon/chain/submission_ranking.py": ["cacheon.chain.speed-comparison.v1","cacheon.chain.speed-comparison.v2"],
  "cacheon/chain/weight_offer_service.py": ["cacheon-weight-offer-service-config-v1","cacheon.chain.weight-offer-service-config.v1"],
  "cacheon/chain/weight_push_auth.py": ["cacheon.weight-push-credentials.v1","cacheon.weight-share.push-ack-auth.v1","cacheon.weight-share.push-ack.v1","cacheon.weight-share.push.v1"],
  "cacheon/chain/weight_share.py": ["cacheon.authenticated-weight-offer.v1","cacheon.current-weight-offer","cacheon.current-weight-offer.v2","cacheon.weight-share.request.v1","cacheon.weight-share.response.v1","cacheon.weight-share.storage.v1"],

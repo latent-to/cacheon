@@ -711,7 +711,7 @@ def test_pretransition_stale_sibling_above_last_winner_can_crown() -> None:
     assert crown.reason == "qualified_pretransition_ancestor_win"
 
 
-def test_faster_stale_sibling_becomes_the_next_baseline_and_threshold() -> None:
+def test_store_ranked_sibling_becomes_next_baseline_without_ratio_regrading() -> None:
     catalog = default_target_catalog()
     parent = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "parent")})
     first = _candidate(
@@ -748,8 +748,7 @@ def test_faster_stale_sibling_becomes_the_next_baseline_and_threshold() -> None:
             {middle_sibling.reservation_digest}
         ),
     )
-    assert rejected.winner_candidate_digest == ""
-    assert rejected.events[0].reason == "stale_incumbent"
+    assert rejected.winner_candidate_digest == middle_sibling.digest
 
     # A fresh challenger measured against the faster sibling is current and
     # uses ordinary marginal settlement, not the stale-sibling exception.
@@ -770,7 +769,7 @@ def test_faster_stale_sibling_becomes_the_next_baseline_and_threshold() -> None:
     assert current.winner_candidate_digest == current_challenger.digest
 
 
-def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> None:
+def test_store_ranked_ancestor_does_not_repeat_composed_ratio_comparison() -> None:
     catalog = default_target_catalog()
     a = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "A")})
     b = _candidate(
@@ -802,7 +801,7 @@ def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> Non
         lineage_tips={ROUTED: active},
         pretransition_reservations=frozenset({equal_d.reservation_digest}),
     )
-    assert equal_plan.winner_candidate_digest == ""
+    assert equal_plan.winner_candidate_digest == equal_d.digest
 
     faster_d = _candidate(
         a, _ref(catalog, ROUTED, "D-faster"), catalog,
@@ -825,7 +824,7 @@ def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> Non
     ("speedup", "pretransition"),
     (("1.05", True), ("1.04", True), ("1.09", False)),
 )
-def test_stale_sibling_must_be_strictly_better_and_pretransition(
+def test_store_ranked_sibling_does_not_require_pretransition_snapshot(
     speedup: str, pretransition: bool,
 ) -> None:
     catalog = default_target_catalog()
@@ -849,11 +848,8 @@ def test_stale_sibling_must_be_strictly_better_and_pretransition(
             else frozenset()
         ),
     )
-    assert planned.winner_candidate_digest == ""
-    assert [event.event_type for event in planned.events] == [
-        SettlementEventType.HOLD
-    ]
-    assert planned.events[0].reason == "stale_incumbent"
+    assert planned.winner_candidate_digest == stale.digest
+    assert any(event.event_type is SettlementEventType.CROWN for event in planned.events)
 
 
 def test_lineage_tip_naming_the_incumbent_still_crowns() -> None:

@@ -1,12 +1,7 @@
-"""Eval-side weight-offer push stage for the standing CPU supervisor.
+"""Weight-offer projection and push, owned only by the standalone producer.
 
-The supervisor never signs weights. When ``enable_weights`` is set, this stage
-projects the current V1 offer from the intake store and HTTP-pushes it to the
-serve-weights lane, which owns readback and the follow-weights signer decides
-whether anything reaches the chain. Composition lives in
-``standing_cpu_supervisor.build_standing_supervisor``; the sealed
-``weights_stage_config`` file this module reopens is documented in
-``docs/validator-guide/chain-loop.md``.
+The evaluator records competitive scores in SQLite. The weight-offer service
+reads those scores and retained evidence here; signing remains with followers.
 """
 
 from __future__ import annotations
@@ -151,7 +146,6 @@ def compose_weight_offer_push(
     from cacheon import chain
     from cacheon.chain.standing_cpu_supervisor import (
         StandingCpuSupervisorError,
-        weights_stage,
     )
     from cacheon.chain.weight_push_auth import resolve_push_credentials
     from cacheon.chain.weight_share import (
@@ -207,7 +201,8 @@ def compose_weight_offer_push(
                 states = store.evaluation_stacks()
                 standing, discovery = store.active_reward_claims()
                 crowned = any(state.generation > 0 for state in states)
-                if standing or discovery or crowned:
+                earning = store.passed_reward_claims()
+                if standing or discovery or crowned or earning:
                     # Real economic authority exists: project it. A mixed or
                     # torn state (claims without a crowned arena, or the
                     # reverse) is the builder's refusal to surface, not a
@@ -251,7 +246,7 @@ def compose_weight_offer_push(
             status=status if isinstance(status, str) and status else "pushed",
         )
 
-    return weights_stage(publish=publish)
+    return publish
 
 
 __all__ = [

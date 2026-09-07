@@ -19,7 +19,11 @@ from cacheon.chain.eval_cost import (
     EvalCostPolicy,
 )
 from cacheon.chain.payload import MAX_PAYLOAD_BYTES, PayloadError, decode_payload
-from cacheon.chain.submit import submit_bundle
+from tests.intake_fixtures import (
+    submit_with_baseline as submit_bundle,
+    published_baseline as published_baseline,
+)
+
 
 _BUNDLE = Path(__file__).resolve().parent.parent / "examples" / "miner_silu_torch"
 _URL = "https://example.com/bundles/miner-silu-torch.tar"
@@ -74,7 +78,7 @@ def test_dry_run_reuses_an_unused_payment_pointer_as_v2() -> None:
     assert ref is not None
     assert ref.payment_block == 80
     assert ref.payment_extrinsic_index == 4
-    assert '"v":2' in result["payload"]
+    assert '"v":3' in result["payload"]
 
 
 def test_dry_run_refuses_pay_together_with_reuse() -> None:

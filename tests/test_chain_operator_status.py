@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import json
 
 import pytest
@@ -49,7 +51,7 @@ def _store(tmp_path) -> FinalizedIntakeStore:
 
 
 def _reserve(store: FinalizedIntakeStore, *arrivals: FinalizedArrival) -> None:
-    store.reserve_finalized(
+    reserve_fixture(store,
         arrivals,
         finalized_block=BLOCK,
         finalized_block_hash=BLOCK_HASH,

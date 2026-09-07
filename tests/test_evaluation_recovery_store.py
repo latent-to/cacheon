@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import sqlite3
 from dataclasses import dataclass
 
@@ -92,7 +94,7 @@ def _advance(store: RecoverableFinalizedIntakeStore, block: int) -> None:
     cursor = store.finalized_cursor()
     assert cursor is not None and block >= cursor[0]
     if block != cursor[0]:
-        store.reserve_finalized(
+        reserve_fixture(store,
             (),
             finalized_block=block,
             finalized_block_hash="0x" + f"{block:064x}",
@@ -100,7 +102,7 @@ def _advance(store: RecoverableFinalizedIntakeStore, block: int) -> None:
 
 
 def _promoted(store: RecoverableFinalizedIntakeStore, profile: _Profile, index: int = 0):
-    row = store.reserve_finalized(
+    row = reserve_fixture(store,
         (_arrival(profile, index),),
         finalized_block=10,
         finalized_block_hash="0x" + f"{10:064x}",

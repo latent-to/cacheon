@@ -1,5 +1,25 @@
 # Submitting a proposal
 
+## Required baseline reference
+
+Read `GET /api/baseline` from your validator's dashboard and pass its
+`baseline_ref` to both `chain-eval-cost` and `chain-submit`, together with
+`--validator-url`. The reference is the exact commissioned stack digest.
+For every command below, add:
+
+```bash
+--baseline-ref "$BASELINE_REF" --validator-url "$VALIDATOR_URL"
+```
+
+Both commands check that reference before quoting or paying. Intake checks
+again after reveal and before admission, so a still-valid payment quote does
+not admit a submission against a superseded baseline. New submission payloads
+use version 3 with a `b` baseline field and an optional `p` payment pointer.
+The baseline also binds the payment remark. Version 1/2 payloads remain
+readable as history but cannot enter the new evaluation queue without a
+baseline reference. See [Incentive criteria](../architecture/incentive-criteria.md).
+
+
 Production submission is a hotkey-signed, timelock commit-reveal containing a
 content hash and an HTTPS fetch URL. The chain carries a reference, not the
 archive bytes.

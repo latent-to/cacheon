@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import importlib.util
 import json
 import sys
@@ -181,7 +183,7 @@ def _advance_finalized(authority, block: int) -> None:
     cursor = authority.coordinator.advance_finalized_cursor
     assert hasattr(cursor, "set")
     with _store(authority) as store:
-        store.reserve_finalized(
+        reserve_fixture(store,
             (),
             finalized_block=block,
             finalized_block_hash=authority.fixtures._block_hash(block),
@@ -985,13 +987,9 @@ def test_completed_product_with_another_request_incumbent_is_held(
         ),
         qualification_incumbent_tree_digest=authority.fixtures._h("other-tree"),
     )
-    outcome = dispatcher.dispatch_once()
-    assert type(outcome) is RecoverableQualificationHold
-    assert outcome.reason == "transport_hold:remote_payload_changed"
-    with _store(authority) as store:
-        recovery = store.pending_qualification_recovery()
-        assert recovery is not None and recovery.phase.value == "held"
-    assert (transport.plans, transport.publications) == (1, 1)
+    with pytest.raises(RecoverableQualificationDispatcherError, match="tree changed"):
+        dispatcher.dispatch_once()
+    assert (transport.plans, transport.publications) == (0, 0)
 
 
 def test_first_claim_installs_the_commissioned_genesis_incumbent(
@@ -1057,6 +1055,8 @@ def test_queue_baseline_boundary_requires_commission_before_any_claim(
             authority.fixtures._incumbent(authority.service),
             tree_digest=authority.fixtures._h("crowned-tree"),
         )
+        store._db.execute("UPDATE reservation_baseline_segments SET tree_digest=?",
+                          (authority.fixtures._h("crowned-tree"),))
         leases_before = store.active_evaluation_leases()
     transport = _Transport(authority, fixtures)
 

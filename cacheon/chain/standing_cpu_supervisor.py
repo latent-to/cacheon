@@ -11,7 +11,7 @@ Stage work is delegated to the existing dispatchers:
 - screen FIFO → ``RemoteEvaluationDispatcher.dispatch_screen_once``
 - qualification FIFO + same-request recovery →
   ``RecoverableQualificationDispatcher.dispatch_once``
-- later gates attach settlement / weights as injectable stages
+- settlement consumes accepted, durably scored qualification results
 
 ``chainops`` may launch this process and bind sealed paths; it must not
 duplicate recovery or evidence semantics.
@@ -32,11 +32,7 @@ from pathlib import Path
 from typing import Any, Callable
 from functools import partial
 from cacheon.chain import sealed_config
-from cacheon.chain.standing_weights_stage import (
-    WeightsStageConfig,
-    compose_weight_offer_push,
-    load_weights_config,
-)
+
 
 
 STATUS_SCHEMA = "cacheon-standing-cpu-supervisor-status-v1"
@@ -47,7 +43,6 @@ _STANDING_CONFIG_FIELDS = frozenset(
     {
         "enable_qualification",
         "enable_settlement",
-        "enable_weights",
         "idle_poll_ms",
         "qualification_evidence_root",
         "qualification_incumbent_stack_path",
@@ -58,7 +53,6 @@ _STANDING_CONFIG_FIELDS = frozenset(
         "screen_dispatcher_config",
         "settlement_network",
         "stall_timeout_ms",
-        "weights_stage_config",
     }
 )
 
@@ -74,7 +68,6 @@ class SupervisorPhase(str, Enum):
     SCREEN = "screen"
     QUALIFICATION = "qualification"
     SETTLEMENT = "settlement"
-    WEIGHTS = "weights"
     HOLD = "hold"
     FAILED = "failed"
 
@@ -186,7 +179,6 @@ class StandingCpuSupervisor:
     screen_once: ScreenOnce
     qualification_once: QualificationOnce | None
     settle_once: OptionalStage | None = None
-    weights_once: OptionalStage | None = None
     clock: Callable[[], float] = time.time
     stall_timeout_s: float = 3_600.0
     _status: SupervisorStatus = field(init=False, repr=False)
@@ -195,7 +187,7 @@ class StandingCpuSupervisor:
     def __post_init__(self) -> None:
         if not callable(self.screen_once):
             raise StandingCpuSupervisorError("the screen stage is required")
-        for name in ("qualification_once", "settle_once", "weights_once"):
+        for name in ("qualification_once", "settle_once"):
             value = getattr(self, name)
             if value is not None and not callable(value):
                 raise StandingCpuSupervisorError(f"{name} is not callable")
@@ -231,8 +223,6 @@ class StandingCpuSupervisor:
                 phase = SupervisorPhase.QUALIFICATION
             elif result.stage == "settlement":
                 phase = SupervisorPhase.SETTLEMENT
-            elif result.stage == "weights":
-                phase = SupervisorPhase.WEIGHTS
             else:
                 phase = SupervisorPhase.IDLE
         progress = now if result.progressed else self._status.last_progress_unix
@@ -374,7 +364,6 @@ class StandingCpuSupervisor:
             ("settlement", self.settle_once),
             ("qualification", self.qualification_once),
             ("screen", self.screen_once),
-            ("weights", self.weights_once),
         ):
             if callback is None:
                 continue
@@ -440,28 +429,6 @@ def settlement_stage(
             disposition="committed",
             lease_id=lease_id,
             phase=SupervisorPhase.SETTLEMENT,
-        )
-
-    return once
-
-
-def weights_stage(
-    publish: Callable[[], Any],
-) -> Callable[[], SupervisorStageResult | None]:
-    """Wrap weight project/publish/readback; idle when nothing is due."""
-
-    def once() -> SupervisorStageResult | None:
-        result = publish()
-        if result is None:
-            return None
-        digest = getattr(result, "projection_digest", None)
-        status = getattr(result, "status", None)
-        return SupervisorStageResult(
-            stage="weights",
-            progressed=True,
-            disposition=status if isinstance(status, str) and status else "published",
-            request_id=digest if isinstance(digest, str) and digest else None,
-            phase=SupervisorPhase.WEIGHTS,
         )
 
     return once
@@ -571,11 +538,9 @@ class StandingSupervisorConfig:
     qualification_evidence_root: Path
     qualification_incumbent_stack_path: Path
     qualification_incumbent_tree_digest: str
-    enable_weights: bool
     enable_settlement: bool
     enable_qualification: bool
     settlement_network: str
-    weights_stage: WeightsStageConfig | None
     stall_timeout_s: float
     idle_poll_s: float
     restart_initial_backoff_s: float
@@ -627,7 +592,6 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
     except (TypeError, ValueError) as exc:
         raise StandingCpuSupervisorError(str(exc)) from None
 
-    enable_weights = _exact_bool(row["enable_weights"], "enable_weights")
     enable_settlement = _exact_bool(row["enable_settlement"], "enable_settlement")
     # Operator gate for the qualification stage: screens keep draining while a
     # qualification-side defect is being repaired, instead of the broken stage
@@ -640,7 +604,7 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
     # refuses a regressed clock and stamps the cohort lease with it. That read
     # is the authority this stage was waiting for, so the flag is only honored
     # together with the endpoint it reads from. No wallet and no chain write is
-    # involved -- publication stays behind ``enable_weights``.
+    # involved; publication belongs to the standalone weight producer.
     settlement_network = row["settlement_network"]
     if type(settlement_network) is not str:
         raise StandingCpuSupervisorError("settlement network is malformed")
@@ -655,22 +619,6 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
     # epoch, which is exactly how the 2026-08-16 expiry_blocks decision was
     # lost: a per-epoch artifact edited in place, then orphaned by the next
     # commission regenerating it from defaults.
-
-    weights_stage_config = row["weights_stage_config"]
-    if type(weights_stage_config) is not str:
-        raise StandingCpuSupervisorError("weights_stage_config is malformed")
-    if enable_weights and not weights_stage_config.strip():
-        raise StandingCpuSupervisorError(
-            "enable_weights requires weights_stage_config, the sealed eval "
-            "push-weight-offer authority"
-        )
-    if not enable_weights and weights_stage_config:
-        raise StandingCpuSupervisorError(
-            "weights_stage_config is configured while enable_weights is false"
-        )
-    weights_stage = (
-        load_weights_config(weights_stage_config) if enable_weights else None
-    )
 
     stall_timeout_ms = _positive_int(
         row["stall_timeout_ms"], "stall_timeout_ms", maximum=86_400_000
@@ -697,11 +645,9 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         qualification_evidence_root=evidence_root,
         qualification_incumbent_stack_path=incumbent_path,
         qualification_incumbent_tree_digest=tree_digest,
-        enable_weights=enable_weights,
         enable_settlement=enable_settlement,
         enable_qualification=enable_qualification,
         settlement_network=settlement_network,
-        weights_stage=weights_stage,
         stall_timeout_s=stall_timeout_ms / 1000.0,
         idle_poll_s=idle_poll_ms / 1000.0,
         restart_initial_backoff_s=restart_initial_backoff_ms / 1000.0,
@@ -769,28 +715,10 @@ def build_standing_supervisor(
             finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
         )
 
-    weights_once = None
-    if config.enable_weights:
-        if config.weights_stage is None:
-            raise StandingCpuSupervisorError(
-                "enable_weights is set without a sealed weights stage"
-            )
-        weights_once = compose_weight_offer_push(
-            config.weights_stage,
-            store_factory=partial(
-                RecoverableFinalizedIntakeStore,
-                screen_config.intake_db,
-                screen_config.policy,
-                scope=screen_config.scope,
-            ),
-            scope=screen_config.scope,
-        )
-
     return StandingCpuSupervisor(
         screen_once=screen_dispatcher.dispatch_screen_once,
         qualification_once=qualification_once,
         settle_once=settle_once,
-        weights_once=weights_once,
         stall_timeout_s=config.stall_timeout_s,
     )
 
@@ -871,5 +799,4 @@ __all__ = [
     "load_standing_config",
     "run_forever",
     "settlement_stage",
-    "weights_stage",
 ]

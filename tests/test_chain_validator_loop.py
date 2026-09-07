@@ -21,7 +21,12 @@ from cacheon.chain.eval_cost import (
     quote_eval_cost,
 )
 from cacheon.chain.intake import FinalizedIntakeStore, IntakePolicy, IntakeScope
-from cacheon.chain.payload import encode_payload
+from cacheon.chain.payload import encode_payload as _encode_payload
+from functools import partial
+from tests.intake_fixtures import fixture_baseline
+from cacheon.chain.declared_baseline import commission_baseline
+
+encode_payload = partial(_encode_payload, baseline_ref=fixture_baseline().digest)
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_intake import (
@@ -111,6 +116,8 @@ def _run(
         intake_only=True,
     )
     options.update(changes)
+    with FinalizedIntakeStore(options["intake_db"], scope=SCOPE, policy=IntakePolicy()) as store:
+        commission_baseline(store, fixture_baseline(), "a" * 64)
     return loop.run_pass(_NoWeightsSubtensor(), 307, **options), calls, options
 
 
@@ -203,7 +210,7 @@ def test_unpaid_v1_is_failed_when_eval_cost_is_required(tmp_path, monkeypatch):
 
 
 def _paid_proof(digest: str) -> EvalCostPaymentProof:
-    request = EvalCostRequest(netuid=307, hotkey="miner", content_hash=digest)
+    request = partial(EvalCostRequest, baseline_ref=fixture_baseline().digest)(netuid=307, hotkey="miner", content_hash=digest)
     quote = quote_eval_cost(
         request,
         policy=EvalCostPolicy(amount_rao=10, destination="treasury"),

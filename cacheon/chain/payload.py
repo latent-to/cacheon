@@ -39,6 +39,7 @@ class SubmissionRef:
     block: int
     payment_block: int = 0
     payment_extrinsic_index: int = 0
+    baseline_ref: str = ""
 
 
 def _url_allowed(url: object, *, schemes: tuple[str, ...]) -> bool:
@@ -87,6 +88,7 @@ def _encode_payload(
     schemes: tuple[str, ...],
     payment_block: int = 0,
     payment_extrinsic_index: int = 0,
+    baseline_ref: str = "",
 ) -> str:
     if _HASH_RE.fullmatch(content_hash or "") is None:
         raise PayloadError(
@@ -104,6 +106,11 @@ def _encode_payload(
             "u": url,
             "p": pointer,
         }
+    if baseline_ref:
+        if _HASH_RE.fullmatch(baseline_ref) is None:
+            raise PayloadError("baseline_ref must be 64 lowercase hex chars")
+        body = {"v": 3, "h": content_hash, "u": url, "b": baseline_ref,
+                **({"p": pointer} if pointer else {})}
     data = json.dumps(body, separators=(",", ":"))
     if len(data.encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise PayloadError(f"payload exceeds the {MAX_PAYLOAD_BYTES}-byte chain cap")
@@ -116,6 +123,7 @@ def encode_payload(
     *,
     payment_block: int = 0,
     payment_extrinsic_index: int = 0,
+    baseline_ref: str = "",
 ) -> str:
     """Encode one production, HTTPS-only submission reference."""
 
@@ -123,6 +131,7 @@ def encode_payload(
         content_hash,
         url,
         schemes=ALLOWED_URL_SCHEMES,
+        baseline_ref=baseline_ref,
         payment_block=payment_block,
         payment_extrinsic_index=payment_extrinsic_index,
     )
@@ -168,7 +177,7 @@ def _decode_payload(
     if parsed is None:
         logger.warning("payload from %s: schema/version/encoding mismatch; ignored", hotkey)
         return None
-    content_hash, url, payment_block, payment_extrinsic_index = parsed
+    content_hash, url, payment_block, payment_extrinsic_index, baseline_ref = parsed
     if not isinstance(content_hash, str) or _HASH_RE.fullmatch(content_hash) is None:
         logger.warning("payload from %s: bad content hash; ignored", hotkey)
         return None
@@ -189,16 +198,31 @@ def _decode_payload(
         return None
     return SubmissionRef(
         hotkey, content_hash, url, block,
-        payment_block, payment_extrinsic_index,
+        payment_block, payment_extrinsic_index, baseline_ref,
     )
 
 
 def _parse_payload_object(
     obj: object, data: str
-) -> tuple[str, str, int, int] | None:
+) -> tuple[str, str, int, int, str] | None:
     if not isinstance(obj, dict) or type(obj.get("v")) is not int:
         return None
     version = obj["v"]
+    if version == 3:
+        if set(obj) not in ({"v", "h", "u", "b"}, {"v", "h", "u", "b", "p"}):
+            return None
+        if not isinstance(obj["b"], str) or _HASH_RE.fullmatch(obj["b"]) is None:
+            return None
+        pointer = obj.get("p", {})
+        try:
+            canonical = _encode_payload(obj["h"], obj["u"], schemes=ALLOWED_URL_SCHEMES,
+                baseline_ref=obj["b"], payment_block=pointer.get("b", 0),
+                payment_extrinsic_index=pointer.get("i", 0))
+        except (PayloadError, TypeError, AttributeError):
+            return None
+        if canonical != data:
+            return None
+        return obj["h"], obj["u"], pointer.get("b", 0), pointer.get("i", 0), obj["b"]
     if version == PAYLOAD_VERSION:
         if set(obj) != {"v", "h", "u"}:
             return None
@@ -208,7 +232,7 @@ def _parse_payload_object(
         )
         if encoded != data:
             return None
-        return obj["h"], obj["u"], 0, 0
+        return obj["h"], obj["u"], 0, 0, ""
     if version == PAID_PAYLOAD_VERSION:
         if set(obj) != {"v", "h", "u", "p"}:
             return None
@@ -233,7 +257,7 @@ def _parse_payload_object(
         )
         if encoded != data:
             return None
-        return obj["h"], obj["u"], pointer["b"], pointer["i"]
+        return obj["h"], obj["u"], pointer["b"], pointer["i"], ""
     return None
 
 

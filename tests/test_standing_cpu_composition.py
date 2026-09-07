@@ -312,7 +312,7 @@ def test_screen_to_qualification_restart_reuses_one_request(
     screen_runs: list[EvaluationRun] = []
     supervisor = _supervisor(harness, screen_runs)
 
-    assert supervisor.weights_once is None
+    assert not hasattr(supervisor, "weights_once")
     assert supervisor.tick().phase is SupervisorPhase.SCREEN
     assert len(screen_runs) == 1
     reservation_id = screen_runs[0].lease.reservation_ids[0]
@@ -331,7 +331,7 @@ def test_screen_to_qualification_restart_reuses_one_request(
     harness.transport.complete()
 
     restarted = _supervisor(harness, screen_runs)
-    assert restarted.weights_once is None
+    assert not hasattr(restarted, "weights_once")
     assert restarted.tick().phase is SupervisorPhase.QUALIFICATION
     assert harness.transport.plan.request_id == request_id
     assert (

@@ -27,7 +27,12 @@ from cacheon.chain.audit_log import (
     pass_audit_record,
 )
 from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
-from cacheon.chain.payload import encode_payload
+from cacheon.chain.payload import encode_payload as _encode_payload
+from functools import partial
+from tests.intake_fixtures import fixture_baseline
+from cacheon.chain.declared_baseline import commission_baseline
+
+encode_payload = partial(_encode_payload, baseline_ref=fixture_baseline().digest)
 from cacheon.eval.evidence_store import publish_evidence, reopen_evidence
 from cacheon.object_store import MemoryObjectStore
 
@@ -85,6 +90,9 @@ def _published_database(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(loop, "fetch_bundle", lambda *_: source)
     database = tmp_path / "state" / "intake.sqlite3"
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakePolicy
+    with FinalizedIntakeStore(database, scope=SCOPE, policy=IntakePolicy()) as store:
+        commission_baseline(store, fixture_baseline(), "a" * 64)
     result = loop.run_pass(
         _Subtensor(),
         307,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import hashlib
 import json
 import threading
@@ -640,7 +642,7 @@ def test_push_weight_offer_cli_never_calls_set_weights(
     scope = IntakeScope("0x" + "0" * 64, 307)
     intake = tmp_path / "intake.sqlite3"
     with FinalizedIntakeStore(intake, scope=scope) as store:
-        store.reserve_finalized(
+        reserve_fixture(store,
             (),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",

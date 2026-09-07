@@ -141,6 +141,7 @@ def _finalized_arrivals(
                 invalid_reason,
                 ref.payment_block,
                 ref.payment_extrinsic_index,
+                ref.baseline_ref,
             )
         )
     return tuple(rows)
@@ -180,7 +181,7 @@ def _eval_cost_invalid_reason(
     if not isinstance(owner, str) or not owner:
         raise EvalCostFetchError("subnet owner coldkey is unavailable")
     request = EvalCostRequest(
-        netuid=netuid, hotkey=ref.hotkey, content_hash=ref.content_hash
+        netuid=netuid, hotkey=ref.hotkey, content_hash=ref.content_hash, baseline_ref=ref.baseline_ref
     )
     return verify_eval_cost_payment(
         request=request,

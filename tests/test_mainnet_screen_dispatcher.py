@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import json
 import sqlite3
 import sys
@@ -100,7 +102,7 @@ def _setup_authority(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     private.mkdir(mode=0o700)
     intake_db = private / "intake.sqlite3"
     with FinalizedIntakeStore(intake_db, POLICY, scope=SCOPE) as store:
-        store.reserve_finalized(
+        reserve_fixture(store,
             (),
             finalized_block=BLOCK,
             finalized_block_hash=_block_hash(BLOCK),
@@ -296,7 +298,7 @@ def _published_intake_row(tmp_path: Path, intake_db: Path, *, label: str):
         committed,
     )
     with FinalizedIntakeStore(intake_db, POLICY, scope=SCOPE) as store:
-        reserved = store.reserve_finalized(
+        reserved = reserve_fixture(store,
             (
                 FinalizedArrival(
                     f"miner-{label}",

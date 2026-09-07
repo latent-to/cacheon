@@ -42,12 +42,16 @@ def submit_bundle(
     eval_cost_policy: EvalCostPolicy | None = None,
     payment_block: int = 0,
     payment_extrinsic_index: int = 0,
+    baseline_ref: str = "",
+    validator_url: str = "",
 ) -> dict:
     """Hash the bundle, optionally pay or reuse eval-cost, and commit the payload.
 
     ``pay`` and ``payment_block`` are exclusive. Intake consumes a pointer only
     on reserved or deferred admission.
     """
+    from cacheon.chain.baseline_client import validate_baseline
+    validate_baseline(validator_url, baseline_ref)
     ch = content_hash(bundle_dir)
     hotkey = ""
     if wallet is not None:
@@ -74,7 +78,7 @@ def submit_bundle(
     resolved_block = 0
     resolved_index = 0
     if pay:
-        request = EvalCostRequest(netuid=netuid, hotkey=hotkey, content_hash=ch)
+        request = EvalCostRequest(netuid=netuid, hotkey=hotkey, content_hash=ch, baseline_ref=baseline_ref)
         policy = _eval_cost_policy(eval_cost_policy)
         if subtensor is not None:
             at_block = current_eval_cost_block(subtensor)
@@ -90,7 +94,7 @@ def submit_bundle(
             resolved_block = int(payment["payment_block"])
             resolved_index = int(payment["payment_extrinsic_index"])
     elif reuse:
-        request = EvalCostRequest(netuid=netuid, hotkey=hotkey, content_hash=ch)
+        request = EvalCostRequest(netuid=netuid, hotkey=hotkey, content_hash=ch, baseline_ref=baseline_ref)
         if subtensor is not None:
             proof = reopen_unused_eval_cost_payment(
                 subtensor,
@@ -122,6 +126,7 @@ def submit_bundle(
             url,
             payment_block=resolved_block,
             payment_extrinsic_index=resolved_index,
+            baseline_ref=baseline_ref,
         )
         result = post_reveal_commitment(
             subtensor,

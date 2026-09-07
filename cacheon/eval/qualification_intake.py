@@ -769,7 +769,7 @@ def _settlement_projection(
     report,
     authority,
     attempt_ref,
-    attempt,
+    attempt, calibration_context=None,
 ):
     if report.decision is not QualificationDecision.PASS:
         return None
@@ -787,7 +787,7 @@ def _settlement_projection(
         report=report,
         authority=authority,
         attempt_ref=attempt_ref,
-        attempt=attempt,
+        attempt=attempt, calibration_context=calibration_context,
     )
 
 
@@ -970,7 +970,7 @@ def run_qualification_intake(
         settlement_qualification = (
             _settlement_projection(
                 reservation, prepared_candidates[index], report,
-                manifest, reference, attempt,
+                manifest, reference, attempt, value.calibration_context,
             )
             if prepared_candidates else None
         )

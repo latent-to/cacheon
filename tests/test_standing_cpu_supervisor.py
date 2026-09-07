@@ -23,7 +23,6 @@ from cacheon.chain.standing_cpu_supervisor import (
     SupervisorStageResult,
     run_forever,
     settlement_stage,
-    weights_stage,
 )
 
 
@@ -458,7 +457,7 @@ def test_untyped_stage_product_is_rejected() -> None:
         ).tick()
 
 
-def test_settlement_and_weights_stages_wire_into_supervisor() -> None:
+def test_settlement_stage_wires_into_supervisor() -> None:
     class _Store:
         def has_pending_settlement(self):
             return True
@@ -488,17 +487,8 @@ def test_settlement_and_weights_stages_wire_into_supervisor() -> None:
     assert status.phase is SupervisorPhase.SETTLEMENT
     assert status.lease_id == "lease"
 
-    published = weights_stage(
-        publish=lambda: SimpleNamespace(
-            projection_digest=_d("projection"), status="confirmed"
-        )
-    )
-    result = published()
-    assert result is not None
-    assert result.phase is SupervisorPhase.WEIGHTS
-    assert result.disposition == "confirmed"
-
-    assert weights_stage(publish=lambda: None)() is None
+    with pytest.raises(TypeError, match="weights_once"):
+        StandingCpuSupervisor(screen_once=lambda: None, weights_once=lambda: None)
 
 
 def test_python_m_entry_shares_one_module_identity_with_by_name_imports(tmp_path) -> None:

@@ -13,6 +13,8 @@ same row reader -- with no second mechanism to drift.
 
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import json
 
 import pytest
@@ -49,7 +51,7 @@ def _rejected_store(tmp_path, *, reason: str) -> tuple[FinalizedIntakeStore, str
     arrival = FinalizedArrival(
         "miner-0", f"{1:064x}", "https://host.example/b.tar.gz", BLOCK, BLOCK_HASH, 0
     )
-    store.reserve_finalized(
+    reserve_fixture(store,
         (arrival,), finalized_block=BLOCK, finalized_block_hash=BLOCK_HASH
     )
     store._db.execute(

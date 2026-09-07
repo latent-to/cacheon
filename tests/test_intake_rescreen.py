@@ -12,6 +12,8 @@ live identity, with no human in the loop.
 
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -42,7 +44,7 @@ ROTATED = "screen_receipt_service_rotated"
 
 
 def _promoted_row(store):
-    row = store.reserve_finalized(
+    row = reserve_fixture(store,
         (_arrival(0),),
         finalized_block=10,
         finalized_block_hash="0x" + f"{10:064x}",
@@ -90,7 +92,7 @@ def test_a_rotated_row_recovers_without_a_human(tmp_path) -> None:
 
 def test_only_a_promoted_reservation_may_be_rescreened(tmp_path) -> None:
     with _store(tmp_path) as store:
-        row = store.reserve_finalized(
+        row = reserve_fixture(store,
             (_arrival(0),),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",

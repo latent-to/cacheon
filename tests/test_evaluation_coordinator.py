@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+from tests.intake_fixtures import reserve_fixture, commissioned_store
 import threading
 import time
 from pathlib import Path
@@ -32,8 +33,7 @@ from cacheon.chain.evaluation_coordinator import (
     WorkerReadiness,
 )
 from cacheon.chain.intake import (
-    FinalizedArrival,
-    FinalizedIntakeStore,
+    FinalizedArrival, FinalizedIntakeStore,
     IntakeError,
     IntakePolicy,
     IntakeScope,
@@ -146,7 +146,7 @@ def _db_path(tmp_path: Path) -> Path:
 
 
 def _store(tmp_path: Path) -> FinalizedIntakeStore:
-    return FinalizedIntakeStore(_db_path(tmp_path), POLICY, scope=SCOPE)
+    return commissioned_store(FinalizedIntakeStore(_db_path(tmp_path), POLICY, scope=SCOPE), _remote_incumbent(ArenaService(_manifest(), _Provider())), _h("remote-tree"))
 
 
 def _published_rows(tmp_path: Path, count: int):
@@ -177,7 +177,7 @@ def _published_rows(tmp_path: Path, count: int):
             )
         )
     with _store(tmp_path) as store:
-        reserved = store.reserve_finalized(
+        reserved = reserve_fixture(store,
             tuple(arrivals),
             finalized_block=BLOCK,
             finalized_block_hash=_block_hash(BLOCK),
@@ -241,7 +241,7 @@ def _coordinator(
 
 def _advance(tmp_path: Path, cursor: _CursorAuthority, block: int) -> None:
     with _store(tmp_path) as store:
-        store.reserve_finalized(
+        reserve_fixture(store,
             (),
             finalized_block=block,
             finalized_block_hash=_block_hash(block),
@@ -1048,7 +1048,7 @@ def test_claim_screen_replays_a_prior_fail_onto_identical_bytes(tmp_path: Path) 
         (_h("binary:dup"),),
     )
     with _store(tmp_path) as store:
-        reserved = store.reserve_finalized(
+        reserved = reserve_fixture(store,
             tuple(
                 FinalizedArrival(
                     f"miner-{index}",

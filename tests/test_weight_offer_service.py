@@ -270,7 +270,7 @@ def test_idle_and_pushed_passes_are_reported_distinctly() -> None:
     events: list[tuple[str, str]] = []
     script: list[object] = [
         None,
-        types.SimpleNamespace(disposition="accepted", request_id="d" * 64),
+        types.SimpleNamespace(status="accepted", projection_digest="d" * 64),
     ]
 
     def publish() -> object:

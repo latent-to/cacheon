@@ -9,6 +9,8 @@ transaction, so the closure costs the miner nothing.
 
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import pytest
 
 from cacheon.chain.eval_cost_credit import grant_eval_cost_credit
@@ -47,7 +49,7 @@ def _store(tmp_path) -> FinalizedIntakeStore:
 
 
 def _reserve(store, arrival: FinalizedArrival):
-    return store.reserve_finalized(
+    return reserve_fixture(store,
         (arrival,),
         finalized_block=arrival.block,
         finalized_block_hash=arrival.block_hash,

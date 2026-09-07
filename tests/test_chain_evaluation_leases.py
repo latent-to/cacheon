@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import sqlite3
 
 import pytest
@@ -76,7 +78,7 @@ def _advance(store: FinalizedIntakeStore, block: int) -> None:
     assert cursor is not None and block >= cursor[0]
     if block == cursor[0]:
         return
-    store.reserve_finalized(
+    reserve_fixture(store,
         (),
         finalized_block=block,
         finalized_block_hash="0x" + f"{block:064x}",
@@ -144,7 +146,7 @@ def _complete_screen(store: FinalizedIntakeStore, lease: EvaluationLease) -> Non
 
 
 def _published_rows(store: FinalizedIntakeStore, count: int = 2):
-    rows = store.reserve_finalized(
+    rows = reserve_fixture(store,
         tuple(_arrival(index) for index in range(count)),
         finalized_block=10,
         finalized_block_hash="0x" + f"{10:064x}",
@@ -564,7 +566,7 @@ def test_no_plan_no_decision_is_not_mapped_to_candidate_failure(tmp_path):
 
 def test_capacity_backpressure_is_deferred_not_candidate_failure(tmp_path):
     with _store(tmp_path, max_pending=1, max_cohort=1) as store:
-        first, second = store.reserve_finalized(
+        first, second = reserve_fixture(store,
             (_arrival(0), _arrival(1)),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
@@ -585,18 +587,18 @@ def test_stale_capacity_promotes_older_deferred_before_new_arrival(tmp_path):
     with _store(
         tmp_path, max_pending=1, max_cohort=1, expiry_blocks=20
     ) as store:
-        first = store.reserve_finalized(
+        first = reserve_fixture(store,
             (_arrival(0, block=10),),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
         )[0]
-        second = store.reserve_finalized(
+        second = reserve_fixture(store,
             (_arrival(1, block=11),),
             finalized_block=11,
             finalized_block_hash="0x" + f"{11:064x}",
         )[0]
         assert (first.status, second.status) == ("reserved", "deferred")
-        third = store.reserve_finalized(
+        third = reserve_fixture(store,
             (_arrival(2, block=30),),
             finalized_block=30,
             finalized_block_hash="0x" + f"{30:064x}",

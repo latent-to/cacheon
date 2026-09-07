@@ -35,6 +35,8 @@ def retain_complete_pass(store: FinalizedIntakeStore, row: IntakeReservation,
 
     from cacheon.chain.intake import IntakeError
 
+    from cacheon.chain.submission_ranking import backfill_rankings
+    backfill_rankings(store)
     prior = store._db.execute(
         "SELECT 1 FROM settlement_qualifications WHERE reservation_id=?",
         (row.reservation_id,),
@@ -51,6 +53,12 @@ def retain_complete_pass(store: FinalizedIntakeStore, row: IntakeReservation,
          str(root), current_finalized_block),
     )
     _insert_candidate(store, qualification, str(root))
+    from cacheon.chain.submission_ranking import retain_ranking
+    if not retain_ranking(store, qualification, attempt_ref, root, current_finalized_block):
+        store._db.execute(
+            "UPDATE settlement_candidates SET status='held',reason='stronger_unfinalized_winner' "
+            "WHERE reservation_id=?", (row.reservation_id,),
+        )
 
 
 def accept_retained_primary_passes(store: FinalizedIntakeStore) -> None:
@@ -82,6 +90,8 @@ def accept_retained_primary_passes(store: FinalizedIntakeStore) -> None:
                 "WHERE reservation_id=?", (row["reservation_id"],),
             )
             store.reopen_settlement_evidence(candidate)
+        from cacheon.chain.submission_ranking import backfill_rankings
+        backfill_rankings(store)
 
 
 def settlement_evidence_metadata(

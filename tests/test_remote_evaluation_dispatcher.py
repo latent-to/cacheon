@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import dataclasses
 import json
 import threading
@@ -179,7 +181,11 @@ def _db_path(tmp_path: Path) -> Path:
 
 
 def _store(tmp_path: Path) -> FinalizedIntakeStore:
-    return FinalizedIntakeStore(_db_path(tmp_path), POLICY, scope=SCOPE)
+    store = FinalizedIntakeStore(_db_path(tmp_path), POLICY, scope=SCOPE)
+    from cacheon.chain.declared_baseline import commission_baseline, current_baseline
+    if current_baseline(store) is None:
+        commission_baseline(store, _incumbent(ArenaService(_manifest(), _Provider())), _h("incumbent-tree"))
+    return store
 
 
 def _published_rows(tmp_path: Path, count: int):
@@ -208,7 +214,7 @@ def _published_rows(tmp_path: Path, count: int):
             )
         )
     with _store(tmp_path) as store:
-        reserved = store.reserve_finalized(
+        reserved = reserve_fixture(store,
             tuple(arrivals),
             finalized_block=BLOCK,
             finalized_block_hash=_block_hash(BLOCK),
@@ -241,7 +247,7 @@ def _published_rows(tmp_path: Path, count: int):
 
 def _advance(tmp_path: Path, cursor: _Cursor, block: int) -> None:
     with _store(tmp_path) as store:
-        store.reserve_finalized(
+        reserve_fixture(store,
             (), finalized_block=block, finalized_block_hash=_block_hash(block)
         )
     cursor.set(block)

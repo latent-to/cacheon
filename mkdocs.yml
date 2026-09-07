@@ -107,6 +107,7 @@ nav:
   - Architecture:
       - System overview: architecture/overview.md
       - Product model: architecture/product-model.md
+      - Incentive criteria: architecture/incentive-criteria.md
       - Evaluation pipeline: architecture/pipeline.md
       - Target and slot contract: architecture/slot-contract.md
       - Stacks and manifests: architecture/stacks.md

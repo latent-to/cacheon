@@ -243,8 +243,8 @@ def run_forever(
         if result is None:
             report("idle", "refresh window not reached")
         else:
-            digest = getattr(result, "request_id", None) or ""
-            report("pushed", f"{getattr(result, 'disposition', '')} {digest}".strip())
+            digest = getattr(result, "projection_digest", None) or ""
+            report("pushed", f"{getattr(result, 'status', '')} {digest}".strip())
         if waiter(poll_s):
             return
 

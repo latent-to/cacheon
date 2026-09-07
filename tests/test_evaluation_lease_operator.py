@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import json
 from pathlib import Path
 
@@ -62,7 +64,7 @@ def _new_database(
     private.mkdir(mode=0o700)
     database = private / "intake.sqlite3"
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
-        store.reserve_finalized(
+        reserve_fixture(store,
             (), finalized_block=block, finalized_block_hash=_block_hash(block)
         )
     return database
@@ -140,7 +142,7 @@ def _published_rows(
     policy: IntakePolicy = POLICY,
 ) -> tuple[object, ...]:
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
-        rows = store.reserve_finalized(
+        rows = reserve_fixture(store,
             tuple(_arrival(index) for index in range(len(target_ids))),
             finalized_block=BLOCK,
             finalized_block_hash=_block_hash(BLOCK),
@@ -158,7 +160,7 @@ def _advance(
     policy: IntakePolicy = POLICY,
 ) -> None:
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
-        store.reserve_finalized(
+        reserve_fixture(store,
             (), finalized_block=block, finalized_block_hash=_block_hash(block)
         )
 
@@ -358,7 +360,7 @@ def test_canonical_failed_and_expired_rows_are_not_claimed(tmp_path: Path) -> No
     private.mkdir(mode=0o700)
     database = private / "intake.sqlite3"
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
-        expired, failed, current = store.reserve_finalized(
+        expired, failed, current = reserve_fixture(store,
             (
                 _arrival(0, block=10),
                 _arrival(1, block=11, invalid_reason="malformed_submission"),

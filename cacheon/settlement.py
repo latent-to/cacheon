@@ -341,8 +341,11 @@ class SettlementQualification:
     audit_policy: SlotAuditPolicy | None = None
     audit_evidence_digest: str = _LEGACY_AUDIT_EVIDENCE_DIGEST
     resident_lane_orientation: ResidentLaneOrientation | None = None
+    comparison_context_digest: str = ""
 
     def __post_init__(self) -> None:
+        if self.comparison_context_digest:
+            _digest(self.comparison_context_digest, "comparison context")
         if self.lane not in _LANES:
             raise SettlementError("settlement lane is unsupported")
         for field in (
@@ -503,9 +506,11 @@ class SettlementQualification:
         authority,
         attempt_ref,
         attempt,
+        calibration_context=None,
     ) -> "SettlementQualification":
         """Project already reopened trusted types without reimplementing their grader."""
 
+        from cacheon.chain.submission_ranking import comparison_context
         from cacheon.eval.evidence_store import EvidenceArtifactRef
         from cacheon.eval.marginal_runtime import PreparedCandidateRuntime
         from cacheon.eval.qualification import QualificationDecision
@@ -626,6 +631,9 @@ class SettlementQualification:
             ),
             audit_evidence_digest=audit_evidence_digest,
             resident_lane_orientation=resident_lane_orientation,
+            comparison_context_digest=(
+                "" if calibration_context is None else comparison_context(calibration_context, resident_witness)
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -674,6 +682,8 @@ class SettlementQualification:
                     "audit_policy": self.audit_policy.to_dict(),
                 }
             )
+        if self.comparison_context_digest:
+            result["comparison_context_digest"] = self.comparison_context_digest
         if self.resident_lane_orientation is not None:
             result["resident_lane_orientation"] = (
                 self.resident_lane_orientation.to_dict()
@@ -687,7 +697,12 @@ class SettlementQualification:
         # orientation.  Accept exactly the shapes it can emit; a resident
         # acceptance without an audit witness carries the orientation and no
         # audit fields.
-        fields_v4 = set(cls.__dataclass_fields__)
+        if type(value) is dict:
+            value = dict(value)
+            comparison_context = value.pop("comparison_context_digest", "")
+        else:
+            comparison_context = ""
+        fields_v4 = set(cls.__dataclass_fields__) - {"comparison_context_digest"}
         fields_v3 = fields_v4 - {"resident_lane_orientation"}
         audit_fields = {
             "audit_control_digest",
@@ -702,6 +717,7 @@ class SettlementQualification:
         }:
             raise SettlementError("settlement qualification fields do not match")
         row = dict(value)
+        row["comparison_context_digest"] = comparison_context
         row.setdefault("speed_evidence_policy_digest", _LEGACY_SPEED_POLICY_DIGEST)
         if "audit_policy" in row:
             row["audit_policy"] = SlotAuditPolicy.from_dict(row["audit_policy"])
@@ -920,30 +936,6 @@ class _Journal:
         self.sequence += 1
 
 
-def _lineage_admits_candidate(
-    candidate: SettlementCandidate,
-    lineages: Mapping[str, TargetLineage],
-    pretransition_reservations: frozenset[str],
-) -> bool:
-    """Admit the tip, or a superior ancestor fork known before divergence."""
-
-    lineage = lineages.get(candidate.target_id)
-    if lineage is None:
-        return True
-    incumbent = candidate.incumbent_manifest.entries.get(candidate.target_id)
-    incumbent_artifact = "" if incumbent is None else incumbent.artifact_digest
-    if incumbent_artifact == lineage.artifact_digest:
-        return True
-    try:
-        threshold = lineage.threshold_from(incumbent_artifact)
-    except SettlementError:
-        return False
-    assert threshold is not None
-    return candidate.reservation_digest in pretransition_reservations and (
-        Decimal(candidate.speedup) > threshold[0]
-    )
-
-
 def plan_settlement(
     candidates: Iterable[SettlementCandidate],
     *,
@@ -956,12 +948,12 @@ def plan_settlement(
 ) -> SettlementPlan:
     """Select one registered winner over one incumbent and emit a hash-chained plan.
 
-    A candidate against the current target tip is eligible normally. A stale
-    candidate remains eligible when its incumbent is an ancestor of the tip,
-    its reservation existed before the lineage first left that ancestor, and
-    its conservative speedup is strictly greater than the product of all
-    winning speedups from that ancestor to the current tip.
+    Intake has already compared candidates against their baseline and the
+    strongest same-slot winner using retained measurements. This planner
+    only checks lineage membership and applies the accepted contribution.
     """
+
+    from cacheon.chain.submission_ranking import lineage_admits_candidate
 
     if type(current_manifest) is not EvaluationStackManifest:
         raise SettlementError("current manifest is not exactly typed")
@@ -987,7 +979,7 @@ def plan_settlement(
     def is_stale(row: SettlementCandidate) -> bool:
         if row.target_id not in tips:
             return row.incumbent != before
-        return not _lineage_admits_candidate(
+        return not lineage_admits_candidate(
             row, tips, pretransition_reservations
         )
 

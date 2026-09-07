@@ -1434,68 +1434,8 @@ def cmd_chain_publish(args: argparse.Namespace) -> int:
 
 
 def cmd_chain_eval_cost(args: argparse.Namespace) -> int:
-    from cacheon.chain.eval_cost import (
-        EvalCostPolicy,
-        EvalCostRequest,
-        quote_eval_cost,
-    )
-    from cacheon.chain.eval_cost_payment import (
-        current_eval_cost_block,
-        read_subnet_owner_coldkey,
-    )
-
-    request = EvalCostRequest(
-        netuid=args.netuid,
-        hotkey=args.hotkey or "query",
-        content_hash=args.content_hash or "",
-        target_id=args.target_id or "",
-    )
-    destination = ""
-    at_block = 0
-    network = str(getattr(args, "network", "") or "")
-    if network:
-        from cacheon import chain
-        from cacheon.chain.eval_cost import EvalCostFetchError
-
-        try:
-            subtensor = chain.connect(network)
-            at_block = current_eval_cost_block(subtensor)
-            destination = read_subnet_owner_coldkey(
-                subtensor, args.netuid, block=at_block
-            )
-        except EvalCostFetchError as exc:
-            print(f"REFUSED: {exc}")
-            return 2
-    quote = quote_eval_cost(
-        request,
-        policy=EvalCostPolicy(
-            amount_rao=int(
-                getattr(
-                    args,
-                    "eval_cost_tao_rao",
-                    1_000_000_000,
-                )
-            ),
-            destination=destination,
-        ),
-        at_block=at_block,
-    )
-    print(f"version:      {quote.version}")
-    print(f"netuid:       {quote.netuid}")
-    print(f"asset:        {quote.asset}")
-    print(f"instrument:   {quote.instrument}")
-    print(f"amount_rao:   {quote.amount_rao}")
-    print(
-        f"destination:  {quote.destination or 'current subnet owner coldkey (resolved at payment)'}"
-    )
-    print(f"quote_ttl:    {quote.expires_block - quote.issued_block} blocks")
-    print(
-        "v1 quote ignores submission extras and stays valid through payment if "
-        "the transfer is included within the TTL of issuance. chain-submit --pay "
-        "quotes at the current block and transfers that frozen TAO amount to the "
-        "current subnet owner coldkey."
-    )
-    return 0
+    from cacheon.chain.baseline_client import quote_command
+    return quote_command(args)
 
 
 def cmd_chain_eval_cost_credit(args: argparse.Namespace) -> int:
@@ -1603,6 +1543,8 @@ def cmd_chain_submit(args: argparse.Namespace) -> int:
             eval_cost_policy=policy,
             payment_block=payment_block,
             payment_extrinsic_index=payment_index,
+            baseline_ref=args.baseline_ref,
+            validator_url=args.validator_url,
         )
     except (PayloadError, EvalCostError, EvalCostFetchError) as e:
         if isinstance(e, EvalCostCommitError):
@@ -2904,6 +2846,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=1_000_000_000,
         help="quoted TAO amount in rao; default 1000000000 (1 TAO) is the published v1 quote",
     )
+    sp.add_argument("--baseline-ref", required=True, help="current commissioned stack digest")
+    sp.add_argument("--validator-url", required=True, help="validator dashboard URL publishing /api/baseline")
     sp.set_defaults(func=cmd_chain_eval_cost)
 
     sp = sub.add_parser(
@@ -2982,6 +2926,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=1_000_000_000,
         help="TAO amount in rao to transfer with --pay or to verify when reusing a payment; default 1000000000 (1 TAO)",
     )
+    sp.add_argument("--baseline-ref", required=True, help="current commissioned stack digest")
+    sp.add_argument("--validator-url", required=True, help="validator dashboard URL publishing /api/baseline")
     sp.set_defaults(func=cmd_chain_submit)
 
     sp = sub.add_parser("chain-status",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.intake_fixtures import reserve_fixture
+
 import dataclasses
 import importlib.util
 import shutil
@@ -119,7 +121,7 @@ def _published_profile(fixtures, root: Path, profile: str) -> None:
         0,
     )
     with fixtures._store(root) as store:
-        row = store.reserve_finalized(
+        row = reserve_fixture(store,
             (arrival,),
             finalized_block=fixtures.BLOCK,
             finalized_block_hash=fixtures._block_hash(fixtures.BLOCK),

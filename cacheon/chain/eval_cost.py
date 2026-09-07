@@ -109,11 +109,14 @@ class EvalCostRequest:
     content_hash: str = ""
     target_id: str = ""
     submission: Mapping[str, object] | None = None
+    baseline_ref: str = ""
 
     def __post_init__(self) -> None:
         if type(self.netuid) is not int or self.netuid < 0:
             raise EvalCostError("eval-cost netuid is malformed")
         _require_account(self.hotkey, field="hotkey")
+        if self.baseline_ref:
+            require_sha256_hex(self.baseline_ref, field="baseline_ref")
         if self.content_hash:
             require_sha256_hex(self.content_hash, field="content_hash")
         if not isinstance(self.target_id, str) or any(
@@ -157,6 +160,7 @@ class EvalCostQuote:
     instrument: str
     issued_block: int
     expires_block: int
+    baseline_ref: str = ""
 
     def __post_init__(self) -> None:
         if type(self.version) is not int or self.version < 1:
@@ -229,6 +233,7 @@ def quote_eval_cost(
         instrument=EVAL_COST_INSTRUMENT,
         issued_block=at_block,
         expires_block=at_block + resolved.quote_ttl_blocks,
+        baseline_ref=request.baseline_ref,
     )
 
 
@@ -243,12 +248,15 @@ def encode_payment_remark(request: EvalCostRequest, quote: EvalCostQuote) -> str
         raise EvalCostError("payment remark requires a destination wallet")
     if quote.amount_rao <= 0:
         raise EvalCostError("payment remark requires a positive amount")
+    if quote.baseline_ref != request.baseline_ref:
+        raise EvalCostError("payment remark baseline differs from quote")
     if quote.netuid != request.netuid:
         raise EvalCostError("payment remark quote netuid differs")
     return canonical_json_bytes(
         {
             "domain": EVAL_COST_PAYMENT_DOMAIN,
             "payload": {
+                **({"baseline_ref": request.baseline_ref} if request.baseline_ref else {}),
                 "amount_rao": quote.amount_rao,
                 "content_hash": request.content_hash,
                 "destination": quote.destination,
@@ -288,7 +296,9 @@ def decode_payment_remark(text: object) -> dict[str, object] | None:
     ):
         return None
     payload = obj.get("payload")
-    if not isinstance(payload, dict) or set(payload) != _REMARK_PAYLOAD_FIELDS:
+    if not isinstance(payload, dict) or set(payload) not in (
+        _REMARK_PAYLOAD_FIELDS, _REMARK_PAYLOAD_FIELDS | {"baseline_ref"}
+    ):
         return None
     if canonical_json_bytes(obj).decode("utf-8") != text:
         return None

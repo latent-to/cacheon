@@ -81,23 +81,20 @@ produce bounty events without changing the stack. Among current registered candi
 the planner chooses the highest conservative speedup and uses finalized order as a stable
 tie-break.
 
-Staleness is judged per target lineage, not only against the planning arena's own stack.
-`arena_digest` is derived per commissioned baseline, so a challenger graded against a
-superseded incumbent is commissioned into a *different* arena whose own stack is that old
-baseline. The per-arena `incumbent == before` test alone therefore passes and crowns it a
-second time for one target. `target_lineage_tips` records the artifact holding each
-target's active root-to-tip lineage, each parent artifact, and each conservative winning
-speedup. A candidate measured against any ancestor remains eligible when its reservation
-was already present when the active lineage first left that ancestor and its conservative
-speedup is strictly greater than the product of every winning edge from that ancestor to
-the current tip. For example, with `A -> B -> C`, a candidate `D` measured on A must beat
-`(B/A) * (C/B)`. Equality does not pass. If D wins, the active lineage becomes `A -> D`;
-D is the next baseline and the old `B -> C` branch remains auditable history.
+The [incentive criteria](../architecture/incentive-criteria.md) govern
+competition. Intake admits only the current commissioned baseline reference;
+admitted work keeps that exact baseline. At evaluation completion the store
+compares the candidate's scored throughput with the strongest retained same-slot
+winner using the candidate's direct-evaluation threshold. It does not multiply
+historical speedups or launch another evaluator comparison. A losing contender
+is held out of settlement and rewards; a winning stale contender keeps its win
+and a durable frontend marker.
 
-A later reservation against an old ancestor, a candidate based on an artifact outside the
-active lineage, or a score at/below the composed threshold is held `stale_incumbent`.
-Retained qualification evidence is not deleted or recomputed merely because the active
-tip advanced.
+The settlement planner consumes this competitive decision. Finalizing a winner
+means commissioning its accepted HEAD as the next measurement baseline.
+Unfinalized winners already participate in the standalone producer's weight
+projection, including before the first settlement. The evaluation supervisor
+never creates weights.
 
 Each CROWN snapshots the reservation IDs present in intake; this is the temporal authority
 for the exception and avoids ambiguous same-block comparisons. Stores that settled before
@@ -415,10 +412,10 @@ Offer production must survive an evaluation pause: `follow-weights` refuses a
 projection older than its refresh window, so an offer that stops being re-minted
 while the standing supervisor is down freezes the chain vector. The standalone
 producer, `python -m cacheon.chain.weight_offer_service --config <sealed offer
-config>`, composes the supervisor's weights stage against the same sealed screen
-and weights authorities on a loop, pushes to `serve-weights`, and never signs.
-Exactly one producer runs per intake database: while it is armed, the standing
-supervisor's `enable_weights` stays false.
+config>`, reads the persisted qualification scores against the same sealed screen
+and weights authorities, pushes to `serve-weights`, and never signs.
+Exactly one producer runs per intake database. The evaluation supervisor has
+no weight-production stage or weight configuration switches.
 
 ```bash
 # one-time on the gateway host: dedicated HTTP authority (not a chain signer)
@@ -542,7 +539,7 @@ retained design intent and the reserved durable schema are described in
 | Weighted recipient UID changes before or after signing | Submission aborts or retained publication is held | Reopen exact finalized metagraph authority; never confirm against reassigned UIDs |
 | Held reservation has no disposition | It remains durable and may block later work until explicit disposition or eligible finalized-block SLA expiry | Preserve and monitor it; use audited `release_hold` or minimum-age `expire` when operator action is required, never silent deletion |
 | Arena must be retired as an authority domain | No generic transition is available | Define and implement a reviewed typed arena-retirement policy before changing economic authority |
-| Candidate from another arena names an ancestor of the current tip | Eligible only if already present when lineage left that ancestor and strictly faster than the composed ancestor-to-tip threshold | Seed lineage history; otherwise the candidate is held `stale_incumbent` with its original evidence retained |
+| Candidate from another arena names an ancestor of the current tip | Eligible after the completion-time comparison beats its declared baseline and the retained strongest same-slot rate | Seed lineage history; otherwise the candidate is held `stale_incumbent` with its original evidence retained |
 
 The journal and settlement tables are evidence. Back them up with SQLite-aware tooling,
 monitor WAL/disk health, and test restoration with evidence roots present. Never repair an

@@ -41,7 +41,7 @@ from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     cumulative_crown_speedups,
     estimated_sglang_tokens_per_second,
-    live_offer_shares,
+    live_offer_shares, with_competitive_results, baseline_relationship,
 )
 
 # ---------------------------------------------------------------- config ---
@@ -663,7 +663,9 @@ def submission_baseline(
     manifest = raw.get("incumbent_manifest") or {}
     entry = (manifest.get("entries") or {}).get(target_id) or {}
     baseline_artifact = entry.get("artifact_digest") or ""
+    from dashboard.baseline_api import competition_details
     result: dict[str, Any] = {
+        **competition_details(con, reservation_id),
         "evaluated": evaluated,
         "assigned": assigned,
         "relationship": "no_active_tip",
@@ -674,64 +676,7 @@ def submission_baseline(
         "current_tip_artifact_digest": "",
         "threshold_speedup": None,
     }
-    if lineage_tables_available is None:
-        tables = {
-            row["name"]
-            for row in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                "('target_lineage_tips','target_lineage_nodes')"
-            )
-        }
-        lineage_tables_available = tables == {
-            "target_lineage_tips",
-            "target_lineage_nodes",
-        }
-    if not lineage_tables_available:
-        return result
-    tip = con.execute(
-        "SELECT artifact_digest FROM target_lineage_tips WHERE target_id=?",
-        (target_id,),
-    ).fetchone()
-    if tip is None:
-        return result
-    tip_artifact = str(tip["artifact_digest"])
-    result["current_tip_artifact_digest"] = tip_artifact
-    if baseline_artifact == tip_artifact:
-        result["relationship"] = "current_tip"
-        result["threshold_speedup"] = 1.0
-        return result
-
-    nodes: list[dict[str, Any]] = []
-    artifact = tip_artifact
-    seen: set[str] = set()
-    while artifact and artifact not in seen:
-        seen.add(artifact)
-        node = con.execute(
-            "SELECT artifact_digest,parent_artifact_digest,winner_speedup "
-            "FROM target_lineage_nodes WHERE target_id=? AND artifact_digest=?",
-            (target_id, artifact),
-        ).fetchone()
-        if node is None:
-            break
-        nodes.append(dict(node))
-        artifact = str(node["parent_artifact_digest"])
-    nodes.reverse()
-    start = next(
-        (
-            index for index, node in enumerate(nodes)
-            if node["parent_artifact_digest"] == baseline_artifact
-        ),
-        None,
-    )
-    if start is None:
-        result["relationship"] = "outside_active_lineage"
-        return result
-    threshold = Decimal(1)
-    for node in nodes[start:]:
-        threshold *= Decimal(str(node["winner_speedup"]))
-    result["relationship"] = "ancestor"
-    result["threshold_speedup"] = float(threshold)
-    return result
+    return baseline_relationship(con, target_id, baseline_artifact, result, lineage_tables_available)
 
 
 def safe_float(value: Any) -> float | None:
@@ -765,6 +710,16 @@ def favicon() -> FileResponse:
 @app.get("/icon-192.png", include_in_schema=False)
 def brand_icon() -> FileResponse:
     return FileResponse(STATIC_DIR / "icon-192.png")
+
+
+@app.get("/api/baseline")
+def commissioned_baseline() -> dict[str, Any]:
+    from dashboard.baseline_api import baseline_head
+    con = intake_conn()
+    try:
+        return baseline_head(con)
+    finally:
+        con.close()
 
 
 @app.get("/api/health")
@@ -1203,6 +1158,7 @@ def winners() -> dict[str, Any]:
           AND sc.status!='duplicate_proposal'
         GROUP BY sc.reservation_id
     """)
+    passed = with_competitive_results(con, passed)
     crown_events = rows(con, """
         SELECT e.sequence, e.reservation_id, e.target_id, sc.candidate_json
         FROM settlement_events e
@@ -1275,7 +1231,7 @@ def winners() -> dict[str, Any]:
             "reward_claim_status": (
                 "earning" if shares.get(hotkey) else "not_earning"
             ) if offer is not None else "offer_unavailable",
-            "settlement_status": row["status"],
+            "settlement_status": row["status"], **row["competition"],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
                 "uid": hk.get("uid"),

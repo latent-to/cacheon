@@ -13,10 +13,10 @@ the qualification fence refused to claim across the segment boundary, the
 selector could never pick it, and the automatic rotated-cohort re-screen sat
 behind that same fence. Left alone the row would have blocked the new arena's
 qualification lane for every later submission until it expired. A segment
-naming a retired arena is rebound before qualification. A crown does not
-replace the operator's measurement incumbent. The commission gate also repairs
-unmeasured rows stamped with a crown by older screen/backfill code; retained
-qualification evidence still protects its exact original baseline.
+naming a retired arena used to be rebound before qualification. Declared
+baselines supersede that repair: a mismatched commission stops before dispatch
+and never changes an admitted baseline. A crown does not itself replace the
+operator's measurement incumbent.
 """
 
 from __future__ import annotations
@@ -35,14 +35,6 @@ if TYPE_CHECKING:
     from cacheon.chain.intake import FinalizedIntakeStore
     from cacheon.stack_manifest import EvaluationStackManifest
 
-RETIRED_ARENA_REBIND = "retired_arena_rebind"
-
-# Rows that hold no qualification evidence yet. A qualifying row holds a lease
-# and a reproduction_pending row holds a PASS half; both keep their segment so
-# the boundary stays visible to the operator instead of being rebound.
-_REBINDABLE = ("published", "transport_retry", "screening", "promoted")
-
-
 def bind_reservation_baseline_segment(
     store: "FinalizedIntakeStore",
     reservation_id: str,
@@ -50,14 +42,7 @@ def bind_reservation_baseline_segment(
     *,
     reason: str,
 ) -> None:
-    """Bind one reservation, and its promoted retry group, to ``state``.
-
-    A segment that already names ``state``'s arena is kept whatever its
-    generation: learning the service after a crown must not rewrite a durable
-    baseline. A segment naming another arena is replaced and the new binding
-    records the arena it left, because that arena was retired from under the
-    row (module docstring).
-    """
+    """Bind an unbound reservation and retry group; never replace a declaration."""
 
     if (
         type(state) is not EvaluationStackState
@@ -89,22 +74,11 @@ def bind_reservation_baseline_segment(
                 )
             ),
         )))
-    marks = ",".join("?" for _ in reservation_ids)
-    retired = store._db.execute(
-        "SELECT arena_id FROM reservation_baseline_segments "
-        f"WHERE reservation_id IN ({marks}) AND arena_id<>? "
-        "ORDER BY arena_id LIMIT 1",
-        (*reservation_ids, state.arena_digest),
-    ).fetchone()
-    if retired is not None:
-        store._db.execute(
-            "DELETE FROM reservation_baseline_segments "
-            f"WHERE reservation_id IN ({marks}) AND arena_id<>?",
-            (*reservation_ids, state.arena_digest),
-        )
-        reason = f"{reason}:rebound_from_{retired['arena_id'][:16]}"
-        if len(reason) > 128:
-            raise IntakeError("reservation baseline rebind reason is malformed")
+    for row_id in reservation_ids:
+        prior = reservation_baseline_segment(store, row_id)
+        if prior is not None and (prior.manifest.digest != state.manifest.digest
+                                  or prior.tree_digest != state.tree_digest):
+            raise IntakeError("declared reservation baseline cannot be rebound")
     if group:
         existing = tuple(
             reservation_baseline_segment(store, row_id)
@@ -309,50 +283,16 @@ def qualification_queue_baseline(
     )
 
 
-def rebind_retired_arena_segments(
-    store: "FinalizedIntakeStore", live: EvaluationStackState
-) -> tuple[str, ...]:
-    """Rebind every evidence-free row whose segment names an arena other than ``live``'s.
-
-    Rebinding happens in one transaction for the whole queue rather than one
-    head per pass: the selector never picks a row bound to a retired arena, so
-    each such row would otherwise surface as the head in turn.
-    """
-
-    marks = ",".join("?" for _ in _REBINDABLE)
-    with store._transaction():
-        rows = tuple(
-            store._db.execute(
-                "SELECT b.reservation_id FROM reservation_baseline_segments AS b "
-                "JOIN reservations AS r USING(reservation_id) "
-                f"WHERE r.status IN ({marks}) AND b.arena_id<>? "
-                "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,"
-                "r.content_hash",
-                (*_REBINDABLE, live.arena_digest),
-            )
-        )
-        for row in rows:
-            bind_reservation_baseline_segment(
-                store, row["reservation_id"], live, reason=RETIRED_ARENA_REBIND
-            )
-    return tuple(row["reservation_id"] for row in rows)
-
-
 def commission_boundary(
     store: "FinalizedIntakeStore",
     incumbent: "EvaluationStackManifest",
     *,
     tree_digest: str,
 ) -> tuple[str, str, str] | None:
-    """Bind unmeasured work to the sealed commission before any claim.
+    """Publish the commissioned HEAD and stop at a different queued baseline.
 
-    Returns None when the head drains under ``incumbent``, otherwise the
-    commissioned, required, and required-tree digests of the boundary.
-    Settlement advances crown lineage, not the manually commissioned baseline.
-    Old screen/backfill code stamped that mutable crown into queued segments;
-    repair those unmeasured bindings here, where the sealed dispatcher supplies
-    the actual worker incumbent. Retained qualification evidence keeps its
-    binding and still halts a genuinely different manual commission.
+    Returns None when the queue head drains under the commission, otherwise
+    the commissioned, required and required-tree digests. No binding is changed.
     """
 
     try:
@@ -361,41 +301,15 @@ def commission_boundary(
         if str(exc) != "evaluation stack is not initialized":
             raise
         store.initialize_evaluation_stack(incumbent, tree_digest=tree_digest)
-    commissioned = EvaluationStackState(
-        incumbent.arena_digest, 0, incumbent, tree_digest,
-        canonical_digest(_EVALUATION_STACK_GENESIS_DOMAIN, {
-            "arena_digest": incumbent.arena_digest,
-            "stack_digest": incumbent.digest,
-            "tree_digest": tree_digest,
-        }),
-    )
-    marks = ",".join("?" for _ in _REBINDABLE)
-    with store._transaction():
-        rows = tuple(store._db.execute(
-            "SELECT r.reservation_id FROM reservations AS r "
-            f"WHERE r.status IN ({marks}) AND NOT EXISTS ("
-            "SELECT 1 FROM evaluation_lease_members AS m "
-            "WHERE m.reservation_id=r.reservation_id AND m.active=1) "
-            "AND NOT EXISTS (SELECT 1 FROM settlement_qualifications AS q "
-            "WHERE q.reservation_id=r.reservation_id)",
-            _REBINDABLE,
-        ))
-        for row in rows:
-            prior = reservation_baseline_segment(store, row["reservation_id"])
-            if prior is not None and (
-                prior.manifest.digest == incumbent.digest
-                and prior.tree_digest == tree_digest
-            ):
-                continue
-            store._db.execute(
-                "DELETE FROM reservation_baseline_segments WHERE reservation_id=?",
-                (row["reservation_id"],),
-            )
-            bind_reservation_baseline_segment(
-                store, row["reservation_id"], commissioned,
-                reason="commissioned_incumbent",
-            )
+    from cacheon.chain.declared_baseline import commission_baseline, current_baseline
     required = qualification_queue_baseline(store)
+    head = current_baseline(store)
+    draining_older = (head is not None and required is not None
+                      and required.generation < head.generation
+                      and required.manifest.digest == incumbent.digest
+                      and required.tree_digest == tree_digest)
+    if not draining_older:
+        commission_baseline(store, incumbent, tree_digest)
     if required is None or (
         required.manifest.digest == incumbent.digest
         and required.tree_digest == tree_digest
@@ -405,12 +319,10 @@ def commission_boundary(
 
 
 __all__ = [
-    "RETIRED_ARENA_REBIND",
     "backfill_reservation_baseline_segments",
     "bind_reservation_baseline_segment",
     "bind_unbound_queue_to_stack",
     "commission_boundary",
     "qualification_queue_baseline",
-    "rebind_retired_arena_segments",
     "reservation_baseline_segment",
 ]
