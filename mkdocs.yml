@@ -9,6 +9,7 @@ site_dir: site
 # never part of the published documentation source set.
 exclude_docs: |
   WORKLOG.md
+  reference/state-of-record.md
 repo_url: https://github.com/latent-to/cacheon
 repo_name: latent-to/cacheon
 edit_uri: edit/main/docs/
@@ -103,7 +104,6 @@ nav:
   - Start here:
       - What Cacheon is: get-started/concepts.md
       - Local quickstart: get-started/quickstart.md
-      - Current status: reference/state-of-record.md
   - Architecture:
       - System overview: architecture/overview.md
       - Product model: architecture/product-model.md

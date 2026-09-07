@@ -102,7 +102,6 @@ The remaining empirical gates include:
 - a production engine image served end to end through the reviewed release path; and
 - exact campaign, family, membership, and reserve manifests.
 
-See [Current status](../reference/state-of-record.md) for the maintained evidence
-ledger, [Authoritative qualification](../validator-guide/qualification.md) for the
+See [Authoritative qualification](../validator-guide/qualification.md) for the
 current protocol, and [Emissions policy](../reference/emissions-policy.md) for the
 economic contract.

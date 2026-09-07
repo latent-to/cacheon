@@ -57,9 +57,8 @@ and reject the environment if the resolved wheel does not match the driver,
 toolkit, and deployment lock.
 
 The repository's current SGLang contract is `0.5.18`, but installing the
-pin is not evidence that its GPU gates passed. Check the dated validation
-boundary in [State of record](../reference/state-of-record.md) and the proof
-procedure in [SGLang compatibility](sglang-tracking.md). A deployment lockfile
+pin is not evidence that its GPU gates passed. Follow the validation procedure
+in [SGLang compatibility](sglang-tracking.md). A deployment lockfile
 or image is stronger authority than this illustrative installation sequence;
 do not let a package resolver silently replace its Torch/CUDA stack.
 

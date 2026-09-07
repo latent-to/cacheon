@@ -26,9 +26,8 @@ DOCS = ROOT / "docs"
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
 SURFACE_CLI = ROOT / "scripts" / "surface_baseline" / "cli.json"
 CLI_REFERENCE = DOCS / "reference" / "cli.md"
-# This gitignored local operations log can contain private infrastructure
-# context. It is deliberately outside both validation and publication.
-PRIVATE_DOCS = {DOCS / "WORKLOG.md"}
+# Local working records are excluded from validation and publication.
+PRIVATE_DOCS = {DOCS / "WORKLOG.md", DOCS / "reference/state-of-record.md"}
 REDIRECT_MARKER = re.compile(r"\A<!-- docs-redirect: ([^>\n]+) -->\n")
 
 PRIVATE_PATTERNS = (

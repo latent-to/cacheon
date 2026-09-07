@@ -19,7 +19,7 @@ cacheon/dispatch.py 1207
 cacheon/engine_tree.py 1607
 cacheon/eval/b300_qualification_deployment.py 1023
 cacheon/eval/b300_qualification_graph_evidence_store.py 939
-cacheon/eval/b300_screen_deployment.py 1958
+cacheon/eval/b300_screen_deployment.py 1802
 cacheon/eval/b300_screen_stages.py 1020
 cacheon/eval/calibration.py 922
 cacheon/eval/crossover_runtime.py 1547

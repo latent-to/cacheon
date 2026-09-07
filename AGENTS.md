@@ -12,8 +12,7 @@ Choose the smallest relevant path:
 2. `docs/architecture/product-model.md` — normative proposal, crown,
    integration, and release contract.
 3. `docs/architecture/slot-contract.md` — normative contribution boundary.
-4. `docs/reference/state-of-record.md` — dated implementation and evidence
-   status.
+4. `docs/validator-guide/first-hour.md` — deployment and evidence prerequisites.
 5. `docs/miner-guide/overview.md` — contribution workflow.
 6. `docs/validator-guide/overview.md` — intake, qualification, settlement, and
    publication.
@@ -24,7 +23,8 @@ cross-harness continuity instructions supplied by the environment. Historical lo
 investigation; current code, tests, Git state, and external state remain
 authoritative.
 
-`WORKLOG.md` and `docs/WORKLOG.md`, when present, are private local working
+`WORKLOG.md`, `docs/WORKLOG.md`, and `docs/reference/state-of-record.md`, when
+present, are private local working
 records. They are ignored and must not be committed, linked from public docs,
 or treated as production authority.
 
@@ -377,6 +377,6 @@ trimmed to this tree's prose-only house style.
 ## Persistence
 
 Committed code, tests, this file, and `docs/` are the portable context. Keep
-dated empirical claims in `docs/reference/state-of-record.md` or `docs/results/`;
-keep evergreen pages neutral and present-tense. Detailed chronology belongs in
-Git history or `docs/history/`, not in operator and architecture pages.
+curated empirical results in `docs/results/`; keep evergreen pages neutral and
+present-tense. Operational status and task chronology belong in ignored local
+working records, not in published documentation.

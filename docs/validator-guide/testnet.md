@@ -247,8 +247,7 @@ reopened. Do not infer a stronger boundary from testnet connectivity:
 | Structural two-pass fixture | State-machine transitions, independence checks, evidence reopening, and settlement plumbing | Empirical GPU speedup, production calibration, or arena-provider readiness |
 | Builder-authenticated reproducible OCI pair plus release/session-bound serving receipts | Release-image identity and execution through the approved serving seams for that exact session | Qualification authority unless separate resident crossover, audit, and T evidence exists; clean-wheel, native-provider, and effective-policy gates remain separate prerequisites |
 
-The [state of record](../reference/state-of-record.md) identifies which of these evidence
-products have been completed. Deployment must supply and commission its production arena
+Deployment must supply and commission its production arena
 provider independently of the command-line intake path.
 
 ## Testnet exit criteria

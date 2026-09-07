@@ -209,8 +209,7 @@ its own design and security review, not a revert switch.
   membership authority, independently graded review and invalidation authority,
   and accepted production audit-canary evidence.
 
-See [Current status](state-of-record.md) for the maintained evidence ledger and
-[Settlement and weights](../validator-guide/settlement-and-weights.md) for the
+See [Settlement and weights](../validator-guide/settlement-and-weights.md) for the
 operator flow.
 
 ## Source anchors

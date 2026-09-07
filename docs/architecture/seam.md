@@ -274,8 +274,7 @@ Optional backend rows declare `requires` packages so CPU/dev environments can sk
 
 !!! warning "Pin-validation boundary"
     A green import/chokepoint canary is necessary compatibility evidence, not proof that
-    a pin preserves candidate execution and measured performance. Check
-    [State of record](../reference/state-of-record.md) for completed evidence and
+    a pin preserves candidate execution and measured performance. See
     [SGLang compatibility](../dev/sglang-tracking.md) for the complete validation ladder.
 
 ### Diagnosing a seam failure

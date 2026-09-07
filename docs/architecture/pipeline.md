@@ -358,10 +358,6 @@ See the [emissions policy](../reference/emissions-policy.md).
 
 A settled crown changes the evaluation stack and nothing else. Integration into maintained source, release, and serving are separate authorities that this repository does not implement; see [After a crown](../engine/integration.md).
 
-The dated
-[State of record](../reference/state-of-record.md) tracks implementation and validation
-limits.
-
 ## Operational handoff checklist
 
 Before treating an attempt as production authority, an operator or reviewer should be

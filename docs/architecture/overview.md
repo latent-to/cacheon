@@ -145,5 +145,4 @@ The architecture is preserving its product boundary when all of the following re
 - [Stacks and manifests](stacks.md)
 - [Evaluation pipeline](pipeline.md)
 - [SGLang seam](seam.md)
-- [Current state of record](../reference/state-of-record.md)
 - [Normative product model](product-model.md)

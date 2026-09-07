@@ -178,4 +178,3 @@ policies, evidence, and independent reproduction bound to the production path.
 - [Run the CPU quickstart](quickstart.md)
 - [Understand the architecture](../architecture/overview.md)
 - [Choose a registered target](../miner-guide/slots.md)
-- [Inspect the current evidence boundary](../reference/state-of-record.md)

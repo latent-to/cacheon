@@ -86,6 +86,14 @@ Each stage has a timeout and emits typed evidence with one of three grades: `pas
 Screens are explicitly marked `crownable: false`. A fast abbreviated-serving screen is
 an admission signal, not economic evidence, and cannot update the evaluation stack.
 
+The B300 resident screen measures the registered workload cells at their declared input
+and output lengths, concurrency, and timed-read counts. Each stock or candidate read
+executes that same mix; throughput is the observed output-token sum divided by the sum
+of host-measured batch times. Leading warmup batches are excluded from the mix, and the
+screen's existing cold-lifetime warmup remains unscored. Mixed workloads size the engine
+for the largest context and concurrency. A four-output-token probe cannot stand in for
+this speed decision: it can hide an improvement that appears during sustained decode.
+
 The abbreviated-serving stage can use a long-lived resident screen lane. It keeps stock
 resident, swaps candidate bundles into a reviewed seam, recaptures graphs, and binds every
 batch to the current swap generation. Stock reads bracket candidates and act as canaries:

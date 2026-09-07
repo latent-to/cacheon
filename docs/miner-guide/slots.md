@@ -70,9 +70,8 @@ these widened consumers. See the [attention family ABI](kernel-abi.md#atomic-spa
 
 The catalog registers contracts; each arena's pinned data seals which of them
 accept paid submission, and a registered slot can be absent from an arena
-whose model never executes the adapter's callsite. Check the arena's
-registered set in the [state of record](../reference/state-of-record.md)
-before paying.
+whose model never executes the adapter's callsite. Check the deployed arena's
+registered target set before paying.
 
 Closing a standalone lane removes only that lane. Activation remains claimable
 inside a fused MoE target, normalization inside

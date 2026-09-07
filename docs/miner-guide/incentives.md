@@ -250,8 +250,7 @@ convert an existing V1 claim or create retroactive principal.
   catch-up.
 
 See [Finite-debt V2](../reference/emissions-policy.md#finite-debt-v2) for the
-exact policy and [Current status](../reference/state-of-record.md#inactive-v2-finite-debt)
-for the maintained activation boundary.
+exact policy and activation boundary.
 
 ## Read the exact rules
 
@@ -261,5 +260,3 @@ and operational boundaries live in:
 - [Emissions policy](../reference/emissions-policy.md) — exact V1 and V2 formulas;
 - [Settlement and weights](../validator-guide/settlement-and-weights.md) — validator
   settlement, signing, publication, and recovery;
-- [Current status](../reference/state-of-record.md) — what has actually been
-  exercised and what remains inactive.

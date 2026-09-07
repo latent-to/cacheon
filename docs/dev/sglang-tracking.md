@@ -9,8 +9,7 @@ A green static seam canary establishes import and chokepoint compatibility only.
 runtime pin is eligible for evaluation or release authority only after end-to-end GPU
 controls reject a deliberately broken bundle, accept a faithful bundle, and rebaseline
 the registered champions under the exact new identity. Treat the source pin as the
-compatibility target, not as evidence that these empirical gates passed. Completed proof
-coverage belongs in [State of record](../reference/state-of-record.md).
+compatibility target, not as evidence that these empirical gates passed.
 
 ## Why the pin matters
 
@@ -213,6 +212,3 @@ digest-pinned base image, reproducible Cacheon artifacts, native build, and
 serving policy. Consumers verify those exact identities. Upgrading a running
 deployment means building and signing a new release; it is never an in-place
 package upgrade inside an existing release.
-
-See [State of record](../reference/state-of-record.md) for which empirical GPU
-proofs exist for the present architecture and which remain outstanding.

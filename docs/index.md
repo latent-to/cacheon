@@ -102,16 +102,13 @@ copying them.
 | Deploy intake, an arena provider, and qualification workers | [Validator guide](validator-guide/overview.md) |
 | See what a crown does and does not authorize | [After a crown](engine/integration.md) |
 | Audit trust boundaries and failure behavior | [Security model](security/threat-model.md) |
-| Check what is implemented, measured, and still unproven | [State of record](reference/state-of-record.md) |
 
 ## Evidence is scoped, not blended
 
 Every performance or authority claim is scoped to the exact runtime, hardware, arena,
 stack, identities, and procedure that produced it. Diagnostic measurements cannot
 authorize a crown; crown evidence cannot authorize reviewed source; and release
-verification cannot retroactively validate qualification. The
-[state of record](reference/state-of-record.md) identifies which evidence products have
-actually been retained for each boundary.
+verification cannot retroactively validate qualification.
 
 !!! note "Source of executable truth"
     This [Cacheon repository](https://github.com/latent-to/cacheon) owns both
