@@ -392,6 +392,11 @@ derives a candidate-local `B300RemoteQualificationAdapter`, and runs through
 `B300MainnetWorker.run_remote_qualification`. Screen-only construction and
 one-shot adapter mode still refuse qualification before resident work.
 
+Registered B300 qualification seals only the canonical retained-support policy
+digest derived by `retained_support_policy_digest()`. A stale support-policy
+digest fails commissioning before GPU execution; retained quality validation
+checks the same binding again after execution.
+
 The commission measures B against the durable incumbent stack the
 capabilities factory declares (`incumbent_entries`, resolved through the same
 closed source resolver); at genesis the declaration is empty and the baseline

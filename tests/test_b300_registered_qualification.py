@@ -22,6 +22,8 @@ from cacheon.arena_service import (
     ScreenGrade,
     ScreenStageResult,
 )
+from cacheon.eval.reference_quality import retained_support_policy_digest
+from cacheon.stack_identity import canonical_digest
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
 from cacheon.engine_tree import inspect_contribution
@@ -310,7 +312,7 @@ def _harness(
         tokens_per_prompt=case.session.max_new_tokens,
         topk_width=case.session.top_logprobs_num,
         hidden_tasks_per_prompt=1,
-        support_policy_digest=_h("retained-support-policy"),
+        support_policy_digest=retained_support_policy_digest(),
         hidden_task_policy_digest=hidden_policy,
         hidden_tasks_required=True,
         select_count=2,
@@ -414,6 +416,24 @@ def _harness(
         policy,
         inputs,
     )
+
+
+@pytest.mark.parametrize("source_fixture", [None, FUSED])
+@pytest.mark.parametrize("topk_width", [0, 1])
+def test_registered_policy_rejects_stale_support_before_qualification(
+    tmp_path: Path, source_fixture: Path | None, topk_width: int,
+) -> None:
+    policy = replace(_harness(tmp_path, source_fixture).policy, topk_width=topk_width)
+    assert policy.support_policy_digest == retained_support_policy_digest()
+    stale = canonical_digest(
+        "cacheon.private.b300-support-policy.v1",
+        {"hidden_task_support": "topk-exact", "nll_tail_threshold": "0.35"},
+    )
+    with pytest.raises(
+        registered.B300RegisteredQualificationError,
+        match="support policy differs from the retained quality contract",
+    ):
+        replace(policy, support_policy_digest=stale)
 
 
 def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identity(

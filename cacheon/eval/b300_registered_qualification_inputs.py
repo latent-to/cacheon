@@ -1,10 +1,4 @@
-"""Sealed policy, blocker, graph-fact, and input authorities for registered
-B300 qualification.
-
-These are the closed types the qualification factory validates and derives
-plans from.  ``b300_registered_qualification`` composes and re-exports every
-name, so import paths are unchanged.
-"""
+"""Sealed authorities consumed by the registered B300 qualification factory."""
 
 from __future__ import annotations
 
@@ -66,6 +60,7 @@ from cacheon.eval.qualification_intake import (
     GraphVerificationObservation,
     publish_graph_observation,
 )
+from cacheon.eval.reference_quality import retained_support_policy_digest
 from cacheon.eval.qualification_runner import (
     CandidateQualificationAuthority,
     CausalQualificationInput,
@@ -418,6 +413,10 @@ class B300RegisteredQualificationPolicy:
             "hidden_task_policy_digest",
         ):
             object.__setattr__(self, field, _digest(getattr(self, field), field))
+        if self.support_policy_digest != retained_support_policy_digest():
+            raise B300RegisteredQualificationError(
+                "support policy differs from the retained quality contract"
+            )
         if not isinstance(self.nll_tail_threshold, str):
             raise B300RegisteredQualificationError(
                 "NLL tail threshold must be a canonical decimal string"
