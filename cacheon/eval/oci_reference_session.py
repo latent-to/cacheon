@@ -1,8 +1,8 @@
 """Trusted host protocol for one pristine, untimed teacher session.
 
 The caller supplies an exact empty-stack reference manifest and an ordered cohort
-of fixed-width requests.  This module performs the ordinary OCI init/preflight
-handshake, exchanges only ORQ1/ORE1 frames, and returns primitive worker evidence
+of bounded requests.  This module performs the ordinary OCI init/preflight
+handshake, exchanges ORQ/ORE binary frames, and returns primitive worker evidence
 plus host-observed transcript identities.  It has no quality, scheduling, or
 economic authority.
 """
@@ -40,7 +40,6 @@ from cacheon.eval.oci_session_protocol import (
 )
 from cacheon.eval.qualification import ReferenceManifest
 from cacheon.eval.reference_protocol import (
-    EVIDENCE_MAGIC,
     MAX_EVIDENCE_BYTES,
     ReferenceEvidence,
     ReferenceProtocolError,
@@ -72,7 +71,7 @@ def _digest(value: object, *, field: str) -> str:
 
 @dataclass(frozen=True)
 class ReferenceSessionPlan:
-    """Exact empty-stack launch and ordered ORQ1 cohort supplied by the validator."""
+    """Exact empty-stack launch and ordered reference cohort supplied by the validator."""
 
     reference: ReferenceManifest
     pristine_stack: EvaluationStackManifest
@@ -288,7 +287,7 @@ class ReferenceSessionEvidence:
 
 
 class AttachedReferenceTransport(AttachedSessionTransport):
-    """ORQ1/ORE1 reader over the ordinary manager-owned attached transport."""
+    """Reference-frame reader over the ordinary manager-owned attached transport."""
 
     def read_reference_evidence(
         self, request: ReferenceRequest, *, deadline: float
@@ -314,7 +313,7 @@ class AttachedReferenceTransport(AttachedSessionTransport):
                     OuterSessionWorkerError, ": ".join(detail)
                 )
             raise OuterSessionProtocolError("worker emitted an early control frame")
-        if magic != EVIDENCE_MAGIC:
+        if magic != request.evidence_magic:
             raise OuterSessionProtocolError("worker emitted wrong reference-evidence magic")
         exact = expected_evidence_payload_bytes(request)
         if size != exact or size > MAX_EVIDENCE_BYTES:
@@ -322,7 +321,7 @@ class AttachedReferenceTransport(AttachedSessionTransport):
         payload = self._read_exact(size, deadline=deadline)
         try:
             return decode_reference_evidence(
-                EVIDENCE_MAGIC + struct.pack(">I", size) + payload,
+                magic + struct.pack(">I", size) + payload,
                 request,
             )
         except ReferenceProtocolError as exc:

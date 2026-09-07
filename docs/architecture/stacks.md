@@ -1,8 +1,8 @@
 # Stacks and manifests
 
-Cacheon represents evaluation state, product state, and semantic reference state as separate content-addressed objects. This makes it impossible to confuse “currently winning in the referee” with “reviewed and shipped.”
+Cacheon represents evaluation state and semantic reference state as separate content-addressed objects. Neither is a product: nothing that wins in the referee ships by that fact.
 
-## The three manifest roles
+## The two manifest roles
 
 ### Evaluation stack
 
@@ -14,15 +14,9 @@ Cacheon represents evaluation state, product state, and semantic reference state
 - the exact target-catalog snapshot and digest;
 - the active contribution reference for each target.
 
-An evaluation entry may be a hostile `ProposalContributionRef` or an already integrated contribution. Proposal references remain legal only because the whole stack is materialized and executed inside the hostile evaluation boundary.
+Every evaluation entry is a hostile `ProposalContributionRef`. Proposal references are legal only because the whole stack is materialized and executed inside the hostile evaluation boundary.
 
 The evaluation stack is arena-specific. A result against one runtime, base engine, catalog, or arena cannot update another stack by name alone.
-
-### Engine release stack
-
-`EngineReleaseManifest` is the chain-independent product identity. It binds the runtime, base engine, catalog, and active entries but accepts `IntegratedContributionRef` values only. Each reference must be covered by an exact approved `IntegrationReviewRecord`.
-
-The release manifest is not mutated when the referee crowns a proposal. It changes only through a reviewed product decision.
 
 ### Reference manifest
 
@@ -30,13 +24,13 @@ The release manifest is not mutated when the referee crowns a proposal. It chang
 
 The reference does not compete on speed and is not the incumbent B′. This prevents an untrusted incumbent from becoming its own correctness oracle.
 
-| Property | Evaluation stack | Engine release stack | Reference |
-|---|---:|---:|---:|
-| Hostile proposal entries allowed | Yes | No | No |
-| Bound to one arena | Yes | No | Quality profile |
-| Timed | Versioned B/C/[B′] speed work | Release checks only | Never |
-| Can update after a crown | Transactionally | No | No |
-| Can be served as product | No | Yes, after signed publication | No |
+| Property | Evaluation stack | Reference |
+|---|---:|---:|
+| Hostile proposal entries allowed | Yes | No |
+| Bound to one arena | Yes | Quality profile |
+| Timed | Versioned B/C/[B′] speed work | Never |
+| Can update after a crown | Transactionally | No |
+| Can be served as product | No | No |
 
 ## Canonical identity
 
@@ -46,7 +40,6 @@ This closes several ambiguity classes:
 
 - a target cannot change meaning while retaining its name;
 - an arena cannot silently change workload or topology under retained evidence;
-- an integrated contribution cannot be substituted for another source tree with matching labels;
 - manifest map order cannot alter identity;
 - a candidate cannot claim a different target after measurement.
 
@@ -64,9 +57,6 @@ These three identities answer different questions and should appear together in 
 
 Equal stack digests are not enough to claim equal execution if launch inputs differ. Equal
 tree digests are not enough if a different model, native publication, or topology ran.
-Conversely, a proposal tree and a reviewed release tree can preserve the same crowned
-selected payload while differing in reviewed packaging and therefore having different
-tree identities.
 
 ## Exact marginal substitution
 
@@ -84,8 +74,8 @@ flowchart TB
 
     E --> I
     E --> C
-    I -->|"v7 resident or v8 request process"| L0
-    C -->|"v7 resident or v8 request process"| L1
+    I -->|"request process"| L0
+    C -->|"request process"| L1
     L0 -->|"serialized host-timed reads"| V["Qualification verdict"]
     L1 -->|"serialized host-timed reads + sealed trajectory"| V
     C --> A
@@ -97,7 +87,7 @@ The target catalog determines the transition:
 
 - a singleton replaces one slot target;
 - an atomic target replaces its registered member set and displaces the overlapping singleton targets;
-- compatible targets use explicit validator-owned composition precedence;
+- conflicting targets are removed before the candidate tree is materialized;
 - required targets and displacement closures are validated before planning;
 - unregistered work fails resolution rather than being disguised as a singleton.
 
@@ -112,8 +102,7 @@ Planning produces:
 ```text
 incumbent = materialize(E0)                         # A + R0 on baseline lane
 candidate = materialize(replace(E0, rmsnorm, R1))  # A + R1 on candidate lane
-v7        = B, C, then B′ only if B/C cannot decide
-v8        = B, C, B′ unconditionally
+v10       = B, C, B′ unconditionally (v11: same reads, mixed cells)
 A         = separate eager, untimed candidate audit
 T         = materialize(pristine reference)        # neither proposal is a grading oracle
 ```
@@ -160,9 +149,7 @@ authoritative qualification rather than inheriting a synthetic screen result.
 4. rewrite local Python and native names into deterministic contribution namespaces;
 5. emit one canonical runtime manifest and rebuild plan;
 6. record every emitted file and compute the logical tree digest;
-7. reopen the emitted tree before it is accepted by launch or release code.
-
-Integrated contributions take a stricter path. Promotion binds reviewed repository state, the byte-preserved selected payload, surrounding packaging, artifacts, tests, license/provenance assertions, and immutable attribution into an `IntegrationReviewRecord`. A release tree can resolve source only through approved integrated references.
+7. reopen the emitted tree before it is accepted by launch code.
 
 The resulting tree digest is separate from the stack digest. The stack identifies semantic composition; the tree identifies the exact emitted filesystem used to build and launch it. Both are retained.
 
@@ -186,9 +173,8 @@ Materialized source is only one part of a running engine. The launch authority a
 
 The controller prepares these inputs before timed execution. Production
 qualification binds two isolated physical TP lanes and serializes GPU work
-across them. Current v7 uses the standing resident pair for B/C and takes B′
-only when needed; current v8 uses separate engine processes and always takes
-B/C/B′. Independent reproduction must exchange the physical incumbent and
+across them. Current v10 (v11 for mixed cells) uses separate engine processes and
+always takes B/C/B′. Independent reproduction must exchange the physical incumbent and
 candidate lane roles.
 
 A separate
@@ -205,40 +191,11 @@ Principal implementations are
 [`eval/native_artifact.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/native_artifact.py),
 and [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py).
 
-### Direct-artifact identity across the stack
-
-A direct artifact is not identified by its CUBIN name or `ops.entry`. Its
-canonical execution identity covers the provider, compiler factory, allowed
-profile inputs, ordered bindings, lifecycle plan, specialization predicates,
-prelaunch operations, validator-owned resource plan, derived capability
-requirements, and complete device launch plan. That projection is included in
-the selected contribution and selected-delta identities used to materialize the
-engine tree.
-
-The target catalog separately binds the immutable provider-registry snapshot and
-digest. Launch preparation then adds the measured compile profile, native build
-specification, sealed publication digest, and exact file inventory. Runtime
-admission adds driver-observed CUBIN ABI and contract digests, while execution
-receipts prove that the selected entry loaded, ran, and completed on every active
-member without fallback.
-
-These layers answer different questions:
-
-| Layer | Bound authority |
-|---|---|
-| Contribution | Exact declarative device execution and source closure |
-| Catalog | Which artifact providers and target features are permitted |
-| Build | Image, logical/compiler architecture, topology-derived profile, patcher, and publication |
-| Runtime | Exact retained CUBIN handle, observed ABI, rank device, parameters, resources, and lifecycle |
-| Qualification | Full member coverage, successful invocation, seam completion, and zero fallback |
-
-See [Sealed direct artifacts](direct-artifacts.md) for the complete contract.
-
 ## Transactional stack updates
 
-A passing qualification does not immediately mutate the incumbent. The settlement path requires two independently selected and reopened passing qualifications for the exact same reproduction identity.
+A passing qualification does not immediately mutate the incumbent. The settlement path reopens one complete audited passing qualification for the exact measured contribution identity. Historical paired evidence remains reopenable with its original identities and lower speedup.
 
-The equal core `SettlementReproductionIdentity` contains the arena digest,
+For historical pairs, the equal core `SettlementReproductionIdentity` contains the arena digest,
 target ID, selected-delta digest, hotkey, incumbent stack/tree digests, and
 candidate stack/tree digests. The pair must also match broader contribution,
 reservation, finalized-priority, manifest, member, and arm fields. Separately,
@@ -247,7 +204,7 @@ plan, attempt, report, selection commitment, selection-secret commitment, and
 selection evidence. Settlement conservatively uses the lower of the two
 accepted speedups.
 
-Only after both evidence roots reopen and agree does settlement:
+After the accepted qualification evidence reopens, settlement:
 
 1. revalidate the target transition against the current stack;
 2. project the crown and attributable credit;
@@ -271,25 +228,15 @@ An operator should never “repair” these cases by editing a manifest digest o
 directory into the expected path. The mismatch is the evidence that the attempted state
 transition lacks authority.
 
-## Release promotion
+## No release path
 
-Promotion does not copy a hostile proposal reference into a release manifest. It produces a new integrated reference from reviewed source, then requires exact review coverage for every release entry. The engine tree is rematerialized from those integrated sources and bound into the release descriptor.
-
-This yields a one-way authority boundary:
-
-```text
-proposal reference -> crown evidence -> integration review -> integrated reference -> release manifest
-```
-
-There is no supported arrow from a mutable miner URL, chain record, or evaluation bundle directly to serving.
+There is no supported arrow from a mutable miner URL, chain record, evaluation bundle, or crown to serving. Integration into maintained source and any release are decisions made outside this repository; see [After a crown](../engine/integration.md).
 
 ## Source map
 
 - [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — strict manifest and contribution-reference types
 - [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) — marginal arms, cohorts, transitions, and rollback
-- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic source materialization and integration promotion
-- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — singleton, atomic, overlap, and composition policy
-- [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_identity.py) — canonical direct-artifact execution identity
-- [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_provider.py) — closed provider registry included in catalog identity
+- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic source materialization
+- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — singleton, atomic, displacement, and conflict policy
 - [`eval/reference_quality.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_quality.py) — pristine reference quality products
 - [`eval/calibration.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/calibration.py) — calibrated qualification/reference policy

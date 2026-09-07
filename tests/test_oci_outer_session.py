@@ -249,6 +249,47 @@ def test_plan_validates_every_frame_before_start_and_contains_no_execution_polic
     assert not hasattr(plan, "score")
 
 
+def test_session_executes_sealed_request_geometry_per_batch() -> None:
+    plan = _plan(
+        batch_max_new_tokens=(2, 4, 4),
+        batch_expected_prompt_tokens=(8, 65, 65),
+    )
+    clock = _Clock()
+    transport = _FakeTransport(clock, plan.expected_preflight)
+    result = run_outer_session(
+        plan,
+        transport=transport,
+        deadline=1000.0,
+        init_timeout_s=30.0,
+        batch_timeout_s=30.0,
+        clock=clock,
+    )
+
+    assert [row.max_new_tokens for row in transport.requests] == [2, 4, 4]
+    assert [row.expected_prompt_tokens for row in transport.requests] == [8, 65, 65]
+    assert [row.token_numerator for row in result.batches] == [4, 8, 8]
+    assert plan.quality_tokens_per_prompt == 4
+    assert replace(plan, batch_max_new_tokens=(4, 2, 2)).quality_tokens_per_prompt == 4
+    from types import SimpleNamespace
+    from cacheon.eval.qualification_runner import _planned_prompt_digests
+    from cacheon.eval.scoring import planned_prompt_texts
+
+    pool = planned_prompt_texts(plan)
+    assert tuple(pool.values()) == ("a", "b", "c", "d", "e", "f")
+    assert _planned_prompt_digests(SimpleNamespace(baseline_session_plan=plan)) == tuple(sorted(pool))
+
+    with pytest.raises(OuterSessionInfrastructureError, match="exactly cover"):
+        _plan(
+            batch_max_new_tokens=(2, 4),
+            batch_expected_prompt_tokens=(8, 65),
+        )
+    with pytest.raises(OuterSessionInfrastructureError, match="controller batch"):
+        _plan(
+            batch_max_new_tokens=(2, 0, 4),
+            batch_expected_prompt_tokens=(8, 65, 65),
+        )
+
+
 def test_happy_path_accepts_preflight_before_ready_and_returns_raw_host_intervals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -300,9 +341,6 @@ def test_happy_path_accepts_preflight_before_ready_and_returns_raw_host_interval
     assert result.conditioning_started_at == result.batches[0].response_completed_at
     assert result.first_timed_completed_at == result.batches[2].response_completed_at
     assert result.conditioning_token_numerator == 8
-    assert result.conditioning_interval_seconds > (
-        result.batches[1].elapsed_seconds + result.batches[2].elapsed_seconds
-    )
     assert result.preflight == plan.expected_preflight
 
 

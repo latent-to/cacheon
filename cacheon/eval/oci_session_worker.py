@@ -598,12 +598,6 @@ def _engine_session(
     from cacheon.eval.engine_worker import isolated_engine_session
 
     bundle_path = str(tree_root) if active else ""
-    if manifest is not None and manifest.dep_patches and not os.environ.get(
-        "FLASHINFER_WORKSPACE_BASE", ""
-    ):
-        raise SessionWorkerError(
-            "dep-patched tree lacks its sealed runtime workspace"
-        )
     with isolated_engine_session(
         cfg,
         bundle_path=bundle_path,
@@ -1000,7 +994,7 @@ def _logprob_entry(value: object, *, label: str) -> tuple[float, int]:
         or not math.isfinite(float(logprob))
         or type(token_id) is not int
     ):
-        raise SessionProtocolError(f"pristine reference {label} entry is invalid")
+        raise SessionProtocolError(f"pristine reference {label} entry is invalid: logprob={logprob!r}, token_id={token_id!r}")
     return float(logprob), token_id
 
 
@@ -1157,11 +1151,12 @@ def _read_reference_request(fd: int) -> object:
         FRAME_HEADER_BYTES as REFERENCE_HEADER_BYTES,
         MAX_REQUEST_BYTES,
         REQUEST_MAGIC,
+        MIXED_REQUEST_MAGIC,
         decode_reference_request,
     )
 
     header = _read_exact(fd, REFERENCE_HEADER_BYTES)
-    if header[:4] != REQUEST_MAGIC:
+    if header[:4] not in (REQUEST_MAGIC, MIXED_REQUEST_MAGIC):
         raise SessionProtocolError("reference request magic/version mismatch")
     size = struct.unpack(">I", header[4:8])[0]
     if size > MAX_REQUEST_BYTES:

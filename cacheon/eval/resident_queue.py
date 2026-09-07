@@ -20,7 +20,7 @@ swaps and two reads, never an engine reload.
 
 Trust tier: screen/routing only.  Payment and crown evidence still come from
 the isolated per-candidate qualification path.  Non-swappable bundles
-(aot_exports device artifacts, dep-patched trees) never enter this queue — the
+(dep-patched trees) never enter this queue — the
 seam refuses them — and are scheduled as dedicated launches by the caller.
 
 This module is deliberately free of executor imports: it drives the

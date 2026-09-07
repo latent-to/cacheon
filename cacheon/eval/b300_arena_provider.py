@@ -66,8 +66,6 @@ _NON_SERVING_STAGES = SCREEN_STAGES[:-1]
 _SERVING_STAGE = SCREEN_STAGES[-1]
 
 
-
-
 def _resource_ids(value: object, field: str, *, allow_empty: bool) -> tuple[str, ...]:
     if type(value) is not tuple:
         raise B300ArenaProviderError(f"{field} must be an exact tuple")
@@ -316,17 +314,8 @@ class B300DeploymentAuthorities:
     deadline_provider: DeadlineProvider
     qualification_lane_pair: B300QualificationLanePair
     qualification_stage: str
-    resident_pair_factory: object
-    resident_count_quality: object
 
     def __post_init__(self) -> None:
-        from cacheon.eval.b300_resident_pair_factory import (
-            B300CommissionedResidentPairFactory,
-        )
-        from cacheon.eval.registered_resident_count_quality import (
-            B300ResidentCountQualityCapability,
-        )
-
         handlers = _validate_screen_authorities(
             self.runtime_identity,
             self.screen_handlers,
@@ -344,14 +333,6 @@ class B300DeploymentAuthorities:
             raise B300ArenaProviderError("qualification factory builder is not callable")
         if type(self.qualification_lane_pair) is not B300QualificationLanePair:
             raise B300ArenaProviderError("qualification lane pair is not exact")
-        if (
-            type(self.resident_pair_factory) is not B300CommissionedResidentPairFactory
-            or type(self.resident_count_quality)
-            is not B300ResidentCountQualityCapability
-        ):
-            raise B300ArenaProviderError(
-                "resident pair or count authority is not exactly commissioned"
-            )
         orientation = self.qualification_lane_pair.orientation(
             self.qualification_stage
         )
@@ -637,11 +618,6 @@ class B300ArenaServiceProvider:
         self._resident_teardown_failed = False
         self._closed = False
         self._lock = threading.RLock()
-
-    @property
-    def resident_screen_active(self) -> bool:
-        with self._lock:
-            return self._resident_lifetime is not None and not self._resident_failed
 
     @property
     def resident_screen_latched(self) -> bool:

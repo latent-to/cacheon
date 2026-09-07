@@ -1,0 +1,6 @@
+{
+  "architectures": ["sm103"],
+  "dtypes": ["bfloat16"],
+  "notes": "Faithful GEMM-family control: rank-2/rank-3 weights and input-dtype/FP32 strided outputs; not performance evidence.",
+  "op": "linear.dense"
+}

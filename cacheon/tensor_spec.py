@@ -420,6 +420,7 @@ def validate_tensor(
                 raise ValueError(f"{spec.name or 'tensor'} aliases another contract tensor")
 
 
+@torch.inference_mode(False)
 def allocate_output_spec(
     spec: OutputSpec,
     *,
@@ -427,7 +428,12 @@ def allocate_output_spec(
     fallback_device: str | torch.device,
     inputs: Iterable[torch.Tensor] = (),
 ) -> TensorAllocation:
-    """Allocate and cross-check every declared output and workspace buffer."""
+    """Allocate and cross-check ordinary, mutable output and workspace buffers.
+
+    Slot buffers can outlive the inference scope that runs the candidate. The
+    serving caller must still be able to update them, for example when SGLang
+    adds shared experts to the routed MoE output after the slot returns.
+    """
 
     inputs = tuple(t for t in inputs if torch.is_tensor(t))
     allocated: list[torch.Tensor] = []

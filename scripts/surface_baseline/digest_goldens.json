@@ -1,0 +1,7 @@
+{
+ "burn_projection": {"authority_digest":"1e56efe1ea87e7facff14d1b57519537a22377ee47ce0a0eccd1a03306c1d658","digest":"cea8428be99c80ad5a0b2585dd0df6dd1a4e094d14307755ad82b9f907511a10"},
+ "empty_settlement_state_digest": "190c5308919b321a6d316e388104bd1e4997e644a079e3cf5c36bf5de1ebf07f",
+ "owner_burn_projection": {"authority_digest":"b85c47d0b646b310f898924cd78008dfc309242d49c1c822095137fe46c63ab1","digest":"9257f4b3a035861b3eea2985d8e2b4afa7b41331938a794376e3d832164ebcae"},
+ "slot_audit_control": "3da44779e7a0f44361d84ef3640ead6fb2ec2805e1d00bb045395d8b8393160f",
+ "standing_reward_claim": "721a765a10f28f192054bd1bd2797bdb15f0a53767ecefaa85e24bef756b33b3"
+}

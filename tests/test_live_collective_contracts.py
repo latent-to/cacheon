@@ -336,7 +336,8 @@ def test_arfusion_group_mirrors_pinned_stock_group_selection(monkeypatch):
     ps.get_moe_data_parallel_world_size = lambda: 2
     assert _REAL_MOE_DP_WORLD_SIZE() == 2
     del ps.get_moe_data_parallel_world_size
-    assert _REAL_MOE_DP_WORLD_SIZE() is None
+    with pytest.raises(RuntimeError, match="cannot resolve MoE-DP topology"):
+        _REAL_MOE_DP_WORLD_SIZE()
     ps.get_moe_expert_parallel_world_size = lambda: 2
     assert dispatch._arfusion_group(False) is moe_ep
     assert _REAL_ARFUSION_GROUP_ROLE(False) == "ep"

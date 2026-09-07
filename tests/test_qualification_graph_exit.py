@@ -100,7 +100,7 @@ def _plan(
             graph_facts_builder_digest=_h(
                 "graph-failure:" + harness.candidate.reservation.target_id
             ),
-            graph_facts_builder=lambda _candidate, _prepared: facts,
+            graph_facts_builder=lambda _candidate, _prepared, _model_profile_key: facts,
         )
         factory = registered.build_b300_registered_qualification_factory(inputs)
     value = factory.plan_builder(harness.cohort, b"g" * 32)

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaCandidateBinding,
@@ -231,19 +230,6 @@ def _authorities(
             "B", baseline_executor.device_policy
         ),
     )
-    authority_index = len(executor_factory.managed_executors)
-    resident_pair_factory, pair_executors = (
-        authority_fixtures._resident_pair_factory(
-            tmp_path / f"resident-pair-{authority_index}",
-            executor_factory.monkeypatch,
-            _h(f"resident-pair-placeholder-{authority_index}"),
-        )
-    )
-    executor_factory.managed_executors.extend(pair_executors)
-    resident_count_quality = authority_fixtures._resident_count_quality(
-        authority_fixtures.default_target_catalog(),
-        tmp_path / f"count-evidence-{authority_index}",
-    )
     authorities = B300DeploymentAuthorities(
         runtime_identity=_runtime(),
         screen_handlers=handlers,
@@ -264,16 +250,6 @@ def _authorities(
         deadline_provider=lambda _request, _state: time.monotonic() + 600.0,
         qualification_lane_pair=lane_pair,
         qualification_stage="primary",
-        resident_pair_factory=resident_pair_factory,
-        resident_count_quality=resident_count_quality,
-    )
-    manifest = _manifest(authorities)
-    authorities = dataclasses.replace(
-        authorities,
-        resident_pair_factory=authority_fixtures._rebind_resident_pair_factory(
-            resident_pair_factory,
-            manifest.digest,
-        ),
     )
     return authorities, runner, resident, factory_builder
 
@@ -368,7 +344,6 @@ def test_all_five_real_screens_run_in_order_and_preserve_pass(
     assert tuple(row.stage for row in receipt.results) == SCREEN_STAGES
     assert tuple(row[1] for row in runner.calls) == SCREEN_STAGES[:-1]
     assert resident.created == 1
-    assert service._provider.resident_screen_active
     service._provider.close()
     assert resident.closed == 1
 
@@ -390,14 +365,14 @@ def test_fail_is_not_rewritten(tmp_path: Path, executor_factory) -> None:
     assert resident.created == 0
 
 
-def test_no_decision_screen_evidence_retries_instead_of_reaching_qualification(
+def test_no_decision_abi_screen_retries_then_holds_instead_of_reaching_qualification(
     tmp_path: Path, executor_factory
 ) -> None:
     """An undecided ABI stage must not buy a seat on the GPU.
 
-    Qualification is the expensive half of the pipeline. Promoting on a stage
-    that returned no decision spends a full evaluation on a candidate whose
-    ABI was never checked; one inconclusive screen retries (6ab052e).
+    Qualification is the expensive half of the pipeline. An undecided stage
+    retries within the screen budget and then parks; only an undecided final
+    stage escalates to qualification. The ABI stage is never final.
     """
 
     authorities, _runner, resident, _builder = _authorities(
@@ -407,12 +382,17 @@ def test_no_decision_screen_evidence_retries_instead_of_reaching_qualification(
     )
     manifest = _manifest(authorities)
     service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
+    first = _binding(tmp_path / "no-decision")
+    exhausted = dataclasses.replace(
+        first, screen_attempt=manifest.capacity.screen_retry_limit
+    )
 
-    receipt = service.screen(_binding(tmp_path / "no-decision"))
-
-    assert receipt.decision is PromotionDecision.RETRY
-    assert tuple(row.stage for row in receipt.results) == ("static", "build", "abi")
-    assert receipt.results[-1].grade is ScreenGrade.NO_DECISION
+    for binding, expected in ((first, PromotionDecision.RETRY),
+                              (exhausted, PromotionDecision.HOLD)):
+        receipt = service.screen(binding)
+        assert receipt.decision is expected
+        assert tuple(row.stage for row in receipt.results) == ("static", "build", "abi")
+        assert receipt.results[-1].grade is ScreenGrade.NO_DECISION
     # The screen stops at the undecided stage: no later stage is run, and the
     # candidate never reaches the resident lane.
     assert resident.created == 0
@@ -646,7 +626,6 @@ def test_qualification_preserves_exact_request_order_and_real_authorities(
     assert builder.calls[0][1] == {"attempt": 1}
     assert resident.created == 1
     assert resident.closed == 1
-    assert not service._provider.resident_screen_active
 
 
 def test_reordered_factory_is_refused(

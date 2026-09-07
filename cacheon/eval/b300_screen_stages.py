@@ -76,7 +76,6 @@ from cacheon.eval.oci_prebuild import (
 from cacheon.manifest import (
     ManifestError,
     all_declared_cuda_sources,
-    all_declared_dep_patches,
     load_manifest,
 )
 from cacheon.rebuild import RebuildError
@@ -304,12 +303,7 @@ def _validate_static_candidate(
             raise _CandidateStaticFailure("candidate Python is not UTF-8") from exc
     inspected = inspect_contribution(root, catalog=catalog)
     declared_cuda = all_declared_cuda_sources(root, manifest)
-    declared_patches = all_declared_dep_patches(root, manifest)
-    scan = scan_tree(
-        root,
-        declared_cuda_sources=declared_cuda,
-        declared_dep_patches=declared_patches,
-    )
+    scan = scan_tree(root, declared_cuda_sources=declared_cuda)
     if not scan.ok:
         raise _CandidateStaticFailure("recursive candidate policy rejected bytes")
     reservation = candidate.reservation
@@ -609,34 +603,6 @@ def _resolve_candidate_tree(
             "materialized tree contains another candidate authority"
         )
     return resolved
-
-
-def _decode_canonical_json(payload: bytes) -> dict[str, object]:
-    def reject_float(_value: str) -> None:
-        raise B300ScreenStagesError("screen evidence contains a JSON float")
-
-    def pairs(rows: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in rows:
-            if key in result:
-                raise B300ScreenStagesError("screen evidence repeats a JSON key")
-            result[key] = value
-        return result
-
-    try:
-        value = json.loads(
-            payload.decode("utf-8"),
-            parse_float=reject_float,
-            parse_constant=reject_float,
-            object_pairs_hook=pairs,
-        )
-    except B300ScreenStagesError:
-        raise
-    except (UnicodeError, ValueError, RecursionError) as exc:
-        raise B300ScreenStagesError("screen evidence is malformed") from exc
-    if type(value) is not dict or canonical_json_bytes(value) != payload:
-        raise B300ScreenStagesError("screen evidence is not canonical")
-    return value
 
 
 @dataclass(frozen=True)

@@ -303,48 +303,62 @@ def test_rmsnorm_dispatcher_no_audit_without_env():
     assert calls["n"] == 1 and SLOT not in audit._stats
 
 
-# ---- topk_overlap slots (the msa_prefill selection audit, 2026-07-10) -----------
+# ---- topk_overlap slots (the generic selection-audit mode; no registered slot
+# ---- currently uses it, so the tests register a synthetic one) ------------------
 
-MSA_SLOT = "attention.msa_prefill_block_score"
+TOPK_SLOT = "test.selection"
 
 
 def _sel(rows):
     return torch.tensor(rows, dtype=torch.int32).unsqueeze(0)  # (H=1, rows, k)
 
 
-def test_topk_identical_selection_no_violation(monkeypatch):
+def _arm_topk(monkeypatch):
+    from cacheon.slots import SLOTS, SILU_AND_MUL, Correctness
+    from dataclasses import replace as _dc_replace
+
     _arm(monkeypatch)
+    spec = _dc_replace(
+        SILU_AND_MUL,
+        name=TOPK_SLOT,
+        correctness=Correctness("topk_overlap", top_k=8, min_overlap=0.9),
+    )
+    monkeypatch.setitem(SLOTS, TOPK_SLOT, spec)
+
+
+def test_topk_identical_selection_no_violation(monkeypatch):
+    _arm_topk(monkeypatch)
     idx = _sel([[0, 1, 2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 12, 13, 14, 15]])
-    audit.record(MSA_SLOT, (idx,), (idx.clone(),))
-    s = audit._stats[MSA_SLOT]
+    audit.record(TOPK_SLOT, (idx,), (idx.clone(),))
+    s = audit._stats[TOPK_SLOT]
     assert s["n"] == 1 and s["violations"] == 0 and s["worst_frac"] == 1.0
     assert s["mode"] == "topk_overlap" and s["min_ratio"] == 0.9
 
 
 def test_topk_disjoint_row_is_violation(monkeypatch):
     # One fully-wrong row of four -> mean overlap 0.75 < the slot's 0.9 floor.
-    _arm(monkeypatch)
+    _arm_topk(monkeypatch)
     base = [[i * 8 + j for j in range(8)] for i in range(4)]
     actual = [row[:] for row in base]
     actual[0] = [100 + j for j in range(8)]
-    audit.record(MSA_SLOT, (_sel(actual),), (_sel(base),))
-    s = audit._stats[MSA_SLOT]
+    audit.record(TOPK_SLOT, (_sel(actual),), (_sel(base),))
+    s = audit._stats[TOPK_SLOT]
     assert s["n"] == 1 and s["violations"] == 1
     assert abs(s["worst_frac"] - 0.75) < 1e-6
 
 
 def test_topk_candidate_may_not_replace_padding_with_extra_blocks(monkeypatch):
-    _arm(monkeypatch)
+    _arm_topk(monkeypatch)
     expected = _sel([[0, 1, 2, 3, -1, -1, -1, -1]])
     actual = _sel([[0, 1, 2, 3, 9, 10, 11, 12]])
-    audit.record(MSA_SLOT, (actual,), (expected,))
-    s = audit._stats[MSA_SLOT]
+    audit.record(TOPK_SLOT, (actual,), (expected,))
+    s = audit._stats[TOPK_SLOT]
     assert s["n"] == 1 and s["violations"] == 1 and s["worst_frac"] == 0.0
 
 
 def test_topk_all_invalid_expected_counts_refused(monkeypatch):
-    _arm(monkeypatch)
+    _arm_topk(monkeypatch)
     empty = _sel([[-1] * 8])
-    audit.record(MSA_SLOT, (empty.clone(),), (empty,))
-    s = audit._stats[MSA_SLOT]
+    audit.record(TOPK_SLOT, (empty.clone(),), (empty,))
+    s = audit._stats[TOPK_SLOT]
     assert s["n"] == 0 and s["violations"] == 0 and s["baseline_refused"] == 1

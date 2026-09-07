@@ -1,6 +1,7 @@
 """Recompute calibrated B/C/B-prime speed evidence from sealed lifecycle rows."""
 from __future__ import annotations
 
+import hashlib
 import math
 import statistics
 from dataclasses import dataclass
@@ -18,18 +19,6 @@ class SpeedupVerdict:
 
 class RawSpeedEvidenceError(ValueError):
     pass
-
-@dataclass(frozen=True)
-class ChargedExecutionRate:
-    launch_digest: str
-    session_id: str
-    conditioning_tokens: int
-    timed_tokens: int
-    charged_tokens: int
-    conditioning_seconds: float
-    timed_seconds: float
-    charged_seconds: float
-    tokens_per_second: float
 
 def _finite_time(value: object, *, field: str) -> float:
     if (
@@ -52,47 +41,52 @@ def marginal_workload_digest(plan: object) -> str:
     from cacheon.stack_identity import canonical_digest
     if type(plan) is not SessionExecutionPlan:
         raise RawSpeedEvidenceError("workload plan must be exact typed evidence")
+    payload = {
+        "conditioning_count": plan.conditioning_count,
+        "engine_config_digest": plan.expected_engine_config_digest,
+        "expected_prompt_tokens": plan.expected_prompt_tokens,
+        "max_new_tokens": plan.max_new_tokens,
+        "prompt_batches": plan.prompt_batches,
+        "temperature": format(plan.temperature, ".17g"),
+        "top_logprobs_num": plan.top_logprobs_num,
+        "warmup_count": plan.warmup_count,
+    }
+    if not plan.batch_max_new_tokens:
+        # Retained one-shape evidence keeps its exact v2 identity.
+        return canonical_digest(
+            "cacheon.qualification.marginal-workload.v2", payload
+        )
     return canonical_digest(
-        "cacheon.qualification.marginal-workload.v2",
+        "cacheon.qualification.marginal-workload.v3",
         {
-            "conditioning_count": plan.conditioning_count,
-            "engine_config_digest": plan.expected_engine_config_digest,
-            "expected_prompt_tokens": plan.expected_prompt_tokens,
-            "max_new_tokens": plan.max_new_tokens,
-            "prompt_batches": plan.prompt_batches,
-            "temperature": format(plan.temperature, ".17g"),
-            "top_logprobs_num": plan.top_logprobs_num,
-            "warmup_count": plan.warmup_count,
+            **payload,
+            "batch_request_geometry": [
+                [tokens, prompt_tokens]
+                for tokens, prompt_tokens in zip(
+                    plan.batch_max_new_tokens,
+                    plan.batch_expected_prompt_tokens,
+                    strict=True,
+                )
+            ],
         },
     )
 
 
-def _projection_digest(selected: str, candidate: str, calibration: str, context: str,
-                       workload: str, runtime_policy: str, rates: tuple[ChargedExecutionRate, ...]) -> str:
+def planned_prompt_texts(plan: object) -> dict[str, str]:
+    """Bind every sealed prompt occurrence, including each mixed-workload cell."""
     from cacheon.stack_identity import canonical_digest
-    def row(rate: ChargedExecutionRate) -> list[object]:
-        return [
-            rate.launch_digest,
-            rate.session_id,
-            rate.conditioning_tokens,
-            rate.timed_tokens,
-            rate.charged_tokens,
-            *(format(value, ".17g") for value in (
-                rate.conditioning_seconds, rate.timed_seconds, rate.charged_seconds
-            )),
-        ]
-    return canonical_digest(
-        "cacheon.qualification.marginal-speed-evidence.v1",
-        {
-            "selected_delta_digest": selected,
-            "candidate_launch_digest": candidate,
-            "calibration_digest": calibration,
-            "calibration_context_digest": context,
+
+    workload = marginal_workload_digest(plan)
+    return {
+        canonical_digest("cacheon.qualification.prompt-occurrence", {
+            "batch_index": batch_index,
+            "prompt_index": prompt_index,
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
             "workload_digest": workload,
-            "runtime_resource_policy_digest": runtime_policy,
-            "rates": [row(rate) for rate in rates],
-        },
-    )
+        }): prompt
+        for batch_index, prompts in enumerate(plan.prompt_batches)
+        for prompt_index, prompt in enumerate(prompts)
+    }
 
 
 def relative_spread(samples: list[float]) -> float:

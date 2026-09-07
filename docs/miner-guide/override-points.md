@@ -129,8 +129,6 @@ evidence, or performance.
 ## When not to use an override
 
 Use a normal slot implementation when you own the complete registered callable.
-Use a [dependency patch](dep-patches.md) only when a registered target explicitly
-requires an approved dependency export/build change. A hole, base, or engine
-change that is not registered cannot be submitted; registering it is a reviewed
-validator-side catalog change. Do not vendor a large dependency into a bundle to
-simulate a validator-owned base.
+A hole, base, or engine change that is not registered cannot be submitted;
+registering it is a reviewed validator-side catalog change. Do not vendor a
+large dependency into a bundle to simulate a validator-owned base.

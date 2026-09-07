@@ -21,7 +21,15 @@ beyond the sealed noise ceiling do not void the read set. The earliest bracket
 was measured adjacent to the candidate arm, so it is the only valid comparison
 baseline; the drifted later brackets are excluded and C against B decides.
 
-Version 6 runs B/C, then B-prime only when a legal bookend could reverse it.
+Version 8 precommits the B/C/B-prime schedule and grades it once, concluding.
+The pre-version-8 graders (the adaptive five-read escalation and the version-6
+conditional bookend) were deleted with the MiniMax-M3 history seal on
+2026-09-06; no policy below version 8 can be constructed or graded.
+
+Versions 10 and 11 implement the owner's 2026-09-07 single-run contract.
+Both baseline observations must be stable, including matched timed windows;
+neither may be discarded. The credited estimate uses the faster baseline.
+An invalid or unresolved measurement cannot become a candidate failure.
 """
 
 from __future__ import annotations
@@ -30,7 +38,7 @@ from dataclasses import replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from cacheon.eval.scoring import RawSpeedEvidenceError, SpeedupVerdict, relative_spread, score_speedup
+from cacheon.eval.scoring import SpeedupVerdict, relative_spread, score_speedup
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from cacheon.eval.crossover_runtime import ResidentSpeedPolicy
@@ -61,65 +69,7 @@ def fail_reason(verdict: SpeedupVerdict, *, conditioning_failed: bool = False) -
 
 def resident_speed_roles(version: int, count: int) -> tuple[str, ...] | None:
     roles = {2: ("B", "C"), 3: ("B", "C", "B_prime")}
-    if version < 6:
-        roles[5] = ("B", "C", "B_prime", "C_prime", "B_double_prime")
-        roles.pop(2)
     return roles.get(count)
-
-
-def v6_decision_limits(
-    policy: "ResidentSpeedPolicy",
-) -> tuple[float, float]:
-    """B/C limits invariant to every sealed or discarded B-prime."""
-
-    margin = policy.min_margin
-    multiplier = policy.noise_multiplier
-    noise = policy.max_noise
-    clear_fail_below = 1.0 + margin
-    high_bookend = (2.0 + noise) / (2.0 - noise)
-    clear_pass_at = high_bookend * (
-        1.0 + max(margin, multiplier * noise)
-    )
-    return clear_fail_below, clear_pass_at
-
-
-def v6_grade(
-    policy: "ResidentSpeedPolicy", baseline: object, candidate: object,
-    baseline_after: object | None = None,
-) -> tuple[SpeedupVerdict, SpeedupVerdict, SpeedStageDecision]:
-    initial, initial_decision = speed_grade(
-        policy, [baseline], [candidate], concluding=False
-    )
-    if baseline_after is None and initial_decision is None:
-        raise RawSpeedEvidenceError("resident v6 evidence omitted required B-prime")
-    if baseline_after is None:
-        return initial, initial, initial_decision  # type: ignore[return-value]
-    if initial_decision is not None:
-        raise RawSpeedEvidenceError("resident v6 clear decision added B-prime")
-    final, decision = speed_grade(
-        policy, [baseline, baseline_after], [candidate], concluding=True
-    )
-    if decision is None:
-        raise RawSpeedEvidenceError("resident v6 evidence has no terminal decision")
-    return initial, final, decision
-
-
-def _disposition(
-    verdict: SpeedupVerdict, margin: float
-) -> SpeedStageDecision | None:
-    if not verdict.confident:
-        return None
-    if verdict.speedup <= verdict.required - margin:
-        return SpeedStageDecision.FAIL
-    if verdict.speedup >= verdict.required + margin:
-        return SpeedStageDecision.PASS
-    return None
-
-
-def _final(verdict: SpeedupVerdict) -> SpeedStageDecision:
-    if not verdict.confident:
-        return SpeedStageDecision.NO_DECISION
-    return SpeedStageDecision.PASS if verdict.passed_speedup else SpeedStageDecision.FAIL
 
 
 def invariant_decision(
@@ -154,6 +104,8 @@ def speed_grade(
 
     baseline_rates = [policy.scored_tokens_per_second(row) for row in baselines]
     candidate_rates = [policy.scored_tokens_per_second(row) for row in candidates]
+    if policy.version >= 10:
+        return _single_run_grade(policy, baselines, candidates, baseline_rates, candidate_rates)
     dropped_brackets = 0
     bracket_drift = 0.0
     if policy.version >= 5 and len(baseline_rates) >= 2:
@@ -168,29 +120,6 @@ def speed_grade(
         k=policy.noise_multiplier,
         max_noise=policy.max_noise,
     )
-    if policy.version >= 6 and not concluding and len(baseline_rates) == len(candidate_rates) == 1:
-        fail_ratio, pass_ratio = v6_decision_limits(policy)
-        conditioning = policy.conditioning_regression(baselines[0], candidates[0])
-        decision = (
-            SpeedStageDecision.FAIL
-            if conditioning or verdict.speedup < fail_ratio
-            else SpeedStageDecision.PASS
-            if verdict.speedup >= pass_ratio
-            else None
-        )
-        return replace(
-            verdict,
-            noise=0.0,
-            required=pass_ratio,
-            passed_speedup=decision is SpeedStageDecision.PASS,
-            confident=decision is not None,
-            detail=(
-                "conditioning regression in v6 B/C precheck"
-                if conditioning
-                else f"v6 B/C ratio {verdict.speedup:.3f}; invariant bounds "
-                f"[{fail_ratio:.3f}, {pass_ratio:.3f})"
-            ),
-        ), decision
     if dropped_brackets:
         verdict = replace(
             verdict,
@@ -200,10 +129,6 @@ def speed_grade(
                 f"excluded -- C against B decides"
             ),
         )
-    if policy.version < 4:
-        if concluding:
-            return verdict, _final(verdict)
-        return verdict, _disposition(verdict, policy.min_margin)
     decision = invariant_decision(baseline_rates, candidate_rates, verdict.required)
     if decision is None and concluding:
         # Escalation cannot be relied on to converge: taking more reads only
@@ -214,6 +139,53 @@ def speed_grade(
     return verdict, decision
 
 
+def _single_run_grade(policy, baselines, candidates, baseline_rates, candidate_rates):
+    """Keep all stock observations and separate measurement validity from competition."""
+
+    verdict = score_speedup(
+        baseline_rates, candidate_rates, min_margin=policy.min_margin,
+        k=policy.noise_multiplier, max_noise=policy.max_noise,
+    )
+    invalid = ""
+    if len(baselines) != 2 or len(candidates) != 1:
+        invalid = "single-run qualification requires complete B/C/B-prime evidence"
+    elif any(row.first_timed_batch_index <= row.first_batch_index
+             or row.conditioning_tokens <= 0 for row in (*baselines, *candidates)):
+        invalid = "measurement lacks the declared conditioning before timing"
+    elif not verdict.confident:
+        invalid = "baseline brackets exceed the sealed drift limit; no baseline was discarded"
+    else:
+        before, after = (row.windows for row in baselines)
+        current = candidates[0].windows
+        if len(before) != len(after) or len(before) != len(current):
+            invalid = "B/C/B-prime windows do not cover the same workload"
+        else:
+            for b, bp, c in zip(before, after, current, strict=True):
+                if b.tokens != bp.tokens or b.tokens != c.tokens:
+                    invalid = "B/C/B-prime token numerators differ"
+                    break
+                if relative_spread([b.tokens / b.seconds, bp.tokens / bp.seconds]) > policy.max_window_scatter:
+                    invalid = "matched baseline windows exceed the sealed stability limit"
+                    break
+    if invalid:
+        return replace(verdict, confident=False, passed_speedup=False, detail=invalid), SpeedStageDecision.NO_DECISION
+    lower = candidate_rates[0] / max(baseline_rates)
+    upper = candidate_rates[0] / min(baseline_rates)
+    if lower >= verdict.required:
+        decision = SpeedStageDecision.PASS
+        detail = "candidate clears the bound against both stable baseline observations"
+    elif upper < 1.0 + policy.min_margin:
+        decision = SpeedStageDecision.FAIL
+        detail = "candidate does not clear the speed floor against either stable baseline"
+    else:
+        decision = SpeedStageDecision.NO_DECISION
+        detail = "measurement uncertainty crosses the speed decision boundary"
+    return replace(
+        verdict, speedup=lower, passed_speedup=decision is SpeedStageDecision.PASS,
+        detail=detail,
+    ), decision
+
+
 __all__ = [
     "SPEED_FAIL_REASONS",
     "SpeedStageDecision",
@@ -221,6 +193,4 @@ __all__ = [
     "invariant_decision",
     "resident_speed_roles",
     "speed_grade",
-    "v6_decision_limits",
-    "v6_grade",
 ]

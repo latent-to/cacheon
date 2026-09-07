@@ -46,11 +46,13 @@ import os
 import re
 import threading
 from collections.abc import Callable, Iterable
+from contextvars import ContextVar
 from pathlib import Path
 from types import FunctionType
 from typing import Optional
 
 logger = logging.getLogger("cacheon.receipts")
+_INVOKING: ContextVar[bool] = ContextVar("cacheon_invoking", default=False)
 
 _SAFE_RE = re.compile(r"[^0-9A-Za-z._\-]+")
 _SAFE_SOURCE_RE = re.compile(r"[^0-9A-Za-z._/\-]+")
@@ -72,8 +74,6 @@ _IDENTITY_KINDS = frozenset(
         "failed",
         "not_selected",
         "audit",
-        "aot_loaded",
-        "aot_invoked",
     }
 )
 # Include the receipt directory so one long-lived process can participate in
@@ -272,7 +272,15 @@ def _write_to(root: Path, kind: str, payload: dict, *, tag: str = "") -> bool:
         root.mkdir(parents=True, exist_ok=True)
         suffix = f".{_SAFE_RE.sub('_', tag)}" if tag else ""
         p = root / f"{kind}{suffix}.{os.getpid()}.json"
-        p.write_text(json.dumps(body, sort_keys=True))
+        # The resident lane rewrites this file at every swap while the host
+        # reads it for the crossover proof; a truncating write is observable as
+        # an empty file (2026-08-27, 2026-09-03: "invalid receipt ... Expecting
+        # value" then HOLD). Replace atomically so a reader sees the previous
+        # or the new receipt, never a zero-byte one. The dot prefix keeps the
+        # temporary file outside every "<kind>*.json" collector glob.
+        tmp = root / f".{p.name}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(body, sort_keys=True))
+        os.replace(tmp, p)
         return True
     except Exception:  # noqa: BLE001
         logger.exception("cacheon: receipt write failed (kind=%s)", kind)
@@ -322,6 +330,12 @@ def _write_execution_once(
         if key in _ONCE:
             return
         payload = {"slot": slot}
+        if kind == "completed":
+            # Persist the first invocation's capture fact immediately. A later
+            # phase/exit flush refreshes aggregate counts, but a scheduler that
+            # is killed after model execution must not lose proof that its
+            # candidate was baked into the serving graph.
+            payload.update(_calls_payload(slot))
         if error is not None:
             try:
                 message = str(error)[:512]
@@ -359,7 +373,7 @@ def set_graph_probe(probe: object) -> None:
     _GRAPH_PROBE = probe if callable(probe) else None
 
 
-def _count_call(slot: str) -> None:
+def _count_call(slot: str) -> bool:
     """Tally one invocation of ``slot``. Hot path: keep it cheap.
 
     The capture probe runs only until this slot has been seen inside a capture.
@@ -372,12 +386,15 @@ def _count_call(slot: str) -> None:
         entry = [0, 0]
         _CALLS[slot] = entry
     entry[0] += 1
+    captured_now = False
     if not entry[1] and _GRAPH_PROBE is not None:
         try:
             if _GRAPH_PROBE():
                 entry[1] = 1
+                captured_now = True
         except Exception:  # noqa: BLE001 - a probe must not break model execution
             pass
+    return captured_now
 
 
 def _calls_payload(slot: str) -> dict:
@@ -438,8 +455,13 @@ def completed(slot: str) -> None:
     The file is written once — the count it carries is refreshed at every phase
     boundary and at exit, so the hot path never touches the filesystem.
     """
-    _count_call(slot)
+    captured_now = _count_call(slot)
     _write_execution_once("completed", slot)
+    if captured_now:
+        # An eager warmup commonly writes the once-only receipt before capture.
+        # Refresh exactly when capture first becomes true; a later SIGKILL must
+        # not leave the durable row frozen at captured=false.
+        flush_calls()
 
 
 def failed(
@@ -463,6 +485,11 @@ def failed(
     )
 
 
+def is_invoking() -> bool:
+    """Let a candidate call its installed library without recursively selecting itself."""
+    return _INVOKING.get()
+
+
 def invoke(
     slot: str,
     entry: Callable[..., object],
@@ -476,11 +503,14 @@ def invoke(
     <Type> in <slot>" instead of reporting the lane as broken.
     """
 
+    token = _INVOKING.set(True)
     try:
         return entry(*args)
     except BaseException as exc:
         failed(slot, exc, phase=phase, entry=entry)
         raise
+    finally:
+        _INVOKING.reset(token)
 
 
 def not_selected(slot: str, outcome: str, mismatches: Iterable) -> None:

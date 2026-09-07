@@ -469,10 +469,6 @@ class GraphVerificationGrade(_Canonical):
             if value is not None:
                 object.__setattr__(self, field, _digest(value, field))
 
-    @property
-    def veto_passed(self) -> bool:
-        return self.decision is QualificationDecision.PASS
-
     @classmethod
     def from_dict(cls, value: object) -> "GraphVerificationGrade":
         def decision(item: object) -> QualificationDecision:
@@ -1072,15 +1068,9 @@ def _validated_topk_position(position: object) -> list[list[object]]:
 def _trajectory_rows(lifecycle: object):
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
     from cacheon.eval.oci_session_protocol import PromptEvidence
-    from cacheon.eval.resident_pair_quality_lifecycle import (
-        ResidentPairMarginalLifecycleEvidence,
-    )
     from cacheon.eval.scoring import marginal_workload_digest
 
-    if type(lifecycle) not in {
-        ResidentMarginalLifecycleEvidence,
-        ResidentPairMarginalLifecycleEvidence,
-    }:
+    if type(lifecycle) is not ResidentMarginalLifecycleEvidence:
         raise QualificationError("trajectory lifecycle is not typed")
     plan = lifecycle.prepared.baseline_session_plan
     batch_sets = tuple(
@@ -1089,6 +1079,7 @@ def _trajectory_rows(lifecycle: object):
     workload = marginal_workload_digest(plan)
     rows = []
     for batch_index, prompts in enumerate(plan.prompt_batches):
+        expected_tokens = plan.request_geometry(batch_index)[0]
         for prompt_index, prompt in enumerate(prompts):
             occurrence = canonical_digest(
                 "cacheon.qualification.prompt-occurrence",
@@ -1104,8 +1095,8 @@ def _trajectory_rows(lifecycle: object):
                 evidence = batches[batch_index].evidence.prompts[prompt_index]
                 if (
                     type(evidence) is not PromptEvidence
-                    or len(evidence.output_ids) != plan.max_new_tokens
-                    or len(evidence.top_logprobs) != plan.max_new_tokens
+                    or len(evidence.output_ids) != expected_tokens
+                    or len(evidence.top_logprobs) != expected_tokens
                     or any(type(token) is not int or token < 0 for token in evidence.output_ids)
                     or any(len(position) != plan.top_logprobs_num for position in evidence.top_logprobs)
                 ):
@@ -1125,58 +1116,34 @@ def _trajectory_rows(lifecycle: object):
     return workload, tuple(rows)
 
 
-def _quality_leg_lifecycle(lifecycle: object, candidate_read: int):
-    """Return the exact three-role lifecycle for one candidate read.
-
-    The raw pristine-T protocol deliberately stays baseline/candidate/control.
-    A repeat referee therefore produces two independently gradeable triplets:
-    B/C/B-prime and B-prime/C-prime/B-double-prime.
-    """
+def _resident_lifecycle(lifecycle: object):
+    """Return the exact B/C/B-prime lifecycle, refusing anything untyped."""
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
-    from cacheon.eval.resident_pair_quality_lifecycle import (
-        ResidentPairMarginalLifecycleEvidence,
-    )
 
-    if type(lifecycle) not in {
-        ResidentMarginalLifecycleEvidence,
-        ResidentPairMarginalLifecycleEvidence,
-    }:
+    if type(lifecycle) is not ResidentMarginalLifecycleEvidence:
         raise QualificationError("quality lifecycle is not typed")
-    if type(candidate_read) is not int or candidate_read not in (1, 2):
-        raise QualificationError("candidate read must be exactly 1 or 2")
-    try:
-        return lifecycle.quality_leg(candidate_read)
-    except (TypeError, ValueError, RuntimeError) as exc:
-        raise QualificationError(str(exc)) from None
+    return lifecycle
 
 
 def lifecycle_prompt_digests(lifecycle: object) -> tuple[str, ...]:
     """Canonical prompt-occurrence pool fixed before any quality selection."""
 
-    return tuple(sorted(row[0] for row in _trajectory_rows(lifecycle)[1]))
+    from cacheon.eval.scoring import planned_prompt_texts
+
+    plan = lifecycle.prepared.baseline_session_plan
+    _workload, rows = _trajectory_rows(lifecycle)
+    eligible = set(planned_prompt_texts(plan))
+    observed = {row[0] for row in rows}
+    if not eligible or not eligible <= observed:
+        raise QualificationError("quality prompt geometry is absent from trajectories")
+    return tuple(sorted(eligible))
 
 
 def cohort_trajectory_digest(lifecycle: object) -> str:
     """Bind every retained token/top-k frame in complete execution order."""
 
     workload, rows = _trajectory_rows(lifecycle)
-    if lifecycle.candidates_repeat:
-        repeat_workload, repeat_rows = _trajectory_rows(
-            _quality_leg_lifecycle(lifecycle, 2)
-        )
-        if repeat_workload != workload or tuple(row[0] for row in repeat_rows) != tuple(
-            row[0] for row in rows
-        ):
-            raise QualificationError("repeat trajectory workload differs")
-        return canonical_digest(
-            "cacheon.qualification.cohort-trajectories.v2",
-            {
-                "workload_digest": workload,
-                "primary": [[key, frames] for key, frames in rows],
-                "repeat": [[key, frames] for key, frames in repeat_rows],
-            },
-        )
     return canonical_digest(
         "cacheon.qualification.cohort-trajectories",
         {"workload_digest": workload, "prompts": [[key, frames] for key, frames in rows]},
@@ -1189,14 +1156,8 @@ def candidate_lifecycle_digest(
     """Bind the exact retained B/C/B-prime execution used by one qualifier."""
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
-    from cacheon.eval.resident_pair_quality_lifecycle import (
-        ResidentPairMarginalLifecycleEvidence,
-    )
 
-    if type(lifecycle) not in {
-        ResidentMarginalLifecycleEvidence,
-        ResidentPairMarginalLifecycleEvidence,
-    }:
+    if type(lifecycle) is not ResidentMarginalLifecycleEvidence:
         raise QualificationError("candidate lifecycle is not typed")
     candidates = tuple(
         row
@@ -1206,26 +1167,6 @@ def candidate_lifecycle_digest(
     if len(candidates) != 1:
         raise QualificationError("candidate lifecycle is absent or ambiguous")
     candidate = candidates[0]
-    if type(lifecycle) is ResidentPairMarginalLifecycleEvidence:
-        return canonical_digest(
-            "cacheon.qualification.candidate-lifecycle.resident-pair-v1",
-            {
-                "arm_digest": candidate.arm.digest,
-                "cohort_trajectory_digest": cohort_trajectory_digest(lifecycle),
-                "count_result_digest": (
-                    None
-                    if lifecycle.count_result is None
-                    else lifecycle.count_result.digest
-                ),
-                "crossover_evidence_digest": lifecycle.crossover.digest,
-                "crossover_plan_digest": lifecycle.plan.digest,
-                "retirement_digest": lifecycle.retirement.digest,
-                "selected_delta_digest": _digest(
-                    selected_delta_digest, "selected delta"
-                ),
-                "source_digest": lifecycle.source.digest,
-            },
-        )
     return canonical_digest(
         "cacheon.qualification.candidate-lifecycle.resident-v1",
         {
@@ -1285,11 +1226,10 @@ def selected_trajectory_digest(
     *,
     selected_delta_digest: str,
     selected_prompt_digests: tuple[str, ...],
-    candidate_read: int = 1,
 ) -> str:
     """Bind selected B/C/B-prime frames for one exact candidate arm."""
 
-    lifecycle = _quality_leg_lifecycle(lifecycle, candidate_read)
+    lifecycle = _resident_lifecycle(lifecycle)
 
     candidates = tuple(row.arm.selected_delta_digest for row in lifecycle.candidates)
     if candidates.count(selected_delta_digest) != 1:
@@ -1318,11 +1258,10 @@ def selected_trajectory_projection_digest(
     *,
     selected_delta_digest: str,
     selected_prompt_digests: tuple[str, ...],
-    candidate_read: int = 1,
 ) -> str:
     """Bind raw-quality-checkable token, support, and true-argmax facts."""
 
-    lifecycle = _quality_leg_lifecycle(lifecycle, candidate_read)
+    lifecycle = _resident_lifecycle(lifecycle)
 
     candidates = tuple(row.arm.selected_delta_digest for row in lifecycle.candidates)
     if candidates.count(selected_delta_digest) != 1:
@@ -1404,24 +1343,9 @@ def derived_hidden_task_plan_digest(
 
 
 def _selected_prompt_texts(lifecycle: object) -> dict[str, str]:
-    from cacheon.eval.scoring import marginal_workload_digest
+    from cacheon.eval.scoring import planned_prompt_texts
 
-    plan = lifecycle.prepared.baseline_session_plan
-    workload = marginal_workload_digest(plan)
-    result = {}
-    for batch_index, prompts in enumerate(plan.prompt_batches):
-        for prompt_index, prompt in enumerate(prompts):
-            occurrence = canonical_digest(
-                "cacheon.qualification.prompt-occurrence",
-                {
-                    "batch_index": batch_index,
-                    "prompt_index": prompt_index,
-                    "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-                    "workload_digest": workload,
-                },
-            )
-            result[occurrence] = prompt
-    return result
+    return planned_prompt_texts(lifecycle.prepared.baseline_session_plan)
 
 
 def _validate_teacher_source(
@@ -1515,7 +1439,6 @@ def validate_quality_binding(
     graph_requirement: GraphVerificationRequirement,
     reference_execution: object,
     reference_request_sha256: str,
-    candidate_read: int = 1,
 ):
     """Project frozen workload/trajectory coverage onto one raw T binding."""
 
@@ -1537,7 +1460,7 @@ def validate_quality_binding(
     binding = raw_artifact.binding
     t_session = reference_execution.session
     selection.reopen(commitment, entropy)
-    quality_lifecycle = _quality_leg_lifecycle(lifecycle, candidate_read)
+    quality_lifecycle = _resident_lifecycle(lifecycle)
     plan = lifecycle.prepared.baseline_session_plan
     candidates = tuple(
         row for row in quality_lifecycle.candidates
@@ -1603,14 +1526,12 @@ def validate_quality_binding(
             lifecycle,
             selected_delta_digest=selected_delta_digest,
             selected_prompt_digests=selection.selected_prompt_digests,
-            candidate_read=candidate_read,
         )
         or binding.selected_trajectory_projection_digest
         != selected_trajectory_projection_digest(
             lifecycle,
             selected_delta_digest=selected_delta_digest,
             selected_prompt_digests=selection.selected_prompt_digests,
-            candidate_read=candidate_read,
         )
         or binding.selected_prompt_digests != selection.selected_prompt_digests
         or binding.hidden_task_plan_digest
@@ -1634,9 +1555,10 @@ def validate_quality_binding(
         or graph_requirement.digest != profile_requirement_digest
         or actual_requirement_binding != expected_requirement_binding
         or binding.selection_digest != selection.digest
-        or (binding.tokens_per_prompt, binding.topk_width, binding.hidden_tasks_per_prompt)
-        != (profile.tokens_per_prompt, profile.topk_width, profile.hidden_tasks_per_prompt)
-        or (plan.max_new_tokens, plan.top_logprobs_num)
+        or binding.tokens_per_prompt > profile.tokens_per_prompt
+        or (binding.topk_width, binding.hidden_tasks_per_prompt)
+        != (profile.topk_width, profile.hidden_tasks_per_prompt)
+        or (plan.quality_tokens_per_prompt, plan.top_logprobs_num)
         != (profile.tokens_per_prompt, profile.topk_width)
         or binding.support_policy_digest != profile.support_policy_digest
         or profile.support_policy_digest != retained_support_policy_digest()

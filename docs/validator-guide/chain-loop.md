@@ -28,7 +28,7 @@ submit weights after each pass.
    screens, use the routing-only resident lane where applicable, form a
    capacity-bounded cohort, execute authoritative resident qualification, and persist
    outcomes.
-9. **Settle retained pairs.** Lease economically unblocked, independently reproduced
+9. **Settle retained PASSes.** Lease economically unblocked, completely qualified
    candidates and apply the resulting settlement plan transactionally.
 
 The pass returns counts and dispositions. It never opens a wallet or calls
@@ -49,12 +49,8 @@ stateDiagram-v2
     screening --> promoted: five screens pass
     screening --> published: primary screen retry
     promoted --> qualifying
-    qualifying --> reproduction_pending: first PASS
-    reproduction_pending --> screening
-    screening --> reproduction_pending: reproduction screen retry
-    qualifying --> qualified: matching second PASS
+    qualifying --> qualified: complete audited PASS
     qualifying --> published: primary NO_DECISION requeue
-    qualifying --> reproduction_pending: reproduction NO_DECISION requeue
     reserved --> failed
     fetching --> failed
     published --> failed
@@ -67,7 +63,6 @@ stateDiagram-v2
     promoted --> held
     qualifying --> held
     no_decision --> published: reviewed requeue / release
-    no_decision --> reproduction_pending: reviewed reproduction requeue
 ```
 
 `qualified` means two matching PASS qualifications have been retained. The associated
@@ -323,7 +318,12 @@ supervises one persistent pod adapter per epoch and parks the epoch on its
 first command-level adapter failure rather than restarting into an unproven
 resident model. Transport, pod, and adapter failures surface as
 infrastructure `no_decision` records that release the durable lease without
-consuming an evaluation attempt.
+consuming an evaluation attempt; the standing supervisor records that release
+as a `released` disposition and continues to the next unit rather than
+exiting. After every completed qualification the pod adapter retires itself
+behind the durable result, exactly as it does behind a latched resident
+screen, so the next screen boots a fresh adapter on idle GPUs instead of
+waiting on the qualification's lane containers.
 
 The tracked B300 adapter has two closed construction modes. Screen-only mode
 executes through the commissioned screen deployment and refuses qualification
@@ -335,6 +335,20 @@ continuation store. One-shot mode cannot commission qualification. Deployment
 wrappers supply every installed path as an explicit argument; active endpoints,
 credentials, sealed capability bytes, and process composition stay in the
 private operations tree.
+
+New qualification requests bind `incumbent_stack_digest` and
+`incumbent_tree_digest` from the CPU's commissioned authority. The worker checks
+both against the requested primary or reproduction commission before resolving
+publications, marking resident entry, or retiring the screen. A returned product
+must match that authenticated request pin. Retained requests keep their original
+bytes and grammar when reopened; an older unbound request remains readable for
+completed-result recovery but cannot start execution on the new worker.
+
+Before changing arena/service identity, drain the prior active reservations,
+leases, and unresolved recoveries under their original authority. A blank legacy
+reservation for a target shared by two models does not identify its intended
+arena. A service-specific baseline lookup never substitutes another arena's sole
+stack. Restarting an unchanged service retains the existing recovery path.
 
 ## Standing CPU supervisor
 
@@ -455,7 +469,7 @@ a bundle whose exact content hash already reached a terminal `FAIL` under the ex
 current arena service digest inherits that `FAIL` (reason
 `duplicate_of:<reservation>:<original reason>`) and costs neither a screen nor a
 qualification. A prior `PASS` is never replayed — settlement requires an independently
-bound PASS pair, so a resubmitted winner queues for a real evaluation. Any changed
+bound audited PASS, so a resubmitted winner queues for a real evaluation. Any changed
 byte, or any change to the arena, produces a fresh evaluation.
 
 An operator can grant one artificial make-good with
@@ -480,8 +494,7 @@ The controller maps failures according to where authority was lost:
 | Serving-canary inconclusive evidence | Retry once, then retain `NO_DECISION` and advance to full qualification | A routing canary cannot indefinitely hold the queue |
 | Qualification plan/runner/raw-speed failure affecting a registered cohort | `NO_DECISION` for every member plus a persisted bisection plan | Cohort halves are retried to isolate poisoning without assigning losses |
 | Per-candidate post-attempt `NO_DECISION` | Retained report plus one-candidate requeue | Retry in primary or reproduction lane |
-| First complete `PASS` | `reproduction_pending`; no settlement candidate yet | Fresh screen and qualification required |
-| Second matching complete `PASS` | `qualified`; paired candidate becomes settlement-pending | Settlement leases it when earlier economic blockers clear |
+| Complete audited `PASS` | `qualified`; candidate becomes settlement-pending | No second qualification; settlement leases it when earlier economic blockers clear |
 
 The qualification retry counter counts retained qualification dispositions. The screen
 counter counts retained screen attempts. Restarting the service does not reset either.
@@ -520,7 +533,7 @@ own access controls and audit trail.
 ### Archive an exact schema-3 migration hold
 
 One legacy database shape can retain a single-PASS schema-3 candidate that cannot satisfy
-the current two-PASS parser. It has a dedicated terminal operation:
+the current audited-qualification parser. It has a dedicated terminal operation:
 
 ```bash
 cacheon chain-archive-schema3-hold \

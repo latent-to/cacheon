@@ -1,9 +1,4 @@
-"""Shared engine-worker policy helpers.
-
-This module is safe for both the legacy development launcher and the isolated
-OCI worker to import.  It contains no engine construction, subprocess launch,
-or grading authority.
-"""
+"""Engine policy and construction inside the already-proven OCI worker fence."""
 
 from __future__ import annotations
 
@@ -288,11 +283,8 @@ def _emit_execution_summary(receipt_dir: str) -> None:
     stock instead — dies with the worker. Every one of those is what a miner is
     asking for when they ask what happened to their bundle.
 
-    Stderr is the channel that outlives the container: the host drains it, hashes
-    every byte, and retains a bounded prefix with its own receipt. Emitted on
-    success as well as failure, because "it passed but lost on speed" needs this
-    evidence just as much as "it never ran" — and today only the failure path
-    says anything at all.
+    The host retains stderr. Batch completion emits before ordinary OCI teardown
+    can terminate the worker; graceful teardown also preserves later failures.
 
     Never raises. This runs in a teardown path where an exception would mask the
     real outcome of the run.
@@ -345,8 +337,6 @@ def _require_execution_completion(
     from cacheon import receipts
 
     completed = receipts.collect(receipt_dir, "completed")
-    aot_loaded = receipts.collect(receipt_dir, "aot_loaded")
-    aot_invoked = receipts.collect(receipt_dir, "aot_invoked")
     passed, detail = receipts.completed_gate(
         completed,
         expected_slots=expected_slots,
@@ -354,10 +344,7 @@ def _require_execution_completion(
         expected_member_count=expected_member_count,
     )
     if not passed:
-        observed = (
-            f"observed_receipts=completed:{len(completed)},"
-            f"aot_loaded:{len(aot_loaded)},aot_invoked:{len(aot_invoked)}"
-        )
+        observed = f"observed_receipts=completed:{len(completed)}"
         message = (
             "candidate engine run failed execution coverage: "
             + detail
@@ -372,55 +359,11 @@ def _require_execution_completion(
         # the candidate's own defect: the seam wrote ``active`` into this very
         # root, so the path works and nothing dispatched. Anything partial is
         # ambiguous and stays infrastructure.
-        if not (completed or aot_loaded or aot_invoked):
+        if not completed:
             raise CandidateNeverExecutedError(
                 message + "; " + CANDIDATE_NEVER_EXECUTED_MARKER
             )
         raise CandidateExecutionCoverageError(message)
-    if aot_invoked and not aot_loaded:
-        raise CandidateExecutionCoverageError(
-            "candidate engine run has sealed CuTe AOT use evidence without "
-            "matching load evidence"
-        )
-    if aot_loaded:
-        aot_slots = sorted(
-            {
-                row.get("slot")
-                for row in aot_loaded
-                if isinstance(row.get("slot"), str) and row.get("slot")
-            }
-        )
-        if not aot_slots:
-            raise CandidateExecutionCoverageError(
-                "candidate engine run has malformed CuTe AOT load evidence"
-            )
-        if not set(aot_slots).issubset(expected_slots):
-            raise CandidateExecutionCoverageError(
-                "candidate engine run loaded sealed CuTe AOT for an inactive slot"
-            )
-        loaded_passed, loaded_detail = receipts.completed_gate(
-            aot_loaded,
-            expected_slots=aot_slots,
-            member_receipts=active_receipts,
-            expected_member_count=expected_member_count,
-        )
-        if not loaded_passed:
-            raise CandidateExecutionCoverageError(
-                "candidate engine run failed sealed CuTe AOT load coverage: "
-                + loaded_detail
-            )
-        aot_passed, aot_detail = receipts.completed_gate(
-            aot_invoked,
-            expected_slots=aot_slots,
-            member_receipts=active_receipts,
-            expected_member_count=expected_member_count,
-        )
-        if not aot_passed:
-            raise CandidateExecutionCoverageError(
-                "candidate engine run failed sealed CuTe AOT use coverage: "
-                + aot_detail
-            )
-        detail += "; sealed CuTe AOT " + loaded_detail + "; " + aot_detail
     return detail
 
 
@@ -441,6 +384,7 @@ def _complete_candidate_execution(
             expected_slots=expected_slots,
             expected_member_count=expected_member_count,
         )
+        _emit_execution_summary(receipt_dir)
     except CandidateExecutionCoverageError as exc:
         if audit_policy is None:
             raise
@@ -459,6 +403,24 @@ class EngineWorkerHandle:
     engine: object
     require_completion: Any
     collect_audit_receipts: Any
+
+
+def _engine_child_failed(signum=None, frame=None) -> None:
+    # SystemExit also escapes asyncio/uvloop signal callbacks. Ordinary
+    # exceptions are only logged there, leaving the engine call hung. Unwind
+    # through the existing rank-receipt reporter before OCI reaps the session.
+    raise SystemExit("SGLang child process failed; inspect retained rank receipts")
+
+
+def _report_running_engine_failures(engine: object) -> None:
+    manager = engine.tokenizer_manager
+
+    class ReportingSignalHandler(manager.signal_handler_class):
+        running_phase_sigquit_handler = staticmethod(_engine_child_failed)
+
+    # SGLang replaces its launch handler on the first request. Keep its SIGTERM
+    # behavior and all serving settings; only the fatal SIGQUIT path changes.
+    manager.signal_handler_class = ReportingSignalHandler
 
 
 @contextlib.contextmanager
@@ -533,6 +495,7 @@ def isolated_engine_session(
             import sglang as sgl
 
             kwargs = engine_kwargs(cfg, active=active)
+            kwargs["custom_sigquit_handler"] = _engine_child_failed
             if audit_policy is not None:
                 # This is a separate, untimed fidelity role.  Timed B/C/B' plans
                 # carry no audit policy and therefore retain their sealed graph
@@ -558,6 +521,7 @@ def isolated_engine_session(
             expected_slots: list[str] = []
             expected_members = int(kwargs.get("tp_size", 1) or 1)
             try:
+                _report_running_engine_failures(engine)
                 if active:
                     assert receipts is not None
                     active_receipts = receipts.require(

@@ -1,7 +1,7 @@
 site_name: Cacheon
 site_description: >-
   Engineering documentation for Cacheon's contribution, evaluation, settlement,
-  and release systems.
+  and weight-publication systems.
 site_url: https://cacheon.ai/docs/
 docs_dir: docs
 site_dir: site
@@ -9,6 +9,7 @@ site_dir: site
 # never part of the published documentation source set.
 exclude_docs: |
   WORKLOG.md
+  reference/state-of-record.md
 repo_url: https://github.com/latent-to/cacheon
 repo_name: latent-to/cacheon
 edit_uri: edit/main/docs/
@@ -103,14 +104,12 @@ nav:
   - Start here:
       - What Cacheon is: get-started/concepts.md
       - Local quickstart: get-started/quickstart.md
-      - Current status: reference/state-of-record.md
   - Architecture:
       - System overview: architecture/overview.md
       - Product model: architecture/product-model.md
-      - Proposal to release: architecture/pipeline.md
+      - Evaluation pipeline: architecture/pipeline.md
       - Target and slot contract: architecture/slot-contract.md
-      - Evaluation and release stacks: architecture/stacks.md
-      - Sealed direct artifacts: architecture/direct-artifacts.md
+      - Stacks and manifests: architecture/stacks.md
       - Runtime injection seam: architecture/seam.md
   - Miner guide:
       - Overview: miner-guide/overview.md
@@ -126,7 +125,6 @@ nav:
       - Why submissions fail: miner-guide/why-submissions-fail.md
       - Troubleshooting: miner-guide/diagnostics.md
       - Override points: miner-guide/override-points.md
-      - Dependency patches: miner-guide/dep-patches.md
   - Validator guide:
       - Overview: validator-guide/overview.md
       - Deployment readiness: validator-guide/first-hour.md
@@ -139,7 +137,7 @@ nav:
       - Verification and diagnostics: validator-guide/running-evals.md
       - Testnet: validator-guide/testnet.md
   - Cacheon Engine:
-      - Integrating a contribution: engine/integration.md
+      - After a crown: engine/integration.md
       - Model provisioning: engine/model-provision.md
   - Security:
       - Threat model: security/threat-model.md

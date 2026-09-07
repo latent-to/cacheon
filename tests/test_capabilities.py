@@ -20,30 +20,6 @@ from cacheon.registry import (
 )
 
 
-def test_call_descriptor_canonicalizes_aliases_and_values():
-    desc = CallDescriptor.from_mapping(
-        {
-            "dtype_name": "torch.bfloat16",
-            "arch": "SM_103",
-            "tp": 4,
-            "phase": "extend",
-            "graph-mode": "capture",
-            "quant": "unquantized",
-            "model": "MiniMax-M3-NVFP4",
-        }
-    )
-    assert desc.as_dict() == {
-        "architecture": "sm103",
-        "dtype": "bfloat16",
-        "graph_mode": "cuda_graph",
-        "model": "MiniMax-M3-NVFP4",
-        "phase": "prefill",
-        "quant": "dense",
-        "tp_size": 4,
-    }
-    assert desc["arch"] == "sm103"
-
-
 def test_call_descriptor_rejects_conflicting_aliases():
     with pytest.raises(ValueError, match="conflicting values.*tp_size"):
         CallDescriptor({"tp": 4, "tp_size": 8})
@@ -214,12 +190,12 @@ def test_registry_selection_exposes_validator_owned_fallback_reasons():
 
     inactive = registry.select("attention.msa_prefill_block_score", good)
     assert inactive.outcome is SelectionOutcome.REGISTRY_INACTIVE
-    assert inactive.use_baseline
+    assert not inactive.use_candidate
 
     registry.enable()
     missing = registry.select("unknown.slot", good)
     assert missing.outcome is SelectionOutcome.SLOT_UNREGISTERED
-    assert missing.use_baseline
+    assert not missing.use_candidate
 
     wrong = registry.select(
         "attention.msa_prefill_block_score",

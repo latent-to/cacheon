@@ -52,40 +52,48 @@ from cacheon.eval.qualification_runner import (
     HiddenJudgeBinding,
     SpeedStageDisposition,
 )
-from cacheon.eval.registered_resident_count_quality import (
-    B300ResidentCountQualityCapability,
-)
-from cacheon.eval.b300_resident_pair_factory import (
-    B300CommissionedResidentPairFactory,
-)
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.stack_plan import MarginalArmPlan
-from cacheon.target_catalog import TargetCatalog, default_target_catalog
+from cacheon.target_catalog import TargetCatalog
 
 
-def registered_b300_target_ids(catalog: TargetCatalog) -> tuple[str, ...]:
-    """Return the exact canonical registered IDs carried by one catalog."""
+def registered_b300_target_ids(
+    catalog: TargetCatalog,
+    target_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Validate one commissioned arena's registered IDs against the catalog."""
 
     if type(catalog) is not TargetCatalog:
         raise TypeError("registered B300 catalog is not exact")
+    if (
+        type(target_ids) is not tuple
+        or not target_ids
+        or any(type(target) is not str for target in target_ids)
+        or target_ids != tuple(sorted(set(target_ids)))
+    ):
+        raise ValueError("registered B300 target IDs are not canonical")
     rows = catalog.snapshot().get("targets")
-    target_ids = (
+    catalog_ids = (
         tuple(row.get("target_id") for row in rows)
         if isinstance(rows, list) and all(type(row) is dict for row in rows)
         else ()
     )
-    checked = tuple(row for row in target_ids if isinstance(row, str))
+    checked = tuple(row for row in catalog_ids if isinstance(row, str))
     if (
         not checked
-        or checked != target_ids
+        or checked != catalog_ids
         or checked != tuple(sorted(set(checked)))
     ):
         raise ValueError("registered B300 catalog target rows are not canonical")
-    return checked
+    missing = tuple(target for target in target_ids if target not in checked)
+    if missing:
+        raise ValueError(
+            f"registered B300 targets missing from the catalog: {missing!r}"
+        )
+    return target_ids
 
 
-REGISTERED_B300_TARGET_IDS = registered_b300_target_ids(default_target_catalog())
 QUALIFICATION_SPEED_EVIDENCE_POLICY = (
     "resident-v3-one-candidate-registered-target.v2"
 )
@@ -274,6 +282,7 @@ class B300QualificationConstructionAuthority:
     """
 
     catalog: TargetCatalog
+    registered_target_ids: tuple[str, ...]
     profiles: tuple[B300RegisteredProfileAuthority, ...]
     incumbent_stack: EvaluationStackManifest
     incumbent_tree_digest: str
@@ -283,8 +292,6 @@ class B300QualificationConstructionAuthority:
     evidence_policy_digest: str
     builder_source_digest: str
     selection_store_digest: str
-    resident_count_quality_builder_digest: str
-    resident_count_quality: B300ResidentCountQualityCapability
     secret_loader: SecretLoader
     plan_builder: QualificationPlanBuilder
     entropy_provider_digest: str
@@ -299,15 +306,23 @@ class B300QualificationConstructionAuthority:
                 "qualification target catalog is not exact"
             )
         rows = tuple(self.profiles)
+        typed_profiles = all(
+            type(row) is B300RegisteredProfileAuthority for row in rows
+        )
+        profile_target_ids = (
+            tuple(row.target_id for row in rows) if typed_profiles else ()
+        )
         try:
-            catalog_target_ids = registered_b300_target_ids(self.catalog)
+            expected_target_ids = registered_b300_target_ids(
+                self.catalog, self.registered_target_ids
+            )
         except (TypeError, ValueError):
-            catalog_target_ids = ()
+            expected_target_ids = ()
         if (
             type(self.profiles) is not tuple
-            or any(type(row) is not B300RegisteredProfileAuthority for row in rows)
-            or catalog_target_ids != REGISTERED_B300_TARGET_IDS
-            or tuple(row.target_id for row in rows) != REGISTERED_B300_TARGET_IDS
+            or not typed_profiles
+            or not expected_target_ids
+            or profile_target_ids != expected_target_ids
         ):
             raise B300QualificationDeploymentError(
                 "registered qualification profiles do not exactly cover the catalog"
@@ -318,7 +333,9 @@ class B300QualificationConstructionAuthority:
                 registered_b300_profile_resolver_digest,
             )
 
-            projection = registered_b300_member_contract_projection(self.catalog)
+            projection = registered_b300_member_contract_projection(
+                self.catalog, expected_target_ids
+            )
             expected_profiles = tuple(
                 (
                     target.target_id,
@@ -397,7 +414,6 @@ class B300QualificationConstructionAuthority:
             "evidence_policy_digest",
             "builder_source_digest",
             "selection_store_digest",
-            "resident_count_quality_builder_digest",
             "entropy_provider_digest",
             "deadline_policy_digest",
         ):
@@ -414,10 +430,6 @@ class B300QualificationConstructionAuthority:
         ):
             raise B300QualificationDeploymentError(
                 "qualification construction authorities are not callable"
-            )
-        if type(self.resident_count_quality) is not B300ResidentCountQualityCapability:
-            raise B300QualificationDeploymentError(
-                "resident count quality capability is not exact"
             )
         if type(getattr(self.hidden_judge, "binding", None)) is not HiddenJudgeBinding:
             raise B300QualificationDeploymentError(
@@ -449,9 +461,6 @@ class B300QualificationConstructionAuthority:
                 "builder_source_digest": self.builder_source_digest,
                 "evidence_policy_digest": self.evidence_policy_digest,
                 "profile_registry_digest": self.profile_registry_digest,
-                "resident_count_quality_builder_digest": (
-                    self.resident_count_quality_builder_digest
-                ),
                 "selection_store_digest": self.selection_store_digest,
                 "speed_evidence_policy": QUALIFICATION_SPEED_EVIDENCE_POLICY,
             },
@@ -484,7 +493,6 @@ class B300QualificationConstructionAuthority:
                 "policy_digest": self.qualification_policy_digest,
                 "pristine_stack_digest": self.pristine_stack.digest,
                 "pristine_tree_digest": self.pristine_tree_digest,
-                "resident_count_quality_digest": self.resident_count_quality.digest,
             },
         )
 
@@ -905,7 +913,6 @@ def compose_b300_qualification_deployment(
     construction: B300QualificationConstructionAuthority,
     candidate_executor: OCIEngineExecutor,
     resident_baseline_executor: OCIEngineExecutor,
-    resident_pair_factory: B300CommissionedResidentPairFactory,
     screen_lane: str,
 ) -> B300QualificationDeployment:
     """Compose one exact full worker authority from validator-owned inputs.
@@ -927,10 +934,6 @@ def compose_b300_qualification_deployment(
     if type(construction) is not B300QualificationConstructionAuthority:
         raise B300QualificationDeploymentError(
             "qualification construction authority is not exact"
-        )
-    if type(resident_pair_factory) is not B300CommissionedResidentPairFactory:
-        raise B300QualificationDeploymentError(
-            "resident pair factory is not exactly commissioned"
         )
     if screen_lane not in _STAGES:
         raise B300QualificationDeploymentError(
@@ -983,8 +986,6 @@ def compose_b300_qualification_deployment(
             ),
             qualification_lane_pair=screen_authorities.qualification.lane_pair,
             qualification_stage=screen_lane,
-            resident_pair_factory=resident_pair_factory,
-            resident_count_quality=construction.resident_count_quality,
         )
     except B300ArenaProviderError as exc:
         raise B300QualificationDeploymentError(
@@ -1015,7 +1016,6 @@ __all__ = [
     "CONSTRUCTION_SCHEMA",
     "POLICY_SCHEMA",
     "QUALIFICATION_SPEED_EVIDENCE_POLICY",
-    "REGISTERED_B300_TARGET_IDS",
     "REGISTRY_SCHEMA",
     "SELECTION_REFERENCE_SCHEMA",
     "compose_b300_qualification_deployment",

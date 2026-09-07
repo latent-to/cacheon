@@ -34,7 +34,6 @@ from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
-    IntegratedContributionRef,
     ProposalContributionRef,
 )
 from cacheon.stack_plan import CohortPlan, MarginalArmPlan, StackPlanError
@@ -60,14 +59,9 @@ def _digest(value: object, *, field: str) -> str:
 def _native_environment(binding: TrustedLaunchBinding) -> dict[str, object]:
     """Return only the arm-invariant native toolchain authority.
 
-    ``tree_digest`` is necessarily arm-specific.  A direct CuTe-AOT candidate also
-    upgrades its native build from schema 1 to schema 2: the compile-profile digest
-    and the compiler-policy digest that incorporates it are therefore candidate
-    build inputs, not evidence that the image/toolchain changed.  Each complete
-    ``NativeBuildSpec`` is already self-validating, and ``resolve_engine_launch``
-    separately validates a trusted compile profile against the common launch
-    hardware.  Keep comparing the immutable image, platform, worker, toolchain,
-    patcher, architecture, and dependency policy exactly.
+    ``tree_digest`` is necessarily arm-specific.  Each complete ``NativeBuildSpec``
+    is already self-validating.  Keep comparing the immutable image, platform,
+    worker, toolchain, patcher, architecture, and dependency policy exactly.
     """
 
     native = binding.native_build_spec
@@ -90,9 +84,6 @@ def _expected_contributions(
         if type(ref) is ProposalContributionRef:
             source_kind = "proposal_artifact"
             source_digest = ref.artifact_digest
-        elif type(ref) is IntegratedContributionRef:
-            source_kind = "integrated_source"
-            source_digest = ref.integrated_source_tree_digest
         else:  # pragma: no cover - EvaluationStackManifest is already closed
             raise MarginalRuntimeError("stack contains an unsupported contribution ref")
         rows.append(

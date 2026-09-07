@@ -28,7 +28,7 @@ def _write_variant_bundle(tmp_path):
         'bundle_id = "cli-variant-qualification"\n'
         'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
-        'slot = "attention.msa_prefill_block_score"\n'
+        'slot = "norm.rmsnorm"\n'
         'variant = "small"\n'
         'source = "kernels/small.py"\n'
         'entry = "run"\n'
@@ -36,7 +36,7 @@ def _write_variant_bundle(tmp_path):
         'architectures = ["sm_120"]\n'
         'metadata = "metadata/small.json"\n\n'
         '[[ops]]\n'
-        'slot = "attention.msa_prefill_block_score"\n'
+        'slot = "norm.rmsnorm"\n'
         'variant = "large"\n'
         'source = "kernels/large.py"\n'
         'entry = "run"\n'
@@ -101,53 +101,23 @@ def test_cmd_verify_runs_two_shape_variants_through_real_verifier(
     (tmp_path / "metadata").mkdir()
     source = (
         "import torch\n\n"
-        "def run(q, cache, page, slots, cu, seq, prefix, maxq, maxk, bq, bk, "
-        "topk, init, local, scale, cu_blocks, max_blocks, all_blocks, out):\n"
-        "    out.fill_(-1)\n"
-        "    for b in range(seq.numel()):\n"
-        "        qs, qe = int(cu[b]), int(cu[b + 1])\n"
-        "        sid, length = int(slots[b]), int(seq[b])\n"
-        "        keys = cache[page[sid, :length].long(), 0].float()\n"
-        "        base = int(cu_blocks[b])\n"
-        "        for qb, row in enumerate(range(qs, qe, bq)):\n"
-        "            visible = min(length, int(prefix[b]) + qb * bq + 1)\n"
-        "            blocks = (visible + bk - 1) // bk\n"
-        "            scores = q[row].float() @ keys[:visible].T\n"
-        "            scores = torch.nn.functional.pad(\n"
-        "                scores, (0, blocks * bk - visible), value=float('-inf')\n"
-        "            ).view(q.shape[1], blocks, bk).amax(-1) * float(scale)\n"
-        "            scores[:, :min(blocks, init)] = torch.inf\n"
-        "            scores[:, max(0, blocks - local):] = torch.finfo(scores.dtype).max\n"
-        "            width = min(topk, blocks)\n"
-        "            out[:, base + qb, :width] = scores.topk(width, -1).indices.int()\n"
+        "def run(x, weight, out, eps):\n"
+        "    x32 = x.float()\n"
+        "    normed = x32 * torch.rsqrt(x32.pow(2).mean(-1, keepdim=True) + eps)\n"
+        "    out.copy_((normed * weight.float()).to(x.dtype))\n"
     )
     (tmp_path / "kernels" / "score.py").write_text(source)
     rows = []
     variants = (
-        ("q16", 16, "float32"),
-        ("q128", 128, "float32"),
-        ("q16-fp16", 16, "float16"),
+        ("h2880", {"exact": 2880}, "float32"),
+        ("h-large", {"min": 4096}, "float32"),
+        ("h2880-fp16", {"exact": 2880}, "float16"),
     )
-    for variant, q_len, dtype in variants:
+    for variant, last_dim, dtype in variants:
         metadata = {
             "capabilities": {
                 "dtype": dtype,
-                "head_dim": 128,
-                "block_size": 128,
-                "q_block_size": 128,
-                "q_len": q_len,
-                "batch_size": 1,
-                "num_q_heads": 1,
-                "num_kv_heads": 1,
-                "init_blocks": 0,
-                "local_blocks": 1,
-                "phase": "prefill",
-                "layout": "paged",
-                "graph_mode": "eager",
-                "quant": "dense",
-                "top_k": 8,
-                "tp_size": 4,
-                "world_size": 8,
+                "last_dim": last_dim,
             },
         }
         (tmp_path / "metadata" / f"{variant}.json").write_text(
@@ -155,7 +125,7 @@ def test_cmd_verify_runs_two_shape_variants_through_real_verifier(
         )
         rows.append(
             "[[ops]]\n"
-            'slot = "attention.msa_prefill_block_score"\n'
+            'slot = "norm.rmsnorm"\n'
             f'variant = "{variant}"\n'
             'source = "kernels/score.py"\n'
             'entry = "run"\n'
@@ -201,11 +171,11 @@ def test_cmd_verify_runs_two_shape_variants_through_real_verifier(
     assert results[2].context_inapplicable
     assert results[2].num_applicable == 0
 
-    # A TP/world-constrained bundle with no matching arena context is not a
-    # successful verification merely because every row was reported N/A.
+    # A bundle whose declared domains match nothing in the selected verify
+    # context is not a successful verification merely because every row was
+    # reported N/A.
     results.clear()
-    args.tp_size = None
-    args.world_size = None
+    args.dtype = "bfloat16"
 
     def run_inline(target, *call_args, **kwargs):
         result = target(*call_args, **kwargs)
@@ -275,14 +245,14 @@ def test_cmd_verify_rejects_overlapping_variants_before_candidate_invocation(
         'bundle_id = "cli-overlap-preflight"\n'
         'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
-        'slot = "attention.msa_prefill_block_score"\n'
+        'slot = "norm.rmsnorm"\n'
         'variant = "left"\n'
         'source = "kernels/score.py"\n'
         'entry = "run"\n'
         'dtypes = ["float32"]\n'
         'metadata = "metadata/left.json"\n\n'
         '[[ops]]\n'
-        'slot = "attention.msa_prefill_block_score"\n'
+        'slot = "norm.rmsnorm"\n'
         'variant = "right"\n'
         'source = "kernels/score.py"\n'
         'entry = "run"\n'

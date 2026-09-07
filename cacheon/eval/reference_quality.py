@@ -117,7 +117,9 @@ def _text(value: Decimal, field: str, maximum: Decimal = _MAX_DECIMAL) -> str:
         raise ReferenceQualityError(f"computed {field} is nonfinite or out of range")
     with localcontext() as context:
         context.prec = 96
-        text = format(value.normalize(), "f")
+        # The wire limit counts the decimal point and leading zero as well.
+        quantum = Decimal(1).scaleb(max(0, value.adjusted()) - 94)
+        text = format(value.quantize(quantum, rounding=ROUND_HALF_EVEN).normalize(), "f")
     if text in {"", "-0"}:
         text = "0"
     if "." in text:
@@ -348,6 +350,37 @@ class NormalizedTopKDistribution(_Record):
         return _load(cls, value, "normalized top-k", entries=lambda rows: _rows(rows, TokenProbability.from_dict, "top-k entries"))
 
 
+def expected_raw_binding(
+    profile: object,
+    *,
+    identity: str,
+    calibration_digest: str,
+    selection: object,
+    t_session_digest: str,
+    t_request_sha256: str,
+) -> tuple[object, ...]:
+    """Rebuild the raw-quality binding the producer wrote, field for field.
+
+    The reference element is the manifest's measured identity, the value the
+    producer binds and ``validate_quality_binding`` checks. The reopen expected
+    the full manifest digest instead from 2026-08-10 to 2026-09-07, so every
+    completed qualification failed its final self-regrade, including a paid
+    miner's PASS that was then parked as a no-decision hold.
+    """
+
+    from cacheon.eval.qualification import derived_hidden_task_plan_digest
+
+    return (
+        identity, profile.reference.measured_digest, calibration_digest,
+        selection.digest, selection.selected_prompt_digests,
+        t_session_digest, t_request_sha256,
+        profile.support_policy_digest,
+        derived_hidden_task_plan_digest(profile, selection.selected_prompt_digests),
+        profile.nll_tail_threshold,
+        profile.topk_width, profile.hidden_tasks_per_prompt,
+    )
+
+
 def retained_support_policy_digest() -> str:
     return canonical_digest(
         "cacheon.qualification.support-policy",
@@ -540,11 +573,12 @@ class ReferenceQualityRawArtifact(_Record):
         hidden = {bool(row.baseline.hidden_tasks) for row in prompts}
         if len(hidden) != 1:
             raise ReferenceQualityError("hidden-task coverage must be all-or-none across prompts")
+        if max(len(prompt.baseline.tokens) for prompt in prompts) != self.binding.tokens_per_prompt:
+            raise ReferenceQualityError("raw token coverage differs from its bound maximum")
         for prompt in prompts:
             for rollout in (prompt.baseline, prompt.candidate, prompt.stock_control):
                 if (
-                    len(rollout.tokens) != self.binding.tokens_per_prompt
-                    or len(rollout.hidden_tasks) != self.binding.hidden_tasks_per_prompt
+                    len(rollout.hidden_tasks) != self.binding.hidden_tasks_per_prompt
                     or (
                         self.binding.topk_width == 0
                         and any(
@@ -817,6 +851,7 @@ def score_reference_quality(
                                    _mean_nll(evidence.prompts), evidence.digest, calibration.digest)
 
 __all__ = [
+    "expected_raw_binding",
     "HiddenTaskEvidence", "NormalizedTopKDistribution", "PromptQualityEvidence",
     "QUALITY_DECISIONS", "QUALITY_POLICY_VERSION", "QUALITY_SCHEMA_VERSION",
     "RAW_QUALITY_DOMAIN", "RAW_QUALITY_SCHEMA", "RawHiddenTaskResult",

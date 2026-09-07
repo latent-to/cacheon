@@ -57,71 +57,6 @@ The authoritative ABI objects are in
 output shape/stride checks in
 [tensor_spec.py](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py).
 
-## Direct-artifact form of the ABI
-
-A sealed direct artifact implements the same slot semantics without a runtime
-Python callable. Its `bindings` list projects the immutable slot call ABI into a
-closed native signature. For example, a simple tensor kernel can bind input and
-output device pointers plus the validator's current stream:
-
-```toml
-bindings = [
-  { source = "input.x", kind = "pointer", projection = "device_ptr" },
-  { source = "output.out", kind = "pointer", projection = "device_ptr" },
-  { source = "stream.current", kind = "stream" },
-]
-```
-
-The binding order is the index space used by the device plan. It is not
-necessarily the CUDA parameter order: one semantic tensor binding can feed a
-pointer, dimension expression, stride expression, packed field, and TMA
-descriptor. The validator joins every expression and parameter reference back to
-the typed binding before prebuild and again when reopening sealed state.
-
-The complete direct ABI has three parts:
-
-| Layer | Declared by the bundle | Owned at runtime by the validator |
-|---|---|---|
-| Semantic call | Ordered projections of registered slot resources | Live tensors, scalars, stream, group, and output ownership |
-| Artifact storage | Bounded `workspace.*`, `prepared.*`, and `state.*` rows | Allocation, address, scope, budget, and lifecycle |
-| Device launch | Complete logical kernels, parameter widths, and ordered launch plans | Physical CUBIN admission, parameter packing, TMA/FastDivmod construction, launch, and cleanup |
-
-Device parameters are a closed set: exact scalars, admitted pointers, packed
-structs with checked non-overlapping fields, 128-byte TMA descriptors,
-CuTe/CUTLASS FastDivmod values, and provider-authorized group handles. Checked
-expressions can read live tensor shape, stride, element size, storage offset,
-element count, and admitted scalars. They cannot execute candidate callbacks,
-construct arbitrary pointer arithmetic, or discover an ambient stream or group.
-
-The manifest declares logical kernel names because CuTe-generated physical names
-depend on the materialized module. After rank CUDA setup, the validator observes
-the exact sealed CUBIN through the Driver API and binds the canonical logical
-inventory to the physical inventory by ordinal. Kernel count and every formal
-parameter width must match. The admitted library handle is retained for launch,
-so inspection and execution refer to the same loaded object.
-
-Lifecycle roles are ordered `init`, `prepare`, `reset`, `run`, `destroy`.
-`workspace.*` is call-local; `prepared.*` must cross prepare to run; `state.*`
-persists with the engine artifact entry. A `prelaunch` fill can initialize an
-authorized output or artifact resource, but there is no general host prelaunch
-callback.
-
-Direct execution still obeys capability routing, output poisoning, graph replay,
-reference comparison, full-engine quality, and reproduction. Qualification also
-requires `aot_loaded`, `aot_invoked`, and normal `completed` receipts from every
-active scheduler member, with no fallback receipt. Loading a CUBIN is not proof
-that it provided the measured result.
-
-Group-aware projections are declaratively recognized only through the supplied
-slot group and exact persistent `group_ipc` resources. This schema support does
-not make the standard CuTe load path executable: it supplies no group
-capability/handle resolvers, so these projections fail closed. A reviewed resolver
-integration would still need distributed evidence for each concrete topology and
-plan.
-
-See [Sealed direct artifacts](../architecture/direct-artifacts.md) and the
-[manifest field reference](../reference/manifest-schema.md).
-
 ## Op slots
 
 ### `activation.silu_and_mul`
@@ -146,93 +81,142 @@ def rmsnorm(x, weight, out, eps):
 
 This is pure RMSNorm. The slot does not grant ownership of a residual add.
 
-!!! warning "Not available on the current MiniMax-M3 arena"
-    MiniMax-M3 uses `GemmaRMSNorm`, not the registered
-    `RMSNorm.forward_cuda` callsite. This section defines the ABI, but miners
-    must not pay for or submit `norm.rmsnorm` to the current mainnet arena.
+## Block slots
 
-## Attention block slots
+A candidate may call installed vendor libraries, compile CUDA with inline PTX,
+or use Triton to implement its registered computation. Vendor-function adapters
+recognize execution inside a candidate and call the underlying library directly;
+they do not recursively select another candidate. Exceptions still propagate,
+and the invocation scope is reset on both success and failure.
 
-### `attention.sdpa`
+### Atomic sparse-attention family
+
+GLM proposals target `attention.sparse_mla.v1` and implement both internal
+members below. Indexer-query preparation, scores and top-k selection are one
+member; attention-query preparation and sparse attention are the other. The separate score/top-k
+proposal surfaces are retired. Key preparation and cache writes remain
+engine-owned; unquantized projections and absorbed BMMs belong to `linear.dense`.
+
+### `attention.sparse_mla`
 
 ```python
-def attention(q, k, v, out, sm_scale, causal):
-    # q: (T, Hq, D); k/v: (S, Hkv, D); Hq is divisible by Hkv
+def sparse_mla(q, q_rope, positions, cos_sin_cache, is_neox,
+               kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale):
     ...
 ```
 
-The result is scaled dot-product attention with GQA/MQA expansion and the
-validator-provided causal flag.
+Raw queries are `q:(T,H,V)` and `q_rope:(T,H,R)`. Both arrive as strided views of
+engine buffers, never contiguous, and verification supplies the same layouts.
+Positions select rows from the cosine/sine table. Rotate split halves when `is_neox=True`, adjacent pairs
+otherwise; concatenate the latent query and rotated query, clamp to
+`[-448,448]` and convert to FP8-e4m3fn at unit scale. The existing cache
+`kv_cache:(P,S,V+R)` is FP8-e4m3fn. Supplied `out:(T,H,V)` is BF16. Generic
+inputs support float32, float16, BF16 and FP8; the GLM profile supplies raw BF16
+queries and an independent FP8 cache.
 
-### `attention.decode`
+For each query/head, consume only the first `min(seq_lens[t], K)` int32 indices.
+The producer writes its selections first and pads after them; verification
+never places `-1` inside that prefix, and the reference contributes nothing for
+one. Physical index `i` addresses cache `[i // S, i % S]`; valid-looking
+tail indices outside that prefix are ignored. Compute
+`softmax(prepared_q @ selected_keys.T * qk_scale)`, combine the first `V` cache
+components and apply `value_scale`. No selected keys means zero output.
+`is_neox`, `value_dim` and the scales are capture-static; the seven tensors are
+graph-dynamic. The reference rotates in FP64 and dequantizes only selected
+cache rows for FP32 attention. BF16 output uses matched ratio ≥ 0.99 and
+absolute/relative tolerance 0.02/0.02.
+
+The pinned consumer is `DeepseekSparseAttnBackend._forward_trtllm` for prefill
+and decode. Its boundary receives queries before RoPE/FP8 preparation and
+runs after engine-owned key-cache updates. Positions and query values must
+change correctly across replay. The [component example](https://github.com/latent-to/cacheon/tree/main/examples/miner_sparse_mla_torch)
+is a development callable; it alone is not a complete GLM proposal.
+
+### `attention.indexer_select`
 
 ```python
-def attention_decode(
-    q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices,
-    topk_idx, out, sm_scale, block_size,
-):
-    # q: (B,Hq,D); paged K/V: (max_slots,Hkv,D)
-    # topk_idx: (Hkv,B,K) block IDs selected by validator-owned stock code
+def indexer_select(q, key_pages, key_scales, weights, page_table,
+                   row_to_batch, lengths, page_offsets, positions, cos_sin_cache,
+                   q_scale_gate, num_init_tokens, num_local_tokens, top_k, out):
     ...
 ```
 
-This is the graph-native MiniMax-M3 sparse-attend boundary. The validator owns
-cache writes, score production, top-k selection, request/page metadata, and output
-allocation. The candidate attends exactly the supplied nonnegative block IDs;
-`-1` entries and tokens at or beyond `seq_lens` are excluded. The entry contains no
-host synchronization or request-dependent allocation and must declare graph safety
-to enter a scored CUDA graph.
+Queries `(T,H,D)` may be raw BF16/FP16/FP32 or prepared FP8-e4m3fn. Raw queries
+and raw head weights use the same dtype: rotate the leading dimensions with
+adjacent-pair RoPE, compute per-head scale `max(abs(q), 1e-4) / 448`, quantize
+to FP8 and fold `q_scale_gate * scale` into FP32 head weights. For prepared FP8
+queries, positions/table are `None`, weights are already FP32 and the gate is
+one. Key pages `(P,S,D)` remain FP8 and per-key scales `(P,S)` are FP32. Both
+are column views of one interleaved engine page buffer, so neither is
+contiguous; verification hands over the same layout.
+For each logical position in the row's
+`lengths[t]` prefix, add `page_offsets[t]`, resolve its physical page through
+`page_table[row_to_batch[t]]`, and sum over heads:
+`weights[t,h] * max(dot(q[t,h], key) * key_scale, 0)` after query preparation.
+Initial and trailing local token
+counts mark priority scores as positive infinity. Select up to `top_k`,
+translate directly to physical cache indices, and fill unused int32 output
+positions with `-1`. Selection order does not matter; valid-row set overlap
+must reach 0.99. Duplicate indices do not earn additional matches. Every emitted
+index must lie in `[-1, P*S)`: verification rejects any other value, and the
+live seam clamps before the engine dereferences it, so a clamped entry only
+counts as a wrong selection. Verification histories span the declared context,
+so most rows exceed `top_k` and selection is exercised on every registered shape.
 
-The live call descriptor includes `batch_size`/`num_tokens`, page-table capacity as
-`kv_len`, `top_k`, block/page size, head counts, head dimension, layout, model, and
-phase, so capability predicates on those fields are enforced. `quant` describes the
-K/V tensors at this boundary (`dense` for the commissioned BF16 cache); the model's
-NVFP4 expert-weight format is not an attention-kernel requirement.
+The ten tensor inputs are graph-dynamic when present; the gate, priority counts
+and `top_k` are capture-static. Paged decode and ragged prefill both use the producer's real
+page table and query mapping. No serving object crosses the ABI. The pinned
+consumers are `Indexer._get_topk_paged` and `Indexer._get_topk_ragged`, after
+index-cache writes. `Indexer._fused_q_prepare_and_store` defers only query
+preparation to this member while preserving engine-owned key writes.
+A miner may fuse query preparation, scoring and selection without creating
+an intermediate score matrix. The [component example](https://github.com/latent-to/cacheon/tree/main/examples/miner_indexer_select_torch)
+is for development; the [complete atomic example](https://github.com/latent-to/cacheon/tree/main/examples/miner_sparse_attention_torch)
+implements both required members. CPU checks do not establish CUDA capture,
+rank coverage, full-model fidelity or arena availability.
 
-### `attention.msa_block_score`
+### `linear.dense`
 
 ```python
-def msa_block_score(
-    q, k_cache, req_to_token, slot_ids, seq_lens, out,
-    sm_scale, block_size, topk, init_blocks, local_blocks,
-):
-    # out: FP32 (local_index_heads, batch, context // block_size)
+def prepare(weight):
+    # Canonical weight: (N, K) or (B, N, K).
+    return build_layout(weight)
+
+def dense(x, prepared, out):
+    # x: (M, K) or (B, M, K); out: (..., M, N).
     ...
 ```
 
-`req_to_token[slot_ids]` maps each logical sequence position into `k_cache`.
-The candidate fills every live per-head block score, including init/local forced
-blocks and `-inf` tail cells. Stock code retains per-head top-k, head reduction,
-and sparse attend. Correctness uses top-16 selected-set overlap ≥ 0.875.
+The unquantized GEMM family includes ordinary projections, the FP32 router
+projection and absorbed attention BMMs. Respect actual input/output strides.
+The supplied output uses the input dtype or FP32 as required by its consumer.
+Weights remain static after preparation; activations change during graph
+replay. The independent reference accumulates in FP64 before output rounding.
+Bias, gate scaling and surrounding communication remain engine-owned.
+Candidates may call ordinary Torch and installed vendor APIs inside the entry.
 
-### `attention.msa_prefill_block_score`
+### `norm.fused_add_rmsnorm`
 
 ```python
-def msa_prefill_block_score(
-    q, index_k_cache, req_to_token, slot_ids, cu_seqlens, seq_lens,
-    prefix_lens, max_seqlen_q, max_seqlen_k, block_size_q, block_size_k,
-    topk, init_blocks, local_blocks, scale, cu_seqblocks_q,
-    max_seqblock_q, all_seqblock_q, out_topk,
-):
-    # q: (total_q, num_q_heads, D); index_k_cache: paged (slots, 1, D)
-    # out_topk: contiguous int32 (num_q_heads, all_seqblock_q, topk)
+def fused_add_rmsnorm(x, residual, weight, eps, out_norm, out_residual):
+    # residual=None and out_residual=None select plain RMSNorm.
     ...
 ```
 
-This V2 call owns score production and selection for the full ragged batch.
-`req_to_token[slot_ids[b]]` maps logical keys to the paged cache. Query block
-`qb` selects only blocks visible through
-`prefix_lens[b] + qb * block_size_q`; initial and local blocks follow the
-supplied policy. Every valid index is global within that request's logical key
-sequence, and unused output cells must be `-1`. The candidate is called once;
-there is no validator gather, score slab, request-by-head loop, or separate
-top-k launch. The validator independently reconstructs and audits the selected
-sets before the pinned sparse-attention consumer runs.
+For a residual call, fill both outputs: round `x + residual` in the input dtype,
+then compute the FP32 variance and normalized result. For a plain call, preserve
+`x` and fill only `out_norm`; both residual arguments are `None`. GLM's plain
+512/2048/6144-wide normalizations belong to this existing family, with no
+separate GLM RMSNorm proposal lane.
 
 ## Prepare/forward MoE slots
 
 `prepare` runs at load time and may build the representation consumed by the
 serving entry. It must not mutate the raw inputs.
+
+Routed-MoE and dense preparation and invocation run in inference mode, including
+reuse after graph capture. Candidate-owned prepared workspaces remain writable
+across those calls; the prohibition on mutating raw inputs still applies.
 
 ```python
 def prepare(w13, w2):
@@ -244,20 +228,23 @@ def fused_experts(x, topk_ids, topk_weights, prepared, out):
     ...
 ```
 
-For the MiniMax-M3 NVFP4 profile, `prepare` instead receives the exact tagged
-form below from both verification and live dispatch:
+NVFP4 verification and live dispatch use the same tagged prepare form:
 
 ```python
 prepare("nvfp4_layer", weights)
 ```
 
-`weights` is a validator-owned view, not the SGLang layer. It exposes packed
-`uint8` E2M1 `w13_weight`/`w2_weight`, swizzled E4M3 weight scales,
-`g1_alphas`/`g2_alphas`, inverse activation scales, intermediate size, group
-size 16, and the logical ModelOpt `gate_up` layout. `prepare` may repack that
-view into any candidate-owned backend layout. The
-validator derives each weight's outer scale as `g*_alpha * a*_inv` and
-dequantizes independently for its fp32 reference.
+`weights` is a validator-owned view—not the SGLang layer—with packed `uint8`
+E2M1 weights, swizzled E4M3 scales, `g1_alphas`/`g2_alphas`, inverse activation
+scales, intermediate size and group size 16. `cacheon_w13_layout` is `gate_up`,
+`up_gate_interleaved_64+sf_swizzled_128x4` (CuTe-DSL), or `trtllm_fp4_shuffled`
+(TRTLLM permutations for both GEMMs/scales). The live runner supplies activation.
+Only the first two layouts support `dequantize_prepare_args`.
+Candidates may repack it; the validator dequantizes an independent fp32 oracle.
+
+`weights.moe_runner_config.top_k` is the routing width, including fused shared
+experts. Live preparation reads it from the serving layer; verification reads
+it from `topk_ids.shape[-1]`. Neither path substitutes a zero placeholder.
 
 `topk_weights` contains validator-supplied raw positive FP32 routing multipliers.
 They are not promised to be probabilities: do not assume that a row sums to one,
@@ -265,8 +252,33 @@ or that its only value is `1.0` when `K == 1`. SGLang configurations that do not
 renormalize routing, or that apply a routed scaling factor, make those distinctions
 part of the result the kernel must preserve.
 
-`moe.fused_experts` produces the local expert result. The enclosing trusted path
-retains ownership of any later collective.
+GLM-5.3 appends its static routing configuration:
+
+```python
+prepare("nvfp4_layer", weights, topk, routed_scaling)
+```
+
+`topk_weights` contains raw positive FP32 multipliers, not promised
+probabilities. Preserve non-unit row sums, including when `K == 1`.
+
+`moe.fused_experts` is local; the trusted path owns any later collective.
+
+`moe.fused_routed_experts` owns the routing head as well as expert execution and
+the weighted combine:
+
+```python
+def prepare(w13, w2, topk, routed_scaling):
+    return build_layout(w13, w2, topk, routed_scaling)
+
+def fused_routed_experts(
+    x, router_logits, correction_bias, prepared, out
+):
+    ...
+```
+
+Selection uses `topk(sigmoid(router_logits) + correction_bias)`. Combine weights
+come from the unbiased sigmoid scores, are renormalized, and are multiplied by
+the registered routed scaling factor.
 
 `moe.fused_experts_reduce` owns that trailing reduction and therefore receives a
 process group:
@@ -281,9 +293,6 @@ def fused_experts_reduce(
 
 The validator does not replay a second stock reduce after this slot. That wider
 authority is why it is a distributed contract.
-
-The M3 NVFP4 MoE profiles currently accept source/JIT entries only. Direct-AOT
-rows remain unavailable until their native prepare ABI carries the same tagged view.
 
 The prepare/forward split exists because weight transformation and request-time work have
 different lifetimes. Packing fixed expert weights once can be a legitimate optimization;
@@ -307,6 +316,26 @@ def all_reduce(x, out, group):
     out.copy_(tmp)
 ```
 
+### `collective.all_gather_into_tensor`
+
+```python
+def all_gather_into_tensor(x, out, group):
+    # x: (M, H); out: (world*M, H), in rank order
+    ...
+```
+
+### `collective.reduce_scatter_tensor`
+
+```python
+def reduce_scatter_tensor(x, out, group):
+    # x: (world*M, H); out: this rank's SUM-reduced (M, H) shard
+    ...
+```
+
+GLM-5.3 rewards these two callables together through the atomic
+`collective.dp_attention_exchange.v1` target. A bundle for that target must
+implement both members.
+
 ### `collective.ar_residual_rmsnorm`
 
 ```python
@@ -321,44 +350,15 @@ def ar_residual_rmsnorm(
 Both outputs must be filled. `x` differs by rank; `residual` and `weight` are
 replicated inputs.
 
-### `collective.moe_finalize_ar_rmsnorm`
-
-```python
-def moe_finalize_ar_rmsnorm(
-    gemm_out,
-    row_map,
-    scales,
-    residual,
-    weight,
-    eps,
-    out_norm,
-    out_residual,
-    group,
-):
-    ...
-```
-
-This deep boundary performs four operations as one semantic unit:
-
-1. gather pre-finalize GEMM rows using K-major `row_map`;
-2. scale and sum the expert contributions;
-3. all-reduce the local partials;
-4. add the residual and apply RMSNorm.
-
-`gemm_out` has shape `(T_exp*K, H)`, `row_map` has shape `(T_exp*K)`, and
-`scales` has shape `(T_exp, K)`. The live batch may be head-trimmed with
-`T <= T_exp`. The deep producer export required to reach this seam is governed
-by target and [dependency-patch](dep-patches.md) policy.
-
 ## Correctness is target-owned
 
 The validator computes trusted references and applies the target contract. The
 current catalog uses:
 
 - elementwise tolerance for numerically equivalent op kernels;
-- `matched_ratio` for attention, MoE, and collectives whose legitimate reduction
-  order can change rounding;
-- per-row `topk_overlap` for MSA score-derived or direct block selections.
+- `matched_ratio` for dense, routed MoE, fused norm, and collectives whose
+  legitimate reduction order can change rounding; and
+- cosine similarity for low-bit expert boundaries.
 
 Tolerance, ratio, overlap, reference, and model binding are not miner-selected
 manifest values. Passing local `verify` demonstrates compatibility with its
@@ -371,9 +371,7 @@ The comparators reflect the semantic output of each boundary:
   operation;
 - **matched ratio or cosine** permits the bounded rounding/reduction effects expected of
   a low-bit or reordered implementation without allowing the miner to choose its own
-  tolerance; and
-- **top-k overlap** grades the block sets consumed downstream, because raw
-  score equality and index ordering are not the semantic requirement.
+  tolerance.
 
 Slot verification and end-to-end quality answer different questions. A per-call error can
 fit a slot tolerance yet compound across layers, so qualification still uses candidate-

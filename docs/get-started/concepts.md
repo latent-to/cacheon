@@ -64,20 +64,20 @@ The subnet is a market for proposals. The referee is the measurement system that
 3. screens invalid or unpromising work without creating economic authority;
 4. evaluates finalists as one exact marginal substitution;
 5. retains and reopens the evidence;
-6. requires an independent reproduction before settlement; and
+6. reopens the complete audited qualification before settlement; and
 7. projects rewards for active, verifiable contributions.
 
 The referee may update the untrusted evaluation incumbent. It cannot update a signed
 serving release.
 
-## The four objects
+## The two objects
 
 | Object | Trust level | What it establishes |
 |---|---|---|
 | **Proposal** | Hostile input | A miner asks the validator to evaluate one target-scoped delta. |
 | **Crown** | Retained measurement evidence | Two independent qualifications show that the same delta improved one registered arena and target. |
-| **Integrated contribution** | Reviewed Cacheon source | Maintainers preserve the crowned selected-payload bytes while approving provenance, tests, fallbacks, compatibility, and surrounding packaging. |
-| **Engine release** | Signed deployment artifact | A reproducible product assembles reviewed contributions and a sealed model for serving. |
+
+Integration into maintained source, release, and serving are separate authorities outside this repository.
 
 No transition is implicit. In particular, a crown is not permission to run miner source
 in production.
@@ -102,16 +102,15 @@ that registered singleton target and declare that it applies to BF16 calls on `s
    trusting the manifest to grant itself permissions.
 4. Static, build, ABI, graph, and abbreviated-serving screens decide only whether the
    candidate should consume full qualification capacity.
-5. Version-3 qualification chooses the speed substrate from the candidate's
-   manifest features. A hot-swappable candidate uses speed policy v7 on the
-   standing resident pair: serialized B/C, followed by B′ only when B/C cannot
-   decide. A non-swappable candidate uses v8's separate baseline and candidate
-   engines and always collects B/C/B′. A registered eager, untimed audit role
+5. Version-3 qualification measures every candidate on the two-process
+   substrate: speed policy v10 (v11 for a mixed-cell workload) launches separate
+   baseline and candidate engines and always collects B/C/B′. A registered
+   eager, untimed audit role
    (**A**) then checks the candidate delta; after candidate teardown, the
    pristine reference (**T**) supplies candidate-free quality evidence.
-6. One complete PASS is retained as `reproduction_pending`. A fresh independent attempt
-   must reproduce the result. If it does, settlement retains the lower reproduced
-   speedup and may create the target crown.
+6. One complete audited PASS becomes `qualified` and eligible for settlement.
+   Settlement reopens its retained evidence and may create the target crown;
+   it does not schedule another qualification.
 7. If settlement creates the crown, it also creates the corresponding reward claim
    for the miner's hotkey. The active incentive policy determines how that claim
    contributes to the validator's weight vector, which a separate publisher later
@@ -143,15 +142,11 @@ the entire engine. For a live call outside its declared capability domain, the i
 implementation remains selected. That is safe, but an implementation which never routes
 onto material arena calls cannot contribute measurable speedup.
 
-## Two stacks and a reference
+## One stack and a reference
 
 `EvaluationStackManifest`
 : The referee's incumbent. It may refer to crowned but unintegrated hostile proposals and
   is executed only inside isolation.
-
-`EngineReleaseManifest`
-: The serving-stack contract. Every entry in a valid completed manifest is a reviewed
-  integrated contribution.
 
 `ReferenceManifest`
 : A pristine validator-owned semantic reference. It contains no proposal and never
@@ -170,12 +165,12 @@ Cacheon exposes contributor diagnostics that do not create crowns:
   throughput without producing validator evidence.
 
 Production authority begins only after finalized intake, immutable publication, a closed
-arena service, isolated qualification, retained evidence, and independent reproduction.
+arena service, isolated qualification, retained evidence, and audited qualification.
 See [Proposal to release](../architecture/pipeline.md) for the complete sequence.
 
 Use this rule when reading the rest of the documentation: a command is not authoritative
 merely because it performs similar math. Authority comes from the identities, isolation,
-policies, evidence, and independent reproduction bound to the production path.
+policies, evidence, and audited qualification bound to the production path.
 
 ## Read next
 
@@ -183,4 +178,3 @@ policies, evidence, and independent reproduction bound to the production path.
 - [Run the CPU quickstart](quickstart.md)
 - [Understand the architecture](../architecture/overview.md)
 - [Choose a registered target](../miner-guide/slots.md)
-- [Inspect the current evidence boundary](../reference/state-of-record.md)

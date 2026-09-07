@@ -17,6 +17,7 @@ chain_intake/
 .DS_Store
 
 # Private operator continuity and deployment state
+/docs/reference/state-of-record.md
 /chainops/
 /AUTHORITY_REBIND_RUNBOOK.md
 /CONTEXT_MAINNET_FIFO.md

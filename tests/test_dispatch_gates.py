@@ -39,6 +39,32 @@ def _rms_registry():
     return reg
 
 
+def _fused_rms_registry(entry=None):
+    if entry is None:
+        def entry(x, residual, weight, eps, out_norm, out_residual):
+            if residual is None:
+                fp32 = x.float()
+            else:
+                out_residual.copy_(x + residual)
+                fp32 = out_residual.float()
+            variance = fp32.square().mean(-1, keepdim=True)
+            out_norm.copy_(
+                (fp32 * torch.rsqrt(variance + eps) * weight.float()).to(x.dtype)
+            )
+
+    reg = KernelRegistry()
+    reg.register(
+        KernelImpl(
+            slot="norm.fused_add_rmsnorm",
+            bundle_id="fused",
+            entry=entry,
+            eligibility=Eligibility(dtypes=frozenset({"float32"})),
+        )
+    )
+    reg.enable()
+    return reg
+
+
 def _rms_self(**extra):
     s = SimpleNamespace(variance_epsilon=1e-6, weight=_Param(torch.ones(16)))
     for k, v in extra.items():
@@ -50,6 +76,59 @@ def test_rmsnorm_plain_layer_routes_to_kernel():
     dispatched = make_rmsnorm_dispatcher(lambda *a: _BASELINE, registry=_rms_registry())
     out = dispatched(_rms_self(), torch.randn(4, 16))
     assert out is not _BASELINE and torch.is_tensor(out)
+
+
+@pytest.mark.parametrize("has_residual", [False, True])
+def test_rmsnorm_residual_layer_routes_to_fused_kernel(has_residual):
+    dispatched = make_rmsnorm_dispatcher(
+        lambda *_args: _BASELINE, registry=_fused_rms_registry()
+    )
+    x = torch.randn(4, 16)
+    residual = torch.randn(4, 16) if has_residual else None
+    result = dispatched(_rms_self(), x, residual)
+    if has_residual:
+        out, new_residual = result
+        assert torch.equal(new_residual, x + residual)
+    else:
+        out = result
+    expected = get_slot("norm.fused_add_rmsnorm").invoke_reference(
+        {"x": x, "residual": residual, "weight": torch.ones(16), "eps": 1e-6}
+    )
+    assert torch.allclose(out, expected[0])
+
+
+def test_fused_rmsnorm_candidate_error_is_not_stock_fallback():
+    def broken(*_args):
+        raise RuntimeError("fused norm candidate failed")
+
+    dispatched = make_rmsnorm_dispatcher(
+        lambda *_args: _BASELINE, registry=_fused_rms_registry(broken)
+    )
+    with pytest.raises(RuntimeError, match="fused norm candidate failed"):
+        dispatched(_rms_self(), torch.randn(4, 16), torch.randn(4, 16))
+
+
+def test_rmsnorm_forwards_v0518_quant_linear_to_stock():
+    marker = object()
+    calls = []
+
+    def baseline(self, x, residual=None, post_residual_addition=None, *, quant_linear=None):
+        calls.append((residual, post_residual_addition, quant_linear))
+        return _BASELINE
+
+    dispatched = make_rmsnorm_dispatcher(baseline, registry=_rms_registry())
+
+    assert dispatched(_rms_self(), torch.randn(4, 16), quant_linear=marker) is _BASELINE
+    assert calls == [(None, None, marker)]
+
+
+def test_rmsnorm_omits_new_optional_argument_for_an_older_stock_signature():
+    def baseline(self, x, residual=None, post_residual_addition=None):
+        return _BASELINE
+
+    dispatched = make_rmsnorm_dispatcher(baseline, registry=KernelRegistry())
+
+    assert dispatched(_rms_self(), torch.randn(4, 16)) is _BASELINE
 
 
 @pytest.mark.parametrize("attrs", [
@@ -112,6 +191,47 @@ def test_reduce_owning_kernel_skipped_when_tp_layer_defers_its_reduce(monkeypatc
     assert calls == []  # the kernel never ran — an extra all-reduce would diverge from stock
 
 
+def test_moe_forwards_v0518_pre_quant_input_to_stock(monkeypatch):
+    monkeypatch.delenv("CACHEON_MOE_SEAM", raising=False)
+    inputs = _moe_inputs()
+    marker = object()
+    calls = []
+
+    def baseline(self, hidden_states, topk_output, *, pre_quant_input=None):
+        calls.append(pre_quant_input)
+        return _BASELINE
+
+    dispatched = make_moe_dispatcher(baseline, registry=KernelRegistry())
+    topk = SimpleNamespace(
+        topk_ids=inputs["topk_ids"], topk_weights=inputs["topk_weights"]
+    )
+
+    assert dispatched(
+        _moe_layer(inputs, moe_tp_size=1, reduce_results=False),
+        inputs["x"],
+        topk,
+        pre_quant_input=marker,
+    ) is _BASELINE
+    assert calls == [marker]
+
+
+def test_moe_omits_new_optional_argument_for_an_older_stock_signature(monkeypatch):
+    monkeypatch.delenv("CACHEON_MOE_SEAM", raising=False)
+    inputs = _moe_inputs()
+
+    def baseline(self, hidden_states, topk_output):
+        return _BASELINE
+
+    dispatched = make_moe_dispatcher(baseline, registry=KernelRegistry())
+    topk = SimpleNamespace(
+        topk_ids=inputs["topk_ids"], topk_weights=inputs["topk_weights"]
+    )
+
+    assert dispatched(
+        _moe_layer(inputs, moe_tp_size=1, reduce_results=False), inputs["x"], topk
+    ) is _BASELINE
+
+
 def test_reduce_owning_kernel_runs_when_layer_reduces(monkeypatch):
     import cacheon.dispatch as dispatch
 
@@ -127,3 +247,5 @@ def test_reduce_owning_kernel_runs_when_layer_reduces(monkeypatch):
     layer = _moe_layer(inputs, moe_tp_size=2, reduce_results=True)
     out = dispatched(layer, inputs["x"], topk)
     assert out is not _BASELINE and calls == [True]
+    out.add_(1)
+    assert torch.equal(out, torch.ones_like(out))

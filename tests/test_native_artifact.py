@@ -64,8 +64,6 @@ def test_publish_is_build_addressed_canonical_immutable_and_reopenable(tmp_path)
     source, published = _publish(tmp_path)
 
     assert published.root == (tmp_path / "published").resolve() / BUILD[:2] / BUILD
-    assert published.path == published.root
-    assert published.tree_digest == published.publication_digest
     assert published.build_spec_digest == BUILD
     assert not published.reused
     assert published.directories == ("cuda", "cuda/deps")

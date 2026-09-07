@@ -1,8 +1,6 @@
 """Restart-safe CPU dispatch for one exact remote qualification request.
 
-This dispatcher is deliberately separate from the legacy remote dispatcher.
-It never calls ``run_qualification()``, never creates a second carrier after a
-plan is retained, and never generically releases post-publication work.
+A retained plan keeps its original carrier and authenticated request.
 """
 
 from __future__ import annotations
@@ -36,10 +34,12 @@ from cacheon.chain.execution_disposition import (
     ExecutionOutcome,
     ORPHANED_CARRIER_HOLD_REASON,
     PRE_RESIDENT_REQUEUE_FAILURES,
+    STALE_INCUMBENT_REQUEUE_FAILURE,
     WORKER_INFRASTRUCTURE_HOLD_REASON,
     WORKER_INFRASTRUCTURE_REQUEUE_FAILURE,
     resolve_infrastructure_result,
 )
+from cacheon.chain.baseline_segments import commission_boundary
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.screen_identity_rotation import (
@@ -53,7 +53,6 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     RemoteEvaluationRequest,
     RemoteWorkerCredential,
     RemoteWorkerTransportIdentity,
-    _request_body_for_qualification,
     reopen_remote_response,
     seal_remote_request,
 )
@@ -71,8 +70,7 @@ from cacheon.chain.remote_worker_request_plan import (
     QualificationRequestPlan,
 )
 from cacheon.chain.publication import reopen_worker_bundle
-from cacheon.eval.qualification import QualificationDecision
-from cacheon.eval.qualification_intake import QualificationIntakeBatch
+from cacheon.chain.qualification_request import qualification_request_body
 from cacheon.stack_identity import require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
 
@@ -162,9 +160,32 @@ class CompletedQualificationHold:
 
 
 @dataclass(frozen=True)
+class QualificationCommissionRequired:
+    """The FIFO cursor reached work bound to a different baseline segment."""
+
+    commissioned_stack_digest: str
+    required_stack_digest: str
+    required_tree_digest: str
+
+    def __post_init__(self) -> None:
+        require_sha256_hex(
+            self.commissioned_stack_digest,
+            field="commissioned qualification stack digest",
+        )
+        require_sha256_hex(
+            self.required_stack_digest,
+            field="required qualification stack digest",
+        )
+        require_sha256_hex(
+            self.required_tree_digest,
+            field="required qualification tree digest",
+        )
+
+
+@dataclass(frozen=True)
 class RecoverableQualificationRequeue:
     """One typed NO_DECISION + REQUEUE from an authenticated pre-resident
-    refusal or from an unproven worker infrastructure result."""
+    refusal, an unproven worker result, or a stale-incumbent product."""
 
     recovery_id: str
     request_id: str
@@ -201,6 +222,14 @@ class _InfrastructureResultObserved(Exception):
         super().__init__(failure_code)
         self.failure_code = failure_code
         self.outcome = outcome
+
+
+class _StaleIncumbentProduct(Exception):
+    """Internal control flow: a retained product names the old baseline."""
+
+    def __init__(self, product: RemoteQualificationProduct) -> None:
+        super().__init__("incumbent_changed")
+        self.product = product
 
 
 def _infrastructure_requeue_signal(failure_code: str) -> _InfrastructureResultObserved:
@@ -398,33 +427,37 @@ class RecoverableQualificationDispatcher:
             raise
 
     def _bind_commissioned_incumbent(
-        self, store: RecoverableFinalizedIntakeStore
-    ) -> None:
-        """Install or verify the commissioned incumbent before any claim.
+        self, store: RecoverableFinalizedIntakeStore,
+    ) -> QualificationCommissionRequired | None:
+        """Type the segment boundary from ``cacheon.chain.baseline_segments``.
 
-        The store installs one genesis incumbent per arena, reopens identical
-        state, and refuses a different one. A commission pinned to a superseded
-        baseline therefore fails here, before a lease, request, publication, or
-        GPU action exists, rather than at settlement after the paid run; a new
-        arena receives its durable stack row from its first commissioned claim.
+        Once FIFO reaches a segment with a different stack of the live arena,
+        the typed commission boundary halts the evaluator before a lease,
+        request, publication, or GPU action. No completed evidence is erased.
         """
 
         try:
-            store.initialize_evaluation_stack(
+            boundary = commission_boundary(
+                store,
                 self.qualification_incumbent_stack,
                 tree_digest=self.qualification_incumbent_tree_digest,
             )
         except IntakeError as exc:
             raise RecoverableQualificationDispatcherError(
-                "commissioned qualification incumbent differs from the durable "
-                f"evaluation stack; recommission before dispatching: {exc}"
+                f"qualification baseline queue authority is invalid: {exc}"
             ) from exc
+        return None if boundary is None else QualificationCommissionRequired(*boundary)
 
-    def _claim_or_reopen(self) -> _RecoveryClaim | None:
+    def _claim_or_reopen(
+        self,
+    ) -> _RecoveryClaim | QualificationCommissionRequired | None:
         store, point = self._open_store()
         try:
-            self._bind_commissioned_incumbent(store)
             recovery = store.pending_qualification_recovery()
+            if recovery is None or recovery.phase is RecoveryPhase.CLAIMED:
+                boundary = self._bind_commissioned_incumbent(store)
+                if boundary is not None:
+                    return boundary
             if recovery is None:
                 recovery = store.claim_recoverable_qualification(
                     owner=self.coordinator.owner,
@@ -562,7 +595,7 @@ class RecoverableQualificationDispatcher:
     ) -> CompletedQualificationHold:
         """Terminalize a retained legacy non-verdict without rerunning GPU work."""
 
-        if not self._has_no_decision(product.batch):
+        if product.batch.retry_plan is None:
             raise RecoverableQualificationDispatcherError(
                 "legacy qualification product has no non-verdict to migrate"
             )
@@ -606,10 +639,8 @@ class RecoverableQualificationDispatcher:
             raise RecoverableQualificationDispatcherError(
                 "held legacy qualification response changed type"
             )
-        product = self._product(plan, response)
-        if type(product) is not RemoteQualificationProduct or not self._has_no_decision(
-            product.batch
-        ):
+        product = self._product(plan, response, compare_incumbent=False)
+        if type(product) is not RemoteQualificationProduct or product.batch.retry_plan is None:
             raise RecoverableQualificationDispatcherError(
                 "held legacy qualification product changed"
             )
@@ -679,6 +710,36 @@ class RecoverableQualificationDispatcher:
             recovery.recovery_id, recovery.request_id, signal.outcome
         )
 
+    def _requeue_stale_incumbent(
+        self,
+        recovery: EvaluationRecovery,
+        product: RemoteQualificationProduct,
+    ) -> RecoverableQualificationRequeue:
+        store, point, current = self._current_recovery(recovery.recovery_id)
+        try:
+            store.release_stale_incumbent_qualification_recovery(
+                current,
+                product=product,
+                live_stack=self.qualification_incumbent_stack,
+                live_tree_digest=self.qualification_incumbent_tree_digest,
+                current_block=point[0],
+            )
+        except IntakeError as exc:
+            raise RecoverableQualificationDispatcherError(
+                f"stale-incumbent qualification recovery could not be released: {exc}"
+            ) from exc
+        finally:
+            store.close()
+        return RecoverableQualificationRequeue(
+            recovery.recovery_id,
+            recovery.request_id,
+            ExecutionOutcome(
+                ExecutionDisposition.REQUEUE,
+                decision="NO_DECISION",
+                failure_code=STALE_INCUMBENT_REQUEUE_FAILURE,
+            ),
+        )
+
     def _live_worker_epoch(self) -> str | None:
         """Read the live registered worker epoch when the transport carries one.
 
@@ -736,7 +797,7 @@ class RecoverableQualificationDispatcher:
             ) from exc
 
     def _expected_request(
-        self, claim: ClaimedQualificationEvaluation
+        self, claim: ClaimedQualificationEvaluation, retained_body=None,
     ) -> RemoteEvaluationRequest:
         return seal_remote_request(
             claim.lease,
@@ -744,7 +805,12 @@ class RecoverableQualificationDispatcher:
             self.coordinator.service.manifest.service_id,
             self.transport_identity,
             self.credential,
-            _request_body_for_qualification(self.coordinator, claim),
+            qualification_request_body(
+                self.coordinator, claim,
+                incumbent_stack_digest=self.qualification_incumbent_stack.digest,
+                incumbent_tree_digest=self.qualification_incumbent_tree_digest,
+                retained_body=retained_body,
+            ),
         )
 
     def _reopen_plan(
@@ -757,7 +823,9 @@ class RecoverableQualificationDispatcher:
             plan = store.reopen_recovery_request_plan(current)
         finally:
             store.close()
-        expected = self._expected_request(replace(claim, lease=current.lease))
+        expected = self._expected_request(
+            replace(claim, lease=current.lease), plan.remote_request.body
+        )
         if plan.remote_request.to_dict() != expected.to_dict():
             raise QualificationRecoveryHold(
                 "cpu_authority_changed",
@@ -892,6 +960,8 @@ class RecoverableQualificationDispatcher:
         self,
         plan: QualificationRequestPlan,
         response: AuthenticatedRemoteEvaluationResponse,
+        *,
+        compare_incumbent: bool = True,
     ) -> RemoteQualificationProduct | RemoteQualificationHoldProduct:
         try:
             product = reopen_remote_response(
@@ -912,14 +982,20 @@ class RecoverableQualificationDispatcher:
                 plan.request_id,
                 "qualification returned another payload type",
             )
+        body = plan.remote_request.body
+        if "incumbent_stack_digest" in body:
+            if (product.incumbent_stack.digest != body["incumbent_stack_digest"]
+                    or product.incumbent_tree_digest != body["incumbent_tree_digest"]):
+                raise QualificationRecoveryHold(
+                    "remote_payload_changed", plan.request_id,
+                    "qualification result differs from its authenticated incumbent",
+                )
+        elif compare_incumbent and (
+            product.incumbent_stack.digest != self.qualification_incumbent_stack.digest
+            or product.incumbent_tree_digest != self.qualification_incumbent_tree_digest
+        ):
+            raise _StaleIncumbentProduct(product)
         return product
-
-    @staticmethod
-    def _has_no_decision(batch: QualificationIntakeBatch) -> bool:
-        return any(
-            outcome.decision is QualificationDecision.NO_DECISION
-            for outcome in batch.outcomes
-        )
 
     def _commit_product(
         self,
@@ -951,6 +1027,7 @@ class RecoverableQualificationDispatcher:
         self,
     ) -> (
         EvaluationRun
+        | QualificationCommissionRequired
         | RecoverableQualificationHold
         | CompletedQualificationHold
         | RecoverableQualificationRequeue
@@ -962,6 +1039,8 @@ class RecoverableQualificationDispatcher:
         selected = self._claim_or_reopen()
         if selected is None:
             return None
+        if type(selected) is QualificationCommissionRequired:
+            return selected
         recovery, claim = selected.recovery, selected.claim
         if recovery.phase is RecoveryPhase.HELD:
             if recovery.reason.startswith("remote_qualification_hold:"):
@@ -1077,7 +1156,7 @@ class RecoverableQualificationDispatcher:
                     )
                 if type(product) is RemoteQualificationHoldProduct:
                     return self._commit_remote_hold(recovery, product)
-                if self._has_no_decision(product.batch):
+                if product.batch.retry_plan is not None:
                     return self._commit_legacy_no_decision_hold(recovery, product)
                 if recovery.phase is RecoveryPhase.RESULT_READY:
                     import_remote_qualification_evidence(
@@ -1091,6 +1170,8 @@ class RecoverableQualificationDispatcher:
             return self._requeue(recovery, signal.refusal, signal.outcome)
         except _InfrastructureResultObserved as signal:
             return self._requeue_infrastructure(recovery, signal)
+        except _StaleIncumbentProduct as signal:
+            return self._requeue_stale_incumbent(recovery, signal.product)
         except _RecoveryLeaseRenewalDenied as signal:
             return self._hold(
                 signal.recovery,
@@ -1106,6 +1187,7 @@ class RecoverableQualificationDispatcher:
 
 __all__ = [
     "CompletedQualificationHold",
+    "QualificationCommissionRequired",
     "RecoverableQualificationDispatcher",
     "RecoverableQualificationDispatcherError",
     "RecoverableQualificationHold",

@@ -6,7 +6,6 @@ import hashlib
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -200,27 +199,7 @@ def test_full_pass_keeps_existing_product_and_adds_raw_graph_inventory(
         )
         return QualificationIntakeBatch(factory.manifest.digest, (outcome,), attempt)
 
-    prefix = SimpleNamespace(
-        speed_plan=object(),
-        speed=object(),
-        retirement=object(),
-        count_result=None,
-        count_checkpoint=None,
-    )
-    lifecycle = SimpleNamespace(
-        count_checkpoint=None, stock_authority=None
-    )
     monkeypatch.setattr(worker_module, "run_qualification_intake", intake)
-    monkeypatch.setattr(
-        worker_module,
-        "run_b300_resident_qualification_prefix",
-        lambda **_kwargs: prefix,
-    )
-    monkeypatch.setattr(
-        worker_module,
-        "ResidentPairMarginalLifecycleEvidence",
-        lambda *_args: lifecycle,
-    )
     request = _request(case)
     try:
         product = case.adapter.run(request)
@@ -231,7 +210,6 @@ def test_full_pass_keeps_existing_product_and_adds_raw_graph_inventory(
     assert len(plan_calls) == 1
     assert len(intake_calls) == 1
     assert intake_calls[0][1]["prebuilt_plan"] is case.plan
-    assert intake_calls[0][1]["resident_pair_lifecycle"] is lifecycle
     assert intake_calls[0][0] is case.factory
     assert product.batch.outcomes[0].decision is QualificationDecision.PASS
     assert product.evidence_inventory == tuple(

@@ -133,12 +133,9 @@ def _construction(
     catalog, incumbent = deployment_fixtures._incumbent(runtime, _h("arena"))
     builder_source = _h("builder-source")
     evidence_root = tmp_path / "evidence"
-    count_quality = authority_fixtures._resident_count_quality(
-        catalog,
-        evidence_root,
-    )
     return B300QualificationConstructionAuthority(
         catalog=catalog,
+        registered_target_ids=deployment_fixtures.M3_REGISTERED_TARGET_IDS,
         profiles=deployment_fixtures._profiles(catalog, builder_source),
         incumbent_stack=incumbent,
         incumbent_tree_digest=_h("incumbent-tree"),
@@ -148,8 +145,6 @@ def _construction(
         evidence_policy_digest=_h("evidence-policy"),
         builder_source_digest=builder_source,
         selection_store_digest=_h("selection-store"),
-        resident_count_quality_builder_digest=_h("resident-count-quality-builder"),
-        resident_count_quality=count_quality,
         secret_loader=lambda _reference: b"s" * 32,
         plan_builder=lambda _cohort, _secret: object(),
         entropy_provider_digest=_h("entropy-provider"),
@@ -195,20 +190,12 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         construction,
         manifest,
     )
-    resident_pair_factory, pair_executors = (
-        authority_fixtures._resident_pair_factory(
-            tmp_path / "pair",
-            monkeypatch,
-            manifest.digest,
-        )
-    )
     deployment = compose_b300_qualification_deployment(
         manifest=manifest,
         screen_authorities=screen,
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
-        resident_pair_factory=resident_pair_factory,
         screen_lane="primary",
     )
     readiness = _readiness(deployment)
@@ -229,7 +216,7 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         candidate,
         receipt,
         adapter,
-        (candidate_executor, baseline_executor, *pair_executors),
+        (candidate_executor, baseline_executor),
     )
     yield result
     for executor in result.executors:
@@ -258,6 +245,8 @@ def _body(
             }
         ],
         "kind": "qualification_work",
+        "incumbent_stack_digest": configured.construction.incumbent_stack.digest,
+        "incumbent_tree_digest": configured.construction.incumbent_tree_digest,
         "qualification_policy_digest": (
             manifest.qualification_policy_digest
             if policy_digest is None

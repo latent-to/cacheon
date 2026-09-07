@@ -25,7 +25,6 @@ from cacheon.verify_collective import (  # noqa: E402
     _MAX_VERDICT_BYTES,
     _RankVerdict,
     _VERDICT_VERSION,
-    _direct_aot_collective_callables,
     _init_rank_process_group,
     _rank_barrier,
     _read_rank_verdict,
@@ -43,6 +42,7 @@ from cacheon.verification_outcomes import (  # noqa: E402
 )
 
 ALLREDUCE_BUNDLE = "examples/miner_allreduce_torch/kernels/all_reduce.py"
+DP_EXCHANGE_BUNDLE = "examples/miner_dp_attention_exchange_torch/kernels/exchange.py"
 SMALL_SHAPES = [{"num_tokens": 2, "hidden": 8}]
 
 
@@ -115,33 +115,6 @@ def test_cpu_process_group_and_barrier_keep_gloo_call_signature():
     fake_dist.barrier.assert_called_once_with()
 
 
-def test_collective_direct_aot_propagates_only_validator_prepare_boundary():
-    class DirectEntry:
-        def __call__(self, *_args):
-            return None
-
-        def prepare(self, w13, w2):
-            return ("validator-prepared", w13, w2)
-
-    slot = get_slot("moe.fused_experts_reduce")
-    direct_entry = DirectEntry()
-    entry, prepare = _direct_aot_collective_callables(
-        slot, direct_entry, prepare_name=None
-    )
-
-    assert entry is direct_entry
-    assert callable(prepare)
-    assert prepare("w13", "w2") == ("validator-prepared", "w13", "w2")
-    with pytest.raises(RuntimeError, match="validator-generated.*prepare boundary"):
-        _direct_aot_collective_callables(
-            slot, lambda *_args: None, prepare_name=None
-        )
-    with pytest.raises(ValueError, match="candidate Python prepare"):
-        _direct_aot_collective_callables(
-            slot, direct_entry, prepare_name="prepare"
-        )
-
-
 def test_allreduce_faithful_passes_gloo_cpu():
     slot = get_slot("collective.all_reduce")
     res = verify_collective(slot, ALLREDUCE_BUNDLE, "all_reduce",
@@ -155,6 +128,30 @@ def test_allreduce_faithful_passes_gloo_cpu():
         GraphPhaseOutcome.eager_only_passed(),
     ) for row in res.shape_results)
     assert all(row.case_descriptor is not None for row in res.shape_results)
+
+
+@pytest.mark.parametrize(
+    "slot_name,entry_name",
+    (
+        ("collective.all_gather_into_tensor", "all_gather_into_tensor"),
+        ("collective.reduce_scatter_tensor", "reduce_scatter_tensor"),
+    ),
+)
+def test_dp_exchange_faithful_passes_gloo_cpu(monkeypatch, slot_name, entry_name):
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    result = verify_collective(
+        get_slot(slot_name),
+        DP_EXCHANGE_BUNDLE,
+        entry_name,
+        world_size=2,
+        backend="gloo",
+        device="cpu",
+        shapes=SMALL_SHAPES,
+        seed=0,
+    )
+    assert result.passed, "\n".join(
+        f"{row.shape}: {row.detail}" for row in result.shape_results
+    )
 
 
 def test_collective_cpu_verify_does_not_claim_graph_proof():

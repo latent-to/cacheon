@@ -28,7 +28,7 @@ def test_bootstrap_installs_one_cacheon_finder_without_legacy_alias() -> None:
     assert len(finders) == 1
 
 
-def test_wheel_build_removes_stale_optima_packages(tmp_path: Path) -> None:
+def test_wheel_build_removes_retired_packages_and_overlays(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     for relative in (
@@ -39,18 +39,18 @@ def test_wheel_build_removes_stale_optima_packages(tmp_path: Path) -> None:
         "setup.py",
     ):
         shutil.copy2(ROOT / relative, source / relative)
-    shutil.copytree(ROOT / "LICENSES", source / "LICENSES")
     shutil.copytree(ROOT / "cacheon", source / "cacheon")
     shutil.copytree(ROOT / "cacheon_kernels", source / "cacheon_kernels")
 
     stale_packages = (
         source / "build/lib/optima",
         source / "build/lib/optima_kernels",
+        source / "build/lib/cacheon/arena_assets/minimax_m3/sglang_patch",
     )
     for package in stale_packages:
         package.mkdir(parents=True)
         (package / "__init__.py").write_text(
-            "raise RuntimeError('stale Optima package was installed')\n",
+            "raise RuntimeError('retired package was installed')\n",
             encoding="utf-8",
         )
 
@@ -84,5 +84,6 @@ def test_wheel_build_removes_stale_optima_packages(tmp_path: Path) -> None:
         name == "optima.py"
         or name.startswith("optima/")
         or name.startswith("optima_kernels/")
+        or name.startswith("cacheon/arena_assets/")
         for name in names
     )

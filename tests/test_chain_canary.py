@@ -100,7 +100,7 @@ def test_finalized_weight_signature_drift_is_flagged(monkeypatch):
     assert "block" in by_name["subtensor.metagraph"].detail
 
 
-def test_nonfinal_set_weights_default_is_flagged(monkeypatch):
+def test_sdk_weight_default_is_unused_by_explicit_finalized_submission(monkeypatch):
     fake = _fake_bittensor(_FULL_METHODS)
 
     def nonfinal_set_weights(
@@ -114,5 +114,4 @@ def test_nonfinal_set_weights_default_is_flagged(monkeypatch):
     fake.Subtensor.set_weights = nonfinal_set_weights
     monkeypatch.setitem(sys.modules, "bittensor", fake)
     by_name = {c.name: c for c in run_checks()}
-    assert by_name["subtensor.set_weights"].ok is False
-    assert "default to True" in by_name["subtensor.set_weights"].detail
+    assert by_name["subtensor.set_weights"].ok is True

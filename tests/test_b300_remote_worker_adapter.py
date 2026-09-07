@@ -357,7 +357,10 @@ def test_commission_materializes_and_resolves_each_fifo_publication(
     fixtures._publication_tar(distinct_publication, distinct_archive)
     paths = _adapter_paths(tmp_path)
     commission = object.__new__(adapter.B300RemoteQualificationCommission)
-    fixed_authorities = (object(), object(), object())
+    fixed_authorities = (object(), SimpleNamespace(
+        incumbent_stack=SimpleNamespace(digest="a" * 64),
+        incumbent_tree_digest="b" * 64,
+    ), object())
     object.__setattr__(commission, "deployment", fixed_authorities[0])
     object.__setattr__(commission, "construction", fixed_authorities[1])
     object.__setattr__(commission, "readiness", fixed_authorities[2])
@@ -418,6 +421,8 @@ def test_commission_materializes_and_resolves_each_fifo_publication(
                         {"publication": expected_publication.to_dict()}
                     ],
                     "screen_lane": "primary",
+                    "incumbent_stack_digest": "a" * 64,
+                    "incumbent_tree_digest": "b" * 64,
                 }
             )
             wires.append(wire)
@@ -469,9 +474,15 @@ def test_qualification_archive_mismatch_never_builds_or_runs_adapter(
     )
     outer = spool.load_json(job_dir / "request.json")
     archive = spool.artifact_for_role(outer, job_dir, "candidate_publication")
-    wire = SimpleNamespace(
-        body={"candidates": [{"publication": {"changed": "wire"}}]}
-    )
+    object.__setattr__(commission, "construction", SimpleNamespace(
+        incumbent_stack=SimpleNamespace(digest="a" * 64),
+        incumbent_tree_digest="b" * 64,
+    ))
+    wire = SimpleNamespace(body={
+        "candidates": [{"publication": {"changed": "wire"}}],
+        "screen_lane": "primary", "incumbent_stack_digest": "a" * 64,
+        "incumbent_tree_digest": "b" * 64,
+    })
     _patch_authenticated_carrier(
         monkeypatch, stage="qualification", wire=wire
     )
@@ -515,6 +526,10 @@ def test_qualification_execution_failure_is_epoch_fatal(
 
     commission = object.__new__(adapter.B300RemoteQualificationCommission)
     commissioned = object.__new__(B300RemoteQualificationAdapter)
+    object.__setattr__(commission, "construction", SimpleNamespace(
+        incumbent_stack=SimpleNamespace(digest="a" * 64),
+        incumbent_tree_digest="b" * 64,
+    ))
     runtime = _runtime_shell(
         _adapter_paths(tmp_path), qualification_commission=commission
     )
@@ -522,6 +537,8 @@ def test_qualification_execution_failure_is_epoch_fatal(
         body={
             "candidates": [{"publication": {"candidate": "one"}}],
             "screen_lane": "primary",
+            "incumbent_stack_digest": "a" * 64,
+            "incumbent_tree_digest": "b" * 64,
         }
     )
     _patch_authenticated_carrier(
@@ -757,6 +774,56 @@ def test_latched_resident_retires_adapter_behind_completed_result(
 
     # The second frame is never consumed: the process retires after the
     # first completed result, with its worker torn down before the frame.
+    assert seen == [request_ids[0]]
+    assert runtime.closed == 1
+    assert frames == (
+        {"schema": spool.SCHEMA_ADAPTER_CONTROL, "state": "ready"},
+        {
+            "request_id": request_ids[0],
+            "retired": True,
+            "schema": spool.SCHEMA_ADAPTER_CONTROL,
+            "state": "completed",
+        },
+    )
+
+
+def test_completed_qualification_retires_adapter_behind_its_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _adapter_paths(tmp_path)
+    request_ids = ("7" * 64, "8" * 64)
+    frames_by_raw = {
+        b"first\n": (
+            request_ids[0],
+            tmp_path / request_ids[0],
+            tmp_path / f".{request_ids[0]}.1",
+        ),
+        b"second\n": (
+            request_ids[1],
+            tmp_path / request_ids[1],
+            tmp_path / f".{request_ids[1]}.1",
+        ),
+    }
+    runtime = _ServingRuntime()
+    seen: list[str] = []
+    monkeypatch.setattr(
+        adapter,
+        "validated_command_paths",
+        lambda raw, _paths: frames_by_raw[raw],
+    )
+
+    def run_with_runtime(request_dir, _result_dir, _runtime):
+        # A qualification completes normally, but its lane containers would
+        # hold the GPUs until the next screen's idle drain timed out.
+        seen.append(request_dir.name)
+        return "qualification"
+
+    monkeypatch.setattr(adapter, "run_with_runtime", run_with_runtime)
+    controls = io.BytesIO()
+
+    assert adapter.serve_runtime(runtime, paths, iter(frames_by_raw), controls) == 0
+    frames = tuple(json.loads(row) for row in controls.getvalue().splitlines())
+
     assert seen == [request_ids[0]]
     assert runtime.closed == 1
     assert frames == (

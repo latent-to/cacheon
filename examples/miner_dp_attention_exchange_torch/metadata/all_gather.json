@@ -1,0 +1,6 @@
+{
+  "architectures": ["sm103"],
+  "dtypes": ["bfloat16"],
+  "notes": "Faithful all-gather member of the atomic GLM DP-attention exchange target.",
+  "op": "collective.all_gather_into_tensor"
+}

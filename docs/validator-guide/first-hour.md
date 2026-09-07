@@ -156,7 +156,7 @@ Interpret the one-pass summary by stage:
 | `rejected` | Terminal attributable intake failures |
 | `held` | Work requiring operator or bounded retry disposition |
 | `screens`, `decisions` | Disabled in intake-only mode |
-| `settlements` | Committed settlement leases; runs in every mode over retained PASS pairs |
+| `settlements` | Committed settlement leases; runs in every mode over retained accepted PASS evidence |
 
 Run the identical command a second time. With no newly finalized reveals, it should not
 refetch or republish the same arrival. That checks the finalized cursor and idempotent
@@ -211,7 +211,7 @@ targets, and treat all results as diagnostic.
 
 Do not make a diagnostic pass crownable by wrapping it in a shell script. Production
 qualification requires the registered arena, immutable engine trees, OCI execution,
-pristine reference, retained evidence, and independent reproduction described in
+pristine reference, retained evidence, and audited qualification described in
 [Qualification](qualification.md).
 
 ## 7. Commission the arena integration
@@ -257,7 +257,7 @@ result = run_validator(
 
 Do not substitute a shell command, dynamic import path, or fake provider that declares
 success. A commissioned provider must return real typed screen evidence and construct the
-sealed current v7 B/C/[B′] or v8 B/C/B′ speed work, audit, and pristine-T
+sealed two-process B/C/B′ speed work, audit, and pristine-T
 qualification work.
 
 ## 8. Observe one complete reservation lifecycle
@@ -267,24 +267,20 @@ these transitions in order:
 
 ```text
 reserved → fetching → published → screening → promoted → qualifying
-         → reproduction_pending → screening → promoted → qualifying
          → qualified → leased settlement → crowned/held/discovery_bounty
 ```
 
 A controlled negative should terminate as `failed`; an induced validator-side outage
-should become retryable or `NO_DECISION`/`held`, never an economic loss. Confirm that the
-second PASS uses the reproduction lane and different authority, selection, attempt,
-report, and evidence identities. Confirm that both evidence roots reopen before a
-settlement candidate is admitted.
+should become retryable or `NO_DECISION`/`held`, never an economic loss. Confirm that the one complete audited PASS creates a settlement candidate,
+its exact retained evidence reopens, and no second qualification is scheduled.
 
 Structural qualification fixtures can validate transitions, independence checks, and
 evidence reopening. They cannot satisfy the production-provider, GPU-performance, or
 calibration requirements of this commissioning step.
 
 For resident authority, also confirm that timed GPU work never overlaps between lanes,
-both lanes prove quiescence before audit/T, v7 alone makes B′ conditional while
-v8 takes it unconditionally, and the reproduction exact-swaps the physical
-baseline and candidate lane roles.
+both lanes prove quiescence before audit/T, B′ is read unconditionally, and the
+reproduction exact-swaps the physical baseline and candidate lane roles.
 
 ## 9. Commission the signer separately
 
@@ -304,21 +300,6 @@ Legacy V1 is the only implemented emission lane. The V2 finite-debt surface
 was extracted from the tree on 2026-08-09; see
 [Emissions policy](../reference/emissions-policy.md) for the retained design
 intent and the reserved durable schema.
-
-## 10. Commission release operations independently
-
-If this validator also operates the release plane, prove that an active crown can be
-reopened, reviewed source can be promoted into an integrated contribution, a model tree
-can be sealed, and an existing signed release can be verified against an externally
-pinned public key. Release construction, signing, registry publication, and serving-host
-launch are reviewed programmatic deployment APIs, not public CLI commands.
-
-Do not call the validator commissioned merely because unit and slice tests pass. The
-serving plane requires the complete publication checklist: clean-wheel
-closure, provider-specific native proof, builder-authenticated reproducible OCI outputs,
-closed effective serving policy, serving at the approved topology, and bound serve
-receipts. The evaluation plane separately requires a reviewed production
-`ArenaServiceProvider`; neither boundary is supplied by passing the library test suite.
 
 ## Production-readiness checklist
 

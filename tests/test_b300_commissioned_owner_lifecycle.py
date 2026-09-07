@@ -15,7 +15,6 @@ import tests.test_b300_arena_provider as provider_fixtures
 import tests.test_b300_qualification_deployment as deployment_fixtures
 import tests.test_b300_remote_qualification_adapter as remote_fixtures
 import tests.test_b300_remote_worker_adapter as worker_fixtures
-import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaQualificationWork,
@@ -49,9 +48,6 @@ from cacheon.eval.b300_qualification_deployment import (
     compose_b300_qualification_deployment,
 )
 from cacheon.eval.b300_screen_qualification_bridge import QUALIFICATION_EXECUTOR_ID
-from cacheon.eval.b300_registered_qualification_inputs import (
-    registered_b300_member_contract_projection,
-)
 from cacheon.eval.evidence_store import publish_evidence
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
@@ -63,9 +59,9 @@ from cacheon.stack_identity import canonical_digest
 from cacheon.target_catalog import default_target_catalog
 
 
-MSA_PREFILL = "attention.msa_prefill_block_score"
+RMSNORM_TARGET = "norm.rmsnorm"
 ALL_REDUCE = "collective.all_reduce"
-ATOMIC_EPILOGUE = "collective.moe_epilogue.v1"
+FUSED_EXPERTS = "moe.fused_experts"
 
 
 def _h(label: str) -> str:
@@ -124,20 +120,12 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     manifest = deployment_fixtures._manifest(screen)
     construction = remote_fixtures._bind_construction(construction, manifest)
-    resident_pair_factory, pair_executors = (
-        authority_fixtures._resident_pair_factory(
-            tmp_path / "pair",
-            monkeypatch,
-            manifest.digest,
-        )
-    )
     deployment = compose_b300_qualification_deployment(
         manifest=manifest,
         screen_authorities=screen,
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
-        resident_pair_factory=resident_pair_factory,
         screen_lane="primary",
     )
     reproduction_deployment = compose_b300_qualification_deployment(
@@ -146,7 +134,6 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         construction=construction,
         candidate_executor=baseline_executor,
         resident_baseline_executor=candidate_executor,
-        resident_pair_factory=resident_pair_factory,
         screen_lane="reproduction",
     )
     readiness = remote_fixtures._readiness(deployment)
@@ -167,7 +154,6 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         commission,
         reproduction_commission,
         (candidate_executor, baseline_executor),
-        pair_executors,
         resident,
     )
 
@@ -184,7 +170,6 @@ def owner(
         commission,
         reproduction_commission,
         executors,
-        pair_executors,
         resident,
     ) = _deployment(tmp_path, monkeypatch)
     composition = _CompositionReceipt()
@@ -238,8 +223,6 @@ def owner(
     )
     yield harness
     service.close()
-    for executor in pair_executors:
-        executor.manager.close()
 
 
 def _target_candidate(
@@ -363,7 +346,7 @@ def test_service_routes_reproduction_to_swapped_lane_owner(
     candidate = _target_candidate(
         tmp_path / "reproduction-candidate",
         index=99,
-        target_id=MSA_PREFILL,
+        target_id=RMSNORM_TARGET,
     )
     store = QualificationContinuationStore(tmp_path / "reproduction-continuation")
     adapter = owner.service.adapter_for(
@@ -411,7 +394,7 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
     candidate = _target_candidate(
         tmp_path / "screen-candidate",
         index=0,
-        target_id=MSA_PREFILL,
+        target_id=RMSNORM_TARGET,
     )
     receipt = worker.service.screen(candidate)
     assert owner.resident.created == 1
@@ -428,7 +411,6 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
     assert type(work) is ArenaQualificationWork
     assert builder.calls[0][0].candidates == (candidate,)
     assert owner.resident.closed == 1
-    assert not provider.resident_screen_active
     assert worker.service._provider is provider
 
     worker_close = worker.close
@@ -461,7 +443,7 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
     assert set(manager_calls.values()) == {1}
 
 
-def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
+def test_one_owner_routes_heterogeneous_singletons(
     owner: _OwnerHarness,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -470,7 +452,7 @@ def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
     first = _target_candidate(
         tmp_path / "msa-screen",
         index=10,
-        target_id=MSA_PREFILL,
+        target_id=RMSNORM_TARGET,
     )
     owner.service.worker.service.screen(first)
     provider = owner.service.worker._provider
@@ -495,11 +477,11 @@ def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
     )
     products: list[RemoteQualificationProduct] = []
     requests = []
-    targets = (MSA_PREFILL, ALL_REDUCE, ATOMIC_EPILOGUE)
+    targets = (RMSNORM_TARGET, ALL_REDUCE, FUSED_EXPERTS)
     for index, target_id in enumerate(targets, start=10):
         candidate = (
             first
-            if target_id == MSA_PREFILL
+            if target_id == RMSNORM_TARGET
             else _target_candidate(
                 tmp_path / f"target-{index}",
                 index=index,
@@ -529,23 +511,15 @@ def test_one_owner_routes_heterogeneous_singletons_and_atomic_candidate(
     assert all(len(request.body["candidates"]) == 1 for request in requests)
     assert all(len(request.members) == 1 for request in requests)
     assert products[0].authority_manifest.reservations[0].target_members == (
-        MSA_PREFILL,
+        RMSNORM_TARGET,
     )
     assert products[1].authority_manifest.reservations[0].target_members == (
         ALL_REDUCE,
     )
 
-    atomic = products[2].authority_manifest.reservations[0]
-    projection = next(
-        row
-        for row in registered_b300_member_contract_projection(
-            default_target_catalog()
-        )
-        if row.target_id == ATOMIC_EPILOGUE
+    assert products[2].authority_manifest.reservations[0].target_members == (
+        FUSED_EXPERTS,
     )
-    assert atomic.target_members == projection.members
-    assert len(projection.members) == len(projection.member_contracts) == 2
-    assert tuple(row.slot_id for row in projection.member_contracts) == atomic.target_members
 
     production_source = inspect.getsource(
         qualification_module.B300RemoteQualificationAdapter.run
@@ -630,6 +604,8 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
         body={
             "candidates": [{"publication": candidate.publication.to_dict()}],
             "screen_lane": "reproduction",
+            "incumbent_stack_digest": owner.construction.incumbent_stack.digest,
+            "incumbent_tree_digest": owner.construction.incumbent_tree_digest,
         }
     )
     worker_fixtures._patch_authenticated_carrier(
@@ -669,7 +645,6 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
     assert len(owner.worker_init_calls) == 2
     assert runtime.worker is owner.service.worker
     assert not owner.service.worker._closed
-    assert not owner.service.worker._provider.resident_screen_active
     assert (result_dir / "RESIDENT_ENTRY_ARMED.json").is_file()
 
     hold = resolve_infrastructure_result(
@@ -690,7 +665,7 @@ def test_standalone_adapter_closes_only_its_owned_worker_once(
     candidate = _target_candidate(
         tmp_path / "standalone-candidate",
         index=40,
-        target_id=MSA_PREFILL,
+        target_id=RMSNORM_TARGET,
     )
     standalone = qualification_module.B300RemoteQualificationAdapter(
         owner.deployment,

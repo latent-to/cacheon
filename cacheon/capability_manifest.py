@@ -15,6 +15,10 @@ true.
 from __future__ import annotations
 
 CAPABILITY_MODULES: tuple[str, ...] = (
+    # The sealed qualification packet imports the prepared-graph probe, and
+    # its adapter requires the OCI module at worker start.
+    "cacheon.eval.b300_prepared_graph_oci",
+    "cacheon.eval.b300_prepared_graph_probe",
     "cacheon.eval.b300_qualification_graph_evidence_store",
     "cacheon.eval.tokenizer_identity",
 )

@@ -1,0 +1,7 @@
+{
+  "op": "attention.sparse_mla",
+  "dtypes": ["float32", "float16", "bfloat16", "float8_e4m3fn"],
+  "quant": ["fp8_e4m3"],
+  "cuda_graph_safe": true,
+  "notes": "Raw-query RoPE/FP8 preparation plus sparse MLA; engine-owned K preparation and writes precede the call. CPU checks are not GPU acceptance."
+}

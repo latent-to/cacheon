@@ -1,0 +1,6 @@
+{
+  "op": "moe.fused_routed_experts",
+  "quant": ["nvfp4"],
+  "dtypes": ["float32", "bfloat16", "float16"],
+  "notes": "CPU/GPU dry-run for the fat routed-MoE slot (routing + experts + combine). A real submission would fuse the sigmoid-bias routing head, packed FP4/FP8 expert GEMMs, and the weighted combine into one kernel."
+}

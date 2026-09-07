@@ -10,7 +10,7 @@ Cacheon uses three qualification grades:
 
 | Decision | Meaning | Miner response |
 |---|---|---|
-| `PASS` | the bound evidence passed this stage | continue; one qualification PASS is still only `reproduction_pending` |
+| `PASS` | the bound evidence passed this stage | a complete audited qualification PASS becomes `qualified`; settlement is separate |
 | `FAIL` | the candidate or its declared applicability violated a requirement | change the proposal and submit a new content identity |
 | `NO_DECISION` | authority, infrastructure, conditioning, drift, or evidence was insufficient for a safe verdict | preserve the proposal identity and wait/retry under operator policy |
 
@@ -30,9 +30,9 @@ The production SQLite state machine currently exposes these statuses:
 | `published` | immutable worker publication and selected-delta identity exist; waiting for primary screens |
 | `screening` | the registered arena service is running the ordered non-crown screen prefix |
 | `promoted` | every non-crown screen passed; waiting to enter qualification |
-| `qualifying` | one authority-bound version-3 attempt—current v7 resident B/C/[B′] or v8 two-process B/C/B′, registered eager audit A, then pristine T—is active |
-| `reproduction_pending` | one complete PASS is retained; a fresh independent screen/qualification pass is still required |
-| `qualified` | two consistent independent PASS attempts are retained; settlement is separate |
+| `qualifying` | one authority-bound version-3 attempt—two-process B/C/B′, registered eager audit A, then pristine T—is active |
+| `reproduction_pending` | historical transition; a retained complete primary PASS is accepted on restart without another GPU run |
+| `qualified` | one complete audited PASS is retained; settlement is separate |
 | `no_decision` | retryable qualification evidence/failure product was retained |
 | `held` | automatic progress stopped under retry, capacity, or safety policy; operator action is required |
 | `failed` | terminal invalid/rejected/failed candidate |
@@ -155,8 +155,6 @@ do not rank candidates by `max_abs` in isolation.
 
 For all-close contracts, one outlier is enough to fail even if the printed ratio is near
 one. For matched-ratio contracts, the target-owned minimum ratio decides the result. For
-MSA, `overlap` is agreement between trusted and candidate-induced top-k block sets, so
-large raw score differences can be irrelevant while one ranking mistake can matter. For
 low-bit cosine profiles, direction and any configured norm guard matter more than a
 single maximum element error.
 
@@ -268,8 +266,8 @@ tree and pinned build image that a local combined rebuild did not reproduce.
 
 Qualification aggregates mandatory graph, marginal speed, registered eager
 audit A when required by the plan, and pristine T quality evidence. The current
-speed order is v7 resident B/C/[B′] or v8 two-process B/C/B′, followed by A and
-T. Any FAIL makes the attempt fail; any `NO_DECISION` prevents PASS.
+speed order is two-process B/C/B′, followed by A and T. Any FAIL makes the
+attempt fail; any `NO_DECISION` prevents PASS.
 
 Speed problems:
 
@@ -294,16 +292,12 @@ Quality problems:
 Contributor-controlled matched A/B profiling can reproduce a mechanism, but it cannot
 contest a retained validator grade or create qualification authority.
 
-## 8. Reproduction
+## 8. Qualification acceptance
 
-After the first complete PASS, status is `reproduction_pending`. The proposal
-must pass a fresh independent screen and qualification attempt with matching
-identity. The two retained results are consistency-checked, and the lower
-speedup is used for settlement.
-
-Do not announce a crown from `reproduction_pending`. If the second attempt is
-retryable, it remains in the reproduction lane under policy. If the evidence is
-inconsistent or fails, the first PASS cannot crown by itself.
+One complete audited PASS becomes `qualified`. The same attempt's speed, graph,
+audit, and pristine-quality evidence backs settlement; no mandatory repeat runs.
+Historical paired results retain their original evidence and lower accepted score.
+A crown still requires the separate transactional settlement step.
 
 ## 9. Settlement, reward, and release
 

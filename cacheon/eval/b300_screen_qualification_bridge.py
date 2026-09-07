@@ -142,6 +142,7 @@ def derive_b300_screen_qualification(
     authority: dict[str, object],
     prompt_identity: dict[str, str],
     catalog: TargetCatalog,
+    registered_target_ids: tuple[str, ...],
     lane_pair: B300QualificationLanePair,
     backend_config_factory: Callable[[str], OCIBackendConfig],
 ) -> tuple[B300DeclaredQualificationAuthorities, dict[str, object] | None]:
@@ -171,18 +172,17 @@ def derive_b300_screen_qualification(
             )
             predicted_builder = predicted_qualification_builder_digest(
                 catalog,
+                registered_target_ids=registered_target_ids,
                 builder_source_digest=qualification_commission[
                     "builder_source_digest"
                 ],
                 selection_store_digest=qualification_commission[
                     "selection_store_digest"
                 ],
-                resident_count_quality_builder_digest=qualification_commission[
-                    "resident_count_quality_builder_digest"
-                ],
             )
             qualification_policy_digest = predicted_qualification_policy_digest(
                 catalog,
+                registered_target_ids=registered_target_ids,
                 builder_source_digest=qualification_commission[
                     "builder_source_digest"
                 ],
@@ -191,9 +191,6 @@ def derive_b300_screen_qualification(
                 ],
                 hidden_judge_binding_digest=hidden_binding.digest,
                 selection_policy_digest=prompt_identity["selection_policy_digest"],
-                resident_count_quality_builder_digest=qualification_commission[
-                    "resident_count_quality_builder_digest"
-                ],
             )
         except B300RegisteredQualificationError as exc:
             raise B300ScreenQualificationBridgeError(

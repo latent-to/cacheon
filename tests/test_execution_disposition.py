@@ -224,12 +224,6 @@ def test_store_worker_release_requires_request_ready_and_exact_proof(
             store.release_worker_pre_resident_recovery(
                 recovery, refusal=refusal, current_block=authority.fixtures.BLOCK
             )
-        with pytest.raises(IntakeError, match="release is forbidden"):
-            store.release_pre_resident_recovery(
-                recovery,
-                current_block=authority.fixtures.BLOCK,
-                reason="worker_pre_resident:adapter_start_failed",
-            )
         ready = _request_ready_recovery(fixtures, authority, store, plan)
         assert ready.phase is RecoveryPhase.REQUEST_READY
         with pytest.raises(IntakeError, match="worker pre-resident"):

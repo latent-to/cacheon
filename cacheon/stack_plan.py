@@ -15,7 +15,6 @@ from cacheon.stack_manifest import (
     ContributionRef,
     EvaluationStackContext,
     EvaluationStackManifest,
-    IntegratedContributionRef,
     ProposalContributionRef,
 )
 from cacheon.target_catalog import TargetCatalog, TargetResolutionError
@@ -23,7 +22,7 @@ from cacheon._strict import require_digest
 
 
 _PLAN_SCHEMA_VERSION = 1
-_PLAN_POLICY_VERSION = "stack-plan.v1"
+_PLAN_POLICY_VERSION = "stack-plan.v2"
 
 
 class StackPlanError(ValueError):
@@ -43,7 +42,7 @@ def _ref_dict(ref: ContributionRef) -> dict[str, object]:
 
 
 def _require_ref(value: object, *, field: str) -> ContributionRef:
-    if not isinstance(value, (ProposalContributionRef, IntegratedContributionRef)):
+    if not isinstance(value, ProposalContributionRef):
         raise StackPlanError(f"{field} must be a contribution ref")
     return value
 
@@ -130,6 +129,10 @@ class TargetTransition:
         if self.prior is not None:
             if self.prior.target_id != self.target_id:
                 raise StackPlanError("prior contribution does not match transition target")
+            if self.displaced:
+                raise StackPlanError(
+                    "same-target replacement cannot also displace active targets"
+                )
             if self.prior.selected_delta_digest == self.replacement.selected_delta_digest:
                 raise StackPlanError("same-target replacement has no executable delta")
         displaced_ids = tuple(ref.target_id for ref in self.displaced)
@@ -237,21 +240,6 @@ class MarginalArmPlan:
     def digest(self) -> str:
         return canonical_digest("cacheon.stack.marginal-arm-plan", self.to_dict())
 
-    def require_current(
-        self,
-        current: EvaluationStackManifest,
-        *,
-        tree_digest: str,
-        expected_context: EvaluationStackContext,
-    ) -> "MarginalArmPlan":
-        current.validate_against(expected_context)
-        current_tree = _digest(tree_digest, field="current tree_digest")
-        if current.digest != self.incumbent.digest:
-            raise StaleStackPlanError("marginal arm incumbent stack is stale")
-        if current_tree != self.baseline_before.tree_digest:
-            raise StaleStackPlanError("marginal arm incumbent tree is stale")
-        return self
-
     def reopen(
         self,
         *,
@@ -308,28 +296,31 @@ def _candidate_transition(
 
     active = incumbent.entries
     prior = active.get(target_id)
-    remove = {
-        active_id
-        for active_id in set(active) & set(catalog.require(target_id).compatible_with)
-        if catalog.composition_rule(active_id, target_id).precedence.index(active_id)
-        < catalog.composition_rule(active_id, target_id).precedence.index(target_id)
-    }
-    if prior is None:
-        blockers = tuple(
+    if prior is not None:
+        remove: tuple[str, ...] = ()
+        displaced: tuple[ContributionRef, ...] = ()
+    else:
+        # A candidate arm must not retain any incumbent capable of owning the
+        # candidate's live region. This is symmetric at evaluation time even
+        # when catalog width is directional: a narrow challenger removes a
+        # wide incumbent for the comparison; the validator-owned base engine
+        # supplies computation outside the narrow target.
+        # Otherwise runtime priority can time only the incumbent under the
+        # candidate label.
+        candidate_displaces = catalog.displacement_closure(target_id)
+        target_conflicts = catalog.require(target_id).conflicts_with
+        remove = tuple(
             sorted(
                 active_id
                 for active_id in active
-                if target_id in catalog.displacement_closure(active_id)
+                if (
+                    active_id in candidate_displaces
+                    or target_id in catalog.displacement_closure(active_id)
+                    or active_id in target_conflicts
+                )
             )
         )
-        if blockers:
-            raise StackPlanError(
-                f"target {target_id!r} cannot implicitly decompose active "
-                f"targets {blockers!r}"
-            )
-        remove.update(set(active) & set(catalog.displacement_closure(target_id)))
-    removed = tuple(sorted(remove))
-    displaced = tuple(active[target] for target in removed)
+        displaced = tuple(active[target] for target in remove)
 
     transition = TargetTransition(
         target_id=target_id,
@@ -339,13 +330,13 @@ def _candidate_transition(
         displaced=displaced,
     )
     try:
-        candidate = incumbent.with_contribution(replacement, remove=removed)
+        candidate = incumbent.with_contribution(replacement, remove=remove)
         catalog.validate_active_targets(candidate.entries)
         candidate.validate_against(expected_context)
     except (ValueError, TargetResolutionError) as exc:
         raise StackPlanError(f"invalid marginal transition: {exc}") from exc
 
-    expected_targets = (set(active) - set(removed)) | {target_id}
+    expected_targets = (set(active) - set(remove)) | {target_id}
     if set(candidate.entries) != expected_targets:
         raise StackPlanError("candidate changed entries outside the target transition")
     for active_id, incumbent_ref in active.items():
@@ -632,26 +623,6 @@ class CohortPlan:
     def execution_arms(self) -> tuple[MarginalArmPlan, ...]:
         by_delta = {arm.selected_delta_digest: arm for arm in self.arms}
         return tuple(by_delta[digest] for digest in self.execution_order)
-
-    @property
-    def authority_arms(self) -> tuple[MarginalArmPlan, ...]:
-        by_ref = {arm.contribution_digest: arm for arm in self.arms}
-        return tuple(by_ref[ref.digest] for ref in self.authority_order)
-
-    def require_current(
-        self,
-        current: EvaluationStackManifest,
-        *,
-        tree_digest: str,
-        expected_context: EvaluationStackContext,
-    ) -> "CohortPlan":
-        current.validate_against(expected_context)
-        current_tree = _digest(tree_digest, field="current tree_digest")
-        if current.digest != self.incumbent.stack_digest:
-            raise StaleStackPlanError("cohort incumbent stack is stale")
-        if current_tree != self.incumbent.tree_digest:
-            raise StaleStackPlanError("cohort incumbent tree is stale")
-        return self
 
     def reopen(
         self,

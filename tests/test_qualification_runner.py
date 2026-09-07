@@ -98,13 +98,11 @@ class _Harness:
         speed: tuple[QualificationDecision, ...],
         quality: tuple[QualificationDecision, ...],
         audit: tuple[QualificationDecision, ...] | None = None,
-        swap_exchanges: bool = False,
         fail_pre_t_quiescence: bool = False,
         exercise_judge_cache: bool = False,
-        repeat: bool = False,
     ) -> None:
         assert len(graph) == len(speed)
-        assert len(quality) == len(graph) * (2 if repeat else 1)
+        assert len(quality) == len(graph)
         audit = audit or (QualificationDecision.PASS,) * len(graph)
         assert len(audit) == len(graph)
         # This runner harness predates the typed authority constructor and
@@ -144,6 +142,7 @@ class _Harness:
         }
         reference = SimpleNamespace(
             digest=self.commitment.reference_manifest_digest,
+            measured_digest=_d("reference-measured"),
             pristine_launch_digest=_d("pristine-launch"),
             hidden_corpus_commitment=_d("hidden-corpus"),
             hidden_judge_digest=_d("hidden-judge"),
@@ -187,8 +186,8 @@ class _Harness:
         self.lifecycle = SimpleNamespace(
             candidates=lifecycle_candidates,
             baseline_after=final_baseline,
-            # mirrors MarginalLifecycleEvidence.final_baseline (== baseline_after on
-            # the historical 3-leg shape; B'' when repeat reads run)
+            # mirrors ResidentMarginalLifecycleEvidence.final_baseline, which is
+            # baseline_after on the three-read B/C/B-prime schedule
             final_baseline=final_baseline,
         )
         prepared = SimpleNamespace(
@@ -240,11 +239,7 @@ class _Harness:
             expected_launch_resource_policy_digest=_d("launch-policy"),
             expected_runtime_resource_policy_digest=_d("runtime-policy"),
             expected_device_policy_digest=_d("device-policy"),
-            speed_evidence_policy=(
-                runner.SpeedEvidencePolicy.repeat()
-                if repeat
-                else runner.SpeedEvidencePolicy.legacy()
-            ),
+            speed_evidence_policy=runner.SpeedEvidencePolicy.resident(),
             speed_stage_disposition=runner.SpeedStageDisposition.TERMINAL,
             audit_policies=tuple(
                 runner.SlotAuditPolicy(
@@ -295,8 +290,6 @@ class _Harness:
             self.reference_request_counts.append(len(plan.requests))
             self.reference_session_plans.append(plan)
             requests = tuple(plan.requests)
-            if swap_exchanges:
-                requests = tuple(reversed(requests))
             exchanges = tuple(
                 SimpleNamespace(
                     request=request,
@@ -449,12 +442,9 @@ class _Harness:
             request_id,
             nonce,
             index,
-            candidate_read=1,
         ):
             del request_id, nonce
             request_label = f"request-{authority.selected_delta_digest}"
-            if candidate_read == 2:
-                request_label += "-repeat"
             return SimpleNamespace(
                 index=index,
                 delta=authority.selected_delta_digest,
@@ -472,7 +462,7 @@ class _Harness:
         )
         raw_index = 0
 
-        def raw_artifact(_lifecycle, authority, *_args, candidate_read=1):
+        def raw_artifact(_lifecycle, authority, *_args):
             nonlocal raw_index
             self.calls.append(f"raw.{raw_index}")
             raw_index += 1
@@ -487,7 +477,7 @@ class _Harness:
             binding = object.__new__(runner.ReferenceQualityRawBinding)
             binding_values = {
                 "qualification_identity_digest": _d("qualification-identity"),
-                "reference_manifest_digest": self.commitment.reference_manifest_digest,
+                "reference_manifest_digest": authority.profile.reference.measured_digest,
                 "calibration_digest": self.calibration.digest,
                 "selection_digest": _d("selection"),
                 "candidate_lifecycle_digest": _d("candidate-lifecycle"),
@@ -497,7 +487,6 @@ class _Harness:
                 "t_session_digest": _d("reference-session"),
                 "t_request_sha256": _d(
                     f"request-{authority.selected_delta_digest}"
-                    + ("-repeat" if candidate_read == 2 else "")
                 ),
                 "support_policy_digest": _d("support-policy"),
                 "hidden_task_plan_digest": _d("hidden-task-plan"),
@@ -553,7 +542,7 @@ class _Harness:
             _d("causal-attempt-artifact"),
             2,
             "application/json",
-            runner.ATTEMPT_SCHEMA_V2 if repeat else runner.ATTEMPT_SCHEMA,
+            runner.ATTEMPT_SCHEMA_V3,
         )
         self.published_attempt = None
 
@@ -580,7 +569,6 @@ def _install_resident_runner_path(
     harness: _Harness,
     *,
     speed_decision: QualificationDecision,
-    escalated: bool,
 ):
     """Install only the resident orchestration seam around the existing runner harness."""
 
@@ -622,7 +610,7 @@ def _install_resident_runner_path(
 
     class FakeResidentCrossover:
         def __init__(self) -> None:
-            self.escalated = escalated
+            self.escalated = False
 
     crossover = FakeResidentCrossover()
 
@@ -660,11 +648,7 @@ def _install_resident_runner_path(
             self.started_monotonic_s = 1.0
             self.completed_monotonic_s = 3.0
             self.resident_policy = plan.policy
-            roles = (
-                ("B", "C", "B_prime", "C_prime", "B_double_prime")
-                if escalated
-                else ("B", "C", "B_prime")
-            )
+            roles = ("B", "C", "B_prime")
             self.rates = tuple(
                 SimpleNamespace(
                     role=role,
@@ -709,10 +693,6 @@ def _install_resident_runner_path(
         @property
         def policy(self):
             return runner.SpeedEvidencePolicy.resident()
-
-        @property
-        def has_repeat(self) -> bool:
-            return len(self.rates) == 5
 
         def regrade(self, *_args, **_kwargs):
             reason = (
@@ -765,9 +745,8 @@ def _install_resident_runner_path(
         harness.calls.append("resident.speed")
         return crossover
 
-    # The legacy cold lifecycle and legacy speed projection no longer exist in
-    # the runner module at all; their absence IS the guarantee the two
-    # forbidden_* monkeypatches used to assert here.
+    # The legacy cold lifecycle and speed projection no longer exist in the
+    # runner; their absence is what the two forbidden_* monkeypatches asserted.
     monkeypatch.setattr(runner, "ResidentMarginalLifecycleEvidence", FakeResidentLifecycle)
     monkeypatch.setattr(runner, "ResidentSpeedWitness", FakeResidentSpeedWitness)
     monkeypatch.setattr(runner, "run_resident_crossover_speed", run_resident)
@@ -787,13 +766,10 @@ def _install_resident_runner_path(
         published_stage_exits.append(result)
         return stage_reference
 
-    def reopen_stage(root, reference, *, expected, resident_pair_lifecycle=None):
+    def reopen_stage(root, reference, *, expected):
         assert root is harness.value.evidence_root
         assert reference == stage_reference
         assert expected is harness.value
-        assert resident_pair_lifecycle is None or isinstance(
-            resident_pair_lifecycle, FakeResidentLifecycle
-        )
         assert len(published_stage_exits) == 1
         harness.calls.append("stage.reopen")
         return published_stage_exits[0]
@@ -825,7 +801,6 @@ def _resident_case(
     monkeypatch,
     *,
     speed_decision=QualificationDecision.PASS,
-    escalated=False,
     quality=(QualificationDecision.PASS,),
     disposition=None,
     **harness_kwargs,
@@ -840,7 +815,7 @@ def _resident_case(
     if disposition is not None:
         harness.value.speed_stage_disposition = disposition
     baseline, stage_reference, exits = _install_resident_runner_path(
-        monkeypatch, harness, speed_decision=speed_decision, escalated=escalated
+        monkeypatch, harness, speed_decision=speed_decision
     )
     return harness, baseline, stage_reference, exits
 
@@ -911,40 +886,26 @@ def test_resident_audit_fail_exits_before_t(monkeypatch) -> None:
     assert harness.reference_calls == 0
 
 
-@pytest.mark.parametrize(
-    ("escalated", "quality", "expected_requests"),
-    (
-        (False, (QualificationDecision.PASS,), 1),
-        (
-            True,
-            (QualificationDecision.PASS, QualificationDecision.PASS),
-            2,
-        ),
-    ),
-)
-def test_resident_pass_uses_adaptive_t_coverage_without_legacy_speed_projection(
+def test_resident_pass_issues_one_t_request_without_legacy_speed_projection(
     monkeypatch,
-    escalated: bool,
-    quality: tuple[QualificationDecision, ...],
-    expected_requests: int,
 ) -> None:
-    harness, baseline, _stage_reference, exits = _resident_case(
-        monkeypatch, escalated=escalated, quality=quality, repeat=escalated
-    )
+    harness, baseline, _stage_reference, exits = _resident_case(monkeypatch)
 
     reference = _run_resident_harness(harness, baseline)
 
     assert reference == harness.attempt_reference
     assert reference.schema == runner.ATTEMPT_SCHEMA_V3
     assert exits == []
-    assert harness.reference_request_counts == [expected_requests]
+    assert harness.reference_request_counts == [1]
     assert harness.reference_calls == 1
     assert "resident.speed" in harness.calls
     assert "lifecycle" not in harness.calls
     assert not any(call.startswith("speed.") for call in harness.calls)
     assert harness.published_attempt is not None
     report = harness.published_attempt.reports[0]
-    assert (report.repeat_quality is not None) is escalated
+    # The repeat-quality leg left with the five-read schedule; the report
+    # wire shape must not grow it back.
+    assert "repeat_quality" not in report.to_dict()
 
 
 def test_resident_operational_timing_round_trip_and_total_budget() -> None:
@@ -982,35 +943,6 @@ def test_resident_operational_timing_round_trip_and_total_budget() -> None:
             max_qualification_seconds=60,
             qualification_completed_monotonic_s=301.0,
         )
-
-
-def test_repeat_report_cannot_drop_c_prime_quality(monkeypatch) -> None:
-    # C-prime quality regresses on the escalated resident schedule; the
-    # conservative aggregate fails, and a reopened payload cannot shed the
-    # repeat-quality coverage that carried the regression.
-    harness, baseline, _stage_reference, _exits = _resident_case(
-        monkeypatch,
-        escalated=True,
-        quality=(QualificationDecision.PASS, QualificationDecision.FAIL),
-        repeat=True,
-    )
-    _run_resident_harness(harness, baseline)
-    report = harness.published_attempt.reports[0]
-
-    assert harness.reference_request_counts == [2]
-    assert report.repeat_quality is not None
-    assert report.repeat_quality.quality_decision is QualificationDecision.FAIL
-    assert report.quality_decision is QualificationDecision.FAIL
-    assert report.decision is QualificationDecision.FAIL
-    assert report.reason == "quality_repeat_regression"
-
-    payload = report.to_dict()
-    assert "repeat_quality" in payload
-    del payload["repeat_quality"]
-    with pytest.raises(
-        runner.QualificationRunnerError, match="repeat quality coverage"
-    ):
-        runner.CandidateQualificationReport.from_dict(payload)
 
 
 def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> None:
@@ -1083,20 +1015,6 @@ def test_slot_audit_violation_is_a_hard_nonretryable_qualification_fail(
     assert exits[0].reason == "slot_audit_failed"
     assert exits[0].audit_witness.receipts[0].violations == 1
     assert harness.published_attempt is None
-
-
-def test_t_exchange_substitution_is_rejected(monkeypatch) -> None:
-    # The escalated resident schedule issues two T requests; a swapped exchange
-    # order must be rejected exactly as it was on the retired cold schedule.
-    harness, baseline, _stage_reference, _exits = _resident_case(
-        monkeypatch,
-        escalated=True,
-        quality=(QualificationDecision.PASS, QualificationDecision.PASS),
-        repeat=True,
-        swap_exchanges=True,
-    )
-    with pytest.raises(runner.QualificationRunnerError, match="request|exchange"):
-        _run_resident_harness(harness, baseline)
 
 
 def test_pre_t_quiescence_failure_prevents_reference_launch(monkeypatch) -> None:

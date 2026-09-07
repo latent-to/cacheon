@@ -45,6 +45,7 @@ from cacheon.eval.b300_registered_qualification_inputs import (
 from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
 )
+from tests.support.b300 import M3_REGISTERED_TARGET_IDS
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.oci_backend import (
     OCIBackendConfig,
@@ -103,7 +104,6 @@ def executor_factory(tmp_path: Path):
         executor.manager.close()
 
 
-resident_pair_authority = authority_fixtures.resident_pair_authority
 _Judge = authority_fixtures._Judge
 
 
@@ -119,7 +119,13 @@ def _incumbent(runtime: ArenaRuntimeIdentity, arena_digest: str):
     )
 
 
-def _profiles(catalog, builder_source: str, resolvers=None):
+def _profiles(
+    catalog,
+    builder_source: str,
+    resolvers=None,
+    *,
+    registered_target_ids=M3_REGISTERED_TARGET_IDS,
+):
     by_target = {} if resolvers is None else resolvers
     return tuple(
         deployment.B300RegisteredProfileAuthority(
@@ -131,7 +137,9 @@ def _profiles(catalog, builder_source: str, resolvers=None):
             ),
             by_target.get(target.target_id, lambda _candidate, _prepared: object()),
         )
-        for target in registered_b300_member_contract_projection(catalog)
+        for target in registered_b300_member_contract_projection(
+            catalog, registered_target_ids
+        )
     )
 
 
@@ -139,9 +147,9 @@ def _construction(tmp_path: Path, runtime: ArenaRuntimeIdentity):
     catalog, incumbent = _incumbent(runtime, _h("arena"))
     builder_source = _h("builder-source")
     evidence_root = tmp_path / "evidence"
-    count_quality = authority_fixtures._resident_count_quality(catalog, evidence_root)
     return deployment.B300QualificationConstructionAuthority(
         catalog=catalog,
+        registered_target_ids=M3_REGISTERED_TARGET_IDS,
         profiles=_profiles(catalog, builder_source),
         incumbent_stack=incumbent,
         incumbent_tree_digest=_h("incumbent-tree"),
@@ -151,8 +159,6 @@ def _construction(tmp_path: Path, runtime: ArenaRuntimeIdentity):
         evidence_policy_digest=_h("evidence-policy"),
         builder_source_digest=builder_source,
         selection_store_digest=_h("selection-store"),
-        resident_count_quality_builder_digest=_h("resident-count-quality-builder"),
-        resident_count_quality=count_quality,
         secret_loader=lambda _reference: b"s" * 32,
         plan_builder=lambda _cohort, _secret: object(),
         entropy_provider_digest=_h("entropy-provider"),
@@ -372,7 +378,6 @@ def _receipt(service_digest: str, candidate: ArenaCandidateBinding):
 def test_composition_preserves_one_service_across_exact_role_swap(
     tmp_path: Path,
     executor_factory,
-    resident_pair_authority,
     stage: str,
     candidate_lane: str,
     baseline_lane: str,
@@ -406,7 +411,6 @@ def test_composition_preserves_one_service_across_exact_role_swap(
         construction=construction,
         candidate_executor=candidate,
         resident_baseline_executor=baseline,
-        resident_pair_factory=resident_pair_authority(manifest.digest),
         screen_lane=stage,
     )
 
@@ -428,7 +432,6 @@ def test_composition_preserves_one_service_across_exact_role_swap(
 def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
     tmp_path: Path,
     executor_factory,
-    resident_pair_authority,
 ) -> None:
     construction = _construction(tmp_path, _runtime())
     candidate_a = executor_factory("candidate", "A")
@@ -453,7 +456,6 @@ def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
             construction=construction,
             candidate_executor=executor_factory("candidate", "B"),
             resident_baseline_executor=baseline_b,
-            resident_pair_factory=resident_pair_authority(manifest.digest),
             screen_lane="primary",
         )
 
@@ -468,7 +470,6 @@ def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
             construction=construction,
             candidate_executor=candidate_a,
             resident_baseline_executor=baseline_b,
-            resident_pair_factory=resident_pair_authority(manifest.digest),
             screen_lane="primary",
         )
 
@@ -524,11 +525,9 @@ def test_registered_target_and_canonical_evidence_root_are_fail_closed(
 ) -> None:
     construction = _construction(tmp_path, _runtime())
 
-    assert construction.profile_for("attention.decode").target_id == "attention.decode"
-    assert (
-        construction.profile_for("collective.moe_epilogue.v1").target_id
-        == "collective.moe_epilogue.v1"
-    )
+    assert construction.profile_for("moe.fused_experts").target_id == "moe.fused_experts"
+    with pytest.raises(deployment.B300QualificationDeploymentError, match="unsupported"):
+        construction.profile_for("collective.dp_attention_exchange.v1")
     with pytest.raises(deployment.B300QualificationDeploymentError, match="unsupported"):
         construction.profile_for("unknown.registered.target")
     with pytest.raises(
@@ -597,12 +596,15 @@ class _RegisteredJudge:
 def _registered_construction(harness, value, secret: bytes):
     builder_source = _h("builder-source")
     resolvers = {row.target_id: row.resolver for row in harness.factory.profiles}
-    count_quality = authority_fixtures._resident_count_quality(
-        harness.inputs.catalog, harness.inputs.evidence_root
-    )
     return deployment.B300QualificationConstructionAuthority(
         catalog=harness.inputs.catalog,
-        profiles=_profiles(harness.inputs.catalog, builder_source, resolvers),
+        registered_target_ids=harness.policy.registered_target_ids,
+        profiles=_profiles(
+            harness.inputs.catalog,
+            builder_source,
+            resolvers,
+            registered_target_ids=harness.policy.registered_target_ids,
+        ),
         incumbent_stack=harness.inputs.incumbent_stack,
         incumbent_tree_digest=value.prepared.incumbent_binding.tree.tree_digest,
         pristine_stack=harness.inputs.pristine_stack,
@@ -611,8 +613,6 @@ def _registered_construction(harness, value, secret: bytes):
         evidence_policy_digest=_h("evidence-policy"),
         builder_source_digest=builder_source,
         selection_store_digest=_h("selection-store"),
-        resident_count_quality_builder_digest=_h("resident-count-quality-builder"),
-        resident_count_quality=count_quality,
         secret_loader=lambda _reference: secret,
         plan_builder=harness.factory.plan_builder,
         entropy_provider_digest=_h("entropy-provider"),
@@ -675,7 +675,7 @@ def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
         )
 
     source = fixtures._candidate_source(tmp_path / "foreign-source")
-    kernel = source / "kernels" / "msa_prefill_block_score.py"
+    kernel = source / "kernels" / "rmsnorm_stub.py"
     kernel.write_text(kernel.read_text() + "\n# foreign contribution variant\n")
     publication = fixtures.publish_worker_bundle(
         source,
@@ -738,7 +738,7 @@ def test_deployment_accepts_atomic_registered_plan_on_both_retained_stages(
     )
 
     assert accepted is value
-    assert cohort.candidate.reservation.target_id == "collective.moe_epilogue.v1"
+    assert cohort.candidate.reservation.target_id == "collective.dp_attention_exchange.v1"
     assert tuple(
         row.slot_id for row in accepted.candidates[0].graph_requirement.binding.members
     ) == cohort.candidate.reservation.target_members

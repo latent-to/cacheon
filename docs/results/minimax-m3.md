@@ -24,6 +24,10 @@ That work informed three registered identities:
 The atomic target prevents one fused implementation from earning duplicate
 economic titles through overlapping views of the same delta.
 
+Those names describe the campaign-era catalog. The deep-finalize singleton and
+MoE-epilogue atomic target were retired from the current source on 2026-08-30;
+historical evidence keeps its embedded catalog snapshot and is not rewritten.
+
 ## Historical measurements
 
 Under the pre-resident qualification harness, the shallow fused path measured
@@ -98,7 +102,6 @@ The remaining empirical gates include:
 - a production engine image served end to end through the reviewed release path; and
 - exact campaign, family, membership, and reserve manifests.
 
-See [Current status](../reference/state-of-record.md) for the maintained evidence
-ledger, [Authoritative qualification](../validator-guide/qualification.md) for the
+See [Authoritative qualification](../validator-guide/qualification.md) for the
 current protocol, and [Emissions policy](../reference/emissions-policy.md) for the
 economic contract.

@@ -9,7 +9,7 @@ not provide a local qualification substitute.
 | `scan` | Does the declared bundle tree satisfy the static intake policy? | Local admission diagnostic |
 | `verify` | Do applicable variants satisfy the registered component ABI, reference, and graph checks? | Local component diagnostic |
 | Arena screen | Can the exact materialized delta pass static, build, ABI, graph, and abbreviated-serving routing gates? | Promotion eligibility only |
-| Current v7 resident B/C (+ B′ only when inconclusive) or v8 two-process B/C/B′ + audit/T | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
+| Two-process B/C/B′ (v10, or v11 mixed-cell) + audit/T | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
 | Independent reproduction | Do two separately bound PASS attempts reopen and agree? | Settlement prerequisite |
 
 The static arena screen also rejects a candidate whose declared eligibility cannot
@@ -130,12 +130,10 @@ contributor-controlled run cannot provide
 finalized intake identity, validator-owned materialization, hidden work, frozen
 calibration, no-egress worker authority, or a validator-bound durable attempt with its
 aggregate speed witness and referenced graph/quality/T products. The production attempt
-uses two isolated physical TP lanes, serializes current v7 B/C/[B′] or v8
-B/C/B′, validates richer raw frames and device state, and runs a distinct
+uses two isolated physical TP lanes, serializes the two-process B/C/B′
+schedule, validates richer raw frames and device state, and runs a distinct
 audit-only role before pristine T. Those raw frames are not serialized into
-`CohortQualificationAttempt`. A
-local run cannot provide the required second PASS, exact physical-lane swap, or its
-digest-distinctness products.
+`CohortQualificationAttempt`. A local run cannot supply the validator-owned qualification authority.
 
 ## Reading validator outcomes
 
@@ -143,9 +141,8 @@ digest-distinctness products.
 - `FAIL` requires complete evidence of a candidate-attributable violation.
 - `NO_DECISION` covers infrastructure, drift, missing authority, or incomplete evidence
   and is eligible only for bounded retry policy.
-- `reproduction_pending` means the first PASS is retained; it is not a crown.
-- settlement requires two matching contribution identities with distinct authority,
-  plan, attempt, report, and selection evidence.
+- `qualified` means one complete audited PASS is retained.
+- settlement reopens that exact contribution and its retained evidence.
 
 Never infer rejection from absence in `chain-status`; that command sees public chain
 state, not the validator's private lifecycle database.
@@ -160,7 +157,7 @@ state, not the validator's private lifecycle database.
 | Local B/C/B′ bracket | A development performance hypothesis | Registered arena identity or quality authority |
 | Resident abbreviated-serving screen | Capacity routing under its exact lane policy | Speed witness, PASS qualification, or crown |
 | One arena PASS | Complete qualification under one authority | Settlement |
-| Two reopened independent PASSes | Settlement eligibility for that exact context | Integration or release readiness |
+| One reopened complete audited PASS | Settlement eligibility for that exact context | Integration or release readiness |
 
 See [Qualification](qualification.md), [Fidelity](fidelity.md), and
 [Evidence and replay](../security/evidence.md).

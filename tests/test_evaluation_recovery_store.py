@@ -16,7 +16,6 @@ from cacheon.chain.evaluation_recovery import (
     EvaluationRecoveryHoldError,
     RecoveryAction,
     RecoveryPhase,
-    RecoveryResolution,
     reviewed_legacy_screen_only_reason_digests,
 )
 from cacheon.chain.evaluation_lease_operator import (
@@ -358,38 +357,7 @@ def test_recovery_renewal_preserves_identity_but_cannot_commit_before_import(
         ] == ["claimed"]
 
 
-def test_claimed_release_is_atomic_and_generic_qualification_release_is_impossible(
-    tmp_path,
-):
-    profile = PROFILES[0]
-    with _store(tmp_path, profile) as store:
-        _promoted(store, profile, 0)
-        first = store.claim_recoverable_qualification(
-            owner="worker", current_block=10, lease_blocks=5, max_members=1
-        )
-        assert first is not None
-        _advance(store, 11)
-        store.release_pre_resident_recovery(
-            first, current_block=11, reason="transport_proved_unpublished"
-        )
-        recovery_row = store._db.execute(
-            "SELECT resolution,reason FROM evaluation_recoveries WHERE recovery_id=?",
-            (first.recovery_id,),
-        ).fetchone()
-        lease_row = store._db.execute(
-            "SELECT state,reason FROM evaluation_leases WHERE lease_id=?",
-            (first.lease.lease_id,),
-        ).fetchone()
-        assert tuple(recovery_row) == (
-            RecoveryResolution.PRE_RESIDENT_RELEASED.value,
-            "transport_proved_unpublished",
-        )
-        assert tuple(lease_row) == ("released", "transport_proved_unpublished")
-        assert [
-            event.event_type.value
-            for event in store.evaluation_recovery_events(first)
-        ] == ["claimed", "pre_resident_released"]
-
+def test_generic_qualification_release_is_impossible(tmp_path):
     other = PROFILES[1]
     with _store(tmp_path, other) as store:
         _promoted(store, other)

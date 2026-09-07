@@ -305,17 +305,6 @@ def test_environment_only_object_store_configuration(
     assert store.root_dir == explicit_root
 
 
-def test_object_store_config_from_env_defaults_to_generic_s3(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("CUSTOM_BUCKET", "portable")
-    monkeypatch.setenv("CUSTOM_ENDPOINT_URL", "https://objects.example")
-    config = ObjectStoreConfig.from_env(prefix="CUSTOM_")
-    assert config.provider == "s3"
-    assert config.bucket == "portable"
-    assert config.resolved_endpoint_url() == "https://objects.example"
-
-
 def test_open_s3_requires_boto3_message() -> None:
     cfg = ObjectStoreConfig(
         provider="hippius",

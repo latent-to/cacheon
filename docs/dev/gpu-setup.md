@@ -38,7 +38,7 @@ source .venv/bin/activate
 python -m pip install --upgrade pip uv
 
 # General resolver path; verify that the selected Torch wheel matches this host.
-uv pip install "sglang==0.5.13.post1" ninja datasets
+uv pip install "sglang==0.5.18" ninja datasets
 uv pip install -e ".[dev,release]"
 ```
 
@@ -48,7 +48,7 @@ install` above with the deployment-reviewed equivalent of:
 
 ```bash
 uv pip install --prerelease=allow --torch-backend=cu130 \
-  "sglang==0.5.13.post1" ninja datasets
+  "sglang==0.5.18" ninja datasets
 ```
 
 Do not use `--torch-backend=cu130` on a non-CUDA-13 host. In either path,
@@ -56,10 +56,9 @@ record `python -c 'import torch; print(torch.__version__, torch.version.cuda)'`
 and reject the environment if the resolved wheel does not match the driver,
 toolkit, and deployment lock.
 
-The repository's current SGLang contract is `0.5.13.post1`, but installing the
-pin is not evidence that its GPU gates passed. Check the dated validation
-boundary in [State of record](../reference/state-of-record.md) and the proof
-procedure in [SGLang compatibility](sglang-tracking.md). A deployment lockfile
+The repository's current SGLang contract is `0.5.18`, but installing the
+pin is not evidence that its GPU gates passed. Follow the validation procedure
+in [SGLang compatibility](sglang-tracking.md). A deployment lockfile
 or image is stronger authority than this illustrative installation sequence;
 do not let a package resolver silently replace its Torch/CUDA stack.
 
@@ -190,28 +189,6 @@ spawn-safe seam arms each tensor-parallel rank process rather than only
 rank 0. Once armed, a missing prerequisite is a loud failure, never a skip.
 Expect roughly ten minutes for the three boots.
 
-## Native toolchain tier (opt-in)
-
-`tests/test_native_toolchain_live.py` is the build smoke for the
-`cutlass.cute.cubin.v1` provider: a deviceless container compiles a minimal
-`@cute.jit` kernel with the validator compiler recipe, then a GPU container
-runs the produced bytes through the production ELF gate and Driver-API
-admission, asserting the loaded kernel is the declared one. It proves
-toolchain compatibility and device loadability; it does not execute the
-sealed prebuild protocol or any slot's numeric contract.
-
-```bash
-CACHEON_LIVE_NATIVE_TESTS=1 \
-CACHEON_SERVE_IMAGE=<worker image ref> \
-python -m pytest tests/test_native_toolchain_live.py
-```
-
-It shares `CACHEON_SERVE_REPO`, `CACHEON_SERVE_GPU`, and adds
-`CACHEON_SERVE_SCRATCH` (a docker-mountable scratch directory, default a
-temporary directory) and `CACHEON_NATIVE_ARCH` (compile architecture,
-default `sm_100a`; it must match the admission device). Expect one to two
-minutes.
-
 ## Complete-engine performance development
 
 Cacheon deliberately exposes no local qualification command. Contributors may profile
@@ -224,8 +201,8 @@ defines the required inputs and local result record; no repository command mater
 this complete-engine bracket.
 
 Production version-3 qualification materializes the exact incumbent and
-candidate engines through an injected arena service and selects current v7
-resident B/C/[B′] or v8 two-process B/C/B′ from candidate features. It then
+candidate engines through an injected arena service and measures them on the
+two-process B/C/B′ schedule (v10, or v11 for a mixed-cell workload). It then
 runs registered eager audit A, tears down candidate lifetimes, and obtains
 candidate-free pristine T quality evidence. A contributor-controlled model run
 cannot substitute for that authority.
@@ -237,9 +214,9 @@ Move upward only after the lower layer is green:
 | Layer | Required observation | Still does not prove |
 |---|---|---|
 | Component `verify` | Registered reference and graph replay for exercised cases | Model integration or speedup |
-| Local complete-engine A/B | Model can load and the selected delta can improve the matched workload | Validator isolation, hidden quality, crown authority, independent reproduction |
+| Local complete-engine A/B | Model can load and the selected delta can improve the matched workload | Validator isolation, hidden quality, crown authority, settlement |
 | Arena screen | Static/build/ABI/graph/abbreviated-serving gates all promote | B/C/B′ drift, T quality, settlement |
-| Qualification PASS | Exact marginal complete-engine delta clears all registered gates | Crown until independent reproduction |
+| Qualification PASS | Exact marginal complete-engine delta clears all registered gates | Crown until settlement |
 | Two matching PASSes | Candidate is eligible for cohort settlement; the current registered cohort winner may be crowned while another valid pair is held | Integration safety or release readiness |
 
 Keep local A/B results as engineering evidence, labeled with their exact environment and

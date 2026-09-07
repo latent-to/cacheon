@@ -24,9 +24,31 @@ from cacheon.verify import verify_entry  # noqa: E402
 SHAPE = {"num_tokens": 4, "num_experts": 4, "hidden": 64, "inter": 64, "topk": 2}
 WEIGHT_FIELDS = (
     "w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale",
-    "g1_alphas", "g2_alphas", "w13_input_scale_quant",
+    "g1_scale_c", "g1_alphas", "g2_alphas", "w13_input_scale_quant",
     "w2_input_scale_quant", "intermediate_size_per_partition",
 )
+
+
+@pytest.mark.parametrize("kind", ("silu", "swigluoai"))
+def test_expert_grouped_reference_preserves_duplicate_routes_and_raw_weights(kind):
+    generator = torch.Generator().manual_seed(19)
+    x, w13, w2 = (torch.randn(*s, generator=generator) * 3 for s in
+                  ((3, 4), (4, 6, 4), (4, 4, 3)))
+    ids = torch.tensor([[1, 1], [2, 0], [1, 2]])  # repeated route and unused expert3
+    weights = torch.tensor([[0.4, 0.7], [-0.2, 0.0], [1.5, 0.3]])
+    expected = torch.zeros_like(x)
+    for token in range(3):
+        for choice in range(2):
+            expert = int(ids[token, choice])
+            gate, up = (w13[expert] @ x[token]).chunk(2)
+            if kind == "silu":
+                value = gate * torch.sigmoid(gate) * up
+            else:
+                gate, up = gate.clamp(max=7), up.clamp(-7, 7)
+                value = gate * torch.sigmoid(1.702 * gate) * (up + 1)
+            expected[token] += weights[token, choice] * (w2[expert] @ value)
+    actual = _moe_reference(x, w13, w2, ids, weights, Activation(kind, 1.702, 7.0))
+    torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-5)
 
 
 def _candidate(corrupt: bool = False):
@@ -55,6 +77,7 @@ def _live_layer(inputs, *, complete=True):
         w2_blockscale_swizzled=inputs["w2_weight_scale"],
         moe_ep_size=1, moe_tp_size=4, reduce_results=False,
         num_fused_shared_experts=1,
+        top_k=int(inputs["topk_ids"].shape[-1]),
     )
     if not complete:
         del layer.w13_blockscale_swizzled
@@ -88,9 +111,13 @@ def test_m3_nvfp4_verification_executes_the_quantized_contract(corrupt, passed):
     assert result.shape_results[0].case_descriptor.calls[0]["quant"] == "nvfp4"
 
 
-def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
-    slot = slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4")
-    inputs = slot.make_inputs(**SHAPE, dtype=torch.float32, device="cpu", seed=3)
+@pytest.mark.parametrize("target", ("moe.fused_experts", "moe.fused_experts_reduce"))
+@pytest.mark.parametrize("topk", (2, 3))
+def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema(target, topk):
+    slot = slot_for_model(target, "MiniMax-M3-NVFP4")
+    inputs = slot.make_inputs(
+        **(SHAPE | {"topk": topk}), dtype=torch.float32, device="cpu", seed=3
+    )
     layer = _live_layer(inputs)
     layer.w13_weight_scale = torch.zeros_like(inputs["w13_weight_scale"])
     layer.w2_weight_scale = torch.zeros_like(inputs["w2_weight_scale"])
@@ -98,6 +125,7 @@ def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
     live_args = prepare_args_from_layer(layer)
     assert verify_args[0] == live_args[0] == NVFP4_PREPARE_TAG
     verify_view, live_view = verify_args[1], live_args[1]
+    assert verify_view.moe_runner_config.top_k == live_view.moe_runner_config.top_k == topk
     assert (
         verify_view.moe_tp_size,
         verify_view.moe_ep_size,
@@ -118,9 +146,63 @@ def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
     assert torch.equal(live_w13, inputs["w13"]) and torch.equal(live_w2, inputs["w2"])
 
 
+def test_glm_routed_example_executes_the_nvfp4_prepare_contract():
+    source = "examples/miner_moe_fused_routed_torch/kernels/moe_routed.py"
+    slot = slot_for_model("moe.fused_routed_experts", "GLM-5.3-NVFP4")
+    inputs = slot.make_inputs(
+        num_tokens=2, num_experts=4, hidden=64, inter=64, topk=2,
+        routed_scaling=2.5, dtype=torch.float32, device="cpu", seed=11,
+    )
+    assert prepare_args_from_inputs(inputs)[1].moe_runner_config.top_k == 2
+    result = verify_entry(
+        slot,
+        load_entry(source, "fused_routed_experts"),
+        prepare=load_entry(source, "prepare"),
+        dtype=torch.float32,
+        device="cpu",
+        shapes=[{
+            "num_tokens": 2, "num_experts": 4, "hidden": 64, "inter": 64,
+            "topk": 2, "routed_scaling": 2.5,
+        }],
+        eligibility=Eligibility(
+            dtypes=frozenset({"float32"}), quant=frozenset({"nvfp4"}),
+            min_num_tokens=2, max_num_tokens=2,
+        ),
+        architecture="cpu",
+        tp_size=4,
+        world_size=4,
+    )
+
+    case = result.shape_results[0].case_descriptor
+    assert result.passed and result.shape_results[0].applicable and case is not None
+    assert dict(case.calls[0])["quant"] == "nvfp4"
+
+
+@pytest.mark.parametrize(
+    ("trtllm", "mma", "expected"),
+    ((False, False, "gate_up"),
+     (False, True, "up_gate_interleaved_64+sf_swizzled_128x4"),
+     (True, False, "trtllm_fp4_shuffled")),
+)
+@pytest.mark.parametrize("activation", ("swigluoai", "silu"))
+def test_live_nvfp4_prepare_identifies_the_backend_layout(trtllm, mma, expected, activation):
+    slot = slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4")
+    inputs = slot.make_inputs(**SHAPE, dtype=torch.float32, device="cpu", seed=3)
+    layer = _live_layer(inputs)
+    layer.quant_method = SimpleNamespace(enable_flashinfer_trtllm_moe=trtllm)
+    layer.moe_runner_config = SimpleNamespace(activation=activation)
+    if mma:
+        layer.w13_blockscale_mma = inputs["w13_weight_scale"]
+
+    _, view = prepare_args_from_layer(layer)
+    assert view.cacheon_w13_layout == expected
+    assert view.moe_runner_config.activation == activation
+    assert view.w13_weight.data_ptr() == layer.w13_weight.data_ptr()
+    assert view.w2_weight.data_ptr() == layer.w2_weight.data_ptr()
+
+
 def test_m3_reduce_profile_uses_live_shape_topology_and_nvfp4_prepare():
     slot = slot_for_model("moe.fused_experts_reduce", "MiniMax-M3-NVFP4")
-    assert slot.call_abi is None
     assert slot.shapes[0] == {
         "num_tokens": 1, "num_experts": 129, "hidden": 6144,
         "inter": 768, "topk": 5,

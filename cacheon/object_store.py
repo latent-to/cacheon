@@ -160,58 +160,6 @@ class ObjectStoreConfig:
             return self.addressing_style
         return _PROVIDER_DEFAULTS[self.provider]["addressing_style"]
 
-    @classmethod
-    def from_env(
-        cls,
-        *,
-        prefix: str = "CACHEON_OBJECT_STORE_",
-        defaults: "ObjectStoreConfig | None" = None,
-    ) -> "ObjectStoreConfig":
-        """Build config from environment, overlaying optional CLI defaults."""
-
-        def _env(name: str) -> str | None:
-            value = os.environ.get(prefix + name)
-            if value is None or value == "":
-                return None
-            return value
-
-        provider = (
-            _env("PROVIDER")
-            or (defaults.provider if defaults is not None else "s3")
-        ).lower()
-        return cls(
-            provider=provider,
-            bucket=_env("BUCKET")
-            or (defaults.bucket if defaults is not None else ""),
-            key_prefix=(
-                _env("KEY_PREFIX")
-                if _env("KEY_PREFIX") is not None
-                else (defaults.key_prefix if defaults is not None else "")
-            ),
-            endpoint_url=_env("ENDPOINT_URL")
-            if _env("ENDPOINT_URL") is not None
-            else (defaults.endpoint_url if defaults is not None else None),
-            region_name=(
-                _env("REGION")
-                if _env("REGION") is not None
-                else (defaults.region_name if defaults is not None else None)
-            ),
-            access_key_id=_env("ACCESS_KEY_ID")
-            if _env("ACCESS_KEY_ID") is not None
-            else (defaults.access_key_id if defaults is not None else None),
-            secret_access_key=_env("SECRET_ACCESS_KEY")
-            if _env("SECRET_ACCESS_KEY") is not None
-            else (defaults.secret_access_key if defaults is not None else None),
-            addressing_style=_env("ADDRESSING_STYLE")
-            if _env("ADDRESSING_STYLE") is not None
-            else (defaults.addressing_style if defaults is not None else None),
-            root_dir=(
-                _env("ROOT_DIR")
-                if _env("ROOT_DIR") is not None
-                else (defaults.root_dir if defaults is not None else None)
-            ),
-        )
-
 
 def _require_object_key(key: str) -> str:
     if (

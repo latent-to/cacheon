@@ -79,7 +79,7 @@ def _requirement(*, atomic: bool = True) -> GraphVerificationRequirement:
         candidate_launch_digest=_d("launch"),
         contribution_ref_digest=_d("contribution"),
         selected_delta_digest=_d("delta"),
-        target_id="collective.moe_epilogue.v1" if atomic else slots[0],
+        target_id="collective.dp_attention_exchange.v1" if atomic else slots[0],
         target_spec_digest=_d("selected-target"),
         catalog_digest=_d("catalog"),
         members=members,
@@ -431,7 +431,6 @@ def test_exact_atomic_graph_evidence_round_trips_and_passes_only_the_veto():
     grade = regrade_graph_verification(requirement, reference, raw)
 
     assert grade.decision is QualificationDecision.PASS
-    assert grade.veto_passed
     assert grade.reason == "graph_verification_pass"
     assert GraphVerificationRequirement.from_dict(requirement.to_dict()) == requirement
     assert GraphVerificationRawEvidence.from_dict(raw.to_dict()) == raw

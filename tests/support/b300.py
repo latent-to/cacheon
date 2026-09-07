@@ -20,6 +20,24 @@ from cacheon.eval.oci_prebuild import OCIPrebuildPolicy
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 
 
+M3_REGISTERED_TARGET_IDS = (
+    "activation.silu_and_mul",
+    "collective.all_reduce",
+    "collective.ar_residual_rmsnorm",
+    "moe.fused_experts",
+    "moe.fused_experts_reduce",
+    "norm.rmsnorm",
+)
+
+GLM53_REGISTERED_TARGET_IDS = (
+    "collective.all_reduce",
+    "collective.dp_attention_exchange.v1",
+    "linear.dense",
+    "moe.fused_routed_experts",
+    "norm.fused_add_rmsnorm",
+)
+
+
 def sha(label: str) -> str:
     """A deterministic stand-in digest, named by what it stands for."""
 
@@ -41,9 +59,6 @@ class StubSourceResolver:
     def resolve_proposal(self, *_args, **_kwargs):
         raise AssertionError("capability stubs must not resolve sources")
 
-    def resolve_integrated(self, *_args, **_kwargs):
-        raise AssertionError("capability stubs must not resolve sources")
-
 
 def qualification_capabilities(**overrides: object) -> B300QualificationCapabilities:
     values: dict[str, object] = {
@@ -54,8 +69,6 @@ def qualification_capabilities(**overrides: object) -> B300QualificationCapabili
         "source_resolver_digest": sha("source-resolver"),
         "graph_facts_builder": lambda *_args: None,
         "graph_facts_builder_digest": sha("graph-facts"),
-        "resident_count_quality_builder": lambda *_args: None,
-        "resident_count_quality_builder_digest": sha("resident-count-builder"),
         "incumbent_entries": {},
     }
     values.update(overrides)

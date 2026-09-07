@@ -339,28 +339,17 @@ def test_target_identity_never_reorders_screen_fifo(
     ]
 
 
-def test_screen_reproduction_priority_remains_store_policy(tmp_path: Path) -> None:
+def test_old_reproduction_marker_without_a_retained_pass_cannot_launch_work(tmp_path: Path) -> None:
     database = _new_database(tmp_path)
-    rows = _published_rows(
-        database, ("target.first", "target.second", "target.reproduction")
-    )
+    rows = _published_rows(database, ("target.first", "target.second", "target.reproduction"))
     with FinalizedIntakeStore(database, POLICY, scope=SCOPE) as store:
-        # Fixture-only state isolation mirrors the canonical store regression:
-        # the operator itself has no SQL or priority policy.
         store._db.execute(
-            "UPDATE reservations SET status='reproduction_pending',"
-            "screen_lane='reproduction' WHERE reservation_id=?",
-            (rows[2].reservation_id,),
+            "UPDATE reservations SET status='reproduction_pending',screen_lane='reproduction' "
+            "WHERE reservation_id=?", (rows[2].reservation_id,),
         )
     config_path, _ = _config(tmp_path, database)
-    config = operator.load_config(config_path)
-
-    assert operator.preview(config)["reservation_ids"] == [
-        rows[2].reservation_id
-    ]
-    assert operator.claim(config)["lease"]["members"][0]["reservation_id"] == (
-        rows[2].reservation_id
-    )
+    with pytest.raises(IntakeError, match="pending primary qualification is inconsistent"):
+        operator.preview(operator.load_config(config_path))
 
 
 def test_canonical_failed_and_expired_rows_are_not_claimed(tmp_path: Path) -> None:

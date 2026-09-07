@@ -12,8 +12,7 @@ Choose the smallest relevant path:
 2. `docs/architecture/product-model.md` — normative proposal, crown,
    integration, and release contract.
 3. `docs/architecture/slot-contract.md` — normative contribution boundary.
-4. `docs/reference/state-of-record.md` — dated implementation and evidence
-   status.
+4. `docs/validator-guide/first-hour.md` — deployment and evidence prerequisites.
 5. `docs/miner-guide/overview.md` — contribution workflow.
 6. `docs/validator-guide/overview.md` — intake, qualification, settlement, and
    publication.
@@ -24,7 +23,8 @@ cross-harness continuity instructions supplied by the environment. Historical lo
 investigation; current code, tests, Git state, and external state remain
 authoritative.
 
-`WORKLOG.md` and `docs/WORKLOG.md`, when present, are private local working
+`WORKLOG.md`, `docs/WORKLOG.md`, and `docs/reference/state-of-record.md`, when
+present, are private local working
 records. They are ignored and must not be committed, linked from public docs,
 or treated as production authority.
 
@@ -86,21 +86,21 @@ AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
 - Candidate build and execution remain outside the trusted controller in
   validator-owned, no-egress OCI lifetimes.
 - CUDA graphs are part of the scored contract.
-- A first PASS is `reproduction_pending`. Settlement requires an independently
-  bound PASS pair and uses the lower accepted speedup.
+- One complete audited PASS qualifies for settlement. Each new bundle receives one
+  B/C/B′ qualification; historical PASS pairs retain their existing identities and credit.
 - The resident hot-swap screen is routing-only. Its measurements cannot crown,
   settle, or authorize rewards.
 - Production version-3 qualification binds two physical TP lanes. Current
-  speed policy uses v7 resident B/C with B′ only when inconclusive for
-  hot-swappable candidates, or v8 two-process B/C/B′ for non-swappable
-  candidates; both retain a separate eager/untimed audit role when registered,
-  pristine T, and a physical-lane role swap across reproduction.
+  speed policy is the two-process B/C/B′ schedule for every candidate (v10, or
+  v11 for a mixed-cell workload); it warms every workload cell and retains a
+  separate eager/untimed audit role when registered and pristine T. The pair-native v7 schedule was deleted on 2026-09-06.
 - Evaluation-stack settlement, incentive activation, weight publication,
   integration review, release signing, and serving are distinct authorities.
 - Legacy V1 weights are a fenced state machine. The V2 finite-debt economics
-  were extracted from the tree on 2026-08-09; only their reserved durable
-  schema remains, and reintroduction requires a new reviewed change. Do not
-  infer registered discovery promotion from implemented arithmetic.
+  were extracted from the tree on 2026-08-09 and their reserved durable
+  schema was retired on 2026-09-05; reintroduction requires a new reviewed
+  change. Do not infer registered discovery promotion from implemented
+  arithmetic.
 
 If a change weakens one of these statements, it requires an explicit design and
 security review—not a local implementation shortcut.
@@ -302,11 +302,21 @@ contributor and subagent:
   `scripts/island_baseline.txt`. Shrinking the baseline is cleanup; growing it
   is a reviewed decision that must be justified in the pull request.
 - `python scripts/check_loc_ratchet.py` enforces per-directory tracked-line
-  ceilings against `scripts/loc_baseline.txt`, and
+  ceilings against `scripts/loc_baseline.txt` and per-file ceilings for
+  every Python file at or above 900 lines against
+  `scripts/file_ceilings.txt` (a listed file may only shrink; a file that
+  reaches the band is added and justified in the same diff, or split), and
   `python scripts/check_assert_ratchet.py` enforces per-test-file assertion
   floors against `scripts/assert_baseline.json`. Raising a ceiling or
   lowering a floor happens in the same diff that needs it and is justified
   in review; lowering a ceiling locks a deletion in.
+- `python scripts/surface_snapshot.py --check` freezes the identity-bearing
+  surfaces (CLI help, seam table, fresh-store DDL, catalog and bundle
+  digests, module exports, digest domains, codec wire keys, settlement
+  goldens) in `scripts/surface_baseline/`. A refactor that only moves code
+  must leave its diff empty; an intended change runs `--write` and explains
+  each changed section with a `surface-change:` line in the pull request
+  body.
 - Removal contract: a change that supersedes a path deletes it in the same
   pull request, or names the concrete change that will. Alias shims are
   acceptable; marking code "legacy" and keeping it indefinitely is not.
@@ -340,9 +350,32 @@ contributor and subagent:
   claim is carried by the system executing on real hardware; cite the run,
   not the suite.
 
+## Docstrings and comments
+
+Adopted 2026-09-05 from the PyTorch and Kubernetes contributor conventions,
+trimmed to this tree's prose-only house style.
+
+- Docstring every module, class, and public function; private helpers only
+  when they are non-trivial.
+- Lead with one summary sentence, then add prose only for what the name and
+  the typed signature cannot say: the invariant, the ownership boundary, the
+  failure mode, the reason.
+- A docstring that paraphrases the identifier or repeats the return type is
+  noise. Delete it and let the signature document the call.
+- No `Args:`/`Returns:`/`Raises:` blocks. The tree has none and type hints
+  already carry the shapes; describe a parameter only where its type does not
+  constrain it.
+- Comments say why, not what. One restating the next line is a deletion
+  candidate; one naming the incident, receipt, or invariant behind it is not.
+- Never delete a docstring or comment that cites an incident, sabotage,
+  regression, exploit, or product invariant, however redundant it looks.
+- This is review-enforced, not lint-enforced (ruff runs only `F` and `E9`).
+  A restatement is a valid review comment, and removing one is a same-diff
+  cleanup; do not commission a tree-wide sweep for it.
+
 ## Persistence
 
 Committed code, tests, this file, and `docs/` are the portable context. Keep
-dated empirical claims in `docs/reference/state-of-record.md` or `docs/results/`;
-keep evergreen pages neutral and present-tense. Detailed chronology belongs in
-Git history or `docs/history/`, not in operator and architecture pages.
+curated empirical results in `docs/results/`; keep evergreen pages neutral and
+present-tense. Operational status and task chronology belong in ignored local
+working records, not in published documentation.

@@ -207,8 +207,30 @@ const STATUS_TONE = {
   held: "warn", no_decision: "warn", failed: "bad", expired: "mute",
   active: "ok", completed: "ok", released: "mute", inactive: "warn",
   confirmed: "ok", pending: "info", earning: "ok",
+  awaiting_settlement: "info", stale: "warn",
 };
 const pill = (s) => `<span class="pill ${STATUS_TONE[s] || "mute"}">${esc(s || "—")}</span>`;
+function baselineSummary(b) {
+  if (!b || (!b.evaluated && !b.assigned))
+    return '<span class="pill mute">not assigned</span>';
+  const labels = {
+    current_tip: ["current tip", "ok"],
+    ancestor: ["ancestor", "warn"],
+    outside_active_lineage: ["side branch", "bad"],
+    no_active_tip: ["no active tip", "mute"],
+  };
+  const [label, tone] = labels[b.relationship] || [b.relationship || "unknown", "mute"];
+  const artifact = b.artifact_digest
+    ? `<code title="${esc(b.artifact_digest)}">${esc(short(b.artifact_digest, 10))}</code>`
+    : '<code>base engine</code>';
+  const threshold = b.relationship === "ancestor" && b.threshold_speedup != null
+    ? `<div class="muted small">must beat ${Number(b.threshold_speedup).toFixed(6)}×</div>`
+    : "";
+  const queued = b.assigned && !b.evaluated
+    ? '<span class="pill info">queued baseline</span> '
+    : "";
+  return `${queued}<span class="pill ${tone}">${esc(label)}</span><div class="small">${artifact}</div>${threshold}`;
+}
 
 async function api(path) {
   const res = await fetch(path);
@@ -360,6 +382,7 @@ async function viewSubmissions() {
     <td>${fmtTime(s.submitted)}</td>
     <td>${blockLink(s.submitted, s.block_links)}</td>
     <td>${esc(s.target_id || "—")}</td>
+    <td>${baselineSummary(s.baseline)}</td>
     <td>${s.payment
         ? `<a href="${esc(s.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(s.payment.ref)}</a>`
         : '<span class="muted">—</span>'}</td>
@@ -386,7 +409,7 @@ async function viewSubmissions() {
       <button class="btn" ${subFilters.offset + 50 < d.total ? "" : "disabled"}
         onclick="subFilters.offset+=50;refresh();">Next ›</button>
     </div>
-    ${table(["Reservation","Status","Hotkey","Submitted","Block","Target","Fee tx","Screen","Decision","Detail"],
+    ${table(["Reservation","Status","Hotkey","Submitted","Block","Target","Baseline","Fee tx","Screen","Decision","Detail"],
       rows, "No submissions match.")}`;
 }
 
@@ -430,6 +453,7 @@ async function viewWinners() {
   const rows = d.items.map((w) => {
     const hc = w.hotkey_chain || {};
     return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
+    <td><code title="${esc(w.reservation_id)}">${esc(short(w.reservation_id, 12))}</code></td>
     <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div></td>
     <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
         <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
@@ -445,7 +469,9 @@ async function viewWinners() {
           : ""}</div></td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
     <td>${fmtTime(w.passed)}<div class="muted small">block ${blockLink(w.passed, w.passed_links)}</div></td>
-    <td>${pill(w.reward_claim_status)} ${pill(w.settlement_status)}</td>
+    <td>${w.weight_share != null ? `<b>${(w.weight_share * 100).toFixed(2)}%</b>` : "—"}
+        <div class="small">${pill(w.reward_claim_status)}</div>
+        <div class="muted small">${pill(w.settlement_status)}</div></td>
     <td>${hc.registered
         ? `<span class="pill ok">uid ${hc.uid}</span>
            <div class="small">${hc.emission_alpha_per_day != null ? hc.emission_alpha_per_day.toFixed(4) + " " + esc(d.emission_symbol) + "/day" : "—"}</div>
@@ -454,9 +480,17 @@ async function viewWinners() {
   </tr>`;});
   return `
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
+    ${offerLine(d.offer)}
     <h2>Retained PASS rewards</h2>
-    ${table(["Improved op","Vs incumbent","Vs SGLang","Miner hotkey","PASS confirmed","Reward","On-chain now (emission)"],
+    ${table(["Reservation","Improved op","Vs incumbent","Vs SGLang","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
       rows, "No retained PASS rewards yet.")}`;
+}
+
+function offerLine(o) {
+  if (!o) return `<div class="muted small">Served weight offer unavailable.</div>`;
+  return `<div class="muted small">Served offer: projection <code>${esc(short(o.projection_digest, 12))}</code>
+    · effective block ${Number(o.effective_block).toLocaleString()} (${fmtTime(o.effective)})
+    · ${o.crown_count} crowned arena${o.crown_count === 1 ? "" : "s"} · lane ${esc(o.lane)}</div>`;
 }
 
 async function viewMiners() {
@@ -464,6 +498,7 @@ async function viewMiners() {
   const rows = d.items.map((m) => `<tr>
     <td>${key(m.hotkey, m.hotkey_links)}</td>
     <td>${m.registered ? `<span class="pill ok">uid ${m.uid}</span>` : '<span class="pill mute">not registered</span>'}</td>
+    <td>${m.weight_share != null ? `<b>${(m.weight_share * 100).toFixed(2)}%</b>` : "—"}</td>
     <td><b>${m.submissions}</b></td>
     <td>${m.crowned ? `<span class="pill crown">${m.crowned}</span>` : "—"}</td>
     <td>${m.qualified || 0}</td>
@@ -476,7 +511,8 @@ async function viewMiners() {
     <td>${m.emission_alpha_per_day != null ? m.emission_alpha_per_day.toFixed(4) + " " + esc(d.emission_symbol) + "/d" : "—"}</td>
   </tr>`);
   return `<h2>Miners (by hotkey)</h2>
-    ${table(["Hotkey","Registered","Subs","Crowns","Qualified","Active","Held","Failed / expired","Paid fees","First seen","Last seen","Emission"],
+    ${offerLine(d.offer)}
+    ${table(["Hotkey","Registered","Weight share","Subs","Crowns","Qualified","Active","Held","Failed / expired","Paid fees","First seen","Last seen","Emission"],
       rows, "No submissions yet.")}`;
 }
 
@@ -491,16 +527,26 @@ async function viewTimeline() {
     <td class="small muted">${esc(e.reason || "—")}</td>
     <td class="clickable" onclick="openDetail('${e.reservation_id}')"><code>${esc(short(e.reservation_id, 12))}</code></td>
   </tr>`);
+  const vRows = (w.vector || []).map((v) => `<tr>
+    <td>${key(v.hotkey, v.hotkey_links)}</td>
+    <td>${v.registered ? `<span class="pill ok">uid ${v.uid}</span>` : '<span class="pill bad">deregistered</span>'}</td>
+    <td><b>${(v.weight_share * 100).toFixed(2)}%</b></td>
+    <td class="muted">${v.incentive != null ? (v.incentive * 100).toFixed(2) + "%" : "—"}</td></tr>`);
   const wRows = w.items.map((x) => `<tr>
     <td class="muted">#${x.sequence}</td><td>${pill(x.status)}</td>
+    <td><code>${esc(short(x.projection_digest, 12))}</code></td>
     <td>${x.submit_block ? Number(x.submit_block).toLocaleString() : "—"}</td>
     <td>${x.confirmed_block ? Number(x.confirmed_block).toLocaleString() : "—"}</td>
     <td class="small muted">${esc(short(x.reason, 60))}</td></tr>`);
   return `
     <h2>Settlement events</h2>
     ${table(["Seq","Event","When","Target","Reason","Reservation"], rows, "No settlement events yet.")}
-    <h2>Weight publications (latest)</h2>
-    ${table(["Seq","Status","Submit block","Confirmed","Reason"], wRows, "No weight publications.")}`;
+    <h2>Served weight offer</h2>
+    ${offerLine(w.offer)}
+    ${table(["Hotkey","Registered","Weight share","On-chain incentive"], vRows, "No served offer.")}
+    <h2>This validator's weight submissions (follower journal)</h2>
+    ${w.follower_note ? `<div class="muted small">${esc(w.follower_note)}</div>` : ""}
+    ${table(["Seq","Status","Projection","Submit block","Confirmed","Reason"], wRows, "No follower journal rows.")}`;
 }
 
 async function viewSystem() {
@@ -549,6 +595,29 @@ window.openDetail = async (rid) => {
       ${kv("Crowned", fmtTime(d.settlement.crowned))}
       ${kv("Reason", esc(d.settlement.reason || "—"))}
     </dl>` : "";
+  const baseline = d.baseline || {};
+  const baselineCard = `
+    <h2>Evaluation baseline</h2>
+    <div class="card">
+      <dl class="kv" style="margin:0">
+        ${kv("Relationship", baselineSummary(baseline))}
+        ${kv(baseline.evaluated ? "Evaluated artifact" : "Assigned artifact",
+          baseline.evaluated || baseline.assigned
+          ? (baseline.artifact_digest
+              ? `<code>${esc(baseline.artifact_digest)}</code>`
+              : "<code>base engine</code>")
+          : '<span class="muted">Not assigned yet</span>')}
+        ${kv("Current tip", baseline.current_tip_artifact_digest
+          ? `<code>${esc(baseline.current_tip_artifact_digest)}</code>`
+          : "—")}
+        ${kv("Winning threshold", baseline.relationship === "ancestor" && baseline.threshold_speedup != null
+          ? `>${Number(baseline.threshold_speedup).toFixed(9)}× from this ancestor`
+          : baseline.relationship === "current_tip" ? "ordinary marginal threshold" : "—")}
+        ${kv("Stack", baseline.stack_digest ? `<code>${esc(baseline.stack_digest)}</code>` : "—")}
+        ${kv("Tree", baseline.tree_digest ? `<code>${esc(baseline.tree_digest)}</code>` : "—")}
+        ${kv("Arena", baseline.arena_digest ? `<code>${esc(baseline.arena_digest)}</code>` : "—")}
+      </dl>
+    </div>`;
   const screens = (d.screen_attempts_history || []).map((a) =>
     `<tr><td>#${a.attempt}</td><td>${pill(a.decision)}</td><td>${esc(a.lane)}</td><td>${a.stage_count} stages</td></tr>`);
   const quals = (d.qualification_attempts || []).map((a) =>
@@ -597,6 +666,7 @@ window.openDetail = async (rid) => {
       ${kv("Transport attempts", d.transport_attempts)}
       ${kv("Admission epoch", d.admission_epoch)}
     </dl>
+    ${baselineCard}
     ${settle}
     ${screens.length ? "<h2>Screen attempts</h2>" + table(["#","Decision","Lane","Stages"], screens) : ""}
     ${quals.length ? "<h2>Qualification attempts</h2>" + table(["#","Decision","Reason"], quals) : ""}

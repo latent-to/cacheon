@@ -18,7 +18,7 @@ plane. The current revision does not claim a completed production Engine release
 
 ## Why miners participate
 
-Cacheon rewards independently reproduced performance improvements, not uploads or
+Cacheon rewards fully qualified performance improvements, not uploads or
 self-reported benchmarks. If settlement crowns a proposal for a published target, it
 records the corresponding reward claim in the same transaction. The validator later
 combines eligible claims into a weight vector and publishes it on-chain; realized token
@@ -34,7 +34,7 @@ cooperating surfaces with different trust boundaries.
 <div class="cacheon-grid" markdown>
 <a class="cacheon-card" href="engine/integration/">
 <strong>Cacheon Engine</strong>
-<span>Integration review: how a reproduced crown becomes ordinary reviewed source, and how model bytes are provisioned.</span>
+<span>What a crown does and does not authorize, and how model bytes are provisioned.</span>
 </a>
 <a class="cacheon-card" href="architecture/pipeline/">
 <strong>The referee</strong>
@@ -48,20 +48,18 @@ cooperating surfaces with different trust boundaries.
 
 ## One idea, four objects
 
-The system keeps four objects deliberately separate:
+The system keeps two objects deliberately separate, and keeps both away from serving:
 
 ```mermaid
 flowchart LR
   P["Proposal<br/>hostile input"] --> Q["Crown<br/>measured contribution"]
-  Q --> I["Integrated contribution<br/>reviewed source"]
-  I --> R["Engine release<br/>signed product"]
-  Q -. "does not ship automatically" .-> R
+  Q -. "never automatic" .-> R["Integration, release, serving<br/>outside this repository"]
 ```
 
 A miner submits a **proposal** for one registered target delta. The referee may
-establish a **crown** after two independent passing qualifications. Cacheon
-maintainers may then turn the proposal into an **integrated contribution** after
-security, provenance, compatibility, and maintenance review. Work that does not fit
+establish a **crown** after one complete audited passing qualification. Whether crowned
+source is ever integrated into maintained code is a maintainer decision outside this
+repository. Work that does not fit
 a registered target is not a valid proposal; widening the catalog is a reviewed
 validator-side change.
 
@@ -74,16 +72,16 @@ smallest validator-controlled delta it contributes. Authoritative qualification 
 
 - **B** — the exact incumbent evaluation stack;
 - **C** — the same stack with one registered target replaced;
-- **B′** — an incumbent bookend, conditional for a hot-swappable v7 candidate
-  and mandatory for a non-swappable v8 candidate;
+- **B′** — a mandatory second incumbent read, the quality gate's stock-drift
+  control;
 - **A** — a separate eager, untimed sampled-audit role when registered; and
 - **T** — a candidate-free pristine reference that grades sealed trajectories after
   candidate destruction.
 
-The current speed subpolicy is selected from the candidate's manifest features:
-v7 uses the standing resident pair and takes B′ only when B/C cannot decide;
-v8 launches separate baseline and candidate engines and always takes B′.
-C′/B″ survive only in historical v2–v5 evidence. Primary and reproduction
+Every candidate is measured by the two-process schedule: v10 (v11 for a
+mixed-cell workload) launches separate baseline and candidate engines and
+always takes B′. The earlier schedules (v1–v7) are sealed MiniMax-M3 history that
+this tree no longer decodes. Primary and reproduction
 attempts also exchange incumbent and candidate physical-lane roles. A persistent
 hot-swap screen may route candidates before this schedule, but its measurements
 cannot qualify or settle a contribution.
@@ -102,18 +100,15 @@ copying them.
 | Write a Triton, CuTeDSL, or Python reference kernel | [Miner guide](miner-guide/overview.md) |
 | Validate the repository locally without a GPU | [Local quickstart](get-started/quickstart.md) |
 | Deploy intake, an arena provider, and qualification workers | [Validator guide](validator-guide/overview.md) |
-| Integrate a reproduced crown into reviewed source | [Cacheon Engine](engine/integration.md) |
+| See what a crown does and does not authorize | [After a crown](engine/integration.md) |
 | Audit trust boundaries and failure behavior | [Security model](security/threat-model.md) |
-| Check what is implemented, measured, and still unproven | [State of record](reference/state-of-record.md) |
 
 ## Evidence is scoped, not blended
 
 Every performance or authority claim is scoped to the exact runtime, hardware, arena,
 stack, identities, and procedure that produced it. Diagnostic measurements cannot
 authorize a crown; crown evidence cannot authorize reviewed source; and release
-verification cannot retroactively validate qualification. The
-[state of record](reference/state-of-record.md) identifies which evidence products have
-actually been retained for each boundary.
+verification cannot retroactively validate qualification.
 
 !!! note "Source of executable truth"
     This [Cacheon repository](https://github.com/latent-to/cacheon) owns both

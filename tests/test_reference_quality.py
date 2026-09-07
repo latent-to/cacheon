@@ -143,6 +143,23 @@ def test_faithful_candidate_passes_frozen_familywise_policy() -> None:
     assert not verdict.failed_metrics and not verdict.overlapping_metrics
 
 
+@pytest.mark.parametrize("nll_sum, prefix", [("1", "0."), ("4", "1.")])
+def test_repeating_mean_nll_fits_canonical_verdict(nll_sum, prefix):
+    calibration = _calibration()
+    rollout = replace(
+        _rollout(tokens=3), teacher_nll=TeacherNLLEvidence(3, nll_sum, "2", 0)
+    )
+    evidence = _evidence(calibration, (
+        PromptQualityEvidence(_digest("6"), rollout, rollout, rollout, 3, 3),
+    ))
+    verdict = score_reference_quality(
+        evidence, calibration=calibration, expected_context=_context()
+    )
+    assert verdict.decision == "PASS"
+    assert verdict.candidate_mean_teacher_nll == prefix + "3" * 94
+    assert not verdict.failed_metrics and not verdict.overlapping_metrics
+
+
 def test_teacher_nll_regression_fails() -> None:
     calibration = _calibration()
     bad = _rollout(nll="1.5")
@@ -500,6 +517,29 @@ def test_raw_artifact_cannot_shrink_registered_quality_coverage(field, value):
         replace(artifact, binding=replace(artifact.binding, **{field: value}))
 
 
+def test_mixed_raw_quality_preserves_each_full_rollout_and_rejects_shortened_roles(tmp_path):
+    artifact = _raw_artifact(_calibration())
+    short = artifact.prompts[0]
+    roles = tuple(
+        replace(role, tokens=role.tokens + tuple(replace(t, position=t.position + 2) for t in role.tokens))
+        for role in (short.baseline, short.candidate, short.stock_control)
+    )
+    long = RawPromptQualityEvidence(_digest("7"), *roles)
+    prompts = (short, long)
+    binding = replace(_raw_binding(_calibration(), prompts), tokens_per_prompt=4)
+    mixed = ReferenceQualityRawArtifact(binding, prompts)
+    reference = _publish(tmp_path / "evidence", mixed)
+    reopened = reopen_reference_quality_evidence(
+        tmp_path / "evidence", reference, expected_binding=binding
+    )
+    assert tuple(row.candidate.teacher_nll.token_count for row in reopened.prompts) == (2, 4)
+    assert ReferenceQualityRawArtifact.from_dict(mixed.to_dict()) == mixed
+    for role in ("baseline", "candidate", "stock_control"):
+        with pytest.raises(ReferenceQualityError, match="coverage"):
+            shortened = replace(long, **{role: replace(getattr(long, role), tokens=getattr(long, role).tokens[:2])})
+            replace(mixed, prompts=(short, shortened))
+
+
 def test_raw_artifact_cannot_substitute_selected_prompts_or_retained_trajectory():
     artifact = _raw_artifact(_calibration())
     prompt = artifact.prompts[0]
@@ -673,3 +713,41 @@ def test_distribution_presence_must_be_uniform() -> None:
     )
     with pytest.raises(ReferenceQualityError, match="coverage differs from its binding"):
         ReferenceQualityRawArtifact(artifact.binding, smuggled_prompts)
+
+
+def test_reopen_expects_the_measured_reference_identity_the_producer_binds(
+    tmp_path,
+) -> None:
+    """The final self-regrade must expect the reference identity the producer
+    writes. A real manifest's full digest and measured digest never coincide;
+    from 2026-08-10 the reopen expected the former while the producer bound the
+    latter, so every completed qualification ended NO_DECISION (a paid miner's
+    PASS, reservation bd4fdfa1, on 2026-09-07)."""
+
+    from types import SimpleNamespace
+
+    from cacheon.eval.qualification import derived_hidden_task_plan_digest
+    from tests.test_qualification_runner import _d, _typed_resident_qualification_input
+
+    profile = _typed_resident_qualification_input(tmp_path).candidates[0].profile
+    assert profile.reference.digest != profile.reference.measured_digest
+    selection = SimpleNamespace(
+        digest=_d("selection"),
+        selected_prompt_digests=tuple(sorted((_d("prompt-a"), _d("prompt-b")))),
+    )
+    expected = reference_quality.expected_raw_binding(
+        profile,
+        identity=_d("identity"),
+        calibration_digest=_d("calibration"),
+        selection=selection,
+        t_session_digest=_d("session"),
+        t_request_sha256=_d("request"),
+    )
+    assert expected[1] == profile.reference.measured_digest
+    assert expected[7] == profile.support_policy_digest
+    assert expected[8] == derived_hidden_task_plan_digest(
+        profile, selection.selected_prompt_digests
+    )
+    assert expected[9:] == (
+        profile.nll_tail_threshold, profile.topk_width, profile.hidden_tasks_per_prompt,
+    )

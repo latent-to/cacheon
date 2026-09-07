@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from decimal import ROUND_FLOOR, Context, Decimal, localcontext
+from itertools import combinations
 from typing import Iterable, Mapping
 
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest
-from cacheon.target_catalog import TargetCatalog, TargetResolutionError
 from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
@@ -303,14 +303,11 @@ class DiscoveryBountyClaim:
 class ArenaRewardAuthority:
     """One arena's complete active stack generation and reopened crowns."""
 
-    catalog: TargetCatalog
     stack: EvaluationStackManifest
     stack_generation: int
     standing_claims: tuple[StandingRewardClaim, ...]
 
     def __post_init__(self) -> None:
-        if type(self.catalog) is not TargetCatalog:
-            raise EconomicsError("arena reward catalog is not exactly typed")
         if type(self.stack) is not EvaluationStackManifest:
             raise EconomicsError("arena reward stack is not exactly typed")
         _integer(self.stack_generation, "arena stack_generation")
@@ -326,7 +323,7 @@ class ArenaRewardAuthority:
     def to_dict(self) -> dict[str, object]:
         return {
             "arena_digest": self.arena_digest,
-            "catalog_digest": self.catalog.digest,
+            "catalog_digest": self.stack.catalog_digest,
             "stack_digest": self.stack.digest,
             "stack_generation": self.stack_generation,
             "standing_claims": [
@@ -457,6 +454,99 @@ def _allocate_pool(credits: Mapping[str, int], pool: int) -> dict[str, int]:
     return result
 
 
+def _active_reward_targets(stack: EvaluationStackManifest) -> tuple[str, ...]:
+    """Check active relationships in the retained, already authenticated policy.
+
+    Commissioning owns catalog construction and admission. Reopening rewards
+    must neither reinterpret old specs through today's catalog nor reconstruct
+    retired build/provider policy.
+    """
+    snapshot = stack.catalog_snapshot
+    schema = snapshot.get("schema_version")
+
+    def require(condition, reason):
+        if not condition:
+            raise EconomicsError(f"active reward families overlap or are incomplete: {reason}")
+
+    require(type(schema) is int and schema in (1, 2), "unsupported catalog schema")
+    require(snapshot.get("policy_version") == f"target-catalog.v{schema}", "catalog policy")
+    # The caller's sealed-spec accessor validates target row shape and identity.
+    rows = {row["target_id"]: row for row in snapshot["targets"]}
+    active = set(stack.entries)
+    require(active <= rows.keys(), "unregistered active target")
+
+    def ids(row, field):
+        values = row.get(field)
+        require(isinstance(values, list) and all(isinstance(v, str) for v in values), field)
+        require(len(values) == len(set(values)) and set(values) <= rows.keys(), field)
+        return set(values)
+
+    def closure(target, children):
+        found, visiting = set(), set()
+
+        def visit(node):
+            require(node not in visiting, "relationship cycle")
+            if node in found:
+                return
+            visiting.add(node)
+            for child in children(node):
+                visit(child)
+                found.add(child)
+            visiting.remove(node)
+
+        visit(target)
+        return found
+
+    owned = set()
+    for target in sorted(active):
+        require(not closure(target, lambda t: ids(rows[t], "displaces")) & active, "displaces")
+        require(not closure(target, lambda t: ids(rows[t], "requires")) - active, "requires")
+        if schema == 2:
+            require(not ids(rows[target], "conflicts_with") & active, "conflicts_with")
+        members = ids(rows[target], "members")
+        require(members and not owned & members, "shared or empty member ownership")
+        owned.update(members)
+
+    if schema == 1:
+        rules = snapshot.get("composition_rules")
+        require(isinstance(rules, list), "composition rules")
+        pairs, rule_ids = set(), set()
+        edges = {target: set() for target in active}
+        for rule in rules:
+            require(isinstance(rule, Mapping), "composition rule")
+            targets = ids(rule, "target_ids")
+            if not targets <= active:
+                continue
+            pair = tuple(sorted(targets))
+            rule_id = rule.get("rule_id")
+            require(len(pair) == 2 and rule["target_ids"] == list(pair), "composition pair")
+            require(isinstance(rule_id, str) and rule_id, "composition rule ID")
+            require(pair not in pairs and rule_id not in rule_ids, "duplicate composition")
+            order = rule.get("precedence")
+            require(ids(rule, "precedence") == targets, "composition precedence")
+            require(type(rule.get("schema_version")) is int and rule["schema_version"] == 1,
+                    "composition schema")
+            require(rule.get("mode") == "first_applicable", "composition mode")
+            digest = rule.get("binding_contract_digest")
+            require(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest),
+                    "composition binding digest")
+            for target in pair:
+                contract = rows[target].get("contract_ref")
+                if contract is not None:
+                    require(contract.get("binding_family_id") == rule.get("binding_family_id"),
+                            "composition binding family")
+            pairs.add(pair)
+            rule_ids.add(rule_id)
+            edges[order[0]].add(order[1])
+        for left, right in combinations(sorted(active), 2):
+            require((right in ids(rows[left], "compatible_with"))
+                    == (left in ids(rows[right], "compatible_with"))
+                    == ((left, right) in pairs), "composition coverage")
+        for target in active:
+            closure(target, edges.__getitem__)
+    return tuple(sorted(active))
+
+
 def project_global_rewards(
     policy: EmissionsPolicyManifest,
     context: GlobalRewardProjectionContext,
@@ -464,7 +554,7 @@ def project_global_rewards(
     earning_claims: Iterable[StandingRewardClaim],
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
 ) -> GlobalRewardProjection:
-    """Pool every retained two-PASS contribution before one indivisible vector."""
+    """Pool the store-selected earning claims before one indivisible vector."""
 
     if type(policy) is not EmissionsPolicyManifest:
         raise EconomicsError("policy is not exactly typed")
@@ -489,15 +579,9 @@ def project_global_rewards(
             raise EconomicsError("PASS reward claims reuse a contribution")
         standing_index[key] = claim
     for authority in authorities:
-        catalog, stack = authority.catalog, authority.stack
-        if stack.catalog_digest != catalog.digest or stack.catalog_snapshot != catalog.snapshot():
-            raise EconomicsError("evaluation stack and reward catalog differ")
-        try:
-            active_targets = catalog.validate_active_targets(stack.entries)
-        except TargetResolutionError as exc:
-            raise EconomicsError(
-                f"active reward families overlap or are incomplete: {exc}"
-            ) from None
+        stack = authority.stack
+        sealed_specs = stack.sealed_target_spec_digests
+        active_targets = _active_reward_targets(stack)
         if not active_targets:
             raise EconomicsError("every registered arena requires an active crown")
         by_target = {row.target_id: row for row in authority.standing_claims}
@@ -509,7 +593,7 @@ def project_global_rewards(
             if claim.arena_digest != stack.arena_digest:
                 raise EconomicsError(f"standing claim for {target_id!r} names another arena")
             if (
-                claim.target_spec_digest != catalog.target_spec_digest(target_id)
+                claim.target_spec_digest != sealed_specs.get(target_id)
                 or claim.target_spec_digest != contribution.target_spec_digest
                 or claim.contribution_digest != contribution.digest
             ):

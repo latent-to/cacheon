@@ -109,3 +109,34 @@ __all__ = [
     "estimated_sglang_tokens_per_second",
     "settled_speedup",
 ]
+
+
+def live_offer_shares(path: object) -> tuple[dict[str, Any] | None, dict[str, Decimal]]:
+    """Read the validator's served weight offer as ``(summary, {hotkey: share})``.
+
+    The offer file is what the weight-offer service serves to every follower,
+    so its vector is the reward split this validator currently stands behind.
+    Returns ``(None, {})`` when the file is absent or malformed; the caller
+    reports that absence instead of inventing a vector.
+    """
+
+    try:
+        with open(path, encoding="utf-8") as fh:
+            offer = json.load(fh)["offer"]
+        projection = offer["projection"]
+        rows = projection["weights_ppm"]
+        shares = {
+            str(hotkey): Decimal(int(ppm)) / Decimal(1_000_000)
+            for hotkey, ppm in rows
+        }
+        summary = {
+            "lane": str(offer.get("lane") or ""),
+            "projection_digest": str(offer["projection_digest"]),
+            "effective_block": int(projection["effective_block"]),
+            "crown_count": int(projection.get("crown_count") or 0),
+            "stack_generation": int(projection.get("stack_generation") or 0),
+            "validator_hotkey": str(projection.get("validator_hotkey") or ""),
+        }
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None, {}
+    return summary, shares

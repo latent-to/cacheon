@@ -174,11 +174,11 @@ commands, scoring policy, chain-signing credentials, and weight publication belo
 separate authorities and must not be added to the intake service definition.
 
 With an injected deployment registry, the same testnet loop may screen, qualify, retain a
-two-PASS pair, and settle. That does not move qualification onto chain: the chain supplies
+complete audited PASS, and settle. That does not move qualification onto chain: the chain supplies
 arrival and current metagraph authority, while the registered OCI/referee fleet produces
-and retains the evidence. Production version-3 qualification uses current v7
-resident B/C with conditional B′ or v8 two-process B/C/B′, then audit and
-pristine T. Verify the primary and exact physical-lane-swapped reproduction
+and retains the evidence. Production version-3 qualification uses the
+two-process B/C/B′ schedule, then audit and pristine T. Verify the primary and
+exact physical-lane-swapped reproduction
 separately before daemon mode.
 
 ## Weight dry run
@@ -245,10 +245,9 @@ reopened. Do not infer a stronger boundary from testnet connectivity:
 | Finalized reveal, committed-tree re-hash, immutable publication, and restart reconciliation | Chain intake, proposal identity, and durable cursor behavior | GPU qualification, settlement, or release readiness |
 | Metagraph-backed weight dry run | Projection construction against live chain state without an extrinsic | Signing, submission, inclusion, or confirmation |
 | Structural two-pass fixture | State-machine transitions, independence checks, evidence reopening, and settlement plumbing | Empirical GPU speedup, production calibration, or arena-provider readiness |
-| Builder-authenticated reproducible OCI pair plus release/session-bound serving receipts | Release-image identity and execution through the approved serving seams for that exact session; include AOT coverage for sealed direct artifacts | Qualification authority unless separate resident crossover, audit, and T evidence exists; clean-wheel, native-provider, and effective-policy gates remain separate prerequisites |
+| Builder-authenticated reproducible OCI pair plus release/session-bound serving receipts | Release-image identity and execution through the approved serving seams for that exact session | Qualification authority unless separate resident crossover, audit, and T evidence exists; clean-wheel, native-provider, and effective-policy gates remain separate prerequisites |
 
-The [state of record](../reference/state-of-record.md) identifies which of these evidence
-products have been completed. Deployment must supply and commission its production arena
+Deployment must supply and commission its production arena
 provider independently of the command-line intake path.
 
 ## Testnet exit criteria
@@ -259,7 +258,7 @@ Before treating a deployment as production-capable, require evidence for all of:
 - HTTPS intake limits, committed hash, publication reopen, copy ordering, and restart;
 - registered arena manifest/provider identity and queue behavior;
 - faithful and broken non-crown screen controls;
-- real isolated primary and independent reproduction attempts with evidence restore;
+- one real complete isolated qualification with evidence restore and no duplicate evaluator run;
 - settlement lease expiry, blocker, atomic-commit, and stale-incumbent controls;
 - live V1 dry-run projection plus signer journal/readback drills under approved policy;
   and

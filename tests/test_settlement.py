@@ -15,6 +15,8 @@ from cacheon.settlement import (
     SettlementEvent,
     SettlementEventType,
     SettlementQualification,
+    TargetLineage,
+    TargetLineageNode,
     plan_settlement,
 )
 from cacheon.stack_identity import canonical_digest, sha256_hex
@@ -24,15 +26,10 @@ from cacheon.stack_manifest import (
     ProposalContributionRef,
 )
 from cacheon.stack_plan import plan_marginal_arm
-from cacheon.target_catalog import (
-    MOE_EPILOGUE_ATOMIC_TARGET,
-    MOE_EPILOGUE_MEMBERS,
-    TargetCatalog,
-    default_target_catalog,
-)
+from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
-MSA = "attention.msa_prefill_block_score"
+ROUTED = "moe.fused_routed_experts"
 SILU = "activation.silu_and_mul"
 RESIDENT_SPEED_POLICY_DIGEST = canonical_digest(
     "cacheon.qualification.speed-evidence-policy",
@@ -162,7 +159,7 @@ def _candidate(
 
 def test_candidate_json_round_trip_and_digest_are_canonical() -> None:
     catalog = default_target_catalog()
-    candidate = _candidate(_stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a")
+    candidate = _candidate(_stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a")
     reopened = SettlementCandidate.from_dict(candidate.to_dict())
     assert reopened == candidate
     assert reopened.digest == candidate.digest
@@ -190,7 +187,7 @@ def _resident_orientation(
 def test_resident_reproduction_requires_exact_physical_lane_role_swap() -> None:
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "resident"), catalog,
+        _stack(catalog), _ref(catalog, ROUTED, "resident"), catalog,
         label="resident",
     )
     primary_orientation = _resident_orientation()
@@ -262,7 +259,7 @@ def test_auditless_resident_acceptance_round_trips_exact_wire_shape() -> None:
 
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "resident"), catalog, label="resident"
+        _stack(catalog), _ref(catalog, ROUTED, "resident"), catalog, label="resident"
     )
     orientation = _resident_orientation()
     fields = SettlementQualification.__dataclass_fields__  # type: ignore[attr-defined]
@@ -293,7 +290,7 @@ def test_auditless_resident_pair_becomes_settlement_candidate() -> None:
 
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "resident"), catalog, label="resident"
+        _stack(catalog), _ref(catalog, ROUTED, "resident"), catalog, label="resident"
     )
     fields = SettlementQualification.__dataclass_fields__  # type: ignore[attr-defined]
     auditless = {
@@ -344,7 +341,7 @@ def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
 
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "resident-policy"), catalog,
+        _stack(catalog), _ref(catalog, ROUTED, "resident-policy"), catalog,
         label="resident-policy",
     )
     with pytest.raises(SettlementError, match="physical lane orientation"):
@@ -355,27 +352,31 @@ def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
 
 
 def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> None:
-    # These bytes include the current target-catalog digest. Replacing the never-live
-    # dense decode, MoE NVFP4, paged MSA-prefill, and MSA decode-score contracts
-    # are reviewed target identity epochs; the settlement schema remains unchanged.
+    # These bytes include the current target-catalog digest. Catalog changes are
+    # reviewed target identity epochs; the settlement schema remains unchanged.
+    # Epoch 2026-09-01: priority fallback composition was replaced by explicit
+    # target conflict/displacement and symmetric challenger transitions.
+    # Epoch 2026-09-05 retired artifact-provider registration and added sparse MLA.
+    # Epoch 2026-09-06 widens families and makes sparse attention atomic.
+    # Historical records are unaffected: they embed their own catalog snapshot.
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
+        _stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a"
     )
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "9ea7a26eff49837d2c53abd9d86e87993ebd3f9d862f269caed67d9905c2ad35"
+        "a515abd3ad4726c0947dd5d9eadee4db5835c006c780d25586e803022b4742f7"
     )
     assert candidate.digest == (
-        "7da3cd0625f341ea29512b8471ad249d37c8f4b2b09017ece68f5afdda86fd3f"
+        "09e704f70eeb609ee57e5f3fe10f0dd85b64f18c6df4f181e03d5f4b9f2e5289"
     )
 
 
 def test_single_pass_or_reused_evidence_cannot_become_settlement_candidate() -> None:
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
+        _stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a"
     )
     with pytest.raises(SettlementError, match="reuses primary"):
         SettlementCandidate.from_reproductions(candidate.primary, candidate.primary)
@@ -403,7 +404,7 @@ def test_each_reproduction_authority_and_evidence_identity_must_be_distinct(
 ) -> None:
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
+        _stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a"
     )
     reproduced = replace(
         candidate.reproduction,
@@ -416,7 +417,7 @@ def test_each_reproduction_authority_and_evidence_identity_must_be_distinct(
 def test_conservative_speed_uses_slower_independent_reproduction() -> None:
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "a"), catalog,
+        _stack(catalog), _ref(catalog, ROUTED, "a"), catalog,
         label="a", speedup="1.09",
     )
     slower = replace(candidate.reproduction, speedup="1.03")
@@ -427,7 +428,7 @@ def test_conservative_speed_uses_slower_independent_reproduction() -> None:
 def test_reproduction_must_use_the_same_speed_evidence_policy() -> None:
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
+        _stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a"
     )
     mismatched = replace(
         candidate.reproduction,
@@ -443,7 +444,7 @@ def test_reproduction_must_use_the_same_seed_independent_audit_control(
 ) -> None:
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
+        _stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a"
     )
     assert candidate.reproduction.audit_policy is not None
     changed_policy = replace(
@@ -464,7 +465,7 @@ def test_reproduction_must_use_the_same_seed_independent_audit_control(
 def test_reproduction_requires_distinct_audit_seed_and_evidence() -> None:
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
+        _stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a"
     )
     assert candidate.primary.audit_policy is not None
     reused_seed = replace(
@@ -487,7 +488,7 @@ def test_reproduction_requires_distinct_audit_seed_and_evidence() -> None:
 def test_new_candidate_rejects_legacy_auditless_qualification_but_reopens_history() -> None:
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
+        _stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a"
     )
     legacy_primary = replace(
         candidate.primary,
@@ -516,7 +517,7 @@ def test_new_candidate_rejects_legacy_auditless_qualification_but_reopens_histor
 def test_settlement_evidence_binds_both_retained_attempts() -> None:
     catalog = default_target_catalog()
     candidate = _candidate(
-        _stack(catalog), _ref(catalog, MSA, "a"), catalog, label="a"
+        _stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a"
     )
     primary_ref = EvidenceArtifactRef(
         "qualification.cohort-attempt",
@@ -550,11 +551,11 @@ def test_highest_speedup_wins_and_events_form_hash_chain() -> None:
     catalog = default_target_catalog()
     incumbent = _stack(catalog)
     early = _candidate(
-        incumbent, _ref(catalog, MSA, "early"), catalog,
+        incumbent, _ref(catalog, ROUTED, "early"), catalog,
         label="early", speedup="1.04", block=10,
     )
     late = _candidate(
-        incumbent, _ref(catalog, MSA, "late"), catalog,
+        incumbent, _ref(catalog, ROUTED, "late"), catalog,
         label="late", speedup="1.06", block=11,
     )
     plan = plan_settlement(
@@ -581,11 +582,11 @@ def test_equal_speedup_uses_finalized_order_not_input_order() -> None:
     catalog = default_target_catalog()
     incumbent = _stack(catalog)
     first = _candidate(
-        incumbent, _ref(catalog, MSA, "first"), catalog,
+        incumbent, _ref(catalog, ROUTED, "first"), catalog,
         label="first", speedup="1.05", block=10, event=2,
     )
     second = _candidate(
-        incumbent, _ref(catalog, MSA, "second"), catalog,
+        incumbent, _ref(catalog, ROUTED, "second"), catalog,
         label="second", speedup="1.05", block=11, event=0,
     )
     plan = plan_settlement(
@@ -598,7 +599,7 @@ def test_equal_speedup_uses_finalized_order_not_input_order() -> None:
 def test_stale_candidate_holds_without_stack_change() -> None:
     catalog = default_target_catalog()
     old = _stack(catalog)
-    candidate = _candidate(old, _ref(catalog, MSA, "old"), catalog, label="old")
+    candidate = _candidate(old, _ref(catalog, ROUTED, "old"), catalog, label="old")
     current_ref = _ref(catalog, SILU, "current")
     current = _stack(catalog, {SILU: current_ref})
     plan = plan_settlement(
@@ -613,16 +614,16 @@ def test_stale_candidate_holds_without_stack_change() -> None:
 def test_nonoverlapping_loser_is_held_for_requalification() -> None:
     catalog = default_target_catalog()
     incumbent = _stack(catalog)
-    msa = _candidate(
-        incumbent, _ref(catalog, MSA, "msa"), catalog,
-        label="msa", speedup="1.07",
+    routed = _candidate(
+        incumbent, _ref(catalog, ROUTED, "routed"), catalog,
+        label="routed", speedup="1.07",
     )
     silu = _candidate(
         incumbent, _ref(catalog, SILU, "silu"), catalog,
         label="silu", speedup="1.06",
     )
     plan = plan_settlement(
-        (silu, msa), current_manifest=incumbent,
+        (silu, routed), current_manifest=incumbent,
         current_tree_digest=_h("incumbent-tree"),
     )
     hold = next(row for row in plan.events if row.event_type is SettlementEventType.HOLD)
@@ -630,12 +631,12 @@ def test_nonoverlapping_loser_is_held_for_requalification() -> None:
     assert hold.reason == "incumbent_advanced"
 
 
-def test_replacement_retires_prior_and_atomic_transition_neutralizes_displaced() -> None:
+def test_replacement_retires_prior() -> None:
     catalog = default_target_catalog()
-    prior = _ref(catalog, MSA, "prior")
-    incumbent = _stack(catalog, {MSA: prior})
+    prior = _ref(catalog, ROUTED, "prior")
+    incumbent = _stack(catalog, {ROUTED: prior})
     replacement = _candidate(
-        incumbent, _ref(catalog, MSA, "next"), catalog, label="next"
+        incumbent, _ref(catalog, ROUTED, "next"), catalog, label="next"
     )
     replaced = plan_settlement(
         (replacement,), current_manifest=incumbent,
@@ -645,34 +646,272 @@ def test_replacement_retires_prior_and_atomic_transition_neutralizes_displaced()
         row.event_type for row in replaced.events
     }
 
-    singleton_entries = {
-        member: _ref(catalog, member, f"prior:{member}")
-        for member in MOE_EPILOGUE_MEMBERS
-    }
-    atomic_incumbent = _stack(catalog, singleton_entries)
-    atomic = _candidate(
-        atomic_incumbent,
-        _ref(catalog, MOE_EPILOGUE_ATOMIC_TARGET, "atomic"),
-        catalog,
-        label="atomic",
+
+def _tip(candidate: SettlementCandidate) -> TargetLineage:
+    assert candidate.candidate_manifest is not None
+    incumbent = candidate.incumbent_manifest.entries.get(candidate.target_id)
+    return TargetLineage(
+        (
+            TargetLineageNode(
+                candidate.candidate_manifest.entries[
+                    candidate.target_id
+                ].artifact_digest,
+                "" if incumbent is None else incumbent.artifact_digest,
+                candidate.speedup,
+                _h(f"transition:{candidate.digest}"),
+            ),
+        )
     )
-    transitioned = plan_settlement(
-        (atomic,), current_manifest=atomic_incumbent,
+
+
+def _lineage(*candidates: SettlementCandidate) -> TargetLineage:
+    nodes = []
+    for candidate in candidates:
+        assert candidate.candidate_manifest is not None
+        incumbent = candidate.incumbent_manifest.entries.get(
+            candidate.target_id
+        )
+        nodes.append(
+            TargetLineageNode(
+                candidate.candidate_manifest.entries[
+                    candidate.target_id
+                ].artifact_digest,
+                "" if incumbent is None else incumbent.artifact_digest,
+                candidate.speedup,
+                _h(f"transition:{candidate.digest}"),
+            )
+        )
+    return TargetLineage(tuple(nodes))
+
+
+def test_pretransition_stale_sibling_above_last_winner_can_crown() -> None:
+    catalog = default_target_catalog()
+    parent = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "parent")})
+    last_winner = _candidate(
+        parent, _ref(catalog, ROUTED, "winner"), catalog, label="winner", speedup="1.05"
+    )
+    better_sibling = _candidate(
+        parent, _ref(catalog, ROUTED, "better"), catalog, label="better",
+        speedup="1.09", block=11,
+    )
+    planned = plan_settlement(
+        (better_sibling,),
+        current_manifest=parent,
         current_tree_digest=_h("incumbent-tree"),
+        lineage_tips={ROUTED: _tip(last_winner)},
+        pretransition_reservations=frozenset(
+            {better_sibling.reservation_digest}
+        ),
     )
-    neutralized = {
-        row.target_id
-        for row in transitioned.events
-        if row.event_type is SettlementEventType.NEUTRALIZATION
-    }
-    assert neutralized == set(MOE_EPILOGUE_MEMBERS)
+    assert planned.winner_candidate_digest == better_sibling.digest
+    crown = next(
+        event for event in planned.events
+        if event.event_type is SettlementEventType.CROWN
+    )
+    assert crown.reason == "qualified_pretransition_ancestor_win"
+
+
+def test_faster_stale_sibling_becomes_the_next_baseline_and_threshold() -> None:
+    catalog = default_target_catalog()
+    parent = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "parent")})
+    first = _candidate(
+        parent, _ref(catalog, ROUTED, "first"), catalog,
+        label="first", speedup="1.05",
+    )
+    faster = _candidate(
+        parent, _ref(catalog, ROUTED, "faster"), catalog,
+        label="faster", speedup="1.09",
+    )
+    accepted = plan_settlement(
+        (faster,),
+        current_manifest=parent,
+        current_tree_digest=_h("incumbent-tree"),
+        lineage_tips={ROUTED: _tip(first)},
+        pretransition_reservations=frozenset({faster.reservation_digest}),
+    )
+    assert accepted.winner_candidate_digest == faster.digest
+    assert accepted.after == faster.challenger
+
+    # Once accepted, the faster sibling owns the lineage and its score is the
+    # threshold. Another sibling from the old parent cannot clear it with a
+    # score that only beat the former winner.
+    middle_sibling = _candidate(
+        parent, _ref(catalog, ROUTED, "middle"), catalog,
+        label="middle", speedup="1.07",
+    )
+    rejected = plan_settlement(
+        (middle_sibling,),
+        current_manifest=parent,
+        current_tree_digest=_h("incumbent-tree"),
+        lineage_tips={ROUTED: _tip(faster)},
+        pretransition_reservations=frozenset(
+            {middle_sibling.reservation_digest}
+        ),
+    )
+    assert rejected.winner_candidate_digest == ""
+    assert rejected.events[0].reason == "stale_incumbent"
+
+    # A fresh challenger measured against the faster sibling is current and
+    # uses ordinary marginal settlement, not the stale-sibling exception.
+    assert faster.candidate_manifest is not None
+    current_challenger = _candidate(
+        faster.candidate_manifest,
+        _ref(catalog, ROUTED, "current-child"),
+        catalog,
+        label="current-child",
+        speedup="1.02",
+    )
+    current = plan_settlement(
+        (current_challenger,),
+        current_manifest=faster.candidate_manifest,
+        current_tree_digest=_h("incumbent-tree"),
+        lineage_tips={ROUTED: _tip(faster)},
+    )
+    assert current.winner_candidate_digest == current_challenger.digest
+
+
+def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> None:
+    catalog = default_target_catalog()
+    a = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "A")})
+    b = _candidate(
+        a, _ref(catalog, ROUTED, "B"), catalog, label="B", speedup="1.1"
+    )
+    assert b.candidate_manifest is not None
+    c = _candidate(
+        b.candidate_manifest,
+        _ref(catalog, ROUTED, "C"),
+        catalog,
+        label="C",
+        speedup="1.1",
+    )
+    assert c.candidate_manifest is not None
+    active = _lineage(b, c)
+    assert active.threshold_from(a.entries[ROUTED].artifact_digest) == (
+        Decimal("1.21"),
+        active.nodes[0].transition_event_id,
+    )
+
+    equal_d = _candidate(
+        a, _ref(catalog, ROUTED, "D-equal"), catalog,
+        label="D-equal", speedup="1.21",
+    )
+    equal_plan = plan_settlement(
+        (equal_d,),
+        current_manifest=c.candidate_manifest,
+        current_tree_digest=c.candidate_tree_digest,
+        lineage_tips={ROUTED: active},
+        pretransition_reservations=frozenset({equal_d.reservation_digest}),
+    )
+    assert equal_plan.winner_candidate_digest == ""
+
+    faster_d = _candidate(
+        a, _ref(catalog, ROUTED, "D-faster"), catalog,
+        label="D-faster", speedup="1.22",
+    )
+    faster_plan = plan_settlement(
+        (faster_d,),
+        current_manifest=c.candidate_manifest,
+        current_tree_digest=c.candidate_tree_digest,
+        lineage_tips={ROUTED: active},
+        pretransition_reservations=frozenset(
+            {faster_d.reservation_digest}
+        ),
+    )
+    assert faster_plan.winner_candidate_digest == faster_d.digest
+    assert faster_plan.after == faster_d.challenger
+
+
+@pytest.mark.parametrize(
+    ("speedup", "pretransition"),
+    (("1.05", True), ("1.04", True), ("1.09", False)),
+)
+def test_stale_sibling_must_be_strictly_better_and_pretransition(
+    speedup: str, pretransition: bool,
+) -> None:
+    catalog = default_target_catalog()
+    parent = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "parent")})
+    last_winner = _candidate(
+        parent, _ref(catalog, ROUTED, "winner"), catalog, label="winner",
+        speedup="1.05",
+    )
+    stale = _candidate(
+        parent, _ref(catalog, ROUTED, f"stale:{speedup}:{pretransition}"),
+        catalog, label=f"stale:{speedup}:{pretransition}", speedup=speedup,
+    )
+    planned = plan_settlement(
+        (stale,),
+        current_manifest=parent,
+        current_tree_digest=_h("incumbent-tree"),
+        lineage_tips={ROUTED: _tip(last_winner)},
+        pretransition_reservations=(
+            frozenset({stale.reservation_digest})
+            if pretransition
+            else frozenset()
+        ),
+    )
+    assert planned.winner_candidate_digest == ""
+    assert [event.event_type for event in planned.events] == [
+        SettlementEventType.HOLD
+    ]
+    assert planned.events[0].reason == "stale_incumbent"
+
+
+def test_lineage_tip_naming_the_incumbent_still_crowns() -> None:
+    catalog = default_target_catalog()
+    parent = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "parent")})
+    last_winner = _candidate(
+        parent, _ref(catalog, ROUTED, "winner"), catalog, label="winner"
+    )
+    assert last_winner.candidate_manifest is not None
+    current = last_winner.candidate_manifest
+    candidate = _candidate(
+        current, _ref(catalog, ROUTED, "next"), catalog, label="next"
+    )
+    crowned = plan_settlement(
+        (candidate,),
+        current_manifest=current,
+        current_tree_digest=_h("incumbent-tree"),
+        lineage_tips={ROUTED: _tip(last_winner)},
+    )
+    assert crowned.winner_candidate_digest == candidate.digest
+    assert crowned.after == candidate.challenger
+
+    with pytest.raises(SettlementError, match="lineage tip artifact"):
+        TargetLineageNode(
+            "not-a-digest", parent.entries[ROUTED].artifact_digest,
+            "1.05", _h("transition"),
+        )
+
+
+def test_genesis_target_without_a_lineage_tip_crowns() -> None:
+    catalog = default_target_catalog()
+    incumbent = _stack(catalog)
+    candidate = _candidate(incumbent, _ref(catalog, ROUTED, "first"), catalog, label="first")
+
+    # No prior crown for this target, so nothing constrains its lineage yet.
+    planned = plan_settlement(
+        (candidate,),
+        current_manifest=incumbent,
+        current_tree_digest=_h("incumbent-tree"),
+        lineage_tips={
+            SILU: TargetLineage(
+                (
+                    TargetLineageNode(
+                        _h("artifact:other-target"), "", "1.01",
+                        _h("transition"),
+                    ),
+                )
+            ),
+        },
+    )
+    assert planned.winner_candidate_digest == candidate.digest
 
 
 def test_duplicate_reservation_is_rejected() -> None:
     catalog = default_target_catalog()
     incumbent = _stack(catalog)
     candidate = _candidate(
-        incumbent, _ref(catalog, MSA, "one"), catalog, label="one"
+        incumbent, _ref(catalog, ROUTED, "one"), catalog, label="one"
     )
     with pytest.raises(SettlementError, match="duplicates"):
         plan_settlement(

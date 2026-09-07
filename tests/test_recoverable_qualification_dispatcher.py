@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.recoverable_qualification_dispatcher import (
     CompletedQualificationHold,
+    QualificationCommissionRequired,
     RecoverableQualificationDispatcher,
     RecoverableQualificationDispatcherError,
     RecoverableQualificationHold,
@@ -622,16 +624,12 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
             _write_hold_result(authority, plan, observed.carrier_path)
             return observed
 
-    counters = {"batch": 0, "claim": 0, "commit": 0, "import": 0}
+    counters = {"claim": 0, "commit": 0, "import": 0}
     original_claim = RecoverableFinalizedIntakeStore.claim_recoverable_qualification
 
     def counted_claim(store, **kwargs):
         counters["claim"] += 1
         return original_claim(store, **kwargs)
-
-    def forbidden_batch(_batch):
-        counters["batch"] += 1
-        raise AssertionError("remote HOLD reached miner batch classification")
 
     def forbidden_import(*_args, **_kwargs):
         counters["import"] += 1
@@ -658,7 +656,6 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
     )
     transport = HoldTransport(authority, fixtures)
     dispatcher = _dispatcher(authority, transport)
-    monkeypatch.setattr(dispatcher, "_has_no_decision", forbidden_batch)
     durable_commit = dispatcher._commit_remote_hold
     interrupted = False
 
@@ -693,7 +690,7 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
         request_id,
         "remote_qualification_hold:graph_evidence_incomplete",
     )
-    assert counters == {"batch": 0, "claim": 0, "commit": 0, "import": 0}
+    assert counters == {"claim": 0, "commit": 0, "import": 0}
     assert (transport.plans, transport.materializations, transport.publications) == (
         1,
         1,
@@ -972,7 +969,7 @@ def test_expired_prepared_recovery_holds_before_transport_when_renewal_denied(
     ]
 
 
-def test_completed_product_survives_later_incumbent_change(
+def test_completed_product_with_another_request_incumbent_is_held(
     tmp_path: Path,
 ) -> None:
     fixtures = _fixtures()
@@ -988,14 +985,13 @@ def test_completed_product_survives_later_incumbent_change(
         ),
         qualification_incumbent_tree_digest=authority.fixtures._h("other-tree"),
     )
-    with _store(authority) as store:
-        store._db.execute(
-            "UPDATE evaluation_stacks SET generation=1,tree_digest=? WHERE arena_id=?",
-            (authority.fixtures._h("other-tree"), authority.service.identity),
-        )
     outcome = dispatcher.dispatch_once()
-    assert type(outcome).__name__ == "EvaluationRun"
-    assert outcome.payload.outcomes[0].decision is QualificationDecision.FAIL
+    assert type(outcome) is RecoverableQualificationHold
+    assert outcome.reason == "transport_hold:remote_payload_changed"
+    with _store(authority) as store:
+        recovery = store.pending_qualification_recovery()
+        assert recovery is not None and recovery.phase.value == "held"
+    assert (transport.plans, transport.publications) == (1, 1)
 
 
 def test_first_claim_installs_the_commissioned_genesis_incumbent(
@@ -1018,7 +1014,40 @@ def test_first_claim_installs_the_commissioned_genesis_incumbent(
     assert state.tree_digest == authority.fixtures._h("incumbent-tree")
 
 
-def test_stale_commissioned_incumbent_refuses_before_any_claim(
+def test_old_resident_drains_bound_queue_after_durable_stack_advances(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    old = authority.fixtures._incumbent(authority.service)
+    old_tree = authority.fixtures._h("incumbent-tree")
+    new = authority.fixtures._incumbent(authority.service, marker="advanced")
+    with _store(authority) as store:
+        store.initialize_evaluation_stack(old, tree_digest=old_tree)
+        bound = store.qualification_queue_baseline()
+        assert bound is not None
+        assert bound.manifest == old
+        store._db.execute(
+            "UPDATE evaluation_stacks SET generation=1,stack_digest=?,tree_digest=?,"
+            "stack_json=?,transition_event_id=? WHERE arena_id=?",
+            (
+                new.digest,
+                authority.fixtures._h("advanced-tree"),
+                json.dumps(new.to_dict(), separators=(",", ":"), sort_keys=True),
+                authority.fixtures._h("advanced-transition"),
+                authority.service.identity,
+            ),
+        )
+
+    outcome = _dispatcher(
+        authority,
+        _Transport(authority, fixtures, complete_on_publish=True),
+    ).dispatch_once()
+
+    assert type(outcome).__name__ == "EvaluationRun"
+
+
+def test_queue_baseline_boundary_requires_commission_before_any_claim(
     tmp_path: Path,
 ) -> None:
     fixtures = _fixtures()
@@ -1031,8 +1060,9 @@ def test_stale_commissioned_incumbent_refuses_before_any_claim(
         leases_before = store.active_evaluation_leases()
     transport = _Transport(authority, fixtures)
 
-    with pytest.raises(RecoverableQualificationDispatcherError, match="recommission"):
-        _dispatcher(authority, transport).dispatch_once()
+    outcome = _dispatcher(authority, transport).dispatch_once()
+    assert isinstance(outcome, QualificationCommissionRequired)
+    assert outcome.required_tree_digest == authority.fixtures._h("crowned-tree")
 
     assert (transport.plans, transport.publications) == (0, 0)
     with _store(authority) as store:
@@ -1040,6 +1070,10 @@ def test_stale_commissioned_incumbent_refuses_before_any_claim(
         assert store.evaluation_stack(authority.service.identity).tree_digest == (
             authority.fixtures._h("crowned-tree")
         )
+
+
+
+
 
 
 def test_completed_no_decision_hold_stays_parked_while_members_are_active(

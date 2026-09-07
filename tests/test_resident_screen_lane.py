@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import threading
 
 import pytest
@@ -332,7 +331,6 @@ class TestResidentScreenLane:
 def _bundle_tree(
     tmp_path,
     *,
-    dep_patch: bool = False,
     cuda_sources: bool = False,
     setup: bool = False,
 ):
@@ -344,17 +342,6 @@ def _bundle_tree(
         "bundle_id = 'screen-test-bundle'",
         "abi_version = 'cacheon-op-abi-v0'",
     ]
-    if dep_patch:
-        patches = source / "patches"
-        patches.mkdir()
-        (patches / "x.patch").write_text(
-            "--- a/f.cu\n+++ b/f.cu\n@@ -1,1 +1,1 @@\n-old\n+new\n"
-        )
-        lines += [
-            "[[dep_patches]]",
-            "target = 'flashinfer'",
-            "path = 'patches/x.patch'",
-        ]
     lines += [
         "[[ops]]",
         f"slot = '{SLOT}'",
@@ -379,11 +366,9 @@ def _bundle_tree(
 
 def _binding(
     tmp_path,
-    *,
-    dep_patch: bool = False,
     **bundle_options,
 ) -> ArenaCandidateBinding:
-    source = _bundle_tree(tmp_path, dep_patch=dep_patch, **bundle_options)
+    source = _bundle_tree(tmp_path, **bundle_options)
     committed = content_hash(source)
     publication = publish_worker_bundle(source, tmp_path / "publications", committed)
     reservation = QualificationReservation(
@@ -406,17 +391,6 @@ class TestScreenSwappability:
         manifest = load_manifest(_bundle_tree(tmp_path))
         assert screen_swappability(manifest) is None
 
-    def test_dep_patched_bundle_is_not_swappable(self, tmp_path) -> None:
-        manifest = load_manifest(_bundle_tree(tmp_path, dep_patch=True))
-        assert "dep-patched" in screen_swappability(manifest)
-
-    def test_aot_bundle_is_not_swappable(self, tmp_path) -> None:
-        manifest = load_manifest(_bundle_tree(tmp_path))
-        patched = dataclasses.replace(
-            manifest,
-            ops=(dataclasses.replace(manifest.ops[0], aot_exports=("aot",)),),
-        )
-        assert "aot" in screen_swappability(patched)
 
     @pytest.mark.parametrize(
         ("bundle_options", "reason"),
@@ -473,13 +447,15 @@ class TestResidentServingScreenStage:
         assert (root / staged).is_dir()
         lane.close()
 
-    def test_swappable_loser_fails(self, tmp_path) -> None:
+    def test_successful_execution_passes_despite_abbreviated_speed_regression(self, tmp_path) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
         stage, lane, _root, _factory = self._stage(
             tmp_path, lambda _n: FakeResidentSession(100.0, {staged: 80.0})
         )
-        assert stage.run_screen(binding).grade is ScreenGrade.FAIL
+        result = stage.run_screen(binding)
+        assert result.grade is ScreenGrade.PASS
+        assert result.reason == "resident_execution_verified"
         lane.close()
 
     def test_wrong_dispatch_fails(self, tmp_path) -> None:
@@ -568,13 +544,8 @@ class TestResidentServingScreenStage:
         assert factory.calls == 1
         lane.close()
 
-    @pytest.mark.parametrize(
-        "bundle_options", [{"dep_patch": True}, {"cuda_sources": True}]
-    )
-    def test_unswappable_bundle_gets_waiver_pass(
-        self, tmp_path, bundle_options
-    ) -> None:
-        binding = _binding(tmp_path, **bundle_options)
+    def test_unswappable_bundle_gets_waiver_pass(self, tmp_path) -> None:
+        binding = _binding(tmp_path, cuda_sources=True)
         factory = FakeLifetimeFactory(
             lambda _n: FakeResidentSession(100.0, {DIGEST_A: 112.0})
         )

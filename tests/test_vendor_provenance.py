@@ -16,20 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PROVENANCE = ROOT / "cacheon" / "vendor_provenance.json"
 
 EXPECTED_ASSETS = (
-    "cacheon/arena_assets/minimax_m3/sglang_patch/flashinfer_trtllm.py",
-    "cacheon/arena_assets/minimax_m3/sglang_patch/modelopt_quant.py",
     "cacheon/eval/seccomp_moby_v0_2_1.json",
 )
-
-EXPECTED_LICENSE_HASHES = {
-    "LICENSES/MINIMAX_COMMUNITY_LICENSE.txt": (
-        "b53f2fdda3049b0e9013207be51efc2d372cda1fcfdd8bb4bb8b22658ca5db9c"
-    ),
-    "LICENSES/SGLANG.txt": (
-        "1495e1e757ef4d0925a2350563cf5754bb23c51701a8ec4fb3c5cdcbedae6747"
-    ),
-}
-
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -97,19 +85,9 @@ def test_provenance_uses_immutable_https_sources() -> None:
         assert len(source["sha256"]) == 64
         int(source["sha256"], 16)
 
-        for key in ("derivation_base", "runtime_target"):
-            if key not in asset:
-                continue
-            row = asset[key]
-            assert row["repository"].startswith("https://")
-            assert len(row["revision"]) == 40
-            int(row["revision"], 16)
-            assert len(row["sha256"]) == 64
-            int(row["sha256"], 16)
-
 
 def test_moby_profile_declares_its_only_transformation() -> None:
-    asset = _assets()[2]
+    asset = _assets()[0]
     packaged = asset["packaged"]
     source = asset["source_distribution"]
     raw = (ROOT / packaged["path"]).read_bytes()
@@ -131,35 +109,11 @@ def test_moby_profile_declares_its_only_transformation() -> None:
     assert isinstance(profile["syscalls"], list) and profile["syscalls"]
 
 
-def test_overlay_distribution_and_runtime_preimage_are_not_conflated() -> None:
-    flashinfer, modelopt = _assets()[:2]
-
-    for asset in (flashinfer, modelopt):
-        assert asset["transformations"] == []
-        assert asset["packaged"]["sha256"] == asset["source_distribution"]["sha256"]
-        assert asset["packaged"]["size"] == asset["source_distribution"]["size"]
-        assert asset["derivation_base"]["insertions"] > 0
-        assert asset["derivation_base"]["deletions"] == 0
-        assert asset["runtime_target"]["package_version"] == "0.0.0.dev1+g56e290315"
-
-    assert flashinfer["derivation_base"]["revision"] != flashinfer["runtime_target"]["revision"]
-    assert flashinfer["packaged"]["sha256"] != flashinfer["runtime_target"]["sha256"]
-    assert modelopt["derivation_base"]["sha256"] == modelopt["runtime_target"]["sha256"]
-
-
-def test_third_party_license_copies_are_hash_bound() -> None:
-    for relative, expected_hash in EXPECTED_LICENSE_HASHES.items():
-        path = ROOT / relative
-        assert path.is_file() and not path.is_symlink()
-        assert _sha256(path.read_bytes()) == expected_hash
-
-
 def test_clean_wheel_and_sdist_include_vendor_record(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     for relative in ("LICENSE", "NOTICE", "README.md", "pyproject.toml"):
         shutil.copy2(ROOT / relative, source / relative)
-    shutil.copytree(ROOT / "LICENSES", source / "LICENSES")
     shutil.copytree(ROOT / "cacheon", source / "cacheon")
     shutil.copytree(ROOT / "cacheon_kernels", source / "cacheon_kernels")
 
@@ -195,11 +149,13 @@ def test_clean_wheel_and_sdist_include_vendor_record(tmp_path: Path) -> None:
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
         assert required_package_files <= names
-        for relative in ("LICENSE", "NOTICE", *EXPECTED_LICENSE_HASHES):
+        assert not any(name.startswith("cacheon/arena_assets/") for name in names)
+        for relative in ("LICENSE", "NOTICE"):
             member = _wheel_license_member(names, relative)
             assert archive.read(member) == (ROOT / relative).read_bytes()
 
     with tarfile.open(sdist, "r:gz") as archive:
         names = {name.split("/", 1)[1] for name in archive.getnames() if "/" in name}
         assert required_package_files <= names
-        assert {"LICENSE", "NOTICE", *EXPECTED_LICENSE_HASHES} <= names
+        assert {"LICENSE", "NOTICE"} <= names
+        assert not any(name.startswith("cacheon/arena_assets/") for name in names)

@@ -41,6 +41,7 @@ from tests.test_marginal_runtime import FUSED, SILU, _case, _prepared
 POLICY = hashlib.sha256(b"commissioned graph verification policy").hexdigest()
 PROBE_AUTHORITY = hashlib.sha256(b"commissioned graph probe authority").hexdigest()
 REOPENER_AUTHORITY = hashlib.sha256(b"commissioned evidence reopener").hexdigest()
+MODEL_PROFILE = "GLM-5.3-NVFP4"
 
 
 def _h(label: str) -> str:
@@ -294,14 +295,17 @@ def test_future_activation_and_collective_candidates_use_one_stable_builder(
     initial_digest = builder.digest
 
     authority.commission(activation)
-    activation_facts = builder(activation.candidate, activation.prepared)
+    activation_facts = builder(activation.candidate, activation.prepared, MODEL_PROFILE)
     after_activation = builder.digest
     authority.commission(collective)
-    collective_facts = builder(collective.candidate, collective.prepared)
+    collective_facts = builder(collective.candidate, collective.prepared, MODEL_PROFILE)
 
     assert initial_digest == after_activation == builder.digest
     assert activation.candidate.reservation.target_id == "activation.silu_and_mul"
-    assert "collective.ar_residual_rmsnorm" in collective.candidate.reservation.target_members
+    assert collective.candidate.reservation.target_members == (
+        "collective.all_gather_into_tensor",
+        "collective.reduce_scatter_tensor",
+    )
     assert tuple(row.slot_id for row in activation_facts.variants) == (
         activation.candidate.reservation.target_members
     )
@@ -390,8 +394,8 @@ def test_exact_lookup_is_idempotent_and_ignores_unrelated_session_timing(
     authority = _CommissionedAuthority()
     artifact = authority.commission(profile)
     builder = _builder(authority)
-    first = builder(profile.candidate, profile.prepared)
-    second = builder(profile.candidate, profile.prepared)
+    first = builder(profile.candidate, profile.prepared, MODEL_PROFILE)
+    second = builder(profile.candidate, profile.prepared, MODEL_PROFILE)
 
     plan = profile.prepared.session_plan
     changed_plan = replace(
@@ -407,7 +411,7 @@ def test_exact_lookup_is_idempotent_and_ignores_unrelated_session_timing(
         profile.candidate,
         profile.prepared,
     )
-    third = builder(profile.candidate, changed_prepared)
+    third = builder(profile.candidate, changed_prepared, MODEL_PROFILE)
 
     assert first is second is third
     serialized = json.dumps(
@@ -459,7 +463,7 @@ def test_every_artifact_binding_drift_fails_closed(
     authority.install(exact, artifact.canonical_bytes)
 
     with pytest.raises(B300QualificationGraphProviderError, match="binding differs"):
-        _builder(authority)(profile.candidate, profile.prepared)
+        _builder(authority)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
 
 def test_attempt_target_member_and_policy_mismatch_fail_closed(
@@ -475,7 +479,7 @@ def test_attempt_target_member_and_policy_mismatch_fail_closed(
         _artifact(binding).canonical_bytes,
     )
     with pytest.raises(B300QualificationGraphProviderError, match="binding differs"):
-        _builder(authority)(changed_attempt, profile.prepared)
+        _builder(authority)(changed_attempt, profile.prepared, MODEL_PROFILE)
 
     with pytest.raises(B300QualificationGraphProviderError, match="member domain"):
         B300QualificationGraphArtifact(
@@ -497,7 +501,7 @@ def test_attempt_target_member_and_policy_mismatch_fail_closed(
     authority = _CommissionedAuthority()
     authority.install(binding, wrong_policy.canonical_bytes)
     with pytest.raises(B300QualificationGraphProviderError, match="policy differs"):
-        _builder(authority)(profile.candidate, profile.prepared)
+        _builder(authority)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
 
 def test_closed_artifact_and_content_address_fail_closed(
@@ -509,29 +513,29 @@ def test_closed_artifact_and_content_address_fail_closed(
 
     missing = _CommissionedAuthority()
     with pytest.raises(B300QualificationGraphProviderError, match="probe failed"):
-        _builder(missing)(profile.candidate, profile.prepared)
+        _builder(missing)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
     wrong_type = _CommissionedAuthority()
     wrong_type.probe_sequences[binding.digest] = [object()]
     with pytest.raises(B300QualificationGraphProviderError, match="EvidenceArtifactRef"):
-        _builder(wrong_type)(profile.candidate, profile.prepared)
+        _builder(wrong_type)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
     wrong_domain = _CommissionedAuthority()
     wrong_ref = _reference(canonical, domain="cacheon.eval.foreign-graph")
     wrong_domain.install(binding, canonical, reference=wrong_ref)
     with pytest.raises(B300QualificationGraphProviderError, match="closed schema"):
-        _builder(wrong_domain)(profile.candidate, profile.prepared)
+        _builder(wrong_domain)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
     wrong_bytes = _CommissionedAuthority()
     wrong_bytes.install(binding, canonical, reopened=canonical + b"\n")
     with pytest.raises(B300QualificationGraphProviderError, match="content-addressed"):
-        _builder(wrong_bytes)(profile.candidate, profile.prepared)
+        _builder(wrong_bytes)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
     noncanonical = canonical + b"\n"
     noncanonical_authority = _CommissionedAuthority()
     noncanonical_authority.install(binding, noncanonical)
     with pytest.raises(B300QualificationGraphProviderError, match="canonical JSON"):
-        _builder(noncanonical_authority)(profile.candidate, profile.prepared)
+        _builder(noncanonical_authority)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
     extra = json.loads(canonical)
     extra["throughput"] = 123
@@ -539,7 +543,7 @@ def test_closed_artifact_and_content_address_fail_closed(
     extra_authority = _CommissionedAuthority()
     extra_authority.install(binding, extra_bytes)
     with pytest.raises(B300QualificationGraphProviderError, match="closed schema"):
-        _builder(extra_authority)(profile.candidate, profile.prepared)
+        _builder(extra_authority)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
 
 @pytest.mark.parametrize(
@@ -601,7 +605,7 @@ def test_converter_rejects_partial_short_ambiguous_or_infrastructure_evidence(
     authority.install(binding, artifact.canonical_bytes)
 
     with pytest.raises(B300QualificationGraphProviderError, match=match):
-        _builder(authority)(profile.candidate, profile.prepared)
+        _builder(authority)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
 
 def test_complete_candidate_failure_remains_raw_facts_not_a_provider_grade(
@@ -622,7 +626,7 @@ def test_complete_candidate_failure_remains_raw_facts_not_a_provider_grade(
     artifact = _artifact(binding, records=records)
     authority = _CommissionedAuthority()
     authority.install(binding, artifact.canonical_bytes)
-    facts = _builder(authority)(profile.candidate, profile.prepared)
+    facts = _builder(authority)(profile.candidate, profile.prepared, MODEL_PROFILE)
 
     assert all(
         observation.shapes[0].failure_kind == "capture"
@@ -644,7 +648,7 @@ def test_same_binding_concurrency_is_serial_and_conflicting_evidence_fails_close
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
-            pool.submit(builder, profile.candidate, profile.prepared)
+            pool.submit(builder, profile.candidate, profile.prepared, MODEL_PROFILE)
             for _ in range(2)
         ]
     assert futures[0].result() is futures[1].result()
@@ -661,7 +665,7 @@ def test_same_binding_concurrency_is_serial_and_conflicting_evidence_fails_close
     conflict_builder = _builder(authority)
     with ThreadPoolExecutor(max_workers=2) as pool:
         conflicting = [
-            pool.submit(conflict_builder, profile.candidate, profile.prepared)
+            pool.submit(conflict_builder, profile.candidate, profile.prepared, MODEL_PROFILE)
             for _ in range(2)
         ]
     outcomes = []
@@ -685,7 +689,7 @@ def test_distinct_candidates_can_be_commissioned_concurrently(
     builder = _builder(authority)
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
-            pool.submit(builder, profile.candidate, profile.prepared)
+            pool.submit(builder, profile.candidate, profile.prepared, MODEL_PROFILE)
             for profile in profiles
         ]
     facts = [future.result() for future in futures]
@@ -716,5 +720,22 @@ def test_graph_evidence_hold_survives_the_facts_builder(
         raise_hold if phase == "reopen" else authority.reopen,
     )
     with pytest.raises(B300QualificationGraphEvidenceHold) as caught:
-        builder(profile.candidate, profile.prepared)
+        builder(profile.candidate, profile.prepared, MODEL_PROFILE)
     assert caught.value is hold
+
+
+def test_builder_requires_the_policy_model_profile_key(
+    profiles: tuple[_Profile, _Profile],
+) -> None:
+    """The planner passes the registered policy's profile; the 2026-09-06 mock
+    mainnet run held every GLM qualification because the builder did not take it."""
+    profile = profiles[0]
+    authority = _CommissionedAuthority()
+    authority.commission(profile)
+    builder = _builder(authority)
+    with pytest.raises(TypeError):
+        builder(profile.candidate, profile.prepared)  # type: ignore[call-arg]
+    with pytest.raises(B300QualificationGraphProviderError):
+        builder(profile.candidate, profile.prepared, "")
+    facts = builder(profile.candidate, profile.prepared, MODEL_PROFILE)
+    assert facts == builder(profile.candidate, profile.prepared, "MiniMax-M3")

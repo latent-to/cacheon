@@ -27,7 +27,6 @@ from cacheon.eval.b300_qualification_lanes import (
     B300QualificationLanePair,
     B300QualificationLanePolicy,
 )
-from cacheon.eval.b300_registered_qualification import REGISTERED_B300_TARGET_IDS
 from cacheon.eval.b300_sealed_qualification_commission import (
     QUALIFICATION_DEADLINE_MAXIMUM_SECONDS,
 )
@@ -35,6 +34,7 @@ from cacheon.eval.calibration import CalibrationEvidenceSet, derive_calibration_
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import (
+    M3_REGISTERED_TARGET_IDS,
     StubHiddenJudge as _Judge,
     gpu as _gpu,
     qualification_capabilities as _capabilities,
@@ -198,17 +198,23 @@ def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> N
             _h(f"resolver:{target_id}"),
             lambda _candidate, _prepared: object(),
         )
-        for target_id in REGISTERED_B300_TARGET_IDS
+        for target_id in M3_REGISTERED_TARGET_IDS
     )
 
-    assert tuple(commission._require_complete_factory_profiles(profiles)) == (
-        REGISTERED_B300_TARGET_IDS
+    assert tuple(
+        commission._require_complete_factory_profiles(
+            profiles, M3_REGISTERED_TARGET_IDS
+        )
+    ) == (
+        M3_REGISTERED_TARGET_IDS
     )
     with pytest.raises(
         commission.B300QualificationCommissionError,
         match="full catalog",
     ):
-        commission._require_complete_factory_profiles(profiles[:-1])
+        commission._require_complete_factory_profiles(
+            profiles[:-1], M3_REGISTERED_TARGET_IDS
+        )
 
 
 def test_lane_policies_reopen_exact_canonical_pair() -> None:
@@ -466,14 +472,42 @@ def test_compose_rejects_a_session_that_differs_from_the_declared_cell() -> None
             inputs, policy, session, {"min_windows": 3}
         )
 
-
-def test_qualification_swap_root_is_runtime_traversable(tmp_path: Path) -> None:
-    root = commission._swap_intake_root(tmp_path / "resident-intake" / "A")
-    assert root.stat().st_mode & 0o777 == 0o711
-
-    root.chmod(0o700)
-    assert commission._swap_intake_root(root) == root
-    assert root.stat().st_mode & 0o777 == 0o711
+    mixed = Workload(
+        _h("mixed"),
+        "seed-v1",
+        (
+            WorkloadCell("s8", 8192, 1024, 2, 2),
+            WorkloadCell("l65", 65536, 4096, 1, 3),
+        ),
+    )
+    mixed_inputs = SimpleNamespace(
+        workload=mixed,
+        prompt_batches=(("a", "b"), ("c", "d"), ("e",), ("f",), ("g",), ("h",)),
+        prompt_batch_cells=("s8", "s8", "s8", "l65", "l65", "l65"),
+    )
+    mixed_policy = SimpleNamespace(tokens_per_prompt=4096)
+    with pytest.raises(commission.B300QualificationCommissionError, match="conform"):
+        commission._require_cell_conformance(
+            mixed_inputs, mixed_policy, {"warmup_count": 1}, {"min_windows": 5}
+        )
+    # The producer seals the extra prompt AND its answer before composition;
+    # inserting it only in the runtime plan would shift hidden-judge identities.
+    warm = SimpleNamespace(
+        workload=mixed,
+        prompt_batches=(mixed_inputs.prompt_batches[0], mixed_inputs.prompt_batches[3],
+                        *mixed_inputs.prompt_batches[1:]),
+        prompt_batch_cells=("s8", "l65", *mixed_inputs.prompt_batch_cells[1:]),
+    )
+    commission._require_cell_conformance(
+        warm, mixed_policy, {"warmup_count": 2}, {"min_windows": 5}
+    )
+    assert warm.prompt_batches[2:] == mixed_inputs.prompt_batches[1:]
+    assert warm.prompt_batch_cells[2:].count("s8") == 2
+    assert warm.prompt_batch_cells[2:].count("l65") == 3
+    with pytest.raises(commission.B300QualificationCommissionError, match="conform"):
+        commission._require_cell_conformance(
+            warm, mixed_policy, {"warmup_count": 3}, {"min_windows": 5}
+        )
 
 
 def test_commissioned_authority_materializes_the_declared_incumbent(
@@ -522,83 +556,3 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     assert incumbent_tree.runtime_manifest == "manifest.toml"
     assert incumbent_tree.stack_digest == incumbent.digest
     assert incumbent.digest != stock.digest
-
-
-def test_sealed_incumbent_bundle_is_derived_staged_and_bounded(
-    tmp_path: Path,
-) -> None:
-    """The v7 baseline injection identity is sealed from the stack entry.
-
-    Digest and slot set come from the resolver-verified source and the
-    registered target's members — never from a runtime swap acknowledgement —
-    and the bundle bytes are staged content-addressed into the swap intake.
-    Anything one swap cannot realize returns None (the two-process route),
-    not an error.
-    """
-
-    import tests.test_engine_tree as engine_tree_fixtures
-    from cacheon.bundle_hash import content_hash
-
-    source = engine_tree_fixtures._copy(tmp_path)
-    catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
-    intake = commission._swap_intake_root(tmp_path / "resident-intake" / "A")
-    resolver = SimpleNamespace(resolve_proposal=lambda digest: source)
-
-    genesis = SimpleNamespace(incumbent_entries={}, source_resolver=resolver)
-    assert commission._sealed_incumbent_bundle(genesis, catalog, intake) is None
-
-    capabilities = SimpleNamespace(
-        incumbent_entries={ref.target_id: ref}, source_resolver=resolver
-    )
-    sealed = commission._sealed_incumbent_bundle(capabilities, catalog, intake)
-    assert sealed is not None
-    assert sealed.target_id == ref.target_id
-    assert sealed.bundle_digest == ref.artifact_digest
-    assert sealed.slots == tuple(sorted(catalog.require(ref.target_id).members))
-    staged = intake / sealed.bundle_digest
-    assert staged.is_dir()
-    assert content_hash(staged) == sealed.bundle_digest
-
-    multiple = SimpleNamespace(
-        incumbent_entries={ref.target_id: ref, "second.target": ref},
-        source_resolver=resolver,
-    )
-    assert commission._sealed_incumbent_bundle(multiple, catalog, intake) is None
-
-
-def test_sealed_incumbent_bundle_refuses_unswappable_and_foreign_slots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import tests.test_engine_tree as engine_tree_fixtures
-    from cacheon.eval import resident_screen_lane
-
-    source = engine_tree_fixtures._copy(tmp_path)
-    catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
-    intake = commission._swap_intake_root(tmp_path / "resident-intake" / "A")
-    capabilities = SimpleNamespace(
-        incumbent_entries={ref.target_id: ref},
-        source_resolver=SimpleNamespace(resolve_proposal=lambda digest: source),
-    )
-
-    monkeypatch.setattr(
-        resident_screen_lane,
-        "screen_swappability",
-        lambda manifest: "native-rebuild bundles are not swappable",
-    )
-    assert (
-        commission._sealed_incumbent_bundle(capabilities, catalog, intake) is None
-    )
-
-    import cacheon.manifest as manifest_module
-
-    monkeypatch.setattr(resident_screen_lane, "screen_swappability", lambda m: None)
-    monkeypatch.setattr(
-        manifest_module,
-        "load_manifest",
-        lambda path: SimpleNamespace(ops=(SimpleNamespace(slot="foreign.slot"),)),
-    )
-    with pytest.raises(
-        commission.B300QualificationCommissionError,
-        match="differ from its registered target members",
-    ):
-        commission._sealed_incumbent_bundle(capabilities, catalog, intake)

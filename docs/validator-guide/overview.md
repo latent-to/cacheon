@@ -30,7 +30,7 @@ flowchart LR
     Private --> Publication["Immutable worker publication"]
     Publication --> Screen["Resident screen<br/>routing only"]
     Screen --> Arena["Injected arena service<br/>trusted provider"]
-    Arena --> OCI["Current speed substrate<br/>v7 B/C/[B′] or v8 B/C/B′"]
+    Arena --> OCI["Two-process speed substrate<br/>B/C/B′ (v10, v11 mixed-cell)"]
     OCI --> Audit["Audit-only role"]
     Audit --> T["Pristine T reference<br/>candidate-free"]
     T --> Evidence["Content-addressed evidence"]
@@ -40,9 +40,7 @@ flowchart LR
     Evidence -. "referenced artifacts" .-> Recovery
     Store --> Signer["Weight reconciler<br/>hotkey only"]
     Signer --> Chain
-    Store -. "reviewed crown input" .-> Integration["Integration and release authority"]
-    Integration --> Registry["Signed engine release / registry"]
-    Registry --> Serving["Production serving fleet<br/>no chain access"]
+    Store -. "never automatic" .-> Integration["Integration, release, serving<br/>outside this repository"]
 ```
 
 The boxes imply operational boundaries:
@@ -81,13 +79,11 @@ The current validator path is deliberately staged:
 5. Copy the private intake tree into an immutable worker publication.
 6. Run registered, non-crownable screens, using the routing-only resident screen for
    swappable candidates and an explicit waiver for non-swappable candidates.
-7. Qualify promoted candidates under the version-3 protocol: v7 resident B/C
-   with B′ only when inconclusive, or v8 two-process B/C/B′, then audit and
-   pristine T.
-8. Require an independent reproduction of the same candidate identity with the exact
-   physical TP-lane role swap.
-9. Apply target and evaluation-stack changes in one settlement transaction.
-10. Reconcile the global reward projection from a separate signer process.
+7. Qualify promoted candidates under the version-3 protocol: two-process
+   B/C/B′ (v10, or v11 for a mixed-cell workload), then audit and pristine T.
+8. Reopen the complete audited PASS and apply target and evaluation-stack changes
+   in one settlement transaction.
+9. Reconcile the global reward projection from a separate signer process.
 
 One reservation therefore crosses three different kinds of state:
 
@@ -96,7 +92,7 @@ One reservation therefore crosses three different kinds of state:
 | Arrival | Finalized cursor and `reserved` row | Intake controller |
 | Transport | `fetching` → `transport_retry`, `failed`, or `published` | Intake controller |
 | Screening | `screening` → `promoted`, retry lane, `failed`, or `held` | Registered arena service through the controller |
-| Qualification | `qualifying` → `reproduction_pending`, `qualified`, `failed`, or `no_decision` | Qualification authority plus transactional store projection |
+| Qualification | `qualifying` → `qualified`, `failed`, or `no_decision` | Qualification authority plus transactional store projection |
 | Settlement | Leased candidate, event journal, stack generation, active claims | Pure planner plus SQLite transaction |
 | Emissions | Legacy V1 standing projection and append-only publication journal | Separate weight reconciler |
 | Shipping | Integration record and signed release | Release authority, never the settlement loop |
@@ -214,8 +210,8 @@ validator passes or stop the controller cleanly for reconciliation; do not add a
 writer, copy a live WAL database into place, or remove the lock file to force access.
 
 Immutable publications and evidence roots are durable dependencies of standing state.
-Deleting them after a crown can make later settlement reopening, reward projection, or
-integration review fail closed. Treat retention, backup, and restore as part of consensus
+Deleting them after a crown can make later settlement reopening or reward projection
+fail closed. Treat retention, backup, and restore as part of consensus
 operations, not log rotation.
 
 `chain-snapshot` supplies the implemented off-pod recovery format: a SQLite online

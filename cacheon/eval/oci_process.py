@@ -163,10 +163,6 @@ class OCIStderrArtifactReceipt:
     def receipt_sha256(self) -> str:
         return hashlib.sha256(self.receipt_bytes).hexdigest()
 
-    @property
-    def digest(self) -> str:
-        return self.receipt_sha256
-
 
 @dataclass(frozen=True)
 class OCIAttachedDiagnostic:

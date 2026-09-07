@@ -17,16 +17,10 @@ from cacheon.eval.b300_qualification_deployment import (
 )
 from cacheon.eval.b300_registered_qualification_inputs import _COMMISSION_SEAL
 from cacheon.eval.b300_registered_qualification import (
-    REGISTERED_B300_TARGET_IDS,
     B300RegisteredQualificationError,
     B300RegisteredQualificationInputs,
     B300RegisteredQualificationPolicy,
-    SealedIncumbentBundle,
     build_b300_registered_qualification_factory,
-)
-from cacheon.eval.b300_resident_pair_factory import (
-    B300CommissionedResidentPairFactory,
-    B300ResidentStockLanePlan,
 )
 from cacheon.eval.b300_sealed_qualification_commission import (
     B300QualificationCapabilities,
@@ -65,17 +59,10 @@ from cacheon.eval.oci_backend import (
     OCIEngineExecutor,
     TrustedArenaModelMountReceipt,
     expected_runtime_preflight,
-    stage_swap_bundle,
 )
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
-from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.qualification import ReferenceManifest
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
-from cacheon.eval.registered_resident_count_quality import (
-    B300ResidentCountQualityBuilderContext,
-    B300ResidentCountQualityCapability,
-    RegisteredResidentCountQualityError,
-)
 from cacheon.eval.scoring import marginal_workload_digest
 from cacheon.target_catalog import default_target_catalog
 
@@ -173,11 +160,12 @@ def _tracked_deadline_provider(
 
 def _require_complete_factory_profiles(
     profiles: object,
+    registered_target_ids: tuple[str, ...],
 ) -> dict[str, B300RegisteredProfileAuthority]:
     if (
         type(profiles) is not tuple
         or any(type(row) is not B300RegisteredProfileAuthority for row in profiles)
-        or tuple(row.target_id for row in profiles) != REGISTERED_B300_TARGET_IDS
+        or tuple(row.target_id for row in profiles) != registered_target_ids
     ):
         raise B300QualificationCommissionError(
             "registered qualification factory does not cover the full catalog"
@@ -189,78 +177,6 @@ def _private_root(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.chmod(0o700)
     return path
-
-
-def _swap_intake_root(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True, mode=0o711)
-    path.chmod(0o711)
-    return path
-
-
-def _sealed_incumbent_bundle(
-    capabilities: B300QualificationCapabilities,
-    catalog,
-    swap_intake_root: Path,
-) -> SealedIncumbentBundle | None:
-    """Derive and stage the bundle the v7 baseline read injects, or None.
-
-    The identity is sealed from the durable incumbent stack entry and its
-    resolver-verified source manifest — the swap acknowledgement never gets a
-    vote. None is not an error: at genesis, and whenever the incumbent stack
-    is not reachable by one swap (multiple entries, a non-proposal reference,
-    or a non-swappable bundle), every candidate routes to the version-8
-    two-process schedule, whose baseline boots the incumbent tree instead.
-    """
-
-    from cacheon.eval.resident_screen_lane import screen_swappability
-    from cacheon.manifest import load_manifest
-    from cacheon.stack_manifest import ProposalContributionRef
-
-    entries = dict(capabilities.incumbent_entries)
-    if len(entries) != 1:
-        return None
-    ((target_id, ref),) = entries.items()
-    if type(ref) is not ProposalContributionRef:
-        return None
-    try:
-        source = capabilities.source_resolver.resolve_proposal(ref.artifact_digest)
-        manifest = load_manifest(source)
-        if screen_swappability(manifest) is not None:
-            return None
-        slots = tuple(sorted({op.slot for op in manifest.ops}))
-        members = tuple(sorted(catalog.require(target_id).members))
-        if slots != members:
-            raise B300QualificationCommissionError(
-                "incumbent bundle slots differ from its registered target members"
-            )
-        staged = stage_swap_bundle(
-            swap_intake_root, source, expected_digest=ref.artifact_digest
-        )
-        return SealedIncumbentBundle(target_id, staged, slots)
-    except B300QualificationCommissionError:
-        raise
-    except (OSError, TypeError, ValueError, RuntimeError) as exc:
-        raise B300QualificationCommissionError(
-            f"incumbent bundle failed to seal for baseline injection: {exc}"
-        ) from None
-
-
-def _resident_plan(
-    launch: EngineLaunchSpec,
-    binding: TrustedLaunchBinding,
-    workload: SessionExecutionPlan,
-) -> ResidentSessionPlan:
-    return ResidentSessionPlan(
-        launch.digest,
-        workload.expected_engine_config_digest,
-        workload.engine_config,
-        expected_runtime_preflight(launch, binding.runtime_preflight_receipt),
-        10_000,
-        100_000,
-        workload.max_new_tokens,
-        workload.top_logprobs_num,
-        workload.temperature,
-    )
 
 
 def _sealed_calibration(
@@ -350,8 +266,6 @@ def compose_commissioned_qualifications(
         capabilities.source_resolver_digest != block["source_resolver_digest"]
         or capabilities.graph_facts_builder_digest
         != block["graph_facts_builder_digest"]
-        or capabilities.resident_count_quality_builder_digest
-        != block["resident_count_quality_builder_digest"]
     ):
         raise B300QualificationCommissionError(
             "capability identities differ from the sealed commission block"
@@ -368,6 +282,8 @@ def compose_commissioned_qualifications(
     try:
         policy = B300RegisteredQualificationPolicy.seal(
             catalog,
+            registered_target_ids=inputs.registered_target_ids,
+            model_profile_key=inputs.model_profile_key,
             verification_policy_digest=block["verification_policy_digest"],
             nll_tail_threshold=policy_block["nll_tail_threshold"],
             tokens_per_prompt=policy_block["tokens_per_prompt"],
@@ -444,12 +360,30 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
     construction and must die here, not forty minutes into a measured run.
     """
 
-    cell = screen_deployment._scored_cell(inputs.workload)
+    quality_cell = screen_deployment._scored_cell(inputs.workload)
+    batch_cells = getattr(
+        inputs,
+        "prompt_batch_cells",
+        (quality_cell.cell_id,) * len(inputs.prompt_batches),
+    )
+    warmup_cells = batch_cells[:session_block["warmup_count"]]
+    expected_counts = {
+        cell.cell_id: cell.timed_reads
+        + warmup_cells.count(cell.cell_id)
+        for cell in inputs.workload.cells
+    }
+    observed_counts = {
+        cell.cell_id: batch_cells.count(cell.cell_id)
+        for cell in inputs.workload.cells
+    }
     if (
-        policy.tokens_per_prompt != cell.output_tokens
-        or len(inputs.prompt_batches)
-        != session_block["warmup_count"] + cell.timed_reads
-        or speed_block["min_windows"] > cell.timed_reads
+        policy.tokens_per_prompt != max(cell.output_tokens for cell in inputs.workload.cells)
+        or type(batch_cells) is not tuple
+        or len(batch_cells) != len(inputs.prompt_batches)
+        or observed_counts != expected_counts
+        or set(warmup_cells) != {cell.cell_id for cell in inputs.workload.cells}
+        or speed_block["min_windows"]
+        > sum(cell.timed_reads for cell in inputs.workload.cells)
     ):
         raise B300QualificationCommissionError(
             "sealed session does not conform to the declared workload cell"
@@ -475,7 +409,6 @@ def _compose_locked(
     calibration_loader,
 ) -> B300RemoteQualificationCommission:
     snapshot = catalog.snapshot()
-    lane_pair = inputs.qualification_lane_pair
     target_members, context, stock, stock_tree = (
         screen_deployment._commissioned_stock_authority(
             inputs,
@@ -502,10 +435,12 @@ def _compose_locked(
         )
     )
     engine_config = screen_deployment._engine_config(
+        inputs.engine_template,
         target_members,
-        screen_deployment._scored_cell(inputs.workload),
+        inputs.workload.cells,
         disable_cuda_graph=False,
     )
+    dp_size = screen_deployment._data_parallel_size(engine_config)
     baseline_hardware = LogicalHardwareSpec(
         visible_gpu_count=screen_deployment.GPU_COUNT,
         architecture=screen_deployment.ARCHITECTURE,
@@ -513,7 +448,7 @@ def _compose_locked(
         topology_digest=inputs.topology_digest,
         tp_size=screen_deployment.TP_SIZE,
         ep_size=1,
-        dp_size=1,
+        dp_size=dp_size,
         device_policy_digest=candidate_executor.device_policy.policy_sha256,
     )
     baseline_physical = PhysicalHardwareBinding(
@@ -526,7 +461,7 @@ def _compose_locked(
         topology_digest=inputs.topology_digest,
         tp_size=screen_deployment.TP_SIZE,
         ep_size=1,
-        dp_size=1,
+        dp_size=dp_size,
         device_policy_digest=candidate_executor.device_policy.policy_sha256,
     )
     incumbent_native = screen_deployment._native_build(
@@ -579,6 +514,10 @@ def _compose_locked(
         physical_hardware=baseline_physical,
     )
     pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
+    quality_cell = screen_deployment._scored_cell(inputs.workload)
+    cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
+    batch_cells = inputs.prompt_batch_cells
+    mixed_cells = len(inputs.workload.cells) > 1
     baseline_session_plan = SessionExecutionPlan(
         launch_digest=incumbent_launch.digest,
         expected_engine_config_digest=engine_config.digest,
@@ -592,9 +531,17 @@ def _compose_locked(
         max_new_tokens=policy.tokens_per_prompt,
         top_logprobs_num=policy.topk_width,
         temperature=float(session_block["temperature"]),
-        expected_prompt_tokens=screen_deployment._scored_cell(
-            inputs.workload
-        ).input_tokens,
+        expected_prompt_tokens=quality_cell.input_tokens,
+        batch_max_new_tokens=(
+            tuple(cells_by_id[cell_id].output_tokens for cell_id in batch_cells)
+            if mixed_cells
+            else ()
+        ),
+        batch_expected_prompt_tokens=(
+            tuple(cells_by_id[cell_id].input_tokens for cell_id in batch_cells)
+            if mixed_cells
+            else ()
+        ),
     )
     pristine_launch, pristine_session_plan = _pristine_reference_authority(
         incumbent_launch,
@@ -700,61 +647,15 @@ def _compose_locked(
         baseline_executor.config.runtime.digest,
         baseline_executor.device_policy.configuration_sha256,
     )
-    # The standing pair's lane engines boot plain stock; the measured baseline
-    # (the incumbent stack above) is realized inside them by injecting the
-    # sealed incumbent bundle through the swap path. Trust gates on
-    # stock-launched sessions therefore stay exact, and the receipts carry
-    # both identities: the pair binding records each lane's booted stock
-    # launch, the crossover arms record the measured stacks. At genesis the
-    # incumbent tree reproduces stock and the identities coincide.
-    stock_resident_native = screen_deployment._native_build(
-        stock_tree.tree_digest,
-        inputs.preflight,
-        baseline_executor.config.prebuild.policy,
-    )
-    stock_resident_launch = replace(
-        resident_launch,
-        stack_digest=stock_tree.stack_digest,
-        tree_digest=stock_tree.tree_digest,
-        native_build_spec_digest=stock_resident_native.digest,
-    )
-    stock_resident_binding = TrustedLaunchBinding(
-        materialized_tree_root=stock_tree.root,
-        controller_distribution_digest=inputs.controller_distribution_digest,
-        native_build_spec=stock_resident_native,
-        runtime_preflight_receipt=inputs.preflight,
-        physical_hardware=resident_physical,
-    )
-    stock_resident_session_plan = replace(
-        baseline_session_plan,
-        launch_digest=stock_resident_launch.digest,
-        expected_preflight=expected_runtime_preflight(
-            stock_resident_launch, inputs.preflight
-        ),
-    )
-    stock_candidate_launch = replace(
-        incumbent_launch,
-        stack_digest=stock_tree.stack_digest,
-        tree_digest=stock_tree.tree_digest,
-        native_build_spec_digest=pristine_native.digest,
-    )
-    stock_candidate_session_plan = replace(
-        baseline_session_plan,
-        launch_digest=stock_candidate_launch.digest,
-        expected_preflight=expected_runtime_preflight(
-            stock_candidate_launch, inputs.preflight
-        ),
-    )
     resident_speed_policy = ResidentSpeedPolicy.from_calibration(
         max_stage_seconds=speed_block["max_stage_seconds"],
         max_qualification_seconds=speed_block["max_qualification_seconds"],
         calibration=calibration_manifest,
         context=calibration_context,
-        # v7 swaps the baseline arm too. Under v6 only the candidate lane took
-        # a swap, which handed the candidate role a measured advantage on
-        # identical work; every v7 gate is `>=`, so it inherits v6 grading
-        # unchanged and adds only the symmetric swap.
-        version=7,
+        # Versions 10/11 retain B/C/B-prime and require valid stock brackets.
+        # The registered plan seals the same single-cell/mixed-cell choice per
+        # candidate, so the worker never re-derives a substrate.
+        version=11 if mixed_cells else 10,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),
@@ -773,72 +674,6 @@ def _compose_locked(
             runtime_preflight_receipt=inputs.preflight,
             physical_hardware=baseline_physical,
         )
-
-    orientation = lane_pair.orientation(screen_lane)
-    baseline_lane_plan = B300ResidentStockLanePlan(
-        orientation.resident_baseline,
-        stock_tree,
-        stock_resident_launch,
-        stock_resident_binding,
-        _resident_plan(
-            stock_resident_launch,
-            stock_resident_binding,
-            stock_resident_session_plan,
-        ),
-        stock_resident_session_plan,
-        baseline_executor,
-    )
-    candidate_lane_plan = B300ResidentStockLanePlan(
-        orientation.candidate,
-        stock_tree,
-        stock_candidate_launch,
-        pristine_binding.launch_binding,
-        _resident_plan(
-            stock_candidate_launch,
-            pristine_binding.launch_binding,
-            stock_candidate_session_plan,
-        ),
-        stock_candidate_session_plan,
-        candidate_executor,
-    )
-    swap_intake = _swap_intake_root(inputs.root / "resident-intake" / screen_lane)
-    incumbent_bundle = _sealed_incumbent_bundle(capabilities, catalog, swap_intake)
-    resident_pair_factory = B300CommissionedResidentPairFactory(
-        service_digest=manifest.digest,
-        readiness=readiness,
-        lane_pair=lane_pair,
-        lane_plans=(baseline_lane_plan, candidate_lane_plan),
-        model_mount=model_mount,
-        swap_intake_root=swap_intake,
-    )
-    try:
-        # The count-quality envelope is sealed against the stock identity the
-        # lane engines actually boot: stock tree, seam-armed graph-on engine
-        # config. The seamless pristine-T launch is the quality/audit
-        # reference, not this one, and the count builder capability refuses a
-        # launch whose engine config differs from the commissioned stock
-        # derivation.
-        count_context = B300ResidentCountQualityBuilderContext(
-            catalog,
-            stock,
-            stock_candidate_launch,
-            pristine_binding,
-            evidence_root,
-            lane_pair,
-            engine_config.max_running_requests,
-        )
-        resident_count_quality = capabilities.resident_count_quality_builder(
-            count_context
-        )
-        if type(resident_count_quality) is not B300ResidentCountQualityCapability:
-            raise RegisteredResidentCountQualityError(
-                "resident count builder returned another capability type"
-            )
-        resident_count_quality.validate(count_context)
-    except (RegisteredResidentCountQualityError, TypeError, ValueError) as exc:
-        raise B300QualificationCommissionError(
-            f"resident count capability failed to compose: {exc}"
-        ) from None
 
     try:
         factory_inputs = B300RegisteredQualificationInputs(
@@ -871,7 +706,6 @@ def _compose_locked(
             pristine_session_plan=pristine_session_plan,
             resident_baseline_arm=resident_baseline_arm,
             resident_speed_policy=resident_speed_policy,
-            incumbent_bundle=incumbent_bundle,
             candidate_executor_namespace_digest=(
                 candidate_executor.manager.namespace_digest
             ),
@@ -889,7 +723,9 @@ def _compose_locked(
             f"registered qualification factory failed to compose: {exc}"
         ) from None
 
-    factory_rows = _require_complete_factory_profiles(factory.profiles)
+    factory_rows = _require_complete_factory_profiles(
+        factory.profiles, inputs.registered_target_ids
+    )
     profiles = tuple(
         B300RegisteredProfileAuthority(
             target_id,
@@ -900,12 +736,14 @@ def _compose_locked(
         for target_id, spec_digest, resolver_digest in (
             sealed_qualification_profile_rows(
                 catalog,
+                registered_target_ids=inputs.registered_target_ids,
                 builder_source_digest=block["builder_source_digest"],
             )
         )
     )
     construction = B300QualificationConstructionAuthority(
         catalog=catalog,
+        registered_target_ids=inputs.registered_target_ids,
         profiles=profiles,
         incumbent_stack=incumbent,
         incumbent_tree_digest=incumbent_tree.tree_digest,
@@ -915,10 +753,6 @@ def _compose_locked(
         evidence_policy_digest=QUALIFICATION_EVIDENCE_POLICY_DIGEST,
         builder_source_digest=block["builder_source_digest"],
         selection_store_digest=block["selection_store_digest"],
-        resident_count_quality_builder_digest=(
-            block["resident_count_quality_builder_digest"]
-        ),
-        resident_count_quality=resident_count_quality,
         secret_loader=capabilities.secret_loader,
         plan_builder=factory.plan_builder,
         entropy_provider_digest=declared_qualification_entropy_digest(
@@ -944,7 +778,6 @@ def _compose_locked(
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
-        resident_pair_factory=resident_pair_factory,
         screen_lane=screen_lane,
     )
     return B300RemoteQualificationCommission(deployment, construction, readiness)

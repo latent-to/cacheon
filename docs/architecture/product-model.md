@@ -27,14 +27,14 @@ The arrows are evidence-bearing handoffs, not automatic conversions. This is why
 same implementation can simultaneously be a valid crown, an unresolved integration
 candidate, and absent from the current production release without contradiction.
 
-## Four objects, four authorities
+## Two objects, two authorities
 
 | Object | Contents | Authority | May enter production? |
 |---|---|---|---|
 | Proposal | A miner-supplied target delta | Hostile input identified by finalized intake and content digests | No |
-| Crown | Reopened evidence that the proposal improved one arena and attributable target | Referee qualification, independent reproduction, and settlement | Not by itself |
-| Integrated contribution | Reviewed source and tests that preserve the crowned selected payload, with immutable contributor identity | Source control and integration review | Yes, as release input |
-| Engine release | Pinned upstream runtime plus a canonical reviewed stack and sealed release inputs | Signed release descriptor and publication | Yes |
+| Crown | Reopened evidence that the proposal improved one arena and attributable target | Complete audited qualification and settlement | Not by itself |
+
+There is no third row. Integrating crowned source into maintained code, releasing, and serving are separate authorities outside this repository; nothing here is an object a crown can be promoted into.
 
 No step may silently substitute one object for another:
 
@@ -48,21 +48,7 @@ No step may silently substitute one object for another:
 
 A crown answers an economic question: **did this exact attributable delta improve the frozen evaluation incumbent under the registered arena policy?**
 
-Shipping answers a product question: **can reviewed source, still bound to the crowned selected payload, be maintained and safely included in a chain-independent engine release?**
-
-The ship decision separately requires:
-
-- reproduction against the crowned evaluation stack and the current release context;
-- correctness and maintained fallback behavior;
-- security review;
-- license and provenance approval;
-- compatibility with active contributions and the pinned SGLang revision;
-- reviewed Cacheon source that preserves the crowned selected payload, plus
-  maintained surrounding packaging and tests;
-- immutable contribution attribution;
-- exact release, native, model, and policy identities.
-
-This permits emissions to follow crown policy while production deployment follows a separate review.
+Shipping is a product question this repository does not answer. Whether crowned source can be maintained and safely served is decided outside it, with its own reproduction, correctness, security, license, provenance, compatibility, packaging, and attribution review. Emissions follow crown policy; production deployment follows that separate review.
 
 ## Marginal contribution, complete execution
 
@@ -70,13 +56,13 @@ Cacheon deliberately separates economic identity from process identity.
 
 The **execution unit** is a complete engine. Production version-3 qualification
 materializes the exact incumbent and one-target-transition candidate engines and
-selects a speed substrate from the candidate's manifest features. Hot-swappable
-candidates use speed policy v7 on two disjoint standing TP lanes: serialized B/C,
-with B′ only when the first comparison cannot decide. Non-swappable candidates
-use v8's separate baseline and candidate engine processes and always collect
-B/C/B′. The candidate then runs in a separate eager, untimed audit role A, and
+measures them on the two-process substrate: speed policy v10 launches separate
+baseline and candidate engine processes on two disjoint TP lanes and always
+collects B/C/B′. Mixed-cell arenas use the same two-process B/C/B′ schedule under v11,
+which grades total timed tokens over the complete sealed mixture. The candidate
+then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
-trust domain. C′/B″ are historical v2–v5 evidence shapes, not current reads.
+trust domain. C′/B″ are not reads on this substrate; their schedules are deleted.
 
 The **reward unit** is the smallest validator-controlled attributable delta:
 
@@ -84,6 +70,10 @@ The **reward unit** is the smallest validator-controlled attributable delta:
 - one registered atomic target spanning an explicit set of semantic regions.
 
 The candidate stack is built by the validator. It equals the incumbent stack except for one selected target transition. The miner does not supply the incumbent entries and does not gain attribution for the whole engine simply because the complete engine is the safe execution envelope.
+
+The measurement incumbent is pinned by the operator's commission. Settlement can
+record a new crown while qualification continues against that same baseline;
+changing the measured incumbent requires an explicit operator commission.
 
 This is the core composability property: later work can be evaluated on top of earlier wins without copying earlier contributors' artifacts and without collapsing attribution into winner-take-all engine ownership.
 
@@ -97,35 +87,30 @@ that may add another 3%:
    onto the resident baseline lane.
 2. It materializes the candidate engine from that same stack, replacing only B's
    declared registered target, and loads it once onto the disjoint candidate lane.
-   Timed work is serialized. A hot-swappable v7 attempt takes B/C and adds B′
-   only when needed; a non-swappable v8 attempt takes B/C/B′ unconditionally.
+   Timed work is serialized. Every attempt takes B/C/B′ unconditionally.
 3. B's hosted bundle does not need to contain A. The validator supplies A from the
    incumbent manifest and gives B attribution only for the selected delta introduced by B.
 4. The registered eager audit role checks the candidate delta outside the timed resident
    reads. T then grades the sealed candidate trajectory using a pristine candidate-free
    reference. The earlier contribution A is not allowed to grade B merely because it is
    in the incumbent.
-5. If two independent qualifications pass, settlement may update the evaluation stack to
-   contain both A and B. The release stack is still unchanged.
-6. If B later passes integration review, a new integrated reference can be selected for a
-   future signed release. That product decision does not alter A's or B's historical crown
-   evidence.
+5. If one complete audited qualification passes, settlement may update the evaluation stack to
+   contain both A and B. Nothing outside the evaluation stack changes.
 
 This example is conceptual; the percentages are not claims about a recorded Cacheon run.
 Its point is the identity split: the worker executes a complete A+B engine, while the
-economic transition and integration record describe only B's registered delta.
+economic transition describes only B's registered delta.
 
-## Two stacks and a trusted reference
+## One stack and a trusted reference
 
 The product model is reflected directly in manifest types:
 
 | Manifest | May contain hostile proposal code? | Arena-bound? | Used for timing? | Used for serving? |
 |---|---:|---:|---:|---:|
 | `EvaluationStackManifest` | Yes | Yes | Yes | No |
-| `EngineReleaseManifest` | No; integrated contributions only | No | Release validation only | Yes |
 | `ReferenceManifest` | No; validator-owned | Quality profile-bound | No | No |
 
-The evaluation stack is an economic hill-climb state. The release manifest is a product state. The reference manifest is semantic authority. A crown can transactionally update the first; only reviewed promotion and signing can create a new instance of the second. See [Stacks and manifests](stacks.md).
+The evaluation stack is an economic hill-climb state; the reference manifest is semantic authority. A crown can transactionally update the first and never touches the second. See [Stacks and manifests](stacks.md).
 
 ## Registered targets
 
@@ -135,11 +120,15 @@ The validator-owned target catalog defines what can receive ordinary attribution
 - singleton members or the explicit members of an atomic target;
 - the frozen slot contract digest;
 - permitted contribution features;
-- overlap, displacement, requirements, and composition precedence.
+- overlap, displacement, conflicts, and requirements.
 
 Miner packaging and manifest row order do not define economic scope. A bundle that explicitly claims a registered target but does not resolve to its exact members and allowed features fails resolution rather than falling through to an unregistered identity.
 
-The registered catalog contains every singleton slot and the atomic `collective.moe_epilogue.v1` target. The atomic target owns both `collective.ar_residual_rmsnorm` and `collective.moe_finalize_ar_rmsnorm`, and explicitly displaces the corresponding singleton targets while active. The live policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
+The registered catalog contains every singleton slot and the atomic
+`collective.dp_attention_exchange.v1` target. The atomic target owns both
+`collective.all_gather_into_tensor` and `collective.reduce_scatter_tensor`, and
+explicitly displaces the corresponding singleton targets while active. The live
+policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## Unregistered work
 
@@ -182,9 +171,7 @@ Keeping the service plane outside normal submissions limits the blast radius of 
 
 ## Chain independence
 
-A valid engine release has no runtime dependency on Bittensor, wallets, miner endpoints, current weights, or referee databases. The chain determines proposal priority and reward state; it does not dynamically choose production code.
-
-The release build consumes reviewed source and exact, signed inputs. The serving container consumes the signed release publication and a sealed model tree. If chain access and miner hosting disappear, the released engine remains rebuildable, verifiable, and deployable from its retained artifacts.
+The chain determines proposal priority and reward state; it does not choose production code. No serving artifact is produced from referee state, and nothing that runs outside the referee depends on Bittensor, wallets, miner endpoints, current weights, or referee databases.
 
 ## Architectural acceptance test
 
@@ -193,8 +180,7 @@ The product model is intact only if all six statements hold:
 1. Removing chain access and miner hosting does not prevent rebuilding or serving the latest signed release.
 2. A new component is evaluated as one marginal substitution over the current stack.
 3. The trusted controller never imports candidate code; candidate runtime execution stays
-   inside a complete isolated engine, while a sealed-direct-artifact factory may execute
-   only inside its further isolated no-network/no-GPU compiler child.
+   inside a complete isolated engine.
 4. A whole-system prototype cannot acquire a duplicate permanent whole-engine reward title by packaging alone.
 5. Every shipped component resolves to reviewed source and immutable attribution.
 6. Updating the evaluation incumbent and publishing a release are independent, explicitly authorized state transitions.
@@ -208,9 +194,8 @@ Before extending Cacheon, locate the feature in this model:
 2. **Who supplies surrounding code?** The validator must assemble the incumbent; a miner
    must not be required to redistribute other contributors' bundles.
 3. **Where does hostile code execute?** Runtime proposal code belongs only in the complete
-   isolated evaluation engine. A direct-artifact factory may run only in the bounded
-   compiler child during disposable prebuild. Neither path may import candidate code into
-   the controller or carry a miner runtime callback into a serving release.
+   isolated evaluation engine. It may not import candidate code into the controller or
+   carry a miner runtime callback into a serving release.
 4. **What creates product authority?** Identify the review record, preserved selected
    payload, integrated source, maintained tests, and release decision.
 5. **Can the resulting release stand alone?** Rebuild, verification, and serving must not

@@ -452,31 +452,22 @@ def run_with_runtime(
                     " deployment authorities"
                 )
             body = wire.body
-            candidates = body.get("candidates")
+            from cacheon.chain.qualification_request import require_commissioned_incumbent
+
+            service = runtime._commissioned_service
+            if service is not None and body.get("screen_lane") == "reproduction":
+                qualification_commission = service.reproduction_commission
+            require_commissioned_incumbent(body, qualification_commission.construction)
+            candidates = body["candidates"]
             # Cohort size is enforced against the sealed manifest capacity by
             # B300RemoteQualificationAdapter.run before any resident work.
-            if (
-                type(candidates) is not list
-                or not candidates
-                or any(
-                    type(row) is not dict or "publication" not in row
-                    for row in candidates
-                )
-            ):
-                raise AdapterError(
-                    "qualification request does not contain a closed promoted cohort"
-                )
             publications = resolve_cohort_publications(
                 outer,
                 request_dir,
                 candidates,
                 runtime.paths.publication_root,
             )
-            screen_lane = body.get("screen_lane")
-            if screen_lane not in {"primary", "reproduction"}:
-                raise AdapterError(
-                    "qualification request lacks an exact commissioned stage"
-                )
+            screen_lane = body["screen_lane"]
             qualification_adapter = runtime.qualification_adapter_for(
                 publications,
                 screen_lane,
@@ -571,6 +562,7 @@ def run_with_runtime(
         ) from exc
     append_run_event(journal, request_id, f"adapter.{stage}", "completed")
     append_run_event(journal, request_id, "adapter.response", "completed")
+    return stage
 
 
 def _run(request_dir: Path, result_dir: Path, paths: AdapterPaths) -> None:
@@ -677,11 +669,12 @@ def serve_runtime(
     for raw in input_stream:
         request_id: str | None = None
         result_dir: Path | None = None
+        stage: str | None = None
         try:
             request_id, request_dir, result_dir = validated_command_paths(raw, paths)
             with bind_request(result_dir, request_id):
                 try:
-                    run_with_runtime(request_dir, result_dir, runtime)
+                    stage = run_with_runtime(request_dir, result_dir, runtime)
                 except BaseException as exc:
                     append_run_event(
                         journal_path(result_dir),
@@ -720,15 +713,25 @@ def serve_runtime(
             )
             _emit_control("epoch_failed", request_id, output=control_output)
             return 2
-        if runtime.resident_screen_latched():
+        retire_reason: str | None = None
+        if stage == "qualification":
+            # The qualification's lane containers keep the GPUs after the
+            # verdict, so the next screen's idle-envelope drain times out
+            # (2026-09-02/03: one ~5-minute infrastructure release per
+            # qualification→screen transition).  Retire behind the durable
+            # result; the next request boots a fresh adapter on idle GPUs.
+            retire_reason = "qualification_completed"
+        elif runtime.resident_screen_latched():
             # A stock-canary miss or a dead resident engine latches the
             # lifetime after a completed result.  Retire this process now,
             # with the result already durable, so the pod boots a fresh
             # adapter for the next request instead of sacrificing it to the
             # latch (2026-09-02: one paid request lost per canary miss).
+            retire_reason = "resident_screen_latched"
+        if retire_reason is not None:
             print(
                 "CACHEON-B300-ADAPTER-RETIRED: "
-                f"request={request_id} reason=resident_screen_latched",
+                f"request={request_id} reason={retire_reason}",
                 file=sys.stderr,
                 flush=True,
             )

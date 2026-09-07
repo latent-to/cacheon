@@ -5,7 +5,6 @@ import importlib
 import json
 import os
 import shutil
-import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -16,42 +15,29 @@ import pytest
 import cacheon.engine_tree as engine_tree
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
-from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.engine_tree import (
     EngineTreeError,
     inspect_contribution,
-    integrated_source_tree_digest,
+    source_tree_digest,
     materialize_engine_tree,
-    promote_integrated_contribution,
     reopen_materialized_engine_tree,
 )
 from cacheon.manifest import load_manifest
 from cacheon.sandbox import load_module
-from cacheon.settlement import (
-    SettlementCandidate,
-    SettlementEvidence,
-    SettlementEventType,
-    SettlementQualification,
-    plan_settlement,
-)
 from cacheon.stack_manifest import (
-    EngineReleaseManifest,
     EvaluationStackContext,
     EvaluationStackManifest,
-    IntegrationReviewRecord,
-    IntegrationReviewArtifacts,
-    IntegratedContributionRef,
     ProposalContributionRef,
-    ReleaseStackContext,
 )
 from cacheon.stack_plan import RollbackPlan, plan_candidate_stack, plan_marginal_arm
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
+ROOT = Path(__file__).parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
-MSA = FIXTURES / "stack_msa_singleton"
-FUSED = FIXTURES / "stack_fused_epilogue_atomic"
+SINGLETON = FIXTURES / "stack_norm_singleton"
+FUSED = ROOT / "examples" / "miner_dp_attention_exchange_torch"
 
 
 def _digest(label: str) -> str:
@@ -60,12 +46,6 @@ def _digest(label: str) -> str:
 
 def _audit_policy(label: str, slots: tuple[str, ...]) -> SlotAuditPolicy:
     return SlotAuditPolicy(_digest(f"audit-seed:{label}")[:32], 100_000, 32, slots, 1)
-
-
-def _evidence(domain: str, digest: str) -> EvidenceArtifactRef:
-    return EvidenceArtifactRef(
-        domain, digest, 1, "application/json", f"cacheon.{domain}.v1"
-    )
 
 
 def _spec_digests(catalog: TargetCatalog) -> dict[str, str]:
@@ -99,18 +79,8 @@ def _proposal_ref(source: Path, catalog: TargetCatalog) -> ProposalContributionR
     )
 
 
-def _sources(
-    *rows: tuple[ProposalContributionRef | IntegratedContributionRef, Path]
-) -> dict[tuple[str, str], Path]:
-    result: dict[tuple[str, str], Path] = {}
-    for ref, source in rows:
-        key = (
-            ("proposal", ref.artifact_digest)
-            if isinstance(ref, ProposalContributionRef)
-            else ("integrated", ref.integrated_source_tree_digest)
-        )
-        result[key] = source
-    return result
+def _sources(*rows: tuple[ProposalContributionRef, Path]) -> dict[tuple[str, str], Path]:
+    return {("proposal", ref.artifact_digest): source for ref, source in rows}
 
 
 def _evaluation_stack(
@@ -164,6 +134,12 @@ def _write_moe_fixture(root: Path, target: str, entry: str) -> Path:
     return root
 
 
+def _native_fixture(tmp_path: Path) -> Path:
+    return _write_moe_fixture(
+        tmp_path / "source", "moe.fused_experts", "fused_experts"
+    )
+
+
 def _materialize(stack, context, catalog, resolver, destination, **kwargs):
     return materialize_engine_tree(
         stack,
@@ -182,7 +158,7 @@ def _arranged(source: Path):
     return catalog, context, ref, _evaluation_stack(catalog, context, ref)
 
 
-def _copy(tmp_path: Path, fixture: Path = MSA, name: str = "source") -> Path:
+def _copy(tmp_path: Path, fixture: Path = SINGLETON, name: str = "source") -> Path:
     destination = tmp_path / name
     shutil.copytree(fixture, destination)
     return destination
@@ -205,9 +181,9 @@ def _declare_cuda(source: Path, extra: str) -> None:
 
 
 def test_singleton_materialization_projects_metadata_and_reopens(tmp_path: Path) -> None:
-    catalog, context, ref, stack = _arranged(MSA)
+    catalog, context, ref, stack = _arranged(SINGLETON)
 
-    result = _materialize(stack, context, catalog, _sources((ref, MSA)), tmp_path / "engine")
+    result = _materialize(stack, context, catalog, _sources((ref, SINGLETON)), tmp_path / "engine")
 
     assert result.stack_digest == stack.digest
     assert result.runtime_manifest == "manifest.toml"
@@ -226,7 +202,7 @@ def test_singleton_materialization_projects_metadata_and_reopens(tmp_path: Path)
 
 def test_materialization_accepts_exact_typed_worker_bundle_carrier(tmp_path: Path) -> None:
     source = tmp_path / "private-source"
-    shutil.copytree(MSA, source)
+    shutil.copytree(SINGLETON, source)
     for path in source.rglob("*"):
         path.chmod(0o700 if path.is_dir() else 0o600)
     source.chmod(0o700)
@@ -260,7 +236,7 @@ def test_multiple_variants_share_selected_source_without_order_authority(
     with (source / "manifest.toml").open("a") as manifest:
         manifest.write(
             "\n[[ops]]\n"
-            'slot = "attention.msa_prefill_block_score"\n'
+            'slot = "norm.rmsnorm"\n'
             'variant = "wide"\n'
             'source = "kernels/blockscore.py"\n'
             'entry = "blockscore"\n'
@@ -280,7 +256,7 @@ def test_overlapping_variant_domains_reject_before_ref_identity(tmp_path: Path) 
     with (source / "manifest.toml").open("a") as manifest:
         manifest.write(
             "\n[[ops]]\n"
-            'slot = "attention.msa_prefill_block_score"\n'
+            'slot = "norm.rmsnorm"\n'
             'variant = "overlap"\n'
             'source = "kernels/blockscore.py"\n'
             'entry = "blockscore"\n'
@@ -292,9 +268,7 @@ def test_overlapping_variant_domains_reject_before_ref_identity(tmp_path: Path) 
         inspect_contribution(source, catalog=default_target_catalog())
 
 
-def test_atomic_materialization_namespaces_native_patch_and_rebuild(
-    tmp_path: Path,
-) -> None:
+def test_atomic_materialization_namespaces_both_members(tmp_path: Path) -> None:
     source_hash = content_hash(FUSED)
     source_modes = {
         path.relative_to(FUSED): path.stat().st_mode
@@ -307,27 +281,13 @@ def test_atomic_materialization_namespaces_native_patch_and_rebuild(
 
     manifest = load_manifest(result.root)
     assert {op.slot for op in manifest.ops} == {
-        "collective.ar_residual_rmsnorm",
-        "collective.moe_finalize_ar_rmsnorm",
+        "collective.all_gather_into_tensor",
+        "collective.reduce_scatter_tensor",
     }
-    assert len(manifest.dep_patches) == 1
     assert all(op.source.startswith("entries/cacheon_c_") for op in manifest.ops)
-    assert all(op.cuda_sources[0].startswith("cuda/cacheon_c_") for op in manifest.ops)
     source = (result.root / manifest.ops[0].source).read_text()
     assert "from cacheon_c_" in source
-    assert "import fused_epilogue_sm103" not in source
-    assert json.loads((result.root / "rebuild.json").read_text()) == {
-        "steps": [
-            {
-                "path": "cacheon/patchers/apply_dep_patch.py",
-                "type": "repo_python",
-            },
-            {
-                "path": "cacheon/patchers/build_cuda_ext.py",
-                "type": "repo_python",
-            },
-        ]
-    }
+    assert not (result.root / "rebuild.json").exists()
     assert content_hash(FUSED) == source_hash
     assert source_modes == {
         path.relative_to(FUSED): path.stat().st_mode
@@ -354,26 +314,26 @@ def test_independent_contributions_compose_without_source_name_collisions(
     experts = _write_moe_fixture(
         tmp_path / "experts", "moe.fused_experts", "fused_experts"
     )
-    reduce = _write_moe_fixture(
-        tmp_path / "reduce", "moe.fused_experts_reduce", "fused_experts_reduce"
+    dense = _write_moe_fixture(
+        tmp_path / "dense", "linear.dense", "dense"
     )
     catalog = default_target_catalog()
     context = _evaluation_context(catalog)
     experts_ref = _proposal_ref(experts, catalog)
-    reduce_ref = _proposal_ref(reduce, catalog)
-    stack = _evaluation_stack(catalog, context, experts_ref, reduce_ref)
+    dense_ref = _proposal_ref(dense, catalog)
+    stack = _evaluation_stack(catalog, context, experts_ref, dense_ref)
 
     result = _materialize(
         stack,
         context,
         catalog,
-        _sources((experts_ref, experts), (reduce_ref, reduce)),
+        _sources((experts_ref, experts), (dense_ref, dense)),
         tmp_path / "engine",
     )
 
     manifest = load_manifest(result.root)
     assert [op.slot for op in manifest.ops] == [
-        "moe.fused_experts_reduce",
+        "linear.dense",
         "moe.fused_experts",
     ]
     assert manifest.ops[0].source != manifest.ops[1].source
@@ -513,312 +473,18 @@ def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
                 sys.modules.pop(name, None)
 
 
-def test_integrated_release_revalidates_reviewed_source(tmp_path: Path) -> None:
-    catalog = default_target_catalog()
-    inspected = inspect_contribution(MSA, catalog=catalog)
-    record = IntegrationReviewRecord(
-        target_id=inspected.target_id,
-        target_spec_digest=inspected.target_spec_digest,
-        proposal_contribution_digest=_digest("proposal"),
-        settlement_candidate_digest=_digest("candidate"),
-        settlement_evidence_digest=_digest("settlement-evidence"),
-        crown_event_digest=_digest("crown"),
-        primary_attempt_digest=_digest("primary"),
-        reproduction_attempt_digest=_digest("reproduction"),
-        integrated_source_tree_digest=integrated_source_tree_digest(MSA),
-        selected_payload_digest=inspected.selected_payload_digest,
-        attribution_digest=_digest("attribution"),
-        license_evidence_digest=_digest("license"),
-        provenance_evidence_digest=_digest("provenance"),
-        security_review_digest=_digest("security"),
-        compatibility_evidence_digest=_digest("compatibility"),
-        test_evidence_digest=_digest("tests"),
-        artifacts=IntegrationReviewArtifacts(
-            _evidence("qualification.cohort-attempt", _digest("primary")),
-            _evidence("qualification.cohort-attempt", _digest("reproduction")),
-            _evidence("integration.license", _digest("license")),
-            _evidence("integration.provenance", _digest("provenance")),
-            _evidence("integration.security-review", _digest("security")),
-            _evidence("integration.compatibility", _digest("compatibility")),
-            _evidence("integration.tests", _digest("tests")),
-        ),
-        reviewer="cacheon-test-reviewer",
-        review_commit="a" * 40,
-    )
-    ref = record.integrated_ref()
-    context = ReleaseStackContext(
-        runtime_digest=_digest("runtime"),
-        base_engine_digest=_digest("base"),
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        target_spec_digests=_spec_digests(catalog),
-    )
-    release = EngineReleaseManifest(
-        runtime_digest=context.runtime_digest,
-        base_engine_digest=context.base_engine_digest,
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        entries={ref.target_id: ref},
-    )
-
-    result = _materialize(
-        release,
-        context,
-        catalog,
-        _sources((ref, MSA)),
-        tmp_path / "release",
-        integration_records={record.target_id: record},
-    )
-    assert result.stack_digest == release.digest
-
-    padded = _copy(tmp_path, name="padded")
-    (padded / "padding.txt").write_text("reviewed source changed\n")
-    with pytest.raises(EngineTreeError, match="integrated source digest mismatch"):
-        _materialize(
-            release,
-            context,
-            catalog,
-            _sources((ref, padded)),
-            tmp_path / "wrong-source",
-            integration_records={record.target_id: record},
-        )
-
-    wrong_payload = replace(ref, selected_payload_digest=_digest("wrong-payload"))
-    wrong_release = EngineReleaseManifest(
-        runtime_digest=context.runtime_digest,
-        base_engine_digest=context.base_engine_digest,
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        entries={wrong_payload.target_id: wrong_payload},
-    )
-    with pytest.raises(EngineTreeError, match="integration authority is invalid"):
-        _materialize(
-            wrong_release,
-            context,
-            catalog,
-            _sources((wrong_payload, MSA)),
-            tmp_path / "wrong-payload",
-            integration_records={record.target_id: record},
-        )
-
-
-def test_integration_promotion_binds_crown_evidence_source_and_review_commit(
-    tmp_path: Path,
-) -> None:
-    catalog = default_target_catalog()
-    context = _evaluation_context(catalog)
-    proposal = _proposal_ref(MSA, catalog)
-    incumbent = _evaluation_stack(catalog, context)
-    arm = plan_marginal_arm(
-        incumbent,
-        proposal,
-        catalog=catalog,
-        incumbent_tree_digest=_digest("promotion-incumbent-tree"),
-        candidate_tree_digest=_digest("promotion-candidate-tree"),
-        expected_context=context,
-    )
-    primary_attempt_payload = b'{"attempt":"primary"}'
-    reproduction_attempt_payload = b'{"attempt":"reproduction"}'
-    audit_slots = tuple(sorted(catalog.require(proposal.target_id).members))
-    primary_audit = _audit_policy("promotion-primary", audit_slots)
-    primary = SettlementQualification(
-        lane="registered",
-        arena_digest=incumbent.arena_digest,
-        reservation_digest=_digest("promotion-reservation"),
-        finalized_block=10,
-        event_index=0,
-        event_subindex=0,
-        hotkey="miner-promotion",
-        target_id=proposal.target_id,
-        members=tuple(sorted(catalog.require(proposal.target_id).members)),
-        selected_delta_digest=arm.selected_delta_digest,
-        qualification_authority_digest=_digest("promotion-authority"),
-        qualification_plan_digest=_digest("promotion-plan"),
-        qualification_attempt_digest=hashlib.sha256(primary_attempt_payload).hexdigest(),
-        qualification_report_digest=_digest("promotion-report"),
-        selection_commitment_digest=_digest("promotion-selection-commitment"),
-        selection_secret_commitment_digest=_digest("promotion-selection-secret"),
-        selection_evidence_digest=_digest("promotion-selection-evidence"),
-        arm_digest=arm.digest,
-        incumbent_stack_digest=arm.baseline_before.stack_digest,
-        incumbent_tree_digest=arm.baseline_before.tree_digest,
-        candidate_stack_digest=arm.challenger.stack_digest,
-        candidate_tree_digest=arm.challenger.tree_digest,
-        speedup="1.05",
-        incumbent_manifest=incumbent,
-        candidate_manifest=arm.candidate,
-        audit_control_digest=primary_audit.control.digest,
-        audit_policy=primary_audit,
-        audit_evidence_digest=_digest("promotion-audit-evidence"),
-    )
-    reproduction_audit = _audit_policy("promotion-reproduction", audit_slots)
-    reproduction = replace(
-        primary,
-        qualification_authority_digest=_digest("promotion-reproduction-authority"),
-        qualification_plan_digest=_digest("promotion-reproduction-plan"),
-        qualification_attempt_digest=hashlib.sha256(
-            reproduction_attempt_payload
-        ).hexdigest(),
-        qualification_report_digest=_digest("promotion-reproduction-report"),
-        selection_commitment_digest=_digest(
-            "promotion-reproduction-selection-commitment"
-        ),
-        selection_secret_commitment_digest=_digest(
-            "promotion-reproduction-selection-secret"
-        ),
-        selection_evidence_digest=_digest(
-            "promotion-reproduction-selection-evidence"
-        ),
-        audit_policy=reproduction_audit,
-        audit_evidence_digest=_digest("promotion-reproduction-audit-evidence"),
-        speedup="1.04",
-    )
-    candidate = SettlementCandidate.from_reproductions(primary, reproduction)
-    evidence_root = tmp_path / "integration-evidence"
-    primary_ref = publish_evidence(
-        evidence_root,
-        primary_attempt_payload,
-        domain="qualification.cohort-attempt",
-        media_type="application/json",
-        schema="cacheon.qualification.cohort-attempt.v1",
-    )
-    reproduction_ref = publish_evidence(
-        evidence_root,
-        reproduction_attempt_payload,
-        domain="qualification.cohort-attempt",
-        media_type="application/json",
-        schema="cacheon.qualification.cohort-attempt.v1",
-    )
-    evidence = SettlementEvidence.bind(
-        candidate,
-        primary_attempt_ref=primary_ref,
-        reproduction_attempt_ref=reproduction_ref,
-    )
-    settlement = plan_settlement(
-        (candidate,),
-        current_manifest=incumbent,
-        current_tree_digest=arm.baseline_before.tree_digest,
-    )
-    crown = next(
-        row for row in settlement.events if row.event_type is SettlementEventType.CROWN
-    )
-
-    repository = tmp_path / "review-repository"
-    integrated = repository / "integrated"
-    shutil.copytree(MSA, integrated)
-    subprocess.run(("git", "init", "-q", str(repository)), check=True)
-    subprocess.run(("git", "-C", str(repository), "add", "integrated"), check=True)
-    subprocess.run(
-        (
-            "git", "-C", str(repository), "-c", "user.name=Cacheon Review",
-            "-c", "user.email=review@cacheon.invalid", "commit", "-q", "-m", "review",
-        ),
-        check=True,
-    )
-    review_commit = subprocess.run(
-        ("git", "-C", str(repository), "rev-parse", "HEAD"),
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    def reviewed(label: str, domain: str) -> EvidenceArtifactRef:
-        payload = json.dumps(
-            {"evidence": label}, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
-        return publish_evidence(
-            evidence_root,
-            payload,
-            domain=domain,
-            media_type="application/json",
-            schema=f"cacheon.{domain}.v1",
-        )
-
-    artifacts = IntegrationReviewArtifacts(
-        primary_ref,
-        reproduction_ref,
-        reviewed("promotion-license", "integration.license"),
-        reviewed("promotion-provenance", "integration.provenance"),
-        reviewed("promotion-security", "integration.security-review"),
-        reviewed("promotion-compatibility", "integration.compatibility"),
-        reviewed("promotion-tests", "integration.tests"),
-    )
-
-    def promote(**changes):
-        arguments = {
-            "candidate": candidate,
-            "settlement_evidence": evidence,
-            "crown_event": crown,
-            "proposal": proposal,
-            "integrated_source_root": integrated,
-            "repository_root": repository,
-            "evidence_root": evidence_root,
-            "catalog": catalog,
-            "review_commit": review_commit,
-            "review_artifacts": artifacts,
-            "reviewer": "validator-release-review",
-        }
-        arguments.update(changes)
-        return promote_integrated_contribution(**arguments)
-
-    record = promote()
-    assert record.settlement_candidate_digest == candidate.digest
-    assert record.settlement_evidence_digest == evidence.digest
-    assert record.crown_event_digest == crown.digest
-    assert record.proposal_contribution_digest == proposal.digest
-    assert record.artifacts == artifacts
-    assert record.review_commit == review_commit
-    assert IntegrationReviewRecord.from_dict(record.to_dict()) == record
-
-    with pytest.raises(EngineTreeError, match="exact candidate CROWN"):
-        promote(
-            crown_event=replace(crown, subject_digest=_digest("wrong-crown-subject"))
-        )
-    with pytest.raises(EngineTreeError, match="crowned delta"):
-        promote(
-            proposal=replace(
-                proposal, attribution_digest=_digest("wrong-proposal-attribution")
-            )
-        )
-    with pytest.raises(EngineTreeError, match="evidence differs"):
-        promote(
-            settlement_evidence=replace(
-                evidence, primary_report_digest=_digest("wrong-primary-report")
-            )
-        )
-
-    license_ref = artifacts.license_evidence_ref
-    license_path = (
-        evidence_root / license_ref.domain / license_ref.sha256[:2] / license_ref.sha256
-    )
-    license_path.unlink()
-    with pytest.raises(EngineTreeError, match="cannot reopen retained"):
-        promote()
-    restored = reviewed("promotion-license", "integration.license")
-    assert restored == license_ref
-    license_path.chmod(0o600)
-    license_path.write_bytes(b"x" * license_ref.size)
-    license_path.chmod(0o400)
-    with pytest.raises(EngineTreeError, match="cannot reopen retained"):
-        promote()
-    license_path.unlink()
-    assert reviewed("promotion-license", "integration.license") == license_ref
-
-    (integrated / "unreviewed-padding.txt").write_text("not in review commit\n")
-    with pytest.raises(EngineTreeError, match="differs from the integration review_commit"):
-        promote()
-
 def test_inert_padding_changes_artifact_not_selected_payload(tmp_path: Path) -> None:
     padded = _copy(tmp_path, name="padded")
     (padded / "README.txt").write_text("not selected by the target\n")
     catalog = default_target_catalog()
 
-    plain = inspect_contribution(MSA, catalog=catalog)
+    plain = inspect_contribution(SINGLETON, catalog=catalog)
     extra = inspect_contribution(padded, catalog=catalog)
 
-    assert content_hash(MSA) != content_hash(padded)
+    assert content_hash(SINGLETON) != content_hash(padded)
     assert plain.selected_payload_digest == extra.selected_payload_digest
     assert plain.selected_delta_digest == extra.selected_delta_digest
-    assert _proposal_ref(MSA, catalog).digest != _proposal_ref(padded, catalog).digest
+    assert _proposal_ref(SINGLETON, catalog).digest != _proposal_ref(padded, catalog).digest
     context = _evaluation_context(catalog)
     ref = _proposal_ref(padded, catalog)
     result = _materialize(
@@ -849,7 +515,7 @@ def test_imported_local_inputs_enter_selected_identity(tmp_path: Path) -> None:
 
 
 def test_native_from_import_is_rewritten(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     kernel = source / "kernels" / "fused_epilogue.py"
     kernel.write_text(
         "from fused_epilogue_sm103 import ar_residual_rmsnorm as native_ar\n"
@@ -1049,11 +715,11 @@ def test_unresolved_or_partial_local_imports_fail_closed(
 def test_partial_declared_native_import_fails_closed(
     tmp_path: Path, source_text: str,
 ) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     (source / "kernels" / "fused_epilogue.py").write_text(
         source_text
-        + "def ar_residual_rmsnorm(*args):\n    return None\n"
-        + "def moe_finalize_ar_rmsnorm(*args):\n    return None\n"
+        + "def prepare(*args):\n    return None\n"
+        + "def fused_experts(*args):\n    return None\n"
     )
     with pytest.raises(EngineTreeError, match="partially local"):
         inspect_contribution(source, catalog=default_target_catalog())
@@ -1061,13 +727,13 @@ def test_partial_declared_native_import_fails_closed(
 
 def test_bare_namespace_and_nonidentifier_module_paths_fail_closed(tmp_path: Path) -> None:
     namespace = tmp_path / "namespace"
-    shutil.copytree(MSA, namespace)
+    shutil.copytree(SINGLETON, namespace)
     (namespace / "kernels" / "blockscore.py").write_text("import kernels\n")
     with pytest.raises(EngineTreeError, match="bare local namespace"):
         inspect_contribution(namespace, catalog=default_target_catalog())
 
     invalid = tmp_path / "invalid"
-    shutil.copytree(MSA, invalid)
+    shutil.copytree(SINGLETON, invalid)
     (invalid / "kernels-v2").mkdir()
     shutil.copy2(
         invalid / "kernels" / "blockscore.py",
@@ -1082,14 +748,14 @@ def test_bare_namespace_and_nonidentifier_module_paths_fail_closed(tmp_path: Pat
 
 
 def test_python_native_name_collision_fails_during_inspection(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     (source / "fused_epilogue_sm103.py").write_text("collision = True\n")
     with pytest.raises(EngineTreeError, match="both local Python and declared native"):
         inspect_contribution(source, catalog=default_target_catalog())
 
 
 def test_ambiguous_declared_native_stems_fail_closed(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     duplicate = source / "other" / "fused_epilogue_sm103.cu"
     duplicate.parent.mkdir()
     shutil.copy2(source / "kernels" / "fused_epilogue_sm103.cu", duplicate)
@@ -1112,7 +778,7 @@ def test_nonregular_source_tree_entries_fail_closed(tmp_path: Path) -> None:
 def test_declared_cuda_headers_enter_identity_and_undeclared_headers_reject(
     tmp_path: Path,
 ) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, '#include "helper.cuh" /* selected */\n')
     (source / "kernels" / "helper.cuh").write_text("#define HELPER 1\n")
     with pytest.raises(EngineTreeError, match="undeclared local input"):
@@ -1124,14 +790,14 @@ def test_declared_cuda_headers_enter_identity_and_undeclared_headers_reject(
 
 
 def test_dynamic_cuda_include_directives_fail_closed(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, '#define HEADER "unbound.cuh"\n#include HEADER\n')
     with pytest.raises(EngineTreeError, match="dynamic include"):
         inspect_contribution(source, catalog=default_target_catalog())
 
 
 def test_literal_cuda_includes_allow_comment_only_suffixes(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     cuda = source / "kernels" / "fused_epilogue_sm103.cu"
     cuda.write_text(
         cuda.read_text().replace(
@@ -1144,14 +810,14 @@ def test_literal_cuda_includes_allow_comment_only_suffixes(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("header", ["/tmp/unbound.cuh", "../../unbound.cuh"])
 def test_unsafe_system_cuda_includes_fail_closed(tmp_path: Path, header: str) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, f"#include <{header}>\n")
     with pytest.raises(EngineTreeError, match="unsafe system include"):
         inspect_contribution(source, catalog=default_target_catalog())
 
 
 def test_missing_quoted_cuda_include_cannot_escape_dependency_roots(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, '#include "../unbound.cuh"\n')
     with pytest.raises(EngineTreeError, match="unsafe dependency include"):
         inspect_contribution(source, catalog=default_target_catalog())
@@ -1167,14 +833,14 @@ def test_missing_quoted_cuda_include_cannot_escape_dependency_roots(tmp_path: Pa
 def test_alternate_cuda_include_directives_fail_closed(
     tmp_path: Path, directive: str
 ) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, directive + "\n")
     with pytest.raises(EngineTreeError, match="unsupported include"):
         inspect_contribution(source, catalog=default_target_catalog())
 
 
 def test_line_spliced_cuda_include_is_still_validated(tmp_path: Path) -> None:
-    source = _copy(tmp_path, FUSED)
+    source = _native_fixture(tmp_path)
     _cuda_prepend(source, '#inc\\\nlude "/tmp/unbound.cuh"\n')
     with pytest.raises(EngineTreeError, match="safe relative path"):
         inspect_contribution(source, catalog=default_target_catalog())
@@ -1199,7 +865,7 @@ def test_bundle_hash_excluded_paths_cannot_be_selected(
 
 def test_root_source_symlink_is_rejected(tmp_path: Path) -> None:
     alias = tmp_path / "alias"
-    alias.symlink_to(MSA, target_is_directory=True)
+    alias.symlink_to(SINGLETON, target_is_directory=True)
     with pytest.raises(EngineTreeError, match="must not be a symlink"):
         inspect_contribution(alias, catalog=default_target_catalog())
 
@@ -1207,11 +873,11 @@ def test_root_source_symlink_is_rejected(tmp_path: Path) -> None:
 def test_materialization_is_location_mode_and_umask_independent(tmp_path: Path) -> None:
     left = tmp_path / "left-source"
     right = tmp_path / "right-source"
-    shutil.copytree(MSA, left)
-    shutil.copytree(MSA, right)
+    shutil.copytree(SINGLETON, left)
+    shutil.copytree(SINGLETON, right)
     os.chmod(left / "kernels" / "blockscore.py", 0o600)
     os.chmod(right / "kernels" / "blockscore.py", 0o755)
-    assert integrated_source_tree_digest(left) == integrated_source_tree_digest(right)
+    assert source_tree_digest(left) == source_tree_digest(right)
 
     catalog = default_target_catalog()
     context = _evaluation_context(catalog)
@@ -1243,8 +909,8 @@ def test_materialization_is_location_mode_and_umask_independent(tmp_path: Path) 
 def test_semantic_aliases_and_set_order_share_selected_identity(tmp_path: Path) -> None:
     canonical = tmp_path / "canonical"
     aliases = tmp_path / "aliases"
-    shutil.copytree(MSA, canonical)
-    shutil.copytree(MSA, aliases)
+    shutil.copytree(SINGLETON, canonical)
+    shutil.copytree(SINGLETON, aliases)
     manifest = aliases / "manifest.toml"
     manifest.write_text(
         manifest.read_text()
@@ -1278,11 +944,8 @@ def test_packaging_order_ids_and_json_whitespace_do_not_choose_namespace(
     prefix, first_op, second_op = manifest.read_text().split("[[ops]]")
     manifest.write_text(
         (prefix + "[[ops]]" + second_op + "[[ops]]" + first_op)
-        .replace("fixture-fused-epilogue-atomic", "ignored-packaging-id")
+        .replace("fixture-dp-exchange-atomic", "ignored-packaging-id")
     )
-    rebuild = json.loads((reordered / "rebuild.json").read_text())
-    rebuild["steps"].reverse()
-    (reordered / "rebuild.json").write_text(json.dumps(rebuild, separators=(",", ":")))
     for metadata_path in (reordered / "metadata").glob("*.json"):
         metadata = json.loads(metadata_path.read_text())
         metadata_path.write_text(json.dumps(metadata, indent=6) + "\n")
@@ -1299,65 +962,34 @@ def test_packaging_order_ids_and_json_whitespace_do_not_choose_namespace(
 
 @pytest.mark.parametrize(
     "input_class",
-    ["op", "metadata", "python", "cuda", "header", "patch"],
+    ["op", "metadata", "python"],
 )
 def test_every_selected_executable_input_class_rotates_delta(
     tmp_path: Path, input_class: str
 ) -> None:
     source = _copy(tmp_path, FUSED)
-    if input_class == "header":
-        header = source / "kernels" / "helper.cuh"
-        header.write_text("#define VALUE 1\n")
-        _cuda_prepend(source, '#include "helper.cuh"\n')
-        _declare_cuda(source, "kernels/helper.cuh")
     before = inspect_contribution(source, catalog=default_target_catalog())
 
     if input_class == "op":
         manifest = source / "manifest.toml"
         manifest.write_text(
             manifest.read_text().replace(
-                'entry = "ar_residual_rmsnorm"',
-                'entry = "ar_residual_rmsnorm_v2"',
+                'entry = "all_gather_into_tensor"',
+                'entry = "all_gather_into_tensor_v2"',
                 1,
             )
         )
     elif input_class == "metadata":
-        path = source / "metadata" / "ar_norm.json"
+        path = source / "metadata" / "all_gather.json"
         metadata = json.loads(path.read_text())
-        metadata["max_num_tokens"] = 999
+        metadata["architectures"].append("sm100")
         path.write_text(json.dumps(metadata))
-    elif input_class == "python":
-        path = source / "kernels" / "fused_epilogue.py"
-        path.write_text(path.read_text() + "\n# selected source revision\n")
-    elif input_class == "cuda":
-        path = source / "kernels" / "fused_epilogue_sm103.cu"
-        path.write_text(path.read_text() + "\n// selected CUDA revision\n")
-    elif input_class == "header":
-        path = source / "kernels" / "helper.cuh"
-        path.write_text("#define VALUE 2\n")
     else:
-        path = source / "patches" / "flashinfer.patch"
-        path.write_text(path.read_text().replace("export_prefinalize", "export_prefinalize_v2"))
+        path = source / "kernels" / "exchange.py"
+        path.write_text(path.read_text() + "\n# selected source revision\n")
 
     after = inspect_contribution(source, catalog=default_target_catalog())
     assert after.selected_payload_digest != before.selected_payload_digest
-    assert after.selected_delta_digest != before.selected_delta_digest
-
-
-def test_registered_patcher_source_identity_rotates_selected_delta(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    patchers = repo / "cacheon" / "patchers"
-    patchers.mkdir(parents=True)
-    real_patchers = Path(engine_tree.__file__).parent / "patchers"
-    for name in ("apply_dep_patch.py", "build_cuda_ext.py"):
-        shutil.copy2(real_patchers / name, patchers / name)
-    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
-    before = inspect_contribution(FUSED, catalog=default_target_catalog())
-    builder = patchers / "build_cuda_ext.py"
-    builder.write_text(builder.read_text() + "\n# reviewed patcher revision\n")
-    after = inspect_contribution(FUSED, catalog=default_target_catalog())
     assert after.selected_delta_digest != before.selected_delta_digest
 
 
@@ -1386,8 +1018,8 @@ def test_source_mutation_cannot_diverge_identity_from_emitted_bytes(
 def test_reopen_rejects_root_mode_extra_directories_and_root_symlinks(
     tmp_path: Path,
 ) -> None:
-    catalog, context, ref, stack = _arranged(MSA)
-    result = _materialize(stack, context, catalog, _sources((ref, MSA)), tmp_path / "engine")
+    catalog, context, ref, stack = _arranged(SINGLETON)
+    result = _materialize(stack, context, catalog, _sources((ref, SINGLETON)), tmp_path / "engine")
     metadata = json.loads((result.root / "metadata/cacheon_engine_tree.json").read_text())
     assert metadata["contributions"][0]["namespace"] == (
         "cacheon_c_" + ref.selected_delta_digest
@@ -1427,7 +1059,7 @@ def test_reopen_rejects_root_mode_extra_directories_and_root_symlinks(
 def test_failed_preinstall_verification_leaves_no_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    catalog, context, ref, stack = _arranged(MSA)
+    catalog, context, ref, stack = _arranged(SINGLETON)
     reopen = engine_tree.reopen_materialized_engine_tree
 
     def fail_temp(root: str | Path, *, expected_tree_digest: str | None = None):
@@ -1438,41 +1070,13 @@ def test_failed_preinstall_verification_leaves_no_destination(
     monkeypatch.setattr(engine_tree, "reopen_materialized_engine_tree", fail_temp)
     destination = tmp_path / "engine"
     with pytest.raises(EngineTreeError, match="forced preinstall"):
-        _materialize(stack, context, catalog, _sources((ref, MSA)), destination)
+        _materialize(stack, context, catalog, _sources((ref, SINGLETON)), destination)
     assert not destination.exists()
 
 
-def test_runtime_rebuild_order_is_global_not_contribution_order() -> None:
-    raw = engine_tree._runtime_rebuild(
-        [
-            {"type": "repo_python", "path": "cacheon/patchers/build_cuda_ext.py"},
-            {"type": "repo_python", "path": "cacheon/patchers/apply_dep_patch.py"},
-        ]
-    )
-    assert raw is not None
-    assert [row["path"] for row in json.loads(raw)["steps"]] == [
-        "cacheon/patchers/apply_dep_patch.py",
-        "cacheon/patchers/build_cuda_ext.py",
-    ]
 
 
-def test_dependency_patch_destinations_cannot_overlap_by_order() -> None:
-    inspected = inspect_contribution(FUSED, catalog=default_target_catalog())
-    destinations: set[tuple[str, str]] = set()
-    engine_tree._contribution_files(
-        inspected,
-        delta_digest=inspected.selected_delta_digest,
-        patch_destinations=destinations,
-    )
-    with pytest.raises(EngineTreeError, match="patch destination collision"):
-        engine_tree._contribution_files(
-            inspected,
-            delta_digest=_digest("other-delta"),
-            patch_destinations=destinations,
-        )
-
-
-@pytest.mark.parametrize("fixture", [MSA, FUSED], ids=["msa", "atomic-fused"])
+@pytest.mark.parametrize("fixture", [SINGLETON, FUSED], ids=["norm-singleton", "atomic-dp"])
 def test_fixture_materialization_binds_marginal_arm_and_exact_rollback(
     tmp_path: Path, fixture: Path,
 ) -> None:
@@ -1521,8 +1125,8 @@ def test_source_and_materialized_symlinks_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(EngineTreeError, match="symlink"):
         inspect_contribution(source, catalog=default_target_catalog())
 
-    catalog, context, ref, stack = _arranged(MSA)
-    result = _materialize(stack, context, catalog, _sources((ref, MSA)), tmp_path / "engine")
+    catalog, context, ref, stack = _arranged(SINGLETON)
+    result = _materialize(stack, context, catalog, _sources((ref, SINGLETON)), tmp_path / "engine")
     link = result.root / "link"
     link.symlink_to(result.root / "manifest.toml")
     with pytest.raises(EngineTreeError, match="symlink"):
@@ -1530,7 +1134,7 @@ def test_source_and_materialized_symlinks_are_rejected(tmp_path: Path) -> None:
 
 
 def test_wrong_source_identity_and_post_write_tampering_fail_closed(tmp_path: Path) -> None:
-    catalog, context, ref, stack = _arranged(MSA)
+    catalog, context, ref, stack = _arranged(SINGLETON)
     padded = _copy(tmp_path, name="padded")
     (padded / "padding.txt").write_text("changes the proposal artifact")
 
@@ -1541,10 +1145,10 @@ def test_wrong_source_identity_and_post_write_tampering_fail_closed(tmp_path: Pa
     wrong_stack = _evaluation_stack(catalog, context, wrong_payload)
     with pytest.raises(EngineTreeError, match="selected payload digest mismatch"):
         _materialize(
-            wrong_stack, context, catalog, _sources((wrong_payload, MSA)), tmp_path / "wrong-payload"
+            wrong_stack, context, catalog, _sources((wrong_payload, SINGLETON)), tmp_path / "wrong-payload"
         )
 
-    result = _materialize(stack, context, catalog, _sources((ref, MSA)), tmp_path / "engine")
+    result = _materialize(stack, context, catalog, _sources((ref, SINGLETON)), tmp_path / "engine")
     kernel = next(result.root.glob("cacheon_c_*/kernels/*.py"))
     os.chmod(kernel, 0o644)
     kernel.write_text(kernel.read_text() + "\n# tampered\n")
@@ -1554,11 +1158,11 @@ def test_wrong_source_identity_and_post_write_tampering_fail_closed(tmp_path: Pa
 
 
 def test_destination_and_context_are_fail_closed(tmp_path: Path) -> None:
-    catalog, context, ref, stack = _arranged(MSA)
+    catalog, context, ref, stack = _arranged(SINGLETON)
     destination = tmp_path / "already-there"
     destination.mkdir()
     with pytest.raises(EngineTreeError, match="already exists"):
-        _materialize(stack, context, catalog, _sources((ref, MSA)), destination)
+        _materialize(stack, context, catalog, _sources((ref, SINGLETON)), destination)
 
     wrong_context = EvaluationStackContext(
         runtime_digest=_digest("wrong-runtime"),
@@ -1569,7 +1173,7 @@ def test_destination_and_context_are_fail_closed(tmp_path: Path) -> None:
         target_spec_digests=_spec_digests(catalog),
     )
     with pytest.raises(ValueError, match="runtime digest"):
-        _materialize(stack, wrong_context, catalog, _sources((ref, MSA)), tmp_path / "stale")
+        _materialize(stack, wrong_context, catalog, _sources((ref, SINGLETON)), tmp_path / "stale")
 
 
 def test_destination_cannot_mutate_a_resolved_contribution_source(tmp_path: Path) -> None:

@@ -86,14 +86,8 @@ not submittable until the catalog registers that surface.
 Decode, short prefill, and long/chunked prefill are different performance
 problems. So are TP topologies with and without fast peer links.
 
-For attention work:
-
-- `attention.msa_block_score` owns paged per-index-head decode scores while
-  stock code retains top-k and attend;
-- `attention.msa_prefill_block_score` is the batched paged long-prefill
-  score-to-selection boundary;
-- an optimization to one should not be measured on a workload dominated by the
-  other.
+An optimization to a decode-dominated boundary should not be measured on a
+workload dominated by prefill, and vice versa.
 
 A developer diagnostic can generate longer inputs, but repeated timed prompts
 with radix caching enabled may turn later passes into cache hits. For a prefill
@@ -107,16 +101,15 @@ critical-path overlap.
 ## Compare against the incumbent, not “stock”
 
 An active stack can already contain crowned contributions on other targets. The
-marginal baseline is that exact incumbent stack, with its exact engine release,
-build products, model assets, and launch controls.
+marginal baseline is that exact incumbent stack, with its exact engine build
+products, model assets, and launch controls.
 
 The authoritative bracket is:
 
 ```text
 incumbent = exact incumbent engine on the assigned baseline lane
 candidate = same stack with exactly the selected target delta on the disjoint lane
-v7 = B → C [→ B′ only when B/C cannot decide], on the standing pair
-v8 = B → C → B′ unconditionally, with separate engine processes
+v10 = B → C → B′ unconditionally, with separate engine processes (v11: mixed cells)
 A = registered eager, untimed candidate audit
 T = candidate-free pristine quality reference after candidate teardown
 ```
@@ -175,7 +168,7 @@ path and the domain's routing frequency are specified.
    larger than normal variance.
 
 Steps 1–7 are miner-side diagnostics. Only finalized, isolated, identity-bound,
-independently reproduced validator qualification can crown the proposal.
+complete audited validator qualification can crown the proposal.
 
 ## Interpret local outcomes correctly
 
@@ -185,7 +178,7 @@ independently reproduced validator qualification can crown the proposal.
 - A speed gain with failed quality is a failed candidate, not a tradeoff score.
 - A graph-off gain is evidence about debugging mode, not the arena.
 - A pass on one topology is not evidence for an undeclared topology.
-- A first production PASS becomes `reproduction_pending`, not crowned.
+- A complete audited production PASS becomes `qualified`; settlement decides the crown.
 
 Also distinguish failure from uncertainty. A consistently slower C or a quality
 regression is a candidate `FAIL`; revise the source and create a new identity.

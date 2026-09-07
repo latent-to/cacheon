@@ -23,7 +23,7 @@ import math
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from cacheon.capabilities import (
     CONTEXT_FIELDS,
@@ -40,7 +40,6 @@ from cacheon.verify import (
     _compare_outputs,
     _clone_tensor_inputs,
     _CudaGraphBackend,
-    _direct_aot_prepare_boundary,
     _device_architecture,
     _graph_case_inputs,
     _input_bindings,
@@ -79,10 +78,7 @@ def _collective_descriptor(
     world_size: int,
 ) -> CallDescriptor:
     dimensions: dict[str, Any] = {}
-    if slot_name in {
-        "moe.fused_experts_reduce",
-        "collective.moe_finalize_ar_rmsnorm",
-    }:
+    if slot_name == "moe.fused_experts_reduce":
         # These two contracts explicitly exclude expert parallel dispatch/combine.
         # EP is not a semantic dimension of a bare all-reduce or AR+norm call.
         dimensions["ep_size"] = 1
@@ -116,19 +112,6 @@ def _collective_descriptor(
         quant=profile.quant if profile and profile.quant else "dense",
         world_size=world_size,
         dimensions=dimensions,
-    )
-
-
-def _direct_aot_collective_callables(
-    slot: SlotSpec,
-    entry: Callable[..., None],
-    *,
-    prepare_name: str | None,
-) -> tuple[Callable[..., None], Callable | None]:
-    """Bind a sealed direct entry to the ordinary collective lifecycle."""
-
-    return entry, _direct_aot_prepare_boundary(
-        slot, entry, prepare_name=prepare_name
     )
 
 
@@ -236,7 +219,6 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
         # spawned ranks included, or the shim silently falls back to its reference path
         # and the "verify" validates nothing (phantom parity). Rank 0 builds (compile is
         # not concurrency-safe on the shared cache), the rest barrier then load from cache.
-        direct_entry = None
         if bundle_path:
             from cacheon.rebuild import apply_rebuild_plan
 
@@ -263,15 +245,6 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 raise rank0_build_error
             if rank != 0:
                 apply_rebuild_plan(bundle_path, phase=rebuild_phase)
-            from cacheon.artifact_runtime import resolve_direct_artifact_entry
-            from cacheon.manifest import load_manifest
-
-            direct_op = load_manifest(bundle_path).op_for(slot_name, variant_name)
-            if direct_op is None:
-                raise ValueError(
-                    f"bundle has no manifest row for {(slot_name, variant_name)!r}"
-                )
-            direct_entry = resolve_direct_artifact_entry(direct_op)
 
         slot = slot_for_model(slot_name, model_key)
         dtype = getattr(torch, dtype_name)
@@ -280,25 +253,20 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
         # ONE module instance for prepare+entry AND across every sequence step (separate
         # loads would re-execute the body and split namespaces; and the whole point of a
         # temporal sequence is that the kernel's cross-call state PERSISTS step to step).
-        if direct_entry is not None:
-            entry, prepare_fn = _direct_aot_collective_callables(
-                slot, direct_entry, prepare_name=prepare_name
-            )
-        else:
-            # Overlay-materialized bundles route the entry through a shim that
-            # imports the tree-rooted delta package absolutely; the bundle root
-            # must be importable in this rank or the shim load dies with
-            # ModuleNotFoundError. Appended, never inserted, so nothing in a
-            # bundle can shadow a real package.
-            if bundle_path:
-                import sys
+        # Overlay-materialized bundles route the entry through a shim that
+        # imports the tree-rooted delta package absolutely; the bundle root
+        # must be importable in this rank or the shim load dies with
+        # ModuleNotFoundError. Appended, never inserted, so nothing in a
+        # bundle can shadow a real package.
+        if bundle_path:
+            import sys
 
-                bundle_root = os.path.abspath(str(bundle_path))
-                if bundle_root not in sys.path:
-                    sys.path.append(bundle_root)
-            module = load_module(source_path)
-            entry = callable_from(module, entry_name)
-            prepare_fn = callable_from(module, prepare_name) if prepare_name else None
+            bundle_root = os.path.abspath(str(bundle_path))
+            if bundle_root not in sys.path:
+                sys.path.append(bundle_root)
+        module = load_module(source_path)
+        entry = callable_from(module, entry_name)
+        prepare_fn = callable_from(module, prepare_name) if prepare_name else None
         invoke = slot.invoke_collective or (lambda e, i, o, g, p: e(i["x"], o, g))
 
         steps = list(shape) if isinstance(shape, (list, tuple)) else [shape]
@@ -308,7 +276,6 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
             raise ValueError("single collective verify mode requires exactly one shape")
         if run_mode != "single" and len(steps) < 2:
             raise ValueError(f"{run_mode} requires at least two shapes")
-        tol = slot.tolerance_for(dtype)
 
         # PHASE 1 — launch every step's kernel BACK-TO-BACK with no intervening
         # collective/sync. A sequence must reproduce the ENGINE's concurrency regime:
@@ -576,20 +543,25 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 # Trusted local math never consumes miner-prepared state. It runs
                 # only on the pre-candidate snapshot, then the validator-owned group
                 # performs the fp32 cross-rank reference reduce.
-                partial = (
-                    slot.collective_partial(reference_inputs, None)
-                    if slot.collective_partial
-                    else reference_inputs["x"].float()
-                )
-                summed = partial.detach().float().clone()
-                dist.all_reduce(summed, op=dist.ReduceOp.SUM)
-                refs = (
-                    slot.collective_finish(reference_inputs, summed, None)
-                    if slot.collective_finish is not None
-                    else [summed]
-                )
+                if slot.collective_reference is not None:
+                    refs = slot.collective_reference(
+                        reference_inputs, dist.group.WORLD, rank, world_size
+                    )
+                else:
+                    partial = (
+                        slot.collective_partial(reference_inputs, None)
+                        if slot.collective_partial
+                        else reference_inputs["x"].float()
+                    )
+                    summed = partial.detach().float().clone()
+                    dist.all_reduce(summed, op=dist.ReduceOp.SUM)
+                    refs = (
+                        slot.collective_finish(reference_inputs, summed, None)
+                        if slot.collective_finish is not None
+                        else [summed]
+                    )
                 current = _compare_outputs(
-                    checked_outs, list(refs), tol=tol, correctness=slot.correctness
+                    checked_outs, list(refs), tolerance_for=slot.tolerance_for, correctness=slot.correctness
                 )
                 passed = passed and current.passed
                 if output_phase == "eager":
@@ -946,35 +918,6 @@ def verify_collective(
         zip(catalog_shapes, test_shapes)
     ):
         shape = jittered_shape
-        if (
-            eligibility is not None
-            and slot.name == "collective.moe_finalize_ar_rmsnorm"
-            and dtype_name != "bfloat16"
-        ):
-            # The live FlashInfer export ABI is a 16-bit BF16 pointer contract.
-            # CPU float32 remains useful for validator-owned reference tests when no
-            # bundle eligibility is being qualified, but a float32 miner variant must
-            # be N/A rather than PASS offline and remain unreachable live.
-            context_blocked.append(True)
-            results.append(
-                ShapeResult(
-                    shape=shape,
-                    dtype=dtype_name,
-                    passed=True,
-                    max_abs_err=0.0,
-                    max_rel_err=0.0,
-                    pass_ratio=1.0,
-                    detail=(
-                        "validator N/A (outside live deep-export dtype domain): "
-                        "requires bfloat16"
-                    ),
-                    metric="n/a",
-                    applicable=False,
-                    phase_outcome=GraphPhaseOutcome.not_applicable(),
-                    case_descriptor=_case_descriptor(shape, "single"),
-                )
-            )
-            continue
         if eligibility is not None:
             candidates = [shape] + ([] if shape == catalog_shape else [catalog_shape])
             for candidate in candidates:

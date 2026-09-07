@@ -1,4 +1,4 @@
-"""A retained PASS pair can earn without changing the evaluation incumbent."""
+"""A retained complete PASS can earn without changing the evaluation incumbent."""
 
 import pytest
 
@@ -8,7 +8,7 @@ from cacheon.stack_identity import canonical_digest
 from tests.test_chain_intake import _qualified_settlement_candidate, _store
 
 
-def test_pending_pair_earns_without_settlement_or_stack_change(tmp_path):
+def test_pending_complete_pass_earns_without_settlement_or_stack_change(tmp_path):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store)
         before = store.evaluation_stack(candidate.arena_digest)
@@ -23,13 +23,13 @@ def test_pending_pair_earns_without_settlement_or_stack_change(tmp_path):
         assert store.active_reward_claims() == ((), ())
 
 
-def test_one_pass_does_not_earn(tmp_path):
+def test_one_pass_earns(tmp_path):
     with _store(tmp_path) as store:
         _qualified_settlement_candidate(store, primary_only=True)
-        assert store.passed_reward_claims() == ()
+        assert len(store.passed_reward_claims()) == 1
 
 
-def test_missing_pair_evidence_stops_reward_projection(tmp_path):
+def test_missing_pass_evidence_stops_reward_projection(tmp_path):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store)
         store._db.execute(

@@ -10,8 +10,7 @@ Documentation should identify authority rather than create a second authority.
 
 - Executable behavior comes from the referenced implementation and tests.
 - Normative product, slot, manifest, and policy contracts are named explicitly.
-- The state-of-record page separates implemented behavior, retained evidence,
-  and remaining production work.
+- Curated results identify their measured scope and retained evidence.
 - Operator guides describe failure behavior and required trust inputs, not only
   a happy path.
 - Historical sequences belong in the design-evolution page. Task and reference
@@ -29,7 +28,7 @@ copy a contract into several guides; copied prose drifts independently.
 - Use exact command, type, field, and file names.
 - Label synthetic, local, GPU, testnet, and production evidence precisely.
 - Avoid chronological narration, launch language, and unsupported readiness
-  claims outside the dedicated history and state-of-record pages.
+  claims. Keep operational status and task journals in ignored local records.
 - Do not include usernames, home-directory paths, private hosts, wallet
   material, unpublished artifact locations, or agent-session paths.
 
@@ -82,7 +81,7 @@ following:
 | CLI command or option | CLI reference and the task guide that invokes it |
 | Manifest, receipt, or wire schema | schema reference, producer, and consumer guides |
 | Slot, target, or seam contract | architecture, miner guide, and reference catalog |
-| Qualification or settlement behavior | validator guide and state of record |
+| Qualification or settlement behavior | validator guide |
 | Security boundary or refusal | threat model and affected operator guide |
 | Environment or compatibility pin | development or compatibility guide |
 | Release artifact or verification | Engine and release-operation guides |

@@ -63,10 +63,10 @@ proves registered measurement, not safe production source.
 | Proposal changes after commit | Content hash is checked after extraction and again across immutable publication | Hash does not establish authorship, license, or safety |
 | Candidate imports or patches trusted controller | Controller parses candidate as data and never imports candidate Python/native; complete engine runs in a separate OCI worker | A container/kernel/runtime escape can cross the boundary |
 | Candidate exfiltrates model/evidence | Runtime has no network, read-only root, exact read-only mounts, private cache tmpfs, bounded protocol; prebuild has no model/GPU/network/home/wallet | GPU/driver side channels, co-tenancy, host compromise, and undiscovered runtime flaws remain possible |
-| Candidate tampers with timer or role | Host assigns physical lanes and the exact v7 B/C/[B′] or v8 B/C/B′ roles, owns clocks, validates bounded raw batches/token counts, observes device state, and controls teardown; a reproduction must exchange lane roles | Host clocks, firmware, driver, and provider scheduling must be trustworthy and calibrated |
+| Candidate tampers with timer or role | Host assigns physical lanes and the exact B/C/B′ roles, owns clocks, validates bounded raw batches/token counts, observes device state, and controls teardown; a reproduction must exchange lane roles | Host clocks, firmware, driver, and provider scheduling must be trustworthy and calibrated |
 | Candidate fakes quality | Any required audit is collected in a separate eager/untimed role and host-regraded; candidate speed lifetimes are destroyed before candidate-free pristine T teacher-forces sealed trajectories | Reference bugs, audit sampling limits, and finite hidden-work coverage remain possible |
 | Candidate behaves only on known shapes/prompts | Post-commit selection, hidden work, typed graph requirements, and registered decode/long-prefill mixture | Workload overfitting cannot be eliminated; corpora and regimes need ongoing governance |
-| Candidate exploits noise | Frozen v7 invariant B/C bounds with conditional B′ or precommitted v8 B/C/B′, v5+ bracket-drift exclusion, physical-lane-swapped reproduction, lower reproduced speedup, and complete per-rank execution evidence before grading | Hardware drift, boot-state outliers, cross-validator variance, and candidate-process receipt forgery remain operational concerns |
+| Candidate exploits noise | Precommitted v10/v11 B/C/B′, every workload cell warmed, both baseline observations validated and retained, faster-baseline credit, and complete per-rank execution evidence before grading | Hardware drift, boot-state outliers, cross-validator variance, and candidate-process receipt forgery remain operational concerns |
 | Candidate hangs or exhausts resources | Stage deadlines, CPU/memory/PID/file/shm/tmpfs bounds, cohort admission, retry budgets, forced container cleanup, durable leases | A GPU/driver hang may require host reset; sustained spam can still consume bounded capacity |
 | Unpaid or replayed intake spam | Optional eval-cost gate (`eval_cost_tao_rao`, default off): one `transfer_keep_alive` to the subnet owner coldkey, remarked to one hotkey + content hash + netuid, consume-once on reserved or deferred admission; a private operator may grant one audited artificial credit for one unpaid reveal | The gate does not meter GPU work after admission. A stolen miner hotkey can spend that hotkey's unused pointer. There is no refund. A credit is a privileged local bypass and must be audited; it is hotkey-scoped, oldest-first, consumed only on admission, and never rescues an invalid payment pointer |
 | Candidate persists into later work | Ephemeral containers, read-only mounts, private tmpfs/cache, lease-scoped resources, restart recovery, post-run quiescence checks | Host/container-runtime compromise can persist beyond these controls |
@@ -76,7 +76,7 @@ proves registered measurement, not safe production source.
 | Recovery archive leaks sensitive state | Closed automatic scope excludes wallets, credentials, models, OCI images, caches, unredacted logs, and unrelated evidence; sealed inputs require explicit names; operational journal is redacted | Explicit sealed inputs and source-path metadata may still be sensitive; no client-side encryption is provided, so bucket policy and deployment encryption remain required |
 | Weight publication ambiguity | Separate signer; live metagraph refresh; intent-before-submit journal; exact recipient-set plus fixed-tolerance normalized-value readback and `last_update`; held state | Hotkey theft, malicious operator, chain faults, and policy disagreement remain external risks |
 | Shared-weight forgery, rollback, or replay | Eval push and its fresh exact acknowledgement are HMAC-authenticated; push-enabled storage retains an HMAC envelope over credential id and offer digest which the gateway verifies before response signing; current-offer writes reject block rollback/same-block conflict; followers pin gateway authority, require live permit, bound initial staleness, verify stable UIDs, and retain a monotonic signer journal | Network/object-store writers can deny service, and object-store writers can replay a previously valid envelope; a fresh follower may accept that replay within the configured freshness window; push-secret, gateway-hotkey, wallet, or host-root compromise remains authoritative. Push-disabled raw storage deliberately trusts its operator |
-| Crown automatically reaches production | Integrated-only release manifest, model seal, deterministic artifacts, SBOM/provenance, Ed25519 signature, expected key, registry reproducibility attestation | Integration review, key custody, base image/toolchain security, registry, and rollout policy remain human/operational authorities |
+| Crown automatically reaches production | No release path exists in the repository: a crown updates only the arena's evaluation stack, whose entries execute inside isolation | Integration into maintained source, release, key custody, and rollout are human/operational authorities outside this repository |
 
 ## Candidate isolation boundary
 
@@ -101,9 +101,9 @@ Concrete attacker stories help reviewers test the composition of controls:
 
 The candidate tries to remain ineligible or fail and rely on fallback while the server
 still answers. Pre-selection stock routing is allowed for ordinary availability.
-Direct-artifact and one-shot qualification require positive execution coverage and treat
-selected-path fallback as invalid evidence. Pair-native hot-swap execution counts are
-minted per generation, and current source holds a leg unless every expected rank fired
+One-shot qualification requires positive execution coverage and treats
+selected-path fallback as invalid evidence. Execution counts are minted per
+generation, and current source holds a leg unless every expected rank fired
 and completed the candidate under that activation generation. These receipts close
 accidental non-invocation but not deliberate in-process forgery. End-to-end host timing
 is bound to the exact candidate launch identity.
@@ -124,10 +124,10 @@ must be drained. Kernel/driver escape remains residual risk.
 
 ### “I will turn a crown into production code”
 
-Evaluation manifests may name hostile proposals; release manifests cannot. Integration
-must preserve the selected payload identity while separately approving provenance,
-license, security, compatibility, and tests. The signed release, external expected key,
-reproducible registry identity, host authorization, and serve receipts are later gates.
+Evaluation manifests name hostile proposals and execute only inside isolation. There is
+no manifest type a crown can be promoted into. Integrating crowned source into maintained
+code, with its own provenance, license, security, compatibility, and test review, is a
+decision made outside this repository.
 
 ## Control-plane separation
 

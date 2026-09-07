@@ -64,6 +64,8 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     "cuda_graph_backend_prefill": "token",
     "cuda_graph_bs": "int_list",
     "disable_radix_cache": "bool",
+    "dp_size": "positive_int",
+    "enable_dp_attention": "bool",
     "enable_flashinfer_allreduce_fusion": "bool",
     "kv_cache_dtype": "token",
     "max_prefill_tokens": "positive_int",

@@ -8,32 +8,20 @@ tests pin both halves: a genuine win passes, and noise alone never does.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import replace
 
 import pytest
 
-from cacheon.eval.oci_outer_session import (
-    OuterSessionInfrastructureError,
-    require_decode_dominant_plan,
-)
 from cacheon.eval.continuation_codec import ContinuationCodec
 from cacheon.eval.scoring import (
-    ChargedExecutionRate,
     RawSpeedEvidenceError,
     SpeedupVerdict,
     relative_spread,
     score_speedup,
 )
-from tests.test_marginal_runtime import _case as runtime_case
-from tests.test_marginal_runtime import _prepared as prepared_runtime
 
 
 def _digest(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
-
-
-def _binding(label: str) -> str:
-    return _digest(label)[:32]
 
 
 def test_relative_spread_two_reads_is_range_over_mean():
@@ -176,86 +164,3 @@ def test_speed_samples_fail_closed_without_filtering(baselines, candidate):
 def test_speed_policy_fails_closed(policy):
     with pytest.raises(RawSpeedEvidenceError):
         score_speedup([100.0, 101.0], 110.0, **policy)
-
-
-def test_speed_witness_shape_decides_policy_and_recomputes():
-    # The settlement byte contract: 3 rates = the historical B/C/B-prime shape,
-    # 5 rates = repeat reads in run order, anything else refuses; the evidence
-    # digest must recompute from the rates or construction fails closed.
-    from cacheon.eval.qualification_runner import (
-        QualificationRunnerError,
-        SpeedEvidencePolicy,
-        SpeedWitness,
-    )
-    from cacheon.eval.scoring import _projection_digest
-
-    def rate(label: str) -> ChargedExecutionRate:
-        return ChargedExecutionRate(
-            _digest("launch:" + label),
-            _binding("session:" + label),
-            10, 20, 30, 1.0, 2.0, 3.0, 10.0,
-        )
-
-    heads = tuple(
-        _digest("witness:" + name)
-        for name in (
-            "delta", "candidate-launch", "calibration",
-            "context", "workload", "runtime-policy",
-        )
-    )
-    legacy_rates = tuple(rate(role) for role in ("B", "C", "B-prime"))
-    witness = SpeedWitness(
-        *heads, _projection_digest(*heads, legacy_rates), legacy_rates
-    )
-    assert witness.policy == SpeedEvidencePolicy.legacy()
-    assert SpeedWitness.from_dict(witness.to_dict()) == witness
-
-    repeat_rates = legacy_rates + tuple(
-        rate(role) for role in ("C-prime", "B-double-prime")
-    )
-    repeat = SpeedWitness(
-        *heads, _projection_digest(*heads, repeat_rates), repeat_rates
-    )
-    assert repeat.policy == SpeedEvidencePolicy.repeat()
-    assert SpeedWitness.from_dict(repeat.to_dict()) == repeat
-
-    with pytest.raises(QualificationRunnerError, match="B/C/B-prime"):
-        SpeedWitness(
-            *heads, _projection_digest(*heads, legacy_rates[:2]), legacy_rates[:2]
-        )
-    with pytest.raises(QualificationRunnerError, match="does not recompute"):
-        SpeedWitness(*heads, _digest("forged evidence"), legacy_rates)
-    # A 3-rate witness can never be regraded under the repeat authority (and
-    # vice versa): the policy check refuses before any calibration is read.
-    with pytest.raises(QualificationRunnerError, match="policy differs"):
-        witness.regrade(None, None, expected_policy=SpeedEvidencePolicy.repeat())
-    with pytest.raises(QualificationRunnerError, match="policy differs"):
-        repeat.regrade(None, None, expected_policy=SpeedEvidencePolicy.legacy())
-
-
-def test_decode_dominant_plan_gate(tmp_path):
-    case = runtime_case(tmp_path)
-    case.session = replace(
-        case.session,
-        prompt_batches=(("warmup",), ("t1",), ("t2",)),
-        max_new_tokens=10,
-        top_logprobs_num=1,
-    )
-    plan = prepared_runtime(case).baseline_session_plan
-    count_tokens = len  # chars-as-tokens keeps the gate arithmetic transparent
-    charged = plan.prompt_batches[plan.warmup_count - plan.conditioning_count :]
-    prompt_tokens = sum(len(prompt) for batch in charged for prompt in batch)
-    decode_tokens = sum(len(batch) * plan.max_new_tokens for batch in charged)
-    expected = decode_tokens / (decode_tokens + prompt_tokens)
-    share = require_decode_dominant_plan(
-        plan, count_tokens=count_tokens, min_decode_share=expected * 0.9
-    )
-    assert abs(share - expected) < 1e-12
-    with pytest.raises(OuterSessionInfrastructureError, match="prefill-heavy"):
-        require_decode_dominant_plan(plan, count_tokens=count_tokens, min_decode_share=0.99)
-    with pytest.raises(OuterSessionInfrastructureError, match="min_decode_share"):
-        require_decode_dominant_plan(plan, count_tokens=count_tokens, min_decode_share=1.0)
-    with pytest.raises(OuterSessionInfrastructureError, match="positive ints"):
-        require_decode_dominant_plan(
-            plan, count_tokens=lambda prompt: 0, min_decode_share=0.5
-        )

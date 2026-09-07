@@ -61,8 +61,14 @@ python scripts/check_islands.py
 
 A module without a consumer must be wired into its production owner, declared
 in the capability manifest, or deleted; growing `scripts/island_baseline.txt`
-is a reviewed last resort. The checker also reports files above the 900-line
-watermark and `_part<N>` test files. Prefer diffs that delete, state the net
+is a reviewed last resort. The checker also reports `_part<N>` test files;
+`scripts/check_loc_ratchet.py` holds every Python file at or above 900 lines
+to its reviewed ceiling in `scripts/file_ceilings.txt`, so an oversized file
+can only shrink; `python scripts/surface_snapshot.py --check` freezes the
+identity-bearing surfaces (CLI help, seam table, DDL, digests, exports, codec
+keys) in `scripts/surface_baseline/`, and an intended change runs `--write`
+and explains each changed section with a `surface-change:` line in the pull
+request body. Prefer diffs that delete, state the net
 line impact in the pull request description, and split any change above
 roughly +1,500 net production lines.
 

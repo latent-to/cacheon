@@ -7,13 +7,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from cacheon.chain.qualification_request import qualification_request_body
 
 from cacheon.chain.remote_evaluation_dispatcher import (
     AuthenticatedRemoteEvaluationResponse,
     RemoteEvaluationDispatcherError,
     RemoteEvaluationRequest,
     RemoteWorkerCredential,
-    _request_body_for_qualification,
     reopen_remote_response,
     seal_remote_request,
     seal_remote_response,
@@ -70,7 +70,11 @@ def _qualification_request(tmp_path: Path, *, count: int = 1):
         service.manifest.service_id,
         identity,
         credential,
-        _request_body_for_qualification(coordinator, claim),
+        qualification_request_body(
+            coordinator, claim,
+            incumbent_stack_digest=fixtures._incumbent(service).digest,
+            incumbent_tree_digest=fixtures._h("incumbent-tree"),
+        ),
     )
     return request, identity, credential
 

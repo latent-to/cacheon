@@ -20,65 +20,66 @@ The authoritative sources are
 
 ## Current slot catalog
 
-There are 11 semantic slots. `entry` below means the callable named by your
+There are 13 semantic slots. `entry` below means the callable named by your
 manifest; it does not require the Python function itself to be named `entry`.
 
 | Slot | Kind | Required call boundary | What the validator retains |
 |---|---|---|---|
 | `activation.silu_and_mul` | op | `entry(x, out)` | MLP activation output |
-| `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
-| `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | dense/GQA/MQA attention output |
-| `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | MiniMax-M3 graph-native sparse attention over validator-selected blocks |
-| `attention.msa_block_score` | block | `entry(q, k_cache, req_to_token, slot_ids, seq_lens, out, sm_scale, block_size, topk, init_blocks, local_blocks)` | paged per-head decode scores; stock owns top-k and attend |
-| `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | one batched paged prefill score-to-selection call; validator audits indices and owns attend |
-| `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
-| `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
+| `attention.indexer_select` | block | `entry(q, key_pages, key_scales, weights, page_table, row_to_batch, lengths, page_offsets, positions, cos_sin_cache, q_scale_gate, num_init_tokens, num_local_tokens, top_k, out)` | query preparation, scores, top-k and int32 physical indices; internal atomic member |
+| `attention.sparse_mla` | block | `entry(q, q_rope, positions, cos_sin_cache, is_neox, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale)` | query RoPE/FP8 preparation and BF16 latent attention output; internal atomic member |
+| `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | rank-ordered gathered tensor |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | sum across the supplied process group |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | reduced residual and normalized output |
-| `collective.moe_finalize_ar_rmsnorm` | collective | `entry(gemm_out, row_map, scales, residual, weight, eps, out_norm, out_residual, group)` | finalized/reduced residual and normalized output |
+| `collective.reduce_scatter_tensor` | collective | `entry(x, out, group)` | this rank's SUM-reduced shard |
+| `linear.dense` | block | `prepare(weight)` plus `entry(x, prepared, out)` | ordinary GEMM, FP32 gate projection and strided absorbed BMM; communication stays outside |
+| `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
+| `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
+| `moe.fused_routed_experts` | block | `prepare(w13, w2, topk, routed_scaling)` plus `entry(x, router_logits, correction_bias, prepared, out)` | routed, combined expert result; the implementation owns the routing head |
+| `norm.fused_add_rmsnorm` | block | `entry(x, residual, weight, eps, out_norm, out_residual)` | plain or residual-add RMSNorm; plain calls supply both residual arguments as `None` |
+| `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
 
-## Current MiniMax-M3 availability
+## Current GLM-5.3 availability
 
-As of 2026-08-24, five registered slot contracts are **unavailable for paid
-submission in the current MiniMax-M3 mainnet arena**:
+The GLM-5.3 source profiles cover six family targets: `moe.fused_routed_experts`,
+`linear.dense`, `norm.fused_add_rmsnorm`, `collective.all_reduce`, atomic
+`collective.dp_attention_exchange.v1`, and atomic `attention.sparse_mla.v1`.
+The last target requires both `attention.indexer_select` and `attention.sparse_mla`.
+An existing commissioned arena's five-target set does not change until the
+widened families pass runtime acceptance and a new commission seals them.
 
-- `norm.rmsnorm`: the deployed model uses `GemmaRMSNorm` at every relevant
-  normalization callsite. The registered adapter patches the separate
-  `RMSNorm.forward_cuda` boundary, so a candidate for this slot cannot execute.
-- `activation.silu_and_mul`: the deployed model computes expert activation
-  inside the MoE grouped-GEMM epilogue on 57 of 60 layers, and its three dense
-  layers route a swigluoai function the registered adapter does not patch. A
-  candidate for this slot loads but is never called.
-- `attention.sdpa`: no serving adapter binds this contract in the deployed
-  runtime, so a candidate can never execute in a measured arm.
-- `attention.msa_prefill_block_score`: closed pending its first clean
-  end-to-end control run on the deployed arena; the decode sibling
-  `attention.msa_block_score` is open.
-- `moe.fused_experts_reduce`: sealed closed pending its full-engine
-  outer-reduction proof.
+Small operations belong to these families; there are no standalone GLM lanes
+for score computation, top-k, plain RMSNorm, FP32 gates, BMM or cache writes.
+Key-cache writes, radix, batching and speculative policy remain engine-owned.
 
-Do not pay for or submit those targets; intake parks them without judgement
-and the payment is not consumed. Every other registered target remains open.
+Sealed profiles replace generic shapes with local `6/32/4096`, TP-gathered
+`24/128/16384`, prefill all-reduce `(16384, 6144)`, and decode DP-exchange
+`(6, 6144)/(32, 6144)`. Dense also binds dimensions, role, and local TP.
+Routed MoE includes the 16,384-token prefill shape; its untimed reference groups
+tokens by expert without duplicating weights. Mixed-cell qualification remains
+the full-model quality and performance gate.
 
-Closure removes only the standalone lane. The same computation remains fully
-claimable **inside open targets**: activation belongs to the
-`moe.fused_experts` boundary (the validator-owned per-model table carries the
-swigluoai parameters for exactly that), normalization belongs to the two fused
-collective boundaries, and a fused kernel is judged only by the contract of
-the target it names — never by what it absorbs internally. See the slot
-contract's closure section.
+Dense family profiles include the router's FP32 output and 64-head absorbed
+BMMs `192 → 512` and `512 → 256`. The norm family includes plain widths
+512/2048/6144. Attention profiles supply raw BF16 queries, 64 latent-attention
+heads and 32 indexer heads, with independent FP8 key caches. Prefill and decode
+share the family ABIs. Exact-image full-model acceptance remains required for
+these widened consumers. See the [attention family ABI](kernel-abi.md#atomic-sparse-attention-family).
 
-The decode MSA slot follows `req_to_token[slot_ids]` and fills one FP32 score
-slab per local index head. Stock code retains top-k and attend. Prefill V2
-instead writes validator-allocated `int32` indices for the whole paged batch;
-`-1` is required padding for short causal rows.
+## Arena availability
 
-The prefill slot is a distinct long-prefill boundary and its canonical live
-descriptor is eager; do not assume a decode optimization exercises it.
+The catalog registers contracts; each arena's pinned data seals which of them
+accept paid submission, and a registered slot can be absent from an arena
+whose model never executes the adapter's callsite. Check the deployed arena's
+registered target set before paying.
 
-Registration and installation remain different facts. The pinned runtime now
-binds `attention.msa_block_score` at `_decode_score_kernel`; the prefill sibling
-has its own guarded adapter.
+Closing a standalone lane removes only that lane. Activation remains claimable
+inside a fused MoE target, normalization inside
+`collective.ar_residual_rmsnorm`, and a fused kernel is judged only by its
+named target contract. See the slot contract's closure section.
+
+Registration and installation remain different facts: the catalog can register
+a slot before the pinned runtime binds a live adapter for it.
 
 Collective slots are distributed contracts. `group` is the process group the
 validator supplies, and every listed output is validator-allocated. Test with
@@ -90,12 +91,12 @@ See [Kernel ABI](kernel-abi.md) for tensor semantics and
 ## Singleton targets
 
 The current default target catalog registers one singleton target for each of
-the 11 slots. Its target ID is the slot ID. A normal proposal therefore names
+the 13 slots. Its target ID is the slot ID. A normal proposal therefore names
 the slot target explicitly:
 
 ```toml
 [competition]
-target = "attention.msa_prefill_block_score"
+target = "moe.fused_experts"
 mode = "slot"
 ```
 
@@ -103,20 +104,21 @@ The catalog, not your manifest, binds that target to its member slot, ABI,
 reference, verification profile, serving binding, correctness policy, and
 allowed implementation features.
 
-## The registered atomic target
+## The registered atomic targets
 
 The default catalog also registers:
 
 | Target | Mode | Members | Displaces |
 |---|---|---|---|
-| `collective.moe_epilogue.v1` | `atomic` | `collective.ar_residual_rmsnorm`, `collective.moe_finalize_ar_rmsnorm` | both corresponding singleton targets |
+| `collective.dp_attention_exchange.v1` | `atomic` | `collective.all_gather_into_tensor`, `collective.reduce_scatter_tensor` | both corresponding singleton targets |
+| `attention.sparse_mla.v1` | `atomic` | `attention.sparse_mla`, `attention.indexer_select` | both corresponding singleton targets |
 
 Use an atomic target only when the optimization's semantics genuinely require
 the coupled boundary and your bundle implements all registered members:
 
 ```toml
 [competition]
-target = "collective.moe_epilogue.v1"
+target = "collective.dp_attention_exchange.v1"
 mode = "atomic"
 ```
 
@@ -138,10 +140,10 @@ Start from the published arena, not from an isolated kernel idea:
    registers that surface.
 
 For a first offline implementation, `activation.silu_and_mul` and
-`norm.rmsnorm` have the smallest single-process ABIs. They are useful for
-learning the contract only: both are unavailable for paid submission in the
-current MiniMax-M3 arena as stated above. Advanced collective and deep-MoE
-targets require the matching multi-GPU and build environment to test honestly.
+`norm.rmsnorm` have the smallest single-process ABIs; check
+[Arena availability](#arena-availability) before paying for either. Advanced
+collective and deep-MoE targets require the matching multi-GPU and build
+environment to test honestly.
 
 ### A decision procedure
 
@@ -173,7 +175,7 @@ third option, and unregistered work is not submittable.
 | fuse SiLU and multiply for a particular token range | `activation.silu_and_mul` singleton with a constrained variant | both operations and the output are already inside one slot |
 | add a residual connection to pure RMSNorm | not `norm.rmsnorm`; use a matching registered collective boundary only if its full semantics apply, otherwise not submittable | the singleton RMSNorm contract explicitly does not own residual addition |
 | replace local expert compute and its trailing reduction as one implementation | `moe.fused_experts_reduce` | this slot, unlike `moe.fused_experts`, owns the supplied-group reduction |
-| jointly alter the shallow and deep MoE collective epilogues | `collective.moe_epilogue.v1`, implementing both members | the catalog already registers and prices the coupled overlap unit |
+| jointly optimize GLM DP-attention exchange | `collective.dp_attention_exchange.v1`, implementing both members | the target owns the measured gather/scatter exchange as one reward unit |
 | patch scheduler batching or invent a new attention seam | not submittable | engine control flow lies outside every component callable ABI |
 
 This exercise prevents two common errors. Choosing a boundary that is too narrow makes

@@ -2,15 +2,14 @@
 
 Cacheon competes against and integrates with an exact SGLang runtime. The pin is
 part of evaluation and release identity, not a loose minimum version. The
-source pin is `0.5.13.post1` in
+source pin is `0.5.18` in
 [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py).
 
 A green static seam canary establishes import and chokepoint compatibility only. A
 runtime pin is eligible for evaluation or release authority only after end-to-end GPU
 controls reject a deliberately broken bundle, accept a faithful bundle, and rebaseline
 the registered champions under the exact new identity. Treat the source pin as the
-compatibility target, not as evidence that these empirical gates passed. Completed proof
-coverage belongs in [State of record](../reference/state-of-record.md).
+compatibility target, not as evidence that these empirical gates passed.
 
 ## Why the pin matters
 
@@ -35,7 +34,7 @@ and evaluation identity and coordinate a pin transition.
 That requirement binds authoritative measurement, not a miner's workstation. Miners may
 develop with another SGLang revision—or without SGLang when a slot reference is
 sufficient—and target Cacheon's typed slot ABI. Qualification always re-runs the submitted
-delta in the validator's pinned arena, and an Engine release binds its own exact pin.
+delta in the validator's pinned arena.
 A pin bump remeasures existing contributions against a changed baseline and execution
 context; it does not automatically make a portable contribution's source invalid.
 Contributions that depended on an old runtime quirk can fail or lose their advantage
@@ -49,10 +48,12 @@ checks for the most consequential surfaces:
 | Upstream surface | Why Cacheon needs it | What movement can break |
 |---|---|---|
 | `SiluAndMul` and `RMSNorm` | Narrow component call sites | Argument order, residual semantics, fallback routing |
-| `flash_decode_with_gqa_share_sparse` | MiniMax-M3 graph-native sparse-attend insertion before projection/sampling | Paged-cache ABI, selected-block format, graph behavior |
-| `MiniMaxSparseAttnBackend.__init__` | Decode-only audit routing; MSA prefill remains live | `_use_msa_decode` and `_msa_owns_decode` fields |
 | `FusedMoE.forward_impl` | MoE waist that survives piecewise capture | Expert inputs, routing outputs, reduction ownership |
+| `flashinfer.decode.trtllm_batch_decode_with_kv_cache_mla` | Shared TRTLLM DSA sparse-core call | Physical-token indexing, active lengths, FP8 scales, BF16 output and per-query layout |
+| GLM dense linear call sites | Validator-owned projection boundary | Quantized-weight layout, row geometry, and return type |
+| `fused_add_rmsnorm` | Residual-plus-norm boundary | In-place residual ownership and tuple semantics |
 | `GroupCoordinator.all_reduce` | Validator-owned TP collective boundary | Process-group ownership and all-rank behavior |
+| DP-attention all-gather/reduce-scatter | Atomic exchange boundary | Coordinator selection, split sizes, and graph behavior |
 | `Engine.generate` logprob API | Trusted KL/quality observation | Top-logprob collection and sealed trajectory schema |
 | `ServerArgs` fields | Deterministic engine launch policy | Model, graph, memory, seed, backend, and logging controls |
 | Blessed native base | FlashInfer/CUTLASS/Triton kernel surface | JIT products, numerics, throughput, validator agreement |
@@ -211,6 +212,3 @@ digest-pinned base image, reproducible Cacheon artifacts, native build, and
 serving policy. Consumers verify those exact identities. Upgrading a running
 deployment means building and signing a new release; it is never an in-place
 package upgrade inside an existing release.
-
-See [State of record](../reference/state-of-record.md) for which empirical GPU
-proofs exist for the present architecture and which remain outstanding.

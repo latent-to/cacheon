@@ -23,11 +23,11 @@ from cacheon.chain.evaluation_recovery import (
     RecoveryPhase,
 )
 from cacheon.chain.intake import IntakeError
+from cacheon.chain.qualification_request import qualification_request_body
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.remote_evaluation_dispatcher import (
     RemoteWorkerCredential,
     RemoteWorkerTransportIdentity,
-    _request_body_for_qualification,
     seal_remote_request,
     seal_remote_response,
 )
@@ -216,7 +216,11 @@ def _authority(
         service.manifest.service_id,
         identity,
         credential,
-        _request_body_for_qualification(coordinator, claim),
+        qualification_request_body(
+            coordinator, claim,
+            incumbent_stack_digest=fixtures._incumbent(service).digest,
+            incumbent_tree_digest=fixtures._h("incumbent-tree"),
+        ),
     )
     wire_path = root / "qualification-request.json"
     spool.atomic_json(wire_path, request.to_dict(), mode=0o400)
@@ -296,20 +300,20 @@ def _write_completed_result(authority: _Authority, plan) -> object:
         media_type="application/json",
         schema="cacheon.qualification.plan-recovery-test.v1",
     )
-    manifest = authority.fixtures._authority_for_request(authority.request)
+    manifest = authority.fixtures._authority_for_request(plan.remote_request)
     product = capture_remote_qualification_product(
         batch=authority.fixtures._failed_batch(manifest, reference),
         authority_manifest=manifest,
         incumbent_stack=authority.fixtures._incumbent(authority.service),
         incumbent_tree_digest=authority.fixtures._h("incumbent-tree"),
-        screen_lane=authority.request.body["screen_lane"],
+        screen_lane=plan.remote_request.body["screen_lane"],
         service_digest=authority.service.identity,
         readiness=authority.coordinator.readiness,
         evidence_root=pod_evidence,
         evidence_references=(reference,),
     )
     response = seal_remote_response(
-        authority.request, product, authority.identity, authority.credential
+        plan.remote_request, product, authority.identity, authority.credential
     )
     carrier = _inspect(authority, plan).carrier_path
     assert carrier is not None

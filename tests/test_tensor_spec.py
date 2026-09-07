@@ -147,3 +147,18 @@ def test_tensor_binding_rejects_in_place_stride_change():
 
     with pytest.raises(ValueError, match="validator-owned storage/tensor binding"):
         validate_allocation_bindings(allocation)
+
+
+def test_output_and_workspace_remain_writable_after_inference_scope():
+    spec = TensorSpec(shape=(3, 5), dtype=torch.float32, stride_policy="strided")
+    with torch.inference_mode():
+        allocation = allocate_output_spec(
+            OutputSpec((spec,), (spec,)),
+            fallback_dtype=torch.float32, fallback_device="cpu",
+        )
+        for tensor in (*allocation.outputs, *allocation.workspace):
+            tensor.zero_()
+    for tensor in (*allocation.outputs, *allocation.workspace):
+        tensor.add_(1)
+        assert torch.equal(tensor, torch.ones_like(tensor))
+    validate_allocation_bindings(allocation)

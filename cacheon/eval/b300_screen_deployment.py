@@ -22,7 +22,6 @@ from cacheon.arena_service import (
     ArenaServiceManifest,
     NonCrownScreenPolicy,
     ScreenStagePolicy,
-    ArenaServiceError,
     Workload,
     WorkloadCell,
 )
@@ -41,6 +40,17 @@ from cacheon.eval.b300_arena_provider import (
     B300ResidentScreenLifetime,
     B300ScreenDeploymentAuthorities,
     b300_arena_provider_digest,
+)
+from cacheon.eval.b300_arena_definition import (
+    B300ScreenDeploymentError,
+    data_parallel_size as _data_parallel_size,
+    engine_config as _engine_config,
+    engine_template as _engine_template,
+    prompt_batch_cells as _prompt_batch_cells,
+    scored_cell as _scored_cell,
+    string_rows as _string_rows,
+    target_partition as _target_partition,
+    workload as _workload,
 )
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_screen_stages import (
@@ -75,24 +85,17 @@ from cacheon.eval.oci_backend import (
 )
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.oci_process import OCIProcessManager
-from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.oci_session_protocol import EngineSessionConfig
 from cacheon.eval.b300_screen_qualification_bridge import (
     B300ScreenQualificationBridgeError,
     derive_b300_screen_qualification,
 )
-from cacheon.eval.resident_queue import ScreenPolicy
-from cacheon.eval.resident_screen_lane import (
-    ResidentScreenLane,
-    ResidentServingScreenStage,
-    make_backend_lifetime_factory,
-)
+from cacheon.eval.b300_resident_screen import _resident_factory
 from cacheon.eval.runtime_preflight import (
     HOST_RECEIPT_SCHEMA,
     RuntimePreflightReceipt,
 )
 from cacheon.eval.screen_quant_policy import slot_quant_requirements
-from cacheon.seams import SEAM_ADAPTERS
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 from cacheon.stack_manifest import (
     EvaluationStackContext,
@@ -113,13 +116,6 @@ ARCHITECTURE = "sm103"
 GPU_COUNT = 4
 TP_SIZE = 4
 DEFAULT_OUTPUT_ROOT = Path("/data/cacheon-b300/remote-worker/commissioned")
-_MODEL_QUANTIZATION = "modelopt_fp4"
-
-
-class B300ScreenDeploymentError(RuntimeError):
-    """A commissioned authority is missing, mutable, or inconsistent."""
-
-
 def _digest(value: object, field: str) -> str:
     return require_digest(value, field=field, error=B300ScreenDeploymentError)
 
@@ -481,72 +477,6 @@ def _catalog_specs(catalog: TargetCatalog) -> dict[str, str]:
     }
 
 
-def _seam_bindings(target_members: tuple[str, ...]) -> tuple[str, ...]:
-    members = set(target_members)
-    return tuple(
-        sorted(
-            {
-                adapter.binding_id
-                for adapter in SEAM_ADAPTERS
-                if adapter.binding_id is not None
-                and members.intersection(adapter.slots)
-            }
-        )
-    )
-
-
-def _engine_config(
-    target_members: tuple[str, ...],
-    cell: WorkloadCell,
-    *,
-    disable_cuda_graph: bool,
-) -> EngineSessionConfig:
-    bindings = _seam_bindings(target_members)
-    kwargs: dict[str, object] = {
-        "chunked_prefill_size": 4096,
-        # One KV page above the cell's exact request total keeps the boundary
-        # request clear of admission off-by-ones.
-        "context_length": cell.input_tokens + cell.output_tokens + 128,
-        "cuda_graph_backend_prefill": "disabled",
-        # Sealed batches repeat across arms inside one resident engine; prefix
-        # reuse must be impossible, not merely symmetric by luck.
-        "disable_radix_cache": True,
-        "kv_cache_dtype": "auto",
-        "page_size": 128,
-        "quantization": _MODEL_QUANTIZATION,
-        "trust_remote_code": True,
-    }
-    if "arfusion" in bindings:
-        kwargs["enable_flashinfer_allreduce_fusion"] = True
-    if not disable_cuda_graph:
-        # SGLang's default 300s scheduler watchdog SIGKILLs ranks mid CUDA-graph
-        # capture on a live resident loop (measured 2026-07-20; reproduced on
-        # mainnet FIFO recommission 2026-08-04 as outer_oci_client_returncode=137).
-        kwargs["watchdog_timeout"] = 1800
-    return EngineSessionConfig(
-        model_path="/cacheon/input/model",
-        dtype="bfloat16",
-        deterministic=False,
-        attention_backend=None,
-        disable_cuda_graph=disable_cuda_graph,
-        # 0.70 keeps >=13 GiB/GPU free for the post-swap decode-graph rebuild:
-        # the pinned fork shares no graph memory pool across runner
-        # generations, so a rebuild on a traffic-warmed engine needs fresh
-        # headroom (OOMed 3/3 at 0.75 on 2026-08-24, 9.07 GiB ask vs ~3.7 GiB
-        # free). expandable_segments cannot substitute here: flashinfer
-        # allreduce fusion needs cudaIpcGetMemHandle, which VMM-backed
-        # allocation breaks.
-        mem_fraction_static=0.70,
-        log_level="error",
-        max_running_requests=cell.concurrency,
-        tp_size=TP_SIZE,
-        moe_runner_backend="flashinfer_cutlass",
-        disable_custom_all_reduce=True,
-        engine_kwargs=kwargs,
-        seam_bindings=bindings,
-    )
-
-
 def _commissioned_stock_authority(
     inputs: "_CommissionedInputs",
     manifest: ArenaServiceManifest,
@@ -667,8 +597,12 @@ class _CommissionedInputs:
     controller_distribution_digest: str
     model_root: Path
     prompt_batches: tuple[tuple[str, ...], ...]
+    prompt_batch_cells: tuple[str, ...]
     prompt_identity: dict[str, str]
     workload: Workload
+    model_profile_key: str
+    engine_template: EngineSessionConfig
+    registered_target_ids: tuple[str, ...]
     closed_targets: tuple[str, ...]
     plan_resolver_digest: str
     evidence_policy_digest: str
@@ -783,6 +717,7 @@ class _CommissionedScreenPlanResolver:
             raise B300ScreenDeploymentError("materialized engine stack changed")
 
         policy = self.inputs.device_policy
+        dp_size = _data_parallel_size(self.inputs.engine_template)
         hardware = LogicalHardwareSpec(
             visible_gpu_count=GPU_COUNT,
             architecture=ARCHITECTURE,
@@ -790,7 +725,7 @@ class _CommissionedScreenPlanResolver:
             topology_digest=self.inputs.topology_digest,
             tp_size=TP_SIZE,
             ep_size=1,
-            dp_size=1,
+            dp_size=dp_size,
             device_policy_digest=policy.policy_sha256,
         )
         physical = PhysicalHardwareBinding(
@@ -800,7 +735,7 @@ class _CommissionedScreenPlanResolver:
             topology_digest=self.inputs.topology_digest,
             tp_size=TP_SIZE,
             ep_size=1,
-            dp_size=1,
+            dp_size=dp_size,
             device_policy_digest=policy.policy_sha256,
         )
         native = _native_build(
@@ -824,7 +759,12 @@ class _CommissionedScreenPlanResolver:
             model_content_digest=self.inputs.runtime.model_content_digest,
         )
         cell = _scored_cell(self.inputs.workload)
-        graph_config = _engine_config(target.members, cell, disable_cuda_graph=False)
+        graph_config = _engine_config(
+            self.inputs.engine_template,
+            target.members,
+            cell,
+            disable_cuda_graph=False,
+        )
         seccomp_digest = _file_sha256(self.executor.config.prebuild.seccomp_profile)
 
         def launch(config: EngineSessionConfig) -> EngineLaunchSpec:
@@ -873,152 +813,6 @@ class _CommissionedScreenPlanResolver:
         )
 
 
-def _resident_factory(
-    inputs: _CommissionedInputs,
-    executor: OCIEngineExecutor,
-    catalog: TargetCatalog,
-    manifest_provider: Callable[[], ArenaServiceManifest],
-) -> B300ResidentScreenFactory:
-    """Build one stock TP4 engine lifetime shared by queued arrivals."""
-
-    if type(executor) is not OCIEngineExecutor or type(catalog) is not TargetCatalog:
-        raise B300ScreenDeploymentError("resident factory inputs are not exact")
-    if not callable(manifest_provider):
-        raise B300ScreenDeploymentError("resident manifest provider is not callable")
-    prompts = tuple(prompt for batch in inputs.prompt_batches[:1] for prompt in batch)
-
-    def create() -> B300ResidentScreenLifetime:
-        manifest = manifest_provider()
-        if (
-            type(manifest) is not ArenaServiceManifest
-            or manifest.runtime != inputs.runtime
-        ):
-            raise B300ScreenDeploymentError(
-                "resident service manifest differs from commission"
-            )
-        snapshot = catalog.snapshot()
-        target_members, _context, _stock, tree = _commissioned_stock_authority(
-            inputs,
-            manifest,
-            catalog,
-            snapshot,
-            error=B300ScreenDeploymentError,
-            label="resident",
-        )
-
-        policy = inputs.device_policy
-        hardware = LogicalHardwareSpec(
-            visible_gpu_count=GPU_COUNT,
-            architecture=ARCHITECTURE,
-            topology_class=inputs.runtime.topology_class,
-            topology_digest=inputs.topology_digest,
-            tp_size=TP_SIZE,
-            ep_size=1,
-            dp_size=1,
-            device_policy_digest=policy.policy_sha256,
-        )
-        physical = PhysicalHardwareBinding(
-            physical_gpu_ids=tuple(str(gpu.physical_id) for gpu in inputs.gpus),
-            architecture=ARCHITECTURE,
-            topology_class=inputs.runtime.topology_class,
-            topology_digest=inputs.topology_digest,
-            tp_size=TP_SIZE,
-            ep_size=1,
-            dp_size=1,
-            device_policy_digest=policy.policy_sha256,
-        )
-        native = _native_build(
-            tree.tree_digest,
-            inputs.preflight,
-            executor.config.prebuild.policy,
-        )
-        binding = TrustedLaunchBinding(
-            materialized_tree_root=tree.root,
-            controller_distribution_digest=inputs.controller_distribution_digest,
-            native_build_spec=native,
-            runtime_preflight_receipt=inputs.preflight,
-            physical_hardware=physical,
-        )
-        config = _engine_config(
-            target_members, _scored_cell(inputs.workload), disable_cuda_graph=False
-        )
-        launch = EngineLaunchSpec(
-            runtime_digest=inputs.runtime.runtime_digest,
-            base_engine_digest=inputs.runtime.base_engine_digest,
-            arena_digest=manifest.digest,
-            stack_digest=tree.stack_digest,
-            tree_digest=tree.tree_digest,
-            image_digest=inputs.preflight.image_digest,
-            platform_digest=inputs.preflight.platform_digest,
-            controller_distribution_digest=inputs.controller_distribution_digest,
-            worker_distribution_digest=inputs.preflight.worker_distribution_digest,
-            model_revision_digest=inputs.runtime.model_revision_digest,
-            model_manifest_digest=inputs.runtime.model_manifest_digest,
-            model_content_digest=inputs.runtime.model_content_digest,
-            validator_overlay_digest=inputs.runtime.validator_overlay_digest,
-            engine_config_digest=config.digest,
-            seccomp_policy_digest=_file_sha256(
-                executor.config.prebuild.seccomp_profile
-            ),
-            resource_policy_digest=(
-                executor.config.prebuild.policy.resource_policy_digest
-            ),
-            native_build_spec_digest=native.digest,
-            hardware=hardware,
-        )
-        mount = TrustedArenaModelMountReceipt.capture(
-            inputs.model_root,
-            arena_digest=manifest.digest,
-            model_revision_digest=inputs.runtime.model_revision_digest,
-            model_manifest_digest=inputs.runtime.model_manifest_digest,
-            model_content_digest=inputs.runtime.model_content_digest,
-        )
-        plan = ResidentSessionPlan(
-            launch_digest=launch.digest,
-            expected_engine_config_digest=config.digest,
-            engine_config=config,
-            expected_preflight=expected_runtime_preflight(
-                launch, inputs.preflight
-            ),
-            max_swaps=10_000,
-            max_batches=100_000,
-            max_new_tokens=4,
-            top_logprobs_num=0,
-            temperature=0.0,
-        )
-        swap_root = inputs.root / "resident-intake"
-        # Owner retains write for host-side staging; other/execute lets the
-        # non-root OCI --user traverse to a known digest. mode=0o700 made the
-        # intake root pass ST_RDONLY preflight while digest lstat failed with
-        # EACCES, surfaced as "staged swap bundle is absent or writable"
-        # (mainnet FIFO 2026-08-04 after CUDA-graph capture completed).
-        swap_root.mkdir(parents=True, exist_ok=True, mode=0o711)
-        os.chmod(swap_root, 0o711)
-        lifetime = make_backend_lifetime_factory(
-            executor,
-            launch,
-            binding,
-            mount,
-            plan,
-            swap_intake_root=swap_root,
-            deadline_provider=lambda: float(executor.manager.clock())
-            + 30 * 24 * 60 * 60,
-        )
-        lane = ResidentScreenLane(
-            lifetime,
-            prompts=prompts,
-            policy=ScreenPolicy(max_candidates_per_lifetime=1_000),
-            verdict_timeout_s=3600.0,
-            close_timeout_s=1800.0,
-        )
-        stage = ResidentServingScreenStage(lane, swap_root)
-        return B300ResidentScreenLifetime(stage, lane.close)
-
-    return B300ResidentScreenFactory(
-        inputs.resident_factory_digest,
-        inputs.resident_resource_ids,
-        create,
-    )
 
 
 @dataclass(frozen=True)
@@ -1054,7 +848,9 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
     resolver = _CommissionedScreenPlanResolver(inputs, build_executor, catalog)
     static = B300StaticScreenAdapter(
         catalog,
-        required_slot_quant=slot_quant_requirements(_MODEL_QUANTIZATION),
+        required_slot_quant=slot_quant_requirements(
+            inputs.engine_template.engine_kwargs.get("quantization")
+        ),
     )
     pipeline = B300BuildABIGraphScreenAdapter(
         catalog=catalog,
@@ -1136,70 +932,6 @@ def _prompt_batches(value: object) -> tuple[tuple[str, ...], ...]:
             "prompt authority must contain at least three bounded nonempty batches"
         )
     return batches
-
-
-_CELL_FIELDS = frozenset(WorkloadCell.__dataclass_fields__)
-
-
-def _workload(
-    prompt: dict[str, object],
-    batches: tuple[tuple[str, ...], ...],
-    sha256: str,
-) -> Workload:
-    """The sealed prompt authority is the single workload authority.
-
-    The manifest declaration and the executed session plan are both projections
-    of the object built here, and the sealed batches are validated against the
-    declared cell before anything commissions.
-    """
-
-    row = _mapping(prompt.get("workload_cell"), "workload cell")
-    if set(row) != _CELL_FIELDS:
-        raise B300ScreenDeploymentError("workload cell fields are not closed")
-    try:
-        cell = WorkloadCell(**row)  # type: ignore[arg-type]
-        workload = Workload(
-            prompt_corpus_digest=sha256,
-            prompt_seed_scheme=prompt.get("prompt_seed_scheme"),  # type: ignore[arg-type]
-            cells=(cell,),
-        )
-    except ArenaServiceError as exc:
-        raise B300ScreenDeploymentError(f"workload declaration is invalid: {exc}") from None
-    if any(len(batch) != cell.concurrency for batch in batches):
-        raise B300ScreenDeploymentError(
-            "sealed prompt batches do not all match the declared cell concurrency"
-        )
-    return workload
-
-
-def _scored_cell(workload: Workload) -> WorkloadCell:
-    if len(workload.cells) != 1:
-        raise B300ScreenDeploymentError(
-            "this evaluator commissions exactly one scored workload cell"
-        )
-    return workload.cells[0]
-
-
-def _string_rows(value: object, label: str) -> list[str]:
-    if type(value) is not list or any(type(row) is not str for row in value):
-        raise B300ScreenDeploymentError(f"{label} must be a list of strings")
-    return value
-
-
-def _closed_targets(
-    prompt: dict[str, object], catalog: TargetCatalog
-) -> tuple[str, ...]:
-    """Sealed family closures: registered targets this workload cannot measure."""
-
-    rows = _string_rows(prompt.get("closed_targets"), "closed targets")
-    for target in rows:
-        try:
-            catalog.require(target)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise B300ScreenDeploymentError(
-                f"closed target is not registered: {exc}"
-            ) from None
-    return tuple(rows)
 
 
 def _prompt_identity(prompt: dict[str, object], sha256: str) -> dict[str, str]:
@@ -1483,7 +1215,15 @@ def _derive_inputs(
     )
     batches = _prompt_batches(prompt)
     workload = _workload(prompt, batches, prompt_identity["sha256"])
+    prompt_batch_cells = _prompt_batch_cells(prompt, batches, workload)
+    model_profile_key = _text(prompt.get("model_profile_key"), "model profile key")
+    engine_template = _engine_template(prompt)
+    if engine_template.tp_size != runtime.tensor_parallel_size:
+        raise B300ScreenDeploymentError(
+            "arena engine tensor parallel size differs from READY runtime"
+        )
     catalog = default_target_catalog()
+    registered_target_ids, closed_targets = _target_partition(prompt, catalog)
     # Calibration is qualification evidence bound by the sealed deployment
     # payload.  It cannot be part of the screen resolver identity: its context
     # names the arena manifest, whose provider identity names this resolver.
@@ -1494,6 +1234,8 @@ def _derive_inputs(
         "device_policy_digest": device_policy.policy_sha256,
         "fmha_cache_identity": _project_fmha_identity(authority),
         "model_content_digest": runtime.model_content_digest,
+        "model_profile_key": model_profile_key,
+        "engine_template_digest": engine_template.digest,
         "prompt_identity": prompt_identity,
         "runtime_tree_digest": _digest(
             runtime_root.get("tree_digest"), "READY runtime tree digest"
@@ -1529,6 +1271,7 @@ def _derive_inputs(
             authority=authority,
             prompt_identity=prompt_identity,
             catalog=catalog,
+            registered_target_ids=registered_target_ids,
             lane_pair=qualification_lane_pair,
             backend_config_factory=lambda executor_id: _backend_config(
                 root, preflight, executor_id=executor_id
@@ -1551,9 +1294,13 @@ def _derive_inputs(
         controller_distribution_digest=controller_distribution_digest,
         model_root=model_root,
         prompt_batches=batches,
+        prompt_batch_cells=prompt_batch_cells,
         prompt_identity=prompt_identity,
         workload=workload,
-        closed_targets=_closed_targets(prompt, catalog),
+        model_profile_key=model_profile_key,
+        engine_template=engine_template,
+        registered_target_ids=registered_target_ids,
+        closed_targets=closed_targets,
         plan_resolver_digest=plan_resolver_digest,
         evidence_policy_digest=evidence_policy_digest,
         resident_factory_digest=resident_factory_digest,

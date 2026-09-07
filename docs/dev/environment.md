@@ -97,8 +97,8 @@ Use the narrowest test that can falsify the change, then widen the boundary:
    intake restart, and evidence reopening.
 4. **GPU seam tests** for the exact SGLang pin, architecture, graph replay,
    collectives, model, and tensor-parallel topology.
-5. **Arena qualification** for the current v7 resident B/C/[B′] or v8
-   two-process B/C/B′ schedule, registered eager audit A, and candidate-free
+5. **Arena qualification** for the two-process B/C/B′ schedule, registered
+   eager audit A, and candidate-free
    pristine T quality. Only this layer can create qualification authority.
 
 If a lower layer fails, stop there. A model benchmark cannot excuse an invalid
@@ -125,7 +125,7 @@ hardware campaign.
 |---|---|---|
 | Manifest or bundle hashing | static/manifest and target-catalog tests | example bundles and full suite |
 | Slot ABI or verification | slot, tensor, and verifier tests | graph replay and the supported GPU matrix |
-| Target overlap/composition | target catalog and stack planning | settlement and emissions projection |
+| Target displacement/conflict | target catalog and stack planning | settlement and emissions projection |
 | Intake or retry state | chain intake and validator-loop tests | restart, evidence, and weight reconciliation |
 | Integration or Engine tree | stack manifest and Engine-tree tests | materialization and reopen verification |
 

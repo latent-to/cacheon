@@ -41,11 +41,6 @@ from cacheon.eval.qualification_intake import (
     QualificationIntakeOutcome,
     QualificationRetryPlan,
 )
-from cacheon.eval.qualification_runner import ATTEMPT_SCHEMA_V4, STAGE_EXIT_SCHEMA_V3
-from cacheon.eval.resident_pair_quality_lifecycle import (
-    ResidentPairQualityLifecycleError,
-    reopen_resident_pair_qualification_product,
-)
 from cacheon.settlement import SettlementQualification
 from cacheon.stack_identity import canonical_digest, require_sha256_hex, sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -59,6 +54,19 @@ _MAX_REMOTE_QUALIFICATION_EVIDENCE_BYTES = 32 << 20
 
 class RemoteEvaluationDispatcherError(RuntimeError):
     """Remote work cannot be authenticated, reopened, released, or committed."""
+
+
+class RemoteEvaluationReleased(RemoteEvaluationDispatcherError):
+    """The durable lease was released with a typed reason after a remote failure.
+
+    Raised only once the release is committed, so a supervisor can record the
+    disposition and keep serving instead of failing closed.
+    """
+
+    def __init__(self, lease_id: str, reason: str) -> None:
+        super().__init__(reason)
+        self.lease_id = lease_id
+        self.reason = reason
 
 
 def _digest(value: object, field_name: str) -> str:
@@ -434,26 +442,6 @@ def import_remote_qualification_evidence(
             "CPU evidence import differs from the authenticated inventory"
         )
     attempt_ref = product.batch.attempt_ref
-    if attempt_ref is not None and attempt_ref.schema in {
-        ATTEMPT_SCHEMA_V4,
-        STAGE_EXIT_SCHEMA_V3,
-    }:
-        try:
-            reopen_resident_pair_qualification_product(
-                reopen_evidence(
-                    evidence_root, attempt_ref,
-                    max_bytes=_MAX_REMOTE_EVIDENCE_ARTIFACT_BYTES,
-                ),
-                authority_digest=product.authority_manifest.authority_digest,
-                report_digests=tuple(
-                    row.report_digest for row in product.batch.outcomes
-                ),
-                evidence_inventory=result,
-            )
-        except ResidentPairQualityLifecycleError as exc:
-            raise RemoteEvaluationDispatcherError(
-                str(exc)
-            ) from None
     if attempt_ref is not None and attempt_ref.schema == CANDIDATE_FAILURE_SCHEMA:
         try:
             failure = reopen_candidate_failure(evidence_root, attempt_ref)

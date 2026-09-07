@@ -12,9 +12,8 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
-from typing import Iterable
+from typing import Iterable, Mapping
 
-from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -79,6 +78,94 @@ def _speedup(value: object) -> str:
     if value != canonical:
         raise SettlementError(f"speedup must use canonical decimal spelling {canonical!r}")
     return canonical
+
+
+@dataclass(frozen=True)
+class TargetLineageNode:
+    """One crowned lineage edge from a parent artifact to its winner."""
+
+    artifact_digest: str
+    parent_artifact_digest: str
+    winner_speedup: str
+    transition_event_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "artifact_digest", _digest(self.artifact_digest, "lineage tip artifact")
+        )
+        object.__setattr__(
+            self,
+            "parent_artifact_digest",
+            _digest(
+                self.parent_artifact_digest,
+                "lineage tip parent artifact",
+                optional=True,
+            ),
+        )
+        object.__setattr__(
+            self, "winner_speedup", _speedup(self.winner_speedup)
+        )
+        object.__setattr__(
+            self,
+            "transition_event_id",
+            _digest(self.transition_event_id, "lineage tip transition event"),
+        )
+
+
+@dataclass(frozen=True)
+class TargetLineage:
+    """The active root-to-tip path for one target."""
+
+    nodes: tuple[TargetLineageNode, ...]
+
+    def __post_init__(self) -> None:
+        nodes = tuple(self.nodes)
+        if (
+            not nodes
+            or any(type(node) is not TargetLineageNode for node in nodes)
+            or len({node.artifact_digest for node in nodes}) != len(nodes)
+        ):
+            raise SettlementError("target lineage nodes are malformed")
+        for parent, child in zip(nodes, nodes[1:]):
+            if child.parent_artifact_digest != parent.artifact_digest:
+                raise SettlementError("target lineage is not contiguous")
+        object.__setattr__(self, "nodes", nodes)
+
+    @property
+    def artifact_digest(self) -> str:
+        return self.nodes[-1].artifact_digest
+
+    @property
+    def winner_speedup(self) -> str:
+        return self.nodes[-1].winner_speedup
+
+    @property
+    def parent_artifact_digest(self) -> str:
+        return self.nodes[-1].parent_artifact_digest
+
+    @property
+    def transition_event_id(self) -> str:
+        return self.nodes[-1].transition_event_id
+
+    def threshold_from(self, artifact_digest: str) -> tuple[Decimal, str] | None:
+        """Return composed tip/ancestor speedup and the first transition."""
+
+        if artifact_digest == self.artifact_digest:
+            return None
+        start = next(
+            (
+                index
+                for index, node in enumerate(self.nodes)
+                if node.parent_artifact_digest == artifact_digest
+            ),
+            None,
+        )
+        if start is None:
+            raise SettlementError("candidate baseline is not in the active lineage")
+        threshold = Decimal(1)
+        for node in self.nodes[start:]:
+            threshold *= Decimal(node.winner_speedup)
+        return threshold, self.nodes[start].transition_event_id
 
 
 @dataclass(frozen=True)
@@ -424,12 +511,9 @@ class SettlementQualification:
         from cacheon.eval.qualification import QualificationDecision
         from cacheon.eval.qualification_intake import QualificationAuthorityManifest
         from cacheon.eval.qualification_runner import (
-            CausalQualificationInput,
             CandidateQualificationReport,
             CohortQualificationAttempt,
-            QualificationStageExit,
             ResidentSpeedWitness,
-            STAGE_EXIT_SCHEMA_V3,
         )
         from cacheon.stack_plan import MarginalArmPlan
 
@@ -449,21 +533,7 @@ class SettlementQualification:
             raise SettlementError("authority does not bind exactly one reservation")
         reservation = reservations[0]
         arm = prepared.arm
-        resident_accept = type(report) is QualificationStageExit
-        if resident_accept:
-            if (
-                type(arm) is not MarginalArmPlan
-                or type(attempt) is not CausalQualificationInput
-                or attempt.prepared.candidates != (prepared,)
-                or attempt_ref.schema != STAGE_EXIT_SCHEMA_V3
-                or report.stage != "resident_accept"
-                or type(report.speed_witness) is not ResidentSpeedWitness
-                or report.resident_pair_closure is None
-                or arm.transition.target_id != target_id
-            ):
-                raise SettlementError("resident acceptance projection is not exact")
-            lane, manifest = "registered", arm.candidate
-        elif type(arm) is MarginalArmPlan:
+        if type(arm) is MarginalArmPlan:
             lane = "registered"
             if (
                 type(report) is not CandidateQualificationReport
@@ -481,60 +551,36 @@ class SettlementQualification:
             raise SettlementError("qualification arm is unsupported")
         if authority.lane != lane:
             raise SettlementError("qualification authority lane differs from its arm")
-        if resident_accept:
-            closure = report.resident_pair_closure
-            if (
-                len(authority.reservations) != 1
-                or report.authority_digest != authority.authority_digest
-                or report.source_digest != attempt.prepared.source.digest
-                or report.selected_delta_digest != arm.selected_delta_digest
-                or report.speed_witness.candidate_launch_digest != prepared.launch.digest
-                or attempt.commitment.digest != authority.commitment_digest
-            ):
-                raise SettlementError(
-                    "resident acceptance differs from its plan or authority"
-                )
-            selection_evidence_digest = closure.count_result.digest
-            audit_evidence_digest = (
-                _LEGACY_AUDIT_EVIDENCE_DIGEST
-                if report.audit_witness is None
-                else report.audit_witness.digest
+        if (
+            attempt.authority_digest != authority.authority_digest
+            or attempt.commitment.digest != authority.commitment_digest
+            or sum(row.digest == report.digest for row in attempt.reports) != 1
+        ):
+            raise SettlementError(
+                "qualification attempt differs from its authority/report"
             )
-        else:
-            if (
-                attempt.authority_digest != authority.authority_digest
-                or attempt.commitment.digest != authority.commitment_digest
-                or sum(row.digest == report.digest for row in attempt.reports) != 1
-            ):
-                raise SettlementError(
-                    "qualification attempt differs from its authority/report"
-                )
-            selection_evidence_digest = canonical_digest(
-                "cacheon.settlement.selection-evidence",
-                {
-                    "commitment_digest": attempt.commitment.digest,
-                    "entropy_digest": attempt.entropy.digest,
-                    "selection_digest": attempt.selection.digest,
-                },
-            )
-            audit_evidence_digest = report.audit_evidence_digest
-        resident_witness = (
-            report.speed_witness
-            if type(report.speed_witness) is ResidentSpeedWitness
-            else None
+        selection_evidence_digest = canonical_digest(
+            "cacheon.settlement.selection-evidence",
+            {
+                "commitment_digest": attempt.commitment.digest,
+                "entropy_digest": attempt.entropy.digest,
+                "selection_digest": attempt.selection.digest,
+            },
         )
-        if resident_witness is not None and (
+        audit_evidence_digest = report.audit_evidence_digest
+        resident_witness = report.speed_witness
+        if type(resident_witness) is not ResidentSpeedWitness:
+            raise SettlementError("qualification report speed witness is not resident")
+        if (
             lane != "registered"
             or len(authority.reservations) != 1
-            or (not resident_accept and len(attempt.reports) != 1)
+            or len(attempt.reports) != 1
         ):
             raise SettlementError(
                 "resident crossover settlement requires one registered candidate"
             )
         resident_lane_orientation = (
-            None
-            if resident_witness is None
-            else ResidentLaneOrientation.from_resident_speed_witness(resident_witness)
+            ResidentLaneOrientation.from_resident_speed_witness(resident_witness)
         )
         if (
             reservation.selected_delta_digest != arm.selected_delta_digest
@@ -565,11 +611,7 @@ class SettlementQualification:
             incumbent_tree_digest=arm.baseline_before.tree_digest,
             candidate_stack_digest=arm.challenger.stack_digest,
             candidate_tree_digest=arm.challenger.tree_digest,
-            speedup=(
-                report.speed_witness.accepted_speedup()
-                if resident_accept
-                else report.speedup
-            ),
+            speedup=report.speedup,
             incumbent_manifest=arm.incumbent,
             proposal_digest="",
             candidate_manifest=manifest,
@@ -702,275 +744,7 @@ class SettlementQualification:
         return canonical_digest(domain, self.to_dict())
 
 
-@dataclass(frozen=True)
-class SettlementCandidate:
-    """A primary PASS and an independent reproduction of the exact same delta."""
-
-    primary: SettlementQualification
-    reproduction: SettlementQualification
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.primary) is not SettlementQualification
-            or type(self.reproduction) is not SettlementQualification
-        ):
-            raise SettlementError("settlement candidate requires two exact qualifications")
-        if self.primary.reproduction_identity != self.reproduction.reproduction_identity:
-            raise SettlementError(
-                "independent reproduction differs from the primary reproduction identity"
-            )
-        common = (
-            "lane", "arena_digest", "reservation_digest", "finalized_block",
-            "event_index", "event_subindex", "hotkey", "target_id", "members",
-            "selected_delta_digest", "arm_digest", "incumbent_stack_digest",
-            "incumbent_tree_digest", "candidate_stack_digest", "candidate_tree_digest",
-            "incumbent_manifest", "proposal_digest", "candidate_manifest",
-            "speed_evidence_policy_digest",
-            "audit_control_digest",
-        )
-        if any(
-            getattr(self.primary, field) != getattr(self.reproduction, field)
-            for field in common
-        ):
-            raise SettlementError(
-                "independent reproduction differs from the primary contribution identity"
-            )
-        distinct = (
-            "qualification_authority_digest", "qualification_plan_digest",
-            "qualification_attempt_digest", "qualification_report_digest",
-            "selection_commitment_digest", "selection_secret_commitment_digest",
-            "selection_evidence_digest",
-        )
-        if any(
-            getattr(self.primary, field) == getattr(self.reproduction, field)
-            for field in distinct
-        ):
-            raise SettlementError(
-                "independent reproduction reuses primary authority or evidence"
-            )
-        primary_audit = self.primary.audit_policy
-        reproduction_audit = self.reproduction.audit_policy
-        if (primary_audit is None) != (reproduction_audit is None):
-            raise SettlementError(
-                "independent reproduction mixes audited and auditless qualifications"
-            )
-        if primary_audit is not None and reproduction_audit is not None:
-            if (
-                primary_audit.control != reproduction_audit.control
-                or primary_audit.validator_seed == reproduction_audit.validator_seed
-                or self.primary.audit_evidence_digest
-                == self.reproduction.audit_evidence_digest
-            ):
-                raise SettlementError(
-                    "independent reproduction reuses or changes slot-audit authority"
-                )
-        primary_orientation = self.primary.resident_lane_orientation
-        reproduction_orientation = self.reproduction.resident_lane_orientation
-        if (primary_orientation is None) != (reproduction_orientation is None):
-            raise SettlementError(
-                "independent reproduction has incomplete resident lane orientation"
-            )
-        if (
-            primary_orientation is not None
-            and reproduction_orientation is not None
-            and not reproduction_orientation.is_exact_swap_of(primary_orientation)
-        ):
-            raise SettlementError(
-                "independent reproduction did not swap physical TP lane orientation"
-            )
-
-    @classmethod
-    def from_reproductions(
-        cls,
-        primary: SettlementQualification,
-        reproduction: SettlementQualification,
-    ) -> "SettlementCandidate":
-        candidate = cls(primary, reproduction)
-        # ``__post_init__`` already refuses a mixed audited/auditless pair and
-        # requires an exact physical lane swap whenever orientation is present.
-        # A resident acceptance pair (v6 speed PASS on both lane orientations)
-        # carries no audit witness; the enforced swap is its reproduction
-        # defense.  Any other auditless pair is legacy history and cannot
-        # become a new candidate.
-        if (
-            candidate.primary.audit_policy is None
-            or candidate.reproduction.audit_policy is None
-        ) and (
-            candidate.primary.resident_lane_orientation is None
-            or candidate.reproduction.resident_lane_orientation is None
-        ):
-            raise SettlementError(
-                "new settlement candidate requires two audited qualifications"
-            )
-        return candidate
-
-    def __getattr__(self, field: str):
-        # Keep common identity access explicit to the pair while callers migrate from
-        # the former single-PASS candidate representation.
-        if field in SettlementQualification.__dataclass_fields__:
-            return getattr(self.primary, field)
-        raise AttributeError(field)
-
-    @property
-    def speedup(self) -> str:
-        """Conservative reproduced speed: the slower independently passing run."""
-
-        return min(
-            (self.primary.speedup, self.reproduction.speedup),
-            key=Decimal,
-        )
-
-    @property
-    def finalized_order(self) -> tuple[int, int, int, str]:
-        return self.primary.finalized_order
-
-    @property
-    def incumbent(self) -> StackArmIdentity:
-        return self.primary.incumbent
-
-    @property
-    def challenger(self) -> StackArmIdentity:
-        return self.primary.challenger
-
-    @property
-    def reproduction_identity(self) -> SettlementReproductionIdentity:
-        return self.primary.reproduction_identity
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "primary": self.primary.to_dict(),
-            "reproduction": self.reproduction.to_dict(),
-        }
-
-    @classmethod
-    def from_dict(cls, value: object) -> "SettlementCandidate":
-        if type(value) is not dict or set(value) != {"primary", "reproduction"}:
-            raise SettlementError("settlement candidate fields do not match")
-        return cls(
-            SettlementQualification.from_dict(value["primary"]),
-            SettlementQualification.from_dict(value["reproduction"]),
-        )
-
-    @property
-    def digest(self) -> str:
-        domain = (
-            "cacheon.settlement.candidate.v4"
-            if self.primary.resident_lane_orientation is not None
-            else "cacheon.settlement.candidate.v2"
-            if self.primary.audit_policy is None
-            else "cacheon.settlement.candidate.v3"
-        )
-        return canonical_digest(domain, self.to_dict())
-
-
-@dataclass(frozen=True)
-class SettlementEvidence:
-    """Receipt that both retained attempt artifacts were reopened for one candidate."""
-
-    candidate_digest: str
-    reservation_digest: str
-    primary_authority_digest: str
-    primary_attempt_ref: EvidenceArtifactRef
-    primary_report_digest: str
-    primary_selection_evidence_digest: str
-    reproduction_authority_digest: str
-    reproduction_attempt_ref: EvidenceArtifactRef
-    reproduction_report_digest: str
-    reproduction_selection_evidence_digest: str
-
-    def __post_init__(self) -> None:
-        for field in (
-            "candidate_digest", "reservation_digest", "primary_authority_digest",
-            "primary_report_digest", "primary_selection_evidence_digest",
-            "reproduction_authority_digest", "reproduction_report_digest",
-            "reproduction_selection_evidence_digest",
-        ):
-            object.__setattr__(self, field, _digest(getattr(self, field), field))
-        if (
-            type(self.primary_attempt_ref) is not EvidenceArtifactRef
-            or type(self.reproduction_attempt_ref) is not EvidenceArtifactRef
-        ):
-            raise SettlementError("settlement attempt references are not exactly typed")
-        if any(
-            left == right
-            for left, right in (
-                (self.primary_authority_digest, self.reproduction_authority_digest),
-                (self.primary_attempt_ref.sha256, self.reproduction_attempt_ref.sha256),
-                (self.primary_report_digest, self.reproduction_report_digest),
-                (
-                    self.primary_selection_evidence_digest,
-                    self.reproduction_selection_evidence_digest,
-                ),
-            )
-        ):
-            raise SettlementError("settlement evidence does not contain a reproduction")
-
-    @classmethod
-    def bind(
-        cls,
-        candidate: SettlementCandidate,
-        *,
-        primary_attempt_ref: EvidenceArtifactRef,
-        reproduction_attempt_ref: EvidenceArtifactRef,
-    ) -> "SettlementEvidence":
-        if type(candidate) is not SettlementCandidate:
-            raise SettlementError("settlement evidence candidate is not exactly typed")
-        if (
-            type(primary_attempt_ref) is not EvidenceArtifactRef
-            or primary_attempt_ref.sha256 != candidate.primary.qualification_attempt_digest
-            or type(reproduction_attempt_ref) is not EvidenceArtifactRef
-            or reproduction_attempt_ref.sha256
-            != candidate.reproduction.qualification_attempt_digest
-        ):
-            raise SettlementError("settlement attempt references differ from the candidate")
-        return cls(
-            candidate.digest,
-            candidate.reservation_digest,
-            candidate.primary.qualification_authority_digest,
-            primary_attempt_ref,
-            candidate.primary.qualification_report_digest,
-            candidate.primary.selection_evidence_digest,
-            candidate.reproduction.qualification_authority_digest,
-            reproduction_attempt_ref,
-            candidate.reproduction.qualification_report_digest,
-            candidate.reproduction.selection_evidence_digest,
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "candidate_digest": self.candidate_digest,
-            "primary_attempt_ref": self.primary_attempt_ref.to_dict(),
-            "primary_authority_digest": self.primary_authority_digest,
-            "primary_report_digest": self.primary_report_digest,
-            "primary_selection_evidence_digest": self.primary_selection_evidence_digest,
-            "reproduction_attempt_ref": self.reproduction_attempt_ref.to_dict(),
-            "reproduction_authority_digest": self.reproduction_authority_digest,
-            "reproduction_report_digest": self.reproduction_report_digest,
-            "reproduction_selection_evidence_digest": self.reproduction_selection_evidence_digest,
-            "reservation_digest": self.reservation_digest,
-        }
-
-    @classmethod
-    def from_dict(cls, value: object) -> "SettlementEvidence":
-        fields = set(cls.__dataclass_fields__)
-        if type(value) is not dict or set(value) != fields:
-            raise SettlementError("settlement evidence fields do not match")
-        return cls(
-            value["candidate_digest"],  # type: ignore[arg-type]
-            value["reservation_digest"],  # type: ignore[arg-type]
-            value["primary_authority_digest"],  # type: ignore[arg-type]
-            EvidenceArtifactRef.from_dict(value["primary_attempt_ref"]),
-            value["primary_report_digest"],  # type: ignore[arg-type]
-            value["primary_selection_evidence_digest"],  # type: ignore[arg-type]
-            value["reproduction_authority_digest"],  # type: ignore[arg-type]
-            EvidenceArtifactRef.from_dict(value["reproduction_attempt_ref"]),
-            value["reproduction_report_digest"],  # type: ignore[arg-type]
-            value["reproduction_selection_evidence_digest"],  # type: ignore[arg-type]
-        )
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest("cacheon.settlement.evidence", self.to_dict())
+from cacheon.settlement_acceptance import SettlementCandidate, SettlementEvidence
 
 
 class SettlementEventType(str, Enum):
@@ -1146,6 +920,30 @@ class _Journal:
         self.sequence += 1
 
 
+def _lineage_admits_candidate(
+    candidate: SettlementCandidate,
+    lineages: Mapping[str, TargetLineage],
+    pretransition_reservations: frozenset[str],
+) -> bool:
+    """Admit the tip, or a superior ancestor fork known before divergence."""
+
+    lineage = lineages.get(candidate.target_id)
+    if lineage is None:
+        return True
+    incumbent = candidate.incumbent_manifest.entries.get(candidate.target_id)
+    incumbent_artifact = "" if incumbent is None else incumbent.artifact_digest
+    if incumbent_artifact == lineage.artifact_digest:
+        return True
+    try:
+        threshold = lineage.threshold_from(incumbent_artifact)
+    except SettlementError:
+        return False
+    assert threshold is not None
+    return candidate.reservation_digest in pretransition_reservations and (
+        Decimal(candidate.speedup) > threshold[0]
+    )
+
+
 def plan_settlement(
     candidates: Iterable[SettlementCandidate],
     *,
@@ -1153,11 +951,29 @@ def plan_settlement(
     current_tree_digest: str,
     initial_event_sequence: int = 0,
     previous_event_digest: str = "",
+    lineage_tips: Mapping[str, TargetLineage] | None = None,
+    pretransition_reservations: frozenset[str] = frozenset(),
 ) -> SettlementPlan:
-    """Select one registered winner over one incumbent and emit a hash-chained plan."""
+    """Select one registered winner over one incumbent and emit a hash-chained plan.
+
+    A candidate against the current target tip is eligible normally. A stale
+    candidate remains eligible when its incumbent is an ancestor of the tip,
+    its reservation existed before the lineage first left that ancestor, and
+    its conservative speedup is strictly greater than the product of all
+    winning speedups from that ancestor to the current tip.
+    """
 
     if type(current_manifest) is not EvaluationStackManifest:
         raise SettlementError("current manifest is not exactly typed")
+    tips = {} if lineage_tips is None else dict(lineage_tips)
+    for target, lineage in tips.items():
+        _identifier(target, "lineage tip target")
+        if type(lineage) is not TargetLineage:
+            raise SettlementError("target lineage is not exactly typed")
+    if type(pretransition_reservations) is not frozenset:
+        raise SettlementError("pretransition reservations must be a frozenset")
+    for reservation_digest in pretransition_reservations:
+        _digest(reservation_digest, "pretransition reservation")
     before = StackArmIdentity(current_manifest.digest, current_tree_digest)
     rows = tuple(candidates)
     if any(type(row) is not SettlementCandidate for row in rows):
@@ -1168,8 +984,15 @@ def plan_settlement(
         raise SettlementError("settlement candidates contain duplicates")
     journal = _Journal(initial_event_sequence, previous_event_digest)
 
-    current = tuple(row for row in rows if row.incumbent == before)
-    stale = sorted((row for row in rows if row.incumbent != before), key=lambda row: row.finalized_order)
+    def is_stale(row: SettlementCandidate) -> bool:
+        if row.target_id not in tips:
+            return row.incumbent != before
+        return not _lineage_admits_candidate(
+            row, tips, pretransition_reservations
+        )
+
+    current = tuple(row for row in rows if not is_stale(row))
+    stale = sorted((row for row in rows if is_stale(row)), key=lambda row: row.finalized_order)
     for row in stale:
         journal.add(
             SettlementEventType.HOLD, row, subject_digest=row.selected_delta_digest,
@@ -1201,9 +1024,20 @@ def plan_settlement(
 
     assert winner.candidate_manifest is not None
     replacement = winner.candidate_manifest.entries[winner.target_id]
+    lineage = tips.get(winner.target_id)
+    incumbent = winner.incumbent_manifest.entries.get(winner.target_id)
+    incumbent_artifact = "" if incumbent is None else incumbent.artifact_digest
+    pretransition_stale_win = (
+        lineage is not None and incumbent_artifact != lineage.artifact_digest
+    )
     journal.add(
         SettlementEventType.CROWN, winner, subject_digest=replacement.digest,
-        target_id=winner.target_id, before=before, after=before, reason="qualified_win",
+        target_id=winner.target_id, before=before, after=before,
+        reason=(
+            "qualified_pretransition_ancestor_win"
+            if pretransition_stale_win
+            else "qualified_win"
+        ),
     )
     prior = current_manifest.entries.get(winner.target_id)
     if prior is not None:
@@ -1236,5 +1070,6 @@ __all__ = [
     "SettlementEvidence", "SettlementEvent",
     "SettlementEventType", "SettlementPlan", "SettlementQualification",
     "SettlementReproductionIdentity", "StackTransitionOutput",
+    "TargetLineage", "TargetLineageNode",
     "plan_settlement",
 ]

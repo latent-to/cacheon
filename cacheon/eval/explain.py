@@ -62,8 +62,6 @@ _ARM_LABEL = {
     "B": "SGLang alone (before)",
     "C": "with your kernel",
     "B_prime": "SGLang alone (after)",
-    "C_prime": "with your kernel (repeat)",
-    "B_double_prime": "SGLang alone (third time)",
 }
 
 
