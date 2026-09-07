@@ -366,9 +366,10 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
         "prompt_batch_cells",
         (quality_cell.cell_id,) * len(inputs.prompt_batches),
     )
+    warmup_cells = batch_cells[:session_block["warmup_count"]]
     expected_counts = {
         cell.cell_id: cell.timed_reads
-        + (session_block["warmup_count"] if cell is quality_cell else 0)
+        + warmup_cells.count(cell.cell_id)
         for cell in inputs.workload.cells
     }
     observed_counts = {
@@ -380,37 +381,13 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
         or type(batch_cells) is not tuple
         or len(batch_cells) != len(inputs.prompt_batches)
         or observed_counts != expected_counts
+        or set(warmup_cells) != {cell.cell_id for cell in inputs.workload.cells}
         or speed_block["min_windows"]
         > sum(cell.timed_reads for cell in inputs.workload.cells)
     ):
         raise B300QualificationCommissionError(
             "sealed session does not conform to the declared workload cell"
         )
-
-
-def _warm_each_cell(inputs, session_block):
-    """Prepare every declared workload cell before either arm starts scored work.
-
-    The original prefix warmed only the quality cell. In the mixed workload,
-    that left the long-context cell's first execution inside the timed region.
-    Reuse the producer's exact batches and preserve every timed batch and order.
-    """
-
-    count = session_block["warmup_count"]
-    batches = tuple(inputs.prompt_batches)
-    cells = tuple(inputs.prompt_batch_cells)
-    prefix = list(batches[:count])
-    prefix_cells = list(cells[:count])
-    for cell in inputs.workload.cells:
-        if cell.cell_id not in prefix_cells:
-            index = cells.index(cell.cell_id, count)
-            prefix.append(batches[index])
-            prefix_cells.append(cell.cell_id)
-    return (
-        tuple(prefix) + batches[count:],
-        tuple(prefix_cells) + cells[count:],
-        len(prefix),
-    )
 
 
 def _compose_locked(
@@ -539,7 +516,7 @@ def _compose_locked(
     pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
     quality_cell = screen_deployment._scored_cell(inputs.workload)
     cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
-    prompt_batches, batch_cells, warmup_count = _warm_each_cell(inputs, session_block)
+    batch_cells = inputs.prompt_batch_cells
     mixed_cells = len(inputs.workload.cells) > 1
     baseline_session_plan = SessionExecutionPlan(
         launch_digest=incumbent_launch.digest,
@@ -548,8 +525,8 @@ def _compose_locked(
         expected_preflight=expected_runtime_preflight(
             incumbent_launch, inputs.preflight
         ),
-        prompt_batches=prompt_batches,
-        warmup_count=warmup_count,
+        prompt_batches=inputs.prompt_batches,
+        warmup_count=session_block["warmup_count"],
         conditioning_count=session_block["conditioning_count"],
         max_new_tokens=policy.tokens_per_prompt,
         top_logprobs_num=policy.topk_width,

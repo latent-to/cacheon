@@ -82,6 +82,12 @@ evidence.
 
 ## Current qualification timeline
 
+The commissioned prompt authority includes a warmup for every declared cell,
+with each prompt and its sealed answer expanded together before composition.
+The session and hidden judge consume those same batches. Commissioning checks
+that the warmup covers every cell and that the remaining counts match the
+registered timed reads; it never inserts prompts into only one consumer.
+
 The version-3 protocol binds two non-overlapping physical TP lanes, equivalent
 topology, separate runtime namespaces, lane-specific NUMA policy, exact
 workload, and a total qualification budget. The baseline and candidate

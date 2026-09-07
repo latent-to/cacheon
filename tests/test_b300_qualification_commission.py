@@ -485,28 +485,28 @@ def test_compose_rejects_a_session_that_differs_from_the_declared_cell() -> None
         prompt_batches=(("a", "b"), ("c", "d"), ("e",), ("f",), ("g",), ("h",)),
         prompt_batch_cells=("s8", "s8", "s8", "l65", "l65", "l65"),
     )
-    commission._require_cell_conformance(
-        mixed_inputs, SimpleNamespace(tokens_per_prompt=4096),
-        {"warmup_count": 1}, {"min_windows": 5}
-    )
-    batches, cells, warmed = commission._warm_each_cell(mixed_inputs, {"warmup_count": 1})
-    assert warmed == 2
-    assert cells[:warmed] == ("s8", "l65")
-    assert batches[:warmed] == (mixed_inputs.prompt_batches[0], mixed_inputs.prompt_batches[3])
-    assert batches[warmed:] == mixed_inputs.prompt_batches[1:]
-    assert cells[warmed:] == mixed_inputs.prompt_batch_cells[1:]
-    single_batches, single_cells, single_warmed = commission._warm_each_cell(
-        SimpleNamespace(workload=SimpleNamespace(cells=(mixed.cells[0],)),
-                        prompt_batches=mixed_inputs.prompt_batches[:3],
-                        prompt_batch_cells=("s8", "s8", "s8")),
-        {"warmup_count": 1},
-    )
-    assert single_warmed == 1
-    assert single_batches == mixed_inputs.prompt_batches[:3]
-    assert single_cells == ("s8", "s8", "s8")
+    mixed_policy = SimpleNamespace(tokens_per_prompt=4096)
     with pytest.raises(commission.B300QualificationCommissionError, match="conform"):
         commission._require_cell_conformance(
-            mixed_inputs, policy, {"warmup_count": 1}, {"min_windows": 5}
+            mixed_inputs, mixed_policy, {"warmup_count": 1}, {"min_windows": 5}
+        )
+    # The producer seals the extra prompt AND its answer before composition;
+    # inserting it only in the runtime plan would shift hidden-judge identities.
+    warm = SimpleNamespace(
+        workload=mixed,
+        prompt_batches=(mixed_inputs.prompt_batches[0], mixed_inputs.prompt_batches[3],
+                        *mixed_inputs.prompt_batches[1:]),
+        prompt_batch_cells=("s8", "l65", *mixed_inputs.prompt_batch_cells[1:]),
+    )
+    commission._require_cell_conformance(
+        warm, mixed_policy, {"warmup_count": 2}, {"min_windows": 5}
+    )
+    assert warm.prompt_batches[2:] == mixed_inputs.prompt_batches[1:]
+    assert warm.prompt_batch_cells[2:].count("s8") == 2
+    assert warm.prompt_batch_cells[2:].count("l65") == 3
+    with pytest.raises(commission.B300QualificationCommissionError, match="conform"):
+        commission._require_cell_conformance(
+            warm, mixed_policy, {"warmup_count": 3}, {"min_windows": 5}
         )
 
 
