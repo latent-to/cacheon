@@ -11,8 +11,13 @@ final self-regrade in `reopen_causal_qualification` still expected the full
 manifest digest, so no completed qualification on this policy could ever
 independently regrade. The reopen now rebuilds the expected binding through
 `expected_raw_binding`, the same identity the producer writes, with a contract
-test on a real manifest whose two digests differ. The fix changes worker bytes
-and lands with the next recommission; the parked row is requeued after it.
+test on a real manifest whose two digests differ. The fix was commissioned the same morning as worker epoch `c2c986ef…`
+(registration `fe635ec2…`). That activation also enabled the standing
+supervisor's settlement stage for the first time on this arena, moved the
+weight offer and follower lanes onto the GLM tree (the pushed offer matched
+the vector already on chain), and parked the eight M3-era settlement
+candidates so the settlement stage cannot lease them. Both paid rows stay held
+until the sealed speed margin is revised; the parked row is requeued after that.
 Earlier the same night, three qualification attempts for another paid row
 (`45404f5e…`, `collective.dp_attention_exchange.v1`) died inside the `e96ca0b6`
 worker with `quality binding differs from frozen workload/trajectories`; that
