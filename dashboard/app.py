@@ -1409,7 +1409,8 @@ def weights(limit: int = Query(30, ge=1, le=500)) -> dict[str, Any]:
             con.close()
         except sqlite3.Error as exc:
             data = []
-            follower_note = f"follower journal unreadable: {exc}"
+            print(f"follower journal unreadable: {exc}", flush=True)
+            follower_note = "follower journal unreadable"
         for w in data:
             rj = json.loads(w["record_json"] or "{}")
             items.append({
