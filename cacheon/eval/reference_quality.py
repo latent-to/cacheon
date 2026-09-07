@@ -350,6 +350,37 @@ class NormalizedTopKDistribution(_Record):
         return _load(cls, value, "normalized top-k", entries=lambda rows: _rows(rows, TokenProbability.from_dict, "top-k entries"))
 
 
+def expected_raw_binding(
+    profile: object,
+    *,
+    identity: str,
+    calibration_digest: str,
+    selection: object,
+    t_session_digest: str,
+    t_request_sha256: str,
+) -> tuple[object, ...]:
+    """Rebuild the raw-quality binding the producer wrote, field for field.
+
+    The reference element is the manifest's measured identity, the value the
+    producer binds and ``validate_quality_binding`` checks. The reopen expected
+    the full manifest digest instead from 2026-08-10 to 2026-09-07, so every
+    completed qualification failed its final self-regrade, including a paid
+    miner's PASS that was then parked as a no-decision hold.
+    """
+
+    from cacheon.eval.qualification import derived_hidden_task_plan_digest
+
+    return (
+        identity, profile.reference.measured_digest, calibration_digest,
+        selection.digest, selection.selected_prompt_digests,
+        t_session_digest, t_request_sha256,
+        profile.support_policy_digest,
+        derived_hidden_task_plan_digest(profile, selection.selected_prompt_digests),
+        profile.nll_tail_threshold,
+        profile.topk_width, profile.hidden_tasks_per_prompt,
+    )
+
+
 def retained_support_policy_digest() -> str:
     return canonical_digest(
         "cacheon.qualification.support-policy",
@@ -820,6 +851,7 @@ def score_reference_quality(
                                    _mean_nll(evidence.prompts), evidence.digest, calibration.digest)
 
 __all__ = [
+    "expected_raw_binding",
     "HiddenTaskEvidence", "NormalizedTopKDistribution", "PromptQualityEvidence",
     "QUALITY_DECISIONS", "QUALITY_POLICY_VERSION", "QUALITY_SCHEMA_VERSION",
     "RAW_QUALITY_DOMAIN", "RAW_QUALITY_SCHEMA", "RawHiddenTaskResult",

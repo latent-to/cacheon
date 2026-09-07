@@ -1,5 +1,28 @@
 # State of record
 
+On **2026-09-07** the first paid GLM submission to complete a full
+qualification on the public loop (a `moe.fused_routed_experts` candidate,
+reservation `bd4fdfa1…`, measured 1,108 tokens/s against 1,100 and 1,101 for
+the two stock arms, teacher NLL 0.0588, graph and audit PASS) came back
+`NO_DECISION` and was parked as a `remote_qualification_hold:legacy_no_decision`
+row. The cause was validator-side: since 2026-08-10 the producer binds raw
+quality evidence to the reference manifest's measured identity, while the
+final self-regrade in `reopen_causal_qualification` still expected the full
+manifest digest, so no completed qualification on this policy could ever
+independently regrade. The reopen now rebuilds the expected binding through
+`expected_raw_binding`, the same identity the producer writes, with a contract
+test on a real manifest whose two digests differ. The fix changes worker bytes
+and lands with the next recommission; the parked row is requeued after it.
+Earlier the same night, three qualification attempts for another paid row
+(`45404f5e…`, `collective.dp_attention_exchange.v1`) died inside the `e96ca0b6`
+worker with `quality binding differs from frozen workload/trajectories`; that
+deployment's sealed policy did not match the retained quality contract. The
+`2bbfab66` source (this tree plus a commissioning-time fence that rejects a
+stale support-policy digest before any GPU work) re-ran the six-target
+acceptance end to end: the positive control passed fidelity with all eight
+members on ranks 0–3 (GSM8K 416/456 against 395 and 405 for the stock arms)
+and the wrong-output normalization control failed fidelity as intended.
+
 On the night of **2026-09-06**, the merged source `1750693c` (the tightened
 gates below on top of `68da3066`) was commissioned on the unchanged GLM image
 as a new worker epoch and re-ran the six-target full-model acceptance end to

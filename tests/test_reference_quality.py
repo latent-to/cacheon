@@ -713,3 +713,41 @@ def test_distribution_presence_must_be_uniform() -> None:
     )
     with pytest.raises(ReferenceQualityError, match="coverage differs from its binding"):
         ReferenceQualityRawArtifact(artifact.binding, smuggled_prompts)
+
+
+def test_reopen_expects_the_measured_reference_identity_the_producer_binds(
+    tmp_path,
+) -> None:
+    """The final self-regrade must expect the reference identity the producer
+    writes. A real manifest's full digest and measured digest never coincide;
+    from 2026-08-10 the reopen expected the former while the producer bound the
+    latter, so every completed qualification ended NO_DECISION (a paid miner's
+    PASS, reservation bd4fdfa1, on 2026-09-07)."""
+
+    from types import SimpleNamespace
+
+    from cacheon.eval.qualification import derived_hidden_task_plan_digest
+    from tests.test_qualification_runner import _d, _typed_resident_qualification_input
+
+    profile = _typed_resident_qualification_input(tmp_path).candidates[0].profile
+    assert profile.reference.digest != profile.reference.measured_digest
+    selection = SimpleNamespace(
+        digest=_d("selection"),
+        selected_prompt_digests=tuple(sorted((_d("prompt-a"), _d("prompt-b")))),
+    )
+    expected = reference_quality.expected_raw_binding(
+        profile,
+        identity=_d("identity"),
+        calibration_digest=_d("calibration"),
+        selection=selection,
+        t_session_digest=_d("session"),
+        t_request_sha256=_d("request"),
+    )
+    assert expected[1] == profile.reference.measured_digest
+    assert expected[7] == profile.support_policy_digest
+    assert expected[8] == derived_hidden_task_plan_digest(
+        profile, selection.selected_prompt_digests
+    )
+    assert expected[9:] == (
+        profile.nll_tail_threshold, profile.topk_width, profile.hidden_tasks_per_prompt,
+    )

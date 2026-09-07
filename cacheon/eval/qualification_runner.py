@@ -73,6 +73,7 @@ from cacheon.eval.reference_quality import (
     ReferenceQualityRawArtifact, ReferenceQualityRawBinding, ReferenceQualityVerdict,
     distribution_from_f32_logprobs, reopen_reference_quality_evidence,
     score_reference_quality, target_nll_from_f32,
+    expected_raw_binding,
 )
 from cacheon.eval.resident_audit_authority import (
     ResidentAuditAuthorityError, ResidentAuditExecutionAuthority,
@@ -2526,14 +2527,13 @@ def reopen_causal_qualification(
                 raw.hidden_task_plan_digest, raw.nll_tail_threshold,
                 raw.topk_width, raw.hidden_tasks_per_prompt,
             )
-            expected_binding = (
-                identity, authority.profile.reference.digest, calibration.digest,
-                attempt.selection.digest, attempt.selection.selected_prompt_digests,
-                attempt.reference_session_digest, report.t_request_sha256,
-                authority.profile.support_policy_digest,
-                derived_hidden_task_plan_digest(authority.profile, attempt.selection.selected_prompt_digests),
-                authority.profile.nll_tail_threshold,
-                authority.profile.topk_width, authority.profile.hidden_tasks_per_prompt,
+            expected_binding = expected_raw_binding(
+                authority.profile,
+                identity=identity,
+                calibration_digest=calibration.digest,
+                selection=attempt.selection,
+                t_session_digest=attempt.reference_session_digest,
+                t_request_sha256=report.t_request_sha256,
             )
             if (
                 binding != expected_binding

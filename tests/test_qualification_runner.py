@@ -142,6 +142,7 @@ class _Harness:
         }
         reference = SimpleNamespace(
             digest=self.commitment.reference_manifest_digest,
+            measured_digest=_d("reference-measured"),
             pristine_launch_digest=_d("pristine-launch"),
             hidden_corpus_commitment=_d("hidden-corpus"),
             hidden_judge_digest=_d("hidden-judge"),
@@ -476,7 +477,7 @@ class _Harness:
             binding = object.__new__(runner.ReferenceQualityRawBinding)
             binding_values = {
                 "qualification_identity_digest": _d("qualification-identity"),
-                "reference_manifest_digest": self.commitment.reference_manifest_digest,
+                "reference_manifest_digest": authority.profile.reference.measured_digest,
                 "calibration_digest": self.calibration.digest,
                 "selection_digest": _d("selection"),
                 "candidate_lifecycle_digest": _d("candidate-lifecycle"),
@@ -744,9 +745,8 @@ def _install_resident_runner_path(
         harness.calls.append("resident.speed")
         return crossover
 
-    # The legacy cold lifecycle and legacy speed projection no longer exist in
-    # the runner module at all; their absence IS the guarantee the two
-    # forbidden_* monkeypatches used to assert here.
+    # The legacy cold lifecycle and speed projection no longer exist in the
+    # runner; their absence is what the two forbidden_* monkeypatches asserted.
     monkeypatch.setattr(runner, "ResidentMarginalLifecycleEvidence", FakeResidentLifecycle)
     monkeypatch.setattr(runner, "ResidentSpeedWitness", FakeResidentSpeedWitness)
     monkeypatch.setattr(runner, "run_resident_crossover_speed", run_resident)
