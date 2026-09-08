@@ -43,18 +43,33 @@ def measured_speed(qualification, attempt_ref, root):
     """Use the report's exact policy and unrounded scored rate from retained bytes."""
 
     from cacheon.chain.intake import IntakeError
-    from cacheon.eval.qualification_runner import CohortQualificationAttempt
+    from cacheon.eval.qualification_runner import CohortQualificationAttempt, ResidentSpeedWitness
     from cacheon.eval.speed_verdict import speed_grade, SpeedStageDecision
 
     try:
-        attempt = CohortQualificationAttempt.from_dict(json.loads(reopen_evidence(root, attempt_ref)))
-        report = next(row for row in attempt.reports if row.digest == qualification.qualification_report_digest)
-        witness = report.speed_witness
+        payload = json.loads(reopen_evidence(root, attempt_ref))
+        if attempt_ref.schema == "cacheon.qualification.operator-quality-correction.v1":
+            report = payload["report"]
+            if (attempt_ref.domain != "qualification.operator-quality-correction"
+                    or payload["report_digest"] != qualification.qualification_report_digest
+                    or canonical_digest(f"{attempt_ref.schema}.report", report) != payload["report_digest"]
+                    or report["decision"] != "PASS" or report["quality_decision"] != "PASS"
+                    or report["selected_delta_digest"] != qualification.selected_delta_digest
+                    or payload["reservation_id"] != qualification.reservation_digest):
+                raise IntakeError("operator correction differs from accepted qualification")
+            witness = ResidentSpeedWitness.from_dict(payload["speed_witness"])
+            speedup = report["speedup"]
+            if witness.evidence_digest != report["speed_evidence_digest"]:
+                raise IntakeError("operator correction changed retained speed evidence")
+        else:
+            attempt = CohortQualificationAttempt.from_dict(payload)
+            report = next(row for row in attempt.reports if row.digest == qualification.qualification_report_digest)
+            witness, speedup = report.speed_witness, report.speedup
         verdict, decision = speed_grade(
             witness.resident_policy, [witness.rates[0], witness.rates[2]],
             [witness.rates[1]], concluding=True,
         )
-        if decision is not SpeedStageDecision.PASS or report.speedup != qualification.speedup:
+        if decision is not SpeedStageDecision.PASS or speedup != qualification.speedup:
             raise IntakeError("competitive qualification does not retain its PASS")
         rate = Decimal(str(witness.resident_policy.scored_tokens_per_second(witness.rates[1])))
         required = Decimal(str(verdict.required))

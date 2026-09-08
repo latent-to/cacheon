@@ -227,6 +227,40 @@ def test_shared_intake_policy_keeps_the_sealed_dispatch_shape() -> None:
     assert dispatcher_module._POLICY_FIELDS == frozenset(fields)
 
 
+@pytest.mark.parametrize("target,duration", [("activation.silu_and_mul", 0.90), ("norm.rmsnorm", 0.85)])
+def test_operator_quality_correction_uses_original_competitive_speed(tmp_path, target, duration):
+    from cacheon.chain.submission_ranking import measured_speed
+    from cacheon.eval.evidence_store import publish_evidence
+    from cacheon.eval.qualification_runner import ResidentSpeedWitness
+    from cacheon.stack_identity import canonical_digest, canonical_json_bytes
+    from tests.test_crossover_runtime import _rig, _speed, _policy_v8
+
+    plan, baseline, candidate, mount, *_ = _rig(tmp_path / "runtime", (duration,),
+                                                policy=_policy_v8(), timed_batches=3)
+    witness = ResidentSpeedWitness.from_evidence(_speed(plan, baseline, candidate, mount), plan)
+    schema = "cacheon.qualification.operator-quality-correction.v1"
+    reservation_id = fixtures._h(target)
+    summary = {"decision": "PASS", "quality_decision": "PASS", "speedup": witness.accepted_speedup(),
+               "selected_delta_digest": witness.selected_delta_digest,
+               "speed_evidence_digest": witness.evidence_digest}
+    digest = canonical_digest(f"{schema}.report", summary)
+    payload = {"report": summary, "report_digest": digest, "reservation_id": reservation_id,
+               "speed_witness": witness.to_dict()}
+    root = tmp_path / "evidence"
+    ref = publish_evidence(root, canonical_json_bytes(payload),
+                           domain="qualification.operator-quality-correction",
+                           media_type="application/json", schema=schema)
+    qualification = SimpleNamespace(qualification_report_digest=digest, reservation_digest=reservation_id,
+        selected_delta_digest=witness.selected_delta_digest, speedup=witness.accepted_speedup(),
+        comparison_context_digest=fixtures._h(target + "context"))
+    rate, required, context = measured_speed(qualification, ref, root)
+    assert float(rate) == pytest.approx(witness.resident_policy.scored_tokens_per_second(witness.rates[1]))
+    assert required > 1 and context == qualification.comparison_context_digest
+    qualification.qualification_report_digest = "f" * 64
+    with pytest.raises(IntakeError, match="correction differs"):
+        measured_speed(qualification, ref, root)
+
+
 def test_upgrade_does_not_reward_historical_pass_that_lost_same_slot(tmp_path, evaluator, monkeypatch):
     from cacheon.chain import submission_ranking
     with fixtures._store(tmp_path) as store:

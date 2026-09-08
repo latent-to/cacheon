@@ -64,3 +64,8 @@ A worker must have the exact queued baseline commissioned before dispatch. If
 it has another baseline loaded, dispatch reports the required manifest/tree
 and stops before creating a lease or GPU request. Draining an older admitted
 segment never rolls back the HEAD advertised to new miners.
+
+An operator-approved quality replay correction retains the original measured
+speed and noise threshold. Its PASS goes through the same slot competition as
+other accepted submissions; correcting a quality HOLD does not itself award
+the slot. The correction and original evaluation remain separate evidence.
