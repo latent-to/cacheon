@@ -351,10 +351,14 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     _commission_int(policy.get("select_count"), "select_count", minimum=2)
     _commission_int(policy.get("audit_minimum_calls"), "audit_minimum_calls", minimum=1)
     session = value.get("session")
-    if type(session) is not dict or set(session) != _COMMISSION_SESSION_FIELDS:
+    if (type(session) is not dict
+        or set(session) - {"measure_phase_latency"} != _COMMISSION_SESSION_FIELDS
+        or ("measure_phase_latency" in session and session["measure_phase_latency"] is not True)):
         raise B300RegisteredQualificationError(
             "sealed qualification session block is not closed"
         )
+    if session.get("measure_phase_latency") and policy["tokens_per_prompt"] < 2:
+        raise B300RegisteredQualificationError("phase measurements require at least two output tokens")
     _commission_int(session.get("warmup_count"), "warmup_count", minimum=0)
     _commission_int(session.get("conditioning_count"), "conditioning_count", minimum=0)
     _commission_decimal(session.get("temperature"), "temperature")

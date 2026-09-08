@@ -212,6 +212,7 @@ class ResidentAuditExecutionAuthority:
             eager.launch_digest != self.launch.digest
             or eager.expected_engine_config_digest != self.launch.engine_config_digest
             or not eager.engine_config.disable_cuda_graph
+            or eager.measure_phase_latency
             or type(eager.audit_policy) is not SlotAuditPolicy
             or eager.warmup_count != 1
             or eager.conditioning_count != 1
@@ -306,6 +307,7 @@ class ResidentAuditExecutionAuthority:
             audit_policy=audit_policy,
             batch_max_new_tokens=(),
             batch_expected_prompt_tokens=(),
+            measure_phase_latency=False,
         )
         allocation = resident_audit_allocation_digest(
             charged_binding,

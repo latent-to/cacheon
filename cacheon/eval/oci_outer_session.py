@@ -14,7 +14,7 @@ import secrets
 import select
 import struct
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, NoReturn, Protocol, Sequence
 
 from cacheon.eval.oci_process import (
@@ -47,8 +47,6 @@ from cacheon.eval.oci_session_protocol import (
     make_init,
     parse_error_message,
     preflight_accept_message,
-    validate_batch_request,
-    validate_audit_evidence,
     validate_preflight,
     validate_ready,
 )
@@ -137,7 +135,7 @@ class SessionTransport(Protocol):
     def has_pending_output(self) -> bool: ...
     def write_frame(self, frame: bytes, *, deadline: float) -> None: ...
     def read_control(self, *, max_bytes: int, deadline: float) -> dict: ...
-    def read_evidence(self, request: BatchRequest, *, deadline: float) -> BatchEvidence: ...
+    def read_evidence(self, request: BatchRequest, *, deadline: float, on_progress=None) -> BatchEvidence: ...
     def finalize(self) -> None: ...
     def abort(self) -> None: ...
 
@@ -300,9 +298,9 @@ class AttachedSessionTransport:
         except SessionProtocolError as exc:
             raise OuterSessionProtocolError(str(exc)) from None
 
-    def read_evidence(self, request: BatchRequest, *, deadline: float) -> BatchEvidence:
+    def read_evidence(self, request: BatchRequest, *, deadline: float, on_progress=None) -> BatchEvidence:
         magic, size = self._header(deadline=deadline)
-        if magic == CONTROL_MAGIC:
+        while magic == CONTROL_MAGIC:
             if size > MAX_CONTROL_BYTES:
                 raise OuterSessionProtocolError("worker declared an oversized error frame")
             try:
@@ -321,7 +319,13 @@ class AttachedSessionTransport:
                 raise _worker_error(
                     detail, diagnostic_provider=self._diagnostic_provider()
                 )
-            raise OuterSessionProtocolError("worker emitted an early control frame")
+            if on_progress is None or not request.measure_phase_latency:
+                raise OuterSessionProtocolError("worker emitted an early control frame")
+            try:
+                on_progress(message)
+            except SessionProtocolError as exc:
+                raise OuterSessionProtocolError(str(exc)) from None
+            magic, size = self._header(deadline=deadline)
         if magic != EVIDENCE_MAGIC:
             raise OuterSessionProtocolError("worker emitted wrong evidence-frame magic")
         exact = expected_evidence_payload_bytes(request)
@@ -373,6 +377,7 @@ class SessionExecutionPlan:
     audit_policy: SlotAuditPolicy | None = None
     batch_max_new_tokens: tuple[int, ...] = ()
     batch_expected_prompt_tokens: tuple[int | None, ...] = ()
+    measure_phase_latency: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.engine_config, EngineSessionConfig):
@@ -470,6 +475,7 @@ class SessionExecutionPlan:
                     top_logprobs_num=self.top_logprobs_num,
                     temperature=self.temperature,
                     expected_prompt_tokens=expected_prompt_tokens,
+                    measure_phase_latency=self.measure_phase_latency,
                 )
                 frame_message(message, max_bytes=MAX_BATCH_REQUEST_BYTES)
             except SessionProtocolError as exc:
@@ -505,6 +511,7 @@ class BatchExecutionEvidence:
     token_numerator: int
     evidence: BatchEvidence
     audit_receipts: tuple[AuditReceiptFacts, ...] = ()
+    prompt_latencies: tuple[tuple[float, float], ...] = field(default=(), metadata={"wire_optional": True})
 
     @property
     def elapsed_seconds(self) -> float:
@@ -816,90 +823,8 @@ class OpenedOuterSession:
             self._fail(exc)
 
     def execute_next(self) -> BatchExecutionEvidence:
-        if not self.started or self.closed:
-            raise OuterSessionInfrastructureError("session is not open")
-        index = self.next_batch_index
-        if index >= len(self.plan.prompt_batches):
-            raise OuterSessionInfrastructureError("session has no remaining planned batch")
-        prompts = self.plan.prompt_batches[index]
-        max_new_tokens, expected_prompt_tokens = self.plan.request_geometry(index)
-        try:
-            request_id, nonce = _fresh_id(self.seen), _fresh_id(self.seen)
-            request = validate_batch_request(
-                batch_request(
-                    session_id=self.session_id,
-                    launch_digest=self.plan.launch_digest,
-                    request_id=request_id,
-                    nonce=nonce,
-                    batch_index=index,
-                    prompts=prompts,
-                    max_new_tokens=max_new_tokens,
-                    top_logprobs_num=self.plan.top_logprobs_num,
-                    temperature=self.plan.temperature,
-                    expected_prompt_tokens=expected_prompt_tokens,
-                )
-            )
-            final_warmup = index == self.plan.warmup_count - 1
-            first_timed = index == self.plan.warmup_count
-            if final_warmup and self.boundary_callback is not None:
-                self.boundary_callback("before_final_warmup", index, self.deadline)
-            if first_timed and self.boundary_callback is not None:
-                self.boundary_callback("before_first_timed", index, self.deadline)
-            if self.transport.has_pending_output():
-                raise OuterSessionProtocolError("worker emitted early or duplicate output")
-            batch_deadline = self._phase_deadline(self.batch_timeout_s)
-            request_started = _now(self.clock, previous=self.last_host_time)
-            self.transport.write_frame(
-                frame_message(request.to_dict(), max_bytes=MAX_BATCH_REQUEST_BYTES),
-                deadline=batch_deadline,
-            )
-            evidence = self.transport.read_evidence(request, deadline=batch_deadline)
-            audit_receipts: tuple[AuditReceiptFacts, ...] = ()
-            if self.plan.audit_policy is not None:
-                try:
-                    audit_receipts = validate_audit_evidence(
-                        _control_or_error(
-                            self.transport,
-                            session_id=self.session_id,
-                            launch_digest=self.plan.launch_digest,
-                            deadline=batch_deadline,
-                        ),
-                        request=request,
-                        policy=self.plan.audit_policy,
-                    )
-                except SessionProtocolError as exc:
-                    raise OuterSessionProtocolError(str(exc)) from None
-            completed = _now(self.clock, previous=request_started)
-            if completed <= request_started:
-                raise OuterSessionInfrastructureError("host batch clock did not advance")
-            token_numerator = len(prompts) * max_new_tokens
-            if evidence.observed_tokens != token_numerator:
-                raise OuterSessionProtocolError("worker evidence token count is not exact")
-            row = BatchExecutionEvidence(
-                index,
-                request_id,
-                nonce,
-                request_started,
-                completed,
-                token_numerator,
-                evidence,
-                audit_receipts,
-            )
-            self.batch_rows.append(row)
-            self.last_host_time = completed
-            if index + 1 == self.conditioning_start_index:
-                self.conditioning_started_at = completed
-            if final_warmup and self.boundary_callback is not None:
-                self.boundary_callback("after_final_warmup", index, self.deadline)
-            if first_timed:
-                self.first_timed_completed_at = completed
-            if self.transport.has_pending_output():
-                raise OuterSessionProtocolError(
-                    "worker emitted trailing or duplicate output"
-                )
-            return row
-        except BaseException as exc:
-            self._fail(exc)
+        from cacheon.eval.oci_batch_execution import execute_batch
+        return execute_batch(self)
 
     def finish(self, *, require_all: bool = True) -> SessionExecutionEvidence:
         if type(require_all) is not bool or not self.started or self.closed:

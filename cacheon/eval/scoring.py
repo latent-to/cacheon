@@ -51,6 +51,8 @@ def marginal_workload_digest(plan: object) -> str:
         "top_logprobs_num": plan.top_logprobs_num,
         "warmup_count": plan.warmup_count,
     }
+    if plan.measure_phase_latency:
+        payload["measure_phase_latency"] = True
     if not plan.batch_max_new_tokens:
         # Retained one-shape evidence keeps its exact v2 identity.
         return canonical_digest(

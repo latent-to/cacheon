@@ -635,6 +635,7 @@ class BatchRequest:
     top_logprobs_num: int
     temperature: float
     expected_prompt_tokens: int | None = None
+    measure_phase_latency: bool = False
 
     def __post_init__(self) -> None:
         for name in ("session_id", "request_id", "nonce"):
@@ -682,10 +683,15 @@ class BatchRequest:
                 self.expected_prompt_tokens, field_name="expected_prompt_tokens",
                 minimum=1, maximum=MAX_PROMPT_TOKENS,
             ))
+        if type(self.measure_phase_latency) is not bool or (
+            self.measure_phase_latency and self.max_new_tokens < 2
+        ):
+            raise SessionProtocolError("phase measurement requires at least two output tokens")
         expected_evidence_payload_bytes(self)
 
     def to_dict(self) -> dict[str, object]:
         return {
+            **({"measure_phase_latency": True} if self.measure_phase_latency else {}),
             "schema": SESSION_SCHEMA, "type": "batch_request",
             "session_id": self.session_id, "launch_digest": self.launch_digest,
             "request_id": self.request_id, "nonce": self.nonce,
@@ -1236,26 +1242,18 @@ def batch_request(
     top_logprobs_num: int,
     temperature: float,
     expected_prompt_tokens: int | None = None,
+    measure_phase_latency: bool = False,
 ) -> dict[str, object]:
     return BatchRequest(
         session_id, launch_digest, request_id, nonce, batch_index, tuple(prompts),
         max_new_tokens, top_logprobs_num, temperature, expected_prompt_tokens,
+        measure_phase_latency,
     ).to_dict()
 
 
 def validate_batch_request(message: object) -> BatchRequest:
-    row = _exact_object(message, fields=_BATCH_REQUEST_FIELDS, label="batch request")
-    if row["schema"] != SESSION_SCHEMA or row["type"] != "batch_request":
-        raise SessionProtocolError("batch request schema/type mismatch")
-    prompts = row["prompts"]
-    if not isinstance(prompts, list):
-        raise SessionProtocolError("batch request prompts must be an array")
-    return BatchRequest(
-        row["session_id"], row["launch_digest"], row["request_id"], row["nonce"],
-        row["batch_index"], tuple(prompts), row["max_new_tokens"],
-        row["top_logprobs_num"], row["temperature"],
-        row["expected_prompt_tokens"],
-    )  # type: ignore[arg-type]
+    from cacheon.eval.phase_latency import parse_batch_request
+    return parse_batch_request(message, fields=_BATCH_REQUEST_FIELDS)
 
 
 _AUDIT_EVIDENCE_FIELDS = frozenset(

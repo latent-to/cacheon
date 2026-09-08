@@ -45,7 +45,6 @@ from dashboard.winners import (
 )
 
 # ---------------------------------------------------------------- config ---
-
 MISSION = Path(os.environ.get(
     "CACHEON_DASH_MISSION", "/data/mainnet14-cacheon-h3-m4i-pre-crown"))
 DB_PATH = Path(os.environ.get(

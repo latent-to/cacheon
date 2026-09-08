@@ -34,6 +34,9 @@ import time
 from dataclasses import dataclass, replace
 from typing import Callable
 
+from cacheon.eval.resident_measurement import (
+    CrossoverRuntimeError, ResidentReadRate, TimedWindow as TimedWindow, _timed_windows,
+)
 from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
 from cacheon.eval.oci_backend import (
     EngineExecutionEvidence,
@@ -53,10 +56,6 @@ from cacheon.eval.speed_verdict import (
     speed_grade,
 )
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
-
-
-class CrossoverRuntimeError(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -129,11 +128,10 @@ class ResidentSpeedPolicy:
                     f"resident speed policy v{min(self.version, 4)} requires a"
                     f" window scatter bound in (0, {scatter_ceiling}]"
                 )
-            # The conditioning span is the only place a candidate's prefill
-            # cost is visible to the host clock; a v3 verdict must bound it
-            # against the baseline so a decode win cannot hide a prefill
-            # regression. The bound is loose because conditioning is not the
-            # scored surface — it only has to catch gross regressions.
+            # Conditioning is outside scored windows. The historical v3
+            # bound catches gross startup regressions; each timed full request
+            # also includes prefill. Streaming phase measurements separate
+            # first-token delivery from subsequent generation.
             if not 1.0 < self.max_conditioning_slowdown <= 2.0:
                 raise CrossoverRuntimeError(
                     "resident speed policy v3 requires a conditioning slowdown"
@@ -417,6 +415,7 @@ def _workload(plan: SessionExecutionPlan) -> tuple[object, ...]:
         plan.temperature,
         plan.batch_max_new_tokens,
         plan.batch_expected_prompt_tokens,
+        plan.measure_phase_latency,
     )
 
 
@@ -572,245 +571,6 @@ def _lane_digest(executor: OCIEngineExecutor, arm: ResidentArmPlan) -> str:
     return _expected_lane_digest(arm)
 
 
-@dataclass(frozen=True)
-class TimedWindow:
-    """One host-clocked timed batch inside a read: the v3 scoring quantum.
-
-    The trust model only accepts wall-clock spans stamped by the controller at
-    batch boundaries (worker-reported timestamps are hostile input), so the
-    window IS the timed batch: every field recomputes exactly from the sealed
-    batch evidence and nothing here depends on a worker clock. Window seconds
-    exclude inter-batch host gaps, so their sum is bounded by — not equal
-    to — the read's timed makespan."""
-
-    batch_index: int
-    tokens: int
-    seconds: float
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.batch_index) is not int
-            or self.batch_index < 0
-            or type(self.tokens) is not int
-            or self.tokens <= 0
-            or type(self.seconds) is not float
-            or not math.isfinite(self.seconds)
-            or self.seconds <= 0
-        ):
-            raise CrossoverRuntimeError("timed window is malformed")
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "batch_index": self.batch_index,
-            "seconds": format(self.seconds, ".17g"),
-            "tokens": self.tokens,
-        }
-
-    @classmethod
-    def from_dict(cls, value: object) -> "TimedWindow":
-        if type(value) is not dict or set(value) != {
-            "batch_index",
-            "seconds",
-            "tokens",
-        }:
-            raise CrossoverRuntimeError("timed window fields differ")
-        try:
-            result = cls(
-                value["batch_index"],  # type: ignore[arg-type]
-                value["tokens"],  # type: ignore[arg-type]
-                float(value["seconds"]),  # type: ignore[arg-type]
-            )
-            if result.to_dict() != value:
-                raise CrossoverRuntimeError("timed window is noncanonical")
-            return result
-        except (TypeError, ValueError) as exc:
-            raise CrossoverRuntimeError("timed window is malformed") from exc
-
-
-@dataclass(frozen=True)
-class ResidentReadRate:
-    role: str
-    lane_digest: str
-    launch_digest: str
-    session_id: str
-    first_batch_index: int
-    last_batch_index: int
-    first_timed_batch_index: int
-    last_timed_batch_index: int
-    conditioning_tokens: int
-    timed_tokens: int
-    charged_tokens: int
-    conditioning_seconds: float
-    timed_seconds: float
-    charged_seconds: float
-    tokens_per_second: float
-    windows: tuple[TimedWindow, ...] = ()
-
-    def __post_init__(self) -> None:
-        if (
-            self.role not in {"B", "C", "B_prime"}
-            or not isinstance(self.session_id, str)
-            or len(self.session_id) != 32
-            or any(char not in "0123456789abcdef" for char in self.session_id)
-            or self.session_id == "0" * 32
-            or any(
-                type(value) is not int
-                for value in (
-                    self.first_batch_index,
-                    self.last_batch_index,
-                    self.first_timed_batch_index,
-                    self.last_timed_batch_index,
-                )
-            )
-            or any(
-                type(value) is not int or value <= 0
-                for value in (
-                    self.conditioning_tokens,
-                    self.timed_tokens,
-                    self.charged_tokens,
-                )
-            )
-            or self.charged_tokens
-            != self.conditioning_tokens + self.timed_tokens
-            or not (
-                0 <= self.first_batch_index
-                <= self.first_timed_batch_index
-                <= self.last_timed_batch_index
-                <= self.last_batch_index
-            )
-            or any(
-                not math.isfinite(value) or value <= 0
-                for value in (
-                    self.conditioning_seconds,
-                    self.timed_seconds,
-                    self.charged_seconds,
-                )
-            )
-            or self.charged_seconds
-            != self.conditioning_seconds + self.timed_seconds
-            or self.tokens_per_second
-            != self.charged_tokens / self.charged_seconds
-        ):
-            raise CrossoverRuntimeError("resident read rate is malformed")
-        windows = tuple(self.windows)
-        object.__setattr__(self, "windows", windows)
-        if windows and (
-            any(type(window) is not TimedWindow for window in windows)
-            or tuple(window.batch_index for window in windows)
-            != tuple(
-                range(
-                    self.first_timed_batch_index,
-                    self.last_timed_batch_index + 1,
-                )
-            )
-            or sum(window.tokens for window in windows) != self.timed_tokens
-        ):
-            raise CrossoverRuntimeError(
-                "resident read windows do not tile the timed span"
-            )
-        for field in ("lane_digest", "launch_digest"):
-            try:
-                require_sha256_hex(getattr(self, field), field=field)
-            except ValueError as exc:
-                raise CrossoverRuntimeError(str(exc)) from None
-
-    def to_dict(self) -> dict[str, object]:
-        row: dict[str, object] = {
-            "batches": [self.first_batch_index, self.last_batch_index],
-            "charged_seconds": format(self.charged_seconds, ".17g"),
-            "charged_tokens": self.charged_tokens,
-            "conditioning_seconds": format(self.conditioning_seconds, ".17g"),
-            "conditioning_tokens": self.conditioning_tokens,
-            "lane_digest": self.lane_digest,
-            "launch_digest": self.launch_digest,
-            "role": self.role,
-            "session_id": self.session_id,
-            "timed_batches": [
-                self.first_timed_batch_index,
-                self.last_timed_batch_index,
-            ],
-            "timed_seconds": format(self.timed_seconds, ".17g"),
-            "timed_tokens": self.timed_tokens,
-        }
-        if self.windows:
-            # Per-window retention exists only for v3 reads; earlier sealed
-            # rate rows keep their exact historical bytes and digests.
-            row["windows"] = [window.to_dict() for window in self.windows]
-        return row
-
-    @classmethod
-    def from_dict(cls, value: object) -> "ResidentReadRate":
-        fields = {
-            "batches",
-            "charged_seconds",
-            "charged_tokens",
-            "conditioning_seconds",
-            "conditioning_tokens",
-            "lane_digest",
-            "launch_digest",
-            "role",
-            "session_id",
-            "timed_batches",
-            "timed_seconds",
-            "timed_tokens",
-        }
-        if type(value) is not dict:
-            raise CrossoverRuntimeError("resident rate fields differ")
-        raw_windows = value.get("windows", [])
-        if (
-            set(value) - {"windows"} != fields
-            or ("windows" in value and type(raw_windows) is not list)
-            or type(value["batches"]) is not list
-            or len(value["batches"]) != 2
-            or type(value["timed_batches"]) is not list
-            or len(value["timed_batches"]) != 2
-        ):
-            raise CrossoverRuntimeError("resident rate fields differ")
-        try:
-            conditioning_seconds = float(value["conditioning_seconds"])
-            timed_seconds = float(value["timed_seconds"])
-            charged_seconds = float(value["charged_seconds"])
-            conditioning_tokens = value["conditioning_tokens"]
-            timed_tokens = value["timed_tokens"]
-            charged_tokens = value["charged_tokens"]
-            result = cls(
-                value["role"],  # type: ignore[arg-type]
-                value["lane_digest"],  # type: ignore[arg-type]
-                value["launch_digest"],  # type: ignore[arg-type]
-                value["session_id"],  # type: ignore[arg-type]
-                value["batches"][0],  # type: ignore[index,arg-type]
-                value["batches"][1],  # type: ignore[index,arg-type]
-                value["timed_batches"][0],  # type: ignore[index,arg-type]
-                value["timed_batches"][1],  # type: ignore[index,arg-type]
-                conditioning_tokens,  # type: ignore[arg-type]
-                timed_tokens,  # type: ignore[arg-type]
-                charged_tokens,  # type: ignore[arg-type]
-                conditioning_seconds,
-                timed_seconds,
-                charged_seconds,
-                charged_tokens / charged_seconds,  # type: ignore[operator]
-                tuple(TimedWindow.from_dict(row) for row in raw_windows),
-            )
-            if result.to_dict() != value:
-                raise CrossoverRuntimeError("resident rate is noncanonical")
-            return result
-        except (TypeError, ValueError, ZeroDivisionError) as exc:
-            raise CrossoverRuntimeError("resident rate is malformed") from exc
-
-
-def _timed_windows(timed: tuple) -> tuple[TimedWindow, ...]:
-    """Per-batch windows from the same sealed host-clock spans the aggregate
-    rate uses; live measurement and regrade share this single derivation."""
-
-    return tuple(
-        TimedWindow(
-            row.batch_index,
-            row.token_numerator,
-            float(row.response_completed_at - row.request_started_at),
-        )
-        for row in timed
-    )
-
 
 def _rate(
     role: str,
@@ -920,7 +680,9 @@ def _execution_digest(value: EngineExecutionEvidence) -> str:
                     format(row.request_started_at, ".17g"),
                     format(row.response_completed_at, ".17g"),
                     row.token_numerator,
-                ]
+                ] + ([[format(first, ".17g"), format(last, ".17g")]
+                      for first, last in row.prompt_latencies]
+                     if row.prompt_latencies else [])
                 for row in value.session.batches
             ],
             "devices": [
@@ -973,8 +735,17 @@ def _validate_resident_execution(
             or row.token_numerator != tokens
             or row.evidence.observed_tokens != tokens
             or row.audit_receipts
+            or bool(row.prompt_latencies) != plan.measure_phase_latency
         ):
             raise CrossoverRuntimeError("resident execution batch evidence is malformed")
+        if row.prompt_latencies:
+            _timed_windows((row,))
+            expected_prompt_tokens = plan.request_geometry(index)[1]
+            if expected_prompt_tokens is not None and any(
+                prompt.prompt_tokens != expected_prompt_tokens
+                for prompt in row.evidence.prompts
+            ):
+                raise CrossoverRuntimeError("phase input lengths differ from the sealed cell")
         request_ids.add(row.request_id)
         nonces.add(row.nonce)
         previous = row.response_completed_at

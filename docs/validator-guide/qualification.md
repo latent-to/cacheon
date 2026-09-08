@@ -80,6 +80,53 @@ explicitly, and retained v8/v9 artifacts regrade byte-for-byte without
 reinterpretation. Merely changing the policy label does not upgrade old
 evidence.
 
+## Per-cell first-token and decode delivery measurements
+
+A sealed qualification commission can set `session.measure_phase_latency` to
+`true`. Omit the field to retain the existing generation protocol. The commission
+builder carries this choice into both timed lanes and the workload identity;
+the eager audit role and pristine reference remain untimed. Each measured cell
+must generate at least two output tokens per request.
+
+The worker streams the same planned requests and sends a first-token and a
+final-token boundary for each prompt. The controller timestamps their arrival,
+checks their request identity and token IDs against the final evidence, and
+retains the relative host times in each timed window's `prompt_latencies`.
+Worker-supplied timestamps are never accepted. Missing, duplicate, stale or
+inconsistent boundaries are measurement failures, not candidate speed failures.
+
+Each resident read in `speed_witness.rates` then includes a `cells` table grouped
+by input tokens, output tokens and request concurrency:
+
+| Field | Definition |
+|---|---|
+| `mean_ttft_seconds` | Mean time from batch dispatch to each prompt's first delivered token |
+| `mean_tpot_seconds` | Mean `(last delivery − first delivery) / (output tokens − 1)` across prompts |
+| `end_to_end_output_tokens_per_second` | Cell output tokens divided by its timed batch spans |
+| `timed_batches` | Number of retained timed batches for this cell |
+
+TTFT includes queueing, tokenization, prefill, sampling and delivery. TPOT measures
+delivery after the first token, including interference from other requests and
+stream buffering. A first chunk may contain several tokens. These are serving
+latency measurements, not isolated GPU phase durations or pure input-token
+throughput. The exact input length and concurrency therefore accompany every
+result. Cells are reported separately rather than averaged together.
+
+This option does not change the v10/v11 qualification or payout rule. A 1.5× TTFT
+improvement is reported as such, not credited as a 1.5× end-to-end speedup. A rule
+that can qualify an independent phase win, its tolerated regressions and its
+reward accounting requires a separately reviewed scoring policy.
+
+Enabling measurement requires a fresh commission because the consumed source,
+prompt protocol and workload identity change. Drain an active evaluation before
+switching; never change its measurement mode midway through B/C/B′. Stage the
+updated source and commission inputs first, then validate on the exact
+commissioned image, model and TP topology before mainnet activation. The option
+adds no model loads, prompt batches or replayed historical evaluations, but its
+streaming overhead must be measured on that runtime. Existing reports and
+continuations retain their original bytes and remain readable without phase
+fields; their missing phase times cannot be reconstructed from aggregate rates.
+
 ## Current qualification timeline
 
 The commissioned prompt authority includes a warmup for every declared cell,

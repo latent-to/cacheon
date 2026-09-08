@@ -532,6 +532,7 @@ def _compose_locked(
         top_logprobs_num=policy.topk_width,
         temperature=float(session_block["temperature"]),
         expected_prompt_tokens=quality_cell.input_tokens,
+        measure_phase_latency=session_block.get("measure_phase_latency", False),
         batch_max_new_tokens=(
             tuple(cells_by_id[cell_id].output_tokens for cell_id in batch_cells)
             if mixed_cells

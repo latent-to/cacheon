@@ -685,24 +685,9 @@ def _engine_outputs(outputs: object, *, request: BatchRequest) -> BatchEvidence:
     return BatchEvidence(tuple(prompts))
 
 
-def _generate(engine: object, request: BatchRequest) -> BatchEvidence:
-    generate = getattr(engine, "generate", None)
-    if not callable(generate):
-        raise SessionProtocolError("engine does not expose generate()")
-    outputs = generate(
-        prompt=list(request.prompts),
-        sampling_params={
-            "temperature": request.temperature,
-            "max_new_tokens": request.max_new_tokens,
-            "ignore_eos": True,
-        },
-        # Width zero disables the engine's logprob gather entirely so no
-        # eval-side CPU work shares the clock with a timed read.
-        return_logprob=request.top_logprobs_num > 0,
-        logprob_start_len=-1,
-        top_logprobs_num=request.top_logprobs_num,
-    )
-    return _engine_outputs(outputs, request=request)
+def _generate(engine: object, request: BatchRequest, emit=None) -> BatchEvidence:
+    from cacheon.eval.phase_latency import generate_outputs
+    return _engine_outputs(generate_outputs(engine, request, emit), request=request)
 
 
 RESIDENT_SWAP_TIMEOUT_SECONDS = 1800.0
@@ -1321,7 +1306,9 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                     )
                 seen_request_ids.add(request.request_id)
                 seen_nonces.add(request.nonce)
-                evidence = _generate(handle.engine, request)
+                evidence = _generate(
+                    handle.engine, request, lambda frame: _write_all(protocol_fd, frame)
+                )
                 collector = getattr(handle, "collect_audit_receipts", None)
                 if audit_policy is not None and not callable(collector):
                     raise SessionProtocolError(
