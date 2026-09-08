@@ -133,8 +133,10 @@ class ResidentReadRate:
     windows: tuple[TimedWindow, ...] = ()
 
     def __post_init__(self) -> None:
+        from cacheon.eval.speed_verdict import PREFILL_LANE_ROLES
+
         if (
-            self.role not in {"B", "C", "B_prime"}
+            self.role not in PREFILL_LANE_ROLES
             or not isinstance(self.session_id, str)
             or len(self.session_id) != 32
             or any(char not in "0123456789abcdef" for char in self.session_id)

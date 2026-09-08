@@ -99,11 +99,9 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     AUDIT_SEED_DOMAIN,
     FACTORY_SCHEMA,
     POLICY_SCHEMA,
-    PRODUCTION_AUTHORITY_BLOCKERS,
     RESOLVER_SCHEMA,
     B300FocusedGraphFacts,
     B300MemberContractProjection,
-    B300QualificationBlocker,
     B300RegisteredQualificationError,
     B300RegisteredQualificationInputs,
     B300RegisteredQualificationPolicy,
@@ -543,14 +541,22 @@ class B300RegisteredQualificationFactory:
         # `crossover_runtime`, which boots real trees for both arms and reads
         # its bookend unconditionally because the quality gate's stock-drift
         # control is harvested from the second baseline read. Versions 10/11
-        # require valid brackets and price from the faster one. The worker routes
-        # on the sealed version this plan carries.
+        # require valid brackets and price from the faster one; version 12 is
+        # sealed by the commission and keeps its prefill lane. The worker
+        # routes on the sealed version this plan carries.
         mixed_cells = bool(prepared_candidate.session_plan.batch_max_new_tokens)
+        speed_policy = inputs.resident_speed_policy
+        if speed_policy.version < 12:
+            speed_policy = replace(speed_policy, version=11 if mixed_cells else 10)
+        elif not mixed_cells:
+            raise B300RegisteredQualificationError(
+                "the prefill lane requires a mixed-cell workload"
+            )
         resident_plan = ResidentCrossoverPlan(
             candidate.reservation.selected_delta_digest,
             inputs.resident_baseline_arm,
             candidate_resident_arm,
-            replace(inputs.resident_speed_policy, version=11 if mixed_cells else 10),
+            speed_policy,
         )
         audit_seed = hashlib.sha256(
             AUDIT_SEED_DOMAIN
@@ -648,7 +654,6 @@ def build_b300_registered_qualification_factory(
 __all__ = [
     "B300FocusedGraphFacts",
     "B300MemberContractProjection",
-    "B300QualificationBlocker",
     "B300RegisteredQualificationComponents",
     "B300RegisteredQualificationError",
     "B300RegisteredQualificationFactory",
@@ -657,7 +662,6 @@ __all__ = [
     "B300RegisteredTargetProjection",
     "FACTORY_SCHEMA",
     "POLICY_SCHEMA",
-    "PRODUCTION_AUTHORITY_BLOCKERS",
     "RESOLVER_SCHEMA",
     "build_b300_registered_qualification_factory",
     "registered_b300_member_contract_projection",

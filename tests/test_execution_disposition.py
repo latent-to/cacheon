@@ -20,7 +20,6 @@ from cacheon.chain.execution_disposition import (
     ExecutionOutcome,
     PRE_RESIDENT_REQUEUE_FAILURES,
     reopen_pre_resident_refusal,
-    resolve_completed_result,
     resolve_infrastructure_result,
     seal_pre_resident_refusal,
     worker_pre_resident_release_reason,
@@ -167,14 +166,6 @@ def test_resolvers_requeue_only_authenticated_pre_resident_proof() -> None:
     for held in (unproven, foreign, unknown):
         assert held.disposition is ExecutionDisposition.HOLD
         assert held.decision == "NO_DECISION"
-
-    completed_hold = resolve_completed_result(True)
-    assert completed_hold.disposition is ExecutionDisposition.HOLD
-    assert completed_hold.disposition is not ExecutionDisposition.REQUEUE
-    assert completed_hold.reason == "post_publication_no_decision"
-    assert resolve_completed_result(False).disposition is (
-        ExecutionDisposition.COMPLETE
-    )
 
 
 def _store(authority):

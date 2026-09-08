@@ -475,7 +475,7 @@ class SessionExecutionPlan:
                     top_logprobs_num=self.top_logprobs_num,
                     temperature=self.temperature,
                     expected_prompt_tokens=expected_prompt_tokens,
-                    measure_phase_latency=self.measure_phase_latency,
+                    measure_phase_latency=self.measure_phase_latency and max_new_tokens >= 2,
                 )
                 frame_message(message, max_bytes=MAX_BATCH_REQUEST_BYTES)
             except SessionProtocolError as exc:

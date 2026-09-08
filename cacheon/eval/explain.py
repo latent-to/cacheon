@@ -62,6 +62,9 @@ _ARM_LABEL = {
     "B": "SGLang alone (before)",
     "C": "with your kernel",
     "B_prime": "SGLang alone (after)",
+    "B_prefill": "SGLang alone, prompt pass (before)",
+    "C_prefill": "with your kernel, prompt pass",
+    "B_prime_prefill": "SGLang alone, prompt pass (after)",
 }
 
 

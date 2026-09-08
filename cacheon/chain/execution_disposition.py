@@ -314,20 +314,6 @@ def resolve_infrastructure_result(
     )
 
 
-def resolve_completed_result(has_no_decision: bool) -> ExecutionOutcome:
-    """Disposition for one completed authenticated product; never REQUEUE."""
-
-    if type(has_no_decision) is not bool:
-        raise ExecutionDispositionError("completed resolution input is not boolean")
-    if has_no_decision:
-        return ExecutionOutcome(
-            ExecutionDisposition.HOLD,
-            decision="NO_DECISION",
-            reason=COMPLETED_NO_DECISION_HOLD_REASON,
-        )
-    return ExecutionOutcome(ExecutionDisposition.COMPLETE)
-
-
 __all__ = [
     "AuthenticatedPreResidentRefusal",
     "AUTHORITY_CHANGED_HOLD_REASON",
@@ -342,7 +328,6 @@ __all__ = [
     "SCHEMA_PRE_RESIDENT_REFUSAL",
     "infrastructure_result_payload",
     "reopen_pre_resident_refusal",
-    "resolve_completed_result",
     "resolve_infrastructure_result",
     "seal_pre_resident_refusal",
     "worker_pre_resident_release_reason",

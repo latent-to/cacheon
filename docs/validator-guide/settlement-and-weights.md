@@ -21,10 +21,11 @@ lock file.
 ## Settlement inputs
 
 `SettlementCandidate` accepts one complete audited PASS. The production
-version-3 attempt runs B/C/B′ (v10, or v11 for mixed cells), then registered
-eager audit A and pristine T. Every cell is warmed before timing, both stock
-observations remain in the evidence, and the faster valid stock rate sets the
-credited speedup.
+version-3 attempt runs B/C/B′ (v10, v11 for mixed cells, or v12 with its
+prompt pass), then registered eager audit A and pristine T. Every cell is
+warmed before timing, both stock observations remain in the evidence, and the
+faster valid stock rate sets the credited speedup. A v12 prefill-lane admission
+is credited at the sealed fraction of its prompt-pass gain.
 
 Historical paired candidates remain byte-compatible and use their original
 lower score. A retained complete primary PASS left by an older controller is

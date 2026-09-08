@@ -43,7 +43,10 @@ def execute_batch(self):
                 top_logprobs_num=self.plan.top_logprobs_num,
                 temperature=self.plan.temperature,
                 expected_prompt_tokens=expected_prompt_tokens,
-                measure_phase_latency=self.plan.measure_phase_latency,
+                # A one-token batch (the version-12 prefill read) has no
+                # delivery interval to time; the protocol refuses to stream it.
+                measure_phase_latency=self.plan.measure_phase_latency
+                and max_new_tokens >= 2,
             )
         )
         final_warmup = index == self.plan.warmup_count - 1

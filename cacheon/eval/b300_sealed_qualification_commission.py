@@ -97,6 +97,8 @@ _COMMISSION_SPEED_FIELDS = frozenset(
         "min_windows",
     }
 )
+# Optional: sealing it commissions speed policy v12, the prefill lane.
+_COMMISSION_PREFILL_LANE_FIELDS = frozenset({"credit_weight", "min_margin"})
 _CALIBRATION_RECORD_FIELDS = frozenset(
     {
         "evidence",
@@ -363,10 +365,18 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     _commission_int(session.get("conditioning_count"), "conditioning_count", minimum=0)
     _commission_decimal(session.get("temperature"), "temperature")
     speed = value.get("resident_speed")
-    if type(speed) is not dict or set(speed) != _COMMISSION_SPEED_FIELDS:
+    if type(speed) is not dict or set(speed) - {"prefill_lane"} != _COMMISSION_SPEED_FIELDS:
         raise B300RegisteredQualificationError(
             "sealed qualification resident-speed block is not closed"
         )
+    if "prefill_lane" in speed:
+        lane = speed["prefill_lane"]
+        if type(lane) is not dict or set(lane) != _COMMISSION_PREFILL_LANE_FIELDS:
+            raise B300RegisteredQualificationError(
+                "sealed qualification prefill-lane block is not closed"
+            )
+        _commission_decimal(lane.get("min_margin"), "prefill_lane.min_margin")
+        _commission_decimal(lane.get("credit_weight"), "prefill_lane.credit_weight")
     _commission_int(speed.get("max_stage_seconds"), "max_stage_seconds", minimum=1)
     _commission_int(
         speed.get("max_qualification_seconds"),

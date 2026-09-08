@@ -401,32 +401,6 @@ class SettlementLease:
         object.__setattr__(self, "candidates", candidates)
 
 
-@dataclass(frozen=True)
-class CrownedSettlement:
-    """One active crown reopened from durable candidate, evidence, and event bytes."""
-
-    candidate: SettlementCandidate
-    evidence: SettlementEvidence
-    event: SettlementEvent
-
-    def __post_init__(self) -> None:
-        from cacheon.settlement import (
-            SettlementCandidate, SettlementEvidence, SettlementEvent,
-            SettlementEventType,
-        )
-
-        if (
-            type(self.candidate) is not SettlementCandidate
-            or type(self.evidence) is not SettlementEvidence
-            or type(self.event) is not SettlementEvent
-            or self.event.event_type is not SettlementEventType.CROWN
-            or self.evidence.candidate_digest != self.candidate.digest
-            or self.event.candidate_digest != self.candidate.digest
-            or self.event.target_id != self.candidate.target_id
-        ):
-            raise IntakeError("active crown authority is inconsistent")
-
-
 class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
     """Single SQLite authority for arrival order, admission, and qualification state."""
 
@@ -4338,7 +4312,7 @@ class SQLiteFollowerWeightPublicationJournal:
 
 
 __all__ = [
-    "CrownedSettlement", "EvaluationStackState", "FinalizedArrival",
+    "EvaluationStackState", "FinalizedArrival",
     "FinalizedIntakeStore", "IntakeError",
     "IntakePolicy", "IntakeReservation", "IntakeScope",
     "SQLiteFollowerWeightPublicationJournal", "SQLiteWeightPublicationJournal",

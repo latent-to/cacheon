@@ -69,9 +69,13 @@ fails the speed floor only when it misses against both. Invalid measurement or
 a boundary-crossing uncertainty yields `NO_DECISION`, never a fabricated miner
 loss or reward. This validity rule does not replace complete workload warmup.
 V10 and v11 precommit
-B′ on the two-process substrate. Retained evidence regrades under the version
-that produced it; evidence sealed below version 8 belongs to the MiniMax-M3
-era and is refused rather than regraded.
+B′ on the two-process substrate. Version 12 appends a one-token prompt pass to
+each lane after B′ and grades the decode reads first and alone; the prompt
+pass can admit only a candidate the decode floor neither passed nor convicted,
+at its own sealed margin, and settles at a sealed fraction of the prompt-pass
+gain (see the [prefill lane](qualification.md#prefill-lane-v12)). Retained
+evidence regrades under the version that produced it; evidence sealed below
+version 8 belongs to the MiniMax-M3 era and is refused rather than regraded.
 
 Policy version 3 replaces each read's single timed aggregate with the median
 over per-batch timed windows. The window is the timed batch because host
@@ -101,8 +105,11 @@ seconds must stay within the bound of the baseline's, compared at equal
 warmth position. V10/v11 have no C′ and grade the initial C/B pair.
 Conditioning spans carry warm/cold session structure and positions must never
 be mixed. A violation is a clear
-candidate `FAIL`: a decode win cannot hide a prefill regression. The check
-grades numbers already sealed in every read and adds no measurement time.
+candidate `FAIL`: a decode win cannot hide a prefill regression, and under v12
+a prompt-pass win cannot hide a decode regression either, because a measured
+decode loss or a conditioning regression is graded before the prompt pass is
+consulted. The check grades numbers already sealed in every read and adds no
+measurement time.
 Version-1 and version-2 witnesses keep their exact historical bytes and
 regrade only under their own sealed arithmetic.
 

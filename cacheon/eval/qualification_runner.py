@@ -26,7 +26,6 @@ from cacheon.eval.crossover_runtime import (
     ResidentMarginalLifecycleEvidence,
     ResidentReadRate,
     ResidentSpeedPolicy,
-    SpeedStageDecision,
     run_resident_crossover_speed,
 )
 from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
@@ -81,11 +80,11 @@ from cacheon.eval.resident_audit_authority import (
 from cacheon.eval.scoring import (
     RawSpeedEvidenceError, SpeedupVerdict, marginal_workload_digest,
 )
+from cacheon.eval.resident_schedule import grade_schedule
 from cacheon.eval.speed_verdict import (
     SPEED_FAIL_REASONS,
     fail_reason,
     resident_speed_roles,
-    speed_grade,
 )
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes, require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -424,19 +423,10 @@ class CausalQualificationInput:
                 self.prepared.baseline_session_plan.expected_preflight.__dataclass_fields__
             ) - {"launch_digest"}
             try:
-                expected_resident_policy = ResidentSpeedPolicy.from_calibration(
-                    max_stage_seconds=resident.policy.max_stage_seconds,
-                    max_qualification_seconds=(
-                        resident.policy.max_qualification_seconds
-                    ),
+                expected_resident_policy = ResidentSpeedPolicy.rebound(
+                    resident.policy,
                     calibration=self.calibration_manifest,
                     context=self.calibration_context,
-                    version=resident.policy.version,
-                    min_windows=resident.policy.min_windows,
-                    max_window_scatter=resident.policy.max_window_scatter,
-                    max_conditioning_slowdown=(
-                        resident.policy.max_conditioning_slowdown
-                    ),
                 )
             except CrossoverRuntimeError as exc:
                 raise QualificationRunnerError(str(exc)) from None
@@ -783,32 +773,23 @@ class ResidentSpeedWitness:
         return SpeedEvidencePolicy.resident()
 
     def always_bookend_result(self) -> tuple[QualificationDecision, str, str | None]:
-        """Grade the two-process schedule: B, C and B-prime, read unconditionally.
+        """Grade the precommitted schedule: B, C and B-prime, read unconditionally,
+        plus the version-12 prefill pass when the policy carries one.
 
         Version 8 precommits the third read (the quality gate takes its
         stock-drift control from the second baseline read), so there is no
         adaptive shape to assert: one grade over the whole schedule terminates.
+        The settled speedup is the decode speedup unless the prefill lane
+        admitted the candidate, in which case it is the credited prefill gain.
         """
 
-        if self.resident_policy.version < 8 or len(self.rates) != 3:
-            raise QualificationRunnerError("resident speed witness is not v8")
         try:
-            verdict, decision = speed_grade(
-                self.resident_policy,
-                [self.rates[0], self.rates[2]],
-                [self.rates[1]],
-                concluding=True,
-            )
-            conditioning = self.resident_policy.conditioning_regression(
-                self.rates[0], self.rates[1]
-            )
-            if conditioning and decision is not SpeedStageDecision.NO_DECISION:
-                decision = SpeedStageDecision.FAIL
+            result = grade_schedule(self.resident_policy, self.rates)
         except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
             raise QualificationRunnerError(str(exc)) from None
-        grade = QualificationDecision(decision.value)
-        return grade, format(verdict.speedup, ".17g"), _speed_reason(
-            grade, verdict, conditioning_failed=conditioning
+        grade = QualificationDecision(result.decision.value)
+        return grade, result.settled_speedup, _speed_reason(
+            grade, result.verdict, conditioning_failed=result.conditioning_failed
         )
 
     def accepted_speedup(self) -> str:
@@ -831,22 +812,8 @@ class ResidentSpeedWitness:
         if expected_policy is not None and expected_policy != self.policy:
             raise QualificationRunnerError("resident speed witness policy differs")
         try:
-            # Reconstruct the expected policy at the witness's own version so
-            # sealed evidence regrades under the arithmetic that produced it;
-            # the equality check below then refuses any cross-version splice.
-            expected_resident = ResidentSpeedPolicy.from_calibration(
-                max_stage_seconds=self.resident_policy.max_stage_seconds,
-                max_qualification_seconds=(
-                    self.resident_policy.max_qualification_seconds
-                ),
-                calibration=calibration,
-                context=context,
-                version=self.resident_policy.version,
-                min_windows=self.resident_policy.min_windows,
-                max_window_scatter=self.resident_policy.max_window_scatter,
-                max_conditioning_slowdown=(
-                    self.resident_policy.max_conditioning_slowdown
-                ),
+            expected_resident = ResidentSpeedPolicy.rebound(
+                self.resident_policy, calibration=calibration, context=context
             )
         except CrossoverRuntimeError as exc:
             raise QualificationRunnerError(str(exc)) from None

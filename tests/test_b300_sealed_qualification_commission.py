@@ -82,6 +82,15 @@ def test_sealed_commission_block_round_trips() -> None:
     assert canonical_json_bytes(block)
 
 
+def test_sealed_prefill_lane_block_round_trips() -> None:
+    block = _block()
+    block["resident_speed"] = {
+        **block["resident_speed"],
+        "prefill_lane": {"credit_weight": "0.5", "min_margin": "0.05"},
+    }
+    assert sealed.sealed_qualification_commission(block) is block
+
+
 def test_pre_catalog_expansion_commission_schema_is_rejected() -> None:
     block = _block()
     block["schema"] = "cacheon-private-b300-qualification-commission-v1"
@@ -129,6 +138,12 @@ def _mutations() -> list[tuple[str, dict[str, object]]]:
     case("open speed block", resident_speed__extra=0)
     case("zero stage budget", resident_speed__max_stage_seconds=0)
     case("noncanonical scatter", resident_speed__max_window_scatter="0.050")
+    case("open prefill lane", resident_speed__prefill_lane={"min_margin": "0.05"})
+    case(
+        "non-decimal prefill weight",
+        resident_speed__prefill_lane={"min_margin": "0.05", "credit_weight": 0.5},
+    )
+    case("prefill lane not a block", resident_speed__prefill_lane="0.05")
     return cases
 
 

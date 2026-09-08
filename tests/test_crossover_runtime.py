@@ -120,7 +120,7 @@ class _Controller:
                 * (1.0, 1.001, 0.999)[(local_index - 1) % 3]
             )
             prompts = self.plan.prompt_batches[index]
-            tokens = len(prompts) * self.plan.max_new_tokens
+            tokens = len(prompts) * self.plan.request_geometry(index)[0]
             started = self.clock
             self.clock += duration
             row = BatchExecutionEvidence(

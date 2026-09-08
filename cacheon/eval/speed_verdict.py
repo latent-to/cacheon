@@ -67,9 +67,19 @@ def fail_reason(verdict: SpeedupVerdict, *, conditioning_failed: bool = False) -
     return "speed_threshold_not_met"
 
 
+DECODE_ROLES = ("B", "C", "B_prime")
+# Version 12 appends a prefill-only pass of the same sealed batches on each arm
+# after the decode schedule has finished, so the decode reads are taken exactly
+# as every earlier version took them.
+PREFILL_LANE_ROLES = DECODE_ROLES + ("B_prefill", "C_prefill", "B_prime_prefill")
+
+
 def resident_speed_roles(version: int, count: int) -> tuple[str, ...] | None:
-    roles = {2: ("B", "C"), 3: ("B", "C", "B_prime")}
-    return roles.get(count)
+    """The precommitted read roles for one policy version, or None for a count
+    that version never reads."""
+
+    roles = PREFILL_LANE_ROLES if version >= 12 else DECODE_ROLES
+    return roles if count == len(roles) else None
 
 
 def invariant_decision(
@@ -187,6 +197,8 @@ def _single_run_grade(policy, baselines, candidates, baseline_rates, candidate_r
 
 
 __all__ = [
+    "DECODE_ROLES",
+    "PREFILL_LANE_ROLES",
     "SPEED_FAIL_REASONS",
     "SpeedStageDecision",
     "fail_reason",

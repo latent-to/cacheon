@@ -383,16 +383,14 @@ def _open_publication_directory(path: Path) -> int:
         raise ModelProvisionError(f"cannot open receipt publication directory: {exc}") from None
 
 
-def _read_published(
-    path: Path, *, require_content_addressed_name: bool = True
-) -> ModelProvisionReceipt:
+def _read_published(path: Path) -> ModelProvisionReceipt:
     parent = _concrete_directory(path.parent, label="receipt publication directory")
     directory_fd = _open_publication_directory(parent)
     try:
         receipt = _decode_receipt(_read_regular_at(directory_fd, path.name))
     finally:
         os.close(directory_fd)
-    if require_content_addressed_name and path.name != _receipt_name(receipt.receipt_digest):
+    if path.name != _receipt_name(receipt.receipt_digest):
         raise ModelProvisionError("model receipt filename does not match its canonical digest")
     return receipt
 
@@ -516,41 +514,6 @@ def reopen_model_provision(
     return ProvisionedModel(receipt, path)
 
 
-def reopen_embedded_model_provision(
-    model_root: str | os.PathLike[str],
-    receipt_path: str | os.PathLike[str],
-    *,
-    expected_content_digest: str,
-    expected_receipt_digest: str,
-    workers: int = 8,
-) -> ProvisionedModel:
-    """Reopen a signed-release copy whose enclosing descriptor supplies its address.
-
-    Ordinary provision receipts remain content-addressed by filename.  A release
-    ships the same canonical bytes under one fixed artifact role name, so this path
-    requires both independently signed expected digests before re-hashing the model.
-    """
-
-    root = _concrete_directory(model_root, label="model root")
-    path = Path(receipt_path)
-    expected_content = _digest(
-        expected_content_digest, field="expected_content_digest"
-    )
-    expected_receipt = _digest(
-        expected_receipt_digest, field="expected_receipt_digest"
-    )
-    receipt = _read_published(path, require_content_addressed_name=False)
-    if (
-        receipt.content_digest != expected_content
-        or receipt.receipt_digest != expected_receipt
-    ):
-        raise ModelProvisionError("embedded model receipt differs from signed identity")
-    observed = _build_receipt(root, workers=workers)
-    if observed != receipt:
-        raise ModelProvisionError("model tree does not match its embedded provision receipt")
-    return ProvisionedModel(receipt, path)
-
-
 __all__ = [
     "MODEL_PROVISION_SCHEMA_VERSION",
     "MODEL_RECEIPT_PREFIX",
@@ -559,6 +522,5 @@ __all__ = [
     "ModelProvisionReceipt",
     "ProvisionedModel",
     "provision_model",
-    "reopen_embedded_model_provision",
     "reopen_model_provision",
 ]
