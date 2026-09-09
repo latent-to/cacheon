@@ -49,6 +49,7 @@ Retained attempts identify the speed policy that created them:
 |---|---|---|
 | v10 | B/C/B′, always three | Every cell warmed; both stock reads valid; single-cell median rate |
 | v11 | B/C/B′, always three | Every cell warmed; mixed-cell total tokens / total time |
+| v12 | B/C/B′, then a one-token prompt pass of each lane; always six | v11 decode rule unchanged; the [prefill lane](#prefill-lane-v12) admits a competitive decode miss at a sealed prompt margin |
 | v8/v9 | B/C/B′, always three | Retained historical arithmetic only |
 
 Versions 1–7 were the MiniMax-M3 era's schedules: the adaptive five-read
@@ -59,7 +60,7 @@ product will be re-run or re-graded, so the runtime, evidence readers, and
 settlement refuse a witness below version 8 instead of decoding it. Every
 candidate is now measured by the two-process crossover, which launches its own
 baseline and candidate engines. That substrate binds v10 (v11 for a mixed-cell
-workload) and reads B′
+workload, v12 when the commission seals a prefill lane) and reads B′
 unconditionally: the quality gate takes its stock-drift control from the second
 baseline read, and a conditional bookend leaves a clear PASS with no control to
 harvest. Reading it regardless of the outcome also preserves what the
@@ -71,7 +72,7 @@ built, and the worker executes the version the sealed plan carries, so the plan
 and the execution substrate cannot disagree. Every calibrated threshold is the
 one the provider sealed.
 
-C′ and B″ do not exist under v10 or v11; no code path in this tree reads them.
+C′ and B″ do not exist under v10, v11 or v12; no code path in this tree reads them.
 
 Fresh execution is resident-only: the runner refuses any other speed-evidence
 policy at entry, and the constructor default is the resident policy — the only
@@ -79,6 +80,121 @@ one a fresh plan can run. A reopen binds the retained evidence's own policy
 explicitly, and retained v8/v9 artifacts regrade byte-for-byte without
 reinterpretation. Merely changing the policy label does not upgrade old
 evidence.
+
+## Per-cell first-token and decode delivery measurements
+
+A sealed qualification commission can set `session.measure_phase_latency` to
+`true`. Omit the field to retain the existing generation protocol. The commission
+builder carries this choice into both timed lanes and the workload identity;
+the eager audit role and pristine reference remain untimed. Each measured cell
+must generate at least two output tokens per request.
+
+The worker streams the same planned requests and sends a first-token and a
+final-token boundary for each prompt. The controller timestamps their arrival,
+checks their request identity and token IDs against the final evidence, and
+retains the relative host times in each timed window's `prompt_latencies`.
+Worker-supplied timestamps are never accepted. Missing, duplicate, stale or
+inconsistent boundaries are measurement failures, not candidate speed failures.
+
+The dashboard derives its `cells` table from those retained windows, grouped by
+input tokens, output tokens and request concurrency; derived summaries are not stored again:
+
+| Field | Definition |
+|---|---|
+| `mean_ttft_seconds` | Mean time from batch dispatch to each prompt's first delivered token |
+| `mean_tpot_seconds` | Mean `(last delivery − first delivery) / (output tokens − 1)` across prompts |
+| `end_to_end_output_tokens_per_second` | Cell output tokens divided by its timed batch spans |
+| `timed_batches` | Number of retained timed batches for this cell |
+
+TTFT includes queueing, tokenization, prefill, sampling and delivery. TPOT measures
+delivery after the first token, including interference from other requests and
+stream buffering. A first chunk may contain several tokens. These are serving
+latency measurements, not isolated GPU phase durations or pure input-token
+throughput. The exact input length and concurrency therefore accompany every
+result. Cells are reported separately rather than averaged together.
+
+The dashboard's submission **Performance** section displays these cells with
+TTFT and TPOT in milliseconds. It shows **Not measured** for evaluations that
+did not collect delivery timings. Output tok/s and the v12 prompt-pass
+comparison remain available independently; prompt passes use **prompts/s**,
+because each request generates one output token. Their batch durations are not
+per-request TTFT. Dashboard display does not enable a measurement mode or
+change a qualification verdict.
+
+This option does not change the v10/v11 qualification or payout rule. A 1.5× TTFT
+improvement is reported as such, not credited as a 1.5× end-to-end speedup. The
+reviewed policy that can qualify a prompt-processing win on its own terms is the
+version-12 [prefill lane](#prefill-lane-v12) below; it grades a separate one-token
+pass, not these delivery timings.
+
+Enabling measurement requires a fresh commission because the consumed source,
+prompt protocol and workload identity change. Drain an active evaluation before
+switching; never change its measurement mode midway through B/C/B′. Stage the
+updated source and commission inputs first, then validate on the exact
+commissioned image, model and TP topology before mainnet activation. The option
+adds no model loads, prompt batches or replayed historical evaluations, but its
+streaming overhead must be measured on that runtime. Existing reports and
+continuations retain their original bytes and remain readable without phase
+fields; their missing phase times cannot be reconstructed from aggregate rates.
+
+## Prefill lane (v12)
+
+Version 12 keeps the v11 decode schedule byte for byte and appends a prompt
+pass to each lane after B′: `B_prefill`, `C_prefill` and `B_prime_prefill`
+replay the same sealed batches with every request budgeted to one generated
+token, so each read measures prompt processing with no decode work to dilute
+it. The decode reads B/C/B′ are taken first, in the same order and with the
+same conditioning as under v11, and the decode verdict is graded first and
+alone. A one-token batch is never streamed for first-token and delivery
+timing; per-batch `prompt_latencies` stay on the decode reads.
+
+The prompt pass is consulted only when the decode floor neither admitted nor
+convicted the candidate:
+
+| Decode grade | Prompt pass | Outcome |
+|---|---|---|
+| `PASS` | anything | `PASS` on the decode lane; the settled speedup is the decode speedup |
+| `FAIL`, candidate slower or conditioning regression | anything | `FAIL` |
+| `FAIL`, bar not cleared | clears `prefill_lane.min_margin` against both stock prompt reads | `PASS` on the prefill lane |
+| `NO_DECISION`, valid measurement at the boundary | clears the prefill margin | `PASS` on the prefill lane |
+| `NO_DECISION`, invalid measurement | anything | `NO_DECISION` |
+| any non-`PASS` | does not clear the prefill margin | the decode grade, unchanged |
+
+A decode bundle therefore sees exactly the v11 outcome, whatever its prompt
+pass measures. A prefill-lane admission settles at a sealed fraction of the
+prompt-pass gain rather than at its raw speedup, because prompt throughput is
+not one-to-one with end-to-end serving throughput:
+
+```text
+prefill speedup = C_prefill / max(B_prefill, B′_prefill)
+settled speedup = 1 + prefill_lane.credit_weight × (prefill speedup − 1)
+```
+
+The prompt reads obey the same bracket-validity and window-stability rules as
+the decode reads. The witness headline (`initial_verdict`, `final_verdict`)
+remains the decode verdict; the settled speedup is what settlement and V1
+credit consume, and every earlier witness regrades unchanged under its own
+version.
+
+A sealed commission enables the lane with an optional block inside
+`resident_speed`:
+
+```json
+"resident_speed": {
+  "max_stage_seconds": 900,
+  "prefill_lane": {"min_margin": "0.05", "credit_weight": "0.33"}
+}
+```
+
+Both values are canonical decimal strings; the margin must lie in (0, 1) and
+the weight in (0, 1]. The block requires a mixed-cell workload, because v12
+extends the v11 makespan rule, and a fresh commission: the version, the read
+order and both thresholds are part of the sealed policy digest. The pass adds
+three prompt-only reads over the sealed batches (two on the baseline lane, one
+on the candidate lane) and no model loads, so the sealed stage and
+qualification wall bounds must cover them. Validate the exact commissioned
+image, model and TP topology before mainnet activation, as for any policy
+change.
 
 ## Current qualification timeline
 
@@ -255,6 +371,14 @@ Unobserved is never read as zero. Absent or incomplete evidence may not be
 converted into candidate PASS or FAIL. The durable store represents this as a
 reservation HOLD with no candidate decision, which is semantically
 `NO_DECISION` without reviving the retired literal decision field.
+
+Collective graph qualification requires the sequence cases generated by the
+verifier's applicable shape domain. A single applicable shape retains its
+individual graph capture/replay check; temporal shape transitions require at
+least two distinct token counts, and a graph sequence requires at least two
+applicable shapes. A missing required sequence remains a HOLD. Graph-provider
+HOLD responses retain the exception type and a bounded cause chain in the
+existing failure fields, shown in the dashboard's evaluation forensics.
 
 This evidence is written from inside the candidate's own process. It closes
 accidental non-invocation as a verdict condition, but it is not proof against a

@@ -97,6 +97,8 @@ _COMMISSION_SPEED_FIELDS = frozenset(
         "min_windows",
     }
 )
+# Optional: sealing it commissions speed policy v12, the prefill lane.
+_COMMISSION_PREFILL_LANE_FIELDS = frozenset({"credit_weight", "min_margin"})
 _CALIBRATION_RECORD_FIELDS = frozenset(
     {
         "evidence",
@@ -351,18 +353,30 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     _commission_int(policy.get("select_count"), "select_count", minimum=2)
     _commission_int(policy.get("audit_minimum_calls"), "audit_minimum_calls", minimum=1)
     session = value.get("session")
-    if type(session) is not dict or set(session) != _COMMISSION_SESSION_FIELDS:
+    if (type(session) is not dict
+        or set(session) - {"measure_phase_latency"} != _COMMISSION_SESSION_FIELDS
+        or ("measure_phase_latency" in session and session["measure_phase_latency"] is not True)):
         raise B300RegisteredQualificationError(
             "sealed qualification session block is not closed"
         )
+    if session.get("measure_phase_latency") and policy["tokens_per_prompt"] < 2:
+        raise B300RegisteredQualificationError("phase measurements require at least two output tokens")
     _commission_int(session.get("warmup_count"), "warmup_count", minimum=0)
     _commission_int(session.get("conditioning_count"), "conditioning_count", minimum=0)
     _commission_decimal(session.get("temperature"), "temperature")
     speed = value.get("resident_speed")
-    if type(speed) is not dict or set(speed) != _COMMISSION_SPEED_FIELDS:
+    if type(speed) is not dict or set(speed) - {"prefill_lane"} != _COMMISSION_SPEED_FIELDS:
         raise B300RegisteredQualificationError(
             "sealed qualification resident-speed block is not closed"
         )
+    if "prefill_lane" in speed:
+        lane = speed["prefill_lane"]
+        if type(lane) is not dict or set(lane) != _COMMISSION_PREFILL_LANE_FIELDS:
+            raise B300RegisteredQualificationError(
+                "sealed qualification prefill-lane block is not closed"
+            )
+        _commission_decimal(lane.get("min_margin"), "prefill_lane.min_margin")
+        _commission_decimal(lane.get("credit_weight"), "prefill_lane.credit_weight")
     _commission_int(speed.get("max_stage_seconds"), "max_stage_seconds", minimum=1)
     _commission_int(
         speed.get("max_qualification_seconds"),

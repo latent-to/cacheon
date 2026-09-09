@@ -773,6 +773,8 @@ def test_remote_qualification_holds_when_plan_build_capture_is_busy(
             is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
         )
         assert len(build_calls) == 1
+        assert result.failure_type == "B300QualificationGraphEvidenceHold"
+        assert result.failure_message.endswith("capture devices busy")
     finally:
         worker.close()
 

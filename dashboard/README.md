@@ -17,6 +17,8 @@ Then open http://127.0.0.1:8788/ (interactive API docs at `/docs`).
 
 Uses the prod conda python (`/root/miniconda3/envs/prod/bin/python`), which
 already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
+From a local repository checkout, install `python -m pip install -e ".[dashboard,dev]"`
+to run the dashboard and its API tests.
 
 ## What it shows
 
@@ -26,7 +28,7 @@ already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
 | Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (1 τ each): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
-| Winners | Every retained two-PASS settlement candidate: conservative speedup over the incumbent, compounded stack speedup over retained SGLang stock with a serving tok/s estimate, the miner's weight share in the served offer (earning / not earning), settlement status, and current on-chain emission |
+| Winners | Retained PASS settlement candidates: credited gain, measured candidate and baseline tok/s, prefill gain, served weight share, settlement status, and current on-chain emission |
 | Miners | Per-hotkey leaderboard sorted by served weight share: submissions, crowns, qualified/failed, fees paid, registration + emission |
 | Timeline | Settlement events (CROWN/ADOPTION/HOLD/…), the served weight offer's vector, and this validator's follower journal (intent/pending/held/confirmed) |
 | System | DB/chain/process/heartbeat health, intake lag |
@@ -82,6 +84,51 @@ stdout into the retained stderr stream, so miner prints and crash diagnostics ar
 both present. Section headers state byte counts, hashes, and whether the 16 MiB
 stream bound truncated the output.
 
+Each qualification attempt also has a **Performance** section:
+
+- Completed `NO_DECISION` attempts held by the remote dispatcher remain visible
+  from their retained result, even without a qualification-disposition row.
+  Their measurements and original decision remain separate from the reservation's
+  current status, including a later operator rejection. Importing the same
+  attempt does not duplicate it in the history.
+- **Why this result:** the shared grader explains the retained policy and reads,
+  including gains against both baselines, required gain and measured baseline
+  drift. A borderline speed result is distinguishable from invalid measurement.
+- **Output throughput:** B/C/B′ output tok/s and total timed batch seconds.
+  This includes prompt processing and generation; it is not isolated decode time.
+- **Prefill:** v12 prompt-pass throughput in **prompts/s**, total timed batch
+  seconds, observed candidate gain over the faster baseline read, and the
+  retained prefill margin. Each prompt pass generates one output token, so the
+  output-token count is a request count, not an input-token throughput measure.
+  The comparison describes the measurements; it does not replace the verdict.
+- **TTFT / TPOT by workload:** mean first-token latency, mean time per subsequent
+  token, and output throughput, separated by input tokens, output tokens and
+  request concurrency. Cells are recomputed from retained host timing windows.
+  Evaluations without these timings explicitly show **Not measured**.
+
+The Winners table includes conservative observed prefill gain when retained
+passing attempts contain prompt passes. Missing historical measurements remain
+absent. `session.measure_phase_latency` must have been enabled in the evaluation
+to display TTFT/TPOT; enabling a dashboard panel does not enable measurement or
+reconstruct timings for old runs.
+
+Credited gains are labelled separately from measured throughput. A v12 prefill
+credit is not an output-throughput ratio, so the dashboard does not divide
+candidate tok/s by that credit to invent a stock tok/s estimate.
+
+The API keeps ordinary lane `tokens_per_second` and adds `timed_seconds` and
+`cells`. Prefill lanes set `tokens_per_second` to null and expose
+`prompts_per_second` instead. `speed.prefill` contains the observed `speedup`
+and retained `min_margin`. The reader also follows database-recorded and staged
+evidence roots and selects the submission's target from historical multi-target
+reports, so changing worker generations does not hide retained measurements.
+An unreadable retained response or grading artifact is shown as an evidence
+error. Execution summaries join PID identities to completed rank records, so
+repeated snapshots do not become extra GPUs or lose the recorded graph capture.
+Worker connection status reflects the CPU relay's last successful pod check.
+It does not treat the relay's default adapter flag as a failed GPU process;
+the pod starts an adapter when work arrives and retires it after qualification.
+
 Metagraph emission is denominated in the subnet's own alpha token, so
 `/api/winners` and `/api/miners` report `emission_alpha_per_day` beside an
 `emission_symbol` read from the netuid's on-chain symbol (`ㄷ` for netuid 14).
@@ -98,13 +145,8 @@ crown count). `/api/weights` returns that vector with UIDs and on-chain
 incentive beside the follower journal rows, so the lag between the served
 offer and chain consensus is visible rather than mistaken for a wrong number.
 
-`/api/winners` reports each contribution twice over: `improvement_pct` is the
-conservative gain over the incumbent it displaced, while
-`cumulative_speedup_over_sglang` compounds the settled gains of a target's
-CROWN lineage in settlement-event order, so it reads as the stack's position
-against retained SGLang stock at the moment that contribution was crowned.
-`tokens_per_second` is the slower independently passing candidate lane from the
-qualification artifacts, and `sglang_tokens_per_second` divides it by the
-cumulative speedup. The SGLang-relative fields are null for a retained PASS
-that never entered the stack, and the tok/s pair is null when no local evidence
-store retains the attempt's artifact.
+`/api/winners` keeps settlement credit (`improvement_pct`) separate from measured
+candidate and baseline throughput. `baseline_kind` identifies stock, incumbent,
+or unknown; missing retained measurements stay null. The former `sglang_*` and
+`cumulative_*_over_sglang` estimates are removed: weighted prefill credits and
+different competition epochs cannot reconstruct a measured stock throughput.

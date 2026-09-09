@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from cacheon.eval.speed_verdict import SpeedStageDecision, fail_reason, speed_grade
-from tests.test_crossover_runtime import _policy_v3
+from tests.test_crossover_runtime import _resident_policy
 
 
 def _read(rates, *, tokens=None, conditioned=True):
@@ -21,9 +21,9 @@ def _read(rates, *, tokens=None, conditioned=True):
 
 
 def _grade(b, c, bp, version=10):
-    policy = _policy_v3(version=version, min_windows=5, min_margin=0.01,
+    policy = _resident_policy(version=version, min_windows=5, min_margin=0.01,
                         max_window_scatter=0.05)
-    return speed_grade(policy, [b, bp], [c], concluding=True)
+    return speed_grade(policy, [b, bp], [c])
 
 
 @pytest.mark.parametrize("version", [10, 11])

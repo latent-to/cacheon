@@ -532,6 +532,7 @@ def _compose_locked(
         top_logprobs_num=policy.topk_width,
         temperature=float(session_block["temperature"]),
         expected_prompt_tokens=quality_cell.input_tokens,
+        measure_phase_latency=session_block.get("measure_phase_latency", False),
         batch_max_new_tokens=(
             tuple(cells_by_id[cell_id].output_tokens for cell_id in batch_cells)
             if mixed_cells
@@ -647,18 +648,32 @@ def _compose_locked(
         baseline_executor.config.runtime.digest,
         baseline_executor.device_policy.configuration_sha256,
     )
+    prefill_lane = speed_block.get("prefill_lane")
+    if prefill_lane is not None and not mixed_cells:
+        # Version 12 scores the mixed-cell makespan; a single-cell workload
+        # has no such rule to append the prefill pass to.
+        raise B300QualificationCommissionError(
+            "the prefill lane requires a mixed-cell workload"
+        )
     resident_speed_policy = ResidentSpeedPolicy.from_calibration(
         max_stage_seconds=speed_block["max_stage_seconds"],
         max_qualification_seconds=speed_block["max_qualification_seconds"],
         calibration=calibration_manifest,
         context=calibration_context,
-        # Versions 10/11 retain B/C/B-prime and require valid stock brackets.
-        # The registered plan seals the same single-cell/mixed-cell choice per
-        # candidate, so the worker never re-derives a substrate.
-        version=11 if mixed_cells else 10,
+        # Versions 10/11 retain B/C/B-prime and require valid stock brackets;
+        # version 12 appends the prefill pass to the mixed-cell rule. The
+        # registered plan seals the same choice per candidate, so the worker
+        # never re-derives a substrate.
+        version=12 if prefill_lane is not None else 11 if mixed_cells else 10,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),
+        prefill_min_margin=(
+            float(prefill_lane["min_margin"]) if prefill_lane is not None else 0.0
+        ),
+        prefill_credit_weight=(
+            float(prefill_lane["credit_weight"]) if prefill_lane is not None else 0.0
+        ),
     )
 
     def bind_candidate(candidate_tree) -> TrustedLaunchBinding:

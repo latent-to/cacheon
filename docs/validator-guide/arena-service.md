@@ -45,7 +45,10 @@ length, admission width, cache policy) derives from the full cell set, and a
 qualification session whose per-batch output budget or read count differs from
 that set cannot commission. Mixed-cell v11 scoring uses total timed output tokens
 over the complete host-observed mixture makespan; the individual batch windows
-remain evidence. A tensor-parallel size larger than the bound GPU count is
+remain evidence. An optional `resident_speed.prefill_lane` block commissions v12,
+which appends a one-token prompt pass to each lane after B′ and rewards a
+prompt-processing win on its own sealed terms (see the
+[qualification guide](qualification.md#prefill-lane-v12)). A tensor-parallel size larger than the bound GPU count is
 rejected. What the manifest declares is therefore what the engine runs.
 
 This prevents a candidate, operator typo, or later configuration drift from

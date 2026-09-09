@@ -104,8 +104,9 @@ that registered singleton target and declare that it applies to BF16 calls on `s
    candidate should consume full qualification capacity.
 5. Version-3 qualification measures every candidate on the two-process
    substrate: speed policy v10 (v11 for a mixed-cell workload) launches separate
-   baseline and candidate engines and always collects B/C/B′. A registered
-   eager, untimed audit role
+   baseline and candidate engines and always collects B/C/B′; v12 adds a
+   one-token prompt pass of each lane so a prompt-processing win can qualify
+   on its own sealed terms. A registered eager, untimed audit role
    (**A**) then checks the candidate delta; after candidate teardown, the
    pristine reference (**T**) supplies candidate-free quality evidence.
 6. One complete audited PASS becomes `qualified` and eligible for settlement.

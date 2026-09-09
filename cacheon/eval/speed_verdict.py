@@ -67,9 +67,19 @@ def fail_reason(verdict: SpeedupVerdict, *, conditioning_failed: bool = False) -
     return "speed_threshold_not_met"
 
 
+DECODE_ROLES = ("B", "C", "B_prime")
+# Version 12 appends a prefill-only pass of the same sealed batches on each arm
+# after the decode schedule has finished, so the decode reads are taken exactly
+# as every earlier version took them.
+PREFILL_LANE_ROLES = DECODE_ROLES + ("B_prefill", "C_prefill", "B_prime_prefill")
+
+
 def resident_speed_roles(version: int, count: int) -> tuple[str, ...] | None:
-    roles = {2: ("B", "C"), 3: ("B", "C", "B_prime")}
-    return roles.get(count)
+    """The precommitted read roles for one policy version, or None for a count
+    that version never reads."""
+
+    roles = PREFILL_LANE_ROLES if version >= 12 else DECODE_ROLES
+    return roles if count == len(roles) else None
 
 
 def invariant_decision(
@@ -95,12 +105,8 @@ def speed_grade(
     policy: "ResidentSpeedPolicy",
     baselines: list[object],
     candidates: list[object],
-    *,
-    concluding: bool,
 ) -> tuple[SpeedupVerdict, SpeedStageDecision | None]:
-    """Grade one read set, shared by the live stage and the independent regrade
-    so the two cannot drift apart. ``concluding`` marks the last grade available
-    for this stage, after which no further reads will be taken."""
+    """Grade the complete precommitted read set in execution and retained regrade."""
 
     baseline_rates = [policy.scored_tokens_per_second(row) for row in baselines]
     candidate_rates = [policy.scored_tokens_per_second(row) for row in candidates]
@@ -108,7 +114,7 @@ def speed_grade(
         return _single_run_grade(policy, baselines, candidates, baseline_rates, candidate_rates)
     dropped_brackets = 0
     bracket_drift = 0.0
-    if policy.version >= 5 and len(baseline_rates) >= 2:
+    if len(baseline_rates) >= 2:
         bracket_drift = relative_spread(baseline_rates)
         if bracket_drift > policy.max_noise:
             dropped_brackets = len(baseline_rates) - 1
@@ -130,7 +136,7 @@ def speed_grade(
             ),
         )
     decision = invariant_decision(baseline_rates, candidate_rates, verdict.required)
-    if decision is None and concluding:
+    if decision is None:
         # Escalation cannot be relied on to converge: taking more reads only
         # widens the observed spread. The burden of proof sits with the
         # candidate, so an undetermined conclusion is "not proven faster" -- a
@@ -187,6 +193,8 @@ def _single_run_grade(policy, baselines, candidates, baseline_rates, candidate_r
 
 
 __all__ = [
+    "DECODE_ROLES",
+    "PREFILL_LANE_ROLES",
     "SPEED_FAIL_REASONS",
     "SpeedStageDecision",
     "fail_reason",

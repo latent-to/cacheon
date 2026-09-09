@@ -120,7 +120,7 @@ class _Controller:
                 * (1.0, 1.001, 0.999)[(local_index - 1) % 3]
             )
             prompts = self.plan.prompt_batches[index]
-            tokens = len(prompts) * self.plan.max_new_tokens
+            tokens = len(prompts) * self.plan.request_geometry(index)[0]
             started = self.clock
             self.clock += duration
             row = BatchExecutionEvidence(
@@ -371,7 +371,7 @@ def _rig(
         "7" * 64,
         baseline,
         candidate,
-        policy if policy is not None else _policy_v8(),
+        policy if policy is not None else _resident_policy(),
     )
     return (
         plan,
@@ -403,7 +403,7 @@ def test_plan_rejects_overlapping_physical_lanes(tmp_path: Path) -> None:
             "7" * 64,
             arm,
             arm,
-            ResidentSpeedPolicy(60, 0.005, 2.0, 0.1, "8" * 64, "9" * 64),
+            _resident_policy(),
         )
 
 
@@ -584,21 +584,13 @@ def test_resident_settlement_control_accepts_exact_lane_policy_swap(
 
 
 def test_resident_policy_binds_total_qualification_budget() -> None:
-    policy = ResidentSpeedPolicy(
-        600,
-        0.005,
-        2.0,
-        0.1,
-        "8" * 64,
-        "9" * 64,
-        max_qualification_seconds=1_800,
-    )
+    policy = _resident_policy(max_stage_seconds=600, max_qualification_seconds=1_800)
     assert ResidentSpeedPolicy.from_dict(policy.to_dict()) == policy
     with pytest.raises(CrossoverRuntimeError, match="unsupported"):
         replace(policy, max_qualification_seconds=599)
 
 
-def _policy_v3(**overrides) -> ResidentSpeedPolicy:
+def _resident_policy(**overrides) -> ResidentSpeedPolicy:
     kwargs = {
         "max_stage_seconds": 60,
         "min_margin": 0.005,
@@ -606,7 +598,7 @@ def _policy_v3(**overrides) -> ResidentSpeedPolicy:
         "max_noise": 0.02,
         "calibration_digest": "8" * 64,
         "calibration_context_digest": "9" * 64,
-        "version": 3,
+        "version": 8,
         "min_windows": 3,
         "max_window_scatter": 0.01,
         "max_conditioning_slowdown": 1.25,
@@ -615,39 +607,24 @@ def _policy_v3(**overrides) -> ResidentSpeedPolicy:
     return ResidentSpeedPolicy(**kwargs)
 
 
-def test_policy_v3_serialization_is_version_dependent() -> None:
-    policy = _policy_v3()
+def test_policy_requires_its_window_geometry() -> None:
+    policy = _resident_policy()
     row = policy.to_dict()
     assert row["min_windows"] == 3 and "max_window_scatter" in row
     assert ResidentSpeedPolicy.from_dict(row) == policy
-    legacy = ResidentSpeedPolicy(60, 0.005, 2.0, 0.1, "8" * 64, "9" * 64)
-    assert "min_windows" not in legacy.to_dict()
-    # Window thresholds cannot ride a pre-v3 policy, and a v3 policy cannot
-    # omit them: the field set is version-exact both ways.
-    with pytest.raises(CrossoverRuntimeError, match="require resident speed policy v3"):
-        replace(legacy, min_windows=3, max_window_scatter=0.01)
     with pytest.raises(CrossoverRuntimeError, match="3..512 timed windows"):
-        replace(legacy, version=3, max_noise=0.02)
+        replace(policy, min_windows=0)
     with pytest.raises(CrossoverRuntimeError, match="fields differ"):
         ResidentSpeedPolicy.from_dict(
             {key: value for key, value in row.items() if key != "min_windows"}
         )
-    with pytest.raises(CrossoverRuntimeError, match="fields differ"):
-        ResidentSpeedPolicy.from_dict(
-            {**legacy.to_dict(), "min_windows": 3, "max_window_scatter": "0.01"}
-        )
-    # The conditioning slowdown bound is required and range-checked under v3
-    # and forbidden before it.
-    with pytest.raises(CrossoverRuntimeError, match="conditioning slowdown"):
-        _policy_v3(max_conditioning_slowdown=1.0)
-    with pytest.raises(CrossoverRuntimeError, match="conditioning slowdown"):
-        _policy_v3(max_conditioning_slowdown=2.5)
-    with pytest.raises(CrossoverRuntimeError, match="require resident speed policy v3"):
-        replace(legacy, max_conditioning_slowdown=1.25)
+    for bound in (1.0, 2.5):
+        with pytest.raises(CrossoverRuntimeError, match="conditioning slowdown"):
+            replace(policy, max_conditioning_slowdown=bound)
 
 
 def test_policy_v9_scores_the_complete_mixed_cell_makespan() -> None:
-    policy = _policy_v3(version=9, max_window_scatter=0.25)
+    policy = _resident_policy(version=9, max_window_scatter=0.25)
     row = ResidentReadRate(
         "B",
         "a" * 64,
@@ -690,10 +667,6 @@ def test_policy_v9_scores_the_complete_mixed_cell_makespan() -> None:
 # harvests its stock-drift control from the second baseline read.
 
 
-def _policy_v8(**overrides) -> ResidentSpeedPolicy:
-    return replace(_policy_v3(**overrides), version=8)
-
-
 @pytest.mark.parametrize(
     ("candidate_duration", "expected_decision"),
     (
@@ -709,7 +682,7 @@ def test_v8_reads_exactly_b_c_and_the_bookend(
     plan, baseline, candidate, mount, trace, overlap = _rig(
         tmp_path,
         (candidate_duration,),
-        policy=_policy_v8(),
+        policy=_resident_policy(),
         timed_batches=3,
     )
     result = _speed(plan, baseline, candidate, mount)
@@ -740,7 +713,7 @@ def test_v8_reads_the_bookend_even_when_the_call_is_not_close(
     # because the quality gate's stock-drift control comes from it: the read is
     # owed to the next stage, not to this one's uncertainty.
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.5,), policy=_policy_v8(), timed_batches=3
+        tmp_path, (0.5,), policy=_resident_policy(), timed_batches=3
     )
     result = _speed(plan, baseline, candidate, mount)
 
@@ -756,7 +729,7 @@ def test_v8_bookend_can_convict_a_borderline_candidate(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path,
         (0.99,),
-        policy=_policy_v8(),
+        policy=_resident_policy(),
         timed_batches=3,
         baseline_durations=(1.0, 1.02, 1.0),
     )
@@ -774,7 +747,7 @@ def test_v8_conditioning_regression_fails_a_fast_candidate(tmp_path: Path) -> No
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path,
         (0.90,),
-        policy=_policy_v8(),
+        policy=_resident_policy(),
         timed_batches=3,
         candidate_conditioning=0.2,
     )
@@ -795,7 +768,7 @@ def test_v8_settled_speedup_is_the_bookend_grade(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path,
         (0.90,),
-        policy=_policy_v8(),
+        policy=_resident_policy(),
         timed_batches=3,
     )
     result = _speed(plan, baseline, candidate, mount)
@@ -809,7 +782,7 @@ def test_v8_evidence_cannot_claim_the_retired_five_arm_schedule(
     tmp_path: Path,
 ) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.90,), policy=_policy_v8(), timed_batches=3
+        tmp_path, (0.90,), policy=_resident_policy(), timed_batches=3
     )
     result = _speed(plan, baseline, candidate, mount)
     # C-prime and B-double-prime do not exist under v8. Sealed evidence that
@@ -818,30 +791,24 @@ def test_v8_evidence_cannot_claim_the_retired_five_arm_schedule(
         replace(result, escalated=True, exit_reason="borderline_pass")
 
 
-@pytest.mark.parametrize("version", (3, 7))
-def test_pre_v8_policies_cannot_serve_this_substrate(
-    tmp_path: Path, version: int
-) -> None:
+@pytest.mark.parametrize("version", range(1, 8))
+def test_pre_v8_policies_cannot_be_constructed_or_decoded(version: int) -> None:
     # The adaptive five-read schedule (v1-v5) and the conditional bookend
     # (v6/v7) left with the MiniMax-M3 history seal. A sealed policy below
     # version 8 is refused before any read rather than measured under a
     # schedule this tree no longer runs.
-    plan, baseline, candidate, mount, trace, _overlap = _rig(
-        tmp_path,
-        (0.9,),
-        policy=replace(_policy_v3(), version=version),
-        timed_batches=3,
-    )
-    with pytest.raises(CrossoverRuntimeError, match="precommitted B/C/B-prime"):
-        _speed(plan, baseline, candidate, mount)
-    assert trace == []
+    policy = _resident_policy()
+    with pytest.raises(CrossoverRuntimeError, match="unsupported"):
+        replace(policy, version=version)
+    with pytest.raises(CrossoverRuntimeError, match="unsupported"):
+        ResidentSpeedPolicy.from_dict({**policy.to_dict(), "version": version})
 
 
 def test_v8_crossover_scores_window_medians_and_retains_windows(
     tmp_path: Path,
 ) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.90,), policy=_policy_v8(), timed_batches=3
+        tmp_path, (0.90,), policy=_resident_policy(), timed_batches=3
     )
     result = _speed(plan, baseline, candidate, mount)
 
@@ -871,7 +838,7 @@ def test_v8_crossover_scores_window_medians_and_retains_windows(
 
 def test_v8_tampered_window_fails_independent_regrade(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.90,), policy=_policy_v8(), timed_batches=3
+        tmp_path, (0.90,), policy=_resident_policy(), timed_batches=3
     )
     result = _speed(plan, baseline, candidate, mount)
     first = result.rates[0]
@@ -889,7 +856,7 @@ def test_v8_tampered_window_fails_independent_regrade(tmp_path: Path) -> None:
 
 def test_v8_witness_refuses_window_retention_mismatch(tmp_path: Path) -> None:
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
-        tmp_path, (0.90,), policy=_policy_v8(), timed_batches=3
+        tmp_path, (0.90,), policy=_resident_policy(), timed_batches=3
     )
     result = _speed(plan, baseline, candidate, mount)
     witness = ResidentSpeedWitness.from_evidence(result, plan)
@@ -923,7 +890,7 @@ def test_v8_conditioning_regression_fails_a_fast_but_prefill_slow_candidate(
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path,
         (0.90,),
-        policy=_policy_v8(),
+        policy=_resident_policy(),
         timed_batches=3,
         candidate_conditioning=0.2,
     )
@@ -942,7 +909,7 @@ def test_v8_conditioning_within_bound_does_not_disturb_the_verdict(
     plan, baseline, candidate, mount, _trace, _overlap = _rig(
         tmp_path,
         (0.90,),
-        policy=_policy_v8(),
+        policy=_resident_policy(),
         timed_batches=3,
         candidate_conditioning=0.12,  # 1.2x, inside the sealed 1.25 bound
     )

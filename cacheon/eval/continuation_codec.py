@@ -144,7 +144,14 @@ class ContinuationCodec:
         return {
             name: self._encode_value(getattr(value, name), hint, f"{key}.{name}")
             for name, hint in hints.items()
+            if not self._omitted_default(type(value), name, getattr(value, name))
         }
+
+    @staticmethod
+    def _omitted_default(cls: type, name: str, value: object) -> bool:
+        """Preserve historical bytes for explicitly optional measurement fields."""
+        field = cls.__dataclass_fields__[name]
+        return field.metadata.get("wire_optional") is True and value == field.default
 
     def _encode_value(self, value: object, hint: object, where: str) -> object:
         origin = typing.get_origin(hint)
@@ -228,12 +235,19 @@ class ContinuationCodec:
     def _decode_dataclass(self, value: object, cls: type) -> object:
         key = _type_key(cls)
         hints = self._hints[key]
-        if type(value) is not dict or set(value) != set(hints):
+        optional = {
+            field.name for field in dataclasses.fields(cls)
+            if field.metadata.get("wire_optional") is True
+        }
+        if type(value) is not dict or set(value) - set(hints) or set(hints) - set(value) - optional:
             raise ContinuationCodecError(f"{key} payload fields are not closed")
         kwargs = {
             name: self._decode_value(value[name], hint, f"{key}.{name}")
             for name, hint in hints.items()
+            if name in value
         }
+        if any(self._omitted_default(cls, name, item) for name, item in kwargs.items()):
+            raise ContinuationCodecError(f"{key} optional default must be omitted")
         try:
             return cls(**kwargs)
         except ContinuationCodecError:

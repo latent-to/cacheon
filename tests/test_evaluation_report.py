@@ -13,10 +13,10 @@ import evaluation_report  # noqa: E402
 
 
 def _policy_block() -> dict:
-    # Float thresholds arrive as decimal strings, as real witnesses store them.
+    # Float thresholds are 17-digit decimal strings, as real witnesses store them.
     return {
         "max_stage_seconds": 3600,
-        "min_margin": "0.005",
+        "min_margin": "0.0050000000000000001",
         "noise_multiplier": "2",
         "max_noise": "0.02",
         "calibration_digest": "a" * 64,
@@ -24,7 +24,7 @@ def _policy_block() -> dict:
         "version": 8,
         "max_qualification_seconds": 7200,
         "min_windows": 6,
-        "max_window_scatter": "0.05",
+        "max_window_scatter": "0.050000000000000003",
         "max_conditioning_slowdown": "1.25",
     }
 
@@ -177,5 +177,5 @@ def test_infra_reasons_are_not_kernel_verdicts(tmp_path: Path) -> None:
 
 
 def test_policy_block_missing_fields_fails_loudly(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="policy block lacks"):
+    with pytest.raises(ValueError, match="policy block does not decode"):
         evaluation_report._policy_from_block({"version": 8})

@@ -31,21 +31,21 @@ from dashboard.forensics import (
     ForensicsUnavailable,
     forensics_log,
     submission_forensics,
+    submission_qualifications,
 )
-from cacheon.chain.baseline_band import (
-    qualification_evidence_roots,
-    qualification_speed,
-)
+from dashboard.competition import competition_label, submission_baseline
+from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
 from dashboard.receipts import screen_stages
 from dashboard.winners import (
     conservative_candidate_tokens_per_second,
-    cumulative_crown_speedups,
-    estimated_sglang_tokens_per_second,
+    measured_baseline,
+    prefill_summary,
+    settlement_hold_notice,
+    reward_exclusion_notice,
     live_offer_shares,
 )
 
 # ---------------------------------------------------------------- config ---
-
 MISSION = Path(os.environ.get(
     "CACHEON_DASH_MISSION", "/data/mainnet14-cacheon-h3-m4i-pre-crown"))
 DB_PATH = Path(os.environ.get(
@@ -582,6 +582,7 @@ def submission_row(r: dict[str, Any]) -> dict[str, Any]:
         "block_links": links_for_block(int(r["block"])),
         "event_index": r["event_index"],
         "admission_epoch": r["admission_epoch"],
+        "competition": competition_label(r["block"]),
         "screen_lane": r.get("screen_lane") or "",
         "screen_status": r.get("screen_status") or "",
         "screen_attempts": r.get("screen_attempts") or 0,
@@ -600,139 +601,6 @@ def submission_row(r: dict[str, Any]) -> dict[str, Any]:
             "links": links_for_extrinsic(paid_block, paid_idx),
         }
     return sub
-
-
-def submission_baseline(
-    con: sqlite3.Connection,
-    reservation_id: str,
-    target_id: str,
-    *,
-    lineage_tables_available: bool | None = None,
-) -> dict[str, Any]:
-    """Describe the baseline used and its relationship to the active tip."""
-
-    candidate = con.execute(
-        "SELECT candidate_json FROM settlement_candidates "
-        "WHERE reservation_id=?",
-        (reservation_id,),
-    ).fetchone()
-    raw: dict[str, Any] = {}
-    evaluated = False
-    assigned = False
-    if candidate is not None:
-        doc = json.loads(candidate["candidate_json"] or "{}")
-        raw = doc.get("primary") or doc
-        evaluated = True
-    else:
-        qualification = con.execute(
-            "SELECT qualification_json FROM settlement_qualifications "
-            "WHERE reservation_id=? ORDER BY reproduction_index LIMIT 1",
-            (reservation_id,),
-        ).fetchone()
-        if qualification is not None:
-            raw = json.loads(qualification["qualification_json"] or "{}")
-            evaluated = True
-        elif con.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' "
-            "AND name='reservation_baseline_segments'"
-        ).fetchone() is not None:
-            segment = con.execute(
-                "SELECT arena_id,stack_digest,tree_digest,stack_json "
-                "FROM reservation_baseline_segments WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()
-            if segment is not None:
-                manifest = json.loads(segment["stack_json"])
-                raw = {
-                    "arena_digest": segment["arena_id"],
-                    "incumbent_manifest": manifest,
-                    "incumbent_stack_digest": segment["stack_digest"],
-                    "incumbent_tree_digest": segment["tree_digest"],
-                }
-                assigned = True
-
-    if not raw:
-        return {
-            "evaluated": False,
-            "assigned": False,
-            "relationship": "not_evaluated",
-            "artifact_digest": "",
-            "current_tip_artifact_digest": "",
-            "threshold_speedup": None,
-        }
-
-    manifest = raw.get("incumbent_manifest") or {}
-    entry = (manifest.get("entries") or {}).get(target_id) or {}
-    baseline_artifact = entry.get("artifact_digest") or ""
-    result: dict[str, Any] = {
-        "evaluated": evaluated,
-        "assigned": assigned,
-        "relationship": "no_active_tip",
-        "artifact_digest": baseline_artifact,
-        "stack_digest": raw.get("incumbent_stack_digest") or manifest.get("digest") or "",
-        "tree_digest": raw.get("incumbent_tree_digest") or "",
-        "arena_digest": raw.get("arena_digest") or manifest.get("arena_digest") or "",
-        "current_tip_artifact_digest": "",
-        "threshold_speedup": None,
-    }
-    if lineage_tables_available is None:
-        tables = {
-            row["name"]
-            for row in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                "('target_lineage_tips','target_lineage_nodes')"
-            )
-        }
-        lineage_tables_available = tables == {
-            "target_lineage_tips",
-            "target_lineage_nodes",
-        }
-    if not lineage_tables_available:
-        return result
-    tip = con.execute(
-        "SELECT artifact_digest FROM target_lineage_tips WHERE target_id=?",
-        (target_id,),
-    ).fetchone()
-    if tip is None:
-        return result
-    tip_artifact = str(tip["artifact_digest"])
-    result["current_tip_artifact_digest"] = tip_artifact
-    if baseline_artifact == tip_artifact:
-        result["relationship"] = "current_tip"
-        result["threshold_speedup"] = 1.0
-        return result
-
-    nodes: list[dict[str, Any]] = []
-    artifact = tip_artifact
-    seen: set[str] = set()
-    while artifact and artifact not in seen:
-        seen.add(artifact)
-        node = con.execute(
-            "SELECT artifact_digest,parent_artifact_digest,winner_speedup "
-            "FROM target_lineage_nodes WHERE target_id=? AND artifact_digest=?",
-            (target_id, artifact),
-        ).fetchone()
-        if node is None:
-            break
-        nodes.append(dict(node))
-        artifact = str(node["parent_artifact_digest"])
-    nodes.reverse()
-    start = next(
-        (
-            index for index, node in enumerate(nodes)
-            if node["parent_artifact_digest"] == baseline_artifact
-        ),
-        None,
-    )
-    if start is None:
-        result["relationship"] = "outside_active_lineage"
-        return result
-    threshold = Decimal(1)
-    for node in nodes[start:]:
-        threshold *= Decimal(str(node["winner_speedup"]))
-    result["relationship"] = "ancestor"
-    result["threshold_speedup"] = float(threshold)
-    return result
 
 
 def safe_float(value: Any) -> float | None:
@@ -973,14 +841,14 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
             FROM arena_screen_dispositions WHERE reservation_id=? ORDER BY attempt_index
         """, (rid,))]
     evidence_roots = qualification_evidence_roots(
-        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA)
-    detail["qualification_attempts"] = [
-        {"attempt": d["attempt_index"], "decision": d["decision"], "reason": d["reason"],
-         "speed": qualification_speed(d["attempt_ref_json"], evidence_roots)}
-        for d in rows(con, """
-            SELECT attempt_index, decision, reason, attempt_ref_json
-            FROM qualification_dispositions WHERE reservation_id=? ORDER BY attempt_index
-        """, (rid,))]
+        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA, con, stage_dir=LOG_ROOT.parent / "stage")
+    try:
+        detail["forensics"] = submission_forensics(SPOOL, rid, target_id=detail["target_id"])
+    except DashboardForensicsError as exc:
+        detail["forensics"] = []
+        detail["forensics_error"] = str(exc)
+    detail["qualification_attempts"] = submission_qualifications(
+        con, rid, detail["target_id"], evidence_roots, detail["forensics"])
 
     cand = con.execute(
         "SELECT status, reason, candidate_json FROM settlement_candidates"
@@ -997,7 +865,14 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
             "lane": cj.get("lane"),
             "crowned": with_time(int(cj.get("finalized_block") or 0)),
         }
+    detail["reward_notice"] = reward_exclusion_notice(r["hotkey"], OFFER_PATH)
+    detail["hold_notice"] = settlement_hold_notice(con, rid, detail.get("settlement", {}))
     detail["baseline"] = submission_baseline(con, rid, detail["target_id"])
+    measured_attempts = [a for a in detail["qualification_attempts"] if a["decision"] == "PASS"] or detail["qualification_attempts"]
+    speed_reads = [a["speed"] for a in measured_attempts if a["speed"]]
+    detail["baseline_measurements"] = measured_baseline(speed_reads, {})
+    candidate_tps = conservative_candidate_tokens_per_second(speed_reads)
+    detail["tokens_per_second"] = float(candidate_tps) if candidate_tps is not None else None
 
     detail["leases"] = rows(con, """
         SELECT el.lease_id, el.stage, el.state, el.generation, el.claimed_block,
@@ -1010,11 +885,6 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
         lease["claimed"] = with_time(int(lease["claimed_block"]))
         lease["expires"] = with_time(int(lease["expires_block"]))
     con.close()
-    try:
-        detail["forensics"] = submission_forensics(SPOOL, rid)
-    except DashboardForensicsError as exc:
-        detail["forensics"] = []
-        detail["forensics_error"] = str(exc)
     return detail
 
 
@@ -1204,31 +1074,25 @@ def winners() -> dict[str, Any]:
           AND sc.status!='duplicate_proposal'
         GROUP BY sc.reservation_id
     """)
-    crown_events = rows(con, """
-        SELECT e.sequence, e.reservation_id, e.target_id, sc.candidate_json
-        FROM settlement_events e
-        JOIN settlement_candidates sc ON sc.reservation_id = e.reservation_id
-        WHERE e.event_type = 'CROWN'
-        ORDER BY e.sequence
-    """)
     evidence_roots = qualification_evidence_roots(
-        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA)
+        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA, con, stage_dir=LOG_ROOT.parent / "stage")
     speeds_by_reservation: dict[str, list[object]] = {}
     if passed:
         marks = ",".join("?" for _ in passed)
         for disposition in rows(con, f"""
-            SELECT reservation_id, attempt_ref_json FROM qualification_dispositions
-            WHERE decision='PASS' AND reservation_id IN ({marks})
-            ORDER BY reservation_id, attempt_index
+            SELECT d.reservation_id, d.attempt_ref_json, r.target_id
+            FROM qualification_dispositions d
+            JOIN reservations r ON r.reservation_id=d.reservation_id
+            WHERE d.decision='PASS' AND d.reservation_id IN ({marks})
+            ORDER BY d.reservation_id, d.attempt_index
         """, tuple(row["reservation_id"] for row in passed)):
             speed = qualification_speed(
-                disposition["attempt_ref_json"], evidence_roots)
+                disposition["attempt_ref_json"], evidence_roots, disposition["target_id"])
             if speed is None:
                 continue
             speeds_by_reservation.setdefault(
                 disposition["reservation_id"], []).append(speed)
     con.close()
-    cumulative_by_reservation = cumulative_crown_speedups(crown_events)
     offer, shares = current_offer()
 
     items = []
@@ -1242,11 +1106,8 @@ def winners() -> dict[str, Any]:
             safe_float(repro.get("speedup")),
         )))
         speedup = min(speeds) if speeds else None
-        cumulative = cumulative_by_reservation.get(row["reservation_id"])
         candidate_tps = conservative_candidate_tokens_per_second(
             speeds_by_reservation.get(row["reservation_id"], []))
-        sglang_tps = estimated_sglang_tokens_per_second(
-            candidate_tps, cumulative)
         hotkey = row["hotkey"]
         hk = ENRICHER.hotkey_info(hotkey)
         passed_block = max(int(row["passed_block"] or 0), int(row["submission_block"]))
@@ -1260,18 +1121,15 @@ def winners() -> dict[str, Any]:
             "improvement_pct": (speedup - 1) * 100 if speedup else None,
             "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
-            "cumulative_speedup_over_sglang": (
-                float(cumulative) if cumulative is not None else None),
-            "cumulative_improvement_pct_over_sglang": (
-                float((cumulative - 1) * 100) if cumulative is not None else None),
             "tokens_per_second": (
                 round(float(candidate_tps), 1)
                 if candidate_tps is not None else None),
-            "sglang_tokens_per_second": (
-                round(float(sglang_tps), 1) if sglang_tps is not None else None),
             "passed": with_time(passed_block),
             "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
+            "competition": competition_label(row["submission_block"]),
+            **measured_baseline(speeds_by_reservation.get(row["reservation_id"], []), primary),
+            **prefill_summary(speeds_by_reservation.get(row["reservation_id"], [])),
             "weight_share": share_value(shares, hotkey),
             "reward_claim_status": (
                 "earning" if shares.get(hotkey) else "not_earning"
@@ -1409,8 +1267,7 @@ def weights(limit: int = Query(30, ge=1, le=500)) -> dict[str, Any]:
             con.close()
         except sqlite3.Error as exc:
             data = []
-            print(f"follower journal unreadable: {exc}", flush=True)
-            follower_note = "follower journal unreadable"
+            follower_note = f"follower journal unreadable: {exc}"
         for w in data:
             rj = json.loads(w["record_json"] or "{}")
             items.append({

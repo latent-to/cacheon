@@ -62,6 +62,9 @@ _ARM_LABEL = {
     "B": "SGLang alone (before)",
     "C": "with your kernel",
     "B_prime": "SGLang alone (after)",
+    "B_prefill": "SGLang alone, prompt pass (before)",
+    "C_prefill": "with your kernel, prompt pass",
+    "B_prime_prefill": "SGLang alone, prompt pass (after)",
 }
 
 
@@ -734,13 +737,24 @@ def ranks_from_log(stderr: object) -> tuple[RankExecution, ...]:
         stderr = stderr.decode("utf-8", "replace")
     if not isinstance(stderr, str):
         return ()
+    summaries = tuple(_tagged(stderr, _SUMMARY_PREFIX))
+    # Active engine-tree receipts can predate rank initialization. Their PID
+    # still joins the completed receipt; repeated snapshots are not extra GPUs.
+    pid_ranks = {
+        row["pid"]: row["rank"]
+        for parsed in summaries
+        for rows in parsed.values() if isinstance(rows, list)
+        for row in rows if isinstance(row, dict)
+        if type(row.get("pid")) is int
+        and type(row.get("rank")) is int and row["rank"] >= 0
+    }
     by_rank: dict[int, dict[str, list]] = {}
-    for index, parsed in enumerate(_tagged(stderr, _SUMMARY_PREFIX)):
+    for index, parsed in enumerate(summaries):
         for kind, rows in parsed.items():
             for row in rows if isinstance(rows, list) else []:
                 if not isinstance(row, dict):
                     continue
-                rank = row.get("rank")
+                rank = pid_ranks.get(row.get("pid"), row.get("rank"))
                 rank = rank if type(rank) is int and rank >= 0 else index
                 by_rank.setdefault(rank, {}).setdefault(kind, []).append(row)
     ranks = []

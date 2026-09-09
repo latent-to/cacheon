@@ -19,7 +19,6 @@ Usage (run where the intake DB lives; PYTHONPATH must carry the cacheon tree):
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import hashlib
 import json
 import sqlite3
@@ -27,7 +26,7 @@ import statistics
 import sys
 from pathlib import Path
 
-from cacheon.eval.crossover_runtime import ResidentSpeedPolicy
+from cacheon.eval.crossover_runtime import CrossoverRuntimeError, ResidentSpeedPolicy
 from cacheon.eval.speed_verdict import speed_grade
 
 STAGE_EXIT_DOMAIN = "qualification.stage-exit"
@@ -83,30 +82,13 @@ class _Read:
             setattr(self, field, float(row[field]))
 
 
-_POLICY_FLOAT_FIELDS = frozenset(
-    {
-        "min_margin",
-        "noise_multiplier",
-        "max_noise",
-        "max_window_scatter",
-        "max_conditioning_slowdown",
-    }
-)
-
-
 def _policy_from_block(block: dict) -> ResidentSpeedPolicy:
-    names = {field.name for field in dataclasses.fields(ResidentSpeedPolicy)}
-    missing = names - set(block)
-    if missing:
-        raise ValueError(f"policy block lacks {sorted(missing)}")
-    # Witness artifacts serialize the float thresholds as decimal strings to
-    # preserve exact digits; the policy constructor wants numbers back.
-    return ResidentSpeedPolicy(
-        **{
-            name: float(block[name]) if name in _POLICY_FLOAT_FIELDS else block[name]
-            for name in names
-        }
-    )
+    # The witness codec is version-exact, so it is the one reader that keeps
+    # up with the policy's own field set.
+    try:
+        return ResidentSpeedPolicy.from_dict(block)
+    except CrossoverRuntimeError as exc:
+        raise ValueError(f"policy block does not decode: {exc}") from None
 
 
 def _resolve_artifact(sha: str, roots: list[Path]) -> bytes | None:
@@ -149,7 +131,7 @@ def _regrade(raw: bytes) -> dict:
         candidates = [r for r in reads if r.role.startswith("C")]
     if not baselines or not candidates:
         raise ValueError("witness lacks a baseline or candidate read")
-    verdict, decision = speed_grade(policy, baselines, candidates, concluding=True)
+    verdict, decision = speed_grade(policy, baselines, candidates)
     medians = {
         read.role: statistics.median(w.tokens / w.seconds for w in read.windows)
         for read in reads

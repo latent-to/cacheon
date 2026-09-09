@@ -357,7 +357,7 @@ def _harness(
         max_qualification_seconds=600,
         calibration=calibration,
         context=calibration_context,
-        version=3,
+        version=10,
         min_windows=3,
         max_window_scatter=0.05,
         max_conditioning_slowdown=1.5,
@@ -555,7 +555,7 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.evidence_root == harness.inputs.evidence_root
 
 
-@pytest.mark.parametrize("version", (5, 6, 7))
+@pytest.mark.parametrize("version", (8, 9, 10, 11))
 def test_registered_plan_measures_every_commissioned_policy_on_two_process(
     tmp_path: Path, version: int
 ) -> None:
@@ -586,6 +586,33 @@ def test_registered_plan_measures_every_commissioned_policy_on_two_process(
 
     assert value.resident_speed_plan is not None
     assert value.resident_speed_plan.policy == replace(commissioned, version=10)
+
+
+def test_a_v12_commission_needs_a_mixed_cell_workload(tmp_path: Path) -> None:
+    """The prefill lane rides the mixed-cell makespan rule and is never
+    re-pinned to v10; a single-cell plan cannot carry it."""
+
+    harness = _harness(tmp_path)
+    current = harness.inputs.resident_speed_policy
+    commissioned = ResidentSpeedPolicy.from_calibration(
+        max_stage_seconds=current.max_stage_seconds,
+        max_qualification_seconds=current.max_qualification_seconds,
+        calibration=harness.inputs.calibration_manifest,
+        context=harness.inputs.calibration_context,
+        version=12,
+        min_windows=current.min_windows,
+        max_window_scatter=current.max_window_scatter,
+        max_conditioning_slowdown=current.max_conditioning_slowdown,
+        prefill_min_margin=0.05,
+        prefill_credit_weight=0.5,
+    )
+    inputs = replace(harness.inputs, resident_speed_policy=commissioned)
+    with pytest.raises(
+        registered.B300RegisteredQualificationError, match="mixed-cell"
+    ):
+        registered.build_b300_registered_qualification_factory(
+            inputs
+        ).plan_builder(harness.cohort, b"v" * 32)
 
 
 def test_native_candidate_is_planned_on_the_two_process_schedule(
@@ -800,18 +827,6 @@ def test_inputs_are_built_only_by_the_commissioner(tmp_path: Path) -> None:
         match="built only by the commissioner",
     ):
         registered.B300RegisteredQualificationInputs(**unsealed, seal=object())
-
-
-def test_blocker_inventory_names_only_missing_commissioning_authorities() -> None:
-    assert tuple(row.blocker_id for row in registered.PRODUCTION_AUTHORITY_BLOCKERS) == (
-        "registered-focused-graph-facts",
-        "registered-runtime-binding",
-        "typed-frozen-reference-calibration",
-    )
-    assert all(
-        row.donor_coordinate.startswith("experiments/minimax_m3/")
-        for row in registered.PRODUCTION_AUTHORITY_BLOCKERS
-    )
 
 
 def test_audit_role_pins_minimum_cost_shortest_prompt_selection(

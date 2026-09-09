@@ -153,55 +153,6 @@ def _canonical_private_root(value: object, field: str) -> Path:
 
 
 @dataclass(frozen=True)
-class B300QualificationBlocker:
-    """One production capability that must be commissioned outside this layer."""
-
-    blocker_id: str
-    missing_authority: str
-    donor_coordinate: str
-
-
-# These are deliberately code coordinates, not claims that the private donor is
-# production authority.  They identify the largest existing construction
-# pattern while making the missing registered-target commissioning work explicit.
-PRODUCTION_AUTHORITY_BLOCKERS = (
-    B300QualificationBlocker(
-        "registered-focused-graph-facts",
-        (
-            "reviewed focused graph-observation producers for every registered "
-            "catalog target, including multi-member atomic targets"
-        ),
-        (
-            "experiments/minimax_m3/frontier_2026-07-13/"
-            "b300_testnet_joined_probe.py:4686"
-        ),
-    ),
-    B300QualificationBlocker(
-        "registered-runtime-binding",
-        (
-            "a commissioned registered-target B300 runtime case and candidate-tree "
-            "binding factory for each physical qualification orientation"
-        ),
-        (
-            "experiments/minimax_m3/frontier_2026-07-13/"
-            "b300_testnet_joined_probe.py:5105"
-        ),
-    ),
-    B300QualificationBlocker(
-        "typed-frozen-reference-calibration",
-        (
-            "typed pristine-reference, prompt, hidden-judge, and frozen calibration "
-            "authorities that reopen for the exact registered workload/lane context"
-        ),
-        (
-            "experiments/minimax_m3/frontier_2026-07-13/"
-            "b300_testnet_joined_probe.py:5148"
-        ),
-    ),
-)
-
-
-@dataclass(frozen=True)
 class B300MemberContractProjection:
     """One singleton member's declared-math authority."""
 

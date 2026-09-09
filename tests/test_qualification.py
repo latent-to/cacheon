@@ -202,15 +202,14 @@ def _lifecycle(tmp_path: Path, *, top_logprobs_num: int = 1):
         ResidentCrossoverEvidence,
         ResidentCrossoverPlan,
         ResidentMarginalLifecycleEvidence,
-        _expanded,
         _expected_lane_digest,
-        _rate,
     )
+    from cacheon.eval.resident_schedule import expanded_schedule, read_rate
     from cacheon.eval.oci_process import OCIQuiescenceReceipt
     from cacheon.eval.scoring import marginal_workload_digest
     from cacheon.eval.speed_verdict import speed_grade
     from tests.test_calibration import _manifest as calibration_manifest
-    from tests.test_crossover_runtime import _policy_v8
+    from tests.test_crossover_runtime import _resident_policy
     from tests.test_marginal_runtime import (
         _case as runtime_case,
         _local_binding as runtime_local_binding,
@@ -249,41 +248,38 @@ def _lifecycle(tmp_path: Path, *, top_logprobs_num: int = 1):
         runtime_policy,
         _d("candidate device configuration"),
     )
-    policy = _policy_v8()
+    policy = _resident_policy()
     plan = ResidentCrossoverPlan(
         case.arm.selected_delta_digest, baseline_arm, candidate_arm, policy
     )
     baseline_lane_digest = _expected_lane_digest(baseline_arm)
     candidate_lane_digest = _expected_lane_digest(candidate_arm)
     baseline_lane = _FixtureLane(
-        _expanded(baseline_arm.session_plan, 2), "b" * 32, 1.0
+        expanded_schedule(baseline_arm.session_plan, 2), "b" * 32, 1.0
     )
     candidate_lane = _FixtureLane(
-        _expanded(candidate_arm.session_plan, 1), "c" * 32, 0.75
+        expanded_schedule(candidate_arm.session_plan, 1), "c" * 32, 0.75
     )
-    rate_b = _rate(
+    rate_b = read_rate(
         "B",
         baseline_lane_digest,
         baseline_lane,
         baseline_arm.session_plan,
-        with_windows=True,
     )
-    rate_c = _rate(
+    rate_c = read_rate(
         "C",
         candidate_lane_digest,
         candidate_lane,
         candidate_arm.session_plan,
-        with_windows=True,
     )
-    rate_b_prime = _rate(
+    rate_b_prime = read_rate(
         "B_prime",
         baseline_lane_digest,
         baseline_lane,
         baseline_arm.session_plan,
-        with_windows=True,
     )
     final, decision = speed_grade(
-        policy, [rate_b, rate_b_prime], [rate_c], concluding=True
+        policy, [rate_b, rate_b_prime], [rate_c]
     )
     crossover = ResidentCrossoverEvidence(
         plan.digest,

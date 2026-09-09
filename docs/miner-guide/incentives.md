@@ -88,6 +88,19 @@ Both stock observations must be valid. The faster observed stock rate sets the
 comparison, and every workload cell is warmed before timing. Historical paired
 qualifications keep their original lower accepted speedup.
 
+Under speed policy v12 the validator also takes a one-token prompt pass of each
+lane after B′. A candidate that clears the decode bar is credited exactly as
+above. A candidate that misses the decode bar without regressing can still
+qualify on the prompt pass, at its own sealed margin, and is then credited at a
+sealed fraction of the prompt-pass gain rather than at its raw prompt speedup:
+
+```text
+settled speedup = 1 + credit_weight × (C_prefill / max(B_prefill, B′_prefill) − 1)
+```
+
+A measured decode slowdown or a conditioning regression fails whatever the
+prompt pass measures.
+
 ## What “validator weight” means
 
 Settlement records who earned credit. A separate publisher calculates how the

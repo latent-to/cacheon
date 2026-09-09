@@ -80,7 +80,8 @@ smallest validator-controlled delta it contributes. Authoritative qualification 
 
 Every candidate is measured by the two-process schedule: v10 (v11 for a
 mixed-cell workload) launches separate baseline and candidate engines and
-always takes B′. The earlier schedules (v1–v7) are sealed MiniMax-M3 history that
+always takes B′; v12 appends a one-token prompt pass of each lane. The earlier
+schedules (v1–v7) are sealed MiniMax-M3 history that
 this tree no longer decodes. Primary and reproduction
 attempts also exchange incumbent and candidate physical-lane roles. A persistent
 hot-swap screen may route candidates before this schedule, but its measurements

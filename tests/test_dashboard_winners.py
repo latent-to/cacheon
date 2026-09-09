@@ -6,85 +6,36 @@ from pathlib import Path
 
 from dashboard.winners import (
     conservative_candidate_tokens_per_second,
-    cumulative_crown_speedups,
-    estimated_sglang_tokens_per_second,
     live_offer_shares,
+    measured_baseline,
+    prefill_summary,
 )
 
 
-def _candidate(primary: str, reproduction: str) -> str:
-    return json.dumps(
-        {
-            "primary": {"speedup": primary},
-            "reproduction": {"speedup": reproduction},
-        }
-    )
-
-
-def test_cumulative_winner_speedup_compounds_settled_gains_in_event_order() -> None:
-    events = [
-        {
-            "sequence": 20,
-            "reservation_id": "second",
-            "target_id": "moe",
-            "candidate_json": _candidate("1.20", "1.10"),
-        },
-        {
-            "sequence": 10,
-            "reservation_id": "first",
-            "target_id": "moe",
-            "candidate_json": _candidate("1.05", "1.04"),
-        },
-        {
-            "sequence": 30,
-            "reservation_id": "other-target",
-            "target_id": "attention",
-            "candidate_json": _candidate("1.03", "1.02"),
-        },
-    ]
-
-    result = cumulative_crown_speedups(events)
-
-    assert result == {
-        "first": Decimal("1.04"),
-        "second": Decimal("1.1440"),
-        "other-target": Decimal("1.02"),
-    }
-
-
-def test_cumulative_winner_speedup_ignores_incomplete_non_crown_data() -> None:
-    result = cumulative_crown_speedups(
-        [
-            {
-                "sequence": 1,
-                "reservation_id": "missing-reproduction",
-                "target_id": "moe",
-                "candidate_json": json.dumps(
-                    {"primary": {"speedup": "1.2"}, "reproduction": {}}
-                ),
-            },
-            {
-                "sequence": 2,
-                "reservation_id": "valid",
-                "target_id": "moe",
-                "candidate_json": _candidate("1.03", "1.02"),
-            },
-        ]
-    )
-
-    assert result == {"valid": Decimal("1.02")}
-
-
-def test_winners_view_labels_relative_and_sglang_columns() -> None:
+def test_winners_view_separates_credit_from_measured_throughput() -> None:
     html = (
         Path(__file__).parents[1] / "dashboard" / "static" / "index.html"
     ).read_text()
 
-    assert '"Vs incumbent","Vs SGLang"' in html
-    assert "cumulative_improvement_pct_over_sglang" in html
-    assert "cumulative_speedup_over_sglang" in html
+    assert '"Credited vs incumbent","Measured baseline"' in html
+    assert "baseline_tokens_per_second" in html
+    assert "baseline_kind" in html
     assert "tokens_per_second" in html
-    assert "sglang_tokens_per_second" in html
+    assert "sglang_tokens_per_second" not in html
+
+
+def test_winner_keeps_measured_baseline_and_prefill_separate_from_credit() -> None:
+    reads = [
+        {"lanes": [{"role": "B", "tokens_per_second": 1200},
+                   {"role": "B_prime", "tokens_per_second": 1190},
+                   {"role": "C_prefill", "tokens_per_second": None}],
+         "prefill": {"speedup": 1.12}},
+        {"lanes": [], "prefill": {"speedup": 1.08}},
+    ]
+    assert measured_baseline(reads, {"incumbent_manifest": {"entries": {}}}) == {
+        "baseline_tokens_per_second": 1190.0, "baseline_kind": "stock"}
+    assert prefill_summary(reads) == {"prefill_speedup": 1.08}
+    assert prefill_summary([]) == {"prefill_speedup": None}
 
 
 def test_emission_columns_render_the_chain_alpha_symbol_not_tao() -> None:
@@ -111,9 +62,6 @@ def test_conservative_candidate_tokens_per_second_uses_slower_pass() -> None:
     rate = conservative_candidate_tokens_per_second(speeds)
 
     assert rate == Decimal("2100.4")
-    assert estimated_sglang_tokens_per_second(rate, Decimal("1.23476")) == (
-        Decimal("2100.4") / Decimal("1.23476")
-    )
 
 
 def test_live_offer_shares_reads_the_served_vector(tmp_path: Path) -> None:

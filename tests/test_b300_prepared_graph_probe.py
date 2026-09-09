@@ -108,6 +108,7 @@ def _descriptor(
         "case": ordinal,
         "dtype": policy.dtype_name,
         "graph_mode": graph_mode,
+        "num_tokens": ordinal + 1,
         "tp_size": policy.tp_size,
         "world_size": policy.world_size,
     }
@@ -197,6 +198,10 @@ def _result(
         if collective:
             rows.extend(
                 (
+                    _shape(
+                        policy, slot, variant, outcome,
+                        kind=VerificationCaseKind.COLLECTIVE_SINGLE, ordinal=1,
+                    ),
                     _shape(
                         policy,
                         slot,
@@ -379,8 +384,8 @@ def test_atomic_execution_routes_both_collectives_and_includes_graph_sequence_on
         assert kwargs["graph_replays"] == request.policy.expected_graph_replays
         assert kwargs["bundle_path"] == str(atomic.prepared.binding.tree.root)
         assert type(kwargs["eligibility"]).__name__ == "Eligibility"
-        # The temporal-eager row is a gate, while single + sequence are evidence.
-        assert len(record.shapes) == 2
+        # The temporal-eager row is a gate; both singles and sequence are evidence.
+        assert len(record.shapes) == 3
         kinds = {
             row.case_descriptor.case_kind
             for row in _result(

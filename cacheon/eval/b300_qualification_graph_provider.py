@@ -20,7 +20,7 @@ import json
 import re
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 
 from cacheon._strict import require_digest, require_identifier
@@ -231,25 +231,9 @@ class B300QualificationGraphBinding:
     native_build_spec_digest: str
 
     def __post_init__(self) -> None:
-        for name in (
-            "reservation_digest",
-            "reservation_identity_digest",
-            "candidate_binding_digest",
-            "target_spec_digest",
-            "selected_delta_digest",
-            "publication_content_hash",
-            "publication_address_digest",
-            "publication_digest",
-            "publication_receipt_digest",
-            "prepared_arm_digest",
-            "prepared_contribution_digest",
-            "prepared_launch_digest",
-            "materialized_stack_digest",
-            "materialized_tree_digest",
-            "trusted_tree_identity_digest",
-            "native_build_spec_digest",
-        ):
-            object.__setattr__(self, name, _digest(getattr(self, name), name))
+        for name in self.__dataclass_fields__:
+            if name not in {"screen_attempt", "target_id", "target_members"}:
+                object.__setattr__(self, name, _digest(getattr(self, name), name))
         object.__setattr__(
             self, "screen_attempt", _positive(self.screen_attempt, "screen attempt")
         )
@@ -368,115 +352,34 @@ class B300QualificationGraphBinding:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "candidate_binding_digest": self.candidate_binding_digest,
-            "materialized_stack_digest": self.materialized_stack_digest,
-            "materialized_tree_digest": self.materialized_tree_digest,
-            "native_build_spec_digest": self.native_build_spec_digest,
-            "prepared_arm_digest": self.prepared_arm_digest,
-            "prepared_contribution_digest": self.prepared_contribution_digest,
-            "prepared_launch_digest": self.prepared_launch_digest,
-            "publication_address_digest": self.publication_address_digest,
-            "publication_content_hash": self.publication_content_hash,
-            "publication_digest": self.publication_digest,
-            "publication_receipt_digest": self.publication_receipt_digest,
-            "reservation_digest": self.reservation_digest,
-            "reservation_identity_digest": self.reservation_identity_digest,
-            "screen_attempt": self.screen_attempt,
-            "selected_delta_digest": self.selected_delta_digest,
-            "target_id": self.target_id,
-            "target_members": list(self.target_members),
-            "target_spec_digest": self.target_spec_digest,
-            "trusted_tree_identity_digest": self.trusted_tree_identity_digest,
-        }
+        return {**asdict(self), "target_members": list(self.target_members)}
 
     @classmethod
     def from_dict(cls, value: object) -> "B300QualificationGraphBinding":
-        fields = frozenset(
-            {
-                "candidate_binding_digest",
-                "materialized_stack_digest",
-                "materialized_tree_digest",
-                "native_build_spec_digest",
-                "prepared_arm_digest",
-                "prepared_contribution_digest",
-                "prepared_launch_digest",
-                "publication_address_digest",
-                "publication_content_hash",
-                "publication_digest",
-                "publication_receipt_digest",
-                "reservation_digest",
-                "reservation_identity_digest",
-                "screen_attempt",
-                "selected_delta_digest",
-                "target_id",
-                "target_members",
-                "target_spec_digest",
-                "trusted_tree_identity_digest",
-            }
-        )
-        row = _strict_object(value, fields, "graph binding")
+        row = _strict_object(value, frozenset(cls.__dataclass_fields__), "graph binding")
         if type(row["target_members"]) is not list:
             raise B300QualificationGraphProviderError(
                 "graph binding target members are not an exact array"
             )
-        return cls(
-            **{**row, "target_members": tuple(row["target_members"])}  # type: ignore[arg-type]
-        )
+        return cls(**{**row, "target_members": tuple(row["target_members"])})
 
     @property
     def digest(self) -> str:
         return canonical_digest(BINDING_SCHEMA, self.to_dict())
 
 
-def _shape_to_dict(row: StructuredGraphShapeRecord) -> dict[str, object]:
-    return {
-        "applicable": row.applicable,
-        "capture_succeeded": row.capture_succeeded,
-        "descriptor_digest": row.descriptor_digest,
-        "eager_passed": row.eager_passed,
-        "failure_is_candidate_attributable": row.failure_is_candidate_attributable,
-        "observation_complete": row.observation_complete,
-        "replay_count": row.replay_count,
-        "replay_passed": row.replay_passed,
-    }
-
-
 def _variant_to_dict(row: StructuredGraphVariantRecord) -> dict[str, object]:
     return {
         "context_applicable": row.context_applicable,
         "domain_coverage_complete": row.domain_coverage_complete,
-        "shapes": [_shape_to_dict(shape) for shape in row.shapes],
+        "shapes": [asdict(shape) for shape in row.shapes],
         "slot_id": row.slot_id,
         "variant_id": row.variant_id,
     }
 
 
-_SHAPE_FIELDS = frozenset(
-    {
-        "applicable",
-        "capture_succeeded",
-        "descriptor_digest",
-        "eager_passed",
-        "failure_is_candidate_attributable",
-        "observation_complete",
-        "replay_count",
-        "replay_passed",
-    }
-)
-_VARIANT_FIELDS = frozenset(
-    {
-        "context_applicable",
-        "domain_coverage_complete",
-        "shapes",
-        "slot_id",
-        "variant_id",
-    }
-)
-
-
 def _shape_from_dict(value: object) -> StructuredGraphShapeRecord:
-    row = _strict_object(value, _SHAPE_FIELDS, "graph shape")
+    row = _strict_object(value, frozenset(StructuredGraphShapeRecord.__dataclass_fields__), "graph shape")
     try:
         return StructuredGraphShapeRecord(**row)  # type: ignore[arg-type]
     except (B300QualificationCapabilityError, TypeError, ValueError) as exc:
@@ -486,7 +389,7 @@ def _shape_from_dict(value: object) -> StructuredGraphShapeRecord:
 
 
 def _variant_from_dict(value: object) -> StructuredGraphVariantRecord:
-    row = _strict_object(value, _VARIANT_FIELDS, "graph variant")
+    row = _strict_object(value, frozenset(StructuredGraphVariantRecord.__dataclass_fields__), "graph variant")
     shapes = row["shapes"]
     if type(shapes) is not list:
         raise B300QualificationGraphProviderError(

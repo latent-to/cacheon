@@ -1571,6 +1571,7 @@ def _typed_resident_qualification_input(
         ReferenceManifest,
     )
     from tests.test_calibration import _manifest as calibration_manifest
+    from tests.test_crossover_runtime import _resident_policy
     from tests.test_marginal_runtime import _case
     from tests.test_qualification import _requirement
 
@@ -1721,8 +1722,9 @@ def _typed_resident_qualification_input(
         reference.workload_digest,
         requirement.binding.verification_policy_digest,
     )
+    base_calibration = calibration_manifest()
     calibration = replace(
-        calibration_manifest(),
+        base_calibration, speed=replace(base_calibration.speed, max_noise="0.02"),
         context=calibration_context,
         raw_evidence_digest=_d(
             f"typed-resident-{candidate_lane}-calibration-raw"
@@ -1733,8 +1735,7 @@ def _typed_resident_qualification_input(
         candidate.arm.selected_delta_digest,
         baseline_arm,
         candidate_arm,
-        ResidentSpeedPolicy.from_calibration(
-            max_stage_seconds=60,
+        ResidentSpeedPolicy.rebound(_resident_policy(version=10),
             calibration=calibration,
             context=calibration_context,
         ),
@@ -1890,11 +1891,8 @@ def test_typed_resident_input_rejects_self_consistent_mismatched_context(
         logical_hardware_digest=_d("wrong-resident-candidate-hardware"),
     )
     calibration = replace(value.calibration_manifest, context=mismatched)
-    policy = ResidentSpeedPolicy.from_calibration(
-        max_stage_seconds=value.resident_speed_plan.policy.max_stage_seconds,
-        max_qualification_seconds=(
-            value.resident_speed_plan.policy.max_qualification_seconds
-        ),
+    policy = ResidentSpeedPolicy.rebound(
+        value.resident_speed_plan.policy,
         calibration=calibration,
         context=mismatched,
     )
