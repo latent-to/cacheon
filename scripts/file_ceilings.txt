@@ -53,7 +53,7 @@ tests/test_oci_backend.py 1134
 tests/test_oci_process.py 1112
 tests/test_qualification.py 1449
 tests/test_qualification_continuation.py 922
-tests/test_qualification_runner.py 2106
+tests/test_qualification_runner.py 2104
 tests/test_recoverable_qualification_dispatcher.py 1208
 tests/test_settlement.py 920
 tests/test_weight_publication.py 982
