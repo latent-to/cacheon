@@ -958,8 +958,11 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
             "crowned": with_time(int(cj.get("finalized_block") or 0)),
         }
     detail["baseline"] = submission_baseline(con, rid, detail["target_id"])
-    detail["baseline_measurements"] = measured_baseline(
-        [a["speed"] for a in detail["qualification_attempts"] if a["speed"]], {})
+    measured_attempts = [a for a in detail["qualification_attempts"] if a["decision"] == "PASS"] or detail["qualification_attempts"]
+    speed_reads = [a["speed"] for a in measured_attempts if a["speed"]]
+    detail["baseline_measurements"] = measured_baseline(speed_reads, {})
+    candidate_tps = conservative_candidate_tokens_per_second(speed_reads)
+    detail["tokens_per_second"] = float(candidate_tps) if candidate_tps is not None else None
 
     detail["leases"] = rows(con, """
         SELECT el.lease_id, el.stage, el.state, el.generation, el.claimed_block,

@@ -673,6 +673,7 @@ window.openDetail = async (rid) => {
       ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
       ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}
       ${kv("Target", esc(d.target_id || "—") + `<div class="muted small">${esc(d.target_summary)}</div>`)}
+      ${kv("Submission tok/s", d.tokens_per_second != null ? `<b>${d.tokens_per_second.toFixed(1)}</b> tok/s · measured` : "Not measured")}
       ${kv("Submission source", sourceLink)}
       ${kv("Content hash", `<code class="small">${esc(short(d.content_hash, 26))}</code>`)}
       ${kv("Eval fee", d.payment
