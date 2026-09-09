@@ -204,7 +204,7 @@ def test_held_result_retains_metrics_without_a_disposition_and_deduplicates_impo
         "request_id": request_id, "state": "completed", "response_sha256": digest,
         "artifacts": [{"role": "adapter_result", "sha256": digest, "size": len(response)}]}))
     for name, value in {"DB_PATH": db, "QUAL_EVIDENCE_STATE": tmp_path / "state",
-                        "QUAL_EVIDENCE_EXTRA": (), "SPOOL": spool,
+                        "QUAL_EVIDENCE_EXTRA": (), "SPOOL": spool, "LOG_ROOT": tmp_path / "logs",
                         "OFFER_PATH": tmp_path / "offer.json", "ENRICH": False}.items():
         monkeypatch.setattr(app, name, value)
     client = TestClient(app.app)
