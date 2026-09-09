@@ -31,6 +31,7 @@ from dashboard.forensics import (
     ForensicsUnavailable,
     forensics_log,
     submission_forensics,
+    submission_qualifications,
 )
 from dashboard.competition import competition_label, submission_baseline
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
@@ -844,13 +845,13 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
         """, (rid,))]
     evidence_roots = qualification_evidence_roots(
         QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA, con, stage_dir=LOG_ROOT.parent / "stage")
-    detail["qualification_attempts"] = [
-        {"attempt": d["attempt_index"], "decision": d["decision"], "reason": d["reason"],
-         "speed": qualification_speed(d["attempt_ref_json"], evidence_roots, detail["target_id"])}
-        for d in rows(con, """
-            SELECT attempt_index, decision, reason, attempt_ref_json
-            FROM qualification_dispositions WHERE reservation_id=? ORDER BY attempt_index
-        """, (rid,))]
+    try:
+        detail["forensics"] = submission_forensics(SPOOL, rid, target_id=detail["target_id"])
+    except DashboardForensicsError as exc:
+        detail["forensics"] = []
+        detail["forensics_error"] = str(exc)
+    detail["qualification_attempts"] = submission_qualifications(
+        con, rid, detail["target_id"], evidence_roots, detail["forensics"])
 
     cand = con.execute(
         "SELECT status, reason, candidate_json FROM settlement_candidates"
@@ -887,11 +888,6 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
         lease["claimed"] = with_time(int(lease["claimed_block"]))
         lease["expires"] = with_time(int(lease["expires_block"]))
     con.close()
-    try:
-        detail["forensics"] = submission_forensics(SPOOL, rid)
-    except DashboardForensicsError as exc:
-        detail["forensics"] = []
-        detail["forensics_error"] = str(exc)
     return detail
 
 

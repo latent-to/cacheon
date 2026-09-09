@@ -41,7 +41,7 @@ cacheon/slots.py 915
 cacheon/target_catalog.py 964
 cacheon/verify.py 986
 cacheon/verify_collective.py 1067
-dashboard/app.py 1340
+dashboard/app.py 1336
 tests/test_b300_remote_worker_adapter.py 1123
 tests/test_chain_intake.py 2073
 tests/test_crossover_runtime.py 951

@@ -1,11 +1,15 @@
 """Dashboard metrics retain workload boundaries and the correct prompt-pass units."""
 
+import base64
+import hashlib
 import json
 import sqlite3
 import pytest
 
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
-from cacheon.eval.evidence_store import prepare_evidence_root, publish_canonical_json_evidence
+from cacheon.eval.evidence_store import (
+    EvidenceArtifactRef, prepare_evidence_root, publish_canonical_json_evidence, reopen_evidence,
+)
 from cacheon.eval.resident_measurement import TimedWindow
 
 
@@ -162,3 +166,85 @@ def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, monk
     assert winner["cumulative_speedup_over_sglang"] == 1.03
     assert winner["sglang_tokens_per_second"] is None
     assert winner["prefill_speedup"] == pytest.approx(160 / 159.04)
+
+
+@pytest.mark.parametrize("target", ["norm.fused_add_rmsnorm", "collective.dp_attention_exchange.v1"])
+def test_held_result_retains_metrics_without_a_disposition_and_deduplicates_import(
+    tmp_path, monkeypatch, target,
+):
+    from fastapi.testclient import TestClient
+    from dashboard import app
+
+    root = tmp_path / "evidence"
+    reference = _publish(root, _reads(), target)
+    ref = EvidenceArtifactRef.from_dict(json.loads(reference))
+    db = tmp_path / "intake.sqlite3"
+    _dashboard_db(db, reference, root, target)
+    con = sqlite3.connect(db)
+    con.execute("DELETE FROM qualification_dispositions")
+    con.execute("UPDATE reservations SET status='held', decision='', reason='remote_qualification_hold:legacy_no_decision'")
+    con.commit()
+    spool, request_id = tmp_path / "spool", "a" * 64
+    carrier = spool / "outbox-retired" / request_id
+    carrier.mkdir(parents=True)
+    (carrier / "request.json").write_text(json.dumps({
+        "request_id": request_id, "lease": {"members": [{"reservation_id": "example"}]}}))
+    result = spool / "results-retired" / request_id
+    (result / "blobs").mkdir(parents=True)
+    response = json.dumps({"payload_kind": "remote_qualification_product", "payload": {
+        "batch": {"attempt_ref": ref.to_dict(), "outcomes": [{"reservation_digest": "example",
+            "decision": "NO_DECISION", "reason": "speed_noise"}]},
+        "evidence": [{"reference": ref.to_dict(), "payload_base64":
+            base64.b64encode(reopen_evidence(root, ref)).decode()}],
+    }}).encode()
+    digest = hashlib.sha256(response).hexdigest()
+    blob = result / "blobs" / digest
+    blob.write_bytes(response)
+    (result / "result.json").write_text(json.dumps({
+        "request_id": request_id, "state": "completed", "response_sha256": digest,
+        "artifacts": [{"role": "adapter_result", "sha256": digest, "size": len(response)}]}))
+    for name, value in {"DB_PATH": db, "QUAL_EVIDENCE_STATE": tmp_path / "state",
+                        "QUAL_EVIDENCE_EXTRA": (), "SPOOL": spool,
+                        "OFFER_PATH": tmp_path / "offer.json", "ENRICH": False}.items():
+        monkeypatch.setattr(app, name, value)
+    client = TestClient(app.app)
+    detail = client.get("/api/submissions/example").json()
+    assert detail["status"] == "held" and detail["decision"] == ""
+    assert detail["tokens_per_second"] == 6.7
+    (attempt,) = detail["qualification_attempts"]
+    assert (attempt["decision"], attempt["reason"]) == ("NO_DECISION", "speed_noise")
+    assert attempt["speed"]["prefill"]["speedup"] == pytest.approx(160 / 159.04)
+    assert attempt["request_id"] == request_id
+    con.execute("INSERT INTO qualification_dispositions VALUES(?,?,?,?,?)",
+                ("example", 0, "NO_DECISION", "speed_noise", reference))
+    con.commit()
+    assert len(client.get("/api/submissions/example").json()["qualification_attempts"]) == 1
+    con.execute("DELETE FROM qualification_dispositions")
+    con.commit()
+    con.close()
+    blob.write_bytes(response + b" ")
+    damaged = client.get("/api/submissions/example").json()
+    assert damaged["qualification_attempts"] == []
+    assert "differs from retained result" in damaged["forensics"][0]["qualification_error"]
+
+
+def test_dashboard_explains_valid_boundary_uncertainty_from_the_shared_grader(tmp_path):
+    from cacheon.chain.baseline_band import qualification_speed_from_payload
+    from cacheon.eval.qualification_runner import ResidentSpeedWitness
+    from tests.test_crossover_runtime import _rig, _speed
+    from tests.test_prefill_lane import _policy
+
+    plan, baseline, candidate, mount, _, _ = _rig(
+        tmp_path, (0.994, 0.995), policy=_policy(), timed_batches=5,
+        baseline_durations=(1., 1.006, 1., 1.))
+    result = _speed(plan, baseline, candidate, mount)
+    witness = ResidentSpeedWitness.from_evidence(result, plan)
+    speed = qualification_speed_from_payload(json.dumps({"speed_witness": witness.to_dict()}).encode())
+    grade = speed["grading"]
+    assert grade["decision"] == "NO_DECISION"
+    assert grade["detail"] == "measurement uncertainty crosses the speed decision boundary"
+    assert grade["measurement_valid"] and not grade["conditioning_failed"]
+    assert grade["candidate_vs_before"] < 1.01 < grade["candidate_vs_after"]
+    assert grade["required_speedup"] > grade["candidate_vs_before"]
+    assert grade["baseline_drift"] < grade["max_noise"]
+    assert speed["prefill"]["speedup"] < 1.05

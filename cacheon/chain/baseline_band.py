@@ -85,6 +85,13 @@ def qualification_speed(
         return None
     if payload is None:
         return None
+    return qualification_speed_from_payload(payload, target_id)
+
+
+def qualification_speed_from_payload(
+    payload: bytes, target_id: str = ""
+) -> dict[str, Any] | None:
+    """Read measurements from either a local artifact or retained remote result."""
     try:
         result = json.loads(payload)
         if "reports" in result:
@@ -140,6 +147,27 @@ def qualification_speed(
                 by_role["B_prefill"], by_role["B_prime_prefill"]),
             "min_margin": policy.get("prefill_min_margin"),
         }
+    if "evidence_digest" in witness:
+        from cacheon.eval.qualification_runner import ResidentSpeedWitness
+        from cacheon.eval.resident_schedule import grade_schedule
+
+        try:
+            retained = ResidentSpeedWitness.from_dict(witness)
+            grade = grade_schedule(retained.resident_policy, retained.rates)
+            speed["grading"] = {
+                "decision": grade.decision.value,
+                "detail": grade.verdict.detail,
+                "candidate_vs_before": candidate / baseline,
+                "candidate_vs_after": candidate / by_role["B_prime"],
+                "required_speedup": grade.verdict.required,
+                "min_margin": retained.resident_policy.min_margin,
+                "baseline_drift": grade.verdict.noise,
+                "max_noise": retained.resident_policy.max_noise,
+                "measurement_valid": grade.verdict.confident,
+                "conditioning_failed": grade.conditioning_failed,
+            }
+        except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+            speed["grading_error"] = str(exc)
     return speed
 
 

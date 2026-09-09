@@ -117,6 +117,21 @@ def test_one_ungraphed_gpu_makes_the_whole_measurement_ungraphed() -> None:
     )
 
 
+def test_repeated_engine_tree_snapshots_join_unknown_ranks_by_pid() -> None:
+    """The norm HOLD's 28 snapshots were misreported as 28 physical GPUs."""
+    active = [{"pid": 400 + rank, "rank": -1, "slots": ["norm.fused_add_rmsnorm"]}
+              for rank in range(4)]
+    completed = [{"pid": 400 + rank, "rank": rank, "slot": "norm.fused_add_rmsnorm",
+                  "calls": 943, "captured": True} for rank in range(4)]
+    log = "\n".join([_summary(active=active)] * 10
+                    + [_summary(active=active, completed=completed)] * 18)
+    ranks = ranks_from_log(log)
+    text = "\n".join(execution_lines(ranks))
+    assert [rank.rank for rank in ranks] == [0, 1, 2, 3]
+    assert "loaded                     on 4 GPU(s)" in text
+    assert "called 3,772 times across 4 GPU(s), inside the CUDA graph on every GPU" in text
+
+
 def test_retained_candidate_traceback_names_exact_prepare_failure() -> None:
     bundle = "a9b3d8a8" + "0" * 56
     traces = []

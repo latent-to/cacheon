@@ -86,6 +86,14 @@ stream bound truncated the output.
 
 Each qualification attempt also has a **Performance** section:
 
+- Completed `NO_DECISION` attempts held by the remote dispatcher remain visible
+  from their retained result, even without a qualification-disposition row.
+  Their measurements and original decision remain separate from the reservation's
+  current status, including a later operator rejection. Importing the same
+  attempt does not duplicate it in the history.
+- **Why this result:** the shared grader explains the retained policy and reads,
+  including gains against both baselines, required gain and measured baseline
+  drift. A borderline speed result is distinguishable from invalid measurement.
 - **Output throughput:** B/C/B′ output tok/s and total timed batch seconds.
   This includes prompt processing and generation; it is not isolated decode time.
 - **Prefill:** v12 prompt-pass throughput in **prompts/s**, total timed batch
@@ -114,6 +122,12 @@ The API keeps ordinary lane `tokens_per_second` and adds `timed_seconds` and
 and retained `min_margin`. The reader also follows database-recorded and staged
 evidence roots and selects the submission's target from historical multi-target
 reports, so changing worker generations does not hide retained measurements.
+An unreadable retained response or grading artifact is shown as an evidence
+error. Execution summaries join PID identities to completed rank records, so
+repeated snapshots do not become extra GPUs or lose the recorded graph capture.
+Worker connection status reflects the CPU relay's last successful pod check.
+It does not treat the relay's default adapter flag as a failed GPU process;
+the pod starts an adapter when work arrives and retires it after qualification.
 
 Metagraph emission is denominated in the subnet's own alpha token, so
 `/api/winners` and `/api/miners` report `emission_alpha_per_day` beside an
