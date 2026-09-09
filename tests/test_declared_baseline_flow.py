@@ -123,6 +123,18 @@ def test_missing_baseline_never_enters_queue(tmp_path):
         assert store.pending() == ()
 
 
+def test_commissioned_import_does_not_invent_a_reward_claim(tmp_path, evaluator):
+    from cacheon.chain.ranked_rewards import reward_authorities
+    with fixtures._store(tmp_path) as store:
+        candidate = fixtures._qualified_settlement_candidate(store)
+        state = store.evaluation_stack(candidate.arena_digest)
+        manifest = type(candidate.candidate_manifest).from_dict(
+            candidate.candidate_manifest.to_dict() | {"arena_digest": "a" * 64})
+        imported = replace(state, arena_digest=manifest.arena_digest, manifest=manifest)
+        assert imported.generation == 0 and imported.manifest.entries
+        assert reward_authorities(store, (imported,), store.passed_reward_claims()) == []
+
+
 def test_quote_and_payment_remark_bind_baseline():
     from cacheon.chain.eval_cost import EvalCostRequest, quote_eval_cost, encode_payment_remark, EvalCostError
     request = EvalCostRequest(307, "miner", "a" * 64, baseline_ref="b" * 64)

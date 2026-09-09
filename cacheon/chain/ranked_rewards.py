@@ -19,7 +19,9 @@ def reward_authorities(store, states, earning):
     claims = {(row.arena_digest, row.target_id, row.contribution_digest): row for row in earning}
     authorities = []
     for state in states:
-        entries = dict(state.manifest.entries)
+        # Generation zero can import an earlier arena's commissioned baseline.
+        # Those entries are evaluation inputs, not reward claims in this arena.
+        entries = dict(state.manifest.entries) if state.generation > 0 else {}
         for (arena, target), candidate in candidates.items():
             if arena == state.arena_digest:
                 entries[target] = candidate.candidate_manifest.entries[target]
