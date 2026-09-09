@@ -96,8 +96,8 @@ retains the relative host times in each timed window's `prompt_latencies`.
 Worker-supplied timestamps are never accepted. Missing, duplicate, stale or
 inconsistent boundaries are measurement failures, not candidate speed failures.
 
-Each resident read in `speed_witness.rates` then includes a `cells` table grouped
-by input tokens, output tokens and request concurrency:
+The dashboard derives its `cells` table from those retained windows, grouped by
+input tokens, output tokens and request concurrency; derived summaries are not stored again:
 
 | Field | Definition |
 |---|---|

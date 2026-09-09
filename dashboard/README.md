@@ -28,7 +28,7 @@ to run the dashboard and its API tests.
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
 | Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (1 τ each): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
-| Winners | Every retained two-PASS settlement candidate: conservative speedup over the incumbent, compounded stack speedup over retained SGLang stock with a serving tok/s estimate, the miner's weight share in the served offer (earning / not earning), settlement status, and current on-chain emission |
+| Winners | Retained PASS settlement candidates: credited gain, measured candidate and baseline tok/s, prefill gain, served weight share, settlement status, and current on-chain emission |
 | Miners | Per-hotkey leaderboard sorted by served weight share: submissions, crowns, qualified/failed, fees paid, registration + emission |
 | Timeline | Settlement events (CROWN/ADOPTION/HOLD/…), the served weight offer's vector, and this validator's follower journal (intent/pending/held/confirmed) |
 | System | DB/chain/process/heartbeat health, intake lag |
@@ -145,13 +145,8 @@ crown count). `/api/weights` returns that vector with UIDs and on-chain
 incentive beside the follower journal rows, so the lag between the served
 offer and chain consensus is visible rather than mistaken for a wrong number.
 
-`/api/winners` reports each contribution twice over: `improvement_pct` is the
-conservative gain over the incumbent it displaced, while
-`cumulative_speedup_over_sglang` compounds the settled gains of a target's
-CROWN lineage in settlement-event order, so it reads as the stack's position
-against retained SGLang stock at the moment that contribution was crowned.
-`tokens_per_second` is the slower independently passing candidate lane from the
-qualification artifacts, and `sglang_tokens_per_second` divides it by the
-cumulative speedup. The SGLang-relative fields are null for a retained PASS
-that never entered the stack, and the tok/s pair is null when no local evidence
-store retains the attempt's artifact.
+`/api/winners` keeps settlement credit (`improvement_pct`) separate from measured
+candidate and baseline throughput. `baseline_kind` identifies stock, incumbent,
+or unknown; missing retained measurements stay null. The former `sglang_*` and
+`cumulative_*_over_sglang` estimates are removed: weighted prefill credits and
+different competition epochs cannot reconstruct a measured stock throughput.

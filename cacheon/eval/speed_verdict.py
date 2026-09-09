@@ -105,12 +105,8 @@ def speed_grade(
     policy: "ResidentSpeedPolicy",
     baselines: list[object],
     candidates: list[object],
-    *,
-    concluding: bool,
 ) -> tuple[SpeedupVerdict, SpeedStageDecision | None]:
-    """Grade one read set, shared by the live stage and the independent regrade
-    so the two cannot drift apart. ``concluding`` marks the last grade available
-    for this stage, after which no further reads will be taken."""
+    """Grade the complete precommitted read set in execution and retained regrade."""
 
     baseline_rates = [policy.scored_tokens_per_second(row) for row in baselines]
     candidate_rates = [policy.scored_tokens_per_second(row) for row in candidates]
@@ -118,7 +114,7 @@ def speed_grade(
         return _single_run_grade(policy, baselines, candidates, baseline_rates, candidate_rates)
     dropped_brackets = 0
     bracket_drift = 0.0
-    if policy.version >= 5 and len(baseline_rates) >= 2:
+    if len(baseline_rates) >= 2:
         bracket_drift = relative_spread(baseline_rates)
         if bracket_drift > policy.max_noise:
             dropped_brackets = len(baseline_rates) - 1
@@ -140,7 +136,7 @@ def speed_grade(
             ),
         )
     decision = invariant_decision(baseline_rates, candidate_rates, verdict.required)
-    if decision is None and concluding:
+    if decision is None:
         # Escalation cannot be relied on to converge: taking more reads only
         # widens the observed spread. The burden of proof sits with the
         # candidate, so an undetermined conclusion is "not proven faster" -- a

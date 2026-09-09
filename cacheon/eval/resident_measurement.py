@@ -222,8 +222,6 @@ class ResidentReadRate:
             # Per-window retention exists only for v3 reads; earlier sealed
             # rate rows keep their exact historical bytes and digests.
             row["windows"] = [window.to_dict() for window in self.windows]
-            if any(window.prompt_latencies for window in self.windows):
-                row["cells"] = phase_cells(self.windows)
         return row
 
     @classmethod
@@ -246,7 +244,7 @@ class ResidentReadRate:
             raise CrossoverRuntimeError("resident rate fields differ")
         raw_windows = value.get("windows", [])
         if (
-            set(value) - {"windows", "cells"} != fields
+            set(value) - {"windows"} != fields
             or ("windows" in value and type(raw_windows) is not list)
             or type(value["batches"]) is not list
             or len(value["batches"]) != 2

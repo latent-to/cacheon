@@ -131,7 +131,7 @@ def _regrade(raw: bytes) -> dict:
         candidates = [r for r in reads if r.role.startswith("C")]
     if not baselines or not candidates:
         raise ValueError("witness lacks a baseline or candidate read")
-    verdict, decision = speed_grade(policy, baselines, candidates, concluding=True)
+    verdict, decision = speed_grade(policy, baselines, candidates)
     medians = {
         read.role: statistics.median(w.tokens / w.seconds for w in read.windows)
         for read in reads

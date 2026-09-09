@@ -474,13 +474,8 @@ async function viewWinners() {
     <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
         <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
         ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
-    <td>${w.sglang_improvement_pct != null
-        ? `<b style="color:var(--accent)">+${w.sglang_improvement_pct.toFixed(2)}%</b>` : "—"}
-        <div class="muted small">${w.sglang_speedup
-          ? w.sglang_speedup.toFixed(5) + "× SGLang" : ""}</div>
-        <div class="muted small">${esc(w.sglang_comparison_basis)}</div>
-        <div class="muted small">${w.sglang_tokens_per_second != null
-          ? w.sglang_tokens_per_second.toFixed(1) + " tok/s stock estimate" : ""}</div></td>
+    <td>${w.baseline_tokens_per_second != null ? `<b>${w.baseline_tokens_per_second.toFixed(1)}</b> tok/s` : '<span class="muted">Unavailable</span>'}
+        <div class="muted small">${esc(w.baseline_kind)}</div></td>
     <td>${w.tokens_per_second != null ? `<b>${w.tokens_per_second.toFixed(1)}</b> tok/s` : '<span class="muted">Unavailable</span>'}
         </td>
     <td>${w.prefill_speedup != null ? metricGain(w.prefill_speedup) : '<span class="muted">Not measured</span>'}</td>
@@ -500,7 +495,7 @@ async function viewWinners() {
     ${offerLine(d.offer)}
     <h2>Retained PASS rewards</h2>
     <p class="muted small">Credited gains follow arena scoring. Throughput and prefill columns show measured performance.</p>
-    <div class="metrics-table">${table(["Reservation","Improved op","Credited vs incumbent","Credited vs SGLang","Candidate tok/s","Prefill gain","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
+    <div class="metrics-table">${table(["Reservation","Improved op","Credited vs incumbent","Measured baseline","Candidate tok/s","Prefill gain","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
       rows, "No retained PASS rewards yet.")}</div>`;
 }
 

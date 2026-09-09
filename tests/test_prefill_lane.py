@@ -35,7 +35,7 @@ from cacheon.eval.speed_verdict import (
     fail_reason,
     resident_speed_roles,
 )
-from tests.test_crossover_runtime import _policy_v3, _rig, _speed
+from tests.test_crossover_runtime import _resident_policy, _rig, _speed
 from tests.test_oci_backend import _case
 
 PREFILL = {"prefill_min_margin": 0.05, "prefill_credit_weight": 0.5}
@@ -50,7 +50,7 @@ def _policy(version: int = 12, **overrides) -> ResidentSpeedPolicy:
     if version >= 12:
         kwargs.update(PREFILL)
     kwargs.update(overrides)
-    return _policy_v3(**kwargs)
+    return _resident_policy(**kwargs)
 
 
 def _read(role: str, rate: float, *, conditioning_seconds: float = 1.0):
@@ -232,7 +232,7 @@ def test_expanded_schedule_appends_one_token_prefill_reads(tmp_path: Path):
 
 
 def _live_policy() -> ResidentSpeedPolicy:
-    return _policy_v3(version=12, **PREFILL)
+    return _resident_policy(version=12, **PREFILL)
 
 
 def _live(tmp_path: Path, decode: float, prefill: float):

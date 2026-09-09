@@ -12,7 +12,7 @@ import json
 import math
 import re
 import stat
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
 from cacheon.arena_service import ArenaCandidateBinding
@@ -176,46 +176,14 @@ class PreparedGraphProbePolicy:
             raise PreparedGraphProbeError("collective timeout must be finite")
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "architecture": self.architecture,
-            "collective_timeout_s": self.collective_timeout_s,
-            "dtype_name": self.dtype_name,
-            "expected_graph_replays": self.expected_graph_replays,
-            "graph_mode": self.graph_mode,
-            "jitter_seed": self.jitter_seed,
-            "model_profile_key": self.model_profile_key,
-            "schema": POLICY_SCHEMA,
-            "seed": self.seed,
-            "tp_size": self.tp_size,
-            "verification_policy_digest": self.verification_policy_digest,
-            "world_size": self.world_size,
-        }
+        return {"schema": POLICY_SCHEMA, **asdict(self)}
 
     @classmethod
     def from_dict(cls, value: object) -> "PreparedGraphProbePolicy":
-        row = _strict_object(
-            value,
-            frozenset(
-                {
-                    "architecture",
-                    "collective_timeout_s",
-                    "dtype_name",
-                    "expected_graph_replays",
-                    "graph_mode",
-                    "jitter_seed",
-                    "model_profile_key",
-                    "schema",
-                    "seed",
-                    "tp_size",
-                    "verification_policy_digest",
-                    "world_size",
-                }
-            ),
-            "probe policy",
-        )
+        row = _strict_object(value, frozenset(cls.__dataclass_fields__) | {"schema"}, "probe policy")
         if row["schema"] != POLICY_SCHEMA:
             raise PreparedGraphProbeError("probe policy schema is unsupported")
-        return cls(**{key: value for key, value in row.items() if key != "schema"})  # type: ignore[arg-type]
+        return cls(**{key: value for key, value in row.items() if key != "schema"})
 
     @property
     def digest(self) -> str:

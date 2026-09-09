@@ -84,8 +84,6 @@ def read_rate(
     lane_digest: str,
     controller: OpenedOuterSession,
     template: SessionExecutionPlan,
-    *,
-    with_windows: bool = False,
 ) -> ResidentReadRate:
     """Take one complete read from the resident controller and rate it."""
 
@@ -93,9 +91,6 @@ def read_rate(
     rows = tuple(
         controller.execute_next() for _ in range(len(template.prompt_batches))
     )
-    timed = rows[template.warmup_count :]
-    conditioning_start = template.warmup_count - template.conditioning_count
-    conditioning = rows[conditioning_start : template.warmup_count]
     if (
         not rows
         or any(type(row) is not BatchExecutionEvidence or row.audit_receipts for row in rows)
@@ -105,9 +100,20 @@ def read_rate(
             controller.plan.prompt_batches[row.batch_index] for row in rows
         )
         != template.prompt_batches
-        or not timed
-        or not conditioning
     ):
+        raise CrossoverRuntimeError("resident read batches are incomplete")
+    return _rate_from_batches(role, lane_digest, controller.plan.launch_digest,
+                              controller.session_id, first, rows, template)
+
+
+def _rate_from_batches(
+    role: str, lane_digest: str, launch_digest: str, session_id: str,
+    first: int, rows: tuple[BatchExecutionEvidence, ...], template: SessionExecutionPlan,
+) -> ResidentReadRate:
+    """Derive one read from host batch evidence, shared by execution and raw regrade."""
+    timed = rows[template.warmup_count:]
+    conditioning = rows[template.warmup_count - template.conditioning_count:template.warmup_count]
+    if not timed or not conditioning:
         raise CrossoverRuntimeError("resident read batches are incomplete")
     conditioning_seconds = (
         timed[0].request_started_at - conditioning[0].request_started_at
@@ -122,8 +128,8 @@ def read_rate(
     return ResidentReadRate(
         role,
         lane_digest,
-        controller.plan.launch_digest,
-        controller.session_id,
+        launch_digest,
+        session_id,
         first,
         first + len(rows) - 1,
         timed[0].batch_index,
@@ -135,7 +141,7 @@ def read_rate(
         float(timed_seconds),
         float(charged_seconds),
         float(charged_tokens / charged_seconds),
-        _timed_windows(timed) if with_windows else (),
+        _timed_windows(timed),
     )
 
 
@@ -225,7 +231,7 @@ def grade_schedule(
         raise CrossoverRuntimeError("resident speed read set is not the precommitted schedule")
     before, candidate, bookend = rates[:3]
     verdict, decision = speed_grade(
-        policy, [before, bookend], [candidate], concluding=True
+        policy, [before, bookend], [candidate]
     )
     conditioning = policy.conditioning_regression(before, candidate)
     if conditioning and decision is not SpeedStageDecision.NO_DECISION:
@@ -235,7 +241,7 @@ def grade_schedule(
     prefill = None
     if policy.version >= 12:
         prefill, admitted = speed_grade(
-            prefill_policy(policy), [rates[3], rates[5]], [rates[4]], concluding=True
+            prefill_policy(policy), [rates[3], rates[5]], [rates[4]]
         )
         if (
             lane is None

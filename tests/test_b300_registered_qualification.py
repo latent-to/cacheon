@@ -357,7 +357,7 @@ def _harness(
         max_qualification_seconds=600,
         calibration=calibration,
         context=calibration_context,
-        version=3,
+        version=10,
         min_windows=3,
         max_window_scatter=0.05,
         max_conditioning_slowdown=1.5,
@@ -555,7 +555,7 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.evidence_root == harness.inputs.evidence_root
 
 
-@pytest.mark.parametrize("version", (5, 6, 7))
+@pytest.mark.parametrize("version", (8, 9, 10, 11))
 def test_registered_plan_measures_every_commissioned_policy_on_two_process(
     tmp_path: Path, version: int
 ) -> None:

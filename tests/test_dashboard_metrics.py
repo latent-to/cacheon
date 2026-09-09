@@ -125,24 +125,29 @@ def _dashboard_db(path, reference, root, target):
     con.close()
 
 
-@pytest.mark.parametrize("target,phase", [
-    ("norm.fused_add_rmsnorm", False), ("collective.dp_attention_exchange.v1", True)])
-def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, monkeypatch, target, phase):
+@pytest.fixture
+def client(tmp_path, monkeypatch):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     from dashboard import app
+
+    for name, value in {"DB_PATH": tmp_path / "intake.sqlite3",
+                        "QUAL_EVIDENCE_STATE": tmp_path / "state", "QUAL_EVIDENCE_EXTRA": (),
+                        "SPOOL": tmp_path / "spool", "LOG_ROOT": tmp_path / "logs",
+                        "OFFER_PATH": tmp_path / "offer.json", "ENRICH": False}.items():
+        monkeypatch.setattr(app, name, value)
+    return TestClient(app.app)
+
+
+@pytest.mark.parametrize("target,phase", [
+    ("norm.fused_add_rmsnorm", False), ("collective.dp_attention_exchange.v1", True)])
+def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, client, target, phase):
 
     evidence = tmp_path / "retained"
     ref = _publish(evidence, _reads(phase), target, reports=True)
     db = tmp_path / "intake.sqlite3"
     _dashboard_db(db, ref, evidence, target)
-    monkeypatch.setattr(app, "DB_PATH", db)
-    monkeypatch.setattr(app, "QUAL_EVIDENCE_STATE", tmp_path / "state")
-    monkeypatch.setattr(app, "QUAL_EVIDENCE_EXTRA", ())
-    monkeypatch.setattr(app, "LOG_ROOT", tmp_path / "logs")
-    monkeypatch.setattr(app, "SPOOL", tmp_path / "spool")
-    monkeypatch.setattr(app, "OFFER_PATH", tmp_path / "offer.json")
-    response = TestClient(app.app).get("/api/submissions/example")
+    response = client.get("/api/submissions/example")
     assert response.status_code == 200
     detail = response.json()
     assert detail["target_id"] == target
@@ -162,18 +167,17 @@ def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, monk
     con.execute("INSERT INTO settlement_events VALUES(?,?,?,?)", (1, "CROWN", "example", target))
     con.commit()
     con.close()
-    winner = TestClient(app.app).get("/api/winners").json()["items"][0]
-    assert winner["cumulative_speedup_over_sglang"] == 1.03
-    assert winner["sglang_tokens_per_second"] is None
+    winner = client.get("/api/winners").json()["items"][0]
+    assert winner["speedup"] == 1.03
+    assert winner["baseline_tokens_per_second"] == 6.7
+    assert winner["baseline_kind"] == "stock"
     assert winner["prefill_speedup"] == pytest.approx(160 / 159.04)
 
 
 @pytest.mark.parametrize("target", ["norm.fused_add_rmsnorm", "collective.dp_attention_exchange.v1"])
 def test_held_result_retains_metrics_without_a_disposition_and_deduplicates_import(
-    tmp_path, monkeypatch, target,
+    tmp_path, client, target,
 ):
-    from fastapi.testclient import TestClient
-    from dashboard import app
 
     root = tmp_path / "evidence"
     reference = _publish(root, _reads(), target)
@@ -203,11 +207,6 @@ def test_held_result_retains_metrics_without_a_disposition_and_deduplicates_impo
     (result / "result.json").write_text(json.dumps({
         "request_id": request_id, "state": "completed", "response_sha256": digest,
         "artifacts": [{"role": "adapter_result", "sha256": digest, "size": len(response)}]}))
-    for name, value in {"DB_PATH": db, "QUAL_EVIDENCE_STATE": tmp_path / "state",
-                        "QUAL_EVIDENCE_EXTRA": (), "SPOOL": spool, "LOG_ROOT": tmp_path / "logs",
-                        "OFFER_PATH": tmp_path / "offer.json", "ENRICH": False}.items():
-        monkeypatch.setattr(app, name, value)
-    client = TestClient(app.app)
     detail = client.get("/api/submissions/example").json()
     assert detail["status"] == "held" and detail["decision"] == ""
     assert detail["tokens_per_second"] == 6.7
@@ -251,9 +250,7 @@ def test_dashboard_explains_valid_boundary_uncertainty_from_the_shared_grader(tm
 
 
 @pytest.mark.parametrize("detailed", [False, True])
-def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path, monkeypatch, detailed):
-    from fastapi.testclient import TestClient
-    from dashboard import app
+def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path, client, detailed):
 
     target, request_id = "collective.all_reduce", "b" * 64
     root, db, spool = tmp_path / "evidence", tmp_path / "intake.sqlite3", tmp_path / "spool"
@@ -279,11 +276,7 @@ def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path,
     (result / "result.json").write_text(json.dumps({
         "request_id": request_id, "state": "completed", "response_sha256": digest,
         "artifacts": [{"role": "adapter_result", "sha256": digest, "size": len(response)}]}))
-    for name, value in {"DB_PATH": db, "QUAL_EVIDENCE_STATE": tmp_path / "state",
-                        "QUAL_EVIDENCE_EXTRA": (), "SPOOL": spool, "LOG_ROOT": tmp_path / "logs",
-                        "OFFER_PATH": tmp_path / "offer.json", "ENRICH": False}.items():
-        monkeypatch.setattr(app, name, value)
-    detail = TestClient(app.app).get("/api/submissions/example").json()
+    detail = client.get("/api/submissions/example").json()
     assert detail["status"] == "held" and detail["decision"] == ""
     assert detail["qualification_attempts"] == []
     hold = detail["forensics"][0]["qualification_hold"]

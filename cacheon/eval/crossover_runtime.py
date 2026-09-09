@@ -51,9 +51,11 @@ from cacheon.eval.oci_outer_session import (
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.resident_schedule import (
     ReadSchedule,
+    ScheduleGrade,
     expanded_schedule,
     grade_schedule,
     read_rate,
+    _rate_from_batches,
 )
 from cacheon.eval.scoring import SpeedupVerdict, marginal_workload_digest
 from cacheon.eval.speed_verdict import (
@@ -66,7 +68,7 @@ from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 @dataclass(frozen=True)
 class ResidentSpeedPolicy:
-    """Authority for adaptive reads and the speed-stage wall-clock SLA."""
+    """Authority for precommitted reads and the speed-stage wall-clock SLA."""
 
     max_stage_seconds: int
     min_margin: float
@@ -74,7 +76,7 @@ class ResidentSpeedPolicy:
     max_noise: float
     calibration_digest: str
     calibration_context_digest: str
-    version: int = 1
+    version: int
     max_qualification_seconds: int = 7_200
     min_windows: int = 0
     max_window_scatter: float = 0.0
@@ -85,7 +87,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+            or self.version not in (8, 9, 10, 11, 12)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -112,48 +114,22 @@ class ResidentSpeedPolicy:
             or not 0 <= self.max_noise < 1
         ):
             raise CrossoverRuntimeError("resident speed policy is unsupported")
-        if self.version >= 2 and self.max_noise > 0.02:
+        if self.max_noise > 0.02:
             # Version 2 scores timed windows, where the hardened stack has
             # demonstrated <=0.8% honest spread; a looser ceiling would let a
             # broken measurement convict or crown instead of NO_DECISION.
             raise CrossoverRuntimeError(
-                "resident speed policy v2 requires max_noise <= 0.02"
+                "resident speed policy requires max_noise <= 0.02"
             )
-        if self.version >= 3:
-            # Version 3 grades the median over per-batch timed windows and
-            # refuses any read whose own window scatter exceeds the sealed
-            # bound: the noise floor becomes measured-per-read evidence
-            # instead of an assumption about the box.
-            if not 3 <= self.min_windows <= 512:
-                raise CrossoverRuntimeError(
-                    "resident speed policy v3 requires 3..512 timed windows"
-                )
-            # Version 3 refuses to grade an unfit read at all, so its bound is
-            # necessarily also a ceiling on what may be sealed. Version 4
-            # always produces a rate and carries scatter as recorded fitness
-            # evidence, so a looser advisory bound is admissible there.
-            scatter_ceiling = 0.25 if self.version >= 4 else 0.05
-            if not 0 < self.max_window_scatter <= scatter_ceiling:
-                raise CrossoverRuntimeError(
-                    f"resident speed policy v{min(self.version, 4)} requires a"
-                    f" window scatter bound in (0, {scatter_ceiling}]"
-                )
-            # Conditioning is outside scored windows. The historical v3
-            # bound catches gross startup regressions; each timed full request
-            # also includes prefill. Streaming phase measurements separate
-            # first-token delivery from subsequent generation.
-            if not 1.0 < self.max_conditioning_slowdown <= 2.0:
-                raise CrossoverRuntimeError(
-                    "resident speed policy v3 requires a conditioning slowdown"
-                    " bound in (1, 2]"
-                )
-        elif (
-            self.min_windows != 0
-            or self.max_window_scatter != 0.0
-            or self.max_conditioning_slowdown != 0.0
-        ):
+        if not 3 <= self.min_windows <= 512:
+            raise CrossoverRuntimeError("resident speed policy requires 3..512 timed windows")
+        if not 0 < self.max_window_scatter <= 0.25:
+            raise CrossoverRuntimeError("resident speed policy requires window scatter in (0, 0.25]")
+        # Conditioning is outside scored windows. The historical v3 bound
+        # catches gross startup regressions; each timed full request includes prefill.
+        if not 1.0 < self.max_conditioning_slowdown <= 2.0:
             raise CrossoverRuntimeError(
-                "window thresholds require resident speed policy v3"
+                "resident speed policy requires a conditioning slowdown bound in (1, 2]"
             )
         if self.version >= 12:
             # The prefill lane admits at a sealed margin and settles at a
@@ -187,8 +163,6 @@ class ResidentSpeedPolicy:
         warmth position: C against B (both first reads, cold) and C-prime
         against B-prime (both continuations, warm). Never mix positions."""
 
-        if self.version < 3:
-            return False
         baseline_tokens = baseline_row.conditioning_tokens  # type: ignore[attr-defined]
         candidate_tokens = candidate_row.conditioning_tokens  # type: ignore[attr-defined]
         if baseline_tokens != candidate_tokens:
@@ -220,37 +194,20 @@ class ResidentSpeedPolicy:
         return statistics.median([abs(rate - median) for rate in rates]) / median
 
     def scored_tokens_per_second(self, row: object) -> float:
-        """Verdict basis for one read. Version 1 grades the charged rate
-        (conditioning + timed), which double-counts session cold-start against
-        whichever arm read first; version 2 grades the steady-state timed
-        window only, with conditioning still bounded by the operational
-        budget; version 3 grades the median over per-batch timed windows and
-        refuses to produce a number at all when the read's own window scatter
-        exceeds the sealed bound, so no consumer anywhere can grade an unfit
-        measurement."""
+        """Rate the complete mixed workload, or the single-cell window median.
 
+        The retired charged-rate rule double-counted cold start against the
+        first arm. Every supported policy scores timed work and retains scatter.
+        """
+
+        self.read_window_scatter(row)
         if self.version in (9, 11, 12):
             # Mixed-cell qualification deliberately contains heterogeneous
             # batch widths and output budgets. A median of per-batch rates
             # would erase the minority cell; total timed tokens over the
             # host-observed makespan gives the sealed mixture one rate.
-            self.read_window_scatter(row)
             return row.timed_tokens / row.timed_seconds  # type: ignore[attr-defined]
-        if self.version >= 3:
-            # The call also enforces the sealed window count, which is a
-            # structural evidence requirement under every version.
-            scatter = self.read_window_scatter(row)
-            if self.version < 4 and scatter > self.max_window_scatter:
-                raise CrossoverRuntimeError(
-                    "resident read window scatter exceeds the sealed bound"
-                )
-            return statistics.median(
-                window.tokens / window.seconds
-                for window in row.windows  # type: ignore[attr-defined]
-            )
-        if self.version >= 2:
-            return row.timed_tokens / row.timed_seconds  # type: ignore[attr-defined]
-        return row.tokens_per_second  # type: ignore[attr-defined]
+        return statistics.median(window.tokens / window.seconds for window in row.windows)
 
     @property
     def digest(self) -> str:
@@ -261,21 +218,11 @@ class ResidentSpeedPolicy:
                 # The sealed identity states the schedule it was measured under.
                 # Version 8 reads the bookend unconditionally, so it must not
                 # claim the conditional read order that versions 6 and 7 seal.
-                "borderline_band": (
-                    "invariant_over_reads_taken"
-                    if self.version >= 8
-                    else "pod_bookend_invariant"
-                    if self.version >= 6
-                    else "one_min_margin_around_required"
-                ),
+                "borderline_band": "invariant_over_reads_taken",
                 "read_order": (
                     list(PREFILL_LANE_ROLES)
                     if self.version >= 12
                     else list(DECODE_ROLES)
-                    if self.version >= 8
-                    else ["B", "C", "B_prime_if_inconclusive"]
-                    if self.version >= 6
-                    else ["B", "C", "B_prime", "C_prime", "B_double_prime"]
                 ),
                 "timing": "serialized_resident_host_time",
             },
@@ -291,15 +238,10 @@ class ResidentSpeedPolicy:
             "min_margin": format(self.min_margin, ".17g"),
             "noise_multiplier": format(self.noise_multiplier, ".17g"),
             "version": self.version,
+            "max_conditioning_slowdown": format(self.max_conditioning_slowdown, ".17g"),
+            "max_window_scatter": format(self.max_window_scatter, ".17g"),
+            "min_windows": self.min_windows,
         }
-        if self.version >= 3:
-            # Window thresholds exist only under version 3; earlier sealed
-            # policies keep their exact historical bytes and digests.
-            row["max_conditioning_slowdown"] = format(
-                self.max_conditioning_slowdown, ".17g"
-            )
-            row["max_window_scatter"] = format(self.max_window_scatter, ".17g")
-            row["min_windows"] = self.min_windows
         if self.version >= 12:
             row["prefill_credit_weight"] = format(self.prefill_credit_weight, ".17g")
             row["prefill_min_margin"] = format(self.prefill_min_margin, ".17g")
@@ -316,37 +258,22 @@ class ResidentSpeedPolicy:
             "min_margin",
             "noise_multiplier",
             "version",
+            "max_conditioning_slowdown",
+            "max_window_scatter",
+            "min_windows",
         }
         if (
             type(value) is not dict
             or type(value.get("version")) is not int
         ):
             raise CrossoverRuntimeError("resident speed policy fields differ")
-        window_kwargs: dict[str, object] = {}
-        if value["version"] >= 3:
-            fields |= {
-                "max_conditioning_slowdown",
-                "max_window_scatter",
-                "min_windows",
-            }
         if value["version"] >= 12:
             fields |= {"prefill_credit_weight", "prefill_min_margin"}
         if set(value) != fields:
             raise CrossoverRuntimeError("resident speed policy fields differ")
         try:
-            if value["version"] >= 3:
-                window_kwargs = {
-                    "min_windows": value["min_windows"],
-                    "max_window_scatter": float(value["max_window_scatter"]),
-                    "max_conditioning_slowdown": float(
-                        value["max_conditioning_slowdown"]
-                    ),
-                }
-            if value["version"] >= 12:
-                window_kwargs["prefill_min_margin"] = float(value["prefill_min_margin"])
-                window_kwargs["prefill_credit_weight"] = float(
-                    value["prefill_credit_weight"]
-                )
+            prefill = {name: float(value[name]) for name in (
+                "prefill_min_margin", "prefill_credit_weight") if name in value}
             result = cls(
                 max_stage_seconds=value["max_stage_seconds"],  # type: ignore[arg-type]
                 min_margin=float(value["min_margin"]),
@@ -356,7 +283,10 @@ class ResidentSpeedPolicy:
                 calibration_context_digest=value["calibration_context_digest"],  # type: ignore[arg-type]
                 version=value["version"],  # type: ignore[arg-type]
                 max_qualification_seconds=value["max_qualification_seconds"],  # type: ignore[arg-type]
-                **window_kwargs,  # type: ignore[arg-type]
+                min_windows=value["min_windows"],
+                max_window_scatter=float(value["max_window_scatter"]),
+                max_conditioning_slowdown=float(value["max_conditioning_slowdown"]),
+                **prefill,
             )
             if result.to_dict() != value:
                 raise CrossoverRuntimeError("resident speed policy is noncanonical")
@@ -372,7 +302,7 @@ class ResidentSpeedPolicy:
         max_qualification_seconds: int = 7_200,
         calibration: object,
         context: object,
-        version: int = 1,
+        version: int,
         min_windows: int = 0,
         max_window_scatter: float = 0.0,
         max_conditioning_slowdown: float = 0.0,
@@ -735,52 +665,10 @@ def _recomputed_rate(
     if stop > len(execution.session.batches):
         raise CrossoverRuntimeError("resident rate exceeds its retained session")
     rows = execution.session.batches[start:stop]
-    timed = rows[plan.warmup_count :]
-    conditioning_start = plan.warmup_count - plan.conditioning_count
-    conditioning = rows[conditioning_start : plan.warmup_count]
-    if (
-        not timed
-        or not conditioning
-        or rate.last_batch_index != stop - 1
-        or tuple(
-            expanded_schedule(plan, stop // len(plan.prompt_batches)).prompt_batches[
-                row.batch_index
-            ]
-            for row in rows
-        )
-        != plan.prompt_batches
-    ):
+    if rate.last_batch_index != stop - 1:
         raise CrossoverRuntimeError("resident rate does not name one complete read")
-    conditioning_seconds = (
-        timed[0].request_started_at - conditioning[0].request_started_at
-    )
-    timed_seconds = (
-        timed[-1].response_completed_at - timed[0].request_started_at
-    )
-    conditioning_tokens = sum(row.token_numerator for row in conditioning)
-    timed_tokens = sum(row.token_numerator for row in timed)
-    charged_seconds = conditioning_seconds + timed_seconds
-    charged_tokens = conditioning_tokens + timed_tokens
-    return ResidentReadRate(
-        rate.role,
-        _expected_lane_digest(arm),
-        arm.launch.digest,
-        execution.session.session_id,
-        start,
-        stop - 1,
-        timed[0].batch_index,
-        timed[-1].batch_index,
-        conditioning_tokens,
-        timed_tokens,
-        charged_tokens,
-        float(conditioning_seconds),
-        float(timed_seconds),
-        float(charged_seconds),
-        float(charged_tokens / charged_seconds),
-        # Recompute exactly what the sealed row claims: a windowed row must
-        # rebuild from the same raw spans, a legacy row must stay window-free.
-        _timed_windows(timed) if rate.windows else (),
-    )
+    return _rate_from_batches(rate.role, _expected_lane_digest(arm), arm.launch.digest,
+                              execution.session.session_id, start, rows, plan)
 
 
 @dataclass(frozen=True)
@@ -1078,10 +966,6 @@ def run_resident_crossover_speed(
     candidate_lane = _lane_digest(candidate_executor, plan.candidate)
     if baseline_lane == candidate_lane:
         raise CrossoverRuntimeError("resident executors reused one lane namespace")
-    if plan.policy.version < 8:
-        raise CrossoverRuntimeError(
-            "two-process crossover requires the precommitted B/C/B-prime policy"
-        )
     # Version 8 reads B and B-prime on the baseline lane and exactly one C on
     # the candidate lane. Version 12 then repeats each lane's reads as
     # one-token prefill passes, after the decode schedule is complete.
@@ -1093,81 +977,33 @@ def run_resident_crossover_speed(
         plan.candidate.session_plan, 1, prefill_reads=prefill
     )
     schedule = ReadSchedule()
+    roles = PREFILL_LANE_ROLES if prefill else DECODE_ROLES
 
-    windowed = True
-
-    def baseline_driver(controller: OpenedOuterSession) -> SessionExecutionEvidence:
-        try:
-            schedule.put("baseline_ready")
-            schedule.get("candidate_ready", deadline=stage_deadline, clock=clock)
-            def read(role: str) -> ResidentReadRate:
-                rate = read_rate(
-                    role,
-                    baseline_lane,
-                    controller,
-                    plan.baseline.session_plan,
-                    with_windows=windowed,
-                )
-                schedule.put(role, rate)
-                return rate
-
-            rates = [read("B")]
-            rates.append(schedule.get("C", deadline=stage_deadline, clock=clock))
-            rates.append(read("B_prime"))
-            if prefill:
-                rates.append(read("B_prefill"))
-                rates.append(
-                    schedule.get("C_prefill", deadline=stage_deadline, clock=clock)
-                )
-                rates.append(read("B_prime_prefill"))
-            # Conditioning pairs by warmth position: C against B, the cold
-            # first reads. A regression there is a clear FAIL -- the
-            # candidate's unscored work already blew its sealed bound.
-            grade = grade_schedule(plan.policy, tuple(rates))
-            schedule.put("initial", grade.verdict)
-            schedule.put("escalate", False)
-            schedule.put("final", grade.verdict)
-            schedule.put("decision", grade.decision)
-            return controller.finish(require_all=False)
-        except BaseException as exc:
-            schedule.fail(exc)
-            raise
-
-    def candidate_driver(controller: OpenedOuterSession) -> SessionExecutionEvidence:
-        try:
-            schedule.put("candidate_ready")
-            schedule.get("baseline_ready", deadline=stage_deadline, clock=clock)
-            schedule.get("B", deadline=stage_deadline, clock=clock)
-            schedule.put(
-                "C",
-                read_rate(
-                    "C",
-                    candidate_lane,
-                    controller,
-                    plan.candidate.session_plan,
-                    with_windows=windowed,
-                ),
-            )
-            if prefill:
-                schedule.get("B_prefill", deadline=stage_deadline, clock=clock)
-                schedule.put(
-                    "C_prefill",
-                    read_rate(
-                        "C_prefill",
-                        candidate_lane,
-                        controller,
-                        plan.candidate.session_plan,
-                        with_windows=windowed,
-                    ),
-                )
-            # Stay resident and idle until the baseline lane has finished.
-            # Tearing this CUDA context down while B-prime is charging would
-            # contaminate it.
-            schedule.get("decision", deadline=stage_deadline, clock=clock)
-            return controller.finish(require_all=False)
-        except BaseException as exc:
-            schedule.fail(exc)
-            raise
+    def driver(prefix, peer, arm, lane):
+        def run(controller: OpenedOuterSession) -> SessionExecutionEvidence:
+            try:
+                schedule.put(prefix + "_ready")
+                schedule.get(peer + "_ready", deadline=stage_deadline, clock=clock)
+                for index, role in enumerate(roles):
+                    if not role.startswith(prefix):
+                        continue
+                    if index:
+                        schedule.get(roles[index - 1], deadline=stage_deadline, clock=clock)
+                    schedule.put(role, read_rate(role, lane, controller, arm.session_plan))
+                if prefix == "B":
+                    # Conditioning compares C against B, their matching cold reads;
+                    # a regression fails even when timed candidate work is faster.
+                    schedule.put("grade", grade_schedule(
+                        plan.policy, tuple(schedule.values[role] for role in roles)))
+                else:
+                    # Stay resident until the baseline finishes: CUDA teardown
+                    # while B-prime is charging would contaminate its timing.
+                    schedule.get("grade", deadline=stage_deadline, clock=clock)
+                return controller.finish(require_all=False)
+            except BaseException as exc:
+                schedule.fail(exc)
+                raise
+        return run
 
     def execute(executor, arm, expanded_plan, driver):
         try:
@@ -1192,14 +1028,14 @@ def run_resident_crossover_speed(
                 baseline_executor,
                 plan.baseline,
                 baseline_plan,
-                baseline_driver,
+                driver("B", "C", plan.baseline, baseline_lane),
             ),
             pool.submit(
                 execute,
                 candidate_executor,
                 plan.candidate,
                 candidate_plan,
-                candidate_driver,
+                driver("C", "B", plan.candidate, candidate_lane),
             ),
         )
         executions: list[EngineExecutionEvidence] = []
@@ -1215,20 +1051,10 @@ def run_resident_crossover_speed(
         type(row) is not EngineExecutionEvidence for row in executions
     ):
         raise CrossoverRuntimeError("resident speed returned incomplete evidence")
-    initial = schedule.values["initial"]
-    final = schedule.values["final"]
-    decision = schedule.values["decision"]
-    escalated = schedule.values["escalate"] is True
-    if (
-        type(initial) is not SpeedupVerdict
-        or type(final) is not SpeedupVerdict
-        or type(decision) is not SpeedStageDecision
-    ):
+    grade = schedule.values["grade"]
+    if type(grade) is not ScheduleGrade:
         raise CrossoverRuntimeError("resident speed grade is incomplete")
-    rates = tuple(
-        schedule.values[role]
-        for role in (PREFILL_LANE_ROLES if prefill else DECODE_ROLES)
-    )
+    rates = tuple(schedule.values[role] for role in roles)
     if any(type(row) is not ResidentReadRate for row in rates):
         raise CrossoverRuntimeError("resident speed rates are incomplete")
     baseline_quiescence = baseline_executor.prove_quiescent()
@@ -1246,11 +1072,11 @@ def run_resident_crossover_speed(
         baseline_quiescence,
         candidate_quiescence,
         rates,  # type: ignore[arg-type]
-        initial,
-        final,
-        escalated,
-        decision,
-        ("borderline_" if escalated else "clear_") + decision.value.lower(),
+        grade.verdict,
+        grade.verdict,
+        False,
+        grade.decision,
+        "clear_" + grade.decision.value.lower(),
         started,
         completed,
     )

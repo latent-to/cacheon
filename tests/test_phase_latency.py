@@ -361,7 +361,7 @@ def test_production_crossover_report_recomputes_cells_from_bound_raw_sessions(
     plan, baseline, candidate, mount, _, _ = fixtures._rig(
         tmp_path,
         (0.9,),
-        policy=fixtures._policy_v3(version=11),
+        policy=fixtures._resident_policy(version=11),
     )
     plan = replace(
         plan,
@@ -384,11 +384,11 @@ def test_production_crossover_report_recomputes_cells_from_bound_raw_sessions(
     assert result.regrade(plan) == result.final_verdict
     witness = ResidentSpeedWitness.from_evidence(result, plan)
     raw = witness.to_dict()
-    assert all(rate["cells"][0]["input_tokens"] == 5 for rate in raw["rates"])
+    assert all(rate["windows"][0]["input_tokens"] == 5 for rate in raw["rates"])
     assert ResidentSpeedWitness.from_dict(raw) == witness
     forged = copy.deepcopy(raw)
-    forged["rates"][0]["cells"][0]["mean_ttft_seconds"] = "0.000001"
-    with pytest.raises(CrossoverRuntimeError, match="noncanonical"):
+    forged["rates"][0]["cells"] = [{"mean_ttft_seconds": "0.000001"}]
+    with pytest.raises(CrossoverRuntimeError, match="fields differ"):
         ResidentSpeedWitness.from_dict(forged)
     rate = result.rates[0]
     altered = replace(rate.windows[0], prompt_latencies=((0.01, 0.5),))
