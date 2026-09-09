@@ -17,6 +17,8 @@ Then open http://127.0.0.1:8788/ (interactive API docs at `/docs`).
 
 Uses the prod conda python (`/root/miniconda3/envs/prod/bin/python`), which
 already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
+From a local repository checkout, install `python -m pip install -e ".[dashboard,dev]"`
+to run the dashboard and its API tests.
 
 ## What it shows
 
@@ -81,6 +83,37 @@ worker reserves stdout for framed protocol and redirects ordinary Python/native
 stdout into the retained stderr stream, so miner prints and crash diagnostics are
 both present. Section headers state byte counts, hashes, and whether the 16 MiB
 stream bound truncated the output.
+
+Each qualification attempt also has a **Performance** section:
+
+- **Output throughput:** B/C/B′ output tok/s and total timed batch seconds.
+  This includes prompt processing and generation; it is not isolated decode time.
+- **Prefill:** v12 prompt-pass throughput in **prompts/s**, total timed batch
+  seconds, observed candidate gain over the faster baseline read, and the
+  retained prefill margin. Each prompt pass generates one output token, so the
+  output-token count is a request count, not an input-token throughput measure.
+  The comparison describes the measurements; it does not replace the verdict.
+- **TTFT / TPOT by workload:** mean first-token latency, mean time per subsequent
+  token, and output throughput, separated by input tokens, output tokens and
+  request concurrency. Cells are recomputed from retained host timing windows.
+  Evaluations without these timings explicitly show **Not measured**.
+
+The Winners table includes conservative observed prefill gain when retained
+passing attempts contain prompt passes. Missing historical measurements remain
+absent. `session.measure_phase_latency` must have been enabled in the evaluation
+to display TTFT/TPOT; enabling a dashboard panel does not enable measurement or
+reconstruct timings for old runs.
+
+Credited gains are labelled separately from measured throughput. A v12 prefill
+credit is not an output-throughput ratio, so the dashboard does not divide
+candidate tok/s by that credit to invent a stock tok/s estimate.
+
+The API keeps ordinary lane `tokens_per_second` and adds `timed_seconds` and
+`cells`. Prefill lanes set `tokens_per_second` to null and expose
+`prompts_per_second` instead. `speed.prefill` contains the observed `speedup`
+and retained `min_margin`. The reader also follows database-recorded and staged
+evidence roots and selects the submission's target from historical multi-target
+reports, so changing worker generations does not hide retained measurements.
 
 Metagraph emission is denominated in the subnet's own alpha token, so
 `/api/winners` and `/api/miners` report `emission_alpha_per_day` beside an

@@ -9,6 +9,9 @@ from dashboard.winners import (
     cumulative_crown_speedups,
     estimated_sglang_tokens_per_second,
     live_offer_shares,
+    measured_baseline,
+    prefill_summary,
+    sglang_comparison,
 )
 
 
@@ -80,11 +83,29 @@ def test_winners_view_labels_relative_and_sglang_columns() -> None:
         Path(__file__).parents[1] / "dashboard" / "static" / "index.html"
     ).read_text()
 
-    assert '"Vs incumbent","Vs SGLang"' in html
-    assert "cumulative_improvement_pct_over_sglang" in html
-    assert "cumulative_speedup_over_sglang" in html
+    assert '"Credited vs incumbent","Credited vs SGLang"' in html
+    assert "sglang_improvement_pct" in html
+    assert "sglang_comparison_basis" in html
     assert "tokens_per_second" in html
     assert "sglang_tokens_per_second" in html
+
+
+def test_winner_keeps_measured_baseline_and_prefill_separate_from_stock_estimate() -> None:
+    reads = [
+        {"lanes": [{"role": "B", "tokens_per_second": 1200},
+                   {"role": "B_prime", "tokens_per_second": 1190},
+                   {"role": "C_prefill", "tokens_per_second": None}],
+         "prefill": {"speedup": 1.12}},
+        {"lanes": [], "prefill": {"speedup": 1.08}},
+    ]
+    assert measured_baseline(reads, {"incumbent_manifest": {"entries": {}}}) == {
+        "baseline_tokens_per_second": 1190.0, "baseline_kind": "stock"}
+    assert prefill_summary(reads) == {"prefill_speedup": 1.08}
+    assert prefill_summary([]) == {"prefill_speedup": None}
+    comparison = sglang_comparison({"primary": {
+        "speedup": "1.07", "incumbent_manifest": {"entries": {}}}}, None)
+    assert comparison["sglang_speedup"] == 1.07
+    assert comparison["sglang_comparison_basis"] == "Evaluated against stock"
 
 
 def test_emission_columns_render_the_chain_alpha_symbol_not_tao() -> None:

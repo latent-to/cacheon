@@ -23,7 +23,8 @@ dependencies = [
 # CUDA libs (heavier download); for a lean CPU-only install do
 # `pip install torch --index-url https://download.pytorch.org/whl/cpu` first.
 cpu = ["torch"]
-dev = ["pytest>=7", "ruff==0.12.7"]
+dev = ["pytest>=7", "ruff==0.12.7", "httpx>=0.24"]
+dashboard = ["fastapi>=0.100", "uvicorn>=0.23"]
 # S3-compatible object stores (Hippius / AWS / MinIO). boto3 is Apache-2.0.
 object-store = ["boto3>=1.34"]
 

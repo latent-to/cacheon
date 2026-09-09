@@ -113,6 +113,14 @@ latency measurements, not isolated GPU phase durations or pure input-token
 throughput. The exact input length and concurrency therefore accompany every
 result. Cells are reported separately rather than averaged together.
 
+The dashboard's submission **Performance** section displays these cells with
+TTFT and TPOT in milliseconds. It shows **Not measured** for evaluations that
+did not collect delivery timings. Output tok/s and the v12 prompt-pass
+comparison remain available independently; prompt passes use **prompts/s**,
+because each request generates one output token. Their batch durations are not
+per-request TTFT. Dashboard display does not enable a measurement mode or
+change a qualification verdict.
+
 This option does not change the v10/v11 qualification or payout rule. A 1.5× TTFT
 improvement is reported as such, not credited as a 1.5× end-to-end speedup. The
 reviewed policy that can qualify a prompt-processing win on its own terms is the

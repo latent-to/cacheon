@@ -40,7 +40,8 @@ class BaselineBandError(ValueError):
 
 
 def qualification_evidence_roots(
-    state_dir: Path, extra: tuple[Path, ...] = ()
+    state_dir: Path, extra: tuple[Path, ...] = (), connection: Any = None,
+    *, stage_dir: Path | None = None,
 ) -> tuple[Path, ...]:
     """Every local store that may retain a submission's stage-exit artifact.
 
@@ -52,11 +53,19 @@ def qualification_evidence_roots(
         rotated = sorted(state_dir.glob("qualification-evidence-*"), reverse=True)
     except OSError:
         rotated = []
-    return tuple(rotated) + tuple(root for root in extra if root.is_dir())
+    recorded = [] if connection is None else [
+        Path(row[0]) for row in connection.execute(
+            "SELECT DISTINCT evidence_root FROM settlement_qualifications "
+            "WHERE evidence_root != ''")
+    ]
+    staged = [] if stage_dir is None else sorted(
+        stage_dir.glob("*/monday-config/qualification-evidence"), reverse=True)
+    return tuple(dict.fromkeys(
+        rotated + recorded + staged + [root for root in extra if root.is_dir()]))
 
 
 def qualification_speed(
-    attempt_ref_json: object, roots: tuple[Path, ...]
+    attempt_ref_json: object, roots: tuple[Path, ...], target_id: str = ""
 ) -> dict[str, Any] | None:
     """Measured lane rates from a graded attempt's stage-exit artifact.
 
@@ -77,40 +86,78 @@ def qualification_speed(
     if payload is None:
         return None
     try:
-        rates = json.loads(payload)["speed_witness"]["rates"]
+        result = json.loads(payload)
+        if "reports" in result:
+            reports = [report for report in result["reports"]
+                       if not target_id or report.get("target_id") == target_id]
+            if len(reports) != 1:
+                return None
+            result = reports[0]
+        witness = result["speed_witness"]
+        rates = witness["rates"]
     except (TypeError, ValueError, KeyError):
         return None
     if not isinstance(rates, list):
         return None
     lanes: list[dict[str, Any]] = []
-    by_role: dict[Any, dict[str, Any]] = {}
+    by_role: dict[str, float] = {}
     for rate in rates:
         try:
             windows = [float(row["seconds"]) for row in rate["windows"]]
             timed_tokens = int(rate["timed_tokens"])
             timed_seconds = float(rate["timed_seconds"])
             conditioning = float(rate["conditioning_seconds"])
+            cells = _phase_measurements(rate["windows"])
         except (TypeError, ValueError, KeyError):
             return None
         if not windows or timed_seconds <= 0:
             return None
         average = sum(windows) / len(windows)
+        role = rate.get("role")
+        prefill = role in {"B_prefill", "C_prefill", "B_prime_prefill"}
+        throughput = timed_tokens / timed_seconds
         lane = {
-            "role": rate.get("role"),
-            "tokens_per_second": round(timed_tokens / timed_seconds, 1),
+            "role": role,
+            "tokens_per_second": None if prefill else round(throughput, 1),
+            # A v12 prompt pass produces exactly one output token per request.
+            "prompts_per_second": round(throughput, 6) if prefill else None,
+            "timed_seconds": round(timed_seconds, 3),
+            "cells": cells,
             "window_seconds": [round(seconds, 3) for seconds in windows],
             "window_scatter": round((max(windows) - min(windows)) / average, 4),
             "conditioning_ratio": round(conditioning / average, 4),
         }
         lanes.append(lane)
-        by_role[lane["role"]] = lane
+        by_role[role] = throughput
     speed: dict[str, Any] = {"lanes": lanes}
     baseline, candidate = by_role.get("B"), by_role.get("C")
-    if baseline and candidate and baseline["tokens_per_second"]:
-        speed["speedup"] = round(
-            candidate["tokens_per_second"] / baseline["tokens_per_second"], 4
-        )
+    if baseline and candidate:
+        speed["speedup"] = round(candidate / baseline, 4)
+    if all(by_role.get(role) for role in ("B_prefill", "C_prefill", "B_prime_prefill")):
+        policy = witness.get("resident_policy") or {}
+        speed["prefill"] = {
+            "speedup": by_role["C_prefill"] / max(
+                by_role["B_prefill"], by_role["B_prime_prefill"]),
+            "min_margin": policy.get("prefill_min_margin"),
+        }
     return speed
+
+
+def _phase_measurements(windows: list[dict[str, Any]]) -> list[dict[str, object]]:
+    """Recompute delivery metrics from retained host times, not cached cell summaries."""
+    if not any(window.get("prompt_latencies") for window in windows):
+        return []
+    from cacheon.eval.resident_measurement import TimedWindow, phase_cells
+
+    return phase_cells(tuple(
+        TimedWindow(
+            window["batch_index"], window["tokens"], float(window["seconds"]),
+            window.get("input_tokens"),
+            tuple(tuple(float(t) for t in pair)
+                  for pair in window.get("prompt_latencies", ())),
+        )
+        for window in windows
+    ))
 
 
 @dataclass(frozen=True)

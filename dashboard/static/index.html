@@ -86,14 +86,24 @@ input[type=text] { min-width: 260px; }
 .btn:hover { border-color: var(--muted); text-decoration: none; }
 .copy { cursor: pointer; color: var(--muted); }
 .copy:hover { color: var(--fg); }
-#drawer { position: fixed; top: 0; right: -560px; width: 540px; max-width: 94vw;
+#drawer { position: fixed; top: 0; right: -850px; width: 820px; max-width: 94vw;
   height: 100vh; background: var(--panel); border-left: 1px solid var(--line);
   transition: right .18s ease; z-index: 30; overflow-y: auto; padding: 20px; }
 #drawer.open { right: 0; box-shadow: -18px 0 50px rgba(0,0,0,.5); }
 #drawer h3 { margin: 0 0 4px; font-size: 14px; }
+.heading-anchor { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; margin-left:4px; padding:3px; border:0; border-radius:5px; background:transparent; color:var(--muted); cursor:pointer; vertical-align:middle; }
+.heading-anchor:hover, .heading-anchor:focus-visible { color:var(--accent); background:var(--panel2); }
 #drawer .kv { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px;
   margin: 14px 0; font-size: 12.5px; }
 #drawer .kv dt { color: var(--muted); } #drawer .kv dd { margin: 0; word-break: break-all; }
+.metrics-table { overflow-x: auto; margin: 10px 0; }
+.performance { margin: 20px 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
+.performance h4 { margin: 22px 0 8px; font-size: 13px; }
+.performance .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.performance .card b { font-size: 20px; }
+.performance .metric-note { color: var(--muted); font-size: 12px; margin: 8px 0; }
+.performance td:first-child { white-space: nowrap; }
+.workload-label { margin: 18px 0 6px; font-weight: 600; font-size: 12px; }
 .forensics-run { border: 1px solid var(--line); border-radius: 9px; padding: 12px;
   margin: 10px 0; background: var(--bg); }
 .forensics-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -118,6 +128,10 @@ input[type=text] { min-width: 260px; }
   z-index: 5; pointer-events: none; }
 .callout { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--warn);
   border-radius: 8px; padding: 10px 14px; margin: 10px 0; color: var(--muted); }
+.reward-notice { background: rgba(248,113,113,.10); border-color: rgba(248,113,113,.4); border-left-color: var(--bad); color: var(--fg); }
+.reward-notice strong { color: var(--bad); }
+.reward-notice p, .hold-note p { margin: 6px 0; }
+.hold-note { margin: 8px 0 14px; padding-left: 12px; border-left: 2px solid var(--line); color: var(--muted); font-size: 12px; }
 .bar { height: 6px; border-radius: 4px; background: var(--panel2); overflow: hidden; margin-top: 4px; }
 .bar i { display: block; height: 100%; background: var(--accent); }
 .empty { color: var(--muted); padding: 18px; text-align: center; background: var(--panel);
@@ -156,6 +170,8 @@ const TABS = [
   ["timeline", "Timeline"], ["system", "System"],
 ];
 let tab = location.hash.replace("#", "") || "overview";
+if (!TABS.some(([id]) => id === tab)) tab = "overview";
+let detailRequest = 0;
 let subFilters = { q: "", status: "", offset: 0 };
 let timer = null;
 
@@ -328,7 +344,7 @@ async function viewQueue() {
     <td>${s.queue_position}</td>
     <td><code>${esc(short(s.reservation_id, 12))}</code></td>
     <td>${pill(s.status)}</td>
-    <td>${esc(s.target_id || "—")}</td>
+    <td>${esc(s.target_id || "—")}<div class="small"><span class="pill info">${esc(s.competition)}</span></div></td>
     <td>${key(s.hotkey, s.hotkey_links)}</td>
     <td>${fmtTime(s.submitted)}<div class="muted small">waiting ${dur(s.waiting_seconds)}</div></td>
     <td>${s.payment ? '<span class="pill ok">1 τ paid</span>' : '<span class="pill mute">unpaid</span>'}</td>
@@ -381,7 +397,7 @@ async function viewSubmissions() {
     <td>${key(s.hotkey, s.hotkey_links)}</td>
     <td>${fmtTime(s.submitted)}</td>
     <td>${blockLink(s.submitted, s.block_links)}</td>
-    <td>${esc(s.target_id || "—")}</td>
+    <td>${esc(s.target_id || "—")}<div class="small"><span class="pill info">${esc(s.competition)}</span></div></td>
     <td>${baselineSummary(s.baseline)}</td>
     <td>${s.payment
         ? `<a href="${esc(s.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(s.payment.ref)}</a>`
@@ -454,19 +470,20 @@ async function viewWinners() {
     const hc = w.hotkey_chain || {};
     return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
     <td><code title="${esc(w.reservation_id)}">${esc(short(w.reservation_id, 12))}</code></td>
-    <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div></td>
+    <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div><span class="pill info">${esc(w.competition)}</span></td>
     <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
         <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
         ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
-    <td>${w.cumulative_improvement_pct_over_sglang != null
-        ? `<b style="color:var(--accent)">+${w.cumulative_improvement_pct_over_sglang.toFixed(2)}%</b>` : "—"}
-        <div class="muted small">${w.cumulative_speedup_over_sglang
-          ? w.cumulative_speedup_over_sglang.toFixed(5) + "× SGLang" : ""}</div>
-        <div class="muted small">${w.tokens_per_second != null
-          ? w.tokens_per_second.toFixed(1) + " tok/s"
-          : ""}${w.sglang_tokens_per_second != null
-          ? " · " + w.sglang_tokens_per_second.toFixed(1) + " tok/s SGLang"
-          : ""}</div></td>
+    <td>${w.sglang_improvement_pct != null
+        ? `<b style="color:var(--accent)">+${w.sglang_improvement_pct.toFixed(2)}%</b>` : "—"}
+        <div class="muted small">${w.sglang_speedup
+          ? w.sglang_speedup.toFixed(5) + "× SGLang" : ""}</div>
+        <div class="muted small">${esc(w.sglang_comparison_basis)}</div>
+        <div class="muted small">${w.sglang_tokens_per_second != null
+          ? w.sglang_tokens_per_second.toFixed(1) + " tok/s stock estimate" : ""}</div></td>
+    <td>${w.tokens_per_second != null ? `<b>${w.tokens_per_second.toFixed(1)}</b> tok/s` : '<span class="muted">Unavailable</span>'}
+        </td>
+    <td>${w.prefill_speedup != null ? metricGain(w.prefill_speedup) : '<span class="muted">Not measured</span>'}</td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
     <td>${fmtTime(w.passed)}<div class="muted small">block ${blockLink(w.passed, w.passed_links)}</div></td>
     <td>${w.weight_share != null ? `<b>${(w.weight_share * 100).toFixed(2)}%</b>` : "—"}
@@ -482,8 +499,9 @@ async function viewWinners() {
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
     ${offerLine(d.offer)}
     <h2>Retained PASS rewards</h2>
-    ${table(["Reservation","Improved op","Vs incumbent","Vs SGLang","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
-      rows, "No retained PASS rewards yet.")}`;
+    <p class="muted small">Credited gains follow arena scoring. Throughput and prefill columns show measured performance.</p>
+    <div class="metrics-table">${table(["Reservation","Improved op","Credited vs incumbent","Credited vs SGLang","Candidate tok/s","Prefill gain","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
+      rows, "No retained PASS rewards yet.")}</div>`;
 }
 
 function offerLine(o) {
@@ -579,16 +597,123 @@ async function viewSystem() {
 }
 
 /* ---------------- detail drawer ---------------- */
+const metricNumber = (value, digits = 1) => value != null && Number.isFinite(Number(value))
+  ? Number(value).toLocaleString(undefined, {minimumFractionDigits: digits, maximumFractionDigits: digits}) : "—";
+const metricMilliseconds = (seconds) => metricNumber(seconds == null ? null : Number(seconds) * 1000, 2);
+const metricGain = (ratio) => `${Number(ratio) >= 1 ? "+" : ""}${metricNumber((Number(ratio) - 1) * 100, 2)}%`;
+const readLabel = (role) => ({B: "B · baseline before", C: "C · candidate", B_prime: "B′ · baseline after",
+  B_double_prime: "B″ · baseline after", B_prefill: "B · baseline before",
+  C_prefill: "C · candidate", B_prime_prefill: "B′ · baseline after"})[role] || role;
+
+function performanceMetrics(attempt) {
+  const speed = attempt.speed;
+  const title = `<h2>Performance · attempt #${esc(attempt.attempt)}</h2>
+    <p>${pill(attempt.decision)} <span class="muted small">${esc(attempt.reason || "")}</span></p>`;
+  if (!speed || !speed.lanes.length)
+    return `<section class="performance">${title}<p class="metric-note">Retained measurements are unavailable for this attempt.</p></section>`;
+  const output = speed.lanes.filter((lane) => lane.tokens_per_second != null);
+  const prefill = speed.lanes.filter((lane) => lane.prompts_per_second != null);
+  const rateRows = (lanes, field, digits) => lanes.map((lane) => `<tr>
+    <td>${esc(readLabel(lane.role))}</td><td class="mono">${metricNumber(lane[field], digits)}</td>
+    <td class="mono">${metricNumber(lane.timed_seconds, 3)}</td></tr>`);
+  const workloads = new Map();
+  for (const lane of output) for (const cell of lane.cells || []) {
+    const shape = [cell.input_tokens, cell.output_tokens, cell.concurrency].join(":");
+    if (!workloads.has(shape)) workloads.set(shape, {cell, rows: []});
+    workloads.get(shape).rows.push(`<tr><td>${esc(readLabel(lane.role))}</td>
+      <td class="mono">${metricMilliseconds(cell.mean_ttft_seconds)}</td>
+      <td class="mono">${metricMilliseconds(cell.mean_tpot_seconds)}</td>
+      <td class="mono">${metricNumber(cell.end_to_end_output_tokens_per_second)}</td>
+      <td>${metricNumber(cell.timed_batches, 0)}</td></tr>`);
+  }
+  const latencyTables = [...workloads.values()].map(({cell, rows}) => `
+    <p class="workload-label">${metricNumber(cell.input_tokens, 0)} input tokens · ${metricNumber(cell.output_tokens, 0)} output tokens · concurrency ${metricNumber(cell.concurrency, 0)}</p>
+    <div class="metrics-table">${table(["Read", "Mean TTFT (ms)", "Mean TPOT (ms)", "Output tok/s", "Batches"], rows)}</div>`).join("");
+  const promptGain = speed.prefill;
+  return `<section class="performance">${title}
+    <h4>Output throughput</h4>
+    <div class="metrics-table">${table(["Read", "Output tok/s", "Timed batches (s)"], rateRows(output, "tokens_per_second", 1))}</div>
+    <p class="metric-note">Output throughput includes prompt processing and generation across the measured workload.</p>
+    <h4>Prefill</h4>
+    ${promptGain ? `<div class="cards">
+      ${card(metricGain(promptGain.speedup), "Measured prompt-throughput gain")}
+      ${card(promptGain.min_margin != null ? metricNumber(Number(promptGain.min_margin) * 100, 2) + "%" : "Not recorded", "Required prefill margin")}
+    </div><p class="metric-note">Compared with the faster baseline read. Qualification also checks decode performance and correctness.</p>` : ""}
+    <div class="metrics-table">${table(["Read", "Prompts/s", "Timed batches (s)"], rateRows(prefill, "prompts_per_second", 3), "Prefill was not measured separately in this evaluation.")}</div>
+    ${prefill.length ? '<p class="metric-note">Each prompt pass generates one output token. Prompts/s counts completed requests; batch times include every timed prompt batch.</p>' : ""}
+    <h4>TTFT / TPOT by workload</h4>
+    ${latencyTables ? `${latencyTables}
+      <p class="metric-note">TTFT is time to the first delivered token. TPOT is delivery time per subsequent output token. Input length, output length and concurrency are kept separate.</p>`
+      : '<div class="empty">Not measured in this evaluation. First-token and subsequent-token delivery timings were not recorded.</div>'}
+  </section>`;
+}
+
+function submissionURL(rid) {
+  const url = new URL(location.href);
+  if (rid) url.searchParams.set("submission", rid);
+  else url.searchParams.delete("submission");
+  return url;
+}
+window.closeDetail = () => {
+  detailRequest++;
+  $("#drawer").classList.remove("open");
+  history.replaceState(null, "", submissionURL(null));
+};
+window.copySubmissionId = async (button) => {
+  const feedback = button.querySelector("span");
+  try {
+    await navigator.clipboard.writeText(button.dataset.reservationId);
+    feedback.textContent = "✓ Copied";
+    setTimeout(() => { feedback.textContent = "⧉"; }, 1800);
+  } catch {
+    feedback.textContent = "Copy failed";
+  }
+};
+window.copySubmissionLink = async (button) => {
+  const icon = button.innerHTML;
+  button.disabled = true;
+  try {
+    await navigator.clipboard.writeText(location.href);
+    button.textContent = "✓";
+    button.title = "Link copied";
+  } catch {
+    button.title = "Copy the link from your address bar";
+  }
+  setTimeout(() => {
+    button.innerHTML = icon;
+    button.title = "Copy link to this submission";
+    button.disabled = false;
+  }, 1800);
+};
+
 window.openDetail = async (rid) => {
+  const request = ++detailRequest;
   const el = $("#drawer");
   el.innerHTML = '<p class="muted">Loading…</p>';
   el.classList.add("open");
   let d;
   try { d = await api("/api/submissions/" + rid); }
-  catch { el.innerHTML = '<p class="muted">Not found.</p>'; return; }
+  catch {
+    if (request === detailRequest) el.innerHTML = '<button class="btn" onclick="closeDetail()">✕ close</button><p class="muted">Unable to load this submission.</p>';
+    return;
+  }
+  if (request !== detailRequest) return;
+  history.replaceState(null, "", submissionURL(d.reservation_id));
   const kv = (k, v) => `<dt>${esc(k)}</dt><dd>${v}</dd>`;
+  let sourceLink = esc(d.url || "Not recorded");
+  try {
+    const source = new URL(d.url);
+    if (["https:", "http:"].includes(source.protocol))
+      sourceLink = `<a href="${esc(source.href)}" target="_blank" rel="noopener noreferrer" style="overflow-wrap:anywhere">${esc(source.hostname)} ↗</a><div class="muted small" style="overflow-wrap:anywhere">${esc(d.url)}</div>`;
+  } catch {}
   const settle = d.settlement ? `
-    <h2>Settlement</h2><dl class="kv">
+    <h2>Settlement</h2>
+    ${d.hold_notice ? `<div class="hold-note">
+      <strong>${esc(d.hold_notice.title)}</strong>
+      <p>${esc(d.hold_notice.message)}</p>
+      <div class="small muted">Recorded reason: <code>${esc(d.hold_notice.reason)}</code>${d.hold_notice.event_sequence != null ? " · settlement event #" + Number(d.hold_notice.event_sequence) : ""}</div>
+    </div>` : ""}
+    <dl class="kv">
       ${kv("Status", pill(d.settlement.status))}
       ${kv("Speedup (primary)", d.settlement.speedup_primary ? d.settlement.speedup_primary.toFixed(6) + "×" : "—")}
       ${kv("Speedup (repro)", d.settlement.speedup_reproduction ? d.settlement.speedup_reproduction.toFixed(6) + "×" : "—")}
@@ -596,10 +721,17 @@ window.openDetail = async (rid) => {
       ${kv("Reason", esc(d.settlement.reason || "—"))}
     </dl>` : "";
   const baseline = d.baseline || {};
+  const checkpoint = baseline.checkpoint;
+  const baselineTps = (d.baseline_measurements || {}).baseline_tokens_per_second;
   const baselineCard = `
     <h2>Evaluation baseline</h2>
     <div class="card">
       <dl class="kv" style="margin:0">
+        ${kv("Model checkpoint", checkpoint
+          ? `<a href="${esc(checkpoint.url)}" target="_blank" rel="noopener noreferrer">${esc(checkpoint.repo)} ↗</a>`
+          : '<span class="muted">No retained checkpoint mapping</span>')}
+        ${checkpoint ? kv("Checkpoint revision", `<code class="small">${esc(checkpoint.revision)}</code>`) : ""}
+        ${kv("Baseline tok/s", baselineTps != null ? `<b>${baselineTps.toFixed(1)}</b> tok/s · measured` : "Not measured")}
         ${kv("Relationship", baselineSummary(baseline))}
         ${kv(baseline.evaluated ? "Evaluated artifact" : "Assigned artifact",
           baseline.evaluated || baseline.assigned
@@ -620,8 +752,7 @@ window.openDetail = async (rid) => {
     </div>`;
   const screens = (d.screen_attempts_history || []).map((a) =>
     `<tr><td>#${a.attempt}</td><td>${pill(a.decision)}</td><td>${esc(a.lane)}</td><td>${a.stage_count} stages</td></tr>`);
-  const quals = (d.qualification_attempts || []).map((a) =>
-    `<tr><td>#${a.attempt}</td><td>${pill(a.decision)}</td><td class="small muted">${esc(short(a.reason, 60))}</td></tr>`);
+  const performance = (d.qualification_attempts || []).map(performanceMetrics).join("");
   const leases = (d.leases || []).map((l) =>
     `<tr><td>${pill(l.stage)}</td><td>${pill(l.state)}</td><td>${fmtTime(l.claimed)}</td>
      <td class="small muted">${esc(short(l.reason, 40))}</td></tr>`);
@@ -649,32 +780,46 @@ window.openDetail = async (rid) => {
     ${forensicRuns ? '<p class="muted small">The download contains the exact request-scoped adapter diagnostics and engine stdout/stderr. Engine stdout is redirected into this retained diagnostic stream after the framed protocol channel is reserved. A partial badge means a stream was truncated or removed before sealing.</p>' : ""}`;
   el.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:start">
-      <div><h3>Submission</h3><code class="small">${esc(d.reservation_id)}</code></div>
-      <button class="btn" onclick="document.getElementById('drawer').classList.remove('open')">✕ close</button>
+      <div style="min-width:0"><h3>Submission<button class="heading-anchor" title="Copy link to this submission" aria-label="Copy link to this submission" onclick="copySubmissionLink(this)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 .5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></button></h3>
+        <button class="btn" style="padding:2px 0;background:none;border:0" title="${esc(d.reservation_id)}" aria-label="Copy full submission ID" data-reservation-id="${esc(d.reservation_id)}" onclick="copySubmissionId(this)"><code class="small">${esc(short(d.reservation_id, 20))}</code> <span>⧉</span></button>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn" onclick="closeDetail()">✕ close</button>
+      </div>
     </div>
+    ${d.reward_notice ? `<div class="callout reward-notice" role="alert">
+      <strong>${esc(d.reward_notice.title)}</strong>
+      <p>${esc(d.reward_notice.message)}</p>
+      ${d.reward_notice.evidence ? `<p class="small">Operator's recorded finding: ${esc(d.reward_notice.evidence)}</p>` : ""}
+      ${d.reward_notice.source_reservation ? `<div class="small">Referenced submission: <code>${esc(d.reward_notice.source_reservation)}</code></div>` : ""}
+      <div class="small muted">${esc(d.reward_notice.reason)} · offer block ${Number(d.reward_notice.offer_block).toLocaleString()}</div>
+    </div>` : ""}
     <dl class="kv">
       ${kv("Status", pill(d.status) + (d.decision ? " " + pill(d.decision) : ""))}
       ${kv("Reason", esc(d.reason || d.invalid_reason || "—"))}
       ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
       ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}
       ${kv("Target", esc(d.target_id || "—") + `<div class="muted small">${esc(d.target_summary)}</div>`)}
+      ${kv("Submission tok/s", d.tokens_per_second != null ? `<b>${d.tokens_per_second.toFixed(1)}</b> tok/s · measured` : "Not measured")}
+      ${kv("Submission source", sourceLink)}
       ${kv("Content hash", `<code class="small">${esc(short(d.content_hash, 26))}</code>`)}
       ${kv("Eval fee", d.payment
           ? `<a href="${esc(d.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(d.payment.ref)}</a> · ${fmtTime(d.payment)}`
           : "unpaid / pre-fee")}
       ${kv("Screen", esc(d.screen_status || "—") + " · lane " + esc(d.screen_lane || "—") + " · attempts " + d.screen_attempts)}
       ${kv("Transport attempts", d.transport_attempts)}
+      ${kv("Competition", d.competition)}
       ${kv("Admission epoch", d.admission_epoch)}
     </dl>
+    ${performance}
     ${baselineCard}
     ${settle}
     ${screens.length ? "<h2>Screen attempts</h2>" + table(["#","Decision","Lane","Stages"], screens) : ""}
-    ${quals.length ? "<h2>Qualification attempts</h2>" + table(["#","Decision","Reason"], quals) : ""}
     ${leases.length ? "<h2>Evaluation leases</h2>" + table(["Stage","State","Claimed","Reason"], leases) : ""}
     ${forensics}`;
 };
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") $("#drawer").classList.remove("open");
+  if (e.key === "Escape") closeDetail();
 });
 
 /* ---------------- refresh loop ---------------- */
@@ -695,6 +840,8 @@ async function refresh() {
 }
 renderTabs();
 refresh();
+const linkedSubmission = new URL(location.href).searchParams.get("submission");
+if (linkedSubmission) openDetail(linkedSubmission);
 </script>
 </body>
 </html>
