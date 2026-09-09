@@ -433,6 +433,30 @@ def test_worker_control_error_is_an_exact_terminal_hold(
     verify_remote_qualification_hold_request(product, request)
 
 
+def test_provider_hold_preserves_failure_through_authenticated_adapter(configured, monkeypatch):
+    from cacheon.eval.b300_qualification_graph_gate import (
+        B300QualificationGraphHoldCode, qualification_graph_gate_hold,
+    )
+
+    def held(*_args, **kwargs):
+        return qualification_graph_gate_hold(
+            RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
+            authenticated_request_digest=kwargs["request_digest"],
+            authority_context_digest=_h("provider"),
+            code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+            failure=RuntimeError("collective verifier omitted its temporal-eager precondition"),
+        )
+
+    monkeypatch.setattr(adapter_module.B300MainnetWorker, "run_remote_qualification", held)
+    request = _request(configured)
+    product = configured.adapter.run(request)
+    verify_remote_qualification_hold_request(product, request)
+    assert product.reason is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
+    assert product.failure_type == "RuntimeError"
+    assert product.failure_message.endswith("temporal-eager precondition")
+    assert product.schema_version == 2
+
+
 def test_publication_identity_and_configured_root_substitution_fail_closed(
     configured: _Configured,
     tmp_path: Path,

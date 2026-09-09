@@ -429,7 +429,7 @@ class B300MainnetWorker:
         except (
             B300QualificationGraphEvidenceHold,
             B300QualificationGraphEvidenceStoreError,
-        ):
+        ) as exc:
             if request_digest is None:
                 raise
             planning_context_digest = canonical_digest(
@@ -451,6 +451,7 @@ class B300MainnetWorker:
                 authenticated_request_digest=request_digest,
                 authority_context_digest=planning_context_digest,
                 code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+                failure=exc,
             )
         self._validate_work(work, candidates)
         supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
@@ -468,7 +469,7 @@ class B300MainnetWorker:
             except (
                 B300QualificationGraphEvidenceHold,
                 B300QualificationGraphEvidenceStoreError,
-            ):
+            ) as exc:
                 _LOG.exception(
                     "qualification graph evidence unavailable while building "
                     "the plan for request %s; the qualification is held "
@@ -480,6 +481,7 @@ class B300MainnetWorker:
                     authenticated_request_digest=request_digest,
                     authority_context_digest=work.factory.manifest.digest,
                     code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+                    failure=exc,
                 )
             except QualificationIntakeError as exc:
                 raise B300MainnetWorkerError(

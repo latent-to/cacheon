@@ -33,6 +33,24 @@ def _h(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
 
 
+def test_provider_hold_retains_bounded_cause_without_changing_diagnostic_identity():
+    kwargs = dict(authenticated_request_digest=_h("request"),
+                  authority_context_digest=_h("context"),
+                  code=gate_module.B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE)
+    reason = RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
+    original = gate_module.qualification_graph_gate_hold(reason, **kwargs)
+    cause = ValueError("collective verifier omitted its temporal-eager precondition")
+    failure = RuntimeError("provider failed: " + "x" * 3000)
+    failure.__cause__ = cause
+    detailed = gate_module.qualification_graph_gate_hold(reason, failure=failure, **kwargs)
+    assert detailed.diagnostic_digest == original.diagnostic_digest
+    assert detailed.reason is reason
+    assert detailed.failure_type == "RuntimeError"
+    assert detailed.failure_message.startswith("RuntimeError: provider failed:")
+    assert detailed.failure_message.endswith(str(cause))
+    assert len(detailed.failure_message) == 2000
+
+
 def _factory(harness, plan):
     reference = _h("graph-gate-selection-reference")
     manifest = QualificationAuthorityManifest.seal(

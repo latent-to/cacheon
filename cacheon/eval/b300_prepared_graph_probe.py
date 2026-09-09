@@ -43,7 +43,11 @@ from cacheon.verification_outcomes import (
     VerifyResult,
 )
 from cacheon.verify import verify_entry_from_source
-from cacheon.verify_collective import verify_collective
+from cacheon.verify_collective import (
+    _graph_capture_sequence,
+    _temporal_sequence,
+    verify_collective,
+)
 
 
 REQUEST_SCHEMA = "cacheon.eval.b300-prepared-graph-probe-request.v1"
@@ -602,21 +606,10 @@ def _variant_record(
     if type(result.shape_results) is not list or not result.shape_results:
         raise PreparedGraphProbeIncompleteError("verifier returned no typed shape rows")
     records: list[StructuredGraphShapeRecord] = []
+    applicable_shapes: list[dict] = []
     temporal_count = 0
     graph_sequence_count = 0
     for row in result.shape_results:
-        if (
-            type(row) is ShapeResult
-            and type(row.case_descriptor) is VerificationCaseDescriptor
-            and row.case_descriptor.case_kind is VerificationCaseKind.COLLECTIVE_TEMPORAL_EAGER
-        ):
-            temporal_count += 1
-        if (
-            type(row) is ShapeResult
-            and type(row.case_descriptor) is VerificationCaseDescriptor
-            and row.case_descriptor.case_kind is VerificationCaseKind.COLLECTIVE_GRAPH_SEQUENCE
-        ):
-            graph_sequence_count += 1
         record = _shape_record(
             row,
             slot_id=slot_id,
@@ -624,6 +617,11 @@ def _variant_record(
             policy=policy,
             collective=collective,
         )
+        kind = row.case_descriptor.case_kind
+        temporal_count += int(kind is VerificationCaseKind.COLLECTIVE_TEMPORAL_EAGER)
+        graph_sequence_count += int(kind is VerificationCaseKind.COLLECTIVE_GRAPH_SEQUENCE)
+        if collective and row.applicable and kind is VerificationCaseKind.COLLECTIVE_SINGLE:
+            applicable_shapes.extend(dict(call) for call in row.case_descriptor.calls)
         if record is not None:
             records.append(record)
     records.sort(key=lambda row: row.descriptor_digest)
@@ -652,11 +650,13 @@ def _variant_record(
             f"graph descriptor authority is empty: row_kinds={kinds}"
         )
     context_applicable = any(row.applicable for row in records)
-    if collective and temporal_count != int(context_applicable):
+    # GLM-5.3 all-reduce has one shape; domain filtering can also leave one.
+    # Require exactly the sequences that the verifier builds for those shapes.
+    if collective and temporal_count != int(_temporal_sequence(applicable_shapes) is not None):
         raise PreparedGraphProbeIncompleteError(
             "collective verifier omitted or duplicated its temporal-eager precondition"
         )
-    if collective and graph_sequence_count != int(context_applicable):
+    if collective and graph_sequence_count != int(_graph_capture_sequence(applicable_shapes) is not None):
         raise PreparedGraphProbeIncompleteError(
             "collective verifier omitted or duplicated its graph-sequence evidence"
         )

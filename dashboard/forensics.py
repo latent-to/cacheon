@@ -72,8 +72,10 @@ def submission_forensics(
             item["worker_log_state"] = "result not retained yet"
         if target_id:
             try:
-                item["qualification"] = _retained_qualification(
+                retained = _retained_qualification(
                     spool_root, request_id, reservation_id, target_id)
+                key = "qualification_hold" if retained and retained.get("decision") == "HOLD" else "qualification"
+                item[key] = retained
             except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
                 item["qualification_error"] = str(exc)
         items.append(item)
@@ -99,6 +101,13 @@ def _retained_qualification(
             or len(raw) != artifact["size"]):
         raise DashboardForensicsError("qualification response differs from retained result")
     response = json.loads(raw)
+    if response.get("payload_kind") == "remote_qualification_hold":
+        payload = response["payload"]
+        if reservation_id not in payload["reservation_digests"]:
+            raise DashboardForensicsError("qualification HOLD names another reservation")
+        return {"decision": "HOLD", "reason": payload["reason"],
+                "failure_type": payload.get("failure_type", ""),
+                "failure_message": payload.get("failure_message", "")}
     if response.get("payload_kind") != "remote_qualification_product":
         return None
     payload = response["payload"]

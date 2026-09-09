@@ -65,5 +65,7 @@ def test_planning_hold_holds_without_replanning(
             is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
         )
         assert len(plan_calls) == 1
+        assert result.failure_type == "B300QualificationGraphEvidenceHold"
+        assert result.failure_message.endswith("capture devices busy")
     finally:
         worker.close()

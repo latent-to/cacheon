@@ -48,6 +48,7 @@ from cacheon.eval.qualification_runner import (
     CandidateQualificationAuthority,
     CausalQualificationInput,
 )
+from cacheon.eval.remote_run_forensics import exception_record
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 from cacheon.stack_plan import MarginalArmPlan
 
@@ -215,8 +216,9 @@ def qualification_graph_gate_hold(
     authenticated_request_digest: str,
     authority_context_digest: str,
     code: B300QualificationGraphHoldCode,
+    failure: BaseException | None = None,
 ) -> B300QualificationGraphGateHold:
-    """Create a closed diagnostic without retaining exception text or paths."""
+    """Bind a HOLD to its request and retain any provider failure in existing fields."""
 
     if (
         type(reason) is not RemoteQualificationHoldReason
@@ -227,6 +229,14 @@ def qualification_graph_gate_hold(
         )
     request = _digest(authenticated_request_digest, "authenticated request digest")
     authority = _digest(authority_context_digest, "graph authority context digest")
+    message = ""
+    if failure is not None:
+        message = " <- ".join(
+            f"{row['type']}: {row['message']}"
+            for row in exception_record(failure)["exceptions"]
+        ).replace("\x00", "\\0")
+        if len(message) > 2_000:
+            message = message[:500] + " ... " + message[-1_495:]
     return B300QualificationGraphGateHold(
         reason,
         canonical_digest(
@@ -238,6 +248,8 @@ def qualification_graph_gate_hold(
                 "request_digest": request,
             },
         ),
+        failure_type=type(failure).__name__ if failure is not None else "",
+        failure_message=message,
     )
 
 

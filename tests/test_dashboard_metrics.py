@@ -248,3 +248,45 @@ def test_dashboard_explains_valid_boundary_uncertainty_from_the_shared_grader(tm
     assert grade["required_speedup"] > grade["candidate_vs_before"]
     assert grade["baseline_drift"] < grade["max_noise"]
     assert speed["prefill"]["speedup"] < 1.05
+
+
+@pytest.mark.parametrize("detailed", [False, True])
+def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path, monkeypatch, detailed):
+    from fastapi.testclient import TestClient
+    from dashboard import app
+
+    target, request_id = "collective.all_reduce", "b" * 64
+    root, db, spool = tmp_path / "evidence", tmp_path / "intake.sqlite3", tmp_path / "spool"
+    reference = _publish(root, _reads(), target)
+    _dashboard_db(db, reference, root, target)
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM qualification_dispositions")
+        con.execute("UPDATE reservations SET status='held', decision='', reason='remote_qualification_hold:graph_evidence_unavailable'")
+    carrier = spool / "outbox" / request_id
+    carrier.mkdir(parents=True)
+    (carrier / "request.json").write_text(json.dumps({
+        "request_id": request_id, "lease": {"members": [{"reservation_id": "example"}]}}))
+    result = spool / "results" / request_id
+    (result / "blobs").mkdir(parents=True)
+    message = "PreparedGraphProbeIncompleteError: omitted temporal-eager precondition" if detailed else ""
+    response = json.dumps({"payload_kind": "remote_qualification_hold", "payload": {
+        "reservation_digests": ["example"], "reason": "graph_evidence_unavailable",
+        "failure_type": "PreparedGraphProbeIncompleteError" if detailed else "",
+        "failure_message": message,
+    }}).encode()
+    digest = hashlib.sha256(response).hexdigest()
+    (result / "blobs" / digest).write_bytes(response)
+    (result / "result.json").write_text(json.dumps({
+        "request_id": request_id, "state": "completed", "response_sha256": digest,
+        "artifacts": [{"role": "adapter_result", "sha256": digest, "size": len(response)}]}))
+    for name, value in {"DB_PATH": db, "QUAL_EVIDENCE_STATE": tmp_path / "state",
+                        "QUAL_EVIDENCE_EXTRA": (), "SPOOL": spool, "LOG_ROOT": tmp_path / "logs",
+                        "OFFER_PATH": tmp_path / "offer.json", "ENRICH": False}.items():
+        monkeypatch.setattr(app, name, value)
+    detail = TestClient(app.app).get("/api/submissions/example").json()
+    assert detail["status"] == "held" and detail["decision"] == ""
+    assert detail["qualification_attempts"] == []
+    hold = detail["forensics"][0]["qualification_hold"]
+    assert hold["reason"] == "graph_evidence_unavailable"
+    assert hold["failure_message"] == message
+    assert "qualification" not in detail["forensics"][0]

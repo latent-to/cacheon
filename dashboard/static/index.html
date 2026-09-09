@@ -767,12 +767,15 @@ window.openDetail = async (rid) => {
      <td class="small muted">${esc(short(l.reason, 40))}</td></tr>`);
   const forensicRuns = (d.forensics || []).map((r) => {
     const log = r.worker_log;
+    const hold = r.qualification_hold;
+    const holdDetail = hold ? `<p>${pill("HOLD")} ${esc(hold.reason)}</p>
+      <pre class="forensics-log">${esc(hold.failure_message || "No underlying exception was retained for this attempt.")}</pre>` : "";
     const qualificationError = r.qualification_error
       ? `<p class="callout">Qualification evidence unreadable: ${esc(r.qualification_error)}</p>` : "";
     if (!log) return `<div class="forensics-run">
       <div class="forensics-head"><code>${esc(short(r.request_id, 16))}</code>
         ${pill(r.result_state || "no result")}</div>
-      ${qualificationError}<p class="muted small">${esc(r.worker_log_state || "No request log was retained.")}</p>
+      ${holdDetail}${qualificationError}<p class="muted small">${esc(r.worker_log_state || "No request log was retained.")}</p>
     </div>`;
     const complete = log.retention === "complete";
     return `<div class="forensics-run">
@@ -781,7 +784,7 @@ window.openDetail = async (rid) => {
         <span class="pill ${complete ? "ok" : "warn"}">${esc(log.retention)} logs</span>
         <a class="btn" href="${esc(log.download_url)}">Download ${complete ? "full" : "retained"} raw output (.log)</a>
       </div>
-      ${qualificationError}
+      ${holdDetail}${qualificationError}
       <p class="muted small">Worker log ${Number(log.size).toLocaleString()} bytes · sha256 <code>${esc(short(log.sha256, 18))}</code></p>
       <pre class="forensics-log">${esc((log.explanation || []).join("\n"))}</pre>
     </div>`;
