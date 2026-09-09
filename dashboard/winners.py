@@ -56,6 +56,40 @@ def conservative_candidate_tokens_per_second(
     return min(rates) if rates else None
 
 
+def measured_baseline(speed_reads: list[object], primary: dict[str, Any]) -> dict[str, Any]:
+    """Slowest measured B/B-prime rate; identify stock versus an incumbent stack."""
+    rates = [rate for speed in speed_reads for role in ("B", "B_prime")
+             if (rate := _lane_tokens_per_second(speed, role)) is not None]
+    manifest = primary.get("incumbent_manifest")
+    kind = ("stock" if not manifest.get("entries") else "incumbent") if isinstance(manifest, dict) else "unknown"
+    return {
+        "baseline_tokens_per_second": round(float(min(rates)), 1) if rates else None,
+        "baseline_kind": kind,
+    }
+
+
+def sglang_comparison(candidate: dict[str, Any], cumulative: Decimal | None) -> dict[str, Any]:
+    """Prefer a recorded stock comparison; otherwise use retained crown lineage."""
+    passes = [candidate.get("primary") or {}]
+    if candidate.get("reproduction"):
+        passes.append(candidate["reproduction"])
+    direct = all(isinstance(p.get("incumbent_manifest"), dict)
+                 and p["incumbent_manifest"].get("entries") == {} for p in passes)
+    ratio, basis = cumulative, "Crown lineage"
+    if direct:
+        try:
+            values = [Decimal(str(p["speedup"])) for p in passes]
+        except (KeyError, InvalidOperation, ValueError, TypeError):
+            values = []
+        ratio = min(values) if values and all(v.is_finite() and v > 0 for v in values) else None
+        basis = "Measured vs stock"
+    return {
+        "sglang_speedup": float(ratio) if ratio is not None else None,
+        "sglang_improvement_pct": float((ratio - 1) * 100) if ratio is not None else None,
+        "sglang_comparison_basis": basis if ratio is not None else "Unavailable",
+    }
+
+
 def estimated_sglang_tokens_per_second(
     candidate_tokens_per_second: Decimal | None,
     cumulative_speedup: Decimal | None,
@@ -151,7 +185,7 @@ def with_competitive_results(con, passed):
     for row in passed:
         competition = competition_details(con, row["reservation_id"])
         if competition.get("won", True):
-            winners.append(dict(row) | {"competition": competition})
+            winners.append(dict(row) | {"ranking": competition})
     return winners
 
 

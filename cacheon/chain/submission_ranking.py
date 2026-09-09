@@ -1,10 +1,11 @@
-"""Completion-time competition using retained qualification speeds, without GPU reruns."""
+"""Completion-time competition using retained qualification scores, without GPU reruns."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import replace
 from decimal import Decimal
+from types import SimpleNamespace
 
 from cacheon.eval.evidence_store import reopen_evidence
 from cacheon.stack_identity import canonical_digest
@@ -18,10 +19,24 @@ def create_schema(store) -> None:
         "sequence INTEGER PRIMARY KEY AUTOINCREMENT, reservation_id TEXT NOT NULL UNIQUE "
         "REFERENCES reservations(reservation_id), arena_id TEXT NOT NULL,target_id TEXT NOT NULL,"
         "baseline_ref TEXT NOT NULL, comparison_context TEXT NOT NULL,"
-        "candidate_rate TEXT NOT NULL, required_ratio TEXT NOT NULL,"
+        "candidate_score TEXT NOT NULL, required_ratio TEXT NOT NULL,"
         "competitor_id TEXT NOT NULL, stale INTEGER NOT NULL, won INTEGER NOT NULL,"
         "completed_block INTEGER NOT NULL)"
     )
+
+
+def _comparison_policy(policy):
+    """Separate measurement compatibility from per-attempt noise and time budgets."""
+
+    row = policy.to_dict()
+    for key in ("calibration_digest", "calibration_context_digest", "min_margin",
+                "max_noise", "noise_multiplier", "max_stage_seconds", "max_qualification_seconds",
+                "prefill_min_margin", "prefill_credit_weight"):
+        row.pop(key, None)
+    # V12 appends prompt reads; its decode measurement is exactly V11's.
+    if row["version"] == 12:
+        row["version"] = 11
+    return row
 
 
 def comparison_context(calibration, witness):
@@ -33,22 +48,36 @@ def comparison_context(calibration, witness):
     # These identities include the commissioned baseline, which is allowed to advance.
     context.pop("arena_digest")
     context.pop("reference_manifest_digest")
-    policy = witness.resident_policy.to_dict()
-    policy.pop("calibration_digest")
-    policy.pop("calibration_context_digest")
+    policy = _comparison_policy(witness.resident_policy)
     return canonical_digest("cacheon.chain.speed-comparison.v2", {"context": context, "policy": policy})
 
 
 def measured_speed(qualification, attempt_ref, root):
-    """Use the report's exact policy and unrounded scored rate from retained bytes."""
+    """Use the retained score and noise margin; never rerun an accepted submission."""
 
     from cacheon.chain.intake import IntakeError
     from cacheon.eval.qualification_runner import CohortQualificationAttempt, ResidentSpeedWitness
-    from cacheon.eval.speed_verdict import speed_grade, SpeedStageDecision
 
     try:
         payload = json.loads(reopen_evidence(root, attempt_ref))
-        if attempt_ref.schema == "cacheon.qualification.operator-quality-correction.v1":
+        if attempt_ref.schema == "cacheon.qualification.stage-exit.v3":
+            from cacheon.eval.crossover_runtime import ResidentSpeedPolicy
+            from cacheon.eval.resident_measurement import ResidentReadRate
+
+            if (canonical_digest(attempt_ref.schema, payload) != qualification.qualification_report_digest
+                    or payload["stage"] != "resident_accept" or payload["decision"] != "PASS"
+                    or payload["authority_digest"] != qualification.qualification_plan_digest
+                    or payload["selected_delta_digest"] != qualification.selected_delta_digest):
+                raise IntakeError("historical acceptance differs from retained qualification")
+            raw = payload["speed_witness"]
+            policy = ResidentSpeedPolicy.from_dict(raw["resident_policy"])
+            rates = tuple(ResidentReadRate.from_dict(row) for row in raw["rates"])
+            if policy.version not in (6, 7) or tuple(row.role for row in rates) not in (
+                    ("B", "C"), ("B", "C", "B_prime")):
+                raise IntakeError("historical acceptance has an unsupported speed schedule")
+            witness = SimpleNamespace(resident_policy=policy, rates=rates, workload_digest=raw["workload_digest"])
+            speedup = qualification.speedup
+        elif attempt_ref.schema == "cacheon.qualification.operator-quality-correction.v1":
             report = payload["report"]
             if (attempt_ref.domain != "qualification.operator-quality-correction"
                     or payload["report_digest"] != qualification.qualification_report_digest
@@ -65,20 +94,15 @@ def measured_speed(qualification, attempt_ref, root):
             attempt = CohortQualificationAttempt.from_dict(payload)
             report = next(row for row in attempt.reports if row.digest == qualification.qualification_report_digest)
             witness, speedup = report.speed_witness, report.speedup
-        verdict, decision = speed_grade(
-            witness.resident_policy, [witness.rates[0], witness.rates[2]],
-            [witness.rates[1]], concluding=True,
-        )
-        if decision is not SpeedStageDecision.PASS or speedup != qualification.speedup:
+        rate, required = _competitive_score(witness.resident_policy, witness.rates)
+        if speedup != qualification.speedup:
             raise IntakeError("competitive qualification does not retain its PASS")
-        rate = Decimal(str(witness.resident_policy.scored_tokens_per_second(witness.rates[1])))
-        required = Decimal(str(verdict.required))
         context = qualification.comparison_context_digest or canonical_digest("cacheon.chain.speed-comparison.v1", {
             "arena": qualification.arena_digest,
             "runtime": qualification.incumbent_manifest.runtime_digest,
             "base_engine": qualification.incumbent_manifest.base_engine_digest,
             "workload": witness.workload_digest,
-            "policy": witness.resident_policy.digest,
+            "policy": _comparison_policy(witness.resident_policy),
         })
     except (ValueError, KeyError, StopIteration, TypeError) as exc:
         raise IntakeError(f"competitive speed evidence cannot reopen: {exc}") from exc
@@ -87,8 +111,39 @@ def measured_speed(qualification, attempt_ref, root):
     return rate, required, context
 
 
+def _competitive_score(policy, rates):
+    """Keep decode scores in measured-rate units and translate prefill credit once.
+
+    A prefill admission uses its conservative decode baseline rate times the
+    existing credited v12 speedup. This is a ranking score, not measured tok/s.
+    Its margin is translated with the same sealed credit weight.
+    """
+
+    from cacheon.chain.intake import IntakeError
+    from cacheon.eval.resident_schedule import grade_schedule
+    from cacheon.eval.speed_verdict import speed_grade, SpeedStageDecision
+
+    rate = Decimal(str(policy.scored_tokens_per_second(rates[1])))
+    if policy.version >= 8:
+        grade = grade_schedule(policy, rates)
+        decision, verdict = grade.decision, grade.verdict
+        if grade.lane == "prefill":
+            baseline = max(policy.scored_tokens_per_second(row) for row in (rates[0], rates[2]))
+            rate = Decimal(str(baseline)) * Decimal(grade.settled_speedup)
+            required = 1 + policy.prefill_credit_weight * (grade.prefill_verdict.required - 1)
+        else:
+            required = verdict.required
+    else:
+        verdict, decision = speed_grade(policy, [row for row in rates if row.role in ("B", "B_prime")],
+                                        [rates[1]], concluding=True)
+        required = verdict.required
+    if decision is not SpeedStageDecision.PASS:
+        raise IntakeError("competitive qualification does not retain its PASS")
+    return rate, Decimal(str(required))
+
+
 def retain_ranking(store, qualification, attempt_ref, root, completed_block: int) -> bool:
-    """Compare against the strongest same-slot winner inside qualification's transaction."""
+    """Compare against every accepted same-slot score inside qualification's transaction."""
 
     from cacheon.chain.intake import IntakeError
 
@@ -109,7 +164,7 @@ def _rank(store, qualification, attempt_ref, root, completed_block, rate, requir
     prior = tuple(store._db.execute(
         "SELECT s.* FROM submission_rankings s JOIN reservations r USING(reservation_id) "
         "WHERE (s.comparison_context=? OR s.arena_id=?) "
-        "AND s.target_id=? AND s.won=1 AND r.status='qualified'",
+        "AND s.target_id=? AND r.status='qualified'",
         (context, qualification.arena_digest, qualification.target_id),
     ))
     if any(row["comparison_context"] != context for row in prior):
@@ -131,12 +186,12 @@ def _rank(store, qualification, attempt_ref, root, completed_block, rate, requir
     # Baseline incorporation subsumes earlier winners. Its direct comparison is
     # authoritative even if absolute machine rates shifted between evaluations.
     unfinalized = tuple(row for row in prior if row["sequence"] > incorporated_sequence)
-    competitor = max(unfinalized, key=lambda row: Decimal(row["candidate_rate"]), default=None)
+    competitor = max(unfinalized, key=lambda row: Decimal(row["candidate_score"]), default=None)
     stale = competitor is not None
-    won = historical_crown or competitor is None or rate > Decimal(competitor["candidate_rate"]) * required
+    won = historical_crown or competitor is None or rate > Decimal(competitor["candidate_score"]) * required
     store._db.execute(
         "INSERT INTO submission_rankings(reservation_id,arena_id,target_id,baseline_ref,"
-        "comparison_context,candidate_rate,required_ratio,competitor_id,stale,won,completed_block) "
+        "comparison_context,candidate_score,required_ratio,competitor_id,stale,won,completed_block) "
         "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (qualification.reservation_digest, qualification.arena_digest, qualification.target_id,
          qualification.incumbent_manifest.digest, context, str(rate), str(required),

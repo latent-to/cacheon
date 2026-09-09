@@ -32,19 +32,23 @@ from dashboard.forensics import (
     forensics_log,
     submission_forensics,
 )
-from cacheon.chain.baseline_band import (
+from dashboard.competition import competition_label, checkpoint_for_engine
+from dashboard.receipts import (
     qualification_evidence_roots,
     qualification_speed,
+    screen_stages,
 )
-from dashboard.receipts import screen_stages
 from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     cumulative_crown_speedups,
     estimated_sglang_tokens_per_second,
+    measured_baseline,
+    sglang_comparison,
     live_offer_shares, with_competitive_results, baseline_relationship,
 )
 
 # ---------------------------------------------------------------- config ---
+
 MISSION = Path(os.environ.get(
     "CACHEON_DASH_MISSION", "/data/mainnet14-cacheon-h3-m4i-pre-crown"))
 DB_PATH = Path(os.environ.get(
@@ -581,6 +585,7 @@ def submission_row(r: dict[str, Any]) -> dict[str, Any]:
         "block_links": links_for_block(int(r["block"])),
         "event_index": r["event_index"],
         "admission_epoch": r["admission_epoch"],
+        "competition": competition_label(r["block"]),
         "screen_lane": r.get("screen_lane") or "",
         "screen_status": r.get("screen_status") or "",
         "screen_attempts": r.get("screen_attempts") or 0,
@@ -666,6 +671,7 @@ def submission_baseline(
     from dashboard.baseline_api import competition_details
     result: dict[str, Any] = {
         **competition_details(con, reservation_id),
+        "checkpoint": checkpoint_for_engine(manifest.get("base_engine_digest") or ""),
         "evaluated": evaluated,
         "assigned": assigned,
         "relationship": "no_active_tip",
@@ -927,10 +933,10 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
             FROM arena_screen_dispositions WHERE reservation_id=? ORDER BY attempt_index
         """, (rid,))]
     evidence_roots = qualification_evidence_roots(
-        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA)
+        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA, con)
     detail["qualification_attempts"] = [
         {"attempt": d["attempt_index"], "decision": d["decision"], "reason": d["reason"],
-         "speed": qualification_speed(d["attempt_ref_json"], evidence_roots)}
+         "speed": qualification_speed(d["attempt_ref_json"], evidence_roots, detail["target_id"])}
         for d in rows(con, """
             SELECT attempt_index, decision, reason, attempt_ref_json
             FROM qualification_dispositions WHERE reservation_id=? ORDER BY attempt_index
@@ -952,6 +958,8 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
             "crowned": with_time(int(cj.get("finalized_block") or 0)),
         }
     detail["baseline"] = submission_baseline(con, rid, detail["target_id"])
+    detail["baseline_measurements"] = measured_baseline(
+        [a["speed"] for a in detail["qualification_attempts"] if a["speed"]], {})
 
     detail["leases"] = rows(con, """
         SELECT el.lease_id, el.stage, el.state, el.generation, el.claimed_block,
@@ -1167,7 +1175,7 @@ def winners() -> dict[str, Any]:
         ORDER BY e.sequence
     """)
     evidence_roots = qualification_evidence_roots(
-        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA)
+        QUAL_EVIDENCE_STATE, QUAL_EVIDENCE_EXTRA, con)
     speeds_by_reservation: dict[str, list[object]] = {}
     if passed:
         marks = ",".join("?" for _ in passed)
@@ -1215,6 +1223,7 @@ def winners() -> dict[str, Any]:
             "improvement_pct": (speedup - 1) * 100 if speedup else None,
             "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
+            **sglang_comparison(cj, cumulative),
             "cumulative_speedup_over_sglang": (
                 float(cumulative) if cumulative is not None else None),
             "cumulative_improvement_pct_over_sglang": (
@@ -1227,11 +1236,13 @@ def winners() -> dict[str, Any]:
             "passed": with_time(passed_block),
             "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
+            "competition": competition_label(row["submission_block"]),
+            **measured_baseline(speeds_by_reservation.get(row["reservation_id"], []), primary),
             "weight_share": share_value(shares, hotkey),
             "reward_claim_status": (
                 "earning" if shares.get(hotkey) else "not_earning"
             ) if offer is not None else "offer_unavailable",
-            "settlement_status": row["status"], **row["competition"],
+            "settlement_status": row["status"], **row["ranking"],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
                 "uid": hk.get("uid"),
@@ -1249,8 +1260,8 @@ def winners() -> dict[str, Any]:
         "pass_total": len(items),
         "offer": offer,
         "note": (
-            "Reproduced PASS pairs earn under the retained-pair policy with time "
-            "decay; a crown is not required. Weight share is this validator's "
+            "Accepted competitive winners earn with time decay; a baseline PASS "
+            "alone does not earn. Historical crowns retain their credit. Weight share is this validator's "
             "currently served offer. The chain reflects it only after commit-reveal "
             "and stake-weighted consensus across validators, so on-chain emission lags."
             if offer is not None
@@ -1364,8 +1375,7 @@ def weights(limit: int = Query(30, ge=1, le=500)) -> dict[str, Any]:
             con.close()
         except sqlite3.Error as exc:
             data = []
-            print(f"follower journal unreadable: {exc}", flush=True)
-            follower_note = "follower journal unreadable"
+            follower_note = f"follower journal unreadable: {exc}"
         for w in data:
             rj = json.loads(w["record_json"] or "{}")
             items.append({

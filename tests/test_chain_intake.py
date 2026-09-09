@@ -271,6 +271,7 @@ def _qualified_settlement_candidate(
     *,
     primary_only: bool = False,
     measured_rate: str | None = None,
+    measured_required: str = "1.01",
     incumbent_state=None,
     retained_block: int = 10,
     index: int = 0,
@@ -390,7 +391,7 @@ def _qualified_settlement_candidate(
     # import, competitive ranking, settlement and rewards remain real code.
     rate = Decimal(measured_rate) if measured_rate is not None else Decimal(speedups[0]) * 100
     with patch("cacheon.chain.submission_ranking.measured_speed", return_value=(
-        rate, Decimal("1.01"), _h("measurement-context" + arena_marker),
+        rate, Decimal(measured_required), _h("measurement-context" + arena_marker),
     )):
         store.apply_qualification_batch(
             QualificationIntakeBatch(authority, (outcome,), primary_attempt),

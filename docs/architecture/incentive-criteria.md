@@ -5,7 +5,7 @@ It describes the intended behavior; implementation and deployment status are
 tracked separately.
 
 **Terms:** A is the new submission, B is its declared evaluation baseline, and C
-is the strongest unfinalized winner for A's target slot, if one exists. A
+is the strongest unfinalized correctness-passing submission for A's target slot, if one exists. A
 baseline reference identifies the finalized evaluation HEAD and its exact stack.
 **Finalized** means incorporated into the commissioned evaluation baseline,
 not merely confirmed on-chain.
@@ -21,8 +21,8 @@ not merely confirmed on-chain.
    submission to another baseline.
 3. **Beat both competitors.** A wins only if it passes the existing correctness
    checks and is faster than B and, when present, C. Use A's evaluation for the
-   direct A-versus-B comparison. Compare A with C's already retained measured
-   speed; do not run another A-versus-C evaluation. Apply a noise margin to that
+   direct A-versus-B comparison. Compare A with C's already retained competitive
+   score; do not run another A-versus-C evaluation. Apply a noise margin to that
    comparison, the same threshold used for A versus B. Ratios
    against different baselines are not directly comparable speeds.
 4. **Reward unfinalized rankings immediately.** Use the current unfinalized
@@ -49,7 +49,7 @@ live services, queues, weights or GPU allocations.
 Implementation reference: `reservations.baseline_ref` retains the miner's
 reference; `reservation_baseline_segments` retains its exact evaluation stack.
 `finalized_baselines` publishes the commissioned HEAD. `submission_rankings`
-retains the measured candidate rate, comparison context, required ratio,
+retains the candidate score, comparison context, required ratio,
 competitor, winner decision, stale marker and completion block. Existing
 qualification evidence retains the direct baseline speedup used by the reward
 formula. A losing A-versus-C comparison earns no claim even if A beat B.
@@ -69,3 +69,16 @@ An operator-approved quality replay correction retains the original measured
 speed and noise threshold. Its PASS goes through the same slot competition as
 other accepted submissions; correcting a quality HOLD does not itself award
 the slot. The correction and original evaluation remain separate evidence.
+
+Version 12 retains the commissioned decode/prefill verdict. A decode winner's
+competitive score is its measured output rate. A prefill winner's score is the
+conservative decode baseline rate multiplied by the existing credited v12
+speedup; its required margin is translated by the same sealed prefill credit
+weight. This score is not measured output throughput and must not be displayed
+as tok/s. Correctness-passing submissions that narrowly lost an earlier
+competitive comparison still set the bar for later submissions.
+
+Migration reads historical resident-acceptance v3 artifacts using their
+retained version-6/7 policies and two/three-read schedules, as well as current
+cohort attempts and approved quality corrections. It does not rerun retired
+GPU qualification paths or manufacture new correctness verdicts.

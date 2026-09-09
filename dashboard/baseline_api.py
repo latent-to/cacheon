@@ -33,5 +33,5 @@ def competition_details(con, reservation_id):
         return {}
     return {"stale": bool(row["stale"]), "won": bool(row["won"]),
             "baseline_ref": row["baseline_ref"], "competitor_id": row["competitor_id"],
-            "candidate_rate": row["candidate_rate"], "required_ratio": row["required_ratio"],
+            "candidate_score": row["candidate_score"], "required_ratio": row["required_ratio"],
             "completed_block": row["completed_block"]}

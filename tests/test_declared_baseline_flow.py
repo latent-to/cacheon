@@ -76,7 +76,7 @@ def test_unfinalized_competition_persists_and_earns_before_commission(tmp_path, 
         details = competition_details(store._db, winner.reservation_digest)
         assert details["won"] and details["stale"]
         assert details["baseline_ref"] == head.manifest.digest
-        assert details["competitor_id"] == first.reservation_digest
+        assert details["competitor_id"] == loser.reservation_digest
         assert current_winners(store)[0]["reservation_id"] == winner.reservation_digest
         assert evaluator["calls"] == 3  # No A-versus-C evaluator run.
         projection = store.build_weight_projection(
@@ -142,7 +142,7 @@ def test_standalone_producer_reopens_scores_after_evaluator_exits(tmp_path, eval
     with fixtures._store(tmp_path) as store:
         candidate = fixtures._qualified_settlement_candidate(store)
         score = dict(store._db.execute("SELECT * FROM submission_rankings").fetchone())
-        assert score["candidate_rate"] == "110"
+        assert score["candidate_score"] == "110"
         assert score["required_ratio"] == "1.01"
         assert score["won"] == 1
         assert store.active_reward_claims() == ((), ())
@@ -186,7 +186,8 @@ def test_comparison_context_survives_baseline_advance_but_separates_measurement_
     assert identity(replace(context, arena_digest="a" * 64, reference_manifest_digest="b" * 64)) == original
     for field in ("logical_hardware_digest", "model_content_digest", "workload_digest", "runtime_digest"):
         assert identity(replace(context, **{field: "c" * 64})) != original
-    assert identity(context, replace(policy, min_margin=0.02)) != original
+    assert identity(context, replace(policy, min_margin=0.02)) == original
+    assert identity(context, replace(policy, min_windows=4)) != original
     with pytest.raises(ValueError, match="calibration context differs"):
         comparison_context(replace(context, workload_digest="f" * 64), witness)
 
@@ -279,3 +280,61 @@ def test_upgrade_does_not_reward_historical_pass_that_lost_same_slot(tmp_path, e
         assert competition_details(store._db, loser.reservation_digest)["stale"]
         assert {claim.hotkey for claim in store.passed_reward_claims()} == {first.hotkey}
         assert evaluator["calls"] == 2
+
+
+def test_faster_prior_competitive_loss_still_sets_the_bar(tmp_path, evaluator):
+    with fixtures._store(tmp_path) as store:
+        fixtures._qualified_settlement_candidate(store)
+        evaluator["rate"] = Decimal("111.9")
+        prior = fixtures._qualified_settlement_candidate(store, index=1, marker="noisy", measured_required="1.02")
+        assert not competition_details(store._db, prior.reservation_digest)["won"]
+        evaluator["rate"] = Decimal("111.5")
+        slower = fixtures._qualified_settlement_candidate(store, index=2, marker="slower")
+        details = competition_details(store._db, slower.reservation_digest)
+        assert not details["won"] and details["competitor_id"] == prior.reservation_digest
+        assert slower.hotkey not in {claim.hotkey for claim in store.passed_reward_claims()}
+
+
+@pytest.mark.parametrize("decode,prefill,expected,margin", [
+    (102.0, 20.0, 102.0, 1.01), (100.5, 50.0, 112.5, 1.025),
+])
+def test_v12_competition_uses_existing_credited_score(decode, prefill, expected, margin):
+    from cacheon.chain.submission_ranking import _competitive_score
+    from tests.test_prefill_lane import _policy, _rates
+
+    score, required = _competitive_score(_policy(), _rates(decode, prefill))
+    assert float(score) == pytest.approx(expected)
+    assert float(required) == pytest.approx(margin)
+    with pytest.raises(IntakeError, match="does not retain its PASS"):
+        _competitive_score(_policy(), _rates(95.0, 60.0))
+
+
+@pytest.mark.parametrize("bookend", [False, True])
+def test_historical_acceptance_reopens_original_two_or_three_reads(tmp_path, bookend):
+    from cacheon.chain.submission_ranking import measured_speed
+    from cacheon.eval.evidence_store import publish_evidence
+    from cacheon.eval.qualification_runner import ResidentSpeedWitness
+    from cacheon.stack_identity import canonical_digest, canonical_json_bytes
+    from tests.test_crossover_runtime import _rig, _speed, _policy_v8
+
+    plan, baseline, candidate, mount, *_ = _rig(tmp_path / "runtime", (0.90,),
+                                                policy=_policy_v8(), timed_batches=3)
+    witness = ResidentSpeedWitness.from_evidence(_speed(plan, baseline, candidate, mount), plan)
+    raw = witness.to_dict()
+    raw["resident_policy"]["version"] = 6
+    if not bookend:
+        raw["rates"] = raw["rates"][:2]
+    schema = "cacheon.qualification.stage-exit.v3"
+    payload = {"stage": "resident_accept", "decision": "PASS", "speed_witness": raw,
+               "authority_digest": fixtures._h("plan"), "selected_delta_digest": witness.selected_delta_digest}
+    root = tmp_path / "evidence"
+    ref = publish_evidence(root, canonical_json_bytes(payload), domain="qualification.stage-exit",
+                          media_type="application/json", schema=schema)
+    qualification = SimpleNamespace(qualification_report_digest=canonical_digest(schema, payload),
+        qualification_plan_digest=fixtures._h("plan"), selected_delta_digest=witness.selected_delta_digest,
+        speedup=witness.accepted_speedup(), comparison_context_digest=fixtures._h("context"))
+    score, required, context = measured_speed(qualification, ref, root)
+    assert score > 0 and required > 1 and context == fixtures._h("context")
+    qualification.qualification_report_digest = "f" * 64
+    with pytest.raises(IntakeError, match="historical acceptance differs"):
+        measured_speed(qualification, ref, root)

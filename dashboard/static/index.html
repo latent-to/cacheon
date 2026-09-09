@@ -223,14 +223,13 @@ function baselineSummary(b) {
   const artifact = b.artifact_digest
     ? `<code title="${esc(b.artifact_digest)}">${esc(short(b.artifact_digest, 10))}</code>`
     : '<code>base engine</code>';
-  const threshold = b.required_ratio == null && b.relationship === "ancestor" && b.threshold_speedup != null
+  const threshold = b.relationship === "ancestor" && b.threshold_speedup != null
     ? `<div class="muted small">must beat ${Number(b.threshold_speedup).toFixed(6)}×</div>`
     : "";
-  const stale = b.stale && b.won ? '<span class="pill warn">stale</span> ' : "";
   const queued = b.assigned && !b.evaluated
     ? '<span class="pill info">queued baseline</span> '
     : "";
-  return `${stale}${queued}<span class="pill ${tone}">${esc(label)}</span><div class="small">${artifact}</div>${threshold}`;
+  return `${queued}<span class="pill ${tone}">${esc(label)}</span><div class="small">${artifact}</div>${threshold}`;
 }
 
 async function api(path) {
@@ -329,7 +328,7 @@ async function viewQueue() {
     <td>${s.queue_position}</td>
     <td><code>${esc(short(s.reservation_id, 12))}</code></td>
     <td>${pill(s.status)}</td>
-    <td>${esc(s.target_id || "—")}</td>
+    <td>${esc(s.target_id || "—")}<div class="small"><span class="pill info">${esc(s.competition)}</span></div></td>
     <td>${key(s.hotkey, s.hotkey_links)}</td>
     <td>${fmtTime(s.submitted)}<div class="muted small">waiting ${dur(s.waiting_seconds)}</div></td>
     <td>${s.payment ? '<span class="pill ok">1 τ paid</span>' : '<span class="pill mute">unpaid</span>'}</td>
@@ -382,7 +381,7 @@ async function viewSubmissions() {
     <td>${key(s.hotkey, s.hotkey_links)}</td>
     <td>${fmtTime(s.submitted)}</td>
     <td>${blockLink(s.submitted, s.block_links)}</td>
-    <td>${esc(s.target_id || "—")}</td>
+    <td>${esc(s.target_id || "—")}<div class="small"><span class="pill info">${esc(s.competition)}</span></div></td>
     <td>${baselineSummary(s.baseline)}</td>
     <td>${s.payment
         ? `<a href="${esc(s.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(s.payment.ref)}</a>`
@@ -455,19 +454,19 @@ async function viewWinners() {
     const hc = w.hotkey_chain || {};
     return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
     <td><code title="${esc(w.reservation_id)}">${esc(short(w.reservation_id, 12))}</code></td>
-    <td>${w.stale ? pill("stale") + " " : ""}<b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div></td>
+    <td><b>${esc(w.target_id)}</b>${w.stale ? ' <span class="pill warn">stale baseline</span>' : ""}<div class="muted small">${esc(w.target_summary)}</div><span class="pill info">${esc(w.competition)}</span></td>
     <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
         <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
         ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
-    <td>${w.cumulative_improvement_pct_over_sglang != null
-        ? `<b style="color:var(--accent)">+${w.cumulative_improvement_pct_over_sglang.toFixed(2)}%</b>` : "—"}
-        <div class="muted small">${w.cumulative_speedup_over_sglang
-          ? w.cumulative_speedup_over_sglang.toFixed(5) + "× SGLang" : ""}</div>
-        <div class="muted small">${w.tokens_per_second != null
-          ? w.tokens_per_second.toFixed(1) + " tok/s"
-          : ""}${w.sglang_tokens_per_second != null
-          ? " · " + w.sglang_tokens_per_second.toFixed(1) + " tok/s SGLang"
-          : ""}</div></td>
+    <td>${w.sglang_improvement_pct != null
+        ? `<b style="color:var(--accent)">+${w.sglang_improvement_pct.toFixed(2)}%</b>` : "—"}
+        <div class="muted small">${w.sglang_speedup
+          ? w.sglang_speedup.toFixed(5) + "× SGLang" : ""}</div>
+        <div class="muted small">${esc(w.sglang_comparison_basis)}</div>
+        <div class="muted small">${w.sglang_tokens_per_second != null
+          ? w.sglang_tokens_per_second.toFixed(1) + " tok/s stock estimate" : ""}</div></td>
+    <td>${w.tokens_per_second != null ? `<b>${w.tokens_per_second.toFixed(1)}</b> tok/s` : '<span class="muted">Unavailable</span>'}
+        </td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
     <td>${fmtTime(w.passed)}<div class="muted small">block ${blockLink(w.passed, w.passed_links)}</div></td>
     <td>${w.weight_share != null ? `<b>${(w.weight_share * 100).toFixed(2)}%</b>` : "—"}
@@ -482,9 +481,9 @@ async function viewWinners() {
   return `
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
     ${offerLine(d.offer)}
-    <h2>Retained PASS rewards</h2>
-    ${table(["Reservation","Improved op","Vs incumbent","Vs SGLang","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
-      rows, "No retained PASS rewards yet.")}`;
+    <h2>Competitive winners</h2>
+    ${table(["Reservation","Improved op","Vs incumbent","Vs SGLang","Candidate tok/s","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
+      rows, "No competitive winners yet.")}`;
 }
 
 function offerLine(o) {
@@ -588,6 +587,12 @@ window.openDetail = async (rid) => {
   try { d = await api("/api/submissions/" + rid); }
   catch { el.innerHTML = '<p class="muted">Not found.</p>'; return; }
   const kv = (k, v) => `<dt>${esc(k)}</dt><dd>${v}</dd>`;
+  let sourceLink = esc(d.url || "Not recorded");
+  try {
+    const source = new URL(d.url);
+    if (["https:", "http:"].includes(source.protocol))
+      sourceLink = `<a href="${esc(source.href)}" target="_blank" rel="noopener noreferrer" style="overflow-wrap:anywhere">${esc(source.hostname)} ↗</a><div class="muted small" style="overflow-wrap:anywhere">${esc(d.url)}</div>`;
+  } catch {}
   const settle = d.settlement ? `
     <h2>Settlement</h2><dl class="kv">
       ${kv("Status", pill(d.settlement.status))}
@@ -597,11 +602,20 @@ window.openDetail = async (rid) => {
       ${kv("Reason", esc(d.settlement.reason || "—"))}
     </dl>` : "";
   const baseline = d.baseline || {};
+  const checkpoint = baseline.checkpoint;
+  const baselineTps = (d.baseline_measurements || {}).baseline_tokens_per_second;
   const baselineCard = `
     <h2>Evaluation baseline</h2>
     <div class="card">
       <dl class="kv" style="margin:0">
+        ${kv("Model checkpoint", checkpoint
+          ? `<a href="${esc(checkpoint.url)}" target="_blank" rel="noopener noreferrer">${esc(checkpoint.repo)} ↗</a>`
+          : '<span class="muted">No retained checkpoint mapping</span>')}
+        ${checkpoint ? kv("Checkpoint revision", `<code class="small">${esc(checkpoint.revision)}</code>`) : ""}
+        ${kv("Baseline tok/s", baselineTps != null ? `<b>${baselineTps.toFixed(1)}</b> tok/s · measured` : "Not measured")}
         ${kv("Relationship", baselineSummary(baseline))}
+        ${kv("Competitive result", baseline.won === true ? "Winner" : baseline.won === false ? "Did not beat prior submission" : "Not ranked")}
+        ${kv("Baseline reference", baseline.baseline_ref ? `<code>${esc(baseline.baseline_ref)}</code>` : "—")}
         ${kv(baseline.evaluated ? "Evaluated artifact" : "Assigned artifact",
           baseline.evaluated || baseline.assigned
           ? (baseline.artifact_digest
@@ -611,12 +625,9 @@ window.openDetail = async (rid) => {
         ${kv("Current tip", baseline.current_tip_artifact_digest
           ? `<code>${esc(baseline.current_tip_artifact_digest)}</code>`
           : "—")}
-        ${kv("Winning threshold", baseline.required_ratio != null
-          ? `>${Number(baseline.required_ratio).toFixed(9)}× the retained competitor rate`
-          : baseline.relationship === "ancestor" && baseline.threshold_speedup != null
+        ${kv("Winning threshold", baseline.relationship === "ancestor" && baseline.threshold_speedup != null
           ? `>${Number(baseline.threshold_speedup).toFixed(9)}× from this ancestor`
           : baseline.relationship === "current_tip" ? "ordinary marginal threshold" : "—")}
-        ${kv("Baseline reference", baseline.baseline_ref || baseline.stack_digest || "—")}
         ${kv("Stack", baseline.stack_digest ? `<code>${esc(baseline.stack_digest)}</code>` : "—")}
         ${kv("Tree", baseline.tree_digest ? `<code>${esc(baseline.tree_digest)}</code>` : "—")}
         ${kv("Arena", baseline.arena_digest ? `<code>${esc(baseline.arena_digest)}</code>` : "—")}
@@ -662,12 +673,14 @@ window.openDetail = async (rid) => {
       ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
       ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}
       ${kv("Target", esc(d.target_id || "—") + `<div class="muted small">${esc(d.target_summary)}</div>`)}
+      ${kv("Submission source", sourceLink)}
       ${kv("Content hash", `<code class="small">${esc(short(d.content_hash, 26))}</code>`)}
       ${kv("Eval fee", d.payment
           ? `<a href="${esc(d.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(d.payment.ref)}</a> · ${fmtTime(d.payment)}`
           : "unpaid / pre-fee")}
       ${kv("Screen", esc(d.screen_status || "—") + " · lane " + esc(d.screen_lane || "—") + " · attempts " + d.screen_attempts)}
       ${kv("Transport attempts", d.transport_attempts)}
+      ${kv("Competition", d.competition)}
       ${kv("Admission epoch", d.admission_epoch)}
     </dl>
     ${baselineCard}

@@ -81,8 +81,8 @@ def test_winners_view_labels_relative_and_sglang_columns() -> None:
     ).read_text()
 
     assert '"Vs incumbent","Vs SGLang"' in html
-    assert "cumulative_improvement_pct_over_sglang" in html
-    assert "cumulative_speedup_over_sglang" in html
+    assert "sglang_improvement_pct" in html
+    assert "sglang_comparison_basis" in html
     assert "tokens_per_second" in html
     assert "sglang_tokens_per_second" in html
 
