@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import weakref
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -126,6 +127,34 @@ def test_prefill_recapture_failure_cannot_acknowledge_a_successful_swap(monkeypa
     assert ack["ok"] is False
     assert ack["error"] == "recapture failed: prefill capture failed"
     assert "recapture" not in events
+
+
+@pytest.mark.parametrize("failure_phase", [None, "prefill", "decode"])
+def test_prior_pool_owner_lives_until_both_phases_finish(monkeypatch, tmp_path, failure_phase):
+    class GraphOwner:
+        backend = SimpleNamespace(_pool=object())
+
+    owner = GraphOwner()
+    reference = weakref.ref(owner)
+
+    def capture(phase):
+        assert reference() is not None, "reusing a retired pool crashes PyTorch 2.13"
+        if failure_phase == phase:
+            raise RuntimeError(f"{phase} failed")
+
+    scheduler, _layer, _events = _runtime(
+        monkeypatch, tmp_path,
+        prefill_hook=lambda: capture("prefill"),
+        recapture_hook=lambda: capture("decode"),
+    )
+    scheduler.tp_worker.model_runner.decode_cuda_graph_runner = owner
+    del owner
+    if failure_phase is None:
+        scheduler.flush_cache()
+    else:
+        with pytest.raises(RuntimeError, match=f"{failure_phase} failed"):
+            scheduler.flush_cache()
+    assert reference() is None, "old graphs must not survive the completed or failed swap"
 
 
 @pytest.mark.parametrize("slots", [
