@@ -1,7 +1,8 @@
-"""Swap a resident engine's kernel bundle and rebuild its decode graphs.
+"""Swap a resident engine's kernel bundle and rebuild both serving graph phases.
 
 Each rank acknowledges only after recapture succeeds or records the exact failure.
-Candidate-prepared state and the prior graph are released before every rebuild.
+Candidate-prepared state is cleared before rebuilding; the prior decode runner
+keeps the shared graph pool alive until both replacement phases finish.
 """
 
 from __future__ import annotations
@@ -86,7 +87,7 @@ def _write_ack(control_dir: str, rank: object, payload: dict[str, object]) -> No
 
 
 def _release_cuda_state(model_runner: object) -> int:
-    """Drop candidate layouts and the old graph before recapture.
+    """Drop candidate layouts and detach both old runners before recapture.
 
     The old backend's graph pool id is harvested first so the rebuild can
     record into it, and empty_cache is skipped while a pool is carried —
@@ -114,6 +115,7 @@ def _release_cuda_state(model_runner: object) -> int:
             if hasattr(layer, _MOE_PREPARED_ATTR):
                 delattr(layer, _MOE_PREPARED_ATTR)
     setattr(model_runner, "decode_cuda_graph_runner", None)
+    setattr(model_runner, "prefill_cuda_graph_runner", None)
     gc.collect()
     if _carried_graph_pool is None and torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -220,13 +222,24 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
         @functools.wraps(fn)
         def init_decode_cuda_graph(self, *args, **kwargs):
             pending = None
-            if not getattr(self, "is_draft_worker", False):
-                pending = _apply_pending_swap(self, control_dir)
+            # PyTorch 2.13 retires a host pool when its last graph dies; carrying
+            # only its ID then crashes prefill capture (2026-09-10). Keep one
+            # runner owning that pool through replacement, including failures.
+            pool_owner = getattr(self, "decode_cuda_graph_runner", None)
             try:
+                if not getattr(self, "is_draft_worker", False):
+                    pending = _apply_pending_swap(self, control_dir)
+                if pending is not None:
+                    # SGLang captures prefill before decode at startup. A swap
+                    # must replace both phases or a later prefill replays stock
+                    # (and stock restoration can retain candidate graphs).
+                    self.init_prefill_cuda_graph()
                 result = fn(self, *args, **kwargs)
             except Exception as exc:
                 _finish_swap(control_dir, pending, exc)
                 raise
+            finally:
+                del pool_owner
             _finish_swap(control_dir, pending)
             return result
 

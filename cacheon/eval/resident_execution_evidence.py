@@ -213,8 +213,8 @@ class ResidentExecutionEvidence:
             and self.prior_execution_ranks == expected_ranks
         )
 
-    def faults(self) -> str:
-        """Why each unclean rank was not counted, for the hold that names it."""
+    def faults(self, *, require_capture: bool = True) -> str:
+        """Explain failed entries and dispatch misses, with capture when required."""
 
         eager = eager_slots()
         found = []
@@ -229,8 +229,9 @@ class ResidentExecutionEvidence:
                 if slot.error:
                     found.append(f"rank {row.rank} {slot.slot} raised {slot.error}")
                 elif slot.calls < 1:
-                    found.append(f"rank {row.rank} {slot.slot} was never called")
-                elif slot.slot not in eager and slot.captured is not True:
+                    detail = f" ({'; '.join(slot.skipped)})" if slot.skipped else ""
+                    found.append(f"rank {row.rank} {slot.slot} was never called{detail}")
+                elif require_capture and slot.slot not in eager and slot.captured is not True:
                     found.append(
                         f"rank {row.rank} {slot.slot} ran outside the captured graph"
                     )

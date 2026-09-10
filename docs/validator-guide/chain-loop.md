@@ -456,7 +456,9 @@ PASS from becoming a permanent priority veto.
 Eval-cost admission is deliberately separate from the shared `IntakePolicy` used by
 screen and evaluation-lease services. `chain-validate --eval-cost-tao-rao` controls the
 required `transfer_keep_alive` amount and defaults to `0` (off). Quote TTL defaults to
-300 blocks and the payment-to-reveal window defaults to 7,200 blocks.
+300 blocks and the payment-to-reveal window defaults to 7,200 blocks. A quote above
+the required amount is accepted when the transfer covers the full quoted amount;
+quoting below the required fee or transferring less than the quote is rejected.
 
 A v2 reveal may attach a payment pointer. When the gate is enabled, intake rebuilds the
 remark from that reveal's hotkey, content hash, and netuid; only that triple can spend

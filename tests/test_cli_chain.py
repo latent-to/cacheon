@@ -7,6 +7,21 @@ import pytest
 import cacheon.cli as cli
 
 
+def test_published_quote_and_payment_defaults_agree(capsys) -> None:
+    """New miners must receive the same 0.5 TAO fee that intake accepts."""
+    parser = cli.build_parser()
+    quote = parser.parse_args(["chain-eval-cost", "--netuid", "14"])
+    submit = parser.parse_args([
+        "chain-submit", "bundle", "--url", "https://example.com/bundle",
+        "--netuid", "14", "--network", "finney", "--wallet", "miner",
+        "--hotkey", "miner", "--pay",
+    ])
+    credit = parser.parse_args(["chain-eval-cost-credit", "--intake-db", "intake.sqlite3"])
+    assert quote.eval_cost_tao_rao == submit.eval_cost_tao_rao == credit.amount_tao_rao == 500_000_000
+    assert cli.cmd_chain_eval_cost(quote) == 0
+    assert "amount_rao:   500000000" in capsys.readouterr().out
+
+
 def test_chain_validate_refuses_implicit_fake_grading(monkeypatch):
     args = argparse.Namespace(intake_only=False)
     with pytest.raises(SystemExit, match="requires --intake-only or"):

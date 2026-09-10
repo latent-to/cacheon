@@ -16,6 +16,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
+
 EVAL_COST_CREDITS_DDL = """
 CREATE TABLE IF NOT EXISTS eval_cost_credits (
     credit_id TEXT PRIMARY KEY,
@@ -81,7 +83,7 @@ def grant_eval_cost_credit(
     *,
     hotkey: str,
     coldkey: str = "",
-    amount_tao_rao: int = 1_000_000_000,
+    amount_tao_rao: int = PUBLISHED_EVAL_COST_TAO_RAO,
     note: str = "",
 ) -> str:
     """Record one artificial eval-cost credit and return its identifier.

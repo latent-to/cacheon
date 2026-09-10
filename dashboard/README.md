@@ -27,7 +27,7 @@ to run the dashboard and its API tests.
 | Overview | Status counts, submissions/day sparkline, failure reasons, currently running eval |
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
 | Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
-| Payments | Eval-cost payments (1 τ each): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
+| Payments | Eval-cost payments (0.5 τ minimum): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
 | Winners | Retained PASS settlement candidates: credited gain, measured candidate and baseline tok/s, prefill gain, served weight share, settlement status, and current on-chain emission |
 | Miners | Per-hotkey leaderboard sorted by served weight share: submissions, crowns, qualified/failed, fees paid, registration + emission |
 | Timeline | Settlement events (CROWN/ADOPTION/HOLD/…), the served weight offer's vector, and this validator's follower journal (intent/pending/held/confirmed) |
@@ -66,6 +66,14 @@ to run the dashboard and its API tests.
 `hotkey`, `q`, `active`, `limit`, `offset`, `order`),
 `/api/submissions/{id}`, `/api/payments`, `/api/winners`, `/api/miners`,
 `/api/events`, `/api/weights`, `/api/hotkey/{ss58}`, `/api/health`.
+
+Submission list and detail responses expose `evaluation_recovery` when an
+operator has linked a payment rejection to a corrected submission. The existing
+intake `metadata` key `evaluation_recoveries` stores a JSON object mapping original
+reservation IDs to evaluated reservation IDs. The reader requires the same
+hotkey and, when already resolved before rejection, target. It reads current status and active lease stage from the
+linked reservation. The UI links to that evaluation beside the original payment
+error; it preserves both submissions' identities, errors and evaluation history.
 
 The submission detail renders the signed evaluation records in full. Each
 screen attempt carries `stages` — every graded check from the signed receipt
@@ -133,7 +141,7 @@ Metagraph emission is denominated in the subnet's own alpha token, so
 `/api/winners` and `/api/miners` report `emission_alpha_per_day` beside an
 `emission_symbol` read from the netuid's on-chain symbol (`ㄷ` for netuid 14).
 The installed bittensor unit table can disagree with the chain, so the UI
-renders the served symbol and never a local one. Only the 1 τ eval-cost fee is
+renders the served symbol and never a local one. Only the eval-cost fee is
 in TAO.
 
 Reward shares come from the served weight offer, not from settlement status:

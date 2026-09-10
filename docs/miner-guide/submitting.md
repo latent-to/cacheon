@@ -149,7 +149,8 @@ Then skip to [Inspect public chain state](#7-inspect-public-chain-state).
 ### 6. Submit — eval-cost gate on
 
 If the operator requires a TAO admission transfer, quote, dry-run `--pay`, then
-pay and commit. The destination is the current subnet owner coldkey.
+pay and commit. The published quote is 0.5 TAO (500,000,000 rao), paid to the
+current subnet owner coldkey.
 
 ```bash
 python -m cacheon.cli chain-eval-cost --netuid "$NETUID" --network "$NET"
