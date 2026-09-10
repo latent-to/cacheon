@@ -36,7 +36,7 @@ from dashboard.forensics import (
 from dashboard.competition import competition_label, submission_baseline
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
 from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
-from dashboard.receipts import screen_stages
+from dashboard.receipts import evaluation_recovery, screen_stages
 from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     measured_baseline,
@@ -610,8 +610,6 @@ def safe_float(value: Any) -> float | None:
         return None
 
 
-# ---------------------------------------------------------------- app ------
-
 app = FastAPI(
     title="Cacheon submissions API",
     description="Read-only API over the netuid-14 intake database, with "
@@ -802,6 +800,7 @@ def submissions(
         "('target_lineage_tips','target_lineage_nodes')"
     ).fetchone()[0] == 2
     for item in shaped:
+        item["evaluation_recovery"] = evaluation_recovery(con, item)
         item["baseline"] = submission_baseline(
             con,
             item["reservation_id"],
@@ -827,6 +826,7 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
     r = dict(row)
     rid = r["reservation_id"]
     detail = submission_row(r)
+    detail["evaluation_recovery"] = evaluation_recovery(con, detail)
     detail["url"] = r.get("url") or ""
     detail["payload_digest"] = r.get("payload_digest") or ""
     detail["publication_digest"] = r.get("publication_digest") or ""
