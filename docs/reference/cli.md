@@ -422,7 +422,7 @@ Intake mode persists finalized order, hardened fetch and re-hash results, privat
 retention, immutable worker publication, and copy disposition. Storage and loop controls
 are `--intake-db`, `--private-root`, `--publication-root`, `--audit-log`,
 `--interval`, and `--once`. `--eval-cost-tao-rao` defaults to `0` (gate off);
-set `1000000000` to require the published 1 TAO `transfer_keep_alive` to the
+set `500000000` to require the published 0.5 TAO `transfer_keep_alive` to the
 current subnet owner coldkey per admission, and
 `--eval-cost-payment-window-blocks` to bound how old that transfer may be relative
 to the reveal. `--eval-cost-quote-ttl-blocks` (default 300, about one hour) is how long a quoted

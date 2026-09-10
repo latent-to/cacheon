@@ -35,6 +35,7 @@ from dashboard.forensics import (
 )
 from dashboard.competition import competition_label, submission_baseline
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
+from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
 from dashboard.receipts import screen_stages
 from dashboard.winners import (
     conservative_candidate_tokens_per_second,
@@ -45,7 +46,6 @@ from dashboard.winners import (
     live_offer_shares,
 )
 
-# ---------------------------------------------------------------- config ---
 MISSION = Path(os.environ.get(
     "CACHEON_DASH_MISSION", "/data/mainnet14-cacheon-h3-m4i-pre-crown"))
 DB_PATH = Path(os.environ.get(
@@ -1052,7 +1052,7 @@ def payments() -> dict[str, Any]:
         c["amount_tao"] = int(c["amount_tao_rao"]) / 1e9
         c["spent"] = bool(c["reservation_id"])
     return {
-        "eval_cost_tao": 1.0,
+        "eval_cost_tao": PUBLISHED_EVAL_COST_TAO_RAO / 1e9,
         "destination_coldkey": owner,
         "destination_links": links_for_address(owner),
         "items": items,

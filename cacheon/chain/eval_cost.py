@@ -19,7 +19,7 @@ matches the owner at the inclusion block.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _replace
 from typing import Mapping, Sequence
 
 from cacheon.stack_identity import canonical_json_bytes, require_sha256_hex
@@ -29,7 +29,7 @@ EVAL_COST_QUOTE_VERSION = 1
 EVAL_COST_PAYMENT_DOMAIN = "cacheon.chain.eval-cost-payment.v1"
 EVAL_COST_ASSET = "tao"
 EVAL_COST_INSTRUMENT = "transfer_keep_alive"
-PUBLISHED_EVAL_COST_TAO_RAO = 1_000_000_000
+PUBLISHED_EVAL_COST_TAO_RAO = 500_000_000
 DEFAULT_EVAL_COST_PAYMENT_WINDOW_BLOCKS = 7_200
 # ~1 hour at 12s blocks. Ridges freezes a payment quote for 3600s of wall time.
 DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS = 300
@@ -321,7 +321,7 @@ def verify_eval_cost_payment(
     proof: EvalCostPaymentProof | None,
     reveal_block: int,
 ) -> str:
-    """Return ``""`` when the proof pays the quote frozen at issuance, else a reason token."""
+    """Accept a fully paid, proposal-bound quote that covers the required fee."""
 
     if type(request) is not EvalCostRequest or type(policy) is not EvalCostPolicy:
         raise EvalCostError("eval-cost verification inputs are not typed")
@@ -338,6 +338,9 @@ def verify_eval_cost_payment(
         return REASON_INVALID
     expected = quote_eval_cost(
         request, policy=policy, at_block=int(parsed["issued_block"])
+    )
+    expected = _replace(
+        expected, amount_rao=max(expected.amount_rao, int(parsed["amount_rao"]))
     )
     if proof.remark != encode_payment_remark(request, expected):
         return REASON_INVALID

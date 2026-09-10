@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from cacheon.chain.eval_cost import (
     EvalCostRequest,
     encode_payment_remark,
     quote_eval_cost,
+    verify_eval_cost_payment,
 )
 from cacheon.chain.intake import FinalizedIntakeStore, IntakePolicy, IntakeScope
 from cacheon.chain.payload import encode_payload
@@ -226,7 +228,10 @@ def _stub_owner(monkeypatch, dest: str = "treasury") -> None:
     )
 
 
-def test_paid_v2_is_admitted_when_eval_cost_is_required(tmp_path, monkeypatch):
+@pytest.mark.parametrize("required_amount", [5, 10])
+def test_paid_v2_is_admitted_when_eval_cost_is_required(
+    tmp_path, monkeypatch, required_amount,
+):
     source = _bundle(
         tmp_path / "source",
         "def silu_and_mul(x, out):\n    out.copy_(x)\n",
@@ -257,7 +262,7 @@ def test_paid_v2_is_admitted_when_eval_cost_is_required(tmp_path, monkeypatch):
         snapshot,
         {digest: source},
         policy=IntakePolicy(expiry_blocks=100),
-        eval_cost_policy=EvalCostPolicy(amount_rao=10),
+        eval_cost_policy=EvalCostPolicy(amount_rao=required_amount),
     )
     assert calls == [digest] and len(result.rejected) == 0
     with FinalizedIntakeStore(
@@ -268,6 +273,28 @@ def test_paid_v2_is_admitted_when_eval_cost_is_required(tmp_path, monkeypatch):
         row = store.all()[0]
         assert row.status == "published"
         assert row.arrival.payment_block == 80
+
+
+@pytest.mark.parametrize("quoted,transferred", [(4, 10), (10, 5)])
+def test_payment_must_cover_both_the_fee_and_its_declared_quote(quoted, transferred):
+    """An overpayment cannot conceal an underquote or an underfunded remark."""
+    request = EvalCostRequest(netuid=307, hotkey="miner", content_hash="a" * 64)
+    quote = quote_eval_cost(
+        request,
+        policy=EvalCostPolicy(amount_rao=quoted, destination="treasury"),
+        at_block=70,
+    )
+    proof = replace(
+        _paid_proof(request.content_hash),
+        amount_rao=transferred,
+        remark=encode_payment_remark(request, quote),
+    )
+    assert verify_eval_cost_payment(
+        request=request,
+        policy=EvalCostPolicy(amount_rao=5, destination="treasury"),
+        proof=proof,
+        reveal_block=90,
+    ) == "eval_cost_payment_invalid"
 
 
 def test_payment_to_a_stale_owner_is_invalid(tmp_path, monkeypatch):
