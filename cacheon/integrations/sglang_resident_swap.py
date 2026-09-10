@@ -1,4 +1,4 @@
-"""Swap a resident engine's kernel bundle and rebuild its decode graphs.
+"""Swap a resident engine's kernel bundle and rebuild both serving graph phases.
 
 Each rank acknowledges only after recapture succeeds or records the exact failure.
 Candidate-prepared state and the prior graph are released before every rebuild.
@@ -102,6 +102,7 @@ def _release_cuda_state(model_runner: object) -> int:
     old_runner = getattr(model_runner, "decode_cuda_graph_runner", None)
     old_pool = getattr(getattr(old_runner, "backend", None), "_pool", None)
     _carried_graph_pool = old_pool
+    old_runner = None
     _graph_pool_reused = False
     evicted = 0
     modules = getattr(getattr(model_runner, "model", None), "modules", None)
@@ -114,6 +115,7 @@ def _release_cuda_state(model_runner: object) -> int:
             if hasattr(layer, _MOE_PREPARED_ATTR):
                 delattr(layer, _MOE_PREPARED_ATTR)
     setattr(model_runner, "decode_cuda_graph_runner", None)
+    setattr(model_runner, "prefill_cuda_graph_runner", None)
     gc.collect()
     if _carried_graph_pool is None and torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -223,6 +225,11 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
             if not getattr(self, "is_draft_worker", False):
                 pending = _apply_pending_swap(self, control_dir)
             try:
+                if pending is not None:
+                    # SGLang captures prefill before decode at startup. A swap
+                    # must replace both phases or a later prefill replays stock
+                    # (and stock restoration can retain candidate graphs).
+                    self.init_prefill_cuda_graph()
                 result = fn(self, *args, **kwargs)
             except Exception as exc:
                 _finish_swap(control_dir, pending, exc)
