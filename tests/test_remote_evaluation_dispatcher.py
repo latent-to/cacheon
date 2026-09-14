@@ -483,7 +483,7 @@ def _all_keys(value: object) -> set[str]:
 
 
 @pytest.mark.parametrize("mode", ["exception", "forged-response"])
-def test_remote_failure_releases_without_attempt_and_replacement_reclaims(
+def test_remote_failure_holds_without_attempt_and_next_row_continues(
     tmp_path: Path,
     mode: str,
 ) -> None:
@@ -505,21 +505,20 @@ def test_remote_failure_releases_without_attempt_and_replacement_reclaims(
     with _store(tmp_path) as store:
         retained = store.get(first.reservation_id)
         events = store.evaluation_lease_events(reservation_id=first.reservation_id)
-    assert (retained.status, retained.screen_attempts) == ("published", 0)
+    assert (retained.status, retained.screen_attempts) == ("held", 0)
     assert [row.event_type for row in events] == ["claimed", "released"]
 
     replacement = _Transport(
         coordinator, credential, endpoint="replacement-worker-endpoint"
     )
-    # A replacement pod has a new pinned endpoint identity and therefore a new
-    # dispatcher/transport identity, but reclaims the same oldest durable row.
+    # The next healthy transport advances FIFO without repeating the held work.
     result = _dispatcher(coordinator, replacement, credential).dispatch_screen_once()
     assert result is not None
-    assert result.lease.reservation_ids == (first.reservation_id,)
-    assert result.lease.generation == events[0].generation + 1
+    assert result.lease.reservation_ids == (second.reservation_id,)
+    assert result.lease.generation == 1
     with _store(tmp_path) as store:
-        assert store.get(first.reservation_id).status == "promoted"
-        assert store.get(second.reservation_id).status == "published"
+        assert store.get(first.reservation_id).status == "held"
+        assert store.get(second.reservation_id).status == "promoted"
 
 
 def test_remote_screen_heartbeat_advances_while_transport_is_blocked(

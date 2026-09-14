@@ -447,6 +447,7 @@ replay, the attempt schema must first be extended to retain and bind those produ
 |---|---|
 | Candidate engine exceeds deadline or violates protocol with attributable evidence | Grade under the frozen requirement; `FAIL` only when attribution is complete |
 | Typed worker failure binds one exact candidate arm | Contain that candidate; retain its attributable outcome and preserve unaffected cohort results |
+| Screen infrastructure failure | HOLD after the first release; preserve diagnostics and do not automatically rescreen |
 | Recognized worker, Docker, GPU, driver, plan, runner, or raw-speed authority failure | HOLD with the original evidence; automatic retry requires authenticated proof that resident execution never began |
 | Evidence-store publication failure | Abort the pass; recovery holds an interrupted `qualifying` row as `controller_restart_during_qualifying` rather than manufacturing a typed `NO_DECISION` |
 | Baseline drift exceeds calibration | `NO_DECISION`; do not increase the candidate's denominator or tune the bar after seeing C |

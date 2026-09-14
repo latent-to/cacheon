@@ -432,7 +432,7 @@ def test_systemic_release_retains_diagnostic_and_consumes_no_attempt(tmp_path):
             result_digest=failure,
         )
         retained = store.get(row.reservation_id)
-        assert (retained.status, retained.screen_attempts) == ("published", 0)
+        assert (retained.status, retained.screen_attempts) == ("held", 0)
         event = store.evaluation_lease_events(lease_id=lease.lease_id)[-1]
         assert (event.event_type, event.reason, event.result_digest) == (
             "released",
@@ -634,33 +634,22 @@ def test_event_reader_recomputes_canonical_identity(tmp_path):
             store.evaluation_lease_events(lease_id=lease.lease_id)
 
 
-def test_systemic_release_cap_parks_reservation_held(tmp_path):
+@pytest.mark.parametrize("reason", ["systemic_qualification:worker_dead", "remote_screen_infrastructure"])
+def test_screen_infrastructure_parks_immediately_without_a_second_claim(tmp_path, reason):
+    # The catch-all starved FIFO on 2026-08-25..28 and 2026-08-29.
+    # The 2026-09-14 owner rule now forbids its first automatic paid retry.
     with _store(tmp_path) as store:
         row = _published_rows(store, 1)[0]
-        clock = 10
-        for round_number in (1, 2, 3):
-            _advance(store, clock)
-            lease = store.claim_evaluation_lease(
-                stage="screen", owner="worker-a", current_block=clock
-            )
-            assert lease is not None, f"round {round_number} could not claim"
-            _advance(store, clock + 1)
-            store.release_evaluation_lease(
-                lease,
-                current_block=clock + 1,
-                reason="systemic_qualification:worker_dead",
-            )
-            clock += 2
-            retained = store.get(row.reservation_id)
-            if round_number < 3:
-                assert retained.status == "published"
-            else:
-                assert retained.status == "held"
-                assert retained.reason == "systemic_release_cap:3"
-        _advance(store, clock)
-        assert store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=clock
-        ) is None
+        _advance(store, 10)
+        lease = store.claim_evaluation_lease(stage="screen", owner="worker-a", current_block=10)
+        assert lease is not None
+        _advance(store, 11)
+        store.release_evaluation_lease(lease, current_block=11, reason=reason)
+        retained = store.get(row.reservation_id)
+        assert retained.status == "held"
+        assert retained.reason == "systemic_release_cap:1"
+        assert retained.screen_attempts == 0
+        assert store.claim_evaluation_lease(stage="screen", owner="worker-a", current_block=11) is None
 
 
 def test_exempt_releases_never_trip_the_cap(tmp_path):
@@ -688,35 +677,9 @@ def test_exempt_releases_never_trip_the_cap(tmp_path):
         assert store.get(row.reservation_id).status == "published"
 
 
-def test_infrastructure_release_cap_parks_the_screen_catch_all(tmp_path):
-    # The exact reason that starved the screen queue on 2026-08-25..28 and
-    # 2026-08-29: outside the old opt-in 'systemic%' count, it retried one
-    # FIFO head row forever. Every non-exempt release now counts.
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        clock = 10
-        for round_number in (1, 2, 3):
-            _advance(store, clock)
-            lease = store.claim_evaluation_lease(
-                stage="screen", owner="worker-a", current_block=clock
-            )
-            assert lease is not None, f"round {round_number} could not claim"
-            _advance(store, clock + 1)
-            store.release_evaluation_lease(
-                lease,
-                current_block=clock + 1,
-                reason="remote_screen_infrastructure",
-            )
-            clock += 2
-        retained = store.get(row.reservation_id)
-        assert retained.status == "held"
-        assert retained.reason == "systemic_release_cap:3"
-
-
 def test_release_cap_counts_consecutively_and_resets_on_completion(tmp_path):
-    # Two strikes, then a completed screen, then two more strikes: the row
-    # stays live because the count restarts at its newest success — a healthy
-    # row that survived a fleet-wide outage is not one blip from parking.
+    # Operator-reviewed screen holds remain in history. A successful screen
+    # then resets the counter for authenticated pre-resident qualification refusals.
     with _store(tmp_path) as store:
         row = _published_rows(store, 1)[0]
         clock = 10
@@ -732,6 +695,8 @@ def test_release_cap_counts_consecutively_and_resets_on_completion(tmp_path):
                 current_block=clock + 1,
                 reason="remote_screen_infrastructure",
             )
+            assert store.get(row.reservation_id).status == "held"
+            store.release_hold(row.reservation_id, reason="operator:verified-no-execution")
             clock += 2
         _advance(store, clock)
         lease = store.claim_evaluation_lease(
