@@ -133,6 +133,7 @@ def _policy(**kwargs):
         half_life_blocks=100,
         discovery_lifetime_blocks=50,
         discovery_pool_ppm=200_000,
+        frontier_awards_from_block=1_000_000,
     )
     values.update(kwargs)
     return EmissionsPolicyManifest(**values)
@@ -310,10 +311,10 @@ def test_missing_live_discovery_hotkey_burns_only_its_bounty_share() -> None:
         _policy(), stack, _global_context(), standing, discoveries
     )
     assert result.weights_by_hotkey == {
-        "alice": 38_124,
-        "bob": 72_928,
+        "alice": 47_655,
+        "bob": 91_160,
         "carol": 50_000,
-        "validator": 838_948,
+        "validator": 811_185,
     }
     assert result.discovery[1].hotkey == "ghost"
 

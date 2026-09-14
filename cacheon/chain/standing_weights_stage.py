@@ -26,6 +26,7 @@ _WEIGHTS_CONFIG_FIELDS = frozenset(
         "discovery_pool_ppm",
         "fallback_endpoint",
         "half_life_blocks",
+        "frontier_awards_from_block",
         "network",
         "push_credentials",
         "push_url",
@@ -54,6 +55,7 @@ class WeightsStageConfig:
     # refusing. Empty disables the fallback: a crownless store then surfaces
     # the builder's refusal as a stage error, exactly as before.
     burn_hotkey: str
+    frontier_awards_from_block: int = 0
 
 
 @dataclass(frozen=True)
@@ -84,7 +86,10 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
         raise StandingCpuSupervisorError(
             f"weights stage config cannot reopen: {exc}"
         ) from None
-    row = _closed_config(raw, _WEIGHTS_CONFIG_FIELDS, "weights stage config")
+    row = _closed_config(
+        {"frontier_awards_from_block": 0, **raw} if type(raw) is dict else raw,
+        _WEIGHTS_CONFIG_FIELDS, "weights stage config",
+    )
     if row["schema"] != WEIGHTS_CONFIG_SCHEMA:
         raise StandingCpuSupervisorError("weights stage config schema is unsupported")
 
@@ -137,6 +142,10 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
             row["refresh_blocks"], "weights refresh_blocks", maximum=86_400
         ),
         burn_hotkey=burn_hotkey,
+        frontier_awards_from_block=_positive_int(
+            row["frontier_awards_from_block"], "weights frontier_awards_from_block",
+            allow_zero=True,
+        ),
     )
 
 
@@ -180,6 +189,7 @@ def compose_weight_offer_push(
         stage.half_life_blocks,
         stage.discovery_lifetime_blocks,
         stage.discovery_pool_ppm,
+        frontier_awards_from_block=stage.frontier_awards_from_block,
     )
     last_push_block = 0
     netuid = int(scope.netuid)

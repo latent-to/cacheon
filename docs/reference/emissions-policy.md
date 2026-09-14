@@ -5,8 +5,9 @@ content-addressed claims. A policy projects those claims into an exact
 1,000,000-part weight vector. A separate signer journals, submits, reads back, and
 confirms that vector.
 
-Policy bytes are validator consensus configuration. They are not supplied by a
-miner, inferred from a bundle, or changed by an operator after observing a result.
+Policy bytes are validator consensus configuration. Miners cannot supply or
+override them. A policy change requires validator authorization and an explicit
+migration; it does not alter the thresholds used to grade retained results.
 
 ## Policy generations
 
@@ -22,36 +23,85 @@ durable evidence remain reopenable from Git history and the reserved schema.
 
 ## Legacy V1
 
-Every distinct registered contribution with a complete audited PASS
-earns from its retained qualification, whether or not it becomes the crown.
+Policy `cacheon.emissions.v1.8` awards new measured performance records a fixed
+share of the available emission budget. A complete audited PASS supplies the
+evidence; a crown is not required to start the award.
 Qualification keeps using the manually commissioned incumbent when another
 contribution crowns. Changing that comparison baseline requires an explicit
 operator commission; a crown alone does not change it.
-Duplicate packaging of the same contribution earns once.
+Duplicate packaging or recommissioning of the same contribution cannot renew
+its award. Within each arena and exact measured incumbent stack, let `s` be the
+new PASS speedup and `best` the largest previously accepted speedup, initially
+`1`. Only `s > best` creates progress. A second PASS against an old incumbent
+does not earn the improvement already established by a stronger PASS.
 
-For speedup `s > 1`, finalized submission block `b`, the preceding distinct PASS
-block `p` in the same arena (or `b` for the first), first retained complete-PASS
-acceptance block `a`, current block `n`, half-life
-`h`, and fixed stall scale `1,800` blocks:
+For acceptance block `a`, current block `n`, and half-life `h`, shares of total
+emission are:
+
+```text
+q = max(0, ln(s / best) / ln(1.01))
+R = max(0, 1 - discovery_reserve - outstanding_standing_shares_at_acceptance)
+A = R × (1 - 2^(-q))
+share(n) = A × 2^(-(n - a) / h)
+```
+
+The 1% unit is anchored to the meaningful-improvement gate. The policy choice is
+that one such unit earns half the remaining standing budget. A 1.82% record
+earns about 71.5% of that budget, not 1.82% of total emission. The exponential
+form follows from requiring compounded improvements accepted at the same time
+to leave the same reserve whether submitted together or in stages:
+`2^(-(q1 + q2)) = 2^(-q1) × 2^(-q2)`. The 50% anchor is an explicit incentive
+choice, not a theorem of economic fairness.
+
+Awards are replayed by acceptance block and the insertion order of their
+retained qualification records. A later PASS in the same block cannot move
+ahead of an earlier award. The discovery reserve is always the configured
+`discovery_pool_ppm / 10^6`; when unused it goes to the validator. Holding that
+capacity aside prevents later discovery bounties from diluting standing awards.
+Outstanding awards remain reserved even while their recipients are absent or
+excluded. A new award cannot spend that temporarily redirected money.
+
+Each award retains its acceptance clock and initial amount when later winners
+arrive or the operator changes the incumbent. New awards have no submission-age
+or stall multiplier. Without new awards, one half-life halves each standing
+share and returns the difference to the validator; after four half-lives it is
+one sixteenth of its initial amount. Sum each hotkey's fixed-point credits and
+convert to integer ppm by flooring against the fixed `10^12` unit. Never divide
+by total miner credit. The validator receives all unallocated, decayed, absent,
+excluded, unused-discovery, and rounding remainder.
+
+Two limits matter. A new winner can claim only the uncommitted budget; it cannot
+take another miner's outstanding award. Also, splitting progress across time
+is not neutral because the reserve replenishes through decay: weak competition
+can still encourage waiting. The rule does not claim complete strategy-proofness.
+Separate commissioned baselines have separate measurement records; changing a
+baseline must remain an authorized operation, never a miner-controlled way to
+reset a record.
+
+#### Preserving existing awards during migration
+
+`frontier_awards_from_block` is an immutable acceptance-block boundary in the
+policy. PASSes accepted before it retain the v1.7 absolute-credit formula, their
+saved speedup and acceptance time. For those claims only, submission block `b`
+and the preceding pre-boundary PASS submission block `p` in the arena determine:
 
 ```text
 credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - a) / h) × 10^12)
 ```
 
-Acceptance time controls decay; submission time still controls stall credit.
-Changing the incumbent cannot alter either timestamp or the retained speedup.
-Logarithmic units make compounded gains path-independent. Policy version
-`cacheon.emissions.v1.7` pays each hotkey's absolute decayed credit: sum its
-credits, multiply by the standing pool, and divide by the fixed `10^12` unit,
-rounding down to integer ppm. It never divides by total miner credit or scales
-miner shares to fill the pool. The validator receives the entire remainder,
-including rounding, absent claimants, and operator exclusions. If absolute
-incentives exceed the available pool, projection stops instead of rescaling them.
-With no new claims, one half-life halves miner incentives and returns the
-difference to the validator. Existing v1.1/v1.3/v1.4/v1.5/v1.6 bindings move forward
-only when all numeric policy fields match; retained qualifications and their
-acceptance blocks are reused without rewriting claims. Legacy evidence without
-a retained acceptance block must be recovered before it can authorize a payout.
+Their remaining absolute shares consume reserve before new awards are issued.
+They also establish each comparison baseline's previous record. If old
+liabilities exhaust capacity, the initial new award is zero; it does not reduce
+old payouts or acquire a deferred entitlement. A projection exceeding the total emission budget stops instead of
+rescaling claims. The boundary defaults to `0` for a new deployment; set it
+explicitly when preserving older awards. The same boundary must be supplied to
+`set-weights`, `push-weight-offer`, and the offer producer's configuration.
+
+Existing v1.1/v1.3/v1.4/v1.5/v1.6/v1.7 bindings can advance once to v1.8 with the
+same half-life, discovery lifetime and discovery pool. The new boundary becomes
+bound with the policy digest and cannot subsequently be changed. This reuses
+retained qualification evidence; it neither reruns evaluations nor rewrites
+claims. Missing acceptance or comparison-baseline evidence stops a new award.
 
 The active standing claim validates its evaluation stack against that stack's
 sealed catalog and target-spec bytes. Historical v1 composition and v2 exclusion
@@ -60,8 +110,13 @@ reinterpret or invalidate an earned claim. A composed crown may carry an
 incumbent contribution whose exact PASS belongs to another arena; that original
 claim keeps its age and earns once, without a duplicate claim in the new arena. Reward
 history is derived from existing settlement candidates and their retained
-PASS records; there is no parallel accepted-history table. Missing or corrupt
-evidence holds the projection. If a claimant leaves the metagraph, its share
+PASS records; there is no parallel accepted-history table. The existing metadata
+stores only the count and digest of the history already used for awards. Each
+projection must preserve that prefix before appending new PASSes. Removal,
+reordering, changed acceptance times, or changed measurement inputs stop the
+projection rather than silently repricing old awards. Evidence corrections need
+an explicit accounting migration; they never authorize a paid rerun.
+Missing or corrupt evidence holds the projection. If a claimant leaves the metagraph, its share
 goes to the validator for that tick and returns if the claimant re-registers.
 
 A discovery qualification can create one non-renewable bounded claim. It does not

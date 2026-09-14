@@ -76,6 +76,7 @@
 "tests/test_execution_disposition.py": 57,
 "tests/test_fixed_incumbent_rewards.py": 9,
 "tests/test_follow_expected_authority.py": 8,
+"tests/test_frontier_rewards.py": 30,
 "tests/test_fused_ar_rmsnorm_lib.py": 10,
 "tests/test_indexer_select.py": 22,
 "tests/test_intake_rescreen.py": 14,

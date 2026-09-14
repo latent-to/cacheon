@@ -56,7 +56,7 @@ ATTEMPT = EvidenceArtifactRef(
     "application/json",
     "cacheon.qualification.cohort-attempt.v1",
 )
-POLICY = EmissionsPolicyManifest(100, 20, 100_000)
+POLICY = EmissionsPolicyManifest(100, 20, 100_000, frontier_awards_from_block=1_000_000)
 
 
 def _arrival(index: int, *, hotkey: str = "miner", block: int = 10) -> FinalizedArrival:
@@ -1694,7 +1694,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
         store.commit_settlement(lease, plan, evidence, current_block=11)
         context = _context("validator", "miner")
         assert _policy_metadata(store) is None
-        legacy = POLICY.to_dict()
+        legacy = {k: v for k, v in POLICY.to_dict().items() if k != "frontier_awards_from_block"}
         legacy["policy_version"] = predecessor_version
         store._db.execute(
             "INSERT INTO metadata(key,value) VALUES('emissions_policy_digest',?)",

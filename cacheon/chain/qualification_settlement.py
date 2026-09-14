@@ -176,8 +176,8 @@ def settlement_evidence_metadata(
     return roots, tuple(references), receipt
 
 
-def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[tuple[object, ...], dict[str, int]]:
-    """Reopen earned contributions and their first retained PASS acceptance blocks."""
+def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[tuple[object, ...], dict[str, int], dict[str, str], dict[str, int]]:
+    """Reopen contributions, acceptance blocks, and their measured comparison baselines."""
     from decimal import Decimal, ROUND_FLOOR
     from cacheon.chain.intake import IntakeError
 
@@ -185,11 +185,14 @@ def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[tuple[object, ...
 
     claims = []
     accepted_blocks = {}
+    comparison_baselines = {}
+    acceptance_order = {}
     seen: set[tuple[str, str, str]] = set()
     rows = store._db.execute(
         "SELECT sc.*, (SELECT MIN(NULLIF(q.retained_block,0)) "
         "FROM settlement_qualifications q WHERE q.reservation_id=sc.reservation_id) "
-        "AS accepted_block FROM settlement_candidates sc "
+        "AS accepted_block, (SELECT MIN(q.rowid) FROM settlement_qualifications q "
+        "WHERE q.reservation_id=sc.reservation_id) AS accepted_order FROM settlement_candidates sc "
         "JOIN reservations r USING(reservation_id) "
         "WHERE r.status='qualified' AND r.decision='PASS' "
         "AND sc.status!='duplicate_proposal' "
@@ -225,5 +228,32 @@ def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[tuple[object, ...
         )
         if row["accepted_block"] is not None:
             accepted_blocks[claims[-1].digest] = int(row["accepted_block"])
+        comparison_baselines[claims[-1].digest] = candidate.incumbent_stack_digest
+        acceptance_order[claims[-1].digest] = int(row["accepted_order"])
         seen.add(key)
-    return tuple(claims), accepted_blocks
+    return tuple(claims), accepted_blocks, comparison_baselines, acceptance_order
+
+
+def bind_reward_history(store, claims, accepted_blocks, comparison_baselines, acceptance_order):
+    """Bind an append-only input prefix inside the projector's policy transaction.
+
+    Fixed awards must not silently grow after an older PASS is removed or its
+    acceptance changes. Retain only a count and digest; the evidence remains
+    the sole history, and missing authority stops publication without a rerun.
+    """
+    from cacheon.chain.intake import IntakeError
+    from cacheon.stack_identity import canonical_digest
+
+    history = [(c.digest, accepted_blocks[c.digest], comparison_baselines[c.digest])
+               for c in sorted(claims, key=lambda c: (accepted_blocks[c.digest], acceptance_order[c.digest], c.digest))]
+    def digest(rows):
+        return canonical_digest("cacheon.economics.accepted-history", rows)
+    row = store._db.execute("SELECT value FROM metadata WHERE key='emissions_reward_history'").fetchone()
+    if row is not None:
+        prior = json.loads(row["value"])
+        if (type(prior.get("count")) is not int or prior["count"] < 0
+                or prior["count"] > len(history) or digest(history[:prior["count"]]) != prior.get("digest")):
+            raise IntakeError("accepted reward history changed; fixed awards cannot be repriced")
+    stamp = json.dumps({"count": len(history), "digest": digest(history)}, sort_keys=True)
+    store._db.execute("INSERT INTO metadata(key,value) VALUES('emissions_reward_history',?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (stamp,))

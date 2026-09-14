@@ -14,7 +14,7 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
 POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "cacheon.emissions.v1.7"
+POLICY_VERSION = "cacheon.emissions.v1.8"
 WEIGHT_PPM = 1_000_000
 CREDIT_SCALE = 1_000_000_000_000
 STALL_SCALE_BLOCKS = 1_800
@@ -52,6 +52,7 @@ class EmissionsPolicyManifest:
     discovery_pool_ppm: int
     schema_version: int = POLICY_SCHEMA_VERSION
     policy_version: str = POLICY_VERSION
+    frontier_awards_from_block: int = 0
 
     def __post_init__(self) -> None:
         _integer(self.half_life_blocks, "half_life_blocks", minimum=1)
@@ -61,6 +62,7 @@ class EmissionsPolicyManifest:
             minimum=1,
         )
         _integer(self.discovery_pool_ppm, "discovery_pool_ppm")
+        _integer(self.frontier_awards_from_block, "frontier_awards_from_block")
         if self.discovery_pool_ppm >= WEIGHT_PPM:
             raise EconomicsError("discovery_pool_ppm must leave standing reward capacity")
         if self.schema_version != POLICY_SCHEMA_VERSION:
@@ -73,6 +75,7 @@ class EmissionsPolicyManifest:
             "discovery_lifetime_blocks": self.discovery_lifetime_blocks,
             "discovery_pool_ppm": self.discovery_pool_ppm,
             "half_life_blocks": self.half_life_blocks,
+            "frontier_awards_from_block": self.frontier_awards_from_block,
             "policy_version": self.policy_version,
             "schema_version": self.schema_version,
         }
@@ -85,6 +88,7 @@ class EmissionsPolicyManifest:
                 "discovery_lifetime_blocks",
                 "discovery_pool_ppm",
                 "half_life_blocks",
+                "frontier_awards_from_block",
                 "policy_version",
                 "schema_version",
             },
@@ -95,6 +99,16 @@ class EmissionsPolicyManifest:
     @property
     def digest(self) -> str:
         return canonical_digest("cacheon.economics.policy", self.to_dict())
+
+    @property
+    def predecessor_digests(self) -> frozenset[str]:
+        """Permit the one-way award cutover without changing existing decay settings."""
+        legacy = self.to_dict()
+        del legacy["frontier_awards_from_block"]
+        return frozenset(canonical_digest("cacheon.economics.policy", legacy | {"policy_version": version})
+                         for version in ("cacheon.emissions.v1.1", "cacheon.emissions.v1.3",
+                                         "cacheon.emissions.v1.4", "cacheon.emissions.v1.5",
+                                         "cacheon.emissions.v1.6", "cacheon.emissions.v1.7"))
 
 
 @dataclass(frozen=True)
@@ -550,6 +564,69 @@ def _active_reward_targets(stack: EvaluationStackManifest) -> tuple[str, ...]:
     return tuple(sorted(active))
 
 
+def _standing_credits(policy, block, claims, accepted_blocks, comparison_baselines, acceptance_order):
+    """Replay fixed awards before membership filtering; absent miners still own capacity.
+
+    Only records against the same sealed comparison baseline are comparable.
+    The 1% qualification floor sets the progress unit; one unit halves the
+    available standing reserve. Legacy claims retain their original formula.
+    """
+    starts, predecessors, previous = {}, {}, {}
+    for claim in sorted(claims, key=lambda c: (c.arena_digest, c.crowned_block, c.digest)):
+        if accepted_blocks is not None and claim.digest not in accepted_blocks:
+            raise EconomicsError("accepted PASS has no retained acceptance block")
+        start = claim.crowned_block if accepted_blocks is None else accepted_blocks[claim.digest]
+        _integer(start, "accepted_block", minimum=claim.crowned_block)
+        _integer(block, "credit block", minimum=start)
+        starts[claim.digest] = start
+        if start < policy.frontier_awards_from_block:
+            predecessors[claim.digest] = previous.get(claim.arena_digest, claim.crowned_block)
+            previous[claim.arena_digest] = claim.crowned_block
+
+    legacy, awards, frontier, seen = [], [], {}, set()
+    credits = {}
+    with localcontext(_MATH_CONTEXT):
+        capacity = Decimal(CREDIT_SCALE) * (WEIGHT_PPM - policy.discovery_pool_ppm) / WEIGHT_PPM
+        unit = Decimal("1.01").ln()
+        order = acceptance_order or {}
+        for claim in sorted(claims, key=lambda c: (starts[c.digest], order.get(c.digest, 0), c.digest)):
+            start = starts[claim.digest]
+            baseline = None if comparison_baselines is None else comparison_baselines.get(claim.digest)
+            if start >= policy.frontier_awards_from_block and baseline is None:
+                raise EconomicsError("frontier award has no retained comparison baseline")
+            if start >= policy.frontier_awards_from_block:
+                _integer(order.get(claim.digest), "retained acceptance order")
+            if baseline is not None:
+                _digest(baseline, "comparison baseline")
+            key = (claim.arena_digest, baseline)
+            best = frontier.get(key, WEIGHT_PPM)
+            frontier[key] = max(best, claim.speedup_ppm)
+            duplicate = claim.contribution_digest in seen
+            seen.add(claim.contribution_digest)
+            if start < policy.frontier_awards_from_block:
+                legacy.append(claim)
+                credits[claim.digest] = claim.credit_at(
+                    block, policy, predecessor_block=predecessors[claim.digest], accepted_block=start,
+                )
+                continue
+            # Reserve liabilities even when their hotkey is absent or excluded.
+            # Ceiling each legacy liability avoids spending its sub-unit dust.
+            committed = sum(
+                old.credit_at(start, policy, predecessor_block=predecessors[old.digest],
+                              accepted_block=starts[old.digest]) + 1
+                for old in legacy
+            ) + sum(amount * Decimal(2) ** (-Decimal(start - accepted) / policy.half_life_blocks)
+                    for accepted, amount in awards)
+            remaining = max(Decimal(0), capacity - committed)
+            progress = max(Decimal(0), (Decimal(claim.speedup_ppm) / best).ln() / unit)
+            award = Decimal(0) if duplicate else remaining * (1 - Decimal(2) ** -progress)
+            awards.append((start, award))
+            credits[claim.digest] = int(award * Decimal(2) ** (
+                -Decimal(block - start) / policy.half_life_blocks
+            ))
+    return credits
+
+
 def project_global_rewards(
     policy: EmissionsPolicyManifest,
     context: GlobalRewardProjectionContext,
@@ -558,6 +635,8 @@ def project_global_rewards(
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
     *,
     accepted_blocks: Mapping[str, int] | None = None,
+    comparison_baselines: Mapping[str, str] | None = None,
+    acceptance_order: Mapping[str, int] | None = None,
 ) -> GlobalRewardProjection:
     """Pool the store-selected earning claims before one indivisible vector."""
 
@@ -632,18 +711,11 @@ def project_global_rewards(
                 raise EconomicsError(f"standing claim for {target_id!r} differs from PASS")
     family_credits: list[StandingFamilyCredit] = []
     standing_by_hotkey: dict[str, int] = {}
-    previous: dict[str, int] = {}
-    for claim in sorted(
-        earning, key=lambda row: (row.arena_digest, row.crowned_block, row.digest)
-    ):
-        predecessor = previous.get(claim.arena_digest, claim.crowned_block)
-        if accepted_blocks is not None and claim.digest not in accepted_blocks:
-            raise EconomicsError("accepted PASS has no retained acceptance block")
-        credit = claim.credit_at(
-            context.current_block, policy, predecessor_block=predecessor,
-            accepted_block=None if accepted_blocks is None else accepted_blocks[claim.digest],
-        )
-        previous[claim.arena_digest] = claim.crowned_block
+    credits = _standing_credits(
+        policy, context.current_block, earning, accepted_blocks, comparison_baselines, acceptance_order,
+    )
+    for claim in earning:
+        credit = credits[claim.digest]
         family_credits.append(
             StandingFamilyCredit(
                 claim.arena_digest,
@@ -693,7 +765,7 @@ def project_global_rewards(
     # CREDIT_SCALE is a fixed unit, never the sum of surviving or initial credit.
     # Filling the miner pool by relative share cancels decay, even for one miner.
     combined = {
-        hotkey: credit * standing_pool // CREDIT_SCALE
+        hotkey: credit * WEIGHT_PPM // CREDIT_SCALE
         for hotkey, credit in standing_by_hotkey.items()
     }
     remainder = standing_pool - sum(combined.values())

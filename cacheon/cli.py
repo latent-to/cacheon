@@ -179,6 +179,7 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
         args.half_life_blocks,
         args.discovery_lifetime_blocks,
         args.discovery_pool_ppm,
+        frontier_awards_from_block=getattr(args, "frontier_awards_from_block", 0),
     )
     context = GlobalRewardProjectionContext(
         scope.digest,
@@ -338,6 +339,7 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         args.half_life_blocks,
         args.discovery_lifetime_blocks,
         args.discovery_pool_ppm,
+        frontier_awards_from_block=getattr(args, "frontier_awards_from_block", 0),
     )
     with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
         if head_only:
@@ -1282,6 +1284,7 @@ def cmd_push_weight_offer(args: argparse.Namespace) -> int:
             args.half_life_blocks,
             args.discovery_lifetime_blocks,
             args.discovery_pool_ppm,
+            frontier_awards_from_block=getattr(args, "frontier_awards_from_block", 0),
         )
         metagraph = chain.fetch_metagraph(subtensor, args.netuid)
         context = GlobalRewardProjectionContext(
@@ -2433,6 +2436,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="emissions half-life in blocks (required)",
     )
+    sp.add_argument("--frontier-awards-from-block", type=int, default=0,
+                    help="PASS acceptance boundary; preserve older absolute awards (default: 0)")
     sp.add_argument(
         "--discovery-lifetime-blocks",
         type=int,
@@ -2696,6 +2701,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument("--half-life-blocks", type=int, default=None)
+    sp.add_argument("--frontier-awards-from-block", type=int, default=0)
     sp.add_argument("--discovery-lifetime-blocks", type=int, default=None)
     sp.add_argument("--discovery-pool-ppm", type=int, default=None)
     sp.add_argument(
