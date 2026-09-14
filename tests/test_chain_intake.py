@@ -56,7 +56,7 @@ ATTEMPT = EvidenceArtifactRef(
     "application/json",
     "cacheon.qualification.cohort-attempt.v1",
 )
-POLICY = EmissionsPolicyManifest(100, 20, 100_000, frontier_awards_from_block=1_000_000)
+POLICY = EmissionsPolicyManifest(100, 20, 100_000)
 
 
 def _arrival(index: int, *, hotkey: str = "miner", block: int = 10) -> FinalizedArrival:
@@ -1694,7 +1694,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
         store.commit_settlement(lease, plan, evidence, current_block=11)
         context = _context("validator", "miner")
         assert _policy_metadata(store) is None
-        legacy = {k: v for k, v in POLICY.to_dict().items() if k != "frontier_awards_from_block"}
+        legacy = POLICY.to_dict()
         legacy["policy_version"] = predecessor_version
         store._db.execute(
             "INSERT INTO metadata(key,value) VALUES('emissions_policy_digest',?)",
@@ -1706,7 +1706,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
             netuid=SCOPE.netuid,
         )
         assert projection.crown_count == 1
-        assert projection.weights_ppm == (("miner", 48_118), ("validator", 951_882))
+        assert projection.weights_ppm == (("miner", 1_000_000),)
         assert _policy_metadata(store)["value"] == POLICY.digest
         pending = WeightPublicationRecord(
             projection.digest,
@@ -1793,7 +1793,7 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
             context=context,
             netuid=SCOPE.netuid,
         )
-        assert projection.weights_ppm == (("miner", 48_118), ("validator", 951_882))
+        assert projection.weights_ppm == (("miner", 1_000_000),)
         assert projection.crown_count == 1
         assert len(projection.arena_state_digests) == 1
         assert store.evaluation_stack(staging.arena_digest).generation == 0
@@ -1806,7 +1806,7 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
             context=context,
             netuid=SCOPE.netuid,
         )
-        assert projection.weights_ppm == (("miner", 48_118), ("validator", 951_882))
+        assert projection.weights_ppm == (("miner", 1_000_000),)
         assert len(projection.arena_state_digests) == 1
 
 

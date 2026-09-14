@@ -382,10 +382,7 @@ absolute path to a second sealed, closed, owner-controlled file with schema
 `wss://`), `push_url` (`http(s)` serve-weights offer endpoint),
 `push_credentials` (owner-only path to the push credential set),
 `attribution_hotkey`, `half_life_blocks`, `discovery_lifetime_blocks`,
-`discovery_pool_ppm`, `refresh_blocks`, and `burn_hotkey`, plus optional
-`frontier_awards_from_block` (defaults to `0`). This acceptance-block boundary
-preserves earlier absolute awards when migrating to the fixed frontier-award
-policy; it becomes immutable once the first projection binds it. Every
+`discovery_pool_ppm`, `refresh_blocks`, and `burn_hotkey`. Every
 `refresh_blocks` the stage reads the finalized head and metagraph, reopens the
 intake store, and pushes the current V1 offer: the real projection whenever an
 active reward claim, a crowned arena, or an activated composition exists;

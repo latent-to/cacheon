@@ -55,9 +55,9 @@ def _compatible_snapshot():
     return snapshot
 
 
-def test_historical_active_composition_keeps_absolute_decaying_rewards():
+def test_historical_active_composition_keeps_one_global_reward_normalization():
     result = _project_snapshot(_compatible_snapshot())
-    assert result.weights_by_hotkey == {"alice": 47_655, "bob": 91_160, "validator": 861_185}
+    assert result.weights_by_hotkey == {"alice": 343_297, "bob": 656_703}
 
 
 @pytest.mark.parametrize("schema", (1, 2))

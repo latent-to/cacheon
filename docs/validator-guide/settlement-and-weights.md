@@ -181,9 +181,7 @@ evaluation delay cannot reset reward age. Duplicate packaging earns once.
 
 Discovery does not install an evaluation stack entry. A qualifying discovery may create
 one non-renewable claim with a bounded lifetime. All live discovery claims share a policy
-pool measured in ppm, reserved before standing awards are issued. Its unused
-capacity returns to the validator; activating it cannot dilute an existing
-standing award. Repackaging,
+pool measured in ppm; standing families receive the remaining pool. Repackaging,
 promotion, integration, or release cannot renew the same bounty.
 
 ## Legacy V1 global projection
@@ -218,28 +216,10 @@ builder validates every crowned stack under its own sealed catalog and binds the
 emissions policy digest. Historical v1 and current v2 catalogs can coexist in one
 projection. The active target relationships and exact sealed claim bindings remain
 required; retired admission or provider policy is not reconstructed. All earning
-claims retain their absolute decayed incentives in one vector, with the full
-remainder assigned to the validator. A catalog or incumbent change does not
-reset claim ages, recompute past gains, or create another miner pool.
-Policy v1.8 gives a new performance record a fixed award from the remaining
-standing budget: a 1% incremental gain earns half that budget, with the
-exponential progress rule specified in [Emissions policy](../reference/emissions-policy.md#legacy-v1).
-A PASS against a stale incumbent earns only progress beyond the previous best
-on that exact comparison baseline. Accepted history determines awards; the
-current crown does not reset them.
-
-Use `--frontier-awards-from-block <ACCEPTANCE_BLOCK>` to preserve v1.7 absolute
-awards accepted before the boundary. The producer configuration uses
-`frontier_awards_from_block`. Omission means `0`, suitable for a new deployment.
-When migrating, replay retained history with the chosen boundary before
-publication. The existing half-life and discovery values must match the bound
-policy; after migration the boundary is immutable as well.
-
-The remainder recipient is the configured validator **hotkey**, resolved to its
-UID from the finalized metagraph. Do not use a remembered UID as recipient
-authority. Verify the configured attribution matches the validator wallet;
-publication checks recipient UID mappings before signing and again during
-confirmation, and refuses reassigned identities.
+claims enter one normalization, so a catalog change neither orphans old rewards
+nor creates an independently normalized pool for the new arena.
+The v1.1/v1.3/v1.4 bindings advance to v1.5 only with identical numeric policy
+fields; unrelated policy changes remain refused.
 
 A retained pair earns from the lower of its two settled speedups, and that ratio
 is only as good as the baseline lane behind it. When the retained stage-exit

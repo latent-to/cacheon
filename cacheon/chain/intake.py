@@ -2852,7 +2852,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         """Derive one reward claim per distinct retained accepted contribution."""
         from cacheon.chain.qualification_settlement import passed_reward_claims
 
-        return passed_reward_claims(self)[0]
+        return passed_reward_claims(self)
 
     def _reopen_claim_evidence(self, retained_digest: str, status: str):
         require_sha256_hex(retained_digest, field="retained_evidence_digest")
@@ -2869,8 +2869,13 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("active reward claim differs from reopened settlement evidence")
         return receipt
 
-    def _bind_emissions_policy(self, policy, *, history=None) -> None:
+    def _bind_emissions_policy(self, policy) -> None:
         policy_digest = policy.digest
+        require_sha256_hex(policy_digest, field="policy_digest")
+        predecessors = {
+            canonical_digest("cacheon.economics.policy", policy.to_dict() | {"policy_version": version})
+            for version in ("cacheon.emissions.v1.1", "cacheon.emissions.v1.3", "cacheon.emissions.v1.4")
+        }
         with self._transaction():
             row = self._db.execute(
                 "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
@@ -2880,7 +2885,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     "INSERT INTO metadata(key,value) VALUES('emissions_policy_digest',?)",
                     (policy_digest,),
                 )
-            elif row["value"] in policy.predecessor_digests:
+            elif row["value"] in predecessors:
                 self._db.execute(
                     "UPDATE metadata SET value=? WHERE key='emissions_policy_digest'",
                     (policy_digest,),
@@ -2889,9 +2894,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 raise IntakeError(
                     "emissions policy differs from the bound validator consensus state"
                 )
-            if history is not None:
-                from cacheon.chain.qualification_settlement import bind_reward_history
-                bind_reward_history(self, *history)
 
     def build_weight_projection(
         self,
@@ -2918,9 +2920,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("weight projection authority is malformed")
         standing, discovery = self.active_reward_claims()
-        from cacheon.chain.qualification_settlement import passed_reward_claims
-
-        earning, accepted_blocks, comparison_baselines, acceptance_order = passed_reward_claims(self)
+        earning = self.passed_reward_claims()
         by_arena: dict[str, list[object]] = {}
         for claim in standing:
             by_arena.setdefault(claim.arena_digest, []).append(claim)
@@ -2948,12 +2948,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
             )
         projection = project_global_rewards(
-            policy, context, tuple(authorities), earning, discovery,
-            accepted_blocks=accepted_blocks,
-            comparison_baselines=comparison_baselines,
-            acceptance_order=acceptance_order,
+            policy, context, tuple(authorities), earning, discovery
         )
-        self._bind_emissions_policy(policy, history=(earning, accepted_blocks, comparison_baselines, acceptance_order))
+        self._bind_emissions_policy(policy)
         evidence = tuple(
             sorted(
                 {

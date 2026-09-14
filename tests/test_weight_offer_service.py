@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import threading
 import types
-import json
 from pathlib import Path
 
 import pytest
 
 from cacheon.chain import remote_worker_spool as spool
-from cacheon.chain.standing_cpu_supervisor import StandingCpuSupervisorError
 from cacheon.chain.standing_weights_stage import (
     WEIGHTS_CONFIG_SCHEMA,
     WeightsStageConfig,
@@ -100,20 +98,6 @@ def test_offer_service_config_reopens_exactly(tmp_path: Path) -> None:
     assert config.max_consecutive_failures == 10
     assert config.weights_stage.refresh_blocks == 600
     assert config.weights_stage.half_life_blocks == 7200
-    assert config.weights_stage.frontier_awards_from_block == 0
-
-
-@pytest.mark.parametrize("boundary", [42_000, True, False, -1, "20"])
-def test_offer_service_carries_an_exact_acceptance_cutover(tmp_path, boundary):
-    config_path, raw = _setup(tmp_path)
-    weights_path = Path(raw["weights_stage_config"])
-    weights = json.loads(weights_path.read_text())
-    _rewrite(weights_path, weights | {"frontier_awards_from_block": boundary})
-    if type(boundary) is int and boundary >= 0:
-        assert load_offer_service_config(config_path).weights_stage.frontier_awards_from_block == boundary
-    else:
-        with pytest.raises(StandingCpuSupervisorError, match="integer bounds"):
-            load_offer_service_config(config_path)
 
 
 def test_unsupported_schema_fails_closed(tmp_path: Path) -> None:
