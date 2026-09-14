@@ -531,7 +531,7 @@ def isolated_engine_session(
                         active_receipts, expected_member_count=expected_members
                     )
                     if audit_policy is not None and (
-                        tuple(expected_slots) != audit_policy.expected_slots
+                        not set(audit_policy.expected_slots).issubset(expected_slots)
                         or expected_members != audit_policy.expected_member_count
                     ):
                         raise RuntimeError(
@@ -557,6 +557,12 @@ def isolated_engine_session(
                         raise RuntimeError(
                             "timed candidate engine unexpectedly emitted audit receipts"
                         )
+                    if audit_policy is not None:
+                        # A composed engine also audits incumbent slots. The
+                        # sealed policy grades the selected delta; full-stack
+                        # execution coverage is still required by complete().
+                        incumbent_slots = set(expected_slots) - set(audit_policy.expected_slots)
+                        observed = [row for row in observed if row.get("slot") not in incumbent_slots]
                     return observed
 
                 yield EngineWorkerHandle(engine, complete, collect_audits)

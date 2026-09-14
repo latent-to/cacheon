@@ -216,9 +216,10 @@ builder validates every crowned stack under its own sealed catalog and binds the
 emissions policy digest. Historical v1 and current v2 catalogs can coexist in one
 projection. The active target relationships and exact sealed claim bindings remain
 required; retired admission or provider policy is not reconstructed. All earning
-claims enter one normalization, so a catalog change neither orphans old rewards
-nor creates an independently normalized pool for the new arena.
-The v1.1/v1.3/v1.4 bindings advance to v1.5 only with identical numeric policy
+claims retain their absolute decayed incentives in one vector, with the full
+remainder assigned to the validator. A catalog or incumbent change does not
+reset claim ages, recompute past gains, or create another miner pool.
+The v1.1/v1.3/v1.4/v1.5/v1.6 bindings advance to v1.7 only with identical numeric policy
 fields; unrelated policy changes remain refused.
 
 A retained pair earns from the lower of its two settled speedups, and that ratio

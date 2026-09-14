@@ -2850,48 +2850,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
 
     def passed_reward_claims(self) -> tuple[object, ...]:
         """Derive one reward claim per distinct retained accepted contribution."""
+        from cacheon.chain.qualification_settlement import passed_reward_claims
 
-        from cacheon.economics import StandingRewardClaim, WEIGHT_PPM
-
-        claims = []
-        seen: set[tuple[str, str, str]] = set()
-        rows = self._db.execute(
-            "SELECT sc.* FROM settlement_candidates sc "
-            "JOIN reservations r USING(reservation_id) "
-            "WHERE r.status='qualified' AND r.decision='PASS' "
-            "AND sc.status!='duplicate_proposal' "
-            "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
-        )
-        for row in rows:
-            candidate = self._settlement_candidate(row)
-            if candidate.candidate_manifest is None:
-                continue  # discovery PASSes use the bounded discovery pool
-            contribution = candidate.candidate_manifest.entries[candidate.target_id]
-            key = (candidate.arena_digest, candidate.target_id, contribution.digest)
-            if key in seen:
-                continue
-            evidence = self.reopen_settlement_evidence(candidate)
-            retained = row["settlement_evidence_digest"]
-            if retained and retained != evidence.digest:
-                raise IntakeError("PASS candidate differs from retained evidence")
-            claims.append(
-                StandingRewardClaim(
-                    candidate.arena_digest,
-                    candidate.target_id,
-                    contribution.target_spec_digest,
-                    contribution.digest,
-                    candidate.hotkey,
-                    int(
-                        (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
-                            rounding=ROUND_FLOOR
-                        )
-                    ),
-                    candidate.finalized_block,
-                    evidence.digest,
-                )
-            )
-            seen.add(key)
-        return tuple(claims)
+        return passed_reward_claims(self)[0]
 
     def _reopen_claim_evidence(self, retained_digest: str, status: str):
         require_sha256_hex(retained_digest, field="retained_evidence_digest")
@@ -2913,7 +2874,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         require_sha256_hex(policy_digest, field="policy_digest")
         predecessors = {
             canonical_digest("cacheon.economics.policy", policy.to_dict() | {"policy_version": version})
-            for version in ("cacheon.emissions.v1.1", "cacheon.emissions.v1.3", "cacheon.emissions.v1.4")
+            for version in ("cacheon.emissions.v1.1", "cacheon.emissions.v1.3", "cacheon.emissions.v1.4", "cacheon.emissions.v1.5", "cacheon.emissions.v1.6")
         }
         with self._transaction():
             row = self._db.execute(
@@ -2959,7 +2920,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("weight projection authority is malformed")
         standing, discovery = self.active_reward_claims()
-        earning = self.passed_reward_claims()
+        from cacheon.chain.qualification_settlement import passed_reward_claims
+
+        earning, accepted_blocks = passed_reward_claims(self)
         by_arena: dict[str, list[object]] = {}
         for claim in standing:
             by_arena.setdefault(claim.arena_digest, []).append(claim)
@@ -2987,7 +2950,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
             )
         projection = project_global_rewards(
-            policy, context, tuple(authorities), earning, discovery
+            policy, context, tuple(authorities), earning, discovery,
+            accepted_blocks=accepted_blocks,
         )
         self._bind_emissions_policy(policy)
         evidence = tuple(

@@ -14,7 +14,7 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
 POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "cacheon.emissions.v1.5"
+POLICY_VERSION = "cacheon.emissions.v1.7"
 WEIGHT_PPM = 1_000_000
 CREDIT_SCALE = 1_000_000_000_000
 STALL_SCALE_BLOCKS = 1_800
@@ -220,9 +220,12 @@ class StandingRewardClaim:
         policy: EmissionsPolicyManifest,
         *,
         predecessor_block: int | None = None,
+        accepted_block: int | None = None,
     ) -> int:
         predecessor = self.crowned_block if predecessor_block is None else predecessor_block
-        _integer(block, "credit block", minimum=self.crowned_block)
+        start = self.crowned_block if accepted_block is None else accepted_block
+        _integer(start, "accepted_block", minimum=self.crowned_block)
+        _integer(block, "credit block", minimum=start)
         _integer(predecessor, "predecessor_block")
         if predecessor > self.crowned_block:
             raise EconomicsError("reward predates its arena stall clock")
@@ -230,7 +233,7 @@ class StandingRewardClaim:
             credit = (
                 (Decimal(self.speedup_ppm) / WEIGHT_PPM).ln()
                 * (Decimal(1) + (Decimal(self.crowned_block - predecessor) / STALL_SCALE_BLOCKS).sqrt())
-                * Decimal(2) ** (-Decimal(block - self.crowned_block) / policy.half_life_blocks)
+                * Decimal(2) ** (-Decimal(block - start) / policy.half_life_blocks)
                 * CREDIT_SCALE
             )
         return int(credit.to_integral_value(rounding=ROUND_FLOOR))
@@ -553,6 +556,8 @@ def project_global_rewards(
     arenas: Iterable[ArenaRewardAuthority],
     earning_claims: Iterable[StandingRewardClaim],
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
+    *,
+    accepted_blocks: Mapping[str, int] | None = None,
 ) -> GlobalRewardProjection:
     """Pool the store-selected earning claims before one indivisible vector."""
 
@@ -585,11 +590,27 @@ def project_global_rewards(
         if not active_targets:
             raise EconomicsError("every registered arena requires an active crown")
         by_target = {row.target_id: row for row in authority.standing_claims}
-        if len(by_target) != len(authority.standing_claims) or set(by_target) != set(active_targets):
+        if (
+            not by_target
+            or len(by_target) != len(authority.standing_claims)
+            or set(by_target) - set(active_targets)
+        ):
             raise EconomicsError("every active target requires exactly one standing claim")
         for target_id in active_targets:
-            claim = by_target[target_id]
             contribution = stack.entries[target_id]
+            claim = by_target.get(target_id)
+            if claim is None:
+                # A composed crown carries the commissioned incumbent from its
+                # original arena; its existing PASS earns once, under that age.
+                if any(
+                    row.arena_digest != stack.arena_digest
+                    and row.target_id == target_id
+                    and row.contribution_digest == contribution.digest
+                    and row.target_spec_digest == sealed_specs.get(target_id)
+                    for row in earning
+                ):
+                    continue
+                raise EconomicsError("every active target requires exactly one standing claim")
             if claim.arena_digest != stack.arena_digest:
                 raise EconomicsError(f"standing claim for {target_id!r} names another arena")
             if (
@@ -616,8 +637,11 @@ def project_global_rewards(
         earning, key=lambda row: (row.arena_digest, row.crowned_block, row.digest)
     ):
         predecessor = previous.get(claim.arena_digest, claim.crowned_block)
+        if accepted_blocks is not None and claim.digest not in accepted_blocks:
+            raise EconomicsError("accepted PASS has no retained acceptance block")
         credit = claim.credit_at(
-            context.current_block, policy, predecessor_block=predecessor
+            context.current_block, policy, predecessor_block=predecessor,
+            accepted_block=None if accepted_blocks is None else accepted_blocks[claim.digest],
         )
         previous[claim.arena_digest] = claim.crowned_block
         family_credits.append(
@@ -630,17 +654,9 @@ def project_global_rewards(
                 credit,
             )
         )
-        recipient = (
-            claim.hotkey
-            if claim.hotkey in eligible
-            else context.validator_hotkey
+        standing_by_hotkey[claim.hotkey] = (
+            standing_by_hotkey.get(claim.hotkey, 0) + credit
         )
-        standing_by_hotkey[recipient] = (
-            standing_by_hotkey.get(recipient, 0) + credit
-        )
-    if not any(standing_by_hotkey.values()):
-        raise EconomicsError("all PASS credit has decayed to zero")
-
     discoveries = tuple(discovery_claims)
     if any(type(row) is not DiscoveryBountyClaim for row in discoveries):
         raise EconomicsError("discovery claims are not exactly typed")
@@ -658,13 +674,8 @@ def project_global_rewards(
             live.append(
                 DiscoveryBountyCredit(claim.digest, claim.hotkey, claim.bounty_units)
             )
-            recipient = (
-                claim.hotkey
-                if claim.hotkey in eligible
-                else context.validator_hotkey
-            )
-            discovery_by_hotkey[recipient] = (
-                discovery_by_hotkey.get(recipient, 0) + claim.bounty_units
+            discovery_by_hotkey[claim.hotkey] = (
+                discovery_by_hotkey.get(claim.hotkey, 0) + claim.bounty_units
             )
         else:
             expired.append(claim.digest)
@@ -673,7 +684,22 @@ def project_global_rewards(
     if live and discovery_pool == 0:
         raise EconomicsError("live discovery claims exist while bounties are disabled")
     standing_pool = WEIGHT_PPM - discovery_pool
-    combined = _allocate_pool(standing_by_hotkey, standing_pool)
+    standing_by_hotkey = redirect_to_validator(
+        standing_by_hotkey, context.validator_hotkey, set(standing_by_hotkey) - eligible
+    )
+    discovery_by_hotkey = redirect_to_validator(
+        discovery_by_hotkey, context.validator_hotkey, set(discovery_by_hotkey) - eligible
+    )
+    # CREDIT_SCALE is a fixed unit, never the sum of surviving or initial credit.
+    # Filling the miner pool by relative share cancels decay, even for one miner.
+    combined = {
+        hotkey: credit * standing_pool // CREDIT_SCALE
+        for hotkey, credit in standing_by_hotkey.items()
+    }
+    remainder = standing_pool - sum(combined.values())
+    if remainder < 0:
+        raise EconomicsError("absolute PASS incentives exceed standing reward capacity")
+    combined[context.validator_hotkey] = combined.get(context.validator_hotkey, 0) + remainder
     if live:
         for hotkey, value in _allocate_pool(discovery_by_hotkey, discovery_pool).items():
             combined[hotkey] = combined.get(hotkey, 0) + value
@@ -698,6 +724,17 @@ def project_global_rewards(
     )
 
 
+def redirect_to_validator(
+    allocations: Mapping[str, int], validator_hotkey: str, excluded_hotkeys: Iterable[str]
+) -> dict[str, int]:
+    """Return excluded allocations to the validator without rescaling other shares."""
+    result = dict(allocations)
+    returned = sum(result.pop(hotkey, 0) for hotkey in set(excluded_hotkeys) - {validator_hotkey})
+    if returned:
+        result[validator_hotkey] = result.get(validator_hotkey, 0) + returned
+    return result
+
+
 __all__ = [
     "ArenaRewardAuthority",
     "CREDIT_SCALE",
@@ -710,6 +747,7 @@ __all__ = [
     "MetagraphMember",
     "POLICY_SCHEMA_VERSION",
     "POLICY_VERSION",
+    "redirect_to_validator",
     "STALL_SCALE_BLOCKS",
     "StandingRewardClaim",
     "WEIGHT_PPM",

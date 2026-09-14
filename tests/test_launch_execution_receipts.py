@@ -150,6 +150,81 @@ def test_child_failure_escapes_an_asyncio_signal_callback():
         loop.close()
 
 
+@pytest.mark.parametrize("selected", ("norm.fused_add_rmsnorm", "dense.gemm"))
+@pytest.mark.parametrize("tp_size", (2, 4))
+def test_composed_audit_keeps_selected_target_and_full_execution_coverage(
+    monkeypatch, capsys, selected, tp_size
+):
+    from dataclasses import replace
+
+    from cacheon.audit_gate import gate
+    from cacheon.eval.oci_session_protocol import SlotAuditPolicy
+
+    monkeypatch.setenv("CACHEON_EXTERNAL_NO_EGRESS", "1")
+    monkeypatch.setenv("CACHEON_ENGINE_WORKER", "1")
+    for name in (
+        "_loopback_is_up", "_network_namespace_is_loopback_only",
+        "_egress_is_blocked", "_process_sandbox_is_hardened",
+    ):
+        monkeypatch.setattr(engine_worker, name, lambda: True)
+    monkeypatch.setattr(engine_worker, "engine_kwargs", lambda cfg, **_: {
+        "tp_size": cfg.tp_size, "disable_cuda_graph": False,
+    })
+    slots = ("collective.all_gather_into_tensor", "collective.reduce_scatter_tensor", selected)
+    active = [_active(10 + rank, rank, slots, tp_size) for rank in range(tp_size)]
+    completed = [
+        {"pid": row["pid"], "rank": row["rank"], "world_size": tp_size,
+         "slot": slot, "calls": 4, "captured": False}
+        for row in active for slot in slots
+    ]
+    audits = [{**row, "n": 4, "violations": 0, "compare_errors": 0} for row in completed]
+    observed = {"active": active, "completed": completed, "audit": audits}
+    monkeypatch.setattr(receipts, "collect", lambda _root, kind: observed.get(kind, []))
+
+    class Engine:
+        """Exercise the worker's audit boundary without loading a model."""
+
+        def __init__(self, **kwargs):
+            assert kwargs["disable_cuda_graph"] is True
+            self.tokenizer_manager = SimpleNamespace(signal_handler_class=object)
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "sglang", SimpleNamespace(Engine=Engine))
+    policy = SlotAuditPolicy("c" * 32, 1_000_000, 4, (selected,), tp_size)
+    kwargs = dict(cfg=SimpleNamespace(tp_size=tp_size), bundle_path="composed",
+                  active=True, framework_mode=False, audit_policy=policy)
+    with engine_worker.isolated_engine_session(**kwargs) as handle:
+        handle.require_completion()
+        summary = json.loads(capsys.readouterr().err.split(
+            engine_worker.EXECUTION_SUMMARY_PREFIX
+        )[-1])
+        assert len(summary["completed"]) == len(slots) * tp_size
+        rows = handle.collect_audit_receipts()
+        assert {(row["slot"], row["rank"]) for row in rows} == {
+            (selected, rank) for rank in range(tp_size)
+        }
+        grade = dict(min_calls=4, expected_slots=(selected,), expected_member_count=tp_size)
+        assert gate(rows, **grade)[0]
+        rows[0]["violations"] = 1
+        assert not gate(handle.collect_audit_receipts(), **grade)[0]
+        rows[0]["violations"] = 0
+        audits.append({**rows[0], "slot": "unregistered.slot"})
+        assert not gate(handle.collect_audit_receipts(), **grade)[0]
+        audits.pop()
+        observed["audit"] = [row for row in audits if not (
+            row["slot"] == selected and row["rank"] == 0
+        )]
+        assert not gate(handle.collect_audit_receipts(), **grade)[0]
+
+    for invalid in (replace(policy, expected_slots=("missing.slot",)),
+                    replace(policy, expected_member_count=tp_size + 1)):
+        with pytest.raises(RuntimeError, match="slot audit policy differs"):
+            with engine_worker.isolated_engine_session(**{**kwargs, "audit_policy": invalid}):
+                pytest.fail("Missing selected slot or wrong TP membership was accepted")
+
+
 def _distributed_receipt_worker(rank, world_size, store_path, receipt_dir):
     import torch.distributed as dist
 

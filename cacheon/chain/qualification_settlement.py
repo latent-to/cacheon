@@ -174,3 +174,56 @@ def settlement_evidence_metadata(
         reproduction_attempt_ref=references[1] if len(references) == 2 else None,
     )
     return roots, tuple(references), receipt
+
+
+def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[tuple[object, ...], dict[str, int]]:
+    """Reopen earned contributions and their first retained PASS acceptance blocks."""
+    from decimal import Decimal, ROUND_FLOOR
+    from cacheon.chain.intake import IntakeError
+
+    from cacheon.economics import StandingRewardClaim, WEIGHT_PPM
+
+    claims = []
+    accepted_blocks = {}
+    seen: set[tuple[str, str, str]] = set()
+    rows = store._db.execute(
+        "SELECT sc.*, (SELECT MIN(NULLIF(q.retained_block,0)) "
+        "FROM settlement_qualifications q WHERE q.reservation_id=sc.reservation_id) "
+        "AS accepted_block FROM settlement_candidates sc "
+        "JOIN reservations r USING(reservation_id) "
+        "WHERE r.status='qualified' AND r.decision='PASS' "
+        "AND sc.status!='duplicate_proposal' "
+        "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
+    )
+    for row in rows:
+        candidate = store._settlement_candidate(row)
+        if candidate.candidate_manifest is None:
+            continue  # discovery PASSes use the bounded discovery pool
+        contribution = candidate.candidate_manifest.entries[candidate.target_id]
+        key = (candidate.arena_digest, candidate.target_id, contribution.digest)
+        if key in seen:
+            continue
+        evidence = store.reopen_settlement_evidence(candidate)
+        retained = row["settlement_evidence_digest"]
+        if retained and retained != evidence.digest:
+            raise IntakeError("PASS candidate differs from retained evidence")
+        claims.append(
+            StandingRewardClaim(
+                candidate.arena_digest,
+                candidate.target_id,
+                contribution.target_spec_digest,
+                contribution.digest,
+                candidate.hotkey,
+                int(
+                    (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
+                        rounding=ROUND_FLOOR
+                    )
+                ),
+                candidate.finalized_block,
+                evidence.digest,
+            )
+        )
+        if row["accepted_block"] is not None:
+            accepted_blocks[claims[-1].digest] = int(row["accepted_block"])
+        seen.add(key)
+    return tuple(claims), accepted_blocks

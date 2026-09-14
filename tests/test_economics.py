@@ -14,6 +14,7 @@ from cacheon.economics import (
     StandingRewardClaim,
     WEIGHT_PPM,
     project_global_rewards,
+    redirect_to_validator,
 )
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest, ProposalContributionRef
@@ -184,7 +185,7 @@ def test_pass_credit_uses_log_speedup_stall_time_and_half_life() -> None:
         passed.credit_at(99, _policy())
 
 
-def test_standing_projection_is_relative_grouped_and_exactly_normalized() -> None:
+def test_standing_projection_returns_common_decay_to_validator() -> None:
     catalog = _catalog()
     stack = _stack(catalog)
     result = _project(
@@ -196,13 +197,13 @@ def test_standing_projection_is_relative_grouped_and_exactly_normalized() -> Non
             _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
         ),
     )
-    assert result.weights_by_hotkey == {"alice": 343_297, "bob": 656_703}
+    assert result.weights_by_hotkey == {"alice": 47_655, "bob": 91_160, "validator": 861_185}
     assert sum(result.weights_by_hotkey.values()) == WEIGHT_PPM
     assert len(result.standing) == 2
     assert result.discovery == ()
 
 
-def test_multiple_families_for_one_hotkey_are_summed_before_normalization() -> None:
+def test_multiple_families_for_one_hotkey_keep_their_decayed_share() -> None:
     catalog = _catalog()
     stack = _stack(catalog)
     result = _project(
@@ -214,7 +215,7 @@ def test_multiple_families_for_one_hotkey_are_summed_before_normalization() -> N
             _claim(stack, "slot.b", "alice", 1_200_000, evidence="7"),
         ),
     )
-    assert result.weights_by_hotkey == {"alice": WEIGHT_PPM}
+    assert result.weights_by_hotkey == {"alice": 138_815, "validator": 861_185}
 
 
 def test_atomic_target_is_one_family_and_suppresses_singletons() -> None:
@@ -224,7 +225,7 @@ def test_atomic_target_is_one_family_and_suppresses_singletons() -> None:
     result = _project(_policy(), atomic, _global_context(), (claim,))
     assert len(result.standing) == 1
     assert result.standing[0].target_id == "atomic.ab"
-    assert result.weights_by_hotkey == {"alice": WEIGHT_PPM}
+    assert result.weights_by_hotkey == {"alice": 111_571, "validator": 888_429}
 
     overlap = _stack(catalog, ("atomic.ab", "slot.a"))
     with pytest.raises(EconomicsError, match="overlap"):
@@ -270,7 +271,7 @@ def test_missing_live_hotkey_burns_its_share_to_the_validator() -> None:
         _policy(), stack, _global_context(), (standing,), (expired,)
     )
     assert result.expired_discovery_claims == (expired.digest,)
-    assert result.weights_by_hotkey == {"alice": WEIGHT_PPM}
+    assert result.weights_by_hotkey == {"alice": 47_655, "validator": 952_345}
 
 
 def test_present_families_keep_their_ppm_when_an_absent_share_is_burned() -> None:
@@ -289,8 +290,8 @@ def test_present_families_keep_their_ppm_when_an_absent_share_is_burned() -> Non
         _global_context(),
         (alice, _claim(stack, "slot.b", "ghost", 1_200_000, evidence="7")),
     )
-    assert present.weights_by_hotkey == {"alice": 343_297, "bob": 656_703}
-    assert burned.weights_by_hotkey == {"alice": 343_297, "validator": 656_703}
+    assert present.weights_by_hotkey == {"alice": 47_655, "bob": 91_160, "validator": 861_185}
+    assert burned.weights_by_hotkey == {"alice": 47_655, "validator": 952_345}
     assert burned.standing[1].hotkey == "ghost"
 
 
@@ -309,10 +310,10 @@ def test_missing_live_discovery_hotkey_burns_only_its_bounty_share() -> None:
         _policy(), stack, _global_context(), standing, discoveries
     )
     assert result.weights_by_hotkey == {
-        "alice": 274_638,
-        "bob": 525_362,
+        "alice": 38_124,
+        "bob": 72_928,
         "carol": 50_000,
-        "validator": 150_000,
+        "validator": 838_948,
     }
     assert result.discovery[1].hotkey == "ghost"
 
@@ -385,8 +386,9 @@ def test_empty_stack_zero_credit_and_future_bounty_fail_closed() -> None:
 
     stack = _stack(catalog, ("slot.a",))
     ancient = _claim(stack, "slot.a", "alice", 1_000_001, crowned_block=0)
-    with pytest.raises(EconomicsError, match="decayed"):
-        _project(_policy(), stack, _global_context(1_000_000), (ancient,))
+    assert _project(
+        _policy(), stack, _global_context(1_000_000), (ancient,)
+    ).weights_by_hotkey == {"validator": WEIGHT_PPM}
     future = _discovery(block=201)
     with pytest.raises(EconomicsError, match="newer"):
         _project(
@@ -407,7 +409,7 @@ def test_sub_ppm_credit_is_retained_but_not_published_as_zero() -> None:
     )
     result = _project(_policy(), stack, _global_context(1_600), claims)
     assert len(result.standing) == 2
-    assert result.weights_by_hotkey == {"bob": WEIGHT_PPM}
+    assert result.weights_by_hotkey == {"bob": 348_757, "validator": 651_243}
 
 
 def test_claim_round_trip_and_zero_evidence_are_strict() -> None:
@@ -423,7 +425,7 @@ def test_claim_round_trip_and_zero_evidence_are_strict() -> None:
         StandingRewardClaim.from_dict({**standing.to_dict(), "extra": 1})
 
 
-def test_global_projection_pools_families_before_one_normalization() -> None:
+def test_global_projection_preserves_absolute_incentives_across_arenas() -> None:
     catalog = _catalog()
     first = _stack(catalog, ("slot.a",), arena="c")
     second = _stack(catalog, ("slot.a", "slot.b"), arena="f")
@@ -567,3 +569,60 @@ def test_active_target_admission_drift_keeps_the_sealed_claim_binding() -> None:
     )
     with pytest.raises(EconomicsError, match="stale or incompatible"):
         _project(_policy(), stack, _global_context(), (claim,))
+
+
+@pytest.mark.parametrize("days,miner_ppm", [(0, 95_310), (1, 47_655), (4, 5_956), (5, 2_978), (50, 0)])
+def test_existing_winner_payout_decays_without_a_new_submission(days, miner_ppm):
+    stack = _stack(_catalog(), ("slot.a",))
+    claim = _claim(stack, "slot.a", "alice", 1_100_000)
+    result = _project(_policy(), stack, _global_context(100 + days * 100), (claim,))
+    assert result.weights_by_hotkey.get("alice", 0) == miner_ppm
+    assert result.weights_by_hotkey.get("validator", 0) == WEIGHT_PPM - miner_ppm
+
+
+@pytest.mark.parametrize("blocked", [("bob",), ("bob", "validator"), ("bob", "bob", "absent")])
+def test_exclusions_return_to_validator_without_renormalizing_miners(blocked):
+    original = {"alice": 125_000, "bob": 250_000, "validator": 625_000}
+    assert redirect_to_validator(original, "validator", blocked) == {
+        "alice": 125_000, "validator": 875_000,
+    }
+    assert original == {"alice": 125_000, "bob": 250_000, "validator": 625_000}
+
+
+def test_new_winner_does_not_rescale_existing_winner_incentive():
+    stack = _stack(_catalog(), ("slot.a",))
+    old = _claim(stack, "slot.a", "alice", 1_100_000)
+    before = _project(_policy(), stack, _global_context(), (old,))
+    new = replace(old, hotkey="bob", crowned_block=200, contribution_digest=_d("9"), retained_evidence_digest=_d("8"))
+    after = project_global_rewards(
+        _policy(), _global_context(), (ArenaRewardAuthority(stack, 7, (old,)),), (old, new),
+    )
+    assert before.weights_by_hotkey["alice"] == after.weights_by_hotkey["alice"] == 47_655
+    assert after.weights_by_hotkey["bob"] > 0
+    assert before.weights_by_hotkey["validator"] - after.weights_by_hotkey["validator"] == after.weights_by_hotkey["bob"]
+
+
+def test_absolute_incentive_overflow_is_not_normalized():
+    stack = _stack(_catalog(), ("slot.a",))
+    claim = _claim(stack, "slot.a", "alice", 4_000_000)
+    with pytest.raises(EconomicsError, match="exceed standing reward capacity"):
+        _project(_policy(), stack, _global_context(100), (claim,))
+
+
+@pytest.mark.parametrize('retained', [True, False])
+def test_composed_crown_reuses_incumbents_original_pass_and_age(retained):
+    catalog = _catalog()
+    original = _stack(catalog, ('slot.a',), arena='f')
+    composed = _stack(catalog)
+    incumbent = _claim(original, 'slot.a', 'alice', 1_100_000)
+    winner = _claim(composed, 'slot.b', 'bob', 1_100_000, 200, evidence='7')
+    authority = ArenaRewardAuthority(composed, 1, (winner,))
+    if not retained:
+        with pytest.raises(EconomicsError, match='every active target'):
+            project_global_rewards(_policy(), _global_context(), (authority,), (winner,))
+        return
+    result = project_global_rewards(
+        _policy(), _global_context(), (authority,), (incumbent, winner),
+    )
+    assert len(result.standing) == 2
+    assert result.weights_by_hotkey == {'alice': 47_655, 'bob': 95_310, 'validator': 857_035}

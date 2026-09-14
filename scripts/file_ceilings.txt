@@ -6,8 +6,8 @@ cacheon/chain/archive.py 1349
 cacheon/chain/evaluation_coordinator.py 1038
 cacheon/chain/evaluation_lease_store.py 1015
 cacheon/chain/evaluation_recovery_store.py 1229
-cacheon/chain/intake.py 4320
-cacheon/chain/recoverable_qualification_dispatcher.py 1196
+cacheon/chain/intake.py 4284
+cacheon/chain/recoverable_qualification_dispatcher.py 1048
 cacheon/chain/remote_evaluation_dispatcher.py 1072
 cacheon/chain/remote_worker_pod_service.py 1114
 cacheon/chain/remote_worker_request_plan.py 940
@@ -54,6 +54,6 @@ tests/test_oci_process.py 1112
 tests/test_qualification.py 1449
 tests/test_qualification_continuation.py 922
 tests/test_qualification_runner.py 2104
-tests/test_recoverable_qualification_dispatcher.py 1208
+tests/test_recoverable_qualification_dispatcher.py 1063
 tests/test_settlement.py 920
 tests/test_weight_publication.py 982

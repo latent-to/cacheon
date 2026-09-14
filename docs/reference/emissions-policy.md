@@ -30,23 +30,35 @@ operator commission; a crown alone does not change it.
 Duplicate packaging of the same contribution earns once.
 
 For speedup `s > 1`, finalized submission block `b`, the preceding distinct PASS
-block `p` in the same arena (or `b` for the first), current block `n`, half-life
+block `p` in the same arena (or `b` for the first), first retained complete-PASS
+acceptance block `a`, current block `n`, half-life
 `h`, and fixed stall scale `1,800` blocks:
 
 ```text
-credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - b) / h) × 10^12)
+credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - a) / h) × 10^12)
 ```
 
-Submission time, not evaluation completion time, controls age and stall credit.
+Acceptance time controls decay; submission time still controls stall credit.
+Changing the incumbent cannot alter either timestamp or the retained speedup.
 Logarithmic units make compounded gains path-independent. Policy version
-`cacheon.emissions.v1.5` projects every accepted qualification and replaces v1.4's
-CROWN-only restriction. Existing v1.1/v1.3/v1.4 bindings move forward only
-when all numeric policy fields match; the credit formula is unchanged.
+`cacheon.emissions.v1.7` pays each hotkey's absolute decayed credit: sum its
+credits, multiply by the standing pool, and divide by the fixed `10^12` unit,
+rounding down to integer ppm. It never divides by total miner credit or scales
+miner shares to fill the pool. The validator receives the entire remainder,
+including rounding, absent claimants, and operator exclusions. If absolute
+incentives exceed the available pool, projection stops instead of rescaling them.
+With no new claims, one half-life halves miner incentives and returns the
+difference to the validator. Existing v1.1/v1.3/v1.4/v1.5/v1.6 bindings move forward
+only when all numeric policy fields match; retained qualifications and their
+acceptance blocks are reused without rewriting claims. Legacy evidence without
+a retained acceptance block must be recovered before it can authorize a payout.
 
 The active standing claim validates its evaluation stack against that stack's
 sealed catalog and target-spec bytes. Historical v1 composition and v2 exclusion
 rules retain their active meaning; installing another model's catalog does not
-reinterpret or invalidate an earned claim. Reward
+reinterpret or invalidate an earned claim. A composed crown may carry an
+incumbent contribution whose exact PASS belongs to another arena; that original
+claim keeps its age and earns once, without a duplicate claim in the new arena. Reward
 history is derived from existing settlement candidates and their retained
 PASS records; there is no parallel accepted-history table. Missing or corrupt
 evidence holds the projection. If a claimant leaves the metagraph, its share
@@ -58,7 +70,8 @@ packaging, promotion, integration, or release cannot renew that claim.
 
 The projector reopens every earning accepted PASS, active stack, standing claim, and
 discovery claim, binds finalized chain scope and membership, aggregates by hotkey,
-and normalizes one positive integer-ppm vector totaling 1,000,000.
+and includes the validator remainder in one positive integer-ppm vector totaling
+1,000,000. Completing the vector does not increase any miner's incentive.
 
 ### All-uncrowned bootstrap
 

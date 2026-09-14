@@ -1706,7 +1706,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
             netuid=SCOPE.netuid,
         )
         assert projection.crown_count == 1
-        assert projection.weights_ppm == (("miner", 1_000_000),)
+        assert projection.weights_ppm == (("miner", 48_118), ("validator", 951_882))
         assert _policy_metadata(store)["value"] == POLICY.digest
         pending = WeightPublicationRecord(
             projection.digest,
@@ -1793,7 +1793,7 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
             context=context,
             netuid=SCOPE.netuid,
         )
-        assert projection.weights_ppm == (("miner", 1_000_000),)
+        assert projection.weights_ppm == (("miner", 48_118), ("validator", 951_882))
         assert projection.crown_count == 1
         assert len(projection.arena_state_digests) == 1
         assert store.evaluation_stack(staging.arena_digest).generation == 0
@@ -1806,7 +1806,7 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
             context=context,
             netuid=SCOPE.netuid,
         )
-        assert projection.weights_ppm == (("miner", 1_000_000),)
+        assert projection.weights_ppm == (("miner", 48_118), ("validator", 951_882))
         assert len(projection.arena_state_digests) == 1
 
 

@@ -6,7 +6,6 @@ A retained plan keeps its original carrier and authenticated request.
 from __future__ import annotations
 
 import os
-import re
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -27,16 +26,10 @@ from cacheon.chain.evaluation_recovery import (
     RecoveryPhase,
 )
 from cacheon.chain.execution_disposition import (
-    AUTHORITY_CHANGED_HOLD_REASON,
     AuthenticatedPreResidentRefusal,
     COMPLETED_NO_DECISION_HOLD_REASON,
     ExecutionDisposition,
     ExecutionOutcome,
-    ORPHANED_CARRIER_HOLD_REASON,
-    PRE_RESIDENT_REQUEUE_FAILURES,
-    STALE_INCUMBENT_REQUEUE_FAILURE,
-    WORKER_INFRASTRUCTURE_HOLD_REASON,
-    WORKER_INFRASTRUCTURE_REQUEUE_FAILURE,
     resolve_infrastructure_result,
 )
 from cacheon.chain.baseline_segments import commission_boundary
@@ -212,40 +205,6 @@ class _PreResidentRefusalObserved(Exception):
         super().__init__(refusal.failure_code)
         self.refusal = refusal
         self.outcome = outcome
-
-
-class _InfrastructureResultObserved(Exception):
-    """Internal control flow: an unproven worker infrastructure result retires
-    its dead request and requeues instead of parking the recovery HELD."""
-
-    def __init__(self, failure_code: str, outcome: ExecutionOutcome) -> None:
-        super().__init__(failure_code)
-        self.failure_code = failure_code
-        self.outcome = outcome
-
-
-class _StaleIncumbentProduct(Exception):
-    """Internal control flow: a retained product names the old baseline."""
-
-    def __init__(self, product: RemoteQualificationProduct) -> None:
-        super().__init__("incumbent_changed")
-        self.product = product
-
-
-def _infrastructure_requeue_signal(failure_code: str) -> _InfrastructureResultObserved:
-    outcome_code = (
-        failure_code
-        if failure_code in PRE_RESIDENT_REQUEUE_FAILURES
-        else WORKER_INFRASTRUCTURE_REQUEUE_FAILURE
-    )
-    return _InfrastructureResultObserved(
-        failure_code,
-        ExecutionOutcome(
-            ExecutionDisposition.REQUEUE,
-            decision="NO_DECISION",
-            failure_code=outcome_code,
-        ),
-    )
 
 
 class _RecoveryLeaseRenewalDenied(Exception):
@@ -689,78 +648,6 @@ class RecoverableQualificationDispatcher:
             recovery.recovery_id, refusal.request_id, outcome
         )
 
-    def _requeue_infrastructure(
-        self,
-        recovery: EvaluationRecovery,
-        signal: _InfrastructureResultObserved,
-        *,
-        live_worker_epoch: str = "",
-    ) -> RecoverableQualificationRequeue:
-        store, point, current = self._current_recovery(recovery.recovery_id)
-        try:
-            store.release_worker_infrastructure_recovery(
-                current,
-                failure_code=signal.failure_code,
-                current_block=point[0],
-                live_worker_epoch=live_worker_epoch,
-            )
-        finally:
-            store.close()
-        return RecoverableQualificationRequeue(
-            recovery.recovery_id, recovery.request_id, signal.outcome
-        )
-
-    def _requeue_stale_incumbent(
-        self,
-        recovery: EvaluationRecovery,
-        product: RemoteQualificationProduct,
-    ) -> RecoverableQualificationRequeue:
-        store, point, current = self._current_recovery(recovery.recovery_id)
-        try:
-            store.release_stale_incumbent_qualification_recovery(
-                current,
-                product=product,
-                live_stack=self.qualification_incumbent_stack,
-                live_tree_digest=self.qualification_incumbent_tree_digest,
-                current_block=point[0],
-            )
-        except IntakeError as exc:
-            raise RecoverableQualificationDispatcherError(
-                f"stale-incumbent qualification recovery could not be released: {exc}"
-            ) from exc
-        finally:
-            store.close()
-        return RecoverableQualificationRequeue(
-            recovery.recovery_id,
-            recovery.request_id,
-            ExecutionOutcome(
-                ExecutionDisposition.REQUEUE,
-                decision="NO_DECISION",
-                failure_code=STALE_INCUMBENT_REQUEUE_FAILURE,
-            ),
-        )
-
-    def _live_worker_epoch(self) -> str | None:
-        """Read the live registered worker epoch when the transport carries one.
-
-        Only the spool-backed transport exposes its verified registration;
-        every other transport keeps epoch-orphan migration inert and the
-        completed-product hold parks for the operator exactly as before.
-        """
-        registration = getattr(self.transport, "registration", None)
-        if not isinstance(registration, dict):
-            return None
-        value = registration.get("worker_epoch")
-        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value):
-            return value
-        return None
-
-    def _retained_epoch(self, recovery: EvaluationRecovery) -> str:
-        store, _point, current = self._current_recovery(recovery.recovery_id)
-        try:
-            return store.reopen_recovery_request_plan(current).worker_epoch
-        finally:
-            store.close()
 
     def _renew_if_due(self, recovery: EvaluationRecovery) -> EvaluationRecovery:
         store, point, current = self._current_recovery(recovery.recovery_id)
@@ -911,17 +798,7 @@ class RecoverableQualificationDispatcher:
             ):
                 assert observed.refusal is not None
                 raise _PreResidentRefusalObserved(observed.refusal, outcome)
-            if recovery.phase is RecoveryPhase.REQUEST_READY:
-                # No authenticated refusal and no completed response: the
-                # worker terminated this request on its own infrastructure.
-                # Retire the dead request and requeue a fresh attempt instead
-                # of parking the recovery HELD forever. A completed response
-                # recorded in an earlier phase still holds below — that is a
-                # store/spool contradiction, not a retryable failure.
-                raise _infrastructure_requeue_signal(
-                    observed.failure_code
-                    or "worker_returned_no_completed_response"
-                )
+            # September 2026: absent completion is not proof that paid work never ran.
             raise QualificationRecoveryHold(
                 "worker_infrastructure_result",
                 plan.request_id,
@@ -994,7 +871,10 @@ class RecoverableQualificationDispatcher:
             product.incumbent_stack.digest != self.qualification_incumbent_stack.digest
             or product.incumbent_tree_digest != self.qualification_incumbent_tree_digest
         ):
-            raise _StaleIncumbentProduct(product)
+            raise QualificationRecoveryHold(
+                "incumbent_changed", plan.request_id,
+                "completed qualification retains its original incumbent",
+            )
         return product
 
     def _commit_product(
@@ -1052,32 +932,8 @@ class RecoverableQualificationDispatcher:
                     recovery,
                     self._reopen_held_remote_product(recovery, claim),
                 )
-            if recovery.reason in (
-                WORKER_INFRASTRUCTURE_HOLD_REASON,
-                AUTHORITY_CHANGED_HOLD_REASON,
-                ORPHANED_CARRIER_HOLD_REASON,
-            ):
-                return self._requeue_infrastructure(
-                    recovery,
-                    _infrastructure_requeue_signal("worker_infrastructure_result"),
-                )
             if recovery.reason == COMPLETED_NO_DECISION_HOLD_REASON:
-                live_epoch = self._live_worker_epoch()
-                if (
-                    live_epoch is not None
-                    and self._retained_epoch(recovery) != live_epoch
-                ):
-                    # The completed product binds a torn-down worker epoch:
-                    # nothing can ever consume it (2026-08-13 zombie: a result
-                    # published seconds before teardown starved dispatch). The
-                    # store independently re-verifies the epoch mismatch before
-                    # migrating the hold into the bounded requeue; for the live
-                    # epoch the product stays parked for the operator.
-                    return self._requeue_infrastructure(
-                        recovery,
-                        _infrastructure_requeue_signal("retained_epoch_retired"),
-                        live_worker_epoch=live_epoch,
-                    )
+                # Preserve the 2026-08-13 epoch-orphan evidence; never buy a replacement.
                 if claim is None:
                     raise RecoverableQualificationDispatcherError(
                         "completed legacy qualification lost its exact claim"
@@ -1168,10 +1024,6 @@ class RecoverableQualificationDispatcher:
                     return self._commit_product(recovery, claim, product)
         except _PreResidentRefusalObserved as signal:
             return self._requeue(recovery, signal.refusal, signal.outcome)
-        except _InfrastructureResultObserved as signal:
-            return self._requeue_infrastructure(recovery, signal)
-        except _StaleIncumbentProduct as signal:
-            return self._requeue_stale_incumbent(recovery, signal.product)
         except _RecoveryLeaseRenewalDenied as signal:
             return self._hold(
                 signal.recovery,

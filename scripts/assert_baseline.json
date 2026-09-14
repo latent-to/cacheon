@@ -116,7 +116,7 @@
 "tests/test_qualification_reasons.py": 7,
 "tests/test_qualification_runner.py": 162,
 "tests/test_rebuild.py": 28,
-"tests/test_recoverable_qualification_dispatcher.py": 185,
+"tests/test_recoverable_qualification_dispatcher.py": 162,
 "tests/test_refactor_d_golden_families.py": 5,
 "tests/test_refactor_d_goldens.py": 11,
 "tests/test_reference_copy_policy.py": 17,
