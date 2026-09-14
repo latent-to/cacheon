@@ -162,7 +162,7 @@
 "tests/test_ssh_worker_transport.py": 13,
 "tests/test_stack_manifest.py": 39,
 "tests/test_stack_plan.py": 34,
-"tests/test_standing_cpu_composition.py": 36,
+"tests/test_standing_cpu_composition.py": 33,
 "tests/test_standing_cpu_supervisor.py": 67,
 "tests/test_standing_supervisor_config.py": 36,
 "tests/test_static.py": 17,
