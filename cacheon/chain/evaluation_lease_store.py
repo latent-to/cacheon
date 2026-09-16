@@ -826,19 +826,16 @@ class EvaluationLeaseStoreMixin:
     _CAP_EXEMPT_RELEASE_PREFIXES = ("operator", "screen_claim_")
 
     def _cap_infrastructure_releases(self, lease: EvaluationLease) -> None:
-        """Park reservations that keep surviving infrastructure releases.
+        """Hold interrupted screens without repeating potentially paid work.
 
         An infrastructure release deliberately consumes no candidate attempt --
         infrastructure failure never becomes a candidate verdict.  Unbounded,
         that honesty is a free loop: the same reservation is reclaimed and
         released forever (observed 2026-08-10: one reservation claimed 16
-        times against a dead worker).  The count is consecutive, not
-        lifetime: only releases after the reservation's newest completed
-        lease count, so rows that merely survived a fleet-wide outage reset
-        on their next success instead of parking one blip later.  At the cap
-        the reservation parks as ``held`` with a blank candidate decision for
-        operator attention.  Holding is not a verdict; ``release_hold``
-        reopens it.
+        times against a dead worker). Screens now stop at the first release
+        (owner's 2026-09-14 no-paid-retry rule). Qualification's authenticated
+        pre-resident retries retain a consecutive cap, reset by completion.
+        Holding is not a verdict; explicit ``release_hold`` preserves history.
         """
         exempt = " ".join(
             "AND e.reason NOT LIKE '{}%' ESCAPE '\\'".format(
@@ -858,7 +855,7 @@ class EvaluationLeaseStoreMixin:
                 "WHERE m2.reservation_id=? AND e2.event_type='completed'), 0)",
                 (member.reservation_id, member.reservation_id),
             ).fetchone()[0]
-            if count < self._SYSTEMIC_RELEASE_CAP:
+            if count < (1 if lease.stage == "screen" else self._SYSTEMIC_RELEASE_CAP):
                 continue
             self._db.execute(
                 "UPDATE reservations SET status='held',decision='',"

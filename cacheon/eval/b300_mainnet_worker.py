@@ -54,6 +54,7 @@ from cacheon.eval.b300_qualification_graph_store_io import (
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_backend import OCIEngineExecutor
+from cacheon.eval.oci_outer_session import OuterSessionInfrastructureError
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
@@ -535,7 +536,7 @@ class B300MainnetWorker:
                 request_digest=request_digest,
                 prebuilt_plan=plan if request_digest is not None else None,
             )
-        except QualificationContinuationError:
+        except (QualificationContinuationError, OuterSessionInfrastructureError) as exc:
             if request_digest is None:
                 raise
             _LOG.exception(
@@ -547,6 +548,7 @@ class B300MainnetWorker:
                 request_digest,
                 work.factory.manifest.authority_digest,
                 plan.prepared.source.digest,
+                failure=exc,
             )
         if request_digest is not None:
             if (

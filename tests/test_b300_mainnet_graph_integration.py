@@ -282,7 +282,9 @@ def test_native_rebuild_uses_dedicated_candidate_launch(
     assert raw_quality_ref in result.supporting_evidence_refs
 
 
+@pytest.mark.parametrize("failure", (QualificationContinuationError("durable resident state is partial"), worker_module.OuterSessionInfrastructureError("session response read timed out")))
 def test_durable_resident_ambiguity_returns_authenticated_hold(
+    failure,
     tmp_path: Path,
     executor_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -291,7 +293,7 @@ def test_durable_resident_ambiguity_returns_authenticated_hold(
     _install_plan(case, monkeypatch)
 
     def interrupted(*_args, **_kwargs):
-        raise QualificationContinuationError("durable resident state is partial")
+        raise failure
 
     monkeypatch.setattr(worker_module, "run_qualification_intake", interrupted)
     try:
@@ -301,6 +303,8 @@ def test_durable_resident_ambiguity_returns_authenticated_hold(
 
     assert type(result) is B300QualificationGraphGateHold
     assert result.reason is RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE
+    assert result.failure_type == type(failure).__name__
+    assert str(failure) in result.failure_message
 
 
 def test_graph_fail_returns_terminal_without_intake_pair_or_settlement(

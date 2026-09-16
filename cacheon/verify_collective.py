@@ -89,6 +89,7 @@ def _collective_descriptor(
         "num_kv_heads": "num_kv_heads", "num_q_heads": "num_q_heads",
         "num_tokens": "num_tokens", "page_size": "page_size", "q_len": "q_len",
         "top_k": "top_k", "topk": "top_k", "inter": "intermediate_dim",
+        "input_dim": "input_dim", "output_dim": "output_dim",
     }
     dimensions.update(
         {dst: shape[src] for src, dst in aliases.items() if src in shape}

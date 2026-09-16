@@ -79,6 +79,11 @@ The current validator path is deliberately staged:
 5. Copy the private intake tree into an immutable worker publication.
 6. Run registered, non-crownable screens, using the routing-only resident screen for
    swappable candidates and an explicit waiver for non-swappable candidates.
+   The resident screen requires successful calls to every registered entry on
+   every rank, including native eager split operations inside SGLang's prefill
+   graph path. Bundle swaps rebuild both prefill and decode graphs. Full
+   qualification retains the scored CUDA-graph and correctness requirements;
+   the screen does not change the commissioned graph backend or capture sizes.
 7. Qualify promoted candidates under the version-3 protocol: two-process
    B/C/B′ (v10, or v11 for a mixed-cell workload), then audit and pristine T.
 8. Reopen the complete audited PASS and apply target and evaluation-stack changes

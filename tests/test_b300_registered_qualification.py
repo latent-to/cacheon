@@ -555,7 +555,7 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.evidence_root == harness.inputs.evidence_root
 
 
-@pytest.mark.parametrize("version", (8, 9, 10, 11))
+@pytest.mark.parametrize("version", (8, 9, 10, 11, 13, 14))
 def test_registered_plan_measures_every_commissioned_policy_on_two_process(
     tmp_path: Path, version: int
 ) -> None:
@@ -585,10 +585,11 @@ def test_registered_plan_measures_every_commissioned_policy_on_two_process(
     ).plan_builder(harness.cohort, b"v" * 32)
 
     assert value.resident_speed_plan is not None
-    assert value.resident_speed_plan.policy == replace(commissioned, version=10)
+    assert value.resident_speed_plan.policy == replace(commissioned, version=13 if version >= 13 else 10)
 
 
-def test_a_v12_commission_needs_a_mixed_cell_workload(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", (12, 15))
+def test_a_prefill_commission_needs_a_mixed_cell_workload(tmp_path: Path, version: int) -> None:
     """The prefill lane rides the mixed-cell makespan rule and is never
     re-pinned to v10; a single-cell plan cannot carry it."""
 
@@ -599,7 +600,7 @@ def test_a_v12_commission_needs_a_mixed_cell_workload(tmp_path: Path) -> None:
         max_qualification_seconds=current.max_qualification_seconds,
         calibration=harness.inputs.calibration_manifest,
         context=harness.inputs.calibration_context,
-        version=12,
+        version=version,
         min_windows=current.min_windows,
         max_window_scatter=current.max_window_scatter,
         max_conditioning_slowdown=current.max_conditioning_slowdown,
@@ -829,7 +830,7 @@ def test_inputs_are_built_only_by_the_commissioner(tmp_path: Path) -> None:
         registered.B300RegisteredQualificationInputs(**unsealed, seal=object())
 
 
-def test_audit_role_pins_minimum_cost_shortest_prompt_selection(
+def test_audit_role_retains_charged_workload_batches(
     tmp_path: Path,
 ) -> None:
     harness = _harness(tmp_path)
@@ -837,26 +838,13 @@ def test_audit_role_pins_minimum_cost_shortest_prompt_selection(
     value = harness.factory.plan_builder(harness.cohort, secret)
 
     session = value.prepared.candidates[0].session_plan
-    prompts = tuple(
-        prompt for batch in session.prompt_batches for prompt in batch
-    )
-    expected = min(
-        prompts,
-        key=lambda prompt: (
-            len(prompt),
-            hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-        ),
-    )
     audit = value.resident_audit_plan
 
-    # Declared policy: the audit role is a minimum-cost slot-call integrity
-    # check, never a semantic or shape-coverage instrument; that coverage is
-    # owned by pristine T. Changing this selection is a reviewed policy
-    # decision.
-    assert audit.plan.prompt_batches == tuple(
-        (expected,) for _ in range(harness.policy.audit_minimum_calls + 1)
-    )
-    assert all(len(expected) <= len(prompt) for prompt in prompts)
+    # UID215's singleton audit never selected its batch-dependent DP path.
+    checked = audit.plan.prompt_batches[1:]
+    assert all(batch in checked for batch in session.prompt_batches)
+    assert all(batch in session.prompt_batches for batch in checked)
+    assert len(checked) >= harness.policy.audit_minimum_calls
     assert audit.plan.warmup_count == 1
     assert audit.plan.conditioning_count == 1
     assert audit.plan.max_new_tokens == harness.policy.audit_max_new_tokens

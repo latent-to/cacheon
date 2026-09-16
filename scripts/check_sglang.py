@@ -12,7 +12,7 @@ Exit 1 on a broken compatibility invariant: the installed package differs from t
 committed pin, or a seam/API moved. A newer PyPI release is only a WARNING: bumping is a
 deliberate human decision (re-baseline), not a code fix.
 
-Schedule it: the GitHub Action in .github/workflows/sglang-canary.yml, or cron:
+An operator can schedule it with cron:
     0 9 * * 1  cd /path/to/cacheon && .venv/bin/python scripts/check_sglang.py
 """
 

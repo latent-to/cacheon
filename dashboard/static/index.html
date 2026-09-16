@@ -248,6 +248,15 @@ function baselineSummary(b) {
   return `${queued}<span class="pill ${tone}">${esc(label)}</span><div class="small">${artifact}</div>${threshold}`;
 }
 
+function recoveryLink(recovery) {
+  if (!recovery) return "";
+  const state = recovery.active_stage ? `${recovery.active_stage} running`
+    : [recovery.status, recovery.decision, recovery.reason].filter(Boolean).join(" · ");
+  return `<div class="small"><a href="${esc(submissionURL(recovery.reservation_id))}"
+    onclick="event.stopPropagation();openDetail('${esc(recovery.reservation_id)}');return false">
+    Re-evaluation ${esc(short(recovery.reservation_id, 12))}: ${esc(state)}</a></div>`;
+}
+
 async function api(path) {
   const res = await fetch(path);
   if (!res.ok) throw new Error(path + " → " + res.status);
@@ -404,7 +413,7 @@ async function viewSubmissions() {
         : '<span class="muted">—</span>'}</td>
     <td>${esc(s.screen_status || "—")}</td>
     <td>${esc(s.decision || "—")}</td>
-    <td class="small muted" title="${esc(s.reason)}">${esc(short(s.reason || s.invalid_reason, 44))}</td>
+    <td class="small muted" title="${esc(s.reason)}">${esc(short(s.reason || s.invalid_reason, 44))}${recoveryLink(s.evaluation_recovery)}</td>
   </tr>`);
   const statuses = ["", "published", "promoted", "screening", "qualifying", "held",
     "qualified", "failed", "expired", "reserved", "deferred"];
@@ -806,7 +815,7 @@ window.openDetail = async (rid) => {
     </div>` : ""}
     <dl class="kv">
       ${kv("Status", pill(d.status) + (d.decision ? " " + pill(d.decision) : ""))}
-      ${kv("Reason", esc(d.reason || d.invalid_reason || "—"))}
+      ${kv("Reason", esc(d.reason || d.invalid_reason || "—") + recoveryLink(d.evaluation_recovery))}
       ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
       ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}
       ${kv("Target", esc(d.target_id || "—") + `<div class="muted small">${esc(d.target_summary)}</div>`)}

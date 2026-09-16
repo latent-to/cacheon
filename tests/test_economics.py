@@ -567,3 +567,22 @@ def test_active_target_admission_drift_keeps_the_sealed_claim_binding() -> None:
     )
     with pytest.raises(EconomicsError, match="stale or incompatible"):
         _project(_policy(), stack, _global_context(), (claim,))
+
+
+@pytest.mark.parametrize('retained', [True, False])
+def test_composed_crown_reuses_incumbents_original_pass_and_age(retained):
+    catalog = _catalog()
+    original = _stack(catalog, ('slot.a',), arena='f')
+    composed = _stack(catalog)
+    incumbent = _claim(original, 'slot.a', 'alice', 1_100_000)
+    winner = _claim(composed, 'slot.b', 'bob', 1_100_000, 200, evidence='7')
+    authority = ArenaRewardAuthority(composed, 1, (winner,))
+    if not retained:
+        with pytest.raises(EconomicsError, match='every active target'):
+            project_global_rewards(_policy(), _global_context(), (authority,), (winner,))
+        return
+    result = project_global_rewards(
+        _policy(), _global_context(), (authority,), (incumbent, winner),
+    )
+    assert len(result.standing) == 2
+    assert result.weights_by_hotkey == {'alice': 333_333, 'bob': 666_667}

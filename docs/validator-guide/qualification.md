@@ -47,6 +47,7 @@ Retained attempts identify the speed policy that created them:
 
 | Version | Timed reads | Purpose |
 |---|---|---|
+| v13/v14/v15 | One full round, then at most one full repeat on a valid threshold crossing | Single-cell / mixed-cell / mixed-cell with prefill; both rounds contribute to a final conservative decision |
 | v10 | B/C/B′, always three | Every cell warmed; both stock reads valid; single-cell median rate |
 | v11 | B/C/B′, always three | Every cell warmed; mixed-cell total tokens / total time |
 | v12 | B/C/B′, then a one-token prompt pass of each lane; always six | v11 decode rule unchanged; the [prefill lane](#prefill-lane-v12) admits a competitive decode miss at a sealed prompt margin |
@@ -59,8 +60,8 @@ leg were deleted on 2026-09-06 with the pair-native lane. No MiniMax-M3
 product will be re-run or re-graded, so the runtime, evidence readers, and
 settlement refuse a witness below version 8 instead of decoding it. Every
 candidate is now measured by the two-process crossover, which launches its own
-baseline and candidate engines. That substrate binds v10 (v11 for a mixed-cell
-workload, v12 when the commission seals a prefill lane) and reads B′
+baseline and candidate engines. New commissions bind v13 (v14 for a mixed-cell
+workload, v15 when the commission seals a prefill lane) and reads B′
 unconditionally: the quality gate takes its stock-drift control from the second
 baseline read, and a conditional bookend leaves a clear PASS with no control to
 harvest. Reading it regardless of the outcome also preserves what the
@@ -72,7 +73,8 @@ built, and the worker executes the version the sealed plan carries, so the plan
 and the execution substrate cannot disagree. Every calibrated threshold is the
 one the provider sealed.
 
-C′ and B″ do not exist under v10, v11 or v12; no code path in this tree reads them.
+Retained v10-v12 executions remain one round. New repeat roles use a `_repeat`
+suffix and include a new before-baseline, candidate and after-baseline.
 
 Fresh execution is resident-only: the runner refuses any other speed-evidence
 policy at entry, and the constructor default is the resident policy — the only
@@ -80,6 +82,50 @@ one a fresh plan can run. A reopen binds the retained evidence's own policy
 explicitly, and retained v8/v9 artifacts regrade byte-for-byte without
 reinterpretation. Merely changing the policy label does not upgrade old
 evidence.
+
+## Bounded borderline repeat (v13-v15)
+
+A round contains the whole B/C/B′ schedule, including conditioning. Version 15
+also includes the complete prefill B/C/B′ pass. Clear outcomes finish after one
+round. Only a valid measurement whose baseline comparisons straddle the required
+improvement can trigger one repeat. A clear prefill admission already resolves
+the first round; a borderline prefill result can trigger repetition when decode
+has not proved a regression. Invalid measurements and conditioning regressions
+do not earn a repeat.
+
+Both engines remain loaded on their original disjoint lanes. Reads remain
+serialized, and each repeated read performs the full declared conditioning and
+workload. The second round starts after the entire first round; v15 repeats both
+decode and prefill. The existing speed-stage and qualification deadlines still
+bound the work. Commission enough wall time for two complete rounds plus startup
+and later audit/quality; the repeat never silently extends a deadline.
+
+For round i, let `L_i = C_i / max(B_i, B′_i)`. The combined conservative estimate
+is `exp((log(L_1) + log(L_2)) / 2)`. Each round has equal weight, after normalization
+against its own faster baseline. All four baseline observations must satisfy the
+existing within-round drift and matched-window checks; both rounds must cover the
+same workload. The required gain is the larger of the two calibrated per-round
+requirements. No baseline or candidate read can be discarded.
+
+This is a conservative bound from observed baseline brackets, **not a statistical
+confidence interval or a guarantee of certainty**. Equal log weights combine
+paired ratios rather than averaging raw throughput across different baseline
+conditions. A valid combined estimate at or above the bound passes the speed
+stage; otherwise it finishes `FAIL / speed_threshold_not_met` (or
+`candidate_slower` for an established regression). A valid threshold crossing
+cannot remain undecided after the repeat. An invalid repeat stays `NO_DECISION`;
+a timeout is an infrastructure hold, never evidence that the candidate is slow.
+
+Prefill uses the same two-round calculation and its original margin and credit
+weight. It cannot rescue an invalid decode measurement or a decode/conditioning
+regression. A speed PASS still requires the ordinary audit and quality stages.
+
+The trigger, one-repeat limit, aggregation and stopping rule are sealed in the
+new policy identity. Raw regrading reconstructs both rounds and verifies that
+the first authorized the second. Existing commissions and retained v8-v12 results
+are not upgraded or pooled with new-policy runs. Operator-released historical
+holds remain separate attempts; this change neither releases them nor changes fees.
+A fresh commission and exact-stack GPU validation are required before activation.
 
 ## Per-cell first-token and decode delivery measurements
 
@@ -261,14 +307,19 @@ The audit-only role is distinct from both timed lanes. Trusted-host grading impo
 PyTorch and requires the expected slot × TP-rank/PID coverage, minimum call counts, and
 absence of retained violations or protocol errors. Live floating-point facts are
 canonicalized into stable decimal strings before they enter the durable witness.
+The audit policy names the selected target's slots. A composed engine also runs
+the incumbent contributions; their audit receipts are excluded from the selected
+delta's grade, while execution coverage still requires every active slot on every rank.
 
-The audit role is deliberately a minimum-cost slot-call integrity check, not a
-semantic or shape-coverage instrument: it deterministically selects the single
-shortest committed prompt (ties broken by prompt digest) and repeats it for the
-required minimum call count. Semantic and prompt-dependent coverage belong to the
-pristine T reference, which the audit role never replaces. This selection policy is
-pinned by a regression test; changing it is a reviewed policy decision, not a
-tuning knob.
+The eager audit preserves the charged workload's prompt batches, concurrency,
+and per-batch input-token expectations, including mixed-length workloads.
+It runs one warmup batch, then every charged batch in order, cycling that sequence
+when needed to reach the required minimum number of checked batches. Generation
+length remains bounded by the audit policy. Reducing these batches to single
+prompts can select a different DP padding or dispatch path and leave a serving
+collective completely unaudited. The host verifies the exact derivation; missing
+slot/rank coverage still fails the audit. Semantic quality remains the separate
+pristine T reference's responsibility.
 
 T remains untimed and candidate-free. The host owns role assignment, monotonic clocks,
 token numerators, conditioning windows, absolute deadlines, device observations, audit
@@ -444,7 +495,8 @@ replay, the attempt schema must first be extended to retain and bind those produ
 |---|---|
 | Candidate engine exceeds deadline or violates protocol with attributable evidence | Grade under the frozen requirement; `FAIL` only when attribution is complete |
 | Typed worker failure binds one exact candidate arm | Contain that candidate; retain its attributable outcome and preserve unaffected cohort results |
-| Recognized worker, Docker, GPU, driver, plan, runner, or raw-speed authority failure | `NO_DECISION`; repair infrastructure and use bounded retry |
+| Screen infrastructure failure | HOLD after the first release; preserve diagnostics and do not automatically rescreen |
+| Recognized worker, Docker, GPU, driver, plan, runner, or raw-speed authority failure | HOLD with the original evidence; automatic retry requires authenticated proof that resident execution never began |
 | Evidence-store publication failure | Abort the pass; recovery holds an interrupted `qualifying` row as `controller_restart_during_qualifying` rather than manufacturing a typed `NO_DECISION` |
 | Baseline drift exceeds calibration | `NO_DECISION`; do not increase the candidate's denominator or tune the bar after seeing C |
 | Either resident speed executor survives past its quiescence proof | Abort authority; never launch audit or T into the contaminated lifetime |

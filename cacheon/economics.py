@@ -585,11 +585,27 @@ def project_global_rewards(
         if not active_targets:
             raise EconomicsError("every registered arena requires an active crown")
         by_target = {row.target_id: row for row in authority.standing_claims}
-        if len(by_target) != len(authority.standing_claims) or set(by_target) != set(active_targets):
+        if (
+            not by_target
+            or len(by_target) != len(authority.standing_claims)
+            or set(by_target) - set(active_targets)
+        ):
             raise EconomicsError("every active target requires exactly one standing claim")
         for target_id in active_targets:
-            claim = by_target[target_id]
             contribution = stack.entries[target_id]
+            claim = by_target.get(target_id)
+            if claim is None:
+                # A composed crown carries the commissioned incumbent from its
+                # original arena; its existing PASS earns once, under that age.
+                if any(
+                    row.arena_digest != stack.arena_digest
+                    and row.target_id == target_id
+                    and row.contribution_digest == contribution.digest
+                    and row.target_spec_digest == sealed_specs.get(target_id)
+                    for row in earning
+                ):
+                    continue
+                raise EconomicsError("every active target requires exactly one standing claim")
             if claim.arena_digest != stack.arena_digest:
                 raise EconomicsError(f"standing claim for {target_id!r} names another arena")
             if (

@@ -30,7 +30,7 @@ from cacheon.eval.evidence_store import (
     reopen_evidence_anywhere,
 )
 
-BASELINE_ROLES = frozenset({"B", "B_prime", "B_double_prime"})
+BASELINE_ROLES = frozenset({"B", "B_prime", "B_double_prime", "B_repeat", "B_prime_repeat"})
 BAND_TOLERANCE = Decimal("0.05")
 MIN_BASELINE_READS = 6
 
@@ -121,7 +121,7 @@ def qualification_speed_from_payload(
             return None
         average = sum(windows) / len(windows)
         role = rate.get("role")
-        prefill = role in {"B_prefill", "C_prefill", "B_prime_prefill"}
+        prefill = isinstance(role, str) and "prefill" in role
         throughput = timed_tokens / timed_seconds
         lane = {
             "role": role,
@@ -154,6 +154,10 @@ def qualification_speed_from_payload(
         try:
             retained = ResidentSpeedWitness.from_dict(witness)
             grade = grade_schedule(retained.resident_policy, retained.rates)
+            if retained.resident_policy.version >= 13:
+                speed["speedup"] = float(grade.settled_speedup)
+                if grade.prefill_verdict is not None:
+                    speed["prefill"]["speedup"] = grade.prefill_verdict.speedup
             speed["grading"] = {
                 "decision": grade.decision.value,
                 "detail": grade.verdict.detail,

@@ -21,8 +21,17 @@ def _h(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
 
 
-def _authority(tmp_path) -> ResidentAuditExecutionAuthority:
+def _authority(tmp_path, *, batches=None, input_tokens=None) -> ResidentAuditExecutionAuthority:
     case = _case(tmp_path)
+    if batches is not None:
+        case.session = replace(case.session, prompt_batches=batches)
+    if input_tokens is not None:
+        case.session = replace(
+            case.session,
+            expected_prompt_tokens=input_tokens[0],
+            batch_max_new_tokens=(16,) * len(input_tokens),
+            batch_expected_prompt_tokens=input_tokens,
+        )
     policy = SlotAuditPolicy(
         "1" * 32,
         1_000_000,
@@ -30,13 +39,11 @@ def _authority(tmp_path) -> ResidentAuditExecutionAuthority:
         ("attention.msa_prefill_block_score",),
         case.session.engine_config.tp_size,
     )
-    prompt = case.session.prompt_batches[0][0]
     return ResidentAuditExecutionAuthority.derive(
         case.launch,
         case.baseline_binding.launch_binding,
         case.session,
         audit_policy=policy,
-        prompt_batches=((prompt,), (prompt,), (prompt,)),
         max_new_tokens=2,
         top_logprobs_num=1,
         executor_namespace_digest=_h("audit-executor-namespace"),
@@ -105,6 +112,36 @@ def test_derivation_changes_only_graph_config_launch_and_preflight(tmp_path) -> 
         )
     )
     assert authority.digest == _authority(tmp_path / "repeat").digest
+
+
+@pytest.mark.parametrize(
+    ("widths", "input_tokens"),
+    (((4, 8), (8192, 65536)), ((1, 3, 2), (12, 24, 48))),
+)
+def test_audit_preserves_serving_batches_and_rejects_singleton_collapse(
+    tmp_path, widths, input_tokens,
+) -> None:
+    batches = tuple(
+        tuple(f"cell-{cell}-prompt-{row}" for row in range(width))
+        for cell, width in enumerate(widths)
+    )
+    authority = _authority(tmp_path, batches=batches, input_tokens=input_tokens)
+    checked = authority.plan.prompt_batches[1:]
+    assert all(batch in checked for batch in batches)
+    assert all(batch in batches for batch in checked)
+    assert len(checked) >= authority.audit_policy.minimum_calls
+    collapsed = tuple((batch[0],) for batch in authority.plan.prompt_batches)
+    with pytest.raises(ResidentAuditAuthorityError, match="eager audit role"):
+        replace(authority, plan=replace(authority.plan, prompt_batches=collapsed))
+    for index, batch in enumerate(authority.plan.prompt_batches):
+        assert authority.plan.request_geometry(index) == (
+            2, input_tokens[batches.index(batch)],
+        )
+    # The failed GPU audit dropped this vector and applied 8192 to long prompts.
+    with pytest.raises(ResidentAuditAuthorityError, match="eager audit role"):
+        replace(authority, plan=replace(
+            authority.plan, batch_max_new_tokens=(), batch_expected_prompt_tokens=(),
+        ))
 
 
 def test_rejects_graph_on_or_identical_audit_launch(tmp_path) -> None:
@@ -259,9 +296,8 @@ def test_causal_authority_binds_eager_plan_and_rejects_old_fake(tmp_path) -> Non
     assert audit is not None
     changed_plan = replace(
         audit.plan,
-        prompt_batches=tuple(
-            ("changed audit prompt",) for _ in audit.plan.prompt_batches
-        ),
+        max_new_tokens=audit.plan.max_new_tokens + 1,
+        batch_max_new_tokens=(audit.plan.max_new_tokens + 1,) * len(audit.plan.prompt_batches),
     )
     changed = replace(value, resident_audit_plan=replace(audit, plan=changed_plan))
     assert runner.qualification_authority_digest(changed) != (

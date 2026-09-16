@@ -139,6 +139,8 @@ def record(slot: str, actual: Sequence[torch.Tensor],
         ok = True
         worst = 1.0
         for a, e in zip(actual, expected):
+            if a.shape == e.shape and a.numel() == 0:
+                continue
             af, ef = a.detach().float(), e.detach().float()
             if corr.mode == "cosine":
                 cos = torch.nn.functional.cosine_similarity(

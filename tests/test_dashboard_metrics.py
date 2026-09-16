@@ -139,6 +139,53 @@ def client(tmp_path, monkeypatch):
     return TestClient(app.app)
 
 
+@pytest.mark.parametrize("target", [
+    "attention.indexer_select", "collective.dp_attention_exchange.v1",
+])
+@pytest.mark.parametrize("target_resolved", [False, True])
+def test_payment_recovery_links_actual_evaluation_without_rewriting_rejection(tmp_path, client, target, target_resolved):
+    db = tmp_path / "intake.sqlite3"
+    _dashboard_db(db, "", tmp_path, target)
+    with sqlite3.connect(db) as con:
+        con.execute("ALTER TABLE metadata ADD COLUMN value TEXT")
+        for column in ("event_subindex", "invalid_reason", "transport_attempts", "screen_lane",
+                       "screen_status", "screen_attempts", "retry_position",
+                       "eval_cost_payment_block", "eval_cost_payment_extrinsic_index"):
+            con.execute(f"ALTER TABLE reservations ADD COLUMN {column}")
+        con.execute("UPDATE reservations SET reason='eval_cost_payment_invalid'")
+        if not target_resolved:
+            con.execute("UPDATE reservations SET target_id=''")
+        con.execute("INSERT INTO reservations(reservation_id,status,hotkey,target_id) "
+                    "VALUES('corrected','promoted','miner',?)", (target,))
+        con.execute("INSERT INTO metadata VALUES('evaluation_recoveries',?)",
+                    (json.dumps({"example": "corrected"}),))
+        con.execute("INSERT INTO evaluation_leases(lease_id,stage,state) "
+                    "VALUES('lease','qualification','active')")
+        con.execute("INSERT INTO evaluation_lease_members VALUES('corrected','lease')")
+    detail = client.get("/api/submissions/example").json()
+    assert detail["status"] == "failed"
+    assert detail["reason"] == "eval_cost_payment_invalid"
+    assert detail["evaluation_recovery"]["reservation_id"] == "corrected"
+    assert detail["evaluation_recovery"]["active_stage"] == "qualification"
+    listed = client.get("/api/submissions?q=example").json()["items"]
+    assert listed[0]["evaluation_recovery"] == detail["evaluation_recovery"]
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE evaluation_leases SET state='completed'")
+        con.execute("UPDATE reservations SET status='failed',decision='FAIL',reason='candidate_slower' "
+                    "WHERE reservation_id='corrected'")
+    recovered = client.get("/api/submissions/example").json()["evaluation_recovery"]
+    assert recovered["active_stage"] is None
+    assert recovered["decision"] == "FAIL"
+    assert recovered["reason"] == "candidate_slower"
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE reservations SET target_id='another-target' WHERE reservation_id='example'")
+    assert client.get("/api/submissions/example").json()["evaluation_recovery"] is None
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE reservations SET target_id=? WHERE reservation_id='example'", (target,))
+        con.execute("UPDATE reservations SET hotkey='another-miner' WHERE reservation_id='corrected'")
+    assert client.get("/api/submissions/example").json()["evaluation_recovery"] is None
+
+
 @pytest.mark.parametrize("target,phase", [
     ("norm.fused_add_rmsnorm", False), ("collective.dp_attention_exchange.v1", True)])
 def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, client, target, phase):

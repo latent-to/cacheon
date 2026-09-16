@@ -4,7 +4,7 @@ A slot is a validator-owned semantic boundary inside the pinned engine. A
 contribution supplies an implementation for that boundary; the validator owns
 the call site, inputs, output allocation, reference, and verification policy.
 
-The registered API contains **13 slots**. The registry in
+The registered API contains **14 slots**. The registry in
 [`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
 is authoritative; print it with `python -m cacheon.cli slots`.
 
@@ -18,6 +18,7 @@ is authoritative; print it with `python -m cacheon.cli slots`.
 | `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | matched ratio ≥ 0.99 |
+| `collective.dp_output_projection_norm` | collective | `prepare(weight, gamma, eps, quant_scale)` + `entry(x, residual, prepared, normalized, local_residual, fp4, scales, group)` | matched ratio ≥ 0.99; full projection, BF16 residual and RMSNorm reference |
 | `collective.reduce_scatter_tensor` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
 | `linear.dense` | block | `prepare(weight)` + `entry(x, prepared, out)`; rank-2/rank-3, input-dtype/FP32 output | matched ratio ≥ 0.99 |
 | `moe.fused_experts` | block | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out)` | cosine ≥ 0.985 |

@@ -364,48 +364,31 @@ def test_screen_to_qualification_restart_reuses_one_request(
         assert store.pending_qualification_recovery() is None
 
 
-def test_postpublication_infrastructure_results_requeue_fresh_until_capped(
+def test_postpublication_infrastructure_hold_preserves_request_across_restart(
     tmp_path: Path,
 ) -> None:
-    # Owner ruling 2026-08-10: a worker infrastructure result retires its dead
-    # request and requeues a fresh one instead of parking HELD; the systemic
-    # release cap bounds the retries and parks the reservation visibly for the
-    # operator, leaving the queue free.
-    harness = _harness(
-        tmp_path,
-        profile="hold-profile",
-        hold_after_publish=True,
-    )
+    # The 2026-08-10 fresh-request policy is superseded by the owner's
+    # 2026-09-14 prohibition on paid retries without no-execution proof.
+    harness = _harness(tmp_path, profile="hold-profile", hold_after_publish=True)
     screen_runs: list[EvaluationRun] = []
     supervisor = _supervisor(harness, screen_runs)
-
     assert supervisor.tick().phase is SupervisorPhase.SCREEN
-    request_ids: list[str] = []
-    for attempt in range(3):
-        status = supervisor.tick()
-        assert status.phase is SupervisorPhase.QUALIFICATION
-        assert status.last_disposition == "requeue"
-        request_ids.append(harness.transport.plan.request_id)
-    assert len(set(request_ids)) == 3, "each retry must mint a fresh request"
+    status = supervisor.tick()
+    assert status.phase is SupervisorPhase.HOLD
+    assert status.last_disposition == "hold"
+    request_id = harness.transport.plan.request_id
+    assert _supervisor(harness, screen_runs).tick().phase is SupervisorPhase.HOLD
+    assert harness.transport.plan.request_id == request_id
     assert (
         harness.transport.plans,
         harness.transport.materializations,
         harness.transport.publications,
-    ) == (3, 3, 3)
-    assert len(harness.transport.screen_requests) == 1
-    assert len(screen_runs) == 1
-
-    idle = supervisor.tick()
-    assert idle.phase is SupervisorPhase.IDLE
-
-    reservation_id = screen_runs[0].lease.reservation_ids[0]
+    ) == (1, 1, 1)
+    assert len(harness.transport.screen_requests) == len(screen_runs) == 1
     with RecoverableFinalizedIntakeStore(
-        harness.fixtures._db_path(tmp_path),
-        harness.fixtures.POLICY,
+        harness.fixtures._db_path(tmp_path), harness.fixtures.POLICY,
         scope=harness.fixtures.SCOPE,
     ) as store:
-        parked = store.get(reservation_id)
-        assert parked.status == "held"
-        assert parked.decision == ""
-        assert parked.reason.startswith("systemic_release_cap:")
-        assert store.pending_qualification_recovery() is None
+        recovery = store.pending_qualification_recovery()
+        assert recovery.request_id == request_id
+        assert recovery.phase == "held"

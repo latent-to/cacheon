@@ -30,10 +30,14 @@ Versions 10 and 11 implement the owner's 2026-09-07 single-run contract.
 Both baseline observations must be stable, including matched timed windows;
 neither may be discarded. The credited estimate uses the faster baseline.
 An invalid or unresolved measurement cannot become a candidate failure.
+
+Versions 13-15 add one bounded repeat for valid threshold crossings. Both rounds
+contribute conservative paired ratios; an invalid round remains inconclusive.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -74,12 +78,46 @@ DECODE_ROLES = ("B", "C", "B_prime")
 PREFILL_LANE_ROLES = DECODE_ROLES + ("B_prefill", "C_prefill", "B_prime_prefill")
 
 
-def resident_speed_roles(version: int, count: int) -> tuple[str, ...] | None:
-    """The precommitted read roles for one policy version, or None for a count
-    that version never reads."""
+def schedule_roles(version: int, *, repeat: bool = False) -> tuple[str, ...]:
+    """Seal one complete round, optionally followed by the one allowed repeat."""
+    roles = PREFILL_LANE_ROLES if version in (12, 15) else DECODE_ROLES
+    return roles + tuple(role + "_repeat" for role in roles) if repeat else roles
 
-    roles = PREFILL_LANE_ROLES if version >= 12 else DECODE_ROLES
-    return roles if count == len(roles) else None
+
+def resident_speed_roles(version: int, count: int) -> tuple[str, ...] | None:
+    """Reject partial rounds and repetitions outside the version's sealed limit."""
+    roles = schedule_roles(version)
+    if count == len(roles):
+        return roles
+    repeated = schedule_roles(version, repeat=True)
+    return repeated if version >= 13 and count == len(repeated) else None
+
+
+def combined_speed_grade(policy, first, second):
+    """Combine two full valid rounds with equal log weight after bracketing drift.
+
+    Each round uses its faster baseline as the conservative denominator. The
+    geometric mean includes both rounds; the larger required margin remains in
+    force. This is an observed bracket bound, not a statistical confidence interval.
+    """
+    grades = [speed_grade(policy, [rows[0], rows[2]], [rows[1]])[0]
+              for rows in (first, second)]
+    speedup = math.exp(sum(math.log(row.speedup) for row in grades) / 2)
+    required = max(row.required for row in grades)
+    valid = all(row.confident for row in grades)
+    same_work = all(tuple(w.tokens for w in a.windows) == tuple(w.tokens for w in b.windows)
+                    for a, b in zip(first, second, strict=True))
+    valid = valid and same_work
+    decision = (SpeedStageDecision.NO_DECISION if not valid else
+                SpeedStageDecision.PASS if speedup >= required else SpeedStageDecision.FAIL)
+    detail = ("combined complete rounds clear the conservative speed bound" if
+              decision is SpeedStageDecision.PASS else
+              "bounded repeat exhausted: insufficient demonstrated improvement" if valid else
+              "repeat contains invalid or mismatched measurements; no round was discarded")
+    return replace(grades[0], speedup=speedup, required=required,
+                   noise=max(row.noise for row in grades), confident=valid,
+                   n_baselines=4, n_candidates=2,
+                   passed_speedup=decision is SpeedStageDecision.PASS, detail=detail), decision
 
 
 def invariant_decision(
@@ -180,7 +218,7 @@ def _single_run_grade(policy, baselines, candidates, baseline_rates, candidate_r
     if lower >= verdict.required:
         decision = SpeedStageDecision.PASS
         detail = "candidate clears the bound against both stable baseline observations"
-    elif upper < 1.0 + policy.min_margin:
+    elif upper < (verdict.required if policy.version >= 13 else 1.0 + policy.min_margin):
         decision = SpeedStageDecision.FAIL
         detail = "candidate does not clear the speed floor against either stable baseline"
     else:
@@ -200,5 +238,7 @@ __all__ = [
     "fail_reason",
     "invariant_decision",
     "resident_speed_roles",
+    "schedule_roles",
+    "combined_speed_grade",
     "speed_grade",
 ]

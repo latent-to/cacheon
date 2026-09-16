@@ -540,14 +540,16 @@ class B300RegisteredQualificationFactory:
         # Every candidate is measured by the two-process crossover in
         # `crossover_runtime`, which boots real trees for both arms and reads
         # its bookend unconditionally because the quality gate's stock-drift
-        # control is harvested from the second baseline read. Versions 10/11
-        # require valid brackets and price from the faster one; version 12 is
-        # sealed by the commission and keeps its prefill lane. The worker
+        # control is harvested from the second baseline read. Versions 13/14
+        # add one bounded borderline repeat; versions 12/15 retain the sealed
+        # prefill lane. Retained 10/11 commissions keep their single round. The worker
         # routes on the sealed version this plan carries.
         mixed_cells = bool(prepared_candidate.session_plan.batch_max_new_tokens)
         speed_policy = inputs.resident_speed_policy
         if speed_policy.version < 12:
             speed_policy = replace(speed_policy, version=11 if mixed_cells else 10)
+        elif speed_policy.version in (13, 14):
+            speed_policy = replace(speed_policy, version=14 if mixed_cells else 13)
         elif not mixed_cells:
             raise B300RegisteredQualificationError(
                 "the prefill lane requires a mixed-cell workload"
@@ -570,26 +572,11 @@ class B300RegisteredQualificationFactory:
             tuple(sorted(candidate.reservation.target_members)),
             prepared_candidate.session_plan.engine_config.tp_size,
         )
-        audit_prompt = min(
-            (
-                prompt
-                for batch in prepared_candidate.session_plan.prompt_batches
-                for prompt in batch
-            ),
-            key=lambda prompt: (
-                len(prompt),
-                hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-            ),
-        )
         audit_authority = ResidentAuditExecutionAuthority.derive(
             prepared_candidate.launch,
             prepared_candidate.binding.launch_binding,
             prepared_candidate.session_plan,
             audit_policy=audit_policy,
-            prompt_batches=tuple(
-                (audit_prompt,)
-                for _ in range(inputs.policy.audit_minimum_calls + 1)
-            ),
             max_new_tokens=inputs.policy.audit_max_new_tokens,
             top_logprobs_num=inputs.policy.audit_toplogprobs_num,
             executor_namespace_digest=inputs.candidate_executor_namespace_digest,

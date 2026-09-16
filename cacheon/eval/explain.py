@@ -67,6 +67,9 @@ _ARM_LABEL = {
     "B_prime_prefill": "SGLang alone, prompt pass (after)",
 }
 
+_ARM_LABEL.update({role + "_repeat": label + " (repeat)"
+                   for role, label in tuple(_ARM_LABEL.items())})
+
 
 def _tagged(stderr: str, prefix: str) -> Iterable[dict]:
     """Every JSON object on a line carrying ``prefix``, corrupt ones skipped.

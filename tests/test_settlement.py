@@ -358,6 +358,7 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     # target conflict/displacement and symmetric challenger transitions.
     # Epoch 2026-09-05 retired artifact-provider registration and added sparse MLA.
     # Epoch 2026-09-06 widens families and makes sparse attention atomic.
+    # Epoch 2026-09-16 adds fused DP output projection with explicit displacement.
     # Historical records are unaffected: they embed their own catalog snapshot.
     catalog = default_target_catalog()
     candidate = _candidate(
@@ -366,10 +367,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "a515abd3ad4726c0947dd5d9eadee4db5835c006c780d25586e803022b4742f7"
+        "6109867da385d9a23bcf9f9a5cc4d39536c59ec8fb4ebfc6cd41f950fc571945"
     )
     assert candidate.digest == (
-        "09e704f70eeb609ee57e5f3fe10f0dd85b64f18c6df4f181e03d5f4b9f2e5289"
+        "944ee407d1cc4331df4e0d07108a4cb13733972e1f18db5790cfed93587dff1b"
     )
 
 

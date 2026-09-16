@@ -10,7 +10,6 @@ import pytest
 import cacheon.chain.recoverable_qualification_dispatcher as dispatcher_module
 from cacheon.chain.execution_disposition import (
     COMPLETED_NO_DECISION_HOLD_REASON,
-    ExecutionDisposition,
 )
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
@@ -20,7 +19,6 @@ from cacheon.chain.recoverable_qualification_dispatcher import (
     RecoverableQualificationDispatcher,
     RecoverableQualificationDispatcherError,
     RecoverableQualificationHold,
-    RecoverableQualificationRequeue,
 )
 from cacheon.chain.remote_evaluation_dispatcher import seal_remote_response
 from cacheon.chain.remote_qualification_hold import (
@@ -282,86 +280,55 @@ class _InfrastructureResultTransport(_Transport):
         spool.write_local_no_decision(
             self.authority.results,
             plan.request_dict(),
-            "adapter_start_failed",
+            getattr(self, "failure_code", "adapter_start_failed"),
         )
         return observed
 
 
-def test_postpublication_worker_failure_retires_request_and_requeues_until_capped(
-    tmp_path: Path,
-) -> None:
-    # Owner ruling 2026-08-10: an unproven worker infrastructure result never
-    # parks the recovery HELD. The dead request retires, a fresh claim mints a
-    # fresh request, and the systemic release cap bounds the retries so an
-    # unfixed fault parks visibly for the operator instead of free-looping.
+@pytest.mark.parametrize("failure_code", ("adapter_start_failed", "adapter_epoch_failed", "adapter_timeout"))
+def test_unproven_worker_failure_retains_original_request(tmp_path: Path, failure_code: str) -> None:
+    # The 2026-08-10 blanket retry rule is superseded by the 2026-09-14 no-paid-retry order.
     fixtures = _fixtures()
     authority = fixtures._authority(tmp_path, recoverable=True)
     transport = _InfrastructureResultTransport(authority, fixtures)
+    transport.failure_code = failure_code
     dispatcher = _dispatcher(authority, transport)
-
-    outcomes = [dispatcher.dispatch_once() for _ in range(3)]
-    assert [type(outcome).__name__ for outcome in outcomes] == (
-        ["RecoverableQualificationRequeue"] * 3
-    )
-    assert [outcome.request_id for outcome in outcomes] == transport.request_ids
-    assert len(set(transport.request_ids)) == 3, "each retry must mint a fresh request"
-    assert all(
-        outcome.outcome.failure_code == "adapter_start_failed" for outcome in outcomes
-    )
-
+    first = dispatcher.dispatch_once()
+    assert type(first) is RecoverableQualificationHold
+    assert first.reason == "transport_hold:worker_infrastructure_result"
+    again = dispatcher.dispatch_once()
+    assert again == first
+    assert transport.plans == 1 and len(transport.request_ids) == 1
+    assert transport.request_ids == [first.request_id]
     with _store(authority) as store:
-        assert store.pending_qualification_recovery() is None
-        reservation_id = store._db.execute(
-            "SELECT reservation_id FROM evaluation_lease_members"
-        ).fetchone()["reservation_id"]
-        retained = store.get(reservation_id)
-        reasons = [
-            row["reason"]
-            for row in store._db.execute(
-                "SELECT reason FROM evaluation_leases WHERE state='released'"
-                " ORDER BY completed_block, lease_id"
-            )
-        ]
-    assert reasons == ["systemic:worker_infrastructure:adapter_start_failed"] * 3
-    assert retained.status == "held"
-    # Holding is not a verdict: the park keeps a blank candidate decision
-    # (NO_DECISION retired as a decision category, owner order 2026-08-12).
-    assert retained.decision == ""
-    assert retained.reason.startswith("systemic_release_cap:")
-
-    # The parked reservation is no longer claimable: the queue moves on.
-    assert dispatcher.dispatch_once() is None
-    assert transport.plans == 3
+        retained = store.pending_qualification_recovery()
+        assert retained is not None and retained.phase.value == "held"
+        assert retained.request_id == first.request_id
+        assert store._db.execute("SELECT count(*) FROM evaluation_leases WHERE state='released'").fetchone()[0] == 0
+        row = store.get(retained.lease.members[0].reservation_id)
+        assert row.status == "promoted" and row.decision == ""
 
 
-def test_parked_worker_infrastructure_hold_migrates_to_requeue(
-    tmp_path: Path,
-) -> None:
-    # A recovery parked HELD under the pre-change reason (written before
-    # infrastructure results became requeue-class) releases through the same
-    # retire-and-requeue on its next claim.
+@pytest.mark.parametrize("reason", ("transport_hold:worker_infrastructure_result", "transport_hold:authority_changed", "transport_hold:published_carrier_missing"))
+def test_parked_unproven_work_is_not_requeued_on_restart(tmp_path: Path, reason: str) -> None:
+    # The 2026-08-16 orphaned-carrier starvation incident does not authorize buying saved work again.
     fixtures = _fixtures()
     authority = fixtures._authority(tmp_path, recoverable=True)
     transport = _Transport(authority, fixtures, fail_resume=True)
-    dispatcher = _dispatcher(authority, transport)
     with pytest.raises(RecoverableQualificationDispatcherError, match="not ready"):
-        dispatcher.dispatch_once()
+        _dispatcher(authority, transport).dispatch_once()
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
-        assert recovery is not None and recovery.phase.value == "request_ready"
-        _hold(store, recovery, authority, "transport_hold:worker_infrastructure_result")
-
-    outcome = _dispatcher(authority, _Transport(authority, fixtures)).dispatch_once()
-    assert type(outcome).__name__ == "RecoverableQualificationRequeue"
-    assert outcome.outcome.failure_code == "worker_infrastructure_result"
+        assert recovery is not None
+        _hold(store, recovery, authority, reason)
+    restarted = _Transport(authority, fixtures)
+    outcome = _dispatcher(authority, restarted).dispatch_once()
+    assert type(outcome) is RecoverableQualificationHold
+    assert outcome.reason == reason and outcome.request_id == recovery.request_id
+    assert restarted.plans == restarted.publications == restarted.resumes == 0
     with _store(authority) as store:
-        assert store.pending_qualification_recovery() is None
-        released = store._db.execute(
-            "SELECT reason FROM evaluation_leases WHERE state='released'"
-        ).fetchone()
-    assert released["reason"] == (
-        "systemic:worker_infrastructure:worker_infrastructure_result"
-    )
+        assert store.pending_qualification_recovery().request_id == recovery.request_id
+        assert store._db.execute("SELECT count(*) FROM evaluation_leases WHERE state='released'").fetchone()[0] == 0
 
 
 def test_worker_infrastructure_release_refuses_other_holds(tmp_path: Path) -> None:
@@ -378,110 +345,6 @@ def test_worker_infrastructure_release_refuses_other_holds(tmp_path: Path) -> No
             _release(store, held, authority, "adapter_start_failed")
         still_held = store.pending_qualification_recovery()
     assert still_held is not None and still_held.phase.value == "held"
-
-
-def test_authority_changed_held_recovery_migrates_into_bounded_requeue(
-    tmp_path: Path,
-) -> None:
-    """A recovery parked HELD with transport_hold:authority_changed carries a
-    retained request that can never dispatch again (it was sealed against an
-    authority that no longer verifies).  The dispatcher migrates it through
-    the same bounded infrastructure requeue: retire the dead request, release
-    the reservation for a fresh claim, count one systemic strike."""
-
-    fixtures = _fixtures()
-    authority = fixtures._authority(tmp_path, recoverable=True)
-    transport = _Transport(authority, fixtures, fail_resume=True)
-    dispatcher = _dispatcher(authority, transport)
-
-    with pytest.raises(
-        RecoverableQualificationDispatcherError,
-        match="same-request qualification result is not ready",
-    ):
-        dispatcher.dispatch_once()
-    assert transport.plan is not None
-    dead_request_id = transport.plan.request_id
-    with _store(authority) as store:
-        recovery = store.pending_qualification_recovery()
-        assert recovery is not None and recovery.phase.value == "request_ready"
-        _hold(store, recovery, authority, "transport_hold:authority_changed")
-
-    transport.fail_resume = False
-    outcome = dispatcher.dispatch_once()
-    assert type(outcome) is RecoverableQualificationRequeue
-    assert outcome.request_id == dead_request_id
-    assert outcome.outcome.disposition is ExecutionDisposition.REQUEUE
-    assert outcome.outcome.decision == "NO_DECISION"
-    with _store(authority) as store:
-        # The dead request retired with its recovery; the reservation is
-        # claimable again and one systemic strike was recorded.
-        assert store.pending_qualification_recovery() is None
-        released = store._db.execute(
-            "SELECT l.state, l.reason, m.reservation_id "
-            "FROM evaluation_leases AS l "
-            "JOIN evaluation_lease_members AS m ON m.lease_id=l.lease_id "
-            "WHERE l.reason LIKE 'systemic%'",
-        ).fetchall()
-        assert len(released) == 1
-        assert released[0]["state"] == "released"
-        assert released[0]["reason"].startswith("systemic:worker_infrastructure:")
-        row = store._db.execute(
-            "SELECT status FROM reservations WHERE reservation_id=?",
-            (released[0]["reservation_id"],),
-        ).fetchone()
-        assert row["status"] == "promoted"
-
-
-def test_orphaned_carrier_held_recovery_migrates_into_bounded_requeue(
-    tmp_path: Path,
-) -> None:
-    """A recovery parked HELD with transport_hold:published_carrier_missing
-    retains a request nothing can ever deliver: the carrier is the only path
-    to its result, and it is gone.  Before this reason had a handler it parked
-    forever, and because the dispatcher resumes the active recovery before any
-    fresh claim, one such row starved every qualification claim on 2026-08-16
-    with no operator escape.  It must migrate through the same bounded
-    infrastructure requeue as the other durably-dead retained requests."""
-
-    fixtures = _fixtures()
-    authority = fixtures._authority(tmp_path, recoverable=True)
-    transport = _Transport(authority, fixtures, fail_resume=True)
-    dispatcher = _dispatcher(authority, transport)
-
-    with pytest.raises(
-        RecoverableQualificationDispatcherError,
-        match="same-request qualification result is not ready",
-    ):
-        dispatcher.dispatch_once()
-    assert transport.plan is not None
-    dead_request_id = transport.plan.request_id
-    with _store(authority) as store:
-        recovery = store.pending_qualification_recovery()
-        assert recovery is not None and recovery.phase.value == "request_ready"
-        _hold(store, recovery, authority, "transport_hold:published_carrier_missing")
-
-    transport.fail_resume = False
-    outcome = dispatcher.dispatch_once()
-    assert type(outcome) is RecoverableQualificationRequeue
-    assert outcome.request_id == dead_request_id
-    assert outcome.outcome.disposition is ExecutionDisposition.REQUEUE
-    # A missing spool artifact is never a candidate signal.
-    assert outcome.outcome.decision == "NO_DECISION"
-    with _store(authority) as store:
-        assert store.pending_qualification_recovery() is None
-        released = store._db.execute(
-            "SELECT l.state, l.reason, m.reservation_id "
-            "FROM evaluation_leases AS l "
-            "JOIN evaluation_lease_members AS m ON m.lease_id=l.lease_id "
-            "WHERE l.reason LIKE 'systemic%'",
-        ).fetchall()
-        assert len(released) == 1
-        assert released[0]["state"] == "released"
-        row = store._db.execute(
-            "SELECT status FROM reservations WHERE reservation_id=?",
-            (released[0]["reservation_id"],),
-        ).fetchone()
-        assert row["status"] == "promoted"
 
 
 def test_completed_no_decision_product_terminalizes_without_retry_or_second_plan(
@@ -1072,10 +935,6 @@ def test_queue_baseline_boundary_requires_commission_before_any_claim(
         )
 
 
-
-
-
-
 def test_completed_no_decision_hold_stays_parked_while_members_are_active(
     tmp_path: Path,
 ) -> None:
@@ -1148,13 +1007,14 @@ def test_completed_no_decision_hold_migrates_when_its_epoch_is_retired(
     assert restored.status == member.prior_status
 
 
-def test_epoch_orphaned_completed_hold_migrates_autonomously(
+def test_epoch_orphaned_completed_hold_preserves_saved_work(
     tmp_path: Path,
 ) -> None:
-    """The dispatcher itself migrates a completed-product hold once the
-    transport's live registered epoch provably differs from the epoch the
-    retained request plan binds (2026-08-13 zombie: the same migration
-    needed a manual operator release and starved both lanes meanwhile)."""
+    """Preserve the 2026-08-13 epoch-orphan evidence across registration changes.
+
+    The old automatic migration bought a replacement for completed work;
+    the September 2026 rule requires retaining it for operator recovery.
+    """
 
     fixtures = _fixtures()
     authority = fixtures._authority(tmp_path, recoverable=True)
@@ -1172,17 +1032,12 @@ def test_epoch_orphaned_completed_hold_migrates_autonomously(
     live_epoch = "0" * 32 if plan_epoch != "0" * 32 else "1" * 32
     transport.registration = {"worker_epoch": live_epoch}
     outcome = dispatcher.dispatch_once()
-    assert type(outcome) is RecoverableQualificationRequeue
-    assert outcome.outcome.disposition is ExecutionDisposition.REQUEUE
+    assert type(outcome) is RecoverableQualificationHold
+    assert outcome.reason == "post_publication_no_decision"
+    assert transport.plans == 1
     with _store(authority) as store:
-        assert store.pending_qualification_recovery() is None
-        released = store._db.execute(
-            "SELECT reason FROM evaluation_leases WHERE state='released'"
-            " AND reason LIKE 'systemic%'"
-        ).fetchone()
-    assert released["reason"] == (
-        "systemic:worker_infrastructure:retained_epoch_retired"
-    )
+        assert store.pending_qualification_recovery() is not None
+        assert store._db.execute("SELECT count(*) FROM evaluation_leases WHERE state='released'").fetchone()[0] == 0
 
 
 def test_completed_hold_for_the_live_epoch_parks_at_the_dispatcher(

@@ -504,8 +504,11 @@ class ResidentServingScreenStage:
 
     Swappable bundles are staged into the content-addressed swap intake and
     screened through the resident lane. Successful execution passes to full
-    qualification regardless of abbreviated throughput; wrong dispatch fails.  A recovered canary
-    withdrawal is retried inside the lane; an unrecovered stock canary is a
+    qualification regardless of abbreviated throughput. Every registered entry
+    must execute on every rank; native prefill split operations may route to full
+    qualification, which retains the scored graph and correctness requirements.
+    Wrong dispatch fails. A recovered canary withdrawal is retried inside the
+    lane; an unrecovered stock canary is a
     measured ``NO_DECISION`` and can never promote the candidate.  Non-swappable
     bundles receive an explicitly recorded
     waiver PASS: the screen tier cannot pre-price them cheaply, so

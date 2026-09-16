@@ -65,7 +65,7 @@ stateDiagram-v2
     no_decision --> published: reviewed requeue / release
 ```
 
-`qualified` means two matching PASS qualifications have been retained. The associated
+`qualified` means a complete audited PASS qualification has been retained. The associated
 settlement candidate then has its own transactional state (`pending`, `leased`, and a
 terminal economic disposition such as `crowned`, `held`, `neutralized`, or
 `discovery_bounty`). A reservation can remain `qualified` while settlement decides its
@@ -75,11 +75,11 @@ Several terminal paths are omitted from the diagram for readability: an operator
 explicitly expire sufficiently old inactive work, copy reconciliation can turn a later
 submission into `failed`, and bounded retry exhaustion leads to `held`.
 
-Retry exhaustion is enforced at the lease layer. Every released evaluation lease
-counts toward a per-reservation cap of three, regardless of which infrastructure
-class released it, unless its release reason begins with `operator` (a deliberate
-operator disposition) or `screen_claim_` (a pre-dispatch claim race). The count is
-consecutive: it covers releases since the reservation's most recent completed lease,
+The lease layer holds a screen after its first infrastructure release.
+Authenticated pre-resident qualification retries retain a cap of three. Releases
+whose reasons begin with `operator` (a deliberate operator disposition) or
+`screen_claim_` (a pre-dispatch claim race) remain exempt. The count covers releases
+since the reservation's most recent completed lease,
 so a successful stage resets it and a fleet-wide transient does not permanently
 poison rows that later succeed. At the cap the reservation is parked as `held` with
 reason `systemic_release_cap:<count>` and waits for the operator `release_hold`
@@ -456,7 +456,9 @@ PASS from becoming a permanent priority veto.
 Eval-cost admission is deliberately separate from the shared `IntakePolicy` used by
 screen and evaluation-lease services. `chain-validate --eval-cost-tao-rao` controls the
 required `transfer_keep_alive` amount and defaults to `0` (off). Quote TTL defaults to
-300 blocks and the payment-to-reveal window defaults to 7,200 blocks.
+300 blocks and the payment-to-reveal window defaults to 7,200 blocks. A quote above
+the required amount is accepted when the transfer covers the full quoted amount;
+quoting below the required fee or transferring less than the quote is rejected.
 
 A v2 reveal may attach a payment pointer. When the gate is enabled, intake rebuilds the
 remark from that reveal's hotkey, content hash, and netuid; only that triple can spend

@@ -23,6 +23,7 @@ import json
 import sys
 from pathlib import Path
 
+from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
 from cacheon.manifest import all_declared_cuda_sources, load_manifest, resolve_source
 from cacheon.sandbox import scan_path
 
@@ -1469,13 +1470,7 @@ def cmd_chain_eval_cost(args: argparse.Namespace) -> int:
     quote = quote_eval_cost(
         request,
         policy=EvalCostPolicy(
-            amount_rao=int(
-                getattr(
-                    args,
-                    "eval_cost_tao_rao",
-                    1_000_000_000,
-                )
-            ),
+            amount_rao=int(getattr(args, "eval_cost_tao_rao", PUBLISHED_EVAL_COST_TAO_RAO)),
             destination=destination,
         ),
         at_block=at_block,
@@ -1581,7 +1576,7 @@ def cmd_chain_submit(args: argparse.Namespace) -> int:
     policy = None
     if pay or reuse:
         policy = EvalCostPolicy(
-            amount_rao=int(getattr(args, "eval_cost_tao_rao", 1_000_000_000)),
+            amount_rao=int(getattr(args, "eval_cost_tao_rao", PUBLISHED_EVAL_COST_TAO_RAO)),
         )
     if not args.dry_run:
         import bittensor as bt
@@ -2901,8 +2896,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--eval-cost-tao-rao",
         type=int,
-        default=1_000_000_000,
-        help="quoted TAO amount in rao; default 1000000000 (1 TAO) is the published v1 quote",
+        default=PUBLISHED_EVAL_COST_TAO_RAO,
+        help="quoted TAO amount in rao; default 500000000 (0.5 TAO) is the published v1 quote",
     )
     sp.set_defaults(func=cmd_chain_eval_cost)
 
@@ -2929,9 +2924,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--amount-tao-rao",
         type=int,
-        default=1_000_000_000,
+        default=PUBLISHED_EVAL_COST_TAO_RAO,
         help="fee amount the credit stands in for, recorded for audit "
-             "(default 1000000000, 1 TAO)",
+             "(default 500000000, 0.5 TAO)",
     )
     sp.add_argument(
         "--note",
@@ -2979,8 +2974,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--eval-cost-tao-rao",
         type=int,
-        default=1_000_000_000,
-        help="TAO amount in rao to transfer with --pay or to verify when reusing a payment; default 1000000000 (1 TAO)",
+        default=PUBLISHED_EVAL_COST_TAO_RAO,
+        help="TAO amount in rao to transfer with --pay or to verify when reusing a payment; default 500000000 (0.5 TAO)",
     )
     sp.set_defaults(func=cmd_chain_submit)
 
@@ -3093,7 +3088,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--eval-cost-tao-rao",
         type=int,
         default=0,
-        help="required TAO transfer amount per admission; 0 disables the gate; 1000000000 (1 TAO) matches the published v1 quote; destination is the current subnet owner coldkey",
+        help="required TAO transfer amount per admission; 0 disables the gate; 500000000 (0.5 TAO) matches the published v1 quote; destination is the current subnet owner coldkey",
     )
     sp.add_argument(
         "--eval-cost-payment-window-blocks",

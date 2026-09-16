@@ -248,6 +248,34 @@ def _is_borderline(verdict: SpeedupVerdict, *, band: float) -> bool:
     return abs(verdict.speedup - verdict.required) <= band
 
 
+def _invocations_proven(
+    opening: SwapReceipt, closing: SwapReceipt, slots: tuple[str, ...],
+) -> bool:
+    """Require every entry on every rank before routing to full qualification.
+
+    SGLang's prefill graph can call native eager split operations, and its
+    capture-size limits also preserve eager paths. The capture-only count is
+    not invocation coverage; full qualification owns graph and numerical proof.
+    """
+    evidence = closing.execution
+    if not evidence.ranks:
+        return evidence.proves_execution(
+            generation=opening.generation, expected_ranks=closing.expected_ranks,
+        )
+    return (
+        evidence.observed
+        and evidence.prior_generation == opening.generation
+        and closing.expected_ranks > 0
+        and len(evidence.ranks) == closing.expected_ranks
+        and all(
+            rank.loaded and not rank.load_error
+            and tuple(row.slot for row in rank.slots) == slots
+            and all(row.calls > 0 and not row.error for row in rank.slots)
+            for rank in evidence.ranks
+        )
+    )
+
+
 class ResidentScreenLoop:
     """Incremental screen: one candidate at a time on one live session.
 
@@ -379,14 +407,12 @@ class ResidentScreenLoop:
 
         swap_out = session.swap(None)
         receipts.append(swap_out)
-        if failure is None and not swap_out.execution.proves_execution(
-            generation=swap_in.generation,
-            expected_ranks=swap_out.expected_ranks,
-        ):
+        if failure is None and not _invocations_proven(swap_in, swap_out, slots):
             failure = (
                 "candidate execution not proven before screen promotion "
                 f"({swap_out.execution.prior_execution_ranks}/"
-                f"{swap_out.expected_ranks} ranks)"
+                f"{swap_out.expected_ranks} graph-covered ranks)"
+                + swap_out.execution.faults(require_capture=False)
             )
         closing = session.execute_batch(prompt_plan, canary=True)
         batch_indices.append(closing.batch_index)
@@ -415,11 +441,11 @@ class ResidentScreenLoop:
                     candidate_reads.append(_throughput(candidate_row_2))
                 swap_out_2 = session.swap(None)
                 receipts.append(swap_out_2)
-                if failure is None and not swap_out_2.execution.proves_execution(
-                    generation=swap_in_2.generation,
-                    expected_ranks=swap_out_2.expected_ranks,
-                ):
-                    failure = "escalation candidate execution not proven"
+                if failure is None and not _invocations_proven(swap_in_2, swap_out_2, slots):
+                    failure = (
+                        "escalation candidate execution not proven"
+                        + swap_out_2.execution.faults(require_capture=False)
+                    )
                 closing_2 = session.execute_batch(prompt_plan, canary=True)
                 batch_indices.append(closing_2.batch_index)
                 closing_throughput = _throughput(closing_2)

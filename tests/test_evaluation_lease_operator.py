@@ -672,8 +672,9 @@ def test_heartbeat_reopens_current_exact_lease_and_rejects_stale(
     assert operator.heartbeat(config, lease_id)["lease"]["expires_block"] == BLOCK + 7
 
 
-def test_release_requeues_without_attempt_and_increments_generation(
-    tmp_path: Path,
+@pytest.mark.parametrize("reason,status", [("worker_transport_unavailable", "held"), ("operator:verified_no_execution", "published")])
+def test_release_preserves_diagnostics_and_requires_review_before_reclaim(
+    tmp_path: Path, reason: str, status: str,
 ) -> None:
     database = _new_database(tmp_path)
     row = _published_rows(database, ("profile.release",))[0]
@@ -685,22 +686,25 @@ def test_release_requeues_without_attempt_and_increments_generation(
     operator.release(
         config,
         lease_id,
-        reason="worker_transport_unavailable",
+        reason=reason,
         result_digest=_h("infrastructure-diagnostic"),
     )
     with FinalizedIntakeStore(database, POLICY, scope=SCOPE) as store:
         retained = store.get(row.reservation_id)
-        assert (retained.status, retained.screen_attempts) == ("published", 0)
+        assert (retained.status, retained.screen_attempts) == (status, 0)
         assert store.active_evaluation_leases() == ()
         event = store.evaluation_lease_events(lease_id=lease_id)[-1]
         assert (event.event_type, event.reason) == (
             "released",
-            "worker_transport_unavailable",
+            reason,
         )
 
     reclaimed = operator.claim(config)["lease"]
-    assert reclaimed["generation"] == 2
-    assert reclaimed["members"][0]["reservation_id"] == row.reservation_id
+    if status == "held":
+        assert reclaimed is None
+    else:
+        assert reclaimed["generation"] == 2
+        assert reclaimed["members"][0]["reservation_id"] == row.reservation_id
 
 
 def test_qualification_cohort_uses_store_order_and_sealed_maximum(

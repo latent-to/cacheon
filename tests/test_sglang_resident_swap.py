@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import weakref
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -16,7 +17,8 @@ class _Layer:
         self._cacheon_moe_prepared_by_impl = {"a": object(), "b": object()}
 
 
-def _runtime(monkeypatch, tmp_path, *, rank=0, recapture_error=None, recapture_hook=None):
+def _runtime(monkeypatch, tmp_path, *, rank=0, recapture_error=None,
+             recapture_hook=None, prefill_error=None, prefill_hook=None):
     layer = _Layer()
     events = []
 
@@ -26,6 +28,17 @@ def _runtime(monkeypatch, tmp_path, *, rank=0, recapture_error=None, recapture_h
         def __init__(self):
             self.model = SimpleNamespace(modules=lambda: (layer,))
             self.decode_cuda_graph_runner = object()
+            self.prefill_cuda_graph_runner = object()
+
+        def init_prefill_cuda_graph(self):
+            events.append("prefill")
+            assert self.prefill_cuda_graph_runner is None
+            assert self.decode_cuda_graph_runner is None
+            if prefill_hook is not None:
+                prefill_hook()
+            if prefill_error is not None:
+                raise prefill_error
+            self.prefill_cuda_graph_runner = object()
 
         def init_decode_cuda_graph(self):
             events.append("recapture")
@@ -35,6 +48,7 @@ def _runtime(monkeypatch, tmp_path, *, rank=0, recapture_error=None, recapture_h
                 recapture_hook()
             if recapture_error is not None:
                 raise recapture_error
+            self.decode_cuda_graph_runner = object()
 
     runner = Runner()
 
@@ -88,7 +102,7 @@ def test_swap_evicts_prepared_weights_before_success_ack(monkeypatch, tmp_path, 
     ack = json.loads((tmp_path / f"ack.rank{rank}.json").read_text())
     assert not (tmp_path / "ack.rankunknown.json").exists()
     assert not hasattr(layer, "_cacheon_moe_prepared_by_impl")
-    assert events == ["sync", "gc", "empty", "recapture"]
+    assert events == ["sync", "gc", "empty", "prefill", "recapture"]
     assert ack["ok"] is True and ack["evicted_prepared_entries"] == 2
 
 
@@ -101,6 +115,79 @@ def test_recapture_error_is_returned_immediately_in_ack(monkeypatch, tmp_path):
     ack = json.loads((tmp_path / "ack.rank0.json").read_text())
     assert ack["ok"] is False
     assert ack["error"] == "recapture failed: CUDA out of memory"
+
+
+def test_prefill_recapture_failure_cannot_acknowledge_a_successful_swap(monkeypatch, tmp_path):
+    scheduler, _layer, events = _runtime(
+        monkeypatch, tmp_path, prefill_error=RuntimeError("prefill capture failed")
+    )
+    with pytest.raises(RuntimeError, match="prefill capture failed"):
+        scheduler.flush_cache()
+    ack = json.loads((tmp_path / "ack.rank0.json").read_text())
+    assert ack["ok"] is False
+    assert ack["error"] == "recapture failed: prefill capture failed"
+    assert "recapture" not in events
+
+
+@pytest.mark.parametrize("failure_phase", [None, "prefill", "decode"])
+def test_prior_pool_owner_lives_until_both_phases_finish(monkeypatch, tmp_path, failure_phase):
+    class GraphOwner:
+        backend = SimpleNamespace(_pool=object())
+
+    owner = GraphOwner()
+    reference = weakref.ref(owner)
+
+    def capture(phase):
+        assert reference() is not None, "reusing a retired pool crashes PyTorch 2.13"
+        if failure_phase == phase:
+            raise RuntimeError(f"{phase} failed")
+
+    scheduler, _layer, _events = _runtime(
+        monkeypatch, tmp_path,
+        prefill_hook=lambda: capture("prefill"),
+        recapture_hook=lambda: capture("decode"),
+    )
+    scheduler.tp_worker.model_runner.decode_cuda_graph_runner = owner
+    del owner
+    if failure_phase is None:
+        scheduler.flush_cache()
+    else:
+        with pytest.raises(RuntimeError, match=f"{failure_phase} failed"):
+            scheduler.flush_cache()
+    assert reference() is None, "old graphs must not survive the completed or failed swap"
+
+
+@pytest.mark.parametrize("slots", [
+    ["attention.indexer_select", "attention.sparse_mla"],
+    ["collective.all_gather_into_tensor", "collective.reduce_scatter_tensor"],
+])
+def test_both_graph_phases_follow_candidate_and_stock_generations(monkeypatch, tmp_path, slots):
+    import cacheon.seam as seam
+
+    active = None
+    captured = []
+    scheduler, _layer, _events = _runtime(
+        monkeypatch, tmp_path,
+        prefill_hook=lambda: captured.append(("prefill", active)),
+        recapture_hook=lambda: captured.append(("decode", active)),
+    )
+
+    def activate(bundle):
+        nonlocal active
+        active = bundle
+        return {"bundle": bundle or "", "slots": slots if bundle else []}
+
+    monkeypatch.setattr(seam, "swap_resident_bundle", activate)
+    for generation, bundle in enumerate(("candidate", None), start=1):
+        (tmp_path / "command.json").write_text(json.dumps({"generation": generation, "bundle": bundle}))
+        scheduler.flush_cache()
+        ack = json.loads((tmp_path / "ack.rank0.json").read_text())
+        assert ack["ok"] and ack["generation"] == generation
+        assert ack["slots"] == (slots if bundle else [])
+    assert captured == [("prefill", "candidate"), ("decode", "candidate"),
+                        ("prefill", None), ("decode", None)]
+    scheduler.flush_cache()
+    assert len(captured) == 4, "an unchanged generation must not recapture"
 
 
 def test_swap_without_a_pool_keeps_the_purge_and_says_so(monkeypatch, tmp_path):

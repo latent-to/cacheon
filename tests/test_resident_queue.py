@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from cacheon.eval.oci_outer_session import (
@@ -8,7 +10,11 @@ from cacheon.eval.oci_outer_session import (
 )
 from cacheon.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
-from cacheon.eval.resident_execution_evidence import ResidentExecutionEvidence
+from cacheon.eval.resident_execution_evidence import (
+    RankExecution, ResidentExecutionEvidence, SlotExecution,
+)
+from cacheon.arena_service import ScreenGrade
+from cacheon.eval.resident_screen_lane import _stage_grade
 from cacheon.eval.resident_queue import (
     ResidentQueueError,
     ResidentScreenLoop,
@@ -214,6 +220,59 @@ class TestScreenQueue:
         closing = verdict.to_dict()["swap_receipts"][1]
         assert closing["prior_execution_ranks"] == 0
         assert closing["expected_ranks"] == 1
+
+    @pytest.mark.parametrize("slots", [
+        ("attention.indexer_select", "attention.sparse_mla"),
+        ("collective.all_gather_into_tensor", "collective.reduce_scatter_tensor"),
+    ])
+    @pytest.mark.parametrize("fault", [
+        None, "never_called", "raised", "not_loaded", "wrong_generation",
+        "missing_rank", "wrong_slot",
+    ])
+    @pytest.mark.parametrize("candidate_rate", [80.0, 112.0])
+    def test_eager_candidate_calls_route_to_qualification(self, slots, fault, candidate_rate):
+        """Prefill work can execute eagerly while decode graphs remain stock."""
+        rank_rows = tuple(RankExecution(rank, True, slots=tuple(
+            SlotExecution(slot, 20, False) for slot in slots
+        )) for rank in range(4))
+        last = rank_rows[-1]
+        if fault == "never_called":
+            last = replace(last, slots=(replace(last.slots[0], calls=0,
+                skipped=("outside_domain on num_tokens, kv_len",)), *last.slots[1:]))
+        elif fault == "raised":
+            last = replace(last, slots=(replace(last.slots[0], error="RuntimeError: invalid input"), *last.slots[1:]))
+        elif fault == "not_loaded":
+            last = replace(last, loaded=False)
+        elif fault == "wrong_slot":
+            last = replace(last, slots=(SlotExecution("other.slot", 20, False),))
+        rank_rows = (*rank_rows[:-1], last)
+        if fault == "missing_rank":
+            rank_rows = rank_rows[:-1]
+
+        class EagerSession(FakeSession):
+            def swap(self, bundle_digest):
+                active = self.active is not None
+                receipt = super().swap(bundle_digest)
+                if not active:
+                    return receipt
+                generation = receipt.execution.prior_generation - (fault == "wrong_generation")
+                return replace(receipt, expected_ranks=4, execution=ResidentExecutionEvidence(
+                    generation, 0, rank_rows,
+                ))
+
+        session = EagerSession(100.0, {DIGEST_A: candidate_rate}, slots={DIGEST_A: slots})
+        [verdict] = _Screened(session, [ScreenCandidate("prefill", DIGEST_A, slots)],
+                              prompts=("p",)).verdicts
+        assert (verdict.failure is None) is (fault is None)
+        assert _stage_grade(verdict) is (ScreenGrade.PASS if fault is None else ScreenGrade.FAIL)
+        if fault == "never_called":
+            assert "outside_domain on num_tokens, kv_len" in verdict.failure
+        assert session.active is None
+        # Routing does not turn eager execution into proof of captured execution.
+        closing = verdict.swap_receipts[-1]
+        assert not closing.execution.proves_execution(
+            generation=closing.execution.prior_generation, expected_ranks=4,
+        )
 
     def test_canary_drift_stops_lifetime_and_withdraws_verdict(self) -> None:
         session = FakeSession(
