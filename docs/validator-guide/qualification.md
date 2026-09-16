@@ -311,7 +311,8 @@ The audit policy names the selected target's slots. A composed engine also runs
 the incumbent contributions; their audit receipts are excluded from the selected
 delta's grade, while execution coverage still requires every active slot on every rank.
 
-The eager audit preserves the charged workload's prompt batches and concurrency.
+The eager audit preserves the charged workload's prompt batches, concurrency,
+and per-batch input-token expectations, including mixed-length workloads.
 It runs one warmup batch, then every charged batch in order, cycling that sequence
 when needed to reach the required minimum number of checked batches. Generation
 length remains bounded by the audit policy. Reducing these batches to single

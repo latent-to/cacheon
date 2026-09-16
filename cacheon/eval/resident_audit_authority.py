@@ -55,14 +55,14 @@ def _same_except(left: object, right: object, allowed: frozenset[str]) -> bool:
     )
 
 
-def _audit_prompt_batches(
+def _audit_batch_indices(
     charged: SessionExecutionPlan, minimum_calls: int,
-) -> tuple[tuple[str, ...], ...]:
+) -> tuple[int, ...]:
     # Singleton audits missed UID215's DP collective: idle ranks selected a
     # different padding path. Keep every charged batch's real concurrency.
     batches = charged.prompt_batches
     checked = max(minimum_calls, len(batches))
-    return (batches[0],) + tuple(batches[i % len(batches)] for i in range(checked))
+    return (0,) + tuple(i % len(batches) for i in range(checked))
 
 
 def resident_audit_allocation_digest(
@@ -226,8 +226,17 @@ class ResidentAuditExecutionAuthority:
             or type(eager.audit_policy) is not SlotAuditPolicy
             or eager.warmup_count != 1
             or eager.conditioning_count != 1
-            or eager.prompt_batches != _audit_prompt_batches(
-                charged, eager.audit_policy.minimum_calls
+            or eager.prompt_batches != tuple(
+                charged.prompt_batches[i] for i in _audit_batch_indices(
+                    charged, eager.audit_policy.minimum_calls
+                )
+            )
+            or any(
+                eager.request_geometry(j)
+                != (eager.max_new_tokens, charged.request_geometry(i)[1])
+                for j, i in enumerate(_audit_batch_indices(
+                    charged, eager.audit_policy.minimum_calls
+                ))
             )
         ):
             raise ResidentAuditAuthorityError(
@@ -302,20 +311,23 @@ class ResidentAuditExecutionAuthority:
             launch_digest=eager_launch.digest,
             engine_config_digest=eager_config.digest,
         )
+        indices = _audit_batch_indices(charged_plan, audit_policy.minimum_calls)
         eager_plan = replace(
             charged_plan,
             launch_digest=eager_launch.digest,
             expected_engine_config_digest=eager_config.digest,
             engine_config=eager_config,
             expected_preflight=eager_preflight,
-            prompt_batches=_audit_prompt_batches(charged_plan, audit_policy.minimum_calls),
+            prompt_batches=tuple(charged_plan.prompt_batches[i] for i in indices),
             warmup_count=1,
             conditioning_count=1,
             max_new_tokens=max_new_tokens,
             top_logprobs_num=top_logprobs_num,
             audit_policy=audit_policy,
-            batch_max_new_tokens=(),
-            batch_expected_prompt_tokens=(),
+            batch_max_new_tokens=(max_new_tokens,) * len(indices),
+            batch_expected_prompt_tokens=tuple(
+                charged_plan.request_geometry(i)[1] for i in indices
+            ),
             measure_phase_latency=False,
         )
         allocation = resident_audit_allocation_digest(
