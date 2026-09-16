@@ -1,0 +1,13 @@
+{
+  "op": "collective.dp_output_projection_norm",
+  "architectures": ["sm103"],
+  "dtypes": ["bfloat16"],
+  "capabilities": {
+    "world_size": 4,
+    "tp_size": 4,
+    "num_tokens": {"min": 1, "max": 32},
+    "input_dim": 16384,
+    "hidden_dim": 6144
+  },
+  "notes": "Four-rank attention-DP output projection, residual-add, RMSNorm and optional NVFP4 preparation; uniform padded local rows 1..32, input width 16384 and hidden width 6144. Requires the registered Cacheon adapter on stock SGLang 0.5.18. Not yet qualified."
+}

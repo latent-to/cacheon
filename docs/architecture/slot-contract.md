@@ -61,7 +61,7 @@ The live catalog supports three kinds. Kind changes the breadth and capability o
 
 ## Current catalog
 
-The current API contains **13 slots**.
+The current API contains **14 slots**.
 
 | Slot | Kind | Entry point | Semantic boundary |
 |---|---|---|---|
@@ -71,6 +71,7 @@ The current API contains **13 slots**.
 | `collective.all_gather_into_tensor` | `collective` | `all_gather_into_tensor` | Equal-size all-gather into a validator-owned output |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |
 | `collective.ar_residual_rmsnorm` | `collective` | `ar_residual_rmsnorm` | Fused all-reduce, residual add, and RMSNorm |
+| `collective.dp_output_projection_norm` | `collective` | `prepare` + `project_gather_norm` | Attention-DP output projection, residual-add, RMSNorm, row gather and optional NVFP4 preparation |
 | `collective.reduce_scatter_tensor` | `collective` | `reduce_scatter_tensor` | Equal-size SUM reduce-scatter into a validator-owned output |
 | `linear.dense` | `block` | `prepare` + `dense` | Unquantized GEMM family, including FP32 gates and absorbed BMM; communication stays outside |
 | `moe.fused_experts` | `block` | `prepare` + `fused_experts` | Prepared MoE expert execution |
@@ -92,6 +93,28 @@ automation should import the typed catalog instead of scraping this page or the
 CLI output. Documentation should not be used to bypass catalog resolution.
 
 ## Typed call shape
+
+The DP output-preparation slot accepts rank-local attention output and residual
+rows, a replicated projection weight, normalization parameters, and an optional
+scalar NVFP4 quantization factor. Its four outputs are rank-ordered replicated
+normalized rows, the caller's updated residual rows, packed FP4 bytes, and linear
+16-value block scales. The last two outputs are empty when quantization is absent.
+Projection and residual addition each retain a BF16 rounding point. The reference
+computes the full projection in FP64 and performs a trusted row gather; a bundle
+may instead distribute the projection columns internally.
+
+Its SGLang adapter defers only the bound post-attention projection until the
+communicator supplies the residual. The selected collective owns that complete
+invocation; dense, normalization and exchange adapters retain their other callsites.
+The router and shared expert consume the BF16 result. Routed experts may receive
+the FP4 output through SGLang's existing pre-quantized dispatch interface. Expert
+execution, routing, the trailing MoE reduce-scatter and sampling remain outside
+this slot. The adapter uses stock SGLang 0.5.18 source; the Cacheon revision and
+commissioned target set identify whether this additional interface is available.
+
+Adding this catalog entry does not commission it in an existing arena. A deployment
+must publish its new runtime and target identities explicitly; an old arena's
+sealed identities and historical qualifications remain attached to that old runtime.
 
 `SlotSpec` binds every semantic detail needed by both verifier and live dispatch:
 

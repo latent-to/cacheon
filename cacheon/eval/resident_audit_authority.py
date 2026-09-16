@@ -55,6 +55,16 @@ def _same_except(left: object, right: object, allowed: frozenset[str]) -> bool:
     )
 
 
+def _audit_prompt_batches(
+    charged: SessionExecutionPlan, minimum_calls: int,
+) -> tuple[tuple[str, ...], ...]:
+    # Singleton audits missed UID215's DP collective: idle ranks selected a
+    # different padding path. Keep every charged batch's real concurrency.
+    batches = charged.prompt_batches
+    checked = max(minimum_calls, len(batches))
+    return (batches[0],) + tuple(batches[i % len(batches)] for i in range(checked))
+
+
 def resident_audit_allocation_digest(
     binding: TrustedLaunchBinding,
     *,
@@ -216,9 +226,9 @@ class ResidentAuditExecutionAuthority:
             or type(eager.audit_policy) is not SlotAuditPolicy
             or eager.warmup_count != 1
             or eager.conditioning_count != 1
-            or len(eager.prompt_batches) != eager.audit_policy.minimum_calls + 1
-            or any(len(batch) != 1 for batch in eager.prompt_batches)
-            or len({batch[0] for batch in eager.prompt_batches}) != 1
+            or eager.prompt_batches != _audit_prompt_batches(
+                charged, eager.audit_policy.minimum_calls
+            )
         ):
             raise ResidentAuditAuthorityError(
                 "resident audit plan is not one exact eager audit role"
@@ -273,7 +283,6 @@ class ResidentAuditExecutionAuthority:
         charged_plan: SessionExecutionPlan,
         *,
         audit_policy: SlotAuditPolicy,
-        prompt_batches: tuple[tuple[str, ...], ...],
         max_new_tokens: int,
         top_logprobs_num: int,
         executor_namespace_digest: str,
@@ -299,7 +308,7 @@ class ResidentAuditExecutionAuthority:
             expected_engine_config_digest=eager_config.digest,
             engine_config=eager_config,
             expected_preflight=eager_preflight,
-            prompt_batches=prompt_batches,
+            prompt_batches=_audit_prompt_batches(charged_plan, audit_policy.minimum_calls),
             warmup_count=1,
             conditioning_count=1,
             max_new_tokens=max_new_tokens,

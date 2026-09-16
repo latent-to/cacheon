@@ -32,6 +32,26 @@ NORM = "norm.rmsnorm"
 ALLREDUCE = "collective.all_reduce"
 
 
+def test_projection_transition_preserves_incumbents_at_other_callsites():
+    catalog = default_target_catalog()
+    target = "collective.dp_output_projection_norm"
+    retained = ("collective.dp_attention_exchange.v1", "linear.dense", "norm.fused_add_rmsnorm")
+    entries = {name: _ref(catalog, name, name) for name in (*retained, ROUTED)}
+    incumbent = _stack(catalog, entries)
+    arm = _plan(incumbent, _ref(catalog, target, "projection"), catalog,
+                _context(catalog, (*entries, target)))
+    assert set(arm.candidate.entries) == {*entries, target}
+    assert not arm.transition.displaced
+    assert all(arm.candidate.entries[name] == entry for name, entry in entries.items())
+    assert incumbent.entries == entries
+    assert arm.baseline_before.stack_digest == arm.baseline_after.stack_digest == incumbent.digest
+    for name in retained:
+        next_arm = _plan(arm.candidate, _ref(catalog, name, "replacement"), catalog,
+                         _context(catalog, (*entries, target)))
+        assert next_arm.candidate.entries[target] == arm.candidate.entries[target]
+        assert not next_arm.transition.displaced
+
+
 def _h(label: str) -> str:
     return sha256_hex(label.encode())
 

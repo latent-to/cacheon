@@ -660,11 +660,10 @@ def _compose_locked(
         max_qualification_seconds=speed_block["max_qualification_seconds"],
         calibration=calibration_manifest,
         context=calibration_context,
-        # Versions 10/11 retain B/C/B-prime and require valid stock brackets;
-        # version 12 appends the prefill pass to the mixed-cell rule. The
-        # registered plan seals the same choice per candidate, so the worker
-        # never re-derives a substrate.
-        version=12 if prefill_lane is not None else 11 if mixed_cells else 10,
+        # New commissions seal one bounded borderline repeat: v13 single-cell,
+        # v14 mixed-cell, or v15 with the prefill pass. Existing evidence keeps
+        # its original version and arithmetic.
+        version=15 if prefill_lane is not None else 14 if mixed_cells else 13,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),

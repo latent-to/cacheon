@@ -887,6 +887,7 @@ SINGLETON_TARGET_IDS = (
     "collective.ar_residual_rmsnorm", "collective.reduce_scatter_tensor",
     "linear.dense", "moe.fused_experts", "moe.fused_experts_reduce",
     "moe.fused_routed_experts", "norm.fused_add_rmsnorm", "norm.rmsnorm",
+    "collective.dp_output_projection_norm",
 )
 
 DP_ATTENTION_EXCHANGE_TARGET = "collective.dp_attention_exchange.v1"
@@ -898,11 +899,12 @@ SPARSE_ATTENTION_TARGET = "attention.sparse_mla.v1"
 SPARSE_ATTENTION_MEMBERS = ("attention.indexer_select", "attention.sparse_mla")
 
 
-_SINGLETON_CONTRACTS = _singleton_contracts()
-
-
 @lru_cache(maxsize=1)
 def default_target_catalog() -> TargetCatalog:
+    contracts = _singleton_contracts()
+    # DP output replaces one post-attention region, not later reduce-scatter,
+    # other dense calls or input norms. Evicting their entire contributions
+    # removed working optimizations in the 2026-09-16 mainnet candidate.
     displacements = {
         "collective.ar_residual_rmsnorm": frozenset(
             {
@@ -918,20 +920,18 @@ def default_target_catalog() -> TargetCatalog:
         "moe.fused_experts_reduce": frozenset({"moe.fused_routed_experts"}),
         "moe.fused_routed_experts": frozenset({"moe.fused_experts_reduce"}),
     }
-    specs: list[TargetSpec] = []
-    for target_id in SINGLETON_TARGET_IDS:
-        features = _STANDARD_COMPONENT_FEATURES
-        specs.append(
-            TargetSpec(
-                target_id=target_id,
-                kind=TargetKind.SLOT,
-                members=(target_id,),
-                displaces=displacements.get(target_id, frozenset()),
-                conflicts_with=conflicts.get(target_id, frozenset()),
-                allowed_features=features,
-                contract_ref=_SINGLETON_CONTRACTS[target_id],
-            )
+    specs = [
+        TargetSpec(
+            target_id=target_id,
+            kind=TargetKind.SLOT,
+            members=(target_id,),
+            displaces=displacements.get(target_id, frozenset()),
+            conflicts_with=conflicts.get(target_id, frozenset()),
+            allowed_features=_STANDARD_COMPONENT_FEATURES,
+            contract_ref=contracts[target_id],
         )
+        for target_id in SINGLETON_TARGET_IDS
+    ]
     for target, members in ((DP_ATTENTION_EXCHANGE_TARGET, DP_ATTENTION_EXCHANGE_MEMBERS),
                             (SPARSE_ATTENTION_TARGET, SPARSE_ATTENTION_MEMBERS)):
         specs.append(TargetSpec(

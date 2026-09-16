@@ -774,11 +774,11 @@ class ResidentSpeedWitness:
 
     def always_bookend_result(self) -> tuple[QualificationDecision, str, str | None]:
         """Grade the precommitted schedule: B, C and B-prime, read unconditionally,
-        plus the version-12 prefill pass when the policy carries one.
+        plus prefill and a bounded repeat when the sealed policy allows them.
 
         Version 8 precommits the third read (the quality gate takes its
-        stock-drift control from the second baseline read), so there is no
-        adaptive shape to assert: one grade over the whole schedule terminates.
+        stock-drift control from the second baseline read). New versions also
+        verify that the initial round authorized any retained repeat.
         The settled speedup is the decode speedup unless the prefill lane
         admitted the candidate, in which case it is the credited prefill gain.
         """

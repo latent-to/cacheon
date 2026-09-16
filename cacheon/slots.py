@@ -35,6 +35,7 @@ from cacheon.norm_contract import (
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 from cacheon.sparse_mla_contract import slot_spec as _sparse_mla_slot
 from cacheon.indexer_select_contract import slot_spec as _indexer_select_slot
+from cacheon.dp_output_projection_contract import slot_spec as _dp_output_slot
 
 @dataclass(frozen=True)
 class Tolerance:
@@ -827,9 +828,11 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 
 SPARSE_MLA = _sparse_mla_slot()
 INDEXER_SELECT = _indexer_select_slot()
+DP_OUTPUT_PROJECTION = _dp_output_slot()
 
 
 SLOTS: dict[str, SlotSpec] = {
+    DP_OUTPUT_PROJECTION.name: DP_OUTPUT_PROJECTION,
     INDEXER_SELECT.name: INDEXER_SELECT,
     SPARSE_MLA.name: SPARSE_MLA,
     SILU_AND_MUL.name: SILU_AND_MUL,

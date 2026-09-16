@@ -11,27 +11,19 @@ alike. It refused every version-6 policy outright between 2026-08-15
 (87944430) and the version-8 change, so those bundles screened clean and then
 never received a speed verdict at all.
 
-Its schedule is version 8 (version 9 for a mixed-cell workload): B, C and
-B-prime, always, and nothing beyond them. Policies below version 8 are refused
-here and their evidence is refused at construction; the adaptive five-read
-escalation and the conditional bookend left with the MiniMax-M3 history seal.
-
-B-prime is precommitted rather than earned by a close call. The reason is the
-quality gate, not the speed gate: `reference_quality.stock_drift_upper_bound`
-harvests its stock-drift control from the second baseline read, and it is the
-only consumer of that read -- the candidate-versus-baseline comparison discards
-it. Reading it unconditionally also keeps the anti-reroll property: a read
-taken regardless of the outcome cannot be a read taken because of it.
+Policies v8-v12 retain their original one-round schedules. New commissions use
+v13-v15: one complete round, with one additional complete round only when valid
+measurements cross the acceptance boundary. Both rounds stay in the same sealed
+sessions; the conservative paired ratios combine with equal log weight.
+B-prime is always measured, including for a clear first-round PASS, because
+reference quality consumes its stock-drift control.
 """
 
 from __future__ import annotations
 
-import concurrent.futures
 import math
 import statistics
-import time
 from dataclasses import dataclass
-from typing import Callable
 
 from cacheon.eval.resident_measurement import (
     CrossoverRuntimeError, ResidentReadRate, TimedWindow as TimedWindow, _timed_windows,
@@ -40,27 +32,24 @@ from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
 from cacheon.eval.oci_backend import (
     EngineExecutionEvidence,
     OCIEngineExecutor,
-    TrustedArenaModelMountReceipt,
 )
 from cacheon.eval.oci_outer_session import (
     BatchExecutionEvidence,
-    OpenedOuterSession,
     SessionExecutionEvidence,
     SessionExecutionPlan,
 )
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.resident_schedule import (
-    ReadSchedule,
-    ScheduleGrade,
-    expanded_schedule,
+    planned_schedule,
+    run_resident_crossover_speed,
     grade_schedule,
-    read_rate,
     _rate_from_batches,
 )
 from cacheon.eval.scoring import SpeedupVerdict, marginal_workload_digest
 from cacheon.eval.speed_verdict import (
     DECODE_ROLES,
-    PREFILL_LANE_ROLES,
+    resident_speed_roles,
+    schedule_roles,
     SpeedStageDecision,
 )
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
@@ -87,7 +76,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (8, 9, 10, 11, 12)
+            or self.version not in (8, 9, 10, 11, 12, 13, 14, 15)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -131,7 +120,7 @@ class ResidentSpeedPolicy:
             raise CrossoverRuntimeError(
                 "resident speed policy requires a conditioning slowdown bound in (1, 2]"
             )
-        if self.version >= 12:
+        if self.version in (12, 15):
             # The prefill lane admits at a sealed margin and settles at a
             # sealed fraction of the prefill gain; neither is derived from a
             # read, so a noisy box cannot widen its own admission.
@@ -201,7 +190,7 @@ class ResidentSpeedPolicy:
         """
 
         self.read_window_scatter(row)
-        if self.version in (9, 11, 12):
+        if self.version in (9, 11, 12, 14, 15):
             # Mixed-cell qualification deliberately contains heterogeneous
             # batch widths and output budgets. A median of per-batch rates
             # would erase the minority cell; total timed tokens over the
@@ -218,13 +207,15 @@ class ResidentSpeedPolicy:
                 # The sealed identity states the schedule it was measured under.
                 # Version 8 reads the bookend unconditionally, so it must not
                 # claim the conditional read order that versions 6 and 7 seal.
-                "borderline_band": "invariant_over_reads_taken",
+                "borderline_band": ("valid_threshold_crossing_one_repeat"
+                                    if self.version >= 13 else "invariant_over_reads_taken"),
                 "read_order": (
-                    list(PREFILL_LANE_ROLES)
-                    if self.version >= 12
-                    else list(DECODE_ROLES)
+                    list(schedule_roles(self.version, repeat=self.version >= 13))
                 ),
                 "timing": "serialized_resident_host_time",
+                **({"repeat_aggregation": "equal_log_weight_faster_bracket",
+                    "repeat_limit": 1, "repeat_exhausted": "speed_threshold_not_met"}
+                   if self.version >= 13 else {}),
             },
         )
 
@@ -242,7 +233,7 @@ class ResidentSpeedPolicy:
             "max_window_scatter": format(self.max_window_scatter, ".17g"),
             "min_windows": self.min_windows,
         }
-        if self.version >= 12:
+        if self.version in (12, 15):
             row["prefill_credit_weight"] = format(self.prefill_credit_weight, ".17g")
             row["prefill_min_margin"] = format(self.prefill_min_margin, ".17g")
         return row
@@ -267,7 +258,7 @@ class ResidentSpeedPolicy:
             or type(value.get("version")) is not int
         ):
             raise CrossoverRuntimeError("resident speed policy fields differ")
-        if value["version"] >= 12:
+        if value["version"] in (12, 15):
             fields |= {"prefill_credit_weight", "prefill_min_margin"}
         if set(value) != fields:
             raise CrossoverRuntimeError("resident speed policy fields differ")
@@ -364,6 +355,7 @@ class ResidentSpeedPolicy:
             prefill_min_margin=policy.prefill_min_margin,
             prefill_credit_weight=policy.prefill_credit_weight,
         )
+
 
 
 @dataclass(frozen=True)
@@ -584,10 +576,9 @@ def _validate_resident_execution(
     execution: EngineExecutionEvidence,
     arm: ResidentArmPlan,
     *,
-    reads: int,
-    prefill_reads: int = 0,
+    roles: tuple[str, ...],
 ) -> None:
-    plan = expanded_schedule(arm.session_plan, reads, prefill_reads=prefill_reads)
+    plan = planned_schedule(arm.session_plan, roles)
     session = execution.session
     if (
         execution.schema != "cacheon.oci-resident-engine-execution.v1"
@@ -702,10 +693,9 @@ class ResidentCrossoverEvidence:
             raise CrossoverRuntimeError(
                 "resident crossover evidence below version 8 is sealed history"
             )
-        # The precommitted reads, always. Escalation is unreachable, so
-        # evidence that claims it is malformed rather than merely unusual.
-        roles = PREFILL_LANE_ROLES if version >= 12 else DECODE_ROLES
-        schedule_valid = self.escalated is False
+        # Only the new policy versions may retain one complete repeated round.
+        roles = resident_speed_roles(version, len(self.rates))
+        schedule_valid = self.escalated is (version >= 13 and len(self.rates) > len(schedule_roles(version)))
         for field in (
             "plan_digest",
             "selected_delta_digest",
@@ -786,21 +776,18 @@ class ResidentCrossoverEvidence:
             ("C", self.candidate_execution, plan.candidate),
         ):
             rows = tuple(row for row in self.rates if row.role.startswith(prefix))
-            decode = sum(not row.role.endswith("_prefill") for row in rows)
             _validate_resident_execution(
-                execution, arm, reads=decode, prefill_reads=len(rows) - decode
+                execution, arm, roles=tuple(row.role for row in rows)
             )
             block = len(arm.session_plan.prompt_batches)
             if tuple(row.first_batch_index for row in rows) != tuple(
                 range(0, block * len(rows), block)
             ) or any(_recomputed_rate(row, execution, arm) != row for row in rows):
                 raise CrossoverRuntimeError("resident rate spans do not independently regrade")
-        # One grade over the whole precommitted schedule. There is no
-        # adaptive read-shape assertion to make: the reads are not a
-        # response to the result, they are the result's entire evidence.
+        # The shared grader also verifies that the first round authorized a repeat.
         grade = grade_schedule(plan.policy, self.rates)
         if (
-            self.initial_verdict != grade.verdict
+            self.initial_verdict != grade_schedule(plan.policy, self.rates[:len(schedule_roles(plan.policy.version))]).verdict
             or self.final_verdict != grade.verdict
             or self.decision is not grade.decision
         ):
@@ -931,157 +918,6 @@ class ResidentMarginalLifecycleEvidence:
         ]
 
 
-def run_resident_crossover_speed(
-    plan: ResidentCrossoverPlan,
-    *,
-    baseline_executor: OCIEngineExecutor,
-    candidate_executor: OCIEngineExecutor,
-    model_mount: TrustedArenaModelMountReceipt,
-    deadline: float,
-    clock: Callable[[], float] = time.monotonic,
-) -> ResidentCrossoverEvidence:
-    """Run the exact production/testnet speed scheduler for one candidate."""
-
-    if (
-        type(plan) is not ResidentCrossoverPlan
-        or type(baseline_executor) is not OCIEngineExecutor
-        or type(candidate_executor) is not OCIEngineExecutor
-        or baseline_executor is candidate_executor
-        or type(model_mount) is not TrustedArenaModelMountReceipt
-    ):
-        raise CrossoverRuntimeError("resident crossover authorities are not exact")
-    started = float(clock())
-    thresholds = (deadline, started)
-    if any(
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        for value in thresholds
-    ):
-        raise CrossoverRuntimeError("resident crossover thresholds are invalid")
-    stage_deadline = min(float(deadline), started + plan.policy.max_stage_seconds)
-    if stage_deadline <= started:
-        raise CrossoverRuntimeError("resident speed stage has no wall-clock budget")
-    baseline_lane = _lane_digest(baseline_executor, plan.baseline)
-    candidate_lane = _lane_digest(candidate_executor, plan.candidate)
-    if baseline_lane == candidate_lane:
-        raise CrossoverRuntimeError("resident executors reused one lane namespace")
-    # Version 8 reads B and B-prime on the baseline lane and exactly one C on
-    # the candidate lane. Version 12 then repeats each lane's reads as
-    # one-token prefill passes, after the decode schedule is complete.
-    prefill = 1 if plan.policy.version >= 12 else 0
-    baseline_plan = expanded_schedule(
-        plan.baseline.session_plan, 2, prefill_reads=2 * prefill
-    )
-    candidate_plan = expanded_schedule(
-        plan.candidate.session_plan, 1, prefill_reads=prefill
-    )
-    schedule = ReadSchedule()
-    roles = PREFILL_LANE_ROLES if prefill else DECODE_ROLES
-
-    def driver(prefix, peer, arm, lane):
-        def run(controller: OpenedOuterSession) -> SessionExecutionEvidence:
-            try:
-                schedule.put(prefix + "_ready")
-                schedule.get(peer + "_ready", deadline=stage_deadline, clock=clock)
-                for index, role in enumerate(roles):
-                    if not role.startswith(prefix):
-                        continue
-                    if index:
-                        schedule.get(roles[index - 1], deadline=stage_deadline, clock=clock)
-                    schedule.put(role, read_rate(role, lane, controller, arm.session_plan))
-                if prefix == "B":
-                    # Conditioning compares C against B, their matching cold reads;
-                    # a regression fails even when timed candidate work is faster.
-                    schedule.put("grade", grade_schedule(
-                        plan.policy, tuple(schedule.values[role] for role in roles)))
-                else:
-                    # Stay resident until the baseline finishes: CUDA teardown
-                    # while B-prime is charging would contaminate its timing.
-                    schedule.get("grade", deadline=stage_deadline, clock=clock)
-                return controller.finish(require_all=False)
-            except BaseException as exc:
-                schedule.fail(exc)
-                raise
-        return run
-
-    def execute(executor, arm, expanded_plan, driver):
-        try:
-            return executor.execute_opened(
-                arm.launch,
-                arm.binding,
-                model_mount,
-                expanded_plan,
-                deadline=stage_deadline,
-                driver=driver,
-            )
-        except BaseException as exc:
-            schedule.fail(exc)
-            raise
-
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=2, thread_name_prefix="cacheon-resident"
-    ) as pool:
-        futures = (
-            pool.submit(
-                execute,
-                baseline_executor,
-                plan.baseline,
-                baseline_plan,
-                driver("B", "C", plan.baseline, baseline_lane),
-            ),
-            pool.submit(
-                execute,
-                candidate_executor,
-                plan.candidate,
-                candidate_plan,
-                driver("C", "B", plan.candidate, candidate_lane),
-            ),
-        )
-        executions: list[EngineExecutionEvidence] = []
-        errors: list[BaseException] = []
-        for future in futures:
-            try:
-                executions.append(future.result())
-            except BaseException as exc:
-                errors.append(exc)
-    if errors:
-        raise schedule.failure or errors[0]
-    if len(executions) != 2 or any(
-        type(row) is not EngineExecutionEvidence for row in executions
-    ):
-        raise CrossoverRuntimeError("resident speed returned incomplete evidence")
-    grade = schedule.values["grade"]
-    if type(grade) is not ScheduleGrade:
-        raise CrossoverRuntimeError("resident speed grade is incomplete")
-    rates = tuple(schedule.values[role] for role in roles)
-    if any(type(row) is not ResidentReadRate for row in rates):
-        raise CrossoverRuntimeError("resident speed rates are incomplete")
-    baseline_quiescence = baseline_executor.prove_quiescent()
-    candidate_quiescence = candidate_executor.prove_quiescent()
-    completed = float(clock())
-    evidence = ResidentCrossoverEvidence(
-        plan.digest,
-        plan.selected_delta_digest,
-        plan.policy,
-        marginal_workload_digest(plan.baseline.session_plan),
-        baseline_lane,
-        candidate_lane,
-        executions[0],
-        executions[1],
-        baseline_quiescence,
-        candidate_quiescence,
-        rates,  # type: ignore[arg-type]
-        grade.verdict,
-        grade.verdict,
-        False,
-        grade.decision,
-        "clear_" + grade.decision.value.lower(),
-        started,
-        completed,
-    )
-    evidence.regrade(plan)
-    return evidence
 
 
 __all__ = [

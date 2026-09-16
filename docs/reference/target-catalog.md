@@ -25,7 +25,7 @@ integration, and releases; a target ID alone cannot reopen authority.
 
 ## Registered targets
 
-The `target-catalog.v2` policy contains 13 singleton contract identities and two
+The `target-catalog.v2` policy contains 14 singleton contract identities and two
 atomic targets. GLM opens family targets, not every internal member identity:
 
 | Target | Kind | Members / effect |

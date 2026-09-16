@@ -20,7 +20,7 @@ The authoritative sources are
 
 ## Current slot catalog
 
-There are 13 semantic slots. `entry` below means the callable named by your
+There are 14 semantic slots. `entry` below means the callable named by your
 manifest; it does not require the Python function itself to be named `entry`.
 
 | Slot | Kind | Required call boundary | What the validator retains |
@@ -31,6 +31,7 @@ manifest; it does not require the Python function itself to be named `entry`.
 | `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | rank-ordered gathered tensor |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | sum across the supplied process group |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | reduced residual and normalized output |
+| `collective.dp_output_projection_norm` | collective | `prepare(weight, gamma, eps, quant_scale)` plus `entry(x, residual, prepared, normalized, local_residual, fp4, scales, group)` | rank-ordered normalized rows, local updated residual and optional NVFP4 bytes/scales |
 | `collective.reduce_scatter_tensor` | collective | `entry(x, out, group)` | this rank's SUM-reduced shard |
 | `linear.dense` | block | `prepare(weight)` plus `entry(x, prepared, out)` | ordinary GEMM, FP32 gate projection and strided absorbed BMM; communication stays outside |
 | `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
@@ -47,6 +48,24 @@ The GLM-5.3 source profiles cover six family targets: `moe.fused_routed_experts`
 The last target requires both `attention.indexer_select` and `attention.sparse_mla`.
 An existing commissioned arena's five-target set does not change until the
 widened families pass runtime acceptance and a new commission seals them.
+
+`collective.dp_output_projection_norm` has a stock-SGLang 0.5.18 adapter and a
+source bundle in this checkout, but is not included in those source profiles or
+existing commissions. Its bundle requires serving acceptance and an explicit new
+runtime/commission identity before an arena can accept submissions to it.
+Eligible decode calls use the same selection path during eager qualification
+audits and CUDA graph capture; selection is not limited to capture itself.
+Matching empty optional outputs pass the live audit, as they do offline verification;
+nonempty outputs retain their registered numerical tolerances.
+The live projection audit uses SGLang's original per-rank token counts to compare
+real rows. Padding on idle ranks is excluded from comparison; computation and
+returned buffers are unchanged. Entirely idle calls and SGLang's synthetic
+autotuning batches without scheduler counts supply no audit coverage.
+The fused target displaces `linear.dense`, `norm.fused_add_rmsnorm` and
+`collective.dp_attention_exchange.v1` in its candidate arm. The ordinary stack
+planner preserves those incumbents in both baseline arms and uses stock serving
+outside the candidate's fused region. Overlapping incumbents cannot remain
+active merely to claim coverage from CUDA graph warmup.
 
 Small operations belong to these families; there are no standalone GLM lanes
 for score computation, top-k, plain RMSNorm, FP32 gates, BMM or cache writes.
@@ -91,7 +110,7 @@ See [Kernel ABI](kernel-abi.md) for tensor semantics and
 ## Singleton targets
 
 The current default target catalog registers one singleton target for each of
-the 13 slots. Its target ID is the slot ID. A normal proposal therefore names
+the 14 slots. Its target ID is the slot ID. A normal proposal therefore names
 the slot target explicitly:
 
 ```toml

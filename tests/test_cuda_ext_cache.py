@@ -647,6 +647,21 @@ def test_nvcc_architecture_uses_only_supported_arch_specific_suffixes():
     assert mod._nvcc_architecture("sm120") == "sm_120a"
 
 
+@pytest.mark.parametrize("architecture", ["sm80", "sm90", "sm103", "sm120"])
+def test_compile_emits_only_the_selected_architecture(tmp_path, monkeypatch, architecture):
+    mod = _patcher()
+    context = _context(mod, tmp_path)
+    real = context["nvcc_architecture"] = mod._nvcc_architecture(architecture)
+    commands = []
+    monkeypatch.setattr(mod.subprocess, "run", lambda command, **kwargs: commands.append(command))
+    mod._compile(bundle=tmp_path, source="kernel.cu", output=tmp_path / "native.so",
+                 depfile=tmp_path / "deps.d", module_name="native", context=context, env={})
+    command, = commands
+    assert [arg for arg in command if arg.startswith("-arch=")] == [
+        f"-arch={real.replace('sm_', 'compute_', 1)}"]
+    assert [arg for arg in command if arg.startswith("-code=")] == [f"-code={real}"]
+
+
 def test_build_rejects_dependency_outside_tree_and_pinned_image_roots(
     tmp_path, monkeypatch, fake_build
 ):

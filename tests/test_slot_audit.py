@@ -71,6 +71,20 @@ def test_record_faithful_no_violation(monkeypatch):
     assert s["n"] == 1 and s["violations"] == 0 and s["worst_frac"] == 1.0
 
 
+@pytest.mark.parametrize("slot", [SLOT, "collective.dp_output_projection_norm"])
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_empty_optional_outputs_preserve_nonempty_audit(slot, corrupt):
+    expected = torch.ones(4, 8)
+    actual = expected + 10 if corrupt else expected.clone()
+    absent = torch.empty(0, dtype=torch.uint8)
+    audit.record(slot, (actual, absent), (expected, absent.clone()))
+    stats = audit._stats[slot]
+    assert stats["n"] == 1
+    assert stats["compare_errors"] == 0
+    assert stats["violations"] == int(corrupt)
+    assert stats["worst_frac"] == (0.0 if corrupt else 1.0)
+
+
 def test_record_garbage_is_violation(monkeypatch):
     _arm(monkeypatch)
     x = torch.randn(8, 64)

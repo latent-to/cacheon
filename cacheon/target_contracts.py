@@ -54,6 +54,18 @@ def singleton_contracts() -> dict:
 
 
     return {
+        "collective.dp_output_projection_norm": _contract_ref(
+            "collective.dp_output_projection_norm", kind="collective",
+            entry="project_gather_norm", prepare="prepare",
+            graph_dynamic_inputs=("x", "residual"),
+            input_abi_id="collective.dp-output-projection-norm.input.v1",
+            output_abi_id="collective.dp-output-projection-norm.bf16-nvfp4.output.v1",
+            reference_id="collective.dp-output-projection-norm.fp64.reference.v1",
+            verification_profile_id="collective.dp-output-projection-norm.verify.v1",
+            binding_family_id="sglang.collective.dp-output-projection-norm.v1",
+            correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
+            tolerances=(ToleranceContractRef("bfloat16", "0.02", "0.02"),),
+        ),
         "attention.indexer_select": _contract_ref(
             "attention.indexer_select", kind="block", entry="indexer_select", prepare=None,
             graph_dynamic_inputs=("q", "key_pages", "key_scales", "weights", "page_table", "row_to_batch", "lengths", "page_offsets", "positions", "cos_sin_cache"),

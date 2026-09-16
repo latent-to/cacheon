@@ -661,7 +661,9 @@ def _compile(
     command = [
         str(nvcc["path"]),
         *_COMPILE_FLAGS,
-        f"-arch={context['nvcc_architecture']}",
+        # The real-arch shorthand also emits generic PTX, which rejects FP4 instructions.
+        f"-arch={str(context['nvcc_architecture']).replace('sm_', 'compute_', 1)}",
+        f"-code={context['nvcc_architecture']}",
         "-MD",
         "-MF",
         str(depfile),

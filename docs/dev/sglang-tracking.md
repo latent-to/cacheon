@@ -100,14 +100,12 @@ python -m cacheon.cli chain-compat
 This separation prevents an unrelated chain SDK change from being confused
 with an Engine runtime change.
 
-## Scheduled release and seam check
+## Release and seam check
 
 The repository ships
-[`scripts/check_sglang.py`](https://github.com/latent-to/cacheon/blob/main/scripts/check_sglang.py)
-and the
-[`sglang-canary` workflow](https://github.com/latent-to/cacheon/blob/main/.github/workflows/sglang-canary.yml).
-GitHub Actions runs it every Monday at 09:00 UTC and also permits a manual
-`workflow_dispatch`.
+[`scripts/check_sglang.py`](https://github.com/latent-to/cacheon/blob/main/scripts/check_sglang.py).
+This private development repository has no inherited GitHub Actions workflows;
+run the check locally in the intended environment.
 
 The script deliberately separates notification from compatibility failure:
 
@@ -116,12 +114,10 @@ The script deliberately separates notification from compatibility failure:
 - an installed SGLang version that differs from `PINNED_SGLANG`, or a failed registered
   seam/API check, exits nonzero;
 - when SGLang cannot be imported, the PyPI release check still runs but seam coverage is
-  skipped, so the CPU workflow does not claim compatibility evidence it could not
+  skipped, so the check does not claim compatibility evidence it could not
   produce.
 
-The workflow attempts to install the pin on its CPU runner, but treats installation
-failure as best effort so the release check still runs. Full seam coverage must run in
-an environment where the pinned package and its required optional dependencies are
+Full seam coverage must run in an environment where the pinned package and its required optional dependencies are
 importable. Behavioral GPU/model proof remains a separate step.
 
 Run the same check locally from an installed checkout:
@@ -130,7 +126,7 @@ Run the same check locally from an installed checkout:
 python scripts/check_sglang.py
 ```
 
-An operator without GitHub Actions can schedule the command directly, for example:
+An operator can schedule the command directly, for example:
 
 ```cron
 0 9 * * 1 cd /path/to/cacheon && .venv/bin/python scripts/check_sglang.py

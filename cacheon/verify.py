@@ -48,6 +48,8 @@ def _compare(
 ) -> tuple[bool, float, float, float, str, str]:
     if actual.shape != expected.shape:
         return False, float("inf"), float("inf"), 0.0, f"shape mismatch {tuple(actual.shape)} vs {tuple(expected.shape)}", "ratio"
+    if actual.numel() == 0:
+        return True, 0.0, 0.0, 1.0, "", "ratio"
     if correctness.mode == "topk_overlap" and not actual.dtype.is_floating_point:
         score, detail = selection_overlap(actual, expected, bounds=bounds)
         if not detail and score < correctness.min_overlap:

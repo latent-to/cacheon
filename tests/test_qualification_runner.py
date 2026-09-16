@@ -1792,15 +1792,11 @@ def _typed_resident_qualification_input(
         (requirement.binding.members[0].slot_id,),
         prepared.baseline_session_plan.engine_config.tp_size,
     )
-    audit_prompt = candidate.session_plan.prompt_batches[0][0]
     resident_audit_plan = runner.ResidentAuditExecutionAuthority.derive(
         candidate.launch,
         candidate.binding.launch_binding,
         candidate.session_plan,
         audit_policy=audit_policy,
-        prompt_batches=tuple(
-            (audit_prompt,) for _ in range(audit_policy.minimum_calls + 1)
-        ),
         max_new_tokens=2,
         top_logprobs_num=1,
         executor_namespace_digest=resident_plan.candidate.executor_namespace_digest,

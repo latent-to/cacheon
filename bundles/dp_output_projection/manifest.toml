@@ -1,0 +1,16 @@
+bundle_id = "glm-dp-output-projection-v1"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "collective.dp_output_projection_norm"
+mode = "slot"
+
+[[ops]]
+slot = "collective.dp_output_projection_norm"
+source = "kernels/projection.py"
+entry = "project_gather_norm"
+prepare = "prepare"
+dtypes = ["bfloat16"]
+architectures = ["sm103"]
+metadata = "metadata/projection.json"
+cuda_sources = ["kernels/dp_projection_native.cu"]

@@ -17,6 +17,7 @@ from __future__ import annotations
 import fcntl
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -363,6 +364,35 @@ def _observe_worker_hold(
     return state
 
 
+def _archive_completed_request(job_dir: Path, request: Mapping[str, Any], intake_db: str) -> None:
+    """Retain finished carriers outside the queue after their consumers release them."""
+    members = request["lease"]["members"]
+    if not members or not (job_dir.parent.parent / "results" / request["request_id"] / "RESULT_READY").is_file():
+        return
+    con = sqlite3.connect(Path(intake_db).resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        for member in members:
+            row = con.execute(
+                "SELECT status FROM reservations WHERE reservation_id=? AND NOT EXISTS "
+                "(SELECT 1 FROM evaluation_lease_members WHERE reservation_id=? AND active=1)",
+                (member["reservation_id"], member["reservation_id"]),
+            ).fetchone()
+            if row is None or row[0] not in {"failed", "expired", "qualified"}:
+                return
+        archive = job_dir.parent.parent / "outbox-archive"
+        archive.mkdir(mode=0o700, exist_ok=True)
+        job_dir.rename(archive / job_dir.name)
+        for directory in (archive, job_dir.parent):
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    finally:
+        con.close()
+    append_event(job_dir.parent.parent, "request_archived", request_id=request["request_id"])
+
+
 def cpu_serve(
     *,
     registration_path: Path,
@@ -380,6 +410,7 @@ def cpu_serve(
         registration, Path(registration["credential_path"])
     )
     outbox = spool_root / "outbox"
+    archive_intake_db = os.environ.get("CACHEON_SPOOL_ARCHIVE_INTAKE_DB")
     results = spool_root / "results"
     state_root = spool_root / "state"
     for path in (outbox, results, state_root):
@@ -416,6 +447,8 @@ def cpu_serve(
                     state_path = job_dir / "dispatch-state.json"
                     state = load_json(state_path) if state_path.exists() else None
                     if state is not None and state.get("state") == "result_received":
+                        if archive_intake_db and active != request_id:
+                            _archive_completed_request(job_dir, request, archive_intake_db)
                         continue
                     local_result = results / request_id
                     if (local_result / "RESULT_READY").is_file():
