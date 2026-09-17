@@ -244,7 +244,10 @@ def load_config(path: str | os.PathLike[str]) -> DispatcherConfig:
         raw = load_json(config_path)
     except Exception as exc:
         raise MainnetScreenDispatcherError(f"config cannot reopen: {exc}") from None
-    row = _closed(raw, _CONFIG_FIELDS, "dispatcher config")
+    fields = _CONFIG_FIELDS | ({"accept_legacy_bundles"} if type(raw) is dict and "accept_legacy_bundles" in raw else set())
+    row = _closed(raw, fields, "dispatcher config")
+    if type(row.get("accept_legacy_bundles", True)) is not bool:
+        raise MainnetScreenDispatcherError("accept_legacy_bundles must be boolean")
     if row["schema"] != CONFIG_SCHEMA:
         raise MainnetScreenDispatcherError("dispatcher config schema is unsupported")
 
@@ -626,6 +629,7 @@ def build_dispatcher(
         # singletons until the cohort fan-out exists at that boundary; retire
         # this pin in the same change that implements it.
         "qualification_max_members": 1,
+        "accept_legacy_bundles": config.raw.get("accept_legacy_bundles", True),
         "heartbeat_interval_s": config.heartbeat_interval_s,
         "heartbeat_join_timeout_s": config.heartbeat_join_timeout_s,
         "lock_attempts": config.lock_attempts,

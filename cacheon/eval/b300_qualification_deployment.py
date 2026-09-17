@@ -528,13 +528,12 @@ def _executor_ids(executor: OCIEngineExecutor, role: str) -> tuple[str, ...]:
     gpus = tuple(executor.device_policy.expected_gpus)
     ids = tuple(str(gpu.physical_id) for gpu in gpus)
     if (
-        len(gpus) != 4
+        not gpus
         or ids != tuple(sorted(set(ids), key=int))
-        or any("B300" not in gpu.name.upper() for gpu in gpus)
-        or len({gpu.uuid for gpu in gpus}) != 4
+        or len({gpu.uuid for gpu in gpus}) != len(gpus)
     ):
         raise B300QualificationDeploymentError(
-            f"{role} qualification executor is not one canonical B300 TP4 lane"
+            f"{role} qualification executor is not one canonical physical lane"
         )
     return ids
 
@@ -553,6 +552,7 @@ def _executor_pair(
     }
     if (
         candidate_executor is resident_baseline_executor
+        or len(candidate_ids) != len(baseline_ids)
         or candidate_executor.manager is resident_baseline_executor.manager
         or candidate_executor.manager.namespace_digest
         == resident_baseline_executor.manager.namespace_digest
@@ -560,7 +560,7 @@ def _executor_pair(
         or candidate_uuids.intersection(baseline_uuids)
     ):
         raise B300QualificationDeploymentError(
-            "candidate and resident-baseline TP4 executors overlap"
+            "candidate and resident-baseline executors overlap or differ in size"
         )
     return candidate_ids, baseline_ids
 

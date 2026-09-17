@@ -1,10 +1,13 @@
-"""Parse and project one sealed B300 arena definition."""
+"""Parse and project a sealed arena's workload and physical allocation."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 
-from cacheon.arena_service import ArenaServiceError, Workload, WorkloadCell
+from cacheon.arena_service import ArenaRuntimeIdentity, ArenaServiceError, Workload, WorkloadCell
+from cacheon._strict import require_digest
+from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
+from cacheon.eval.engine_launch import LogicalHardwareSpec, PhysicalHardwareBinding
 from cacheon.eval.oci_session_protocol import (
     CONTAINER_MODEL_PATH,
     ENGINE_CONFIG_FIELDS,
@@ -41,6 +44,122 @@ def string_rows(value: object, label: str) -> list[str]:
     if type(value) is not list or any(type(row) is not str for row in value):
         raise B300ScreenDeploymentError(f"{label} must be a list of strings")
     return value
+
+
+def _device_ids(value: object, label: str) -> tuple[int, ...]:
+    if (
+        type(value) is not list
+        or not value
+        or any(type(row) is not int or row < 0 for row in value)
+        or value != sorted(set(value))
+    ):
+        raise B300ScreenDeploymentError(f"{label} must be ordered unique GPU indices")
+    return tuple(value)
+
+
+def ready_gpu_ids(ready: dict[str, object]) -> tuple[int, ...]:
+    """Read the full host inventory independently of the arena allocation."""
+    gpu = _mapping(ready.get("gpu"), "READY GPU inventory")
+    inventory = gpu.get("inventory")
+    count = gpu.get("count")
+    if type(count) is not int or count < 1 or type(inventory) is not list or len(inventory) != count:
+        raise B300ScreenDeploymentError("READY GPU count differs from its inventory")
+    return _device_ids(
+        [_mapping(row, "READY GPU row").get("index") for row in inventory],
+        "READY GPU inventory",
+    )
+
+
+def ready_lane(ready: dict[str, object]) -> tuple[int, ...]:
+    """Read the screen lane without assuming a host size or GPU model."""
+    lane = _mapping(ready.get("lane"), "READY lane")
+    selected = _device_ids(lane.get("devices"), "READY lane")
+    tp = lane.get("tensor_parallel_size")
+    if type(tp) is not int or tp != len(selected):
+        raise B300ScreenDeploymentError("READY lane differs from its tensor parallel size")
+    require_digest(lane.get("lane_digest"), field="READY lane digest", error=B300ScreenDeploymentError)
+    return selected
+
+
+def ready_lanes(ready: dict[str, object]) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Resolve the commissioned pair, allowing other devices on the host.
+
+    Existing full-host receipts have one uniquely determined complement.
+    A partial-host allocation must explicitly name its baseline devices.
+    """
+    selected = ready_lane(ready)
+    inventory = ready_gpu_ids(ready)
+    lane = _mapping(ready.get("lane"), "READY lane")
+    baseline = _device_ids(lane["baseline_devices"], "READY baseline lane") if "baseline_devices" in lane else tuple(
+        index for index in inventory if index not in selected
+    )
+    if (
+        len(baseline) != len(selected)
+        or set(selected).intersection(baseline)
+        or not set(selected + baseline).issubset(inventory)
+    ):
+        raise B300ScreenDeploymentError(
+            "READY requires equal disjoint lanes within its inventory; "
+            "partial-host allocations must name baseline_devices"
+        )
+    return selected, baseline
+
+
+def device_policy(gpus: tuple[GPUConfiguration, ...]) -> DeviceStatePolicy:
+    """Bind the lane's observed device configuration and execution envelope."""
+    if (
+        not gpus
+        or tuple(gpu.physical_id for gpu in gpus) != tuple(sorted({gpu.physical_id for gpu in gpus}))
+        or len({gpu.max_memory_clock_mhz for gpu in gpus}) != 1
+    ):
+        raise B300ScreenDeploymentError("selected lane must contain ordered compatible GPU configurations")
+    return DeviceStatePolicy(
+        expected_gpus=gpus,
+        maximum_temperature_c=90,
+        maximum_gpu_utilization_percent=5,
+        maximum_memory_utilization_percent=5,
+        allowed_active_pstates=("P0",),
+        active_maximum_graphics_clock_mhz=max(gpu.max_graphics_clock_mhz for gpu in gpus),
+        active_memory_clock_mhz=gpus[0].max_memory_clock_mhz,
+        active_maximum_power_draw_mw=max(gpu.power_limit_mw for gpu in gpus),
+        active_require_process_on_every_gpu=True,
+        required_consecutive_idle_samples=2,
+        poll_interval_s=0.05,
+        ready_poll_interval_s=0.05,
+        maximum_samples=1024,
+    )
+
+
+def resource_policy(policy, overrides: object):
+    """Apply sealed host capacity to the existing OCI policy and its digest."""
+    row = _mapping(overrides, "OCI resource capacity")
+    if set(row) - {"cpu_millis", "memory_bytes", "pids_limit", "nofile_limit",
+                   "cache_bytes", "cache_inodes", "tmpfs_bytes", "shm_bytes",
+                   "stage_bytes", "stage_inodes"}:
+        raise B300ScreenDeploymentError("unknown OCI resource capacity field")
+    try:
+        return replace(policy, **row)
+    except (TypeError, ValueError) as exc:
+        raise B300ScreenDeploymentError(f"invalid OCI resource capacity: {exc}") from None
+
+
+def hardware_bindings(
+    runtime: ArenaRuntimeIdentity, policy: DeviceStatePolicy, *, dp_size: int
+) -> tuple[LogicalHardwareSpec, PhysicalHardwareBinding]:
+    """Project both launch views from the same commissioned runtime and lane."""
+    common = dict(
+        architecture=runtime.target_architecture,
+        topology_class=runtime.topology_class,
+        topology_digest=runtime.topology_digest,
+        tp_size=runtime.tensor_parallel_size,
+        ep_size=1,
+        dp_size=dp_size,
+        device_policy_digest=policy.policy_sha256,
+    )
+    return (
+        LogicalHardwareSpec(visible_gpu_count=runtime.gpu_count, **common),
+        PhysicalHardwareBinding(physical_gpu_ids=tuple(str(gpu.physical_id) for gpu in policy.expected_gpus), **common),
+    )
 
 
 def _seam_bindings(target_members: tuple[str, ...]) -> tuple[str, ...]:
@@ -87,8 +206,8 @@ def engine_config(
 
 def data_parallel_size(config: EngineSessionConfig) -> int:
     value = config.engine_kwargs.get("dp_size", 1)
-    if type(value) is not int or not 1 <= value <= 4:
-        raise B300ScreenDeploymentError("arena engine dp_size is not a TP4 degree")
+    if type(value) is not int or not 1 <= value <= config.tp_size:
+        raise B300ScreenDeploymentError("arena engine dp_size exceeds its TP degree")
     return value
 
 

@@ -1,10 +1,4 @@
-"""Commissioning surface for qualification in the one existing pod service.
-
-Full composition needs the commissioned B300 host (sealed deployment root,
-eight-GPU lane pair, OCI runtime); these tests pin the CPU-checkable gates:
-capability typing and identity binding, the tracked deadline policy, lane
-disjointness, and sealed calibration package handling.
-"""
+"""Qualification composition and authority checks for GLM/TP4 and Qwen/TP1."""
 
 from __future__ import annotations
 
@@ -556,3 +550,78 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     assert incumbent_tree.runtime_manifest == "manifest.toml"
     assert incumbent_tree.stack_digest == incumbent.digest
     assert incumbent.digest != stock.digest
+
+
+@pytest.mark.parametrize("gpu_model,tp", (("b300", 4), ("h100", 1)))
+def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, monkeypatch, gpu_model, tp):
+    from cacheon.arena_service import ArenaService
+    from cacheon.chain.evaluation_coordinator import WorkerReadiness
+    from cacheon.eval import b300_screen_deployment as screen
+    from cacheon.eval.b300_arena_provider import B300ArenaServiceProvider
+    from cacheon.eval.b300_sealed_qualification_commission import predicted_qualification_builder_digest
+    from cacheon.eval.reference_quality import retained_support_policy_digest
+    from tests import test_b300_screen_deployment as fixtures
+    from tests.test_b300_sealed_qualification_commission import _block
+    from tests.support.b300 import GLM53_REGISTERED_TARGET_IDS
+
+    paths, gpus, ready = fixtures._case(tmp_path, gpu_model=gpu_model, host_size=2 * tp, lane=tuple(range(tp)))
+    for name in ("prompt_authority", "authority_config", "measurement_config"):
+        paths[name].chmod(0o600)
+    prompt = json.loads(paths["prompt_authority"].read_text())
+    prompt["workload_cell"]["timed_reads"] = 3
+    prompt["prompt_batches"].append(["four"])
+    if tp == 4:
+        prompt.update(model_profile_key="GLM-5.3-NVFP4", registered_targets=list(GLM53_REGISTERED_TARGET_IDS))
+        prompt["engine_config"]["engine_kwargs"].update(dp_size=4, enable_dp_attention=True)
+    prompt_sha = fixtures._write(paths["prompt_authority"], prompt)
+    block = _block()
+    block["support_policy_digest"] = retained_support_policy_digest()
+    block["policy"].update(tokens_per_prompt=1024, topk_width=0)
+    block["session"]["conditioning_count"] = 1
+    authority = json.loads(paths["authority_config"].read_text())
+    authority.update(qualification=block, resources={"runtime": {"cpu_millis": 32000}, "prebuild": {"cpu_millis": 16000}})
+    authority["prompt"]["sha256"] = prompt_sha
+    authority["qualification_builder_digest"] = predicted_qualification_builder_digest(
+        default_target_catalog(), registered_target_ids=tuple(prompt["registered_targets"]),
+        builder_source_digest=block["builder_source_digest"], selection_store_digest=block["selection_store_digest"])
+    for name in ("authority_config", "measurement_config"):
+        fixtures._write(paths[name], authority)
+    inputs = screen._authority_inputs(**paths, provisioner=None, provisioned_gpus=gpus)
+    composition = screen._compose(inputs)
+    judge = _Judge()
+    judge.binding = HiddenJudgeBinding(*(inputs.prompt_identity[key] for key in
+        ("hidden_corpus_commitment", "hidden_judge_digest", "hidden_task_policy_digest")))
+    contexts, native_arches = [], []
+    native_build = screen._native_build
+
+    def tracked_native(*args):
+        built = native_build(*args)
+        native_arches.append(built.target_architecture)
+        return built
+
+    def calibration(_inputs, context, stage):
+        contexts.append((stage, context))
+        threshold = replace(calibration_fixtures._threshold_policy(), context=context)
+        threshold = replace(threshold, speed=replace(threshold.speed, max_noise="0.02"))
+        evidence = CalibrationEvidenceSet.create(threshold, calibration_fixtures._observations())
+        return threshold, derive_calibration_manifest(threshold, evidence.observations), evidence
+
+    monkeypatch.setattr(screen, "_native_build", tracked_native)
+    executors = ()
+    try:
+        service = ArenaService(composition.manifest, B300ArenaServiceProvider(composition.manifest, composition.authorities))
+        readiness = WorkerReadiness.for_service(service, ready_receipt_digest=ready["receipt_digest"], ready_epoch=1)
+        commissions, executors = commission.compose_commissioned_qualifications(
+            inputs, composition, readiness, _capabilities(hidden_judge=judge), calibration_loader=calibration)
+        assert len(commissions) == 2 and {stage for stage, _ in contexts} == {"primary", "reproduction"}
+        assert len({context.logical_hardware_digest for _, context in contexts}) == 2
+        assert native_arches and set(native_arches) == {"sm103" if tp == 4 else "sm90"}
+        for index, executor in enumerate(executors):
+            assert tuple(g.physical_id for g in executor.device_policy.expected_gpus) == tuple(range(index * tp, (index + 1) * tp))
+            assert executor.config.runtime.cpu_millis == 32000
+            assert executor.config.prebuild.policy.cpu_millis == 16000
+        assert all(c.construction.registered_target_ids == tuple(prompt["registered_targets"]) for c in commissions)
+    finally:
+        for executor in executors:
+            executor.manager.close()
+        composition.close()

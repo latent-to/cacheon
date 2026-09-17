@@ -9,6 +9,7 @@ flags on one builder. Anything a caller varies per test stays an argument.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import os
 
@@ -175,6 +176,12 @@ def gpu(index: int = 0, model: str = "b300") -> GPUConfiguration:
     reference suite runs the RTX profile for exactly that reason.
     """
 
+    if model == "h100":
+        return replace(
+            gpu(index), name="NVIDIA H100 80GB HBM3", memory_total_mib=81_559,
+            power_limit_mw=700_000, max_graphics_clock_mhz=1_980,
+            max_memory_clock_mhz=2_619,
+        )
     if model == "rtx6000":
         return GPUConfiguration(
             physical_id=index,

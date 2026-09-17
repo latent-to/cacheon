@@ -83,12 +83,17 @@ and qualification use digest-bound content.
 |---|---|
 | `target` | A validator-registered target ID |
 | `mode` | `slot` or `atomic`; `system` parses only for legacy migration |
+| `arena` | Exact logical arena ID; omitted or empty selects the existing default competition |
 
 The table is a request, not policy. Intake resolves it against the frozen
 [target catalog](target-catalog.md) and complete observed feature set. The
 current resolver can infer a target when an exact singleton or registered
 atomic member set is unambiguous, which preserves older bundles. New
-competitive bundles should declare `[competition]` explicitly.
+competitive bundles should declare `[competition]` explicitly. Additional arenas
+require an explicit `arena`, for example `arena = "qwen36-35b-h100-bf16-tp1"`.
+It participates in the bundle hash and selects one evaluation; submissions are
+not broadcast to every model. Slot names remain shared mathematical contracts.
+An unknown selector stays unclaimed and is subject to the ordinary intake SLA.
 
 ## Operation rows
 

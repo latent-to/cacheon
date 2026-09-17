@@ -1,4 +1,4 @@
-"""Display labels for the GLM-5.3 competition and preceding history."""
+"""Display the selected competition and its retained evaluation history."""
 
 from decimal import Decimal
 from functools import lru_cache
@@ -11,9 +11,9 @@ from typing import Any
 GLM53_FIRST_BLOCK = 9009654
 
 
-def competition_label(block: int) -> str:
+def competition_label(block: int, arena: str = "") -> str:
     """Keep the historical model label across the recorded competition cutover."""
-    return "GLM-5.3" if int(block) >= GLM53_FIRST_BLOCK else "MiniMax-M3"
+    return arena or ("GLM-5.3" if int(block) >= GLM53_FIRST_BLOCK else "MiniMax-M3")
 
 
 # Provisioning receipts match these content identities to the pinned HF snapshots.
@@ -137,9 +137,16 @@ def submission_baseline(
         }
     if not lineage_tables_available:
         return result
+    scoped = "competition_arena" in {r["name"] for r in con.execute("PRAGMA table_info(target_lineage_tips)")}
+    scope = ()
+    predicate = ""
+    if scoped:
+        reservation = con.execute("SELECT competition_arena FROM reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
+        scope = (reservation["competition_arena"],)
+        predicate = " AND competition_arena=?"
     tip = con.execute(
-        "SELECT artifact_digest FROM target_lineage_tips WHERE target_id=?",
-        (target_id,),
+        "SELECT artifact_digest FROM target_lineage_tips WHERE target_id=?" + predicate,
+        (target_id, *scope),
     ).fetchone()
     if tip is None:
         return result
@@ -157,8 +164,8 @@ def submission_baseline(
         seen.add(artifact)
         node = con.execute(
             "SELECT artifact_digest,parent_artifact_digest,winner_speedup "
-            "FROM target_lineage_nodes WHERE target_id=? AND artifact_digest=?",
-            (target_id, artifact),
+            "FROM target_lineage_nodes WHERE target_id=? AND artifact_digest=?" + predicate,
+            (target_id, artifact, *scope),
         ).fetchone()
         if node is None:
             break

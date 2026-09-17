@@ -1,20 +1,9 @@
-"""Derive the static screen's slot-quant requirement from the served model.
+"""Derive the static slot screen from the commissioned weight format.
 
-The commissioned screen serves the arena model at one quantization and rejects
-candidates whose MoE kernels cannot consume it.  Those are not two policies:
-they are one physical fact.  An NVFP4 checkpoint hands NVFP4 weights to the
-MoE slots, so a candidate bound there must declare NVFP4.
-
-Held as two independent literals they can silently disagree.  Changing the
-serving quantization while the screen keeps enforcing the previous format
-rejects every valid candidate (or admits every invalid one) with no error
-anywhere -- the screen still passes its own type and canonicality checks,
-because a wrong requirement is still a well-formed one.
-
-So the requirement is derived from the served quantization, and an unfamiliar
-quantization fails closed.  A new serving format must state its kernel
-requirement here, with evidence, rather than defaulting to "screen nothing" --
-silently screening nothing is the failure mode this module exists to remove.
+Changing serving quantization while retaining an independent screen literal
+rejects every valid candidate or admits incompatible kernels. Derive both from
+one value: an explicit unquantized model uses dense weights, modelopt_fp4 uses
+NVFP4. Unknown formats fail rather than silently disabling the screen.
 """
 
 from __future__ import annotations
@@ -41,9 +30,11 @@ _KERNEL_QUANT_FOR_MODEL: dict[str, str] = {
 }
 
 
-def kernel_quant_for_model(model_quantization: str) -> str:
+def kernel_quant_for_model(model_quantization: str | None) -> str:
     """The quant a candidate kernel must declare to consume this checkpoint."""
 
+    if model_quantization is None:
+        return "dense"
     if type(model_quantization) is not str or not model_quantization:
         raise ScreenQuantPolicyError("served quantization is not an exact string")
     try:
@@ -58,7 +49,7 @@ def kernel_quant_for_model(model_quantization: str) -> str:
 
 
 def slot_quant_requirements(
-    model_quantization: str,
+    model_quantization: str | None,
     *,
     slots: tuple[str, ...] = MOE_QUANT_SLOTS,
 ) -> tuple[tuple[str, str], ...]:

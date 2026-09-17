@@ -156,8 +156,8 @@ def _graph_argv(
         f"{publication.build_spec_digest}"
     )
     physical = resolved.physical_hardware.physical_gpu_ids
-    if len(physical) != 4:
-        raise B300PreparedGraphOCIError("graph execution requires exact TP4 devices")
+    if len(physical) != runtime.hardware.visible_gpu_count:
+        raise B300PreparedGraphOCIError("graph execution differs from its GPU allocation")
     gpu_request = f'"device={",".join(physical)}"'
 
     env = {
@@ -307,10 +307,11 @@ class B300PreparedGraphOCIExecutor:
             raise B300PreparedGraphOCIError("graph controller distribution differs from executor authority")
         if (
             request_binding != expected_binding
-            or request.policy.tp_size != 4
-            or request.launch.hardware.visible_gpu_count != 4
+            or request.policy.tp_size != prepared.launch.hardware.tp_size
+            or request.launch.hardware.visible_gpu_count
+            != len(prepared.binding.launch_binding.physical_hardware.physical_gpu_ids)
         ):
-            raise B300PreparedGraphOCIError("graph binding is not the prepared TP4 arm")
+            raise B300PreparedGraphOCIError("graph binding is not the prepared TP arm")
         if not self.manager.transaction_lock.acquire(blocking=False):
             raise B300PreparedGraphOCIError("graph executor is already active")
         try:

@@ -51,11 +51,10 @@ def cmd_slots(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_compat(_: argparse.Namespace) -> int:
-    from cacheon.compat import format_checks, run_checks
+def cmd_compat(args: argparse.Namespace) -> int:
+    from cacheon.compat import PINNED_SGLANG, format_checks, run_checks
 
-    checks = run_checks()
-    print("sglang pin + compatibility canary (run after any sglang bump):")
+    checks = run_checks(args.sglang_version or PINNED_SGLANG)
     print(format_checks(checks))
     return 0 if all(c.ok for c in checks) else 2
 
@@ -2380,6 +2379,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_slots)
 
     sp = sub.add_parser("compat", help="check our sglang integration points survived an upgrade")
+    sp.add_argument("--sglang-version", help="exact version from the arena's runtime authority")
     sp.set_defaults(func=cmd_compat)
 
     sp = sub.add_parser("chain-compat",

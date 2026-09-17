@@ -1,4 +1,4 @@
-"""CPU-only commission/replay tests for the fixed B300 screen deployment."""
+"""Commission/replay contracts for TP4/B300 and TP1/H100 allocations."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import stat
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -42,11 +43,12 @@ def _write(path: Path, value: object) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _preflight() -> RuntimePreflightReceipt:
+def _preflight(version="0.5.18") -> RuntimePreflightReceipt:
     return preflight_receipt(
         image=_h("image"),
         platform=_h("platform"),
         worker=_h("worker-distribution"),
+        sglang_version=version,
         worker_file_count=100,
         worker_total_bytes=100_000,
     )
@@ -74,13 +76,28 @@ def _m3_engine_config() -> dict[str, object]:
     }
 
 
-def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...], dict[str, object]]:
+def _qwen_engine_config():
+    config = _m3_engine_config()
+    config.update(tp_size=1, mem_fraction_static=0.90, moe_runner_backend="triton")
+    config["engine_kwargs"] = {
+        "chunked_prefill_size": 4096, "disable_radix_cache": True,
+        "cuda_graph_bs_decode": [1, 2, 4, 8], "kv_cache_dtype": "auto",
+        "language_model_only": True, "linear_attn_backend": "triton",
+        "max_mamba_cache_size": 16, "mamba_ssm_dtype": "float32",
+    }
+    return config
+
+
+def _case(
+    tmp_path: Path, *, gpu_model="b300", host_size=8,
+    lane=(0, 1, 2, 3), baseline=None,
+) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...], dict[str, object]]:
     tmp_path.chmod(0o700)
     model = tmp_path / "model"
     model.mkdir(mode=0o700)
     (model / "config.json").write_text("{}\n")
     (model / "config.json").chmod(0o400)
-    preflight = _preflight()
+    preflight = _preflight("0.5.18" if gpu_model == "b300" else "0.5.19")
     runtime = runtime_identity_from_preflight(preflight)
     device = tmp_path / "device-execution.json"
     device_sha = _write(
@@ -112,6 +129,12 @@ def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...]
             "timed_reads": 2,
         },
     }
+    if gpu_model == "h100":
+        prompt_value.update(
+            registered_targets=["activation.silu_and_mul", "linear.dense", "moe.fused_experts"],
+            model_profile_key="Qwen3.6-35B-A3B-BF16", engine_config=_qwen_engine_config(),
+        )
+    prompt_value["engine_config"]["tp_size"] = len(lane)
     prompt_sha = _write(prompt, prompt_value)
     calibration = tmp_path / "calibration-package.json"
     calibration_sha = _write(calibration, {"schema": "cacheon-calibration-v1"})
@@ -149,11 +172,11 @@ def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...]
         "schema": "cacheon-private-b300-authority-v1",
         "source": {"controller_digest": _h("old-controller")},
         "topology": {
-            "architecture": "sm103",
-            "gpu_count": 4,
-            "lane": ["0", "1", "2", "3"],
+            "architecture": "sm103" if gpu_model == "b300" else "sm90",
+            "gpu_count": len(lane),
+            "lane": list(map(str, lane)),
             "lane_digest": lane_digest,
-            "tensor_parallel_size": 4,
+            "tensor_parallel_size": len(lane),
             "topology_class": "nvlink-sxm6",
         },
         "worker": {
@@ -169,38 +192,47 @@ def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...]
     _write(authority, authority_value)
     measurement = tmp_path / "measurement-config.json"
     _write(measurement, authority_value)
-    gpus = tuple(_gpu(index) for index in range(8))
+    gpus = tuple(_gpu(index, gpu_model) for index in range(host_size))
     inventory = [
         {
             "index": index,
-            "memory_mib": 288_000,
-            "name": "NVIDIA B300 SXM6 AC",
+            "memory_mib": gpus[index].memory_total_mib,
+            "name": gpus[index].name,
             "pci_bus_id": f"00000000:{index + 1:02x}:00.0",
             "uuid": gpus[index].uuid,
         }
-        for index in range(8)
+        for index in range(host_size)
     ]
     ready_value = {
         "created_at_unix": 1,
-        "gpu": {"count": 8, "inventory": inventory},
+        "gpu": {"count": host_size, "inventory": inventory,
+                "inventory_sha256": _h("inventory"), "topology_sha256": _h("topology")},
         "lane": {
-            "devices": [0, 1, 2, 3],
+            "devices": list(lane),
             "lane_digest": _h("ready-lane"),
-            "tensor_parallel_size": 4,
+            "tensor_parallel_size": len(lane),
         },
         "model": {
             "content_digest": _h("model-content"),
             "path": str(model),
             "readonly_inventory_verified": True,
+            "receipt_digest": _h("model-receipt"), "receipt_file_sha256": _h("model-file"),
+            "receipt_path": str(model / "receipt.json"),
         },
-        "receipt_digest": _h("ready-receipt"),
+        "provider": {"hostname": "worker", "machine_id_sha256": _h("machine"), "pod_endpoint": "worker:22"},
+        "python": {"path": sys.executable, "resolved_path": str(Path(sys.executable).resolve()),
+                   "executable_sha256": _h("python"), "version": "Python 3.12.0"},
         "runtime": {"path": str(tmp_path / "runtime"), "tree_digest": _h("runtime-tree")},
         "schema": "cacheon-current-pod-commission-v1",
-        "source": {"path": str(tmp_path / "source"), "tree_digest": _h("source-tree")},
+        "source": {"path": str(tmp_path / "source"), "tree_digest": _h("source-tree"), "revision": "1" * 40},
         "state": "READY_FOR_REGISTRATION",
         "worker_epoch": "1" * 32,
         "worker_image": preflight.requested_image,
     }
+    if baseline is not None:
+        ready_value["lane"]["baseline_devices"] = list(baseline)
+    from cacheon.chain.remote_worker_spool import spool_digest
+    ready_value["receipt_digest"] = spool_digest("cacheon.current-pod-commission.v1", ready_value)
     ready = tmp_path / "ready-receipt.json"
     _write(ready, ready_value)
     output = tmp_path / "commissioned"
@@ -220,14 +252,28 @@ def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...]
     )
 
 
+@pytest.mark.parametrize("model,host_size,lane,baseline", (
+    ("b300", 8, (0, 1, 2, 3), None),
+    ("h100", 2, (0,), None),
+    ("h100", 8, (2,), (5,)),
+))
 def test_materialize_and_replay_exact_service_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model, host_size, lane, baseline,
 ) -> None:
-    paths, gpus, ready = _case(tmp_path)
-    assert deployment._device_policy(gpus[:4]).drain_timeout_s == 300.0
+    paths, gpus, ready = _case(tmp_path, gpu_model=model, host_size=host_size, lane=lane, baseline=baseline)
+    from cacheon.chain.remote_worker_registration import verify_ready_receipt
+    assert verify_ready_receipt(ready) == ready
+    other = baseline or tuple(index for index in range(host_size) if index not in lane)
+    allocated = tuple(sorted((*lane, *other)))
+    assert deployment._device_policy(tuple(gpus[index] for index in lane)).drain_timeout_s == 300.0
+
+    def provision(selected, *, deadline):
+        assert selected == allocated
+        return tuple(gpus[index] for index in selected)
+
     result = deployment.materialize_b300_screen_identities(
         **paths,
-        gpu_provisioner=lambda selected, *, deadline: gpus,
+        gpu_provisioner=provision,
     )
     output = paths["output_root"]
     manifest = deployment._manifest_from_dict(
@@ -239,21 +285,20 @@ def test_materialize_and_replay_exact_service_identity(
     readiness = WorkerReadiness(**readiness_row)
     assert result["service_digest"] == manifest.digest
     assert result["worker_readiness_digest"] == readiness.digest
-    assert manifest.runtime.gpu_count == 4
-    assert manifest.runtime.tensor_parallel_size == 4
-    assert manifest.runtime.target_architecture == "sm103"
+    assert manifest.runtime.gpu_count == len(lane)
+    assert manifest.runtime.tensor_parallel_size == len(lane)
+    assert manifest.runtime.target_architecture == ("sm103" if model == "b300" else "sm90")
     assert manifest.runtime.topology_digest == _h("sealed-lane")
     deployment_row = json.loads((output / deployment.DEPLOYMENT_FILE).read_text())
     pair = deployment_row["declared_qualification"]["lane_pair"]
-    assert pair["lane_a"]["physical_gpu_ids"] == [0, 1, 2, 3]
-    assert pair["lane_b"]["physical_gpu_ids"] == [4, 5, 6, 7]
+    assert pair["lane_a"]["physical_gpu_ids"] == list(lane)
+    assert pair["lane_b"]["physical_gpu_ids"] == list(other)
     assert set(pair["lane_a"]["gpu_uuids"]).isdisjoint(
         pair["lane_b"]["gpu_uuids"]
     )
 
-    monkeypatch.setattr(deployment, "DEFAULT_OUTPUT_ROOT", output)
     registration = {
-        "lane_devices": [0, 1, 2, 3],
+        "lane_devices": list(lane),
         "ready_receipt_digest": ready["receipt_digest"],
         "service_identity": manifest.service_id,
         "worker_epoch": ready["worker_epoch"],
@@ -261,7 +306,7 @@ def test_materialize_and_replay_exact_service_identity(
         "worker_readiness_digest": readiness.digest,
     }
     worker = deployment.build_commissioned_b300_screen_worker(
-        registration, ready
+        registration, ready, commissioned_root=output
     )
     try:
         assert worker.service.manifest == manifest
@@ -274,7 +319,7 @@ def test_materialize_and_replay_exact_service_identity(
         deployment.B300ScreenDeploymentError,
         match="registration differs",
     ):
-        deployment.build_commissioned_b300_screen_worker(registration, ready)
+        deployment.build_commissioned_b300_screen_worker(registration, ready, commissioned_root=output)
 
 
 def test_calibration_authority_does_not_create_service_identity_cycle(
@@ -343,7 +388,7 @@ def test_materializer_refuses_single_tp4_as_declared_qualification_pair(
     paths, gpus, _ready = _case(tmp_path)
     with pytest.raises(
         deployment.B300ScreenDeploymentError,
-        match="exact commissioned eight-B300 pair",
+        match="provisioned GPU set differs from the commissioned lane pair",
     ):
         deployment.materialize_b300_screen_identities(
             **paths,
@@ -351,10 +396,12 @@ def test_materializer_refuses_single_tp4_as_declared_qualification_pair(
         )
 
 
-def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
-    tmp_path: Path,
-) -> None:
-    paths, gpus, _ready = _case(tmp_path)
+@pytest.mark.parametrize("gpu_model,count,bundle", (
+    ("b300", 4, "miner_moe_fused_experts_reduce_torch"),
+    ("h100", 1, "miner_silu_torch"),
+))
+def test_concrete_resolver_binds_the_commissioned_model_and_hardware(tmp_path, gpu_model, count, bundle):
+    paths, gpus, _ready = _case(tmp_path, gpu_model=gpu_model, host_size=count * 2, lane=tuple(range(count)))
     inputs = deployment._authority_inputs(
         **paths,
         provisioner=None,
@@ -366,7 +413,7 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
         shutil.copytree(
             Path(__file__).parents[1]
             / "examples"
-            / "miner_moe_fused_experts_reduce_torch",
+            / bundle,
             source,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
@@ -402,7 +449,7 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
             composition.manifest.screens.stages[0],
             candidate,
         )
-        assert static_result.grade.value == "fail"
+        assert static_result.grade.value == ("fail" if gpu_model == "b300" else "pass")
         plan = composition.pipeline._plan_resolver(  # noqa: SLF001 - exact deployment seam
             composition.manifest, candidate
         )
@@ -410,13 +457,9 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
         assert plan.service_digest == composition.manifest.digest
         assert plan.graph_launch.arena_digest == composition.manifest.digest
         assert plan.model_mount.arena_digest == composition.manifest.digest
-        assert plan.binding.physical_hardware.physical_gpu_ids == (
-            "0",
-            "1",
-            "2",
-            "3",
-        )
-        assert plan.graph_launch.hardware.tp_size == 4
+        assert plan.binding.physical_hardware.physical_gpu_ids == tuple(map(str, range(count)))
+        assert plan.graph_launch.hardware.tp_size == count
+        assert plan.binding.native_build_spec.target_architecture == inputs.runtime.target_architecture
         assert plan.graph_launch.tree_digest == plan.binding.native_build_spec.tree_digest
         composition.pipeline._validate_plan(  # noqa: SLF001 - regression gate
             composition.manifest, candidate, plan
@@ -626,7 +669,7 @@ def test_commissioned_resident_factory_builds_real_stock_lifetime(
         composition.close()
 
 
-def test_ready_gpu_ids_require_one_canonical_eight_device_set(
+def test_ready_gpu_ids_require_a_counted_canonical_device_set(
     tmp_path: Path,
 ) -> None:
     _paths, _gpus, ready = _case(tmp_path)
@@ -635,7 +678,7 @@ def test_ready_gpu_ids_require_one_canonical_eight_device_set(
     short["gpu"]["count"] = 7
     with pytest.raises(
         deployment.B300ScreenDeploymentError,
-        match="not an eight-B300 pod",
+        match="count differs from its inventory",
     ):
         deployment._ready_gpu_ids(short)
 
@@ -643,7 +686,7 @@ def test_ready_gpu_ids_require_one_canonical_eight_device_set(
     duplicated["gpu"]["inventory"][7]["index"] = 6
     with pytest.raises(
         deployment.B300ScreenDeploymentError,
-        match="one canonical eight-device set",
+        match="ordered unique GPU indices",
     ):
         deployment._ready_gpu_ids(duplicated)
 
@@ -652,17 +695,17 @@ def test_ready_gpu_ids_require_one_canonical_eight_device_set(
     unordered["gpu"]["inventory"][1]["index"] = 0
     with pytest.raises(
         deployment.B300ScreenDeploymentError,
-        match="one canonical eight-device set",
+        match="ordered unique GPU indices",
     ):
         deployment._ready_gpu_ids(unordered)
 
 
-def test_materializer_refuses_id_drift_and_non_b300_names(tmp_path: Path) -> None:
+def test_materializer_refuses_id_and_gpu_model_drift(tmp_path: Path) -> None:
     paths, gpus, _ready = _case(tmp_path)
     drifted = gpus[:7] + (_gpu(9),)
     with pytest.raises(
         deployment.B300ScreenDeploymentError,
-        match="exact commissioned eight-B300 pair",
+        match="provisioned GPU set differs from the commissioned lane pair",
     ):
         deployment.materialize_b300_screen_identities(
             **paths,
@@ -672,7 +715,7 @@ def test_materializer_refuses_id_drift_and_non_b300_names(tmp_path: Path) -> Non
     renamed = gpus[:7] + (replace(gpus[7], name="NVIDIA H100 SXM5"),)
     with pytest.raises(
         deployment.B300ScreenDeploymentError,
-        match="exact commissioned eight-B300 pair",
+        match="GPU configuration differs from READY inventory",
     ):
         deployment.materialize_b300_screen_identities(
             **paths,
@@ -691,7 +734,7 @@ def test_materializer_refuses_lane_absent_from_eight_device_pair(
     _write(ready_path, mutated)
     with pytest.raises(
         deployment.B300ScreenDeploymentError,
-        match="screen lane is absent from the eight-device pair",
+        match="equal disjoint lanes within its inventory",
     ):
         deployment.materialize_b300_screen_identities(
             **paths,

@@ -437,6 +437,7 @@ def run_pass(
     eval_cost_policy: EvalCostPolicy = _DISABLED_EVAL_COST_POLICY,
     arena_registry: ArenaServiceRegistry | None = None,
     arena_id: str | None = None,
+    accept_legacy_bundles: bool = True,
     intake_only: bool = False,
     retained_only: bool = False,
 ) -> PassResult:
@@ -465,6 +466,8 @@ def run_pass(
 
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), netuid)
     with _open_store(intake_db, policy, scope) as store:
+        if service is not None:
+            store.select_arena(arena_id, accept_legacy_bundles=accept_legacy_bundles)
         cursor = store.finalized_cursor()
         if retained_only:
             if cursor is None:
@@ -525,12 +528,16 @@ def run_pass(
                 continue
             try:
                 fingerprint = _fingerprint_private_bundle(private)
+                from cacheon.manifest import load_manifest
+                manifest = load_manifest(private)
+                selected_arena = "" if manifest.competition is None else manifest.competition.arena
             except (OSError, TypeError, ValueError) as exc:
                 rejected = store.mark_failed(active.reservation_id, f"manifest:{exc}")
                 result.rejected[rejected.reservation_id] = rejected.reason
                 continue
             if (
                 service is not None
+                and store.publication_arena(selected_arena) == store._competition_arena
                 and fingerprint.target_id in service.manifest.closed_targets
             ):
                 # The sealed arena cannot measure this registered family right
@@ -563,6 +570,7 @@ def run_pass(
                 delta_fingerprint=fingerprint,
                 publication_digest=publication.digest,
                 publication_root=publication.root,
+                competition_arena=selected_arena,
             )
             if published.status != "published":
                 result.rejected[published.reservation_id] = published.reason
@@ -694,6 +702,7 @@ def run_validator(
     eval_cost_policy: EvalCostPolicy = _DISABLED_EVAL_COST_POLICY,
     arena_registry: ArenaServiceRegistry | None = None,
     arena_id: str | None = None,
+    accept_legacy_bundles: bool = True,
     intake_only: bool = False,
     retained_only: bool = False,
     interval_s: float = DEFAULT_INTERVAL_S,
@@ -717,6 +726,7 @@ def run_validator(
                 eval_cost_policy=eval_cost_policy,
                 arena_registry=arena_registry,
                 arena_id=arena_id,
+                accept_legacy_bundles=accept_legacy_bundles,
                 intake_only=intake_only,
                 retained_only=retained_only,
             )

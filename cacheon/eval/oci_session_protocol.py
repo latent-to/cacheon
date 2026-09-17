@@ -1,11 +1,7 @@
-"""Bounded, non-executable wire protocol for one isolated engine session.
+"""Bounded JSON control and binary token evidence for isolated engine sessions.
 
-The host controller and the in-container worker exchange strict JSON control
-frames and fixed-width binary token evidence.  The protocol carries no Python
-objects, worker timing, verdict, score, hidden quality input, or model-generated
-text.  The module remains independent of evaluator and chain packages so
-importing it cannot pull candidate or inference-runtime code into the trusted
-controller.
+No Python objects, worker timing, verdicts, hidden quality inputs or generated
+text cross this protocol. Imports cannot execute candidate or inference code.
 """
 
 from __future__ import annotations
@@ -55,19 +51,22 @@ _HEX_128 = re.compile(r"[0-9a-f]{32}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 
-# A reviewed extension of this table is required before a new runtime option
-# can cross the hostile boundary.  Arbitrary ``sglang.Engine`` kwargs are not a
-# protocol feature.
+# Only reviewed runtime options cross this boundary; arbitrary Engine kwargs do not.
 _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     "chunked_prefill_size": "positive_int",
     "context_length": "positive_int",
     "cuda_graph_backend_prefill": "token",
     "cuda_graph_bs": "int_list",
+    "cuda_graph_bs_decode": "int_list",
     "disable_radix_cache": "bool",
     "dp_size": "positive_int",
     "enable_dp_attention": "bool",
     "enable_flashinfer_allreduce_fusion": "bool",
     "kv_cache_dtype": "token",
+    "language_model_only": "bool",
+    "linear_attn_backend": "token",
+    "max_mamba_cache_size": "positive_int",
+    "mamba_ssm_dtype": "token",
     "max_prefill_tokens": "positive_int",
     "page_size": "positive_int",
     "quantization": "token",

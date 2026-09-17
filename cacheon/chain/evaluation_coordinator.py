@@ -1,17 +1,10 @@
-"""CPU-owned durable dispatch for asynchronous screening and qualification.
+"""CPU-owned durable dispatch for screening and qualification.
 
-The coordinator deliberately has no settlement, signing, weight, chain-client, or
-worker implementation authority.  It briefly owns :class:`FinalizedIntakeStore`
-to claim or CAS-commit an exact lease, and closes that flock-backed controller
-before reopening publications or calling an arena provider.  A bounded heartbeat
-thread may briefly reopen the store while synchronous worker code is running; it
-never shares a store object with that code.
-
-``advance_finalized_cursor`` is the deployment seam for finalized-chain progress.
-It must finish any intake advancement itself and return the exact durable
-``(block, block_hash)`` cursor.  The coordinator calls it before opening the store
-and verifies the returned cursor against SQLite, so network work cannot occur
-while the controller lock is held.
+The coordinator claims and commits leases under the intake store's lock, then
+closes the store before opening publications or calling a worker. Its bounded
+heartbeat briefly reopens the store without sharing it with worker code.
+``advance_finalized_cursor`` returns a durable (block, hash) after intake work;
+SQLite must agree before dispatch. Settlement and signing remain separate.
 """
 
 from __future__ import annotations
@@ -610,6 +603,7 @@ class EvaluationCoordinator:
         advance_finalized_cursor: Callable[[], tuple[int, str]],
         lease_blocks: int = 30,
         qualification_max_members: int | None = None,
+        accept_legacy_bundles: bool = True,
         heartbeat_interval_s: float = 5.0,
         heartbeat_join_timeout_s: float = 5.0,
         lock_attempts: int = 1000,
@@ -666,6 +660,7 @@ class EvaluationCoordinator:
         self.advance_finalized_cursor = advance_finalized_cursor
         self.lease_blocks = lease_blocks
         self.qualification_max_members = maximum
+        self.accept_legacy_bundles = accept_legacy_bundles
         self.heartbeat_interval_s = float(heartbeat_interval_s)
         self.heartbeat_join_timeout_s = float(heartbeat_join_timeout_s)
         self.lock_attempts = lock_attempts
@@ -697,6 +692,10 @@ class EvaluationCoordinator:
                 last_error = exc
             else:
                 try:
+                    store.select_arena(
+                        self.service.manifest.runtime.arena_id,
+                        accept_legacy_bundles=self.accept_legacy_bundles,
+                    )
                     observed = store.finalized_cursor()
                 except IntakeError as exc:
                     store.close()
@@ -799,7 +798,8 @@ class EvaluationCoordinator:
             # that FAIL before any lease exists, so a resubmission costs neither
             # a screen nor a qualification; a PASS is never replayed
             # (cacheon.chain.duplicate_replay).
-            store.retire_duplicate_screenables(service_digest=self.service.identity)
+            store.prepare_screen_queue(service_digest=self.service.identity,
+                                       closed_targets=self.service.manifest.closed_targets)
             lease = store.claim_evaluation_lease(
                 stage="screen",
                 owner=self.owner,

@@ -1,15 +1,7 @@
-"""SGLang compatibility canary — enforce the pin and integration surface.
+"""Check an arena's exact SGLang version and installed integration surfaces.
 
-Our harness patches sglang internals (the `SiluAndMul` / `RMSNorm` seams, the
-`BaseFusedOp` base, the Engine logprob API, specific `ServerArgs` kwargs). Any
-sglang upgrade can move those. This canary introspects the INSTALLED sglang —
-imports + signatures only, **no GPU, no model** — and checks every seam and API we
-depend on still exists.
-
-Run `cacheon compat` after bumping sglang. If it goes red, the seams need an
-adapter before that version can be used for scoring. (A green canary is necessary
-but not sufficient — the runtime smoke test, "broken kernel still FAILs the gate,"
-is the behavioral confirmation on the pod.)
+Imports and signatures establish compatibility without a GPU or model. The
+commission's faithful/broken runtime controls establish behavioral acceptance.
 """
 
 from __future__ import annotations
@@ -19,13 +11,8 @@ import inspect
 from dataclasses import dataclass
 from typing import Optional
 
-# The sglang version scored against. Bump DELIBERATELY and in a coordinated way —
-# see docs/dev/sglang-tracking.md. All validators must run the same version (consensus).
-#
-# 0.5.18 (CUDA 13). This is the GLM-5.3 branch's source compatibility target.
-# The exact release source and served GLM image were inspected on 2026-08-30;
-# runtime seam activation, broken/faithful controls, and arena rebaseline remain
-# pending.
+# Default compatibility target for existing GLM deployments. Another arena
+# supplies its own exact pin; its RuntimePreflightConfig enforces the same value.
 PINNED_SGLANG = "0.5.18"
 
 
@@ -54,7 +41,8 @@ def _chokepoint_present(mod, chokepoint: str) -> bool:
     return cls is not None and hasattr(cls, meth)
 
 
-def run_checks() -> list[Check]:
+def run_checks(expected_sglang_version: str = PINNED_SGLANG) -> list[Check]:
+    """Check the exact version commissioned for this arena and its seams."""
     checks: list[Check] = []
 
     def add(name: str, ok: bool, detail: str = "") -> None:
@@ -67,9 +55,9 @@ def run_checks() -> list[Check]:
         return checks
 
     ver = getattr(sglang, "__version__", "?")
-    version_matches = ver == PINNED_SGLANG
+    version_matches = ver == expected_sglang_version
     add(
-        f"sglang installed (pinned {PINNED_SGLANG})",
+        f"sglang installed (pinned {expected_sglang_version})",
         version_matches,
         f"found {ver}" + ("" if version_matches else "  <-- DIFFERS from pin"),
     )
@@ -209,21 +197,9 @@ def run_checks() -> list[Check]:
     return checks
 
 
-# ---- blessed dependency base (consensus pin surface) ----
-# The kernel-library surface the subnet scores on. A miner kernel runs against
-# these libraries and a base override-kernel is composed from them, so for
-# CONSENSUS they must be identical across validators: two validators on
-# different flashinfer (or cutlass / triton) JIT *different* kernels ->
-# different throughput AND numerics -> divergent weight vectors -> Yuma
-# penalty. Only sglang is pinned (PINNED_SGLANG above); the kernel libs ride
-# along implicitly, so this makes the whole import surface an explicit,
-# canary-checked pin. stdlib-only (no torch import) so the canary runs
-# anywhere. Per-arena: when arenas merge this becomes part of the Arena (the
-# docker_image should expose this enumerated, hashed set, not an opaque blob).
-# A pinned version of None = record-only: the canary reports the installed
-# version (the consensus-audit surface) but does not enforce, because the
-# exact arena versions aren't validated yet. Set a version to enforce it (a
-# mismatch then fails the canary, like the sglang pin).
+# Kernel library versions are part of the commissioned image/runtime identity.
+# None below means record-only in this canary; an explicit version is enforced.
+# A matching library list does not replace the image or end-to-end acceptance.
 
 
 @dataclass(frozen=True)

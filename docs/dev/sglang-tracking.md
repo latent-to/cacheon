@@ -2,8 +2,12 @@
 
 Cacheon competes against and integrates with an exact SGLang runtime. The pin is
 part of evaluation and release identity, not a loose minimum version. The
-source pin is `0.5.18` in
-[`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py).
+default compatibility pin is `0.5.18` in
+[`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py). Different arenas may commission different exact runtimes.
+Run `python -m cacheon.cli compat --sglang-version 0.5.19` inside a Qwen image
+commissioned for that version. The runtime preflight independently compares the
+installed version with its sealed `expected_sglang_version`. This does not
+change GLM's runtime pin or authorize mixing measurements across versions.
 
 A green static seam canary establishes import and chokepoint compatibility only. A
 runtime pin is eligible for evaluation or release authority only after end-to-end GPU

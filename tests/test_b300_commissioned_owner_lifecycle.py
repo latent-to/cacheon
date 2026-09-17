@@ -195,7 +195,7 @@ def owner(
     monkeypatch.setattr(
         commission_module.screen_deployment,
         "replay_commissioned_screen_composition",
-        lambda _registration, _ready: (object(), composition, readiness),
+        lambda _registration, _ready, **_kwargs: (object(), composition, readiness),
     )
     monkeypatch.setattr(
         commission_module,

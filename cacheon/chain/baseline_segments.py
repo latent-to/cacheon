@@ -35,8 +35,6 @@ if TYPE_CHECKING:
     from cacheon.chain.intake import FinalizedIntakeStore
     from cacheon.stack_manifest import EvaluationStackManifest
 
-RETIRED_ARENA_REBIND = "retired_arena_rebind"
-
 # Rows that hold no qualification evidence yet. A qualifying row holds a lease
 # and a reproduction_pending row holds a PASS half; both keep their segment so
 # the boundary stays visible to the operator instead of being rebound.
@@ -67,11 +65,13 @@ def bind_reservation_baseline_segment(
     ):
         raise IntakeError("reservation baseline binding is malformed")
     reservation = store._db.execute(
-        "SELECT retry_group_digest FROM reservations WHERE reservation_id=?",
+        "SELECT retry_group_digest,competition_arena FROM reservations WHERE reservation_id=?",
         (reservation_id,),
     ).fetchone()
     if reservation is None:
         raise IntakeError("reservation baseline binding lost its reservation")
+    if reservation["competition_arena"] != store._competition_arena:
+        raise IntakeError("baseline belongs to another competition arena")
     group = reservation["retry_group_digest"]
     reservation_ids = (reservation_id,)
     if group:
@@ -146,21 +146,14 @@ def bind_unbound_queue_to_stack(
 ) -> None:
     """Bind every unbound active row the stack's arena may answer for."""
 
-    stack_count = store._db.execute(
-        "SELECT COUNT(*) AS n FROM evaluation_stacks"
-    ).fetchone()["n"]
     active_marks = ",".join("?" for _ in _ACTIVE)
-    if stack_count == 1:
-        authority = "(r.arena_service_digest=? OR r.arena_service_digest='')"
-    else:
-        authority = "r.arena_service_digest=?"
     rows = tuple(
         store._db.execute(
             "SELECT r.reservation_id FROM reservations AS r WHERE "
-            f"r.status IN ({active_marks}) AND {authority} AND NOT EXISTS ("
+            f"r.status IN ({active_marks}) AND r.competition_arena=? AND NOT EXISTS ("
             "SELECT 1 FROM reservation_baseline_segments AS b "
             "WHERE b.reservation_id=r.reservation_id)",
-            (*_ACTIVE, state.arena_digest),
+            (*_ACTIVE, store._competition_arena),
         )
     )
     for row in rows:
@@ -189,12 +182,12 @@ def backfill_reservation_baseline_segments(
             store._db.execute(
                 "SELECT r.reservation_id,r.target_id,r.arena_service_digest "
                 "FROM reservations AS r WHERE "
-                f"r.status IN ({active_marks}) AND NOT EXISTS (SELECT 1 FROM "
+                f"r.status IN ({active_marks}) AND r.competition_arena=? AND NOT EXISTS (SELECT 1 FROM "
                 "reservation_baseline_segments AS b WHERE "
                 "b.reservation_id=r.reservation_id) "
                 "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,"
                 "r.content_hash",
-                _ACTIVE,
+                (*_ACTIVE, store._competition_arena),
             )
         )
         for reservation in pending:
@@ -298,44 +291,15 @@ def qualification_queue_baseline(
     row = store._db.execute(
         "SELECT b.* FROM reservations AS r LEFT JOIN "
         "reservation_baseline_segments AS b USING(reservation_id) "
-        f"WHERE r.status IN ({active_marks}) ORDER BY r.block,r.event_index,"
+        f"WHERE r.status IN ({active_marks}) AND r.competition_arena=? ORDER BY r.block,r.event_index,"
         "r.event_subindex,r.hotkey,r.content_hash LIMIT 1",
-        _ACTIVE,
+        (*_ACTIVE, store._competition_arena),
     ).fetchone()
     if row is None or row["arena_id"] is None:
         return None
     return store._evaluation_stack_state_from_row(
         row, context="qualification queue baseline"
     )
-
-
-def rebind_retired_arena_segments(
-    store: "FinalizedIntakeStore", live: EvaluationStackState
-) -> tuple[str, ...]:
-    """Rebind every evidence-free row whose segment names an arena other than ``live``'s.
-
-    Rebinding happens in one transaction for the whole queue rather than one
-    head per pass: the selector never picks a row bound to a retired arena, so
-    each such row would otherwise surface as the head in turn.
-    """
-
-    marks = ",".join("?" for _ in _REBINDABLE)
-    with store._transaction():
-        rows = tuple(
-            store._db.execute(
-                "SELECT b.reservation_id FROM reservation_baseline_segments AS b "
-                "JOIN reservations AS r USING(reservation_id) "
-                f"WHERE r.status IN ({marks}) AND b.arena_id<>? "
-                "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,"
-                "r.content_hash",
-                (*_REBINDABLE, live.arena_digest),
-            )
-        )
-        for row in rows:
-            bind_reservation_baseline_segment(
-                store, row["reservation_id"], live, reason=RETIRED_ARENA_REBIND
-            )
-    return tuple(row["reservation_id"] for row in rows)
 
 
 def commission_boundary(
@@ -373,12 +337,12 @@ def commission_boundary(
     with store._transaction():
         rows = tuple(store._db.execute(
             "SELECT r.reservation_id FROM reservations AS r "
-            f"WHERE r.status IN ({marks}) AND NOT EXISTS ("
+            f"WHERE r.status IN ({marks}) AND r.competition_arena=? AND NOT EXISTS ("
             "SELECT 1 FROM evaluation_lease_members AS m "
             "WHERE m.reservation_id=r.reservation_id AND m.active=1) "
             "AND NOT EXISTS (SELECT 1 FROM settlement_qualifications AS q "
             "WHERE q.reservation_id=r.reservation_id)",
-            _REBINDABLE,
+            (*_REBINDABLE, store._competition_arena),
         ))
         for row in rows:
             prior = reservation_baseline_segment(store, row["reservation_id"])
@@ -405,12 +369,10 @@ def commission_boundary(
 
 
 __all__ = [
-    "RETIRED_ARENA_REBIND",
     "backfill_reservation_baseline_segments",
     "bind_reservation_baseline_segment",
     "bind_unbound_queue_to_stack",
     "commission_boundary",
     "qualification_queue_baseline",
-    "rebind_retired_arena_segments",
     "reservation_baseline_segment",
 ]

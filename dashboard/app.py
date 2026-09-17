@@ -582,7 +582,7 @@ def submission_row(r: dict[str, Any]) -> dict[str, Any]:
         "block_links": links_for_block(int(r["block"])),
         "event_index": r["event_index"],
         "admission_epoch": r["admission_epoch"],
-        "competition": competition_label(r["block"]),
+        "competition": competition_label(r["block"], r.get("competition_arena", "")),
         "screen_lane": r.get("screen_lane") or "",
         "screen_status": r.get("screen_status") or "",
         "screen_attempts": r.get("screen_attempts") or 0,
@@ -785,11 +785,7 @@ def submissions(
     total = con.execute(
         f"SELECT count(*) FROM reservations {clause}", args).fetchone()[0]
     data = rows(con, f"""
-        SELECT reservation_id, block, event_index, event_subindex, hotkey,
-               content_hash, invalid_reason, admission_epoch, status, target_id,
-               transport_attempts, screen_lane, screen_status, screen_attempts,
-               retry_position, decision, reason,
-               eval_cost_payment_block, eval_cost_payment_extrinsic_index
+        SELECT *
         FROM reservations {clause}
         ORDER BY block {'ASC' if order == 'asc' else 'DESC'}, event_index
         LIMIT ? OFFSET ?
@@ -914,11 +910,7 @@ def queue() -> dict[str, Any]:
     con = intake_conn()
     cutoff = cutoff_block(con)
     pending = rows(con, f"""
-        SELECT reservation_id, block, event_index, hotkey, content_hash, status,
-               target_id, screen_lane, screen_status, screen_attempts,
-               transport_attempts, retry_position, decision, reason,
-               admission_epoch, invalid_reason, event_subindex,
-               eval_cost_payment_block, eval_cost_payment_extrinsic_index
+        SELECT *
         FROM reservations
         WHERE (status IN ({','.join('?' * len(ACTIVE_STATUSES))}) OR status='held')
               AND block >= ?
@@ -1065,7 +1057,7 @@ def winners() -> dict[str, Any]:
     con = intake_conn()
     passed = rows(con, """
         SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
-               r.hotkey, r.block AS submission_block, r.content_hash,
+               r.*, r.block AS submission_block,
                max(q.retained_block) AS passed_block
         FROM settlement_candidates sc
         JOIN reservations r ON r.reservation_id = sc.reservation_id
@@ -1127,7 +1119,7 @@ def winners() -> dict[str, Any]:
             "passed": with_time(passed_block),
             "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
-            "competition": competition_label(row["submission_block"]),
+            "competition": competition_label(row["submission_block"], row.get("competition_arena", "")),
             **measured_baseline(speeds_by_reservation.get(row["reservation_id"], []), primary),
             **prefill_summary(speeds_by_reservation.get(row["reservation_id"], [])),
             "weight_share": share_value(shares, hotkey),

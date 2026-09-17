@@ -1,4 +1,4 @@
-"""Contracts for the fixed, model-free B300 TP4 graph OCI lifetime."""
+"""Model-free graph OCI contracts across commissioned lane widths."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from cacheon.eval.b300_prepared_graph_probe import PreparedGraphProbeRequest
 from cacheon.eval.device_state import DeviceStatePolicy, DeviceStatePolicyError
 from cacheon.eval.engine_launch import (
     LogicalHardwareSpec,
-    NativeBuildSpec,
     PhysicalHardwareBinding,
     TrustedLaunchBinding,
     native_compiler_policy_digest,
@@ -37,7 +36,7 @@ def _h(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
 
 
-def _gpus():
+def _gpus(count):
     return tuple(
         replace(
             _gpu(),
@@ -45,38 +44,36 @@ def _gpus():
             uuid=f"GPU-0000000{index}-0000-0000-0000-00000000000{index}",
             pci_bus_id=f"00000000:{index + 1:02x}:00.0",
         )
-        for index in range(4)
+        for index in range(count)
     )
 
 
-def _tp4(profile, backend, policy: DeviceStatePolicy):
+def _prepared(profile, backend, policy: DeviceStatePolicy):
     tree = profile.prepared.binding.tree
-    topology = _h("b300-tp4-topology")
+    count = len(policy.expected_gpus)
+    architecture = "sm90" if count == 1 else "sm120"
+    topology = _h(f"tp{count}-topology")
     hardware = LogicalHardwareSpec(
-        4, "sm120", "nvlink4", topology, 4, 1, 1, policy.policy_sha256
+        count, architecture, "test-lane", topology, count, 1, 1, policy.policy_sha256
     )
     physical = PhysicalHardwareBinding(
-        ("0", "1", "2", "3"), "sm120", "nvlink4", topology, 4, 1, 1,
+        tuple(str(gpu.physical_id) for gpu in policy.expected_gpus),
+        architecture, "test-lane", topology, count, 1, 1,
         policy.policy_sha256,
     )
     original = backend.native
-    native = NativeBuildSpec(
+    native = replace(
+        original,
         tree_digest=tree.tree_digest,
-        image_digest=original.image_digest,
-        platform_digest=original.platform_digest,
-        worker_distribution_digest=original.worker_distribution_digest,
-        toolchain_digest=original.toolchain_digest,
-        patcher_digest=original.patcher_digest,
         compiler_flags_digest=native_compiler_policy_digest(
             image_digest=original.image_digest,
             worker_distribution_digest=original.worker_distribution_digest,
             dependency_policy_digest=original.dependency_policy_digest,
-            target_architecture="sm120",
+            target_architecture=architecture,
         ),
-        target_architecture="sm120",
-        dependency_policy_digest=original.dependency_policy_digest,
+        target_architecture=architecture,
     )
-    engine = replace(profile.prepared.session_plan.engine_config, tp_size=4)
+    engine = replace(profile.prepared.session_plan.engine_config, tp_size=count)
     launch = replace(
         backend.launch,
         stack_digest=tree.stack_digest,
@@ -106,15 +103,15 @@ def _tp4(profile, backend, policy: DeviceStatePolicy):
     return bound, _request(bound)
 
 
-@pytest.fixture
-def commissioned(tmp_path: Path):
+@pytest.fixture(params=(1, 4), ids=("tp1", "tp4"))
+def commissioned(tmp_path: Path, request):
     backend = _backend_case(tmp_path / "backend")
-    policy = replace(backend.device_policy, expected_gpus=_gpus())
+    policy = replace(backend.device_policy, expected_gpus=_gpus(request.param))
     rows = []
     for label, source in (("singleton", SILU), ("atomic", FUSED)):
         copied = tmp_path / f"{label}-source"
         shutil.copytree(source, copied, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        rows.append(_tp4(_profile(tmp_path / label, copied, label), backend, policy))
+        rows.append(_prepared(_profile(tmp_path / label, copied, label), backend, policy))
     publication = tmp_path / "native-publication"
     publication.mkdir(mode=0o700)
     source = tmp_path / "controller-source"
@@ -211,7 +208,8 @@ def test_fixed_argv_round_trips_two_registered_targets_without_model(
         assert "--network=none" in argv and "--read-only" in argv
         assert "--cap-drop=ALL" in argv
         assert "--security-opt=no-new-privileges=true" in argv
-        assert '--gpus="device=0,1,2,3"' in argv
+        devices = ",".join(str(gpu.physical_id) for gpu in policy.expected_gpus)
+        assert f'--gpus="device={devices}"' in argv
         assert argv[-6:] == (
             f"--entrypoint={backend.runtime.container_python}",
             backend.preflight.local_image_id,
@@ -255,7 +253,7 @@ def test_failures_hold_and_prove_cleanup(commissioned, monkeypatch, outcome):
     assert executor.manager.prove_quiescent().lease_records == ()
 
 
-def test_tp4_and_device_policy_mismatch_reject_before_container(commissioned, monkeypatch):
+def test_device_policy_mismatch_rejects_before_container(commissioned, monkeypatch):
     backend, policy, rows, publication, source = commissioned
     row, request = rows[0]
     changed = replace(
@@ -290,7 +288,7 @@ def test_tp4_and_device_policy_mismatch_reject_before_container(commissioned, mo
         manager=manager,
         capture_runner=lambda *_a, **_k: None,
     )
-    with pytest.raises(graph_oci.B300PreparedGraphOCIError, match="TP4"):
+    with pytest.raises(graph_oci.B300PreparedGraphOCIError, match="device state policy"):
         executor.execute(tp1_request, original.prepared, deadline=time.monotonic() + 30)
 
 

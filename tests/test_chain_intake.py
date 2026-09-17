@@ -145,7 +145,7 @@ def _publish(store, reservation_id, fingerprint, *, digest, root):
         reservation_id,
         delta_fingerprint=fingerprint,
         publication_digest=digest,
-        publication_root=root,
+        publication_root=root, competition_arena=store._competition_arena,
     )
 
 

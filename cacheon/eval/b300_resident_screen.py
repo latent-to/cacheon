@@ -7,9 +7,10 @@ from cacheon.arena_service import ArenaServiceManifest
 from cacheon.eval.b300_arena_definition import (
     B300ScreenDeploymentError, data_parallel_size as _data_parallel_size,
     engine_config as _engine_config, scored_cell as _scored_cell,
+    hardware_bindings as _hardware_bindings,
 )
 from cacheon.eval.b300_arena_provider import B300ResidentScreenFactory, B300ResidentScreenLifetime
-from cacheon.eval.engine_launch import EngineLaunchSpec, LogicalHardwareSpec, PhysicalHardwareBinding, TrustedLaunchBinding
+from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
 from cacheon.eval.oci_backend import OCIEngineExecutor, TrustedArenaModelMountReceipt, expected_runtime_preflight
 from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.resident_queue import ScreenPolicy
@@ -26,10 +27,10 @@ def _resident_factory(
     catalog: TargetCatalog,
     manifest_provider: Callable[[], ArenaServiceManifest],
 ) -> B300ResidentScreenFactory:
-    """Build one stock TP4 engine lifetime shared by queued arrivals."""
+    """Build the commissioned stock engine lifetime shared by queued arrivals."""
 
     from cacheon.eval.b300_screen_deployment import (
-        ARCHITECTURE, GPU_COUNT, TP_SIZE, _commissioned_stock_authority,
+        _commissioned_stock_authority,
         _file_sha256, _native_build,
     )
 
@@ -60,30 +61,14 @@ def _resident_factory(
 
         policy = inputs.device_policy
         dp_size = _data_parallel_size(inputs.engine_template)
-        hardware = LogicalHardwareSpec(
-            visible_gpu_count=GPU_COUNT,
-            architecture=ARCHITECTURE,
-            topology_class=inputs.runtime.topology_class,
-            topology_digest=inputs.topology_digest,
-            tp_size=TP_SIZE,
-            ep_size=1,
-            dp_size=dp_size,
-            device_policy_digest=policy.policy_sha256,
-        )
-        physical = PhysicalHardwareBinding(
-            physical_gpu_ids=tuple(str(gpu.physical_id) for gpu in inputs.gpus),
-            architecture=ARCHITECTURE,
-            topology_class=inputs.runtime.topology_class,
-            topology_digest=inputs.topology_digest,
-            tp_size=TP_SIZE,
-            ep_size=1,
-            dp_size=dp_size,
-            device_policy_digest=policy.policy_sha256,
+        hardware, physical = _hardware_bindings(
+            inputs.runtime, policy, dp_size=dp_size,
         )
         native = _native_build(
             tree.tree_digest,
             inputs.preflight,
             executor.config.prebuild.policy,
+            inputs.runtime.target_architecture,
         )
         binding = TrustedLaunchBinding(
             materialized_tree_root=tree.root,
