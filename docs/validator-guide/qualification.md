@@ -228,7 +228,7 @@ A sealed commission enables the lane with an optional block inside
 ```json
 "resident_speed": {
   "max_stage_seconds": 900,
-  "prefill_lane": {"min_margin": "0.05", "credit_weight": "0.33"}
+  "prefill_lane": {"min_margin": "0.02", "credit_weight": "0.5"}
 }
 ```
 
