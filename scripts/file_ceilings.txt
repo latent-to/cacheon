@@ -37,7 +37,7 @@ cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1205
 cacheon/receipts.py 908
 cacheon/settlement.py 1075
-cacheon/slots.py 918
+cacheon/slots.py 919
 cacheon/target_catalog.py 964
 cacheon/verify.py 988
 cacheon/verify_collective.py 1068

@@ -18,7 +18,7 @@ import torch
 
 from cacheon.capabilities import collective_call_descriptor
 from cacheon.dispatch import _arch_tag, _audit, _in_cuda_graph, _receipts
-from cacheon.dp_output_projection_contract import SLOT, output_spec, reference
+from cacheon.dp_output_projection_contract import SLOT, graded_reference, output_spec, reference
 from cacheon.registry import REGISTRY
 from cacheon.tensor_spec import allocate_output_spec, tensor_bindings, validate_tensor_bindings
 
@@ -150,14 +150,17 @@ def _finish(deferred, residual, norm):
     if audit and state.batch.original_global_num_tokens_cpu is None:
         _audit.baseline_refused(SLOT)
         audit = False
+    if audit:  # FP4 is graded after the candidate ran; keep the scale it could not have touched
+        inputs["quant_scale"] = inputs["quant_scale"].clone()
     expected = reference(inputs, group.device_group, group.rank_in_group, group.world_size) if audit else None
     _receipts.invoke(SLOT, impl.entry, deferred.x, residual, cache[key], *outputs, group.device_group)
     validate_tensor_bindings(tensors, bindings, kind="DP output preparation input/output")
     if expected is not None:
         audited = _audit_rows(outputs, state.batch, group)
         if audited[0].numel():
-            expected = _audit_rows(expected, state.batch, group)
-            _audit.run(SLOT, audited, lambda: expected)
+            # Inside the thunk a grading error is a compare_error, never an engine crash.
+            _audit.run(SLOT, audited, lambda: _audit_rows(
+                graded_reference(inputs, outputs, expected), state.batch, group))
         else:
             _audit.baseline_refused(SLOT)
     _receipts.completed(SLOT)

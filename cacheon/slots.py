@@ -158,6 +158,7 @@ class SlotSpec:
     # Collectives whose reference is not an all-reduce may provide the complete
     # distributed oracle directly: (inputs, group, rank, world_size) -> outputs.
     collective_reference: Optional[Callable] = None
+    graded_reference: Optional[Callable] = None  # (inputs, outputs, expected) -> expected graded inside a tolerance
     # Per-slot end-to-end KL gate, calibrated to THIS slot's intrinsic noise floor (the
     # generic 5e-3 default is tuned for elementwise ops; attention sits ~6e-3 vs flash's
     # reordered softmax, so a flat 5e-3 false-fails a faithful attention kernel — README

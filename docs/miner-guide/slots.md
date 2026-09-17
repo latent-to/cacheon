@@ -57,6 +57,11 @@ Eligible decode calls use the same selection path during eager qualification
 audits and CUDA graph capture; selection is not limited to capture itself.
 Matching empty optional outputs pass the live audit, as they do offline verification;
 nonempty outputs retain their registered numerical tolerances.
+The normalized rows and local residual are graded against the FP64 reference within
+the BF16 tolerance. An NVFP4 block scale is accepted when it is the reference scale of
+some block within that tolerance of the reference rows. A packed byte is accepted when
+its block scale is accepted and both codes are the reference codes, under that scale, of
+values within the tolerance. Offline verification and the live audit apply the same rule.
 The live projection audit uses SGLang's original per-rank token counts to compare
 real rows. Padding on idle ranks is excluded from comparison; computation and
 returned buffers are unchanged. Entirely idle calls and SGLang's synthetic
