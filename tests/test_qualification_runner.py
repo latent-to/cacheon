@@ -375,13 +375,13 @@ class _Harness:
                 )
                 from cacheon.audit import gate
 
-                passed, detail = gate(
+                graded, detail = gate(
                     [receipt.to_gate_dict() for receipt in receipts],
                     min_calls=policy.minimum_calls,
                     expected_slots=policy.expected_slots,
                     expected_member_count=policy.expected_member_count,
                 )
-                assert passed == (decision is QualificationDecision.PASS)
+                assert graded == decision.value
                 witness = runner.AuditWitness(
                     authority.selected_delta_digest,
                     getattr(getattr(value, "resident_audit_plan", None), "launch",
@@ -1308,13 +1308,13 @@ def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
         runner.AuditWitness.from_dict(spelling_tamper)
 
 
-def test_audit_witness_grades_policy_bound_empty_receipts_as_fail() -> None:
+def test_audit_witness_grades_policy_bound_empty_receipts_as_no_decision() -> None:
     policy = runner.SlotAuditPolicy(
         "a" * 32, 250_000, 32, ("moe.fused_experts_reduce",), 4
     )
     witness = _audit_witness("empty-audit", policy, (), "3" * 32)
 
-    assert witness.decision is QualificationDecision.FAIL
+    assert witness.decision is QualificationDecision.NO_DECISION
     assert witness.receipts == ()
     assert witness.detail == "no audit receipts (need >= 32 audited calls)"
     assert runner.AuditWitness.from_dict(witness.to_dict()) == witness

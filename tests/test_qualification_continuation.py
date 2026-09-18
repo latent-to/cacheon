@@ -420,13 +420,13 @@ def _audit_witness() -> tuple[str, object]:
             "norm.rmsnorm", 32, 0, 0, 0, 1.0, 0.995, "allclose", 900, 0, 1
         ),
     )
-    passed, detail = gate(
+    graded, detail = gate(
         [row.to_gate_dict() for row in receipts],
         min_calls=policy.minimum_calls,
         expected_slots=policy.expected_slots,
         expected_member_count=policy.expected_member_count,
     )
-    assert passed
+    assert graded == "PASS"
     witness = runner.AuditWitness(
         _d("delta-0"),
         _d("candidate-launch"),

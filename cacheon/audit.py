@@ -197,7 +197,10 @@ def capture_reference(
 
     MoE stock must see the original input address: upstream FP4 outputs are bound
     to it. Copy the result instead of the input (2026-09-18 audit comparison errors).
-    A baseline error is a compare_error, not an engine crash. For COLLECTIVE
+    A baseline error is a refusal, not an engine crash and not a compare_error:
+    stock produced nothing to compare against, which says nothing about the
+    candidate. That incident's 7,500 baseline errors, with zero violations,
+    terminally failed a correct bundle. For COLLECTIVE
     baselines the thunk itself is a collective; if it errors on one rank the
     engine is already unrecoverable —
     hang-avoidance beyond that is out of scope here.
@@ -208,9 +211,7 @@ def capture_reference(
             expected = (expected,)
     except Exception:  # noqa: BLE001
         try:
-            s = _slot_stats(slot)
-            s["compare_errors"] += 1
-            _receipt(slot)
+            baseline_refused(slot)
         except Exception:  # noqa: BLE001
             pass
         logger.exception("cacheon.audit: baseline call failed (slot=%s)", slot)

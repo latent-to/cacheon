@@ -47,6 +47,9 @@ _OBSERVED_IN_PRODUCTION = (
     "fetch:archive member is excluded from bundle identity: source/kernels/._moe.py",
     "manifest:unsupported capability field init_blocks",
     "systemic_release_cap:3",
+    # Shown bare to miners on 2026-09-16, 09-17 and 09-18, with no explanation.
+    "slot_audit_failed",
+    "audit_not_covered",
 )
 
 
@@ -56,6 +59,22 @@ def test_reason_seen_in_production_is_explained(code: str) -> None:
     assert guidance is not None, f"{code} has been shown to a miner with no explanation"
     assert guidance["cause"].strip()
     assert guidance["next_step"].strip()
+
+
+def test_explain_shows_what_the_audit_compared_on_each_rank() -> None:
+    from cacheon.eval.explain import _audit_lines
+
+    assert _audit_lines({}) == []
+    verdict, grid = _audit_lines({"audit_witness": {
+        "decision": "NO_DECISION",
+        "detail": "audit per-slot/member coverage is insufficient",
+        "receipts": [{"slot": "moe.routed_experts", "rank": 0, "n": 0,
+                      "violations": 0, "baseline_refused": 78}],
+    }})
+    assert "NO_DECISION" in verdict and "coverage is insufficient" in verdict
+    assert grid.endswith(
+        "moe.routed_experts rank 0: 0 compared, 0 outside tolerance, 78 not comparable"
+    )
 
 
 def test_guidance_never_invents_an_explanation() -> None:

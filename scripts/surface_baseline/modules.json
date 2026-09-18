@@ -3,7 +3,7 @@
  "cacheon._strict": {"all":null,"exceptions":[],"public":["duplicate_key_pairs","require_digest","require_driver_integer","require_exact_fields","require_identifier","require_int","truthy_flag"]},
  "cacheon.arena_service": {"all":["AdmissionDecision","ArenaCandidateBinding","ArenaCapacityPolicy","ArenaQualificationRequest","ArenaQualificationWork","ArenaQueueSnapshot","ArenaRuntimeIdentity","ArenaScreenReceipt","ArenaService","ArenaServiceError","ArenaServiceManifest","ArenaServiceProvider","ArenaServiceRegistry","NonCrownScreenPolicy","PromotionDecision","SCREEN_STAGES","ScreenGrade","ScreenStagePolicy","ScreenStageResult","Workload","WorkloadCell"],"exceptions":["ArenaServiceError"]},
  "cacheon.audit": {"all":null,"exceptions":[],"public":["baseline_refused","capture_reference","enabled","record","run","sampled"]},
- "cacheon.audit_gate": {"all":null,"exceptions":[],"public":["gate"]},
+ "cacheon.audit_gate": {"all":null,"exceptions":[],"public":["gate","grade"]},
  "cacheon.bootstrap": {"all":null,"exceptions":[],"public":["install"]},
  "cacheon.bundle_hash": {"all":null,"exceptions":[],"public":["CARRIER_RECEIPT_NAME","content_hash"]},
  "cacheon.capabilities": {"all":null,"exceptions":["CapabilityMetadataError"],"public":["CONTEXT_FIELDS","CallDescriptor","CapabilityDomain","CapabilityMatch","CapabilityMetadataError","CapabilityMismatch","CapabilityPredicate","NUMERIC_FIELDS","SUPPORTED_FIELDS","canonical_field_name","canonical_value","capability_domain_from_metadata","collective_call_descriptor"]},

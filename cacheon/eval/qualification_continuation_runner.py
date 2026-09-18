@@ -105,13 +105,15 @@ def run_continuation_quality_stage(
         teardown: Any,
     ) -> QualificationContinuationStageResult:
         audit = audit_witnesses[value.candidates[0].selected_delta_digest]
+        # The stage exit re-checks this pair against the runner's own vocabulary.
+        failed = audit.decision is seams.qualification_decision.FAIL
         terminal = seams.qualification_stage_exit_type(
             seams.qualification_authority_digest(value),
             value.prepared.source.digest,
             value.candidates[0].selected_delta_digest,
             "audit",
-            seams.qualification_decision.FAIL,
-            "slot_audit_failed",
+            audit.decision,
+            "slot_audit_failed" if failed else "audit_not_covered",
             resident_speed_witness,
             audit,
             audit_started,

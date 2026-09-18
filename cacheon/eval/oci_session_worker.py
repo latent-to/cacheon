@@ -1319,12 +1319,12 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                 except CandidateExecutionCoverageError as exc:
                     if audit_policy is None:
                         raise
-                    # The audit gate already treats an empty policy-bound receipt
-                    # set as candidate FAIL. Preserve the exact execution cause in
-                    # captured stderr while allowing the typed FAIL witness to cross
-                    # the worker boundary instead of converting it into HOLD/retry.
+                    # The audit gate grades an empty policy-bound receipt set
+                    # NO_DECISION. Preserve the exact execution cause in captured
+                    # stderr while the typed witness crosses the worker boundary,
+                    # so the host grades it instead of a transport failure.
                     print(
-                        f"CACHEON-AUDIT-CANDIDATE-FAIL: {exc}",
+                        f"CACHEON-AUDIT-NOT-COVERED: {exc}",
                         file=sys.stderr,
                         flush=True,
                     )

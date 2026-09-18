@@ -388,11 +388,12 @@ def _complete_candidate_execution(
     except CandidateExecutionCoverageError as exc:
         if audit_policy is None:
             raise
-        # The host audit gate grades an empty policy-bound receipt set FAIL.
+        # The host audit gate grades an empty policy-bound receipt set
+        # NO_DECISION (a candidate FAIL until the 2026-09-18 owner ruling).
         # This module is the file bind-mounted into the sealed OCI image, so the
         # conversion must live here rather than in the image-owned session loop.
         print(
-            f"CACHEON-AUDIT-CANDIDATE-FAIL: {exc}",
+            f"CACHEON-AUDIT-NOT-COVERED: {exc}",
             file=sys.stderr,
             flush=True,
         )

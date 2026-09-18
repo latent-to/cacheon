@@ -121,6 +121,22 @@ members actually captured) and `graph_eager_failed`. A kernel that is correct in
 eager mode but cannot be captured and replayed is not shippable here. See
 [Graph correctness](graph-safety.md).
 
+## The audit compares your kernel with stock
+
+After the speed stage, an untimed eager run samples live calls to your slot and
+compares each output with stock SGLang on the same inputs, at the slot's
+registered tolerance.
+
+- `slot_audit_failed` — compared calls show a different function: a call far
+  outside tolerance, or more than one compared call in 100 just outside it.
+  Rare near misses from low-precision rounding pass. Compare against stock at
+  the live shapes and dtypes before resubmitting.
+- `audit_not_covered` — the audit compared too few calls to grade the kernel.
+  This is not a judgement on the bundle: the disposition is `NO_DECISION` and
+  the validator re-evaluates it.
+
+The exact rule is in [Audit outcomes](../validator-guide/fidelity.md#audit-outcomes).
+
 ## Identical bytes are not re-evaluated
 
 If the validator has already produced a terminal verdict for exactly your

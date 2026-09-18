@@ -206,17 +206,17 @@ def test_composed_audit_keeps_selected_target_and_full_execution_coverage(
             (selected, rank) for rank in range(tp_size)
         }
         grade = dict(min_calls=4, expected_slots=(selected,), expected_member_count=tp_size)
-        assert gate(rows, **grade)[0]
+        assert gate(rows, **grade)[0] == "PASS"
         rows[0]["violations"] = 1
-        assert not gate(handle.collect_audit_receipts(), **grade)[0]
+        assert gate(handle.collect_audit_receipts(), **grade)[0] == "FAIL"
         rows[0]["violations"] = 0
         audits.append({**rows[0], "slot": "unregistered.slot"})
-        assert not gate(handle.collect_audit_receipts(), **grade)[0]
+        assert gate(handle.collect_audit_receipts(), **grade)[0] == "NO_DECISION"
         audits.pop()
         observed["audit"] = [row for row in audits if not (
             row["slot"] == selected and row["rank"] == 0
         )]
-        assert not gate(handle.collect_audit_receipts(), **grade)[0]
+        assert gate(handle.collect_audit_receipts(), **grade)[0] == "NO_DECISION"
 
     for invalid in (replace(policy, expected_slots=("missing.slot",)),
                     replace(policy, expected_member_count=tp_size + 1)):

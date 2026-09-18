@@ -260,6 +260,21 @@ def _correctness_lines(graph_evidence: dict) -> list[str]:
     return lines
 
 
+def _audit_lines(stage_exit: dict) -> list[str]:
+    """The in-engine comparison against stock: what was compared, per slot and rank."""
+    witness = _get(stage_exit, "audit_witness", default=None)
+    if not isinstance(witness, dict):
+        return []
+    grid = "; ".join(
+        f"{r.get('slot')} rank {r.get('rank')}: {r.get('n')} compared, "
+        f"{r.get('violations')} outside tolerance, "
+        f"{r.get('baseline_refused')} not comparable"
+        for r in witness.get("receipts") or [] if isinstance(r, dict)
+    ) or "no calls were compared on any rank"
+    verdict = f"{witness.get('decision')}: {witness.get('detail')}"
+    return [f"  {'audit against stock':<26s} {verdict}", f"  {'per rank':<26s} {grid}"]
+
+
 def _speed_lines(stage_exit: dict) -> list[str]:
     rates = _get(stage_exit, "speed_witness", "rates", default=[])
     rates = [r for r in rates if isinstance(r, dict)] if isinstance(rates, list) else []
@@ -450,6 +465,7 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
     lines.append("")
     lines.append("did it work")
     lines.extend(_correctness_lines(_first(decoded, "graph-verification")))
+    lines.extend(_audit_lines(stage_exit))
     lines.append("")
     lines.append("was it faster")
     lines.extend(_speed_lines(stage_exit))
