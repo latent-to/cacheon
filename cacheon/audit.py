@@ -175,6 +175,27 @@ def record(slot: str, actual: Sequence[torch.Tensor],
         if not ok:
             s["violations"] += 1
             if s["violations"] <= 4:
+                # Temporary deployment diagnostic; retire after identifying whether
+                # the 2026-09-18 MoE failures belong to scheduler padding.
+                import json
+                import sys
+                seam = sys.modules.get("cacheon.integrations.sglang_dp_output")
+                state = seam._scope.get() if seam is not None else None
+                batch = state.batch if state is not None else None
+                rows = []
+                for a, e in zip(actual, expected):
+                    tol = spec.tolerance_for(a.dtype)
+                    af, ef = a.detach().float(), e.detach().float()
+                    matched = ((af - ef).abs() <= tol.atol + tol.rtol * ef.abs())
+                    rows.append(dict(shape=list(a.shape), matched=matched.float().mean(-1).tolist(),
+                                     actual_finite=torch.isfinite(af).all(-1).tolist(),
+                                     reference_finite=torch.isfinite(ef).all(-1).tolist()))
+                print("CACHEON-AUDIT-ROWS: " + json.dumps(dict(
+                    slot=slot, call=s["n"], rows=rows,
+                    original_counts=getattr(batch, "original_global_num_tokens_cpu", None),
+                    padded_counts=getattr(batch, "global_num_tokens_cpu", None),
+                    padding=str(getattr(batch, "dp_padding_mode", None)),
+                    forward_mode=str(getattr(batch, "forward_mode", None)))), file=sys.stderr, flush=True)
                 logger.warning(
                     "cacheon.audit VIOLATION slot=%s call=%d frac/cos=%.4f (bar %.4f) "
                     "shapes=%s", slot, s["n"], worst, s["min_ratio"],
