@@ -574,6 +574,10 @@ class _MemoryContinuation:
         self.authority_digest = authority_digest or _d("qualification-authority")
         self.source_digest = source_digest or _d("source")
         self.records: dict[str, object] = {}
+        self.recovery_reference = None
+
+    def _load(self, stage):
+        return self.records.get(stage)
 
     def load_final(self):
         return self.records.get("final")
@@ -604,15 +608,8 @@ class _MemoryContinuation:
         assert self.records["audit_armed"] == (value.nonce, value.operation_digest)
         self.records["audit"] = value
 
-    def load_marginal_speed(self, prepared):
-        del prepared
-        return self.records.get("speed")
-
     def record_resident_speed(self, crossover):
         self.records["speed"] = crossover
-
-    def record_marginal_speed(self, lifecycle):
-        self.records["speed"] = lifecycle
 
     def record_quality(self, value):
         assert self.records["t_armed"] == (value.t_nonce, value.t_operation_digest)

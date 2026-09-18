@@ -777,7 +777,7 @@ def _install_resident_runner_path(
     monkeypatch.setattr(runner, "publish_qualification_stage_exit", publish_stage)
     monkeypatch.setattr(runner, "reopen_qualification_stage_exit", reopen_stage)
 
-    clock_values = iter((3.1, 3.4, 3.5, 3.6))
+    clock_values = iter((3.1, 3.2, 3.4, 3.5, 3.6))
     harness.executor.manager.clock = lambda: next(clock_values)
     resident_baseline_executor = object.__new__(OCIEngineExecutor)
     resident_baseline_executor.manager = SimpleNamespace(clock=lambda: 0.0)

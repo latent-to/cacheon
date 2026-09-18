@@ -335,8 +335,23 @@ when needed to reach the required minimum number of checked batches. Generation
 length remains bounded by the audit policy. Reducing these batches to single
 prompts can select a different DP padding or dispatch path and leave a serving
 collective completely unaudited. The host verifies the exact derivation; missing
-slot/rank coverage still fails the audit. Semantic quality remains the separate
+slot/rank coverage still prevents qualification. Semantic quality remains the separate
 pristine T reference's responsibility.
+
+Reference errors and incomplete audit coverage produce an infrastructure HOLD,
+preserving completed speed evidence. Only complete, attributable numerical
+violations produce a candidate FAIL. The validator may correct its own audit
+failure with `qualification_recovery.authorize_recovery`: an append-only child
+continuation retains the original speed and historical disposition, binds the
+corrected audit execution, and runs only missing pristine T. A passed audit can
+also be reused when only T is missing. The operator must authenticate the original
+request and establish executor quiescence before authorizing recovery.
+
+Recovery charges completed speed, audit and reference execution against the
+existing qualification budget; downtime between durable stages is excluded.
+Original timestamps, speed policy, numerical thresholds and bundle identity stay
+intact. Conflicting evidence, exhausted time or a clock reset stop before launch. Recovery grants no PASS or reward by itself: the
+normal grader, evidence import and settlement still consume the completed result.
 
 T remains untimed and candidate-free. The host owns role assignment, monotonic clocks,
 token numerators, conditioning windows, absolute deadlines, device observations, audit
