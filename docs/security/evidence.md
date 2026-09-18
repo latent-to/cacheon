@@ -142,8 +142,10 @@ different evidence claims.
 emits sampled comparison facts for supported live dispatch seams. Production
 qualification keeps those facts out of charged B/C/[B′] roles and obtains them from
 a separate eager, untimed candidate role. [`cacheon/audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
-grades the bounded facts without importing Torch, requires the exact registered slot ×
-TP-rank/process coverage, and rejects malformed, duplicate, or unexpected coverage.
+grades the bounded facts without importing Torch into `PASS`, `FAIL`, or `NO_DECISION`.
+`PASS` requires the exact registered slot × TP-rank/process coverage. Malformed,
+duplicate, unexpected, or insufficient coverage is `NO_DECISION`, never `PASS` and never
+a candidate `FAIL`; see [Audit outcomes](../validator-guide/fidelity.md#audit-outcomes).
 Floating-point facts are canonicalized to decimal strings before durable receipt
 identity.
 

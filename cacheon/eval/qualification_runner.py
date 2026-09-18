@@ -864,6 +864,21 @@ class ResidentSpeedWitness:
         )  # type: ignore[arg-type]
 
 
+# FAIL says the kernel's compared calls are wrong; NO_DECISION says the audit
+# role compared too little to say anything about the kernel.
+_AUDIT_REASONS = {
+    QualificationDecision.FAIL: "slot_audit_failed",
+    QualificationDecision.NO_DECISION: "audit_not_covered",
+}
+
+
+def _grade_audit(receipts, policy) -> tuple[QualificationDecision, str]:
+    from cacheon.audit_gate import grade
+
+    decision, detail = grade(receipts, policy)
+    return QualificationDecision(decision), detail
+
+
 @dataclass(frozen=True)
 class AuditWitness:
     """Raw untimed eager slot-audit facts regraded only by the trusted host."""
@@ -901,10 +916,7 @@ class AuditWitness:
             raise QualificationRunnerError("audit witness receipts are not typed")
         object.__setattr__(self, "receipts", receipts)
         object.__setattr__(self, "decision", _decision(self.decision))
-        passed, detail = self.regrade()
-        expected = (
-            QualificationDecision.PASS if passed else QualificationDecision.FAIL
-        )
+        expected, detail = self.regrade()
         if (
             self.decision is not expected
             or not isinstance(self.detail, str)
@@ -914,15 +926,8 @@ class AuditWitness:
                 "audit witness verdict was not independently host-regraded"
             )
 
-    def regrade(self) -> tuple[bool, str]:
-        from cacheon.audit_gate import gate
-
-        return gate(
-            [row.to_gate_dict() for row in self.receipts],
-            min_calls=self.policy.minimum_calls,
-            expected_slots=self.policy.expected_slots,
-            expected_member_count=self.policy.expected_member_count,
-        )
+    def regrade(self) -> tuple[QualificationDecision, str]:
+        return _grade_audit(self.receipts, self.policy)
 
     @classmethod
     def from_execution(
@@ -961,14 +966,7 @@ class AuditWitness:
                 "receipts": [_record_dict(row) for row in session.audit_receipts],
             },
         )
-        from cacheon.audit_gate import gate
-
-        passed, detail = gate(
-            [row.to_gate_dict() for row in session.audit_receipts],
-            min_calls=policy.minimum_calls,
-            expected_slots=policy.expected_slots,
-            expected_member_count=policy.expected_member_count,
-        )
+        decision, detail = _grade_audit(session.audit_receipts, policy)
         return cls(
             selected_delta_digest,
             execution.launch_digest,
@@ -977,7 +975,7 @@ class AuditWitness:
             execution.resource_policy_digest,
             policy,
             session.audit_receipts,
-            QualificationDecision.PASS if passed else QualificationDecision.FAIL,
+            decision,
             detail,
         )
 
@@ -1075,7 +1073,7 @@ class QualificationStageExit:
                 SPEED_FAIL_REASONS | {"speed_regression"}
             ),
             ("speed", QualificationDecision.NO_DECISION): {"speed_noise"},
-            ("audit", QualificationDecision.FAIL): {"slot_audit_failed"},
+            **{("audit", row): {reason} for row, reason in _AUDIT_REASONS.items()},
         }.get((self.stage, self.decision), {None})
         if self.reason not in allowed_reasons:
             raise QualificationRunnerError("qualification stage-exit reason differs")
@@ -2022,7 +2020,7 @@ def _report_reason(
     if graph.decision is not QualificationDecision.PASS:
         return graph.reason
     if audit.decision is not QualificationDecision.PASS:
-        return "slot_audit_failed"
+        return _AUDIT_REASONS[audit.decision]
     if speed is QualificationDecision.NO_DECISION:
         return "speed_noise"
     if speed is QualificationDecision.FAIL:

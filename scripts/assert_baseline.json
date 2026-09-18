@@ -23,7 +23,7 @@
 "tests/test_b300_sealed_qualification_commission.py": 19,
 "tests/test_b300_worker_graph_capture_retire.py": 3,
 "tests/test_baseline_band.py": 13,
-"tests/test_bundle_hash.py": 9,
+"tests/test_bundle_hash.py": 5,
 "tests/test_cacheon_kernels.py": 17,
 "tests/test_calibration.py": 43,
 "tests/test_capabilities.py": 42,

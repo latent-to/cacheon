@@ -39,7 +39,7 @@ python -m pip install --upgrade pip uv
 
 # General resolver path; verify that the selected Torch wheel matches this host.
 uv pip install "sglang==0.5.18" ninja datasets
-uv pip install -e ".[dev,release]"
+uv pip install -e ".[dev]"
 ```
 
 CUDA 13 hosts may require the CUDA-specific Torch index and a prerelease

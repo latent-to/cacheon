@@ -545,9 +545,9 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 # only on the pre-candidate snapshot, then the validator-owned group
                 # performs the fp32 cross-rank reference reduce.
                 if slot.collective_reference is not None:
-                    refs = slot.collective_reference(
-                        reference_inputs, dist.group.WORLD, rank, world_size
-                    )
+                    refs = slot.collective_reference(reference_inputs, dist.group.WORLD, rank, world_size)
+                    if slot.graded_reference is not None:
+                        refs = slot.graded_reference(reference_inputs, checked_outs, refs)
                 else:
                     partial = (
                         slot.collective_partial(reference_inputs, None)

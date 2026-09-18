@@ -30,7 +30,7 @@ cd cacheon
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[cpu,dev,release]"
+python -m pip install -e ".[cpu,dev]"
 ```
 
 For a GPU host, install the reviewed CUDA-compatible PyTorch and SGLang stack first, then

@@ -349,6 +349,11 @@ stateDiagram-v2
 only observes it. At or after the deadline, absent matching readback becomes `held` rather
 than blindly resubmitting.
 
+Journal readers also accept the follower's `block_inclusion` confirmations. Their
+`confirmed_block` cannot precede submission; `confirmed_last_update=0` means active
+weights have not been recorded by that confirmation. Inclusion and effective chain
+weights remain separate observations, and the offer producer can reopen either form.
+
 On every non-dry invocation, `set-weights` and `follow-weights` resume any retained
 `intent` or `pending` projection before adopting a new one. Chain scope, netuid
 and signer must still match. A refreshed offer cannot replace an in-flight vector.
@@ -356,6 +361,10 @@ An authority mismatch or a direct low-level call bypassing resume fails closed.
 
 The reconciler can confirm a preexisting chain match without signing. It refuses
 a real submission with zero `crown_count`, a different signer, or stale authority.
+Before creating submission intent, it checks the chain's current weight rate limit
+at the finalized signing height. A changed offer inside that window produces a
+retryable error with the first eligible block and leaves the journal unchanged;
+it must not become a `pending` transaction that the SDK never submitted.
 
 If the journal is held, investigate and preserve the record. To append an audited release
 without submitting:

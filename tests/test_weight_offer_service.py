@@ -293,3 +293,26 @@ def test_idle_and_pushed_passes_are_reported_distinctly() -> None:
 
 def test_main_returns_2_on_missing_config(tmp_path: Path) -> None:
     assert main(["--config", str(tmp_path / "missing.json")]) == 2
+
+
+@pytest.mark.parametrize("reason,last_update,confirmed,valid", [
+    ("block_inclusion", 0, 104, True),
+    ("block_inclusion", 0, 99, False),
+    ("block_inclusion", 105, 104, False),
+    ("post_submit_authoritative_readback", 0, 104, False),
+    ("post_submit_authoritative_readback", 102, 104, True),
+])
+def test_reopen_included_weight_record_before_active_readback(reason, last_update, confirmed, valid):
+    from cacheon.chain.weights import WeightPublicationError, WeightPublicationRecord
+    from cacheon.stack_identity import canonical_digest
+
+    wire = dict(projection_digest="a" * 64, status="confirmed", prior_record_digest=None,
+                submit_block=100, retry_after_block=700, reveal_round=23,
+                confirmed_block=confirmed, confirmed_last_update=last_update, reason=reason)
+    if not valid:
+        with pytest.raises(WeightPublicationError, match="chronology"):
+            WeightPublicationRecord.from_dict(wire)
+        return
+    record = WeightPublicationRecord.from_dict(wire)
+    assert record.to_dict() == wire
+    assert record.digest == canonical_digest("cacheon.chain.weight-publication", wire)

@@ -120,14 +120,16 @@ def test_record_unknown_slot_counts_compare_error(monkeypatch):
     assert audit._stats["no.such.slot"]["compare_errors"] == 1
 
 
-def test_run_baseline_error_is_compare_error_not_crash(monkeypatch):
+def test_run_baseline_error_is_a_refusal_not_a_crash_or_compare_error(monkeypatch):
     _arm(monkeypatch)
 
     def boom():
         raise RuntimeError("baseline exploded")
 
     audit.run(SLOT, (torch.randn(4, 8),), boom)
-    assert audit._stats[SLOT]["compare_errors"] == 1
+    assert audit._stats[SLOT]["compare_errors"] == 0
+    assert audit._stats[SLOT]["baseline_refused"] == 1
+    assert audit._stats[SLOT]["n"] == 0
 
 
 def test_run_unwraps_single_tensor_and_tuple(monkeypatch):
@@ -157,30 +159,95 @@ def test_rolling_receipt_overwrites(monkeypatch, tmp_path):
 # ---- eval-driver gate ----------------------------------------------------------
 
 
-def test_gate_no_receipts_fails():
-    ok, desc = audit.gate([], min_calls=32)
-    assert not ok and "no audit receipts" in desc
+def test_gate_no_receipts_is_not_a_kernel_verdict():
+    decision, desc = audit.gate([], min_calls=32)
+    assert decision == "NO_DECISION" and "no audit receipts" in desc
 
 
-def test_gate_violations_fail():
-    ok, desc = audit.gate([{"n": 100, "violations": 1, "worst_frac": 0.2}], min_calls=32)
-    assert not ok and "1 violations" in desc
+def test_gate_gross_violation_fails():
+    decision, desc = audit.gate(
+        [{"n": 100, "violations": 1, "worst_frac": 0.2, "min_ratio": 0.985}],
+        min_calls=32,
+    )
+    assert decision == "FAIL" and "1 violations" in desc and "grossly" in desc
 
 
-def test_gate_insufficient_coverage_fails():
-    ok, desc = audit.gate([{"n": 5, "violations": 0}], min_calls=32)
-    assert not ok and "insufficient coverage" in desc
+def test_gate_violation_without_a_recorded_bar_fails_closed():
+    decision, _ = audit.gate(
+        [{"n": 100, "violations": 1, "worst_frac": 0.98}], min_calls=32
+    )
+    assert decision == "FAIL"
+
+
+def test_gate_insufficient_coverage_is_not_a_kernel_verdict():
+    decision, desc = audit.gate([{"n": 5, "violations": 0}], min_calls=32)
+    assert decision == "NO_DECISION" and "insufficient coverage" in desc
+
+
+def test_gate_wrong_kernel_on_thin_coverage_still_fails():
+    decision, _ = audit.gate(
+        [{"n": 5, "violations": 5, "worst_frac": 0.02, "min_ratio": 0.985}],
+        min_calls=32,
+    )
+    assert decision == "FAIL"
 
 
 def test_gate_compare_errors_fail_closed():
-    ok, _ = audit.gate([{"n": 100, "violations": 0, "compare_errors": 2}], min_calls=32)
-    assert not ok
+    decision, _ = audit.gate(
+        [{"n": 100, "violations": 0, "compare_errors": 2}], min_calls=32
+    )
+    assert decision == "FAIL"
 
 
 def test_gate_clean_passes_and_sums_ranks():
-    ok, desc = audit.gate(
+    decision, desc = audit.gate(
         [{"n": 20, "violations": 0}, {"n": 20, "violations": 0}], min_calls=32)
-    assert ok and "40 audited calls" in desc
+    assert decision == "PASS" and "40 audited calls" in desc
+
+
+def _member(rank, **facts):
+    return {
+        "slot": "collective.dp_output_projection_norm", "pid": 100 + rank,
+        "rank": rank, "world_size": 4, "compare_errors": 0, "min_ratio": 0.985,
+        **facts,
+    }
+
+
+def _grade_members(**facts):
+    return audit.gate(
+        [_member(rank, **facts) for rank in range(4)],
+        min_calls=32,
+        expected_slots=("collective.dp_output_projection_norm",),
+        expected_member_count=4,
+    )[0]
+
+
+def test_gate_replays_the_september_2026_mainnet_audits():
+    # Per-rank facts as retained; sources in the 2026-09-18 failure census.
+    # 09-16, our own bundle: the audit workload never reached the adapter.
+    assert _grade_members(
+        n=0, violations=0, worst_frac=1.0, baseline_refused=78
+    ) == "NO_DECISION"
+    # 09-18 babcbb40: stock replay raised on every call, zero violations. Those
+    # calls are baseline refusals since this change, not compare errors.
+    assert _grade_members(
+        n=0, violations=0, worst_frac=1.0, baseline_refused=1875
+    ) == "NO_DECISION"
+    # 09-17 abb914bc under byte-exact FP4 grading: 24 of 1,872 calls per rank at
+    # worst 0.9642 is a near-miss rate above budget. It passes only because
+    # a0690e91 fixed the grading (0 violations), not because the gate is loose.
+    assert _grade_members(n=1872, violations=24, worst_frac=0.9642) == "FAIL"
+    assert _grade_members(n=1872, violations=0, worst_frac=1.0) == "PASS"
+    # Crowned honest run, and honest siblings, all a hair over the bar.
+    for worst in (0.9862196445, 0.9873, 0.98674, 0.9886):
+        assert _grade_members(n=1872, violations=0, worst_frac=worst) == "PASS"
+    # One near-miss call in 1,872 is no longer terminal (owner ruling 09-18).
+    assert _grade_members(n=1872, violations=1, worst_frac=0.9791) == "PASS"
+    # Wrong kernels: 09-03 83df0417 and the four 09-13..15 norm rows.
+    assert _grade_members(n=1197, violations=914, worst_frac=0.1748) == "FAIL"
+    assert _grade_members(n=1878, violations=604, worst_frac=0.0177) == "FAIL"
+    # 09-18 padding defect: a single gross call fails however rare it is.
+    assert _grade_members(n=18000, violations=75, worst_frac=0.749966) == "FAIL"
 
 
 def test_gate_requires_exact_slot_by_rank_cartesian_coverage():
@@ -199,21 +266,21 @@ def test_gate_requires_exact_slot_by_rank_cartesian_coverage():
         for rank in range(2)
     ]
     slots = ("activation.silu_and_mul", "norm.rmsnorm")
-    ok, _ = audit.gate(
+    decision, _ = audit.gate(
         rows,
         min_calls=32,
         expected_slots=slots,
         expected_member_count=2,
     )
-    assert ok
+    assert decision == "PASS"
 
-    ok, desc = audit.gate(
+    decision, desc = audit.gate(
         rows[:-1],
         min_calls=32,
         expected_slots=slots,
         expected_member_count=2,
     )
-    assert not ok and "incomplete" in desc
+    assert decision == "NO_DECISION" and "incomplete" in desc
 
 
 def test_gate_requires_minimum_calls_on_every_slot_rank_receipt():
@@ -230,13 +297,13 @@ def test_gate_requires_minimum_calls_on_every_slot_rank_receipt():
         }
         for rank in range(2)
     ]
-    ok, desc = audit.gate(
+    decision, desc = audit.gate(
         rows,
         min_calls=32,
         expected_slots=("norm.rmsnorm",),
         expected_member_count=2,
     )
-    assert not ok and "per-slot/member coverage" in desc
+    assert decision == "NO_DECISION" and "per-slot/member coverage" in desc
 
 
 # ---- dispatcher wiring (rmsnorm: the pure-op case) -------------------------------

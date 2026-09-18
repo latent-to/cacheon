@@ -1,8 +1,8 @@
 """Swap a resident engine's kernel bundle and rebuild both serving graph phases.
 
 Each rank acknowledges only after recapture succeeds or records the exact failure.
-Candidate-prepared state is cleared before rebuilding; the prior decode runner
-keeps the shared graph pool alive until both replacement phases finish.
+Prepared MoE state survives stock swaps and is evicted for a new bundle. The prior
+decode runner keeps the shared graph pool alive until both replacement phases finish.
 """
 
 from __future__ import annotations
@@ -86,8 +86,8 @@ def _write_ack(control_dir: str, rank: object, payload: dict[str, object]) -> No
         logger.exception("cacheon: resident swap ack write failed at %s", path)
 
 
-def _release_cuda_state(model_runner: object) -> int:
-    """Drop candidate layouts and detach both old runners before recapture.
+def _release_cuda_state(model_runner: object, *, clear_prepared: bool) -> int:
+    """Evict retired layouts and detach both old runners before recapture.
 
     The old backend's graph pool id is harvested first so the rebuild can
     record into it, and empty_cache is skipped while a pool is carried —
@@ -106,7 +106,7 @@ def _release_cuda_state(model_runner: object) -> int:
     _graph_pool_reused = False
     evicted = 0
     modules = getattr(getattr(model_runner, "model", None), "modules", None)
-    if callable(modules):
+    if clear_prepared and callable(modules):
         for layer in modules():
             cache = getattr(layer, _MOE_PREPARED_ATTR, None)
             if isinstance(cache, dict):
@@ -135,17 +135,19 @@ def _apply_pending_swap(
     from sglang.srt.distributed.parallel_state import get_tensor_model_parallel_rank
 
     rank = get_tensor_model_parallel_rank()
+    from cacheon import receipts, seam
+
     started = time.perf_counter()
     ack: dict[str, object] = {
         "generation": generation,
         "bundle": bundle or "",
         "pid": os.getpid(),
     }
-    ack["evicted_prepared_entries"] = _release_cuda_state(model_runner)
+    ack["evicted_prepared_entries"] = _release_cuda_state(
+        model_runner, clear_prepared=bool(bundle and bundle != seam._resident_bundle)
+    )
     ack["graph_pool_carried"] = False
     try:
-        from cacheon import receipts, seam
-
         # Closing-generation receipts are final before the new scope is armed.
         try:
             receipts.set_root(os.path.join(control_dir, "receipts"))

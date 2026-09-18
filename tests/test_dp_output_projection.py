@@ -67,6 +67,44 @@ def test_fp4_reference_represents_constant_signed_blocks():
     assert torch.equal(scales.view(torch.float8_e4m3fn).float(), torch.ones(2, 1))
 
 
+def _one_ulp(rows):
+    return (rows.view(torch.int16) + 1).view(torch.bfloat16)
+
+
+@pytest.mark.parametrize("geometry", [dict(input_dim=16384, hidden=6144), dict(input_dim=7168, hidden=4096)])
+def test_fp4_is_graded_inside_the_registered_row_tolerance(geometry):
+    from cacheon.dp_output_projection_contract import quantize_reference
+    from cacheon.slots import get_slot
+    from cacheon.verify import _compare_outputs
+
+    slot = get_slot(SLOT)
+    inputs = make_inputs(num_tokens=2, dtype=torch.bfloat16, device="cpu", seed=3, **geometry)
+    expected, scale = reference(inputs, None, 0, 1), inputs["quant_scale"]
+
+    def grade(rows, fp4, graded=True):
+        outputs = [rows, expected[1], *fp4]
+        against = slot.graded_reference(inputs, outputs, expected) if graded else expected
+        return _compare_outputs(outputs, against, tolerance_for=slot.tolerance_for, correctness=slot.correctness)
+
+    # Honest kernels: rows one BF16 step off with their own FP4, and FP4 taken before the BF16 round.
+    stepped, values = _one_ulp(expected[0]), expected[1].double()
+    unrounded = (values * torch.rsqrt(values.square().mean(-1, keepdim=True) + inputs["epsilon"])
+                 * inputs["gamma"].double())
+    for rows, fp4 in ((stepped, quantize_reference(stepped, scale)),
+                      (expected[0], quantize_reference(unrounded, scale))):
+        ungraded = grade(rows, fp4, graded=False)
+        assert not ungraded.passed and "out[0]" not in ungraded.detail
+        assert grade(rows, fp4).passed
+    # Wrong FP4 beside correct rows: doubled scale, zeroed codes, a quantizer input 5% off.
+    for fp4 in (quantize_reference(expected[0], scale * 2), (torch.zeros_like(expected[2]), expected[3]),
+                quantize_reference(expected[0].double() * 1.05, scale)):
+        assert not grade(expected[0], fp4).passed
+    wrong = expected[0].clone()
+    wrong[:, ::8] += 10
+    detail = grade(wrong, quantize_reference(wrong, scale)).detail
+    assert all(f"out[{index}]" in detail for index in (0, 3))
+
+
 @pytest.fixture(scope="module")
 def native_projection():
     """Exercise the declared native bundle when launched with four CUDA ranks."""
@@ -294,6 +332,34 @@ def test_live_audit_uses_real_rows_without_changing_outputs(stock_flow, monkeypa
     assert stats["n"] == int(bool(live_rows))
     assert stats["baseline_refused"] == int(not live_rows)
     assert stats["violations"] == int(corrupt and bool(live_rows))
+
+
+@pytest.mark.parametrize("wrong_scale", [False, True])
+def test_live_audit_grades_fp4_inside_the_row_tolerance(stock_flow, monkeypatch, wrong_scale):
+    from cacheon.dp_output_projection_contract import quantize_reference
+
+    Layer, registry, calls, prepares, impl = stock_flow
+    monkeypatch.setattr(seam._audit, "sampled", lambda: True)
+    monkeypatch.setattr(seam._audit, "_stats", {})
+    # amax * 6 / 6 == 1.0625 is an exact E4M3 midpoint: one BF16 step moves the reference scale byte.
+    seam._select(None, None, None).quant_scale.fill_(6.)
+    original = impl.entry
+
+    def entry(x, residual, prepared, normalized, updated, packed, scales, group):
+        original(x, residual, prepared, normalized, updated, packed, scales, group)
+        normalized.copy_(_one_ulp(normalized))
+        fp4 = quantize_reference(normalized, prepared["quant_scale"] * (2 if wrong_scale else 1))
+        for out, value in zip((packed, scales), fp4):
+            out.copy_(value)
+
+    impl.entry = entry
+    layer = Layer()
+    layer.layer_communicator.post_attention_layernorm.weight = torch.full((16,), 1.0625, dtype=torch.bfloat16)
+    x = torch.ones(1, 16, dtype=torch.bfloat16)
+    layer.forward(None, x, SimpleNamespace(original_global_num_tokens_cpu=[1]), x)
+    stats = seam._audit._stats[SLOT]
+    assert (stats["n"], stats["compare_errors"]) == (1, 0)
+    assert stats["violations"] == int(wrong_scale)
 
 
 @pytest.mark.parametrize("rank", range(4))

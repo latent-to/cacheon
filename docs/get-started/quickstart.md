@@ -16,7 +16,7 @@ git clone https://github.com/latent-to/cacheon.git
 cd cacheon
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[cpu,dev,release]"
+python -m pip install -e ".[cpu,dev]"
 ```
 
 ## Inspect the slot catalog
