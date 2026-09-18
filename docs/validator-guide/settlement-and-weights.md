@@ -361,6 +361,10 @@ An authority mismatch or a direct low-level call bypassing resume fails closed.
 
 The reconciler can confirm a preexisting chain match without signing. It refuses
 a real submission with zero `crown_count`, a different signer, or stale authority.
+Before creating submission intent, it checks the chain's current weight rate limit
+at the finalized signing height. A changed offer inside that window produces a
+retryable error with the first eligible block and leaves the journal unchanged;
+it must not become a `pending` transaction that the SDK never submitted.
 
 If the journal is held, investigate and preserve the record. To append an audited release
 without submitting:

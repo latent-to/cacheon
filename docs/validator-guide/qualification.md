@@ -315,6 +315,10 @@ MoE audits run stock on the original inputs before invoking the candidate and
 retain a copy of the stock outputs. This preserves the input-address binding of
 upstream FP4 outputs while preventing candidate writes from changing the reference.
 A failed stock call remains a comparison error, never a successful comparison.
+When MoE consumes gathered DP projection outputs, its audit uses the same original
+per-rank token counts as the projection audit. Unused padding is excluded from
+comparison; entirely idle calls and tuner batches without token counts add no
+audit coverage. Candidate execution and returned buffers are unchanged.
 The slot's numerical comparison and acceptance thresholds are unchanged.
 
 Resident screening retains one candidate's loaded module and prepared MoE state

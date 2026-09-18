@@ -244,11 +244,14 @@ def _routed_registry(entry, prepare):
 
 
 @pytest.mark.parametrize("routed", [False, True])
-@pytest.mark.parametrize("corrupt", [False, True])
+@pytest.mark.parametrize("corrupt", [0, 100, float("nan")])
+@pytest.mark.parametrize("world_size", [2, 4])
+@pytest.mark.parametrize("padding", ["full", "partial", "empty", "unknown"])
 def test_moe_audit_keeps_fp4_consumer_identity_and_pristine_reference(
-    monkeypatch, routed, corrupt,
+    monkeypatch, routed, corrupt, world_size, padding,
 ):
     from collections import namedtuple
+    import sys
     from cacheon import audit
     from cacheon.integrations import sglang_dp_output as projection
 
@@ -261,6 +264,18 @@ def test_moe_audit_keeps_fp4_consumer_identity_and_pristine_reference(
     topk = _routed_topk_output(inputs) if routed else _standard_topk_output(inputs)
     slot = "moe.fused_routed_experts" if routed else "moe.fused_experts"
     x = inputs["x"]
+    width = x.shape[0] // world_size
+    counts = [width] * world_size
+    if padding == "partial":
+        counts[0] = width // 2
+    elif padding == "empty":
+        counts = [0] * world_size
+    for rank, count in enumerate(counts):
+        x[rank * width + count:(rank + 1) * width] = float("nan")
+    if padding == "unknown":
+        counts = None
+    monkeypatch.setitem(sys.modules, "sglang.srt.distributed", SimpleNamespace(
+        get_tp_group=lambda: SimpleNamespace(world_size=world_size)))
     pristine = x.clone()
     scale = torch.ones(1)
     packed = torch.zeros_like(x, dtype=torch.uint8)
@@ -281,11 +296,12 @@ def test_moe_audit_keeps_fp4_consumer_identity_and_pristine_reference(
 
     def entry(hidden, *_args):
         calls.append("candidate")
-        _args[-1].copy_(hidden + (100 if corrupt else 0))
+        _args[-1].copy_(hidden + corrupt)
         hidden.fill_(-17)  # Must not rewrite the reference used by the later comparison.
 
     reg = (_routed_registry if routed else _registry)(entry, lambda *_: None)
-    state = projection._Scope(layer, None, (x, scale, packed, scales))
+    state = projection._Scope(layer, SimpleNamespace(original_global_num_tokens_cpu=counts),
+                              (x, scale, packed, scales))
     token = projection._scope.set(state)
     try:
         out = make_moe_dispatcher(stock, registry=reg)(layer, x, topk)
@@ -296,11 +312,13 @@ def test_moe_audit_keeps_fp4_consumer_identity_and_pristine_reference(
     finally:
         projection._scope.reset(token)
     assert calls == ["stock", "candidate"]
-    assert torch.equal(out, pristine + (100 if corrupt else 0))
+    torch.testing.assert_close(out, pristine + corrupt, equal_nan=True, rtol=0, atol=0)
     stats = audit._stats[slot]
-    assert stats["n"] == 1 and stats["compare_errors"] == 0
-    assert stats["violations"] == int(corrupt)
-    assert stats["worst_frac"] == (0.0 if corrupt else 1.0)
+    compared = bool(counts and sum(counts))
+    assert stats["n"] == int(compared) and stats["compare_errors"] == 0
+    assert stats["baseline_refused"] == int(not compared)
+    assert stats["violations"] == int(bool(corrupt) and compared)
+    assert stats["worst_frac"] == (0.0 if corrupt and compared else 1.0)
 
 
 @pytest.mark.parametrize("deferred", [False, True])

@@ -98,11 +98,9 @@ def _select(x, linear, registry):
     return None if impl is None else _Deferred(x, linear, impl, group, _quant_scale(state, x))
 
 
-def _audit_rows(outputs, batch, group):
-    """Compare real token rows using SGLang's original per-rank counts."""
-    counts = batch.original_global_num_tokens_cpu
-    rows = outputs[1].shape[0]
-    if (not isinstance(counts, (list, tuple)) or len(counts) != group.world_size
+def _gathered_audit_rows(outputs, counts, rows, world_size):
+    """Select real token rows from the padded DP gather, including its MoE consumer."""
+    if (not isinstance(counts, (list, tuple)) or len(counts) != world_size
             or any(type(n) is not int or not 0 <= n <= rows for n in counts)):
         raise RuntimeError("DP output audit requires valid original per-rank token counts")
     if all(n == rows for n in counts):
@@ -112,9 +110,15 @@ def _audit_rows(outputs, batch, group):
         return (torch.cat([tensor[i * rows:i * rows + n] for i, n in enumerate(counts)])
                 if tensor.numel() else tensor)
 
+    return tuple(gathered(tensor) for tensor in outputs)
+
+
+def _audit_rows(outputs, batch, group):
     normalized, local, packed, scales = outputs
-    return (gathered(normalized), local[:counts[group.rank_in_group]],
-            gathered(packed), gathered(scales))
+    counts = batch.original_global_num_tokens_cpu
+    normalized, packed, scales = _gathered_audit_rows(
+        (normalized, packed, scales), counts, local.shape[0], group.world_size)
+    return normalized, local[:counts[group.rank_in_group]], packed, scales
 
 
 def _finish(deferred, residual, norm):

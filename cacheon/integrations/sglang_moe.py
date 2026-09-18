@@ -7,6 +7,8 @@ import os
 import sys
 import time
 
+import torch
+
 from cacheon import receipts as _receipts
 
 from cacheon.registry import REGISTRY, KernelRegistry
@@ -17,6 +19,32 @@ _MODULE = "sglang.srt.layers.moe.fused_moe_triton.layer"
 _FINALIZER_MODULE = "sglang.srt.layers.moe.moe_runner.flashinfer_trtllm"
 _FINALIZER_PATCH_FLAG = "_cacheon_moe_deferred_finalize_patched"
 _FINALIZER_FUNC = "finalize_flashinfer_trtllm_deferred_output"
+
+
+def _record_moe_audit(slot, out, expected):
+    """Audit the real rows of the DP projection consumed by this MoE call.
+
+    The 2026-09-18 retained bundle matched every real token but failed on NaNs
+    in an idle rank's padding. Reuse the producer's row domain and leave buffers intact.
+    """
+    from cacheon import audit
+    from cacheon.integrations.sglang_dp_output import _gathered_audit_rows, _scope
+
+    actual = (out,) if torch.is_tensor(out) else tuple(out)
+    state = _scope.get()
+    if state is not None and state.quantized is not None:
+        from sglang.srt.distributed import get_tp_group
+
+        group = get_tp_group()
+        counts = state.batch.original_global_num_tokens_cpu
+        if counts is None or any(e is None for e in expected):
+            return audit.baseline_refused(slot)
+        rows = state.quantized[0].shape[0] // group.world_size
+        actual = _gathered_audit_rows(actual, counts, rows, group.world_size)
+        expected = _gathered_audit_rows(expected, counts, rows, group.world_size)
+        if not actual[0].numel():
+            return audit.baseline_refused(slot)
+    audit.record(slot, actual, expected)
 
 
 def _moe_prepared(self, impl, slot, extra_prepare_args=()):

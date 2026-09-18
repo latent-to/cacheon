@@ -792,7 +792,9 @@ def reconcile_weight_publication(
             and signing_metagraph.block - signing_pre.last_update_block
             < refresh_blocks
         ):
-            if current is None:
+            if current is None or (
+                current.status == "confirmed" and current.projection_digest != projection.digest
+            ):
                 current = _advance(
                     journal,
                     current,
@@ -804,19 +806,6 @@ def reconcile_weight_publication(
                         reason="preexisting_authoritative_readback",
                     ),
                 )
-            elif current.status == "confirmed":
-                if current.projection_digest != projection.digest:
-                    current = _advance(
-                        journal,
-                        current,
-                        WeightPublicationRecord(
-                            projection.digest,
-                            "confirmed",
-                            confirmed_block=signing_metagraph.block,
-                            confirmed_last_update=signing_pre.last_update_block,
-                            reason="preexisting_authoritative_readback",
-                        ),
-                    )
             elif (
                 current.status == "released"
                 and signing_pre.last_update_block >= current.submit_block
@@ -850,6 +839,16 @@ def reconcile_weight_publication(
                     signing_metagraph.block,
                 )
     observed_block = signing_metagraph.block
+    # A rate-limited SDK refusal is not an in-flight transaction. Check before
+    # intent: the 2026-09-18 follower otherwise waited 600 blocks for a nonexistent commit.
+    last_update = signing_metagraph.last_update[
+        signing_metagraph.hotkeys.index(projection.validator_hotkey)]
+    rate_limit = int(subtensor.get_hyperparameter(
+        "WeightsSetRateLimit", netuid=projection.netuid, block=observed_block))
+    # The SDK requires blocks_since_last_update > rate_limit, including for CR.
+    if last_update and observed_block <= last_update + rate_limit:
+        raise chain.ChainWeightStateRetryableError(
+            f"weight submission rate limit until block {last_update + rate_limit + 1}")
 
     intent = _advance(
         journal,

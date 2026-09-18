@@ -8,7 +8,7 @@ from typing import Callable, Optional
 
 import torch
 
-from cacheon.integrations.sglang_moe import _moe_prepared
+from cacheon.integrations.sglang_moe import _moe_prepared, _record_moe_audit
 
 from cacheon import audit as _audit
 from cacheon import receipts as _receipts
@@ -423,11 +423,7 @@ def make_moe_dispatcher(
                             group=group,
                         )
                         if expected is not None:
-                            _audit.record(
-                                slot,
-                                (out,) if torch.is_tensor(out) else tuple(out),
-                                expected,
-                            )
+                            _record_moe_audit(slot, out, expected)
                         _log_once_active(slot)
                         _receipts.completed(slot)
                         return out
@@ -710,11 +706,7 @@ def _try_routed_moe(
         routed_scaling=routed_scaling,
     )
     if expected is not None:
-        _audit.record(
-            _ROUTED_MOE_SLOT,
-            (out,) if torch.is_tensor(out) else tuple(out),
-            expected,
-        )
+        _record_moe_audit(_ROUTED_MOE_SLOT, out, expected)
     if not defer_completion:
         _log_once_active(_ROUTED_MOE_SLOT)
         _receipts.completed(_ROUTED_MOE_SLOT)
