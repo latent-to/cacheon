@@ -385,7 +385,7 @@ class B300StaticScreenAdapter:
                 eligibility = eligibility_from_metadata(
                     value, operation.dtypes, operation.architectures
                 )
-                accepts = accepts or required_quant in eligibility.quant
+                accepts = accepts or required_quant in (eligibility.quant or {"dense"})  # empty = dense
             if not accepts:
                 return slot, required_quant
         return None

@@ -135,12 +135,12 @@ settlement and weights. Settlement selects ready results across arenas, skipping
 only the arena currently qualifying; weights aggregate all arena claims.
 Additional supervisors set `enable_settlement` and `enable_weights` to `false`.
 
-New arenas require `competition.arena` in the hash-bound bundle. The default
-arena retains `accept_legacy_bundles: true`; additional dispatchers set it to
-`false`. The default alias binds once to the verified runtime's `arena_id` and
-cannot be claimed by another arena. Explicit selectors equal to that ID resolve
-to the historical namespace. Routing becomes known at publication; fetch and
-pre-publication admission remain shared.
+New arenas require `competition.arena` in the hash-bound bundle. Every dispatcher
+config states `accept_legacy_bundles` (an omitted key is refused): `true` for the
+default arena, `false` for the others. The default alias binds once to the
+verified runtime's `arena_id` and cannot be claimed by another arena. Explicit
+selectors equal to that ID resolve to the historical namespace. Routing becomes
+known at publication; fetch and pre-publication admission remain shared.
 
 Queues, baselines, target admission, lineage and qualification recovery are
 scoped to the logical arena. Service epochs retain that arena's lineage.

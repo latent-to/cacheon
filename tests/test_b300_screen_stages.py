@@ -219,6 +219,13 @@ def test_static_rejects_candidate_outside_sealed_runtime_quant(
     compatible = _candidate(tmp_path / "compatible", catalog, quant="nvfp4")
     assert adapter.run_screen(manifest, policy, compatible).grade is ScreenGrade.PASS
 
+    # An unquantized arena requires "dense", which a kernel declares by an empty set.
+    dense = B300StaticScreenAdapter(
+        catalog, required_slot_quant=((candidate.reservation.target_id, "dense"),)
+    )
+    assert dense.run_screen(manifest, policy, candidate).grade is ScreenGrade.PASS
+    assert dense.run_screen(manifest, policy, compatible).grade is ScreenGrade.FAIL
+
 
 def _executor(root: Path) -> OCIEngineExecutor:
     runtime = _runtime_policy()
