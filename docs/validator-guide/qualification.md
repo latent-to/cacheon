@@ -311,6 +311,19 @@ The audit policy names the selected target's slots. A composed engine also runs
 the incumbent contributions; their audit receipts are excluded from the selected
 delta's grade, while execution coverage still requires every active slot on every rank.
 
+MoE audits run stock on the original inputs before invoking the candidate and
+retain a copy of the stock outputs. This preserves the input-address binding of
+upstream FP4 outputs while preventing candidate writes from changing the reference.
+A failed stock call remains a comparison error, never a successful comparison.
+The slot's numerical comparison and acceptance thresholds are unchanged.
+
+Resident screening retains one candidate's loaded module and prepared MoE state
+across stock/candidate swaps. Stock disables candidate dispatch; a different
+bundle evicts the prepared state. Every swap still recaptures both graph phases.
+Retained worker logs report `CACHEON-PREPARE` start, completion or failure, and
+host wall time, separately from graph capture. An interrupted prepare has no
+completion marker; a session timeout alone does not establish prepare failure.
+
 The eager audit preserves the charged workload's prompt batches, concurrency,
 and per-batch input-token expectations, including mixed-length workloads.
 It runs one warmup batch, then every charged batch in order, cycling that sequence

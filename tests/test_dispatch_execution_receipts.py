@@ -120,7 +120,7 @@ def test_out_of_domain_call_serves_stock_and_mints_no_receipt(events):
     assert events == []
 
 
-def _moe_call(entry, *, slot="moe.fused_experts"):
+def _moe_call(entry, *, slot="moe.fused_experts", baseline=lambda *_: "stock"):
     x = torch.randn(2, 4)
     layer = SimpleNamespace(
         w13_weight=SimpleNamespace(data=torch.randn(2, 4, 4)),
@@ -135,7 +135,7 @@ def _moe_call(entry, *, slot="moe.fused_experts"):
     )
     registry = _registry(slot, entry, prepare=lambda *_: object())
     wrapped = dispatch.make_moe_dispatcher(
-        lambda *_: "stock", registry=registry, slots=("moe.fused_experts_reduce", slot)
+        baseline, registry=registry, slots=("moe.fused_experts_reduce", slot)
     )
     return wrapped, layer, x, topk
 
@@ -158,7 +158,7 @@ def test_moe_records_success_but_never_falls_back_after_selection(
     assert failures == [("moe.fused_experts", "RuntimeError")]
 
 
-def test_moe_selected_audit_prelude_failure_aborts(events, monkeypatch):
+def test_moe_selected_reference_snapshot_failure_aborts(events, monkeypatch):
     completed = events
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch._audit, "sampled", lambda: True)
@@ -171,7 +171,7 @@ def test_moe_selected_audit_prelude_failure_aborts(events, monkeypatch):
     def entry(x, _ids, _weights, _prepared, out):
         out.copy_(x)
 
-    wrapped, layer, x, topk = _moe_call(entry)
+    wrapped, layer, x, topk = _moe_call(entry, baseline=lambda _layer, x, _topk: x)
     with pytest.raises(RuntimeError, match="clone failed"):
         wrapped(layer, x, topk)
     assert completed == []

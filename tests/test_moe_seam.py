@@ -125,7 +125,10 @@ def test_topology_authority_is_required_only_for_an_active_moe_candidate(monkeyp
         )(*call)
 
 
-def test_prepare_runs_once_and_is_memoized(monkeypatch):
+@pytest.mark.parametrize("raises", [False, True])
+def test_prepare_runs_once_and_reports_wall_time(monkeypatch, capsys, raises):
+    import json
+
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
@@ -134,14 +137,25 @@ def test_prepare_runs_once_and_is_memoized(monkeypatch):
 
     def counting_prepare(w13, w2):
         calls["n"] += 1
+        if raises:
+            raise RuntimeError("prepare failed")
         return base_prepare(w13, w2)
 
     dispatched = make_moe_dispatcher(_baseline_forward, registry=_registry(entry, counting_prepare))
     layer = _fake_layer(inputs)
     topk = _standard_topk_output(inputs)
-    dispatched(layer, inputs["x"], topk)
-    dispatched(layer, inputs["x"], topk)
+    if raises:
+        with pytest.raises(RuntimeError, match="prepare failed"):
+            dispatched(layer, inputs["x"], topk)
+        assert not layer._cacheon_moe_prepared_by_impl
+    else:
+        dispatched(layer, inputs["x"], topk)
+        dispatched(layer, inputs["x"], topk)
     assert calls["n"] == 1, "prepare must run ONCE per layer (memoized), not per step"
+    timing = [json.loads(line.split(": ", 1)[1]) for line in capsys.readouterr().err.splitlines()
+              if line.startswith("CACHEON-PREPARE: ")]
+    assert [row["state"] for row in timing] == ["started", "failed" if raises else "completed"]
+    assert timing[-1]["elapsed_seconds"] >= 0
 
 
 def test_expert_parallel_falls_back(monkeypatch):
@@ -227,6 +241,66 @@ def _routed_registry(entry, prepare):
     )
     reg.enable()
     return reg
+
+
+@pytest.mark.parametrize("routed", [False, True])
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_moe_audit_keeps_fp4_consumer_identity_and_pristine_reference(
+    monkeypatch, routed, corrupt,
+):
+    from collections import namedtuple
+    from cacheon import audit
+    from cacheon.integrations import sglang_dp_output as projection
+
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    monkeypatch.setattr(audit, "sampled", lambda: True)
+    monkeypatch.setattr(audit, "_stats", {})
+    monkeypatch.setattr(audit, "_receipt", lambda _slot: None)
+    inputs = _routed_inputs() if routed else _inputs()
+    layer = _routed_layer(inputs) if routed else _fake_layer(inputs)
+    topk = _routed_topk_output(inputs) if routed else _standard_topk_output(inputs)
+    slot = "moe.fused_routed_experts" if routed else "moe.fused_experts"
+    x = inputs["x"]
+    pristine = x.clone()
+    scale = torch.ones(1)
+    packed = torch.zeros_like(x, dtype=torch.uint8)
+    scales = torch.zeros(x.shape[0], 1, dtype=torch.uint8)
+    dispatch_output = namedtuple("Dispatch", "hidden_states hidden_states_scale")
+    calls = []
+
+    def stock_fp4(output, *_args):
+        assert output.hidden_states is packed
+        calls.append("stock")
+        return x  # Shared stock buffer must be snapshotted before candidate mutation.
+
+    fp4 = projection._wrap_fp4(stock_fp4, None)
+
+    def stock(_layer, hidden, _topk):
+        return fp4(dispatch_output(hidden, None),
+                   SimpleNamespace(w13_input_scale_quant=scale), None)
+
+    def entry(hidden, *_args):
+        calls.append("candidate")
+        _args[-1].copy_(hidden + (100 if corrupt else 0))
+        hidden.fill_(-17)  # Must not rewrite the reference used by the later comparison.
+
+    reg = (_routed_registry if routed else _registry)(entry, lambda *_: None)
+    state = projection._Scope(layer, None, (x, scale, packed, scales))
+    token = projection._scope.set(state)
+    try:
+        out = make_moe_dispatcher(stock, registry=reg)(layer, x, topk)
+        # The production guard still rejects a different consumer; it was not waived.
+        with pytest.raises(RuntimeError, match="different MoE consumer"):
+            stock(layer, x.clone(), topk)
+        assert projection._scope.get() is state
+    finally:
+        projection._scope.reset(token)
+    assert calls == ["stock", "candidate"]
+    assert torch.equal(out, pristine + (100 if corrupt else 0))
+    stats = audit._stats[slot]
+    assert stats["n"] == 1 and stats["compare_errors"] == 0
+    assert stats["violations"] == int(corrupt)
+    assert stats["worst_frac"] == (0.0 if corrupt else 1.0)
 
 
 @pytest.mark.parametrize("deferred", [False, True])

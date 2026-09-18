@@ -98,6 +98,7 @@ def mark_driver() -> None:
 # Bundle is loaded once per process even though activate() may run many times
 # (once per watched module import) and load_candidate_bundle() is re-entrant.
 _bundle_loaded = False
+_resident_bundle: str | None = None
 
 
 def activate() -> None:
@@ -196,19 +197,21 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
     The caller must immediately recapture before serving another batch.
     """
 
-    global _bundle_loaded
+    global _bundle_loaded, _resident_bundle
     import time
 
     from cacheon.registry import REGISTRY
 
     started = time.perf_counter()
+    reuse = bundle is not None and bundle == _resident_bundle
     REGISTRY.disable()
-    REGISTRY.clear()
     _bundle_loaded = False
-    # Drop prior candidates' imported kernel modules so a same-stem source file
-    # re-executes instead of aliasing a previous miner's module.
-    for name in [k for k in list(sys.modules) if k.startswith("cacheon_kernel_")]:
-        sys.modules.pop(name, None)
+    if bundle and not reuse:
+        REGISTRY.clear()
+        _resident_bundle = None
+        # A different miner with the same source stem must get a fresh module.
+        for name in [k for k in list(sys.modules) if k.startswith("cacheon_kernel_")]:
+            sys.modules.pop(name, None)
     result: dict[str, object] = {"bundle": bundle or "", "slots": []}
     if bundle:
         from cacheon.manifest import load_manifest
@@ -224,7 +227,8 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
             )
         os.environ["CACHEON_BUNDLE_PATH"] = bundle
         os.environ["CACHEON_ACTIVE"] = "1"
-        result["slots"] = _enable_loaded_bundle(bundle)
+        result["slots"] = _enable_loaded_bundle(bundle, reuse=reuse)
+        _resident_bundle = bundle
     else:
         os.environ.pop("CACHEON_BUNDLE_PATH", None)
         logger.info("cacheon: resident swap -> stock dispatch")
@@ -278,7 +282,7 @@ def _load_candidate_bundle_locked(
         raise
 
 
-def _enable_loaded_bundle(bundle: str) -> list[str]:
+def _enable_loaded_bundle(bundle: str, *, reuse: bool = False) -> list[str]:
     """Load and enable one bundle, recording what happened. Returns its slots.
 
     The only path allowed to bring a bundle live. There used to be two, and the
@@ -295,7 +299,8 @@ def _enable_loaded_bundle(bundle: str) -> list[str]:
     # the spawn-safe seam is installed.
     from cacheon.registry import REGISTRY
 
-    _load_bundle_into_registry(bundle)
+    if not reuse:
+        _load_bundle_into_registry(bundle)
     REGISTRY.enable()
     _bundle_loaded = True
     # Between enable and first dispatch is the only window where every entry is

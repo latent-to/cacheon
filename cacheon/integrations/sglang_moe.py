@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from cacheon.dispatch import (
-    make_moe_deferred_dispatcher,
-    make_moe_deferred_finalize_dispatcher,
-    make_moe_dispatcher,
-)
+import json
+import os
+import sys
+import time
+
+from cacheon import receipts as _receipts
+
 from cacheon.registry import REGISTRY, KernelRegistry
 
 _PATCH_FLAG = "_cacheon_moe_patched"
@@ -17,9 +19,53 @@ _FINALIZER_PATCH_FLAG = "_cacheon_moe_deferred_finalize_patched"
 _FINALIZER_FUNC = "finalize_flashinfer_trtllm_deferred_output"
 
 
+def _moe_prepared(self, impl, slot, extra_prepare_args=()):
+    """Run ``prepare`` once per implementation on this layer's expert weights.
+
+    A layer may route different shapes to different variants.  A single layer-wide
+    prepared object would hand variant B the layout produced by variant A, so the
+    cache identity includes the slot, bundle, variant, and callable.  The slot's
+    ``prepare_from_layer`` (validator-owned) maps the live sglang layer to the prepare
+    call shape — weights + biases + layout flags — so the miner owns only the
+    transform. ``extra_prepare_args`` appends validator-owned static routing config
+    (the fat slot's top_k + routed_scaling, read from the live TopKConfig)."""
+    cache = getattr(self, "_cacheon_moe_prepared_by_impl", None)
+    if cache is None:
+        cache = {}
+        self._cacheon_moe_prepared_by_impl = cache
+    key = (slot, impl.bundle_id, impl.variant, id(impl.prepare))
+    if key not in cache:
+        from cacheon.slots import get_slot
+
+        spec = get_slot(slot)
+        if spec.prepare_from_layer is not None:
+            args = spec.prepare_from_layer(self)
+        else:
+            args = (self.w13_weight.data, self.w2_weight.data)
+        started = time.perf_counter()
+        marker = {"slot": slot, "pid": os.getpid(), "started_unix": time.time()}
+        print("CACHEON-PREPARE: " + json.dumps(dict(marker, state="started")),
+              file=sys.stderr, flush=True)
+        state = "failed"
+        try:
+            cache[key] = _receipts.invoke(
+                slot, impl.prepare, *args, *extra_prepare_args, phase="prepare"
+            )
+            state = "completed"
+        finally:
+            print("CACHEON-PREPARE: " + json.dumps(dict(
+                marker, state=state, elapsed_seconds=time.perf_counter() - started)),
+                file=sys.stderr, flush=True)
+    return cache[key]
+
+
 def install(registry: KernelRegistry = REGISTRY) -> None:
     """Patch whichever exact MoE consumers have finished importing."""
-    import sys
+    from cacheon.dispatch import (
+        make_moe_deferred_dispatcher,
+        make_moe_deferred_finalize_dispatcher,
+        make_moe_dispatcher,
+    )
 
     mod = sys.modules.get(_MODULE)
     FusedMoE = getattr(mod, "FusedMoE", None) if mod is not None else None
@@ -60,8 +106,6 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
 
 
 def uninstall() -> None:
-    import sys
-
     mod = sys.modules.get(_MODULE)
     FusedMoE = getattr(mod, "FusedMoE", None) if mod is not None else None
     if FusedMoE is not None:
@@ -90,8 +134,6 @@ def uninstall() -> None:
 
 
 def is_installed() -> bool:
-    import sys
-
     mod = sys.modules.get(_MODULE)
     FusedMoE = getattr(mod, "FusedMoE", None) if mod is not None else None
     if FusedMoE is None:

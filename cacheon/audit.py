@@ -7,7 +7,7 @@ composition and kernels are batch-variant; and sglang's deterministic mode
 refuses the arena's fa4 attention backend outright. The invariant the referee
 actually needs is direct: "in the SCORED engine, the miner kernel computes the
 slot's declared function." So the validator audits exactly that: on randomly
-sampled dispatcher calls, run the captured STOCK baseline on pre-call clones and
+sampled dispatcher calls, run the captured STOCK baseline on pristine inputs and
 compare the miner outputs within the slot's own verify tolerances (the same
 numeric contract offline and in-engine). Backend-agnostic; no determinism
 assumptions; uniform across dispatchers (every seam holds the baseline in
@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import os
 import random
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import torch
 
@@ -190,17 +190,22 @@ def record(slot: str, actual: Sequence[torch.Tensor],
         logger.exception("cacheon.audit: compare failed (slot=%s)", slot)
 
 
-def run(slot: str, actual: Sequence[torch.Tensor], baseline_thunk) -> None:
-    """Dispatcher-side one-liner: call the captured stock baseline (thunk) and
-    record the comparison. Never raises — a baseline error is a compare_error,
-    not an engine crash. (For COLLECTIVE baselines the thunk itself is a
-    collective; if it errors on one rank the engine is already unrecoverable —
-    hang-avoidance beyond that is out of scope here.)"""
+def capture_reference(
+    slot: str, baseline_thunk: Callable, *, snapshot: bool = True,
+) -> tuple[Optional[torch.Tensor], ...] | None:
+    """Retain stock outputs before a candidate can mutate inputs or shared buffers.
+
+    MoE stock must see the original input address: upstream FP4 outputs are bound
+    to it. Copy the result instead of the input (2026-09-18 audit comparison errors).
+    A baseline error is a compare_error, not an engine crash. For COLLECTIVE
+    baselines the thunk itself is a collective; if it errors on one rank the
+    engine is already unrecoverable —
+    hang-avoidance beyond that is out of scope here.
+    """
     try:
         expected = baseline_thunk()
         if not isinstance(expected, (tuple, list)):
             expected = (expected,)
-        record(slot, actual, tuple(expected))
     except Exception:  # noqa: BLE001
         try:
             s = _slot_stats(slot)
@@ -209,3 +214,13 @@ def run(slot: str, actual: Sequence[torch.Tensor], baseline_thunk) -> None:
         except Exception:  # noqa: BLE001
             pass
         logger.exception("cacheon.audit: baseline call failed (slot=%s)", slot)
+        return None
+    # Snapshot allocation failure must still abort before the candidate starts.
+    return tuple(e.detach().clone() if snapshot and e is not None else e for e in expected)
+
+
+def run(slot: str, actual: Sequence[torch.Tensor], baseline_thunk) -> None:
+    """Compare immediately against stock; no output snapshot needs to outlive a call."""
+    expected = capture_reference(slot, baseline_thunk, snapshot=False)
+    if expected is not None:
+        record(slot, actual, expected)

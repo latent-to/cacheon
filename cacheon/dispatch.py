@@ -8,6 +8,8 @@ from typing import Callable, Optional
 
 import torch
 
+from cacheon.integrations.sglang_moe import _moe_prepared
+
 from cacheon import audit as _audit
 from cacheon import receipts as _receipts
 from cacheon.capabilities import CallDescriptor, collective_call_descriptor
@@ -403,12 +405,15 @@ def make_moe_dispatcher(
                                 raise RuntimeError(
                                     "MoE selection changed between preflight and commit"
                                 )
-                        # Audit: baseline forward_impl on a pre-call clone (its TP
-                        # reduce is collective — rank-seeded sampling keeps lockstep).
+                        # Stock consumes the upstream FP4 bound to x's address;
+                        # snapshot its output before the candidate, not a clone of x.
+                        # Its TP reduce is collective; rank-seeded sampling stays lockstep.
                         # Both sides are post-reduce here (the kernel path replays the
                         # validator reduce for plain fused_experts), so comparable.
                         aud = not in_graph and _audit.sampled()
-                        a_x = x.clone() if aud else None
+                        expected = _audit.capture_reference(
+                            slot, lambda: stock(self, x, topk_output, pre_quant_input)
+                        ) if aud else None
                         out = _run_moe_kernel(
                             self,
                             x,
@@ -417,14 +422,11 @@ def make_moe_dispatcher(
                             slot,
                             group=group,
                         )
-                        if aud:
-                            def stock_reference():
-                                return stock(self, a_x, topk_output, pre_quant_input)
-
-                            _audit.run(
+                        if expected is not None:
+                            _audit.record(
                                 slot,
                                 (out,) if torch.is_tensor(out) else tuple(out),
-                                stock_reference,
+                                expected,
                             )
                         _log_once_active(slot)
                         _receipts.completed(slot)
@@ -695,7 +697,9 @@ def _try_routed_moe(
     if committed.impl is not impl:
         raise RuntimeError("MoE selection changed between preflight and commit")
     aud = not defer_completion and not in_graph and _audit.sampled()
-    a_x = x.clone() if aud else None
+    expected = _audit.capture_reference(
+        _ROUTED_MOE_SLOT, lambda: stock_reference(x)
+    ) if aud else None
     out = _run_routed_moe_kernel(
         self,
         x,
@@ -705,12 +709,11 @@ def _try_routed_moe(
         top_k=top_k,
         routed_scaling=routed_scaling,
     )
-    if aud:
-        assert stock_reference is not None
-        _audit.run(
+    if expected is not None:
+        _audit.record(
             _ROUTED_MOE_SLOT,
             (out,) if torch.is_tensor(out) else tuple(out),
-            lambda: stock_reference(a_x),
+            expected,
         )
     if not defer_completion:
         _log_once_active(_ROUTED_MOE_SLOT)
@@ -750,35 +753,6 @@ def _run_routed_moe_kernel(
 
         out = tensor_model_parallel_all_reduce(out)
     return out
-
-
-def _moe_prepared(self, impl, slot, extra_prepare_args=()):
-    """Run ``prepare`` once per implementation on this layer's expert weights.
-
-    A layer may route different shapes to different variants.  A single layer-wide
-    prepared object would hand variant B the layout produced by variant A, so the
-    cache identity includes the slot, bundle, variant, and callable.  The slot's
-    ``prepare_from_layer`` (validator-owned) maps the live sglang layer to the prepare
-    call shape — weights + biases + layout flags — so the miner owns only the
-    transform. ``extra_prepare_args`` appends validator-owned static routing config
-    (the fat slot's top_k + routed_scaling, read from the live TopKConfig)."""
-    cache = getattr(self, "_cacheon_moe_prepared_by_impl", None)
-    if cache is None:
-        cache = {}
-        self._cacheon_moe_prepared_by_impl = cache
-    key = (slot, impl.bundle_id, impl.variant, id(impl.prepare))
-    if key not in cache:
-        from cacheon.slots import get_slot
-
-        spec = get_slot(slot)
-        if spec.prepare_from_layer is not None:
-            args = spec.prepare_from_layer(self)
-        else:
-            args = (self.w13_weight.data, self.w2_weight.data)
-        cache[key] = _receipts.invoke(
-            slot, impl.prepare, *args, *extra_prepare_args, phase="prepare"
-        )
-    return cache[key]
 
 
 @torch.inference_mode()
