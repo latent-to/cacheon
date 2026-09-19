@@ -114,7 +114,7 @@ gives the wide nodes enough windows to show their tail:
 | Bundle | Graded windows | Failed windows | Worst window |
 |---|---|---|---|
 | `model.layers.*.input_layernorm`, honest | 1,960 | 0 | 1.0 |
-| `model.layers.*`, honest | 2,120 | 0 | 0.844 |
+| `model.layers.*`, honest | 2,280 | 0 | 0.844 |
 | `model.layers.*`, native | 2,280 | 0 | 0.844 |
 | `model`, honest | 57 | 0 | 0.914 |
 | `model`, native | 57 | 0 | 0.896 |
