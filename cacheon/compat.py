@@ -76,6 +76,19 @@ def run_checks(expected_sglang_version: str = PINNED_SGLANG) -> list[Check]:
             ok = _chokepoint_present(mod, adapter.chokepoint)
             add(f"seam table: {adapter.name} ({adapter.chokepoint})", ok,
                 "" if ok else f"missing {adapter.chokepoint} in {adapter.target_module}")
+            if ok and adapter.inputs:
+                # A data-bound row is only as good as the stock signature it names.
+                cls = getattr(mod, adapter.chokepoint.partition(".")[0])
+                methods = (adapter.chokepoint.partition(".")[2], *adapter.also)
+                missing = sorted(
+                    f"{method}({param})"
+                    for method in methods
+                    for _name, param in adapter.inputs
+                    if not hasattr(cls, method)
+                    or param not in inspect.signature(getattr(cls, method)).parameters
+                )
+                add(f"seam row: {adapter.name} binds {methods}", not missing,
+                    f"stock parameters missing: {missing}" if missing else "")
         except Exception as exc:  # noqa: BLE001
             add(f"seam table: {adapter.name} ({adapter.chokepoint})", False, repr(exc))
 
@@ -86,17 +99,6 @@ def run_checks(expected_sglang_version: str = PINNED_SGLANG) -> list[Check]:
     except Exception as exc:  # noqa: BLE001
         fused_op_base = None
         add("BaseFusedOp base present", False, repr(exc))
-
-    # activation seam (SiluAndMul slot)
-    try:
-        from sglang.srt.layers.activation import SiluAndMul
-
-        ok = hasattr(SiluAndMul, "forward_cuda") and hasattr(SiluAndMul, "forward_native")
-        if fused_op_base is not None:
-            ok = ok and issubclass(SiluAndMul, fused_op_base)
-        add("seam: SiluAndMul (activation)", ok, "needs forward_cuda/native on BaseFusedOp")
-    except Exception as exc:  # noqa: BLE001
-        add("seam: SiluAndMul (activation)", False, repr(exc))
 
     # norm seam (RMSNorm slot)
     try:

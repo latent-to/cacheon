@@ -200,41 +200,6 @@ def _validate_live_outputs(
     )
 
 
-def make_silu_and_mul_dispatcher(
-    baseline_forward: Callable[[object, torch.Tensor], torch.Tensor],
-    *,
-    registry: KernelRegistry = REGISTRY,
-    slot: str = "activation.silu_and_mul",
-) -> Callable[[object, torch.Tensor], torch.Tensor]:
-    """Build a replacement for ``SiluAndMul.forward_*``.
-
-    ``baseline_forward`` is the captured original (used for fallback). The
-    returned function has the same ``(self, x)`` signature.
-    """
-
-    def dispatched(self: object, x: torch.Tensor) -> torch.Tensor:
-        if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
-            return baseline_forward(self, x)
-        last_dim = x.shape[-1]
-        impl = registry.select(
-            slot, _elementwise_descriptor(x, last_dim=last_dim)
-        ).impl
-        if impl is None:
-            return baseline_forward(self, x)
-
-        d = last_dim // 2
-        out = torch.empty((*x.shape[:-1], d), dtype=x.dtype, device=x.device)
-        aud = _audit.sampled()
-        a_x = x.clone() if aud else None  # pre-call clone: the kernel may scribble on x
-        _receipts.invoke(slot, impl.entry, x, out)
-        if aud:
-            _audit.run(slot, (out,), lambda: baseline_forward(self, a_x))
-        _receipts.completed(slot)
-        return out
-
-    return dispatched
-
-
 from cacheon.norm_contract import make_rmsnorm_dispatcher as make_rmsnorm_dispatcher
 
 

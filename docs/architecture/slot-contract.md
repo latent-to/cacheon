@@ -246,7 +246,7 @@ Adding or changing a slot is a validator code change. It requires coordinated up
 1. `SlotSpec` and its reference/shape/graph contract;
 2. the target catalog's frozen contract projection;
 3. offline and, for collectives, distributed verification;
-4. the live SGLang seam adapter and dispatch path;
+4. the live SGLang seam: one data-bound row in [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) when the boundary is one whole method, which [`sglang_method.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_method.py) serves with the shared call and audit body, or a hand-written adapter for a span no single method names;
 5. compatibility canaries against the pinned runtime;
 6. graph, failure, fallback, and end-to-end tests;
 7. arena policy and documentation.

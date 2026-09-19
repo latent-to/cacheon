@@ -10,7 +10,11 @@ torch = pytest.importorskip("torch")
 
 import cacheon.dispatch as dispatch  # noqa: E402
 import cacheon.dispatch_collective as exchange  # noqa: E402
+from cacheon.integrations.sglang_method import make_method_dispatcher  # noqa: E402
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
+from cacheon.seams import SEAM_ADAPTERS  # noqa: E402
+
+_SILU_ROW = next(row for row in SEAM_ADAPTERS if row.name == "activation")
 
 
 @pytest.fixture()
@@ -56,8 +60,9 @@ def _boom(*_args, **_kwargs):
 def test_op_dispatchers_receipt_success_and_never_serve_stock(events, failures):
     completed = events
     baseline = object()
-    silu = dispatch.make_silu_and_mul_dispatcher(
-        lambda *_: baseline,
+    silu = make_method_dispatcher(
+        lambda self, x: baseline,
+        _SILU_ROW,
         registry=_registry(
             "activation.silu_and_mul",
             lambda x, out: out.copy_(x[..., : x.shape[-1] // 2]),
@@ -80,8 +85,9 @@ def test_op_dispatchers_receipt_success_and_never_serve_stock(events, failures):
 
     # A candidate that raises takes the run down with it. Serving stock instead
     # would put stock inside a run that still carries the candidate's name.
-    silu_bad = dispatch.make_silu_and_mul_dispatcher(
-        lambda *_: pytest.fail("stock served inside a candidate arm"),
+    silu_bad = make_method_dispatcher(
+        lambda self, x: pytest.fail("stock served inside a candidate arm"),
+        _SILU_ROW,
         registry=_registry("activation.silu_and_mul", _boom),
     )
     rms_bad = dispatch.make_rmsnorm_dispatcher(
@@ -108,8 +114,9 @@ def test_out_of_domain_call_serves_stock_and_mints_no_receipt(events):
     # fallback: stock is the correct answer, and no receipt is minted, so the
     # evidence cannot claim the candidate ran.
     baseline = object()
-    wrapped = dispatch.make_silu_and_mul_dispatcher(
-        lambda *_: baseline,
+    wrapped = make_method_dispatcher(
+        lambda self, x: baseline,
+        _SILU_ROW,
         registry=_registry(
             "activation.silu_and_mul",
             lambda x, out: out.copy_(x[..., : x.shape[-1] // 2]),
@@ -118,6 +125,41 @@ def test_out_of_domain_call_serves_stock_and_mints_no_receipt(events):
     )
     assert wrapped(object(), torch.randn(2, 8)) is baseline
     assert events == []
+
+
+def test_data_bound_row_audits_stock_and_candidate_on_the_same_pristine_inputs(
+    events, monkeypatch
+):
+    # One body serves every data-bound row, so it cannot assume stock is pure or
+    # that a candidate leaves its inputs alone: both see the caller's values.
+    graded = []
+    monkeypatch.setattr(dispatch._audit, "sampled", lambda: True)
+    monkeypatch.setattr(
+        dispatch._audit, "record",
+        lambda slot, actual, expected: graded.append((actual[0].clone(), expected[0])),
+    )
+    seen = []
+
+    def candidate(x, out):
+        seen.append(x.clone())
+        out.copy_(x[..., :4])
+        x.zero_()
+
+    def in_place_stock(self, x):
+        x.add_(1.0)
+        return x[..., :4]
+
+    wrapped = make_method_dispatcher(
+        in_place_stock, _SILU_ROW,
+        registry=_registry("activation.silu_and_mul", candidate),
+    )
+    x = torch.randn(2, 8)
+    original = x.clone()
+    out = wrapped(object(), x)
+    assert torch.equal(seen[0], original)
+    assert torch.equal(out, original[..., :4])
+    assert torch.equal(graded[0][1], original[..., :4] + 1.0)
+    assert events == ["activation.silu_and_mul"]
 
 
 def _moe_call(entry, *, slot="moe.fused_experts", baseline=lambda *_: "stock"):

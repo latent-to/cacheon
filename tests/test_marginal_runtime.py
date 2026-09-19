@@ -596,22 +596,22 @@ def child(send, bundle):
     import cacheon.integrations.sglang_plugin as plugin
     from cacheon import seam, seams
     seam._ENGINE_TREE = TREE
-    seams.SEAM_ADAPTERS = tuple(a for a in seams.SEAM_ADAPTERS if a.integration == 'sglang_silu')
+    seams.SEAM_ADAPTERS = tuple(a for a in seams.SEAM_ADAPTERS if a.integration == 'sglang_method')
     os.environ.update(CACHEON_ENGINE_WORKER='1', CACHEON_BUNDLE_PATH=bundle,
         CACHEON_ENGINE_TREE_DIGEST='1' * 64, CACHEON_STACK_DIGEST='2' * 64,
         CACHEON_ACTIVE='0')
     plugin.register()
     importlib.import_module('sglang.srt.layers.activation')
-    from cacheon.integrations import sglang_silu
+    from cacheon.integrations import sglang_method
     found = importlib.util.find_spec(NAMESPACE)
     if bundle == TREE:
         import torch
         kernel = importlib.import_module(NAMESPACE + '.kernels.kernel')
         shadowed = os.path.realpath(torch.__file__) == os.path.join(TREE, 'torch.py')
         send.send((TREE in sys.path, shadowed, kernel.loaded, found is not None,
-            sglang_silu.is_installed()))
+            sglang_method.is_installed('activation')))
     else:
-        send.send((found is None, sglang_silu.is_installed()))
+        send.send((found is None, sglang_method.is_installed('activation')))
 if __name__ == '__main__':
     results = []
     for bundle in (TREE, '/raw/miner/bundle'):
