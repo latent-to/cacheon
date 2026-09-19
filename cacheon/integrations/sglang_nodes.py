@@ -111,13 +111,18 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     return found
 
 
-def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tensor]]:
-    """Engine-state rows this call may write, as ``(buffer, dim, index)``.
+def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tensor, torch.dtype]]:
+    """Engine-state rows this call may write, as ``(buffer, dim, index, graded dtype)``.
 
     Only a call that carries the engine's batch can reach the cache pools: cache
     rows at ``out_cache_loc`` and, on hybrid models, the recurrent-state rows of
     the batch's requests. An unrecognized cache layout raises rather than leaving
     written state unchecked.
+
+    SGLang keeps an FP8 cache in ``uint8`` storage with the real type on the pool.
+    Graded as bytes, a near-zero value whose sign flips reads as a jump of 128 (7% of
+    a typical row, above the floor); the rows are graded as the numbers they hold
+    (H100 Qwen FP8-KV runs, 2026-09-20: 39,200 of 43,760 graded windows were bytes).
     """
 
     batch = next(
@@ -126,7 +131,7 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
     )
     if batch is None:
         return []
-    rows: list[tuple[torch.Tensor, int, torch.Tensor]] = []
+    rows: list[tuple[torch.Tensor, int, torch.Tensor, torch.dtype]] = []
     if batch.out_cache_loc is not None:
         pool = getattr(runner.token_to_kv_pool, "full_kv_pool", runner.token_to_kv_pool)
         buffers = [
@@ -137,13 +142,25 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
         ]
         if not buffers:
             raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
-        rows.extend((buffer, 0, batch.out_cache_loc.long()) for buffer in buffers)
+        held = getattr(pool, "dtype", None)
+        fp8 = held is not None and held.is_floating_point and held.itemsize == 1
+        rows.extend(
+            (
+                buffer,
+                0,
+                batch.out_cache_loc.long(),
+                held if fp8 and buffer.dtype == torch.uint8 else buffer.dtype,
+            )
+            for buffer in buffers
+        )
     requests = runner.req_to_token_pool
     recurrent = getattr(requests, "mamba_pool", None)
     if recurrent is not None:
         index = requests.get_mamba_indices(batch.req_pool_indices).long()
         cache = recurrent.mamba_cache
-        rows.extend((buffer, 1, index) for buffer in (*cache.conv, cache.temporal))
+        rows.extend(
+            (buffer, 1, index, buffer.dtype) for buffer in (*cache.conv, cache.temporal)
+        )
     return rows
 
 
@@ -160,22 +177,24 @@ def _answer(slot: str, stock: Callable, runner, args: tuple, kwargs: dict):
     handed = _tensors((args, kwargs), [])
     rows = _state_rows(runner, (*args, *kwargs.values()))
     before = [t.clone() for t in handed]
-    before += [buffer.index_select(dim, index) for buffer, dim, index in rows]
+    before += [buffer.index_select(dim, index) for buffer, dim, index, _ in rows]
     outputs = _audit.capture_reference(
         slot, lambda: _tensors(stock(*args, **kwargs), [], fields=True)
     )
-    written = [buffer.index_select(dim, index) for buffer, dim, index in rows]
+    written = [buffer.index_select(dim, index) for buffer, dim, index, _ in rows]
     # Write back only what stock changed: an untouched input may be an expanded
     # or otherwise unwritable view.
     for tensor, saved in zip(handed, before):
         if not torch.equal(tensor, saved):
             tensor.copy_(saved)
-    for (buffer, dim, index), saved, after in zip(rows, before[len(handed):], written):
+    for (buffer, dim, index, _), saved, after in zip(rows, before[len(handed):], written):
         if not torch.equal(saved, after):
             buffer.index_copy_(dim, index, saved)
     if outputs is None:
         return None
-    return [(t, 0) for t in outputs] + [(t, dim) for t, (_, dim, _) in zip(written, rows)]
+    return [(t, 0) for t in outputs] + [
+        (t.view(held), dim) for t, (_, dim, _, held) in zip(written, rows)
+    ]
 
 
 def _seal(module) -> list[tuple]:
@@ -353,8 +372,8 @@ def make_node_dispatcher(
         if expected is not None and twin is not None:
             actual = [(t, 0) for t in _tensors(result, [], fields=True)]
             actual += [
-                (b.index_select(d, i), d)
-                for b, d, i in _state_rows(runner, (*args, *kwargs.values()))
+                (b.index_select(d, i).view(held), d)
+                for b, d, i, held in _state_rows(runner, (*args, *kwargs.values()))
             ]
             try:
                 if len(actual) != len(expected):

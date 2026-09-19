@@ -78,12 +78,13 @@ def _m3_engine_config() -> dict[str, object]:
 
 def _qwen_engine_config():
     config = _m3_engine_config()
-    config.update(tp_size=1, mem_fraction_static=0.90, moe_runner_backend="triton")
+    config.update(tp_size=1, mem_fraction_static=0.93, moe_runner_backend="triton")
     config["engine_kwargs"] = {
         "chunked_prefill_size": 4096, "disable_radix_cache": True,
-        "cuda_graph_bs_decode": [1, 2, 4, 8], "kv_cache_dtype": "auto",
-        "language_model_only": True, "linear_attn_backend": "triton",
-        "max_mamba_cache_size": 16, "mamba_ssm_dtype": "float32",
+        "cuda_graph_bs_decode": [1, 2, 4, 8, 16, 24, 32, 40, 48],
+        "kv_cache_dtype": "fp8_e4m3", "language_model_only": True,
+        "linear_attn_backend": "triton", "linear_attn_decode_backend": "cutedsl",
+        "max_mamba_cache_size": 48, "mamba_ssm_dtype": "float32",
     }
     return config
 

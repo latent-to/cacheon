@@ -8,10 +8,10 @@ refuses the arena's fa4 attention backend outright. The invariant the referee
 actually needs is direct: "in the SCORED engine, the miner kernel computes the
 slot's declared function." So the validator audits exactly that: on randomly
 sampled dispatcher calls, run the captured STOCK baseline on pristine inputs and
-compare the miner outputs within the slot's own verify tolerances (the same
-numeric contract offline and in-engine). Backend-agnostic; no determinism
-assumptions; uniform across dispatchers (every seam holds the baseline in
-closure).
+grade the miner outputs against it. The node adapter does the grading and hands
+this module the fraction it measured; the per-slot comparison under each slot's
+declared tolerances went with the per-operation adapters that called it.
+Backend-agnostic; no determinism assumptions.
 
 Gate stack this belongs to: verify (fp32 ground truth, jittered/temporal/burst)
 -> THIS audit (untimed quality launch) -> paired benchmark no-regression ->
@@ -40,34 +40,14 @@ from __future__ import annotations
 import logging
 import os
 import random
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
 import torch
 
 from cacheon import receipts
 from cacheon.audit_gate import gate as gate
-from cacheon.selection_overlap import NOTHING_SELECTED, selection_overlap
 
 logger = logging.getLogger("cacheon.audit")
-
-# Per-call pass bar for "allclose" slots: fraction of elements within the slot's
-# (atol, rtol) bound vs the STOCK baseline. Verify uses ratio 1.0 against an fp32
-# reference; in-engine both sides are low-precision, so the worst few elements sit
-# at the tolerance edge (outlier channels: one bf16 ULP at magnitude 4096 is 32).
-# Garbage is nowhere near this: a wrong-function kernel misses on MOST elements.
-_ALLCLOSE_MIN_RATIO = 0.995
-
-# In-engine margin under a matched_ratio slot's verify bar. Verify compares the
-# candidate against an FP32 reference; the audit compares it against the STOCK
-# low-precision kernel, so BOTH sides carry rounding and honest implementations sit
-# a hair below the verify-calibrated bar. MEASURED on the M3 arena control bundles
-# (2026-07-07, 4xB300): an fp32-EXACT reference audited at worst_frac 0.9894 (8/3308
-# calls under the raw 0.99 bar — a must-pass control failing), the honest v6 kernel
-# at 0.9901, and residual-dropping sabotage at 0.0029. The margin splits honest
-# rounding (~0.989+) from garbage (~0.003) with three orders of magnitude to spare.
-_MATCHED_RATIO_AUDIT_MARGIN = 0.005
-
-
 
 _state: dict = {"rate": None, "rng": None}
 _stats: dict[str, dict] = {}
@@ -144,80 +124,8 @@ def compare_error(slot: str) -> None:
     _receipt(slot)
 
 
-def record(slot: str, actual: Sequence[torch.Tensor],
-           expected: Sequence[Optional[torch.Tensor]]) -> None:
-    """Compare miner outputs vs the stock baseline's, under the slot's verify
-    tolerances, and fold the result into the receipted stats. Never raises."""
-    try:
-        from cacheon.slots import SLOTS
-
-        spec = SLOTS.get(slot)
-        s = _slot_stats(slot)
-        if spec is None:
-            compare_error(slot)
-            return
-        if any(e is None for e in expected) or len(actual) != len(expected):
-            baseline_refused(slot)
-            return
-
-        corr = spec.correctness
-        s["mode"] = corr.mode
-        ok = True
-        worst = 1.0
-        for a, e in zip(actual, expected):
-            if a.shape == e.shape and a.numel() == 0:
-                continue
-            af, ef = a.detach().float(), e.detach().float()
-            if corr.mode == "cosine":
-                cos = torch.nn.functional.cosine_similarity(
-                    af.flatten(), ef.flatten(), dim=0).item()
-                worst = min(worst, cos)
-                ok = ok and cos >= corr.min_cosine
-                s["min_ratio"] = corr.min_cosine
-            elif corr.mode == "topk_overlap":
-                # Selection slots: the dispatcher audits the CONSUMED product — the
-                # index rows the miner produced vs the rows the stock function produced
-                # on the same pristine inputs (the stock baseline runs BEFORE the miner
-                # path on audited calls, so no input clones are needed). The grader is
-                # the one verify uses, so offline and in-engine semantics cannot drift.
-                ov, reason = selection_overlap(a.detach(), e.detach())
-                if reason == NOTHING_SELECTED:
-                    baseline_refused(slot)  # nothing selected: coverage note only
-                    return
-                worst = min(worst, ov)
-                ok = ok and ov >= corr.min_overlap
-                s["min_ratio"] = corr.min_overlap
-            else:
-                tol = spec.tolerance_for(a.dtype)
-                within = ((af - ef).abs() <= tol.atol + tol.rtol * ef.abs())
-                frac = within.float().mean().item()
-                bar = (max(0.0, corr.min_ratio - _MATCHED_RATIO_AUDIT_MARGIN)
-                       if corr.mode == "matched_ratio" else _ALLCLOSE_MIN_RATIO)
-                worst = min(worst, frac)
-                ok = ok and frac >= bar
-                s["min_ratio"] = bar
-        s["n"] += 1
-        s["worst_frac"] = min(s["worst_frac"], worst)
-        if not ok:
-            s["violations"] += 1
-            if s["violations"] <= 4:
-                logger.warning(
-                    "cacheon.audit VIOLATION slot=%s call=%d frac/cos=%.4f (bar %.4f) "
-                    "shapes=%s", slot, s["n"], worst, s["min_ratio"],
-                    [tuple(a.shape) for a in actual])
-        _receipt(slot)
-    except Exception:  # noqa: BLE001 — an audit must never take down an engine
-        try:
-            s = _slot_stats(slot)
-            s["compare_errors"] += 1
-            _receipt(slot)
-        except Exception:  # noqa: BLE001
-            pass
-        logger.exception("cacheon.audit: compare failed (slot=%s)", slot)
-
-
 def capture_reference(
-    slot: str, baseline_thunk: Callable, *, snapshot: bool = True,
+    slot: str, baseline_thunk: Callable,
 ) -> tuple[Optional[torch.Tensor], ...] | None:
     """Retain stock outputs before a candidate can mutate inputs or shared buffers.
 
@@ -243,11 +151,4 @@ def capture_reference(
         logger.exception("cacheon.audit: baseline call failed (slot=%s)", slot)
         return None
     # Snapshot allocation failure must still abort before the candidate starts.
-    return tuple(e.detach().clone() if snapshot and e is not None else e for e in expected)
-
-
-def run(slot: str, actual: Sequence[torch.Tensor], baseline_thunk) -> None:
-    """Compare immediately against stock; no output snapshot needs to outlive a call."""
-    expected = capture_reference(slot, baseline_thunk, snapshot=False)
-    if expected is not None:
-        record(slot, actual, expected)
+    return tuple(e.detach().clone() if e is not None else e for e in expected)

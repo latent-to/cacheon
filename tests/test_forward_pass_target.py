@@ -8,6 +8,7 @@ import pytest
 
 from cacheon._strict import members_overlap
 from cacheon.manifest import load_manifest
+from cacheon.settlement import SettlementError, SettlementQualification
 from cacheon.target_catalog import (
     SINGLETON_TARGET_IDS,
     TargetCatalog,
@@ -15,6 +16,7 @@ from cacheon.target_catalog import (
     TargetResolutionError,
     default_target_catalog,
 )
+from tests.test_settlement import ROUTED, _audit_policy, _candidate, _ref, _stack
 from tests.test_target_catalog import SILU, _bundle, _competition, _slot_spec
 
 
@@ -73,6 +75,19 @@ def test_without_node_roots_the_same_bundle_names_no_registered_target(tmp_path)
     assert not closed.resolve_manifest(manifest).registered
     with pytest.raises(TargetCatalogError, match="node_roots"):
         TargetCatalog([replace(_slot_spec(SILU), node_roots=("model", "logits_processor"))])
+
+
+def test_node_address_members_settle_and_a_malformed_member_does_not():
+    catalog = default_target_catalog()
+    primary = _candidate(_stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a").primary
+    nodes = ("logits_processor", "model.layers.*.mlp")
+    audit = _audit_policy("nodes", nodes)
+    wide = replace(
+        primary, members=nodes, audit_policy=audit, audit_control_digest=audit.control.digest
+    )
+    assert SettlementQualification.from_dict(wide.to_dict()) == wide
+    with pytest.raises(SettlementError, match="member is not a canonical identifier"):
+        replace(wide, members=("model.layers.**.mlp",))
 
 
 def test_overlap_is_containment_for_nodes_and_equality_for_slot_ids():

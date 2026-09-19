@@ -69,14 +69,15 @@ their sealed graph configuration. The audit-only session is eager and untimed; t
 worker disables CUDA graphs for that role. An unexpected audit receipt in a charged
 candidate session is a protocol error.
 
-The tensor comparison still occurs inside the candidate engine through
-[`cacheon/audit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit.py).
-For `matched_ratio` slots it grades against
-`max(0, SlotSpec.correctness.min_ratio - 0.005)`. This `0.005` audit margin is not a
-new slot tolerance and must not be applied by `verify`: component verification compares
-the candidate with a high-precision reference, while the live audit compares candidate
-and stock low-precision results, so both audit operands carry rounding. The margin was
-selected with honest/reference and residual-drop controls; changing it requires fresh
+The tensor comparison still occurs inside the candidate engine. The node adapter,
+[`cacheon/integrations/sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
+grades each row of the candidate's result and engine-state rows against stock's on the
+same call, under the tolerance and 75% window bar the
+[slot contract](../architecture/slot-contract.md) defines, and hands
+[`cacheon/audit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit.py)
+the fraction it measured for the rolling receipt. Both operands are the engine's own
+low-precision results, so the tolerance is measured on an honest twin rather than
+declared; changing the floor, the ceiling or the bar requires fresh honest and wrong
 control evidence and review.
 
 The environment variables and rolling receipt are only worker instrumentation. Running

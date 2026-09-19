@@ -177,6 +177,36 @@ honest rows above are the re-run with that rule. The measured tolerance is also
 capped at 40% per row, above the 33% the noisiest honest width earns and below a
 wrong answer.
 
+## FP8 KV cache
+
+The arena serves an FP8 (`fp8_e4m3`) KV cache. The longer run above, repeated with
+it:
+
+| Bundle | Graded windows | Failed windows | Worst window |
+|---|---|---|---|
+| `model.layers.*`, honest | 2,280 | 0 | 0.856 |
+| `model.layers.*`, native | 2,280 | 0 | 0.829 |
+| `model.layers.*`, wrong | 2,280 | 1,960 | 0.0 |
+| `model`, honest | 57 | 0 | 0.894 |
+
+SGLang keeps an FP8 cache in `uint8` storage and holds the real type on the pool.
+Graded as stored, a cache value near zero whose sign flips reads as a jump of 128
+between two bytes that hold almost the same number, and nine in ten of the row
+windows behind the first decoder-layer run (39,200 of 43,760) were bytes. The
+adapter now grades those
+rows as the FP8 numbers they hold. The decoder-layer rows above did not move; the
+`model` row was 0.883 when graded as bytes.
+
+The first FP8 runs put the native twin's worst window at exactly 0.75, the bar, and
+the result repeated bit for bit. The cause was the control workload, not the cache:
+every SWE-agent trajectory opens with the same 1,192 to 2,758-token system prompt,
+and the controls sliced the first 300 tokens, so a batch of eight "different"
+requests was one request eight times. Their rows were identical to four decimals,
+one noisy single-token call counted eight times, and a 256-row window held 32
+independent draws instead of 256. The rows above slice past the shared prefix.
+Earlier tables on this page used the shared slices; their verdicts stand and their
+worst-window figures are, if anything, pessimistic.
+
 ## Limits
 
 - One model, one GPU per engine, no tensor or data parallelism. A node that
@@ -189,5 +219,7 @@ wrong answer.
   rounding leaves at that width, not a chosen leniency.
 - A graded tensor needs 256 rows on audited calls before it produces a verdict.
   The logits processor yields one row per request, so short runs grade it rarely.
-- Recurrent-state rows are FP32 and cache rows were BF16 in these runs. FP8 cache
-  rows are not measured.
+- Recurrent-state rows are FP32. Cache rows are graded in the cache's own type, so
+  an FP8 cache is compared at FP8 resolution against stock's FP8 rows.
+- Audited rows inside a prefix every request shares are correlated across requests,
+  so a window drawn from them holds fewer independent draws than its row count.

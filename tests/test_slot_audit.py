@@ -57,68 +57,17 @@ def test_seeded_sampling_is_reproducible(monkeypatch):
     assert a == b
 
 
-# ---- record / run --------------------------------------------------------------
-
-
-def test_record_faithful_no_violation(monkeypatch):
-    _arm(monkeypatch)
-    x = torch.randn(8, 64)
-    audit.record(SLOT, (x,), (x.clone(),))
-    s = audit._stats[SLOT]
-    assert s["n"] == 1 and s["violations"] == 0 and s["worst_frac"] == 1.0
-
-
-@pytest.mark.parametrize("slot", [SLOT, "collective.dp_output_projection_norm"])
-@pytest.mark.parametrize("corrupt", [False, True])
-def test_empty_optional_outputs_preserve_nonempty_audit(slot, corrupt):
-    expected = torch.ones(4, 8)
-    actual = expected + 10 if corrupt else expected.clone()
-    absent = torch.empty(0, dtype=torch.uint8)
-    audit.record(slot, (actual, absent), (expected, absent.clone()))
-    stats = audit._stats[slot]
-    assert stats["n"] == 1
-    assert stats["compare_errors"] == 0
-    assert stats["violations"] == int(corrupt)
-    assert stats["worst_frac"] == (0.0 if corrupt else 1.0)
-
-
-def test_record_garbage_is_violation(monkeypatch):
-    _arm(monkeypatch)
-    x = torch.randn(8, 64)
-    audit.record(SLOT, (x + 10.0,), (x,))
-    s = audit._stats[SLOT]
-    assert s["n"] == 1 and s["violations"] == 1 and s["worst_frac"] < 0.5
-
-
-def test_record_ulp_noise_passes(monkeypatch):
-    # A few elements at the tolerance edge must NOT fail an otherwise-faithful kernel
-    # (the outlier-channel single-ULP class measured on the v6 stockcheck).
-    _arm(monkeypatch)
-    x = torch.randn(100, 64)
-    y = x.clone()
-    y[0, 0] += 100.0  # one wild element out of 6400 -> frac 0.99984 >= 0.995
-    audit.record(SLOT, (y,), (x,))
-    s = audit._stats[SLOT]
-    assert s["violations"] == 0 and s["worst_frac"] < 1.0
-
-
-def test_record_none_expected_counts_refused(monkeypatch):
-    _arm(monkeypatch)
-    x = torch.randn(4, 8)
-    audit.record(SLOT, (x,), (None,))
-    s = audit._stats[SLOT]
-    assert s["baseline_refused"] == 1 and s["n"] == 0 and s["violations"] == 0
+# ---- recorded units and the stock reference --------------------------------------
 
 
 def test_a_node_address_is_graded_by_its_adapter_and_recorded_as_units(monkeypatch):
-    # A node address has no SlotSpec, so the declared-tolerance path cannot compare
-    # it; the node adapter grades against stock and records the units it graded.
+    # The node adapter grades against stock and records the units it graded; a result
+    # it could not compare is counted apart from a violation.
     _arm(monkeypatch)
-    x = torch.randn(4, 8)
-    audit.record("model.layers.*.mlp", (x,), (x,))
     from cacheon.eval.oci_session_protocol import AuditReceiptFacts, SlotAuditControl
     from cacheon.integrations.sglang_nodes import _MODE
 
+    audit.compare_error("model.layers.*.mlp")
     audit.record_fraction("model.layers.*.mlp", 1.0, 0.9, _MODE)
     audit.record_fraction("model.layers.*.mlp", 0.5, 0.9, _MODE)
     stats = audit._stats["model.layers.*.mlp"]
@@ -134,25 +83,24 @@ def test_a_node_address_is_graded_by_its_adapter_and_recorded_as_units(monkeypat
     assert SlotAuditControl(125_000, 32, ("logits_processor", "model.layers.*.mlp"), 1)
 
 
-def test_run_baseline_error_is_a_refusal_not_a_crash_or_compare_error(monkeypatch):
+def test_a_baseline_error_is_a_refusal_not_a_crash_or_compare_error(monkeypatch):
     _arm(monkeypatch)
 
     def boom():
         raise RuntimeError("baseline exploded")
 
-    audit.run(SLOT, (torch.randn(4, 8),), boom)
+    assert audit.capture_reference(SLOT, boom) is None
     assert audit._stats[SLOT]["compare_errors"] == 0
     assert audit._stats[SLOT]["baseline_refused"] == 1
     assert audit._stats[SLOT]["n"] == 0
 
 
-def test_run_unwraps_single_tensor_and_tuple(monkeypatch):
-    _arm(monkeypatch)
+def test_the_stock_reference_is_a_copy_whether_stock_returns_a_tensor_or_a_tuple():
     x = torch.randn(4, 8)
-    audit.run(SLOT, (x,), lambda: x.clone())          # bare tensor baseline
-    audit.run(SLOT, (x, x), lambda: (x.clone(), x.clone()))  # tuple baseline
-    s = audit._stats[SLOT]
-    assert s["n"] == 2 and s["violations"] == 0
+    for returned, count in ((x, 1), ((x, x), 2)):
+        kept = audit.capture_reference(SLOT, lambda: returned)
+        assert len(kept) == count and all(torch.equal(row, x) for row in kept)
+        assert all(row.data_ptr() != x.data_ptr() for row in kept)
 
 
 # ---- receipts ------------------------------------------------------------------
@@ -161,9 +109,8 @@ def test_run_unwraps_single_tensor_and_tuple(monkeypatch):
 def test_rolling_receipt_overwrites(monkeypatch, tmp_path):
     _arm(monkeypatch)
     monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
-    x = torch.randn(4, 8)
-    audit.record(SLOT, (x,), (x.clone(),))
-    audit.record(SLOT, (x,), (x.clone(),))
+    audit.record_fraction(SLOT, 1.0, 0.9, "matched_ratio")
+    audit.record_fraction(SLOT, 1.0, 0.9, "matched_ratio")
     files = list(tmp_path.glob("audit*.json"))
     assert len(files) == 1  # rolling: same kind+tag+pid file, overwritten
     got = receipts.collect(tmp_path, "audit")
@@ -320,62 +267,24 @@ def test_gate_requires_minimum_calls_on_every_slot_rank_receipt():
     assert decision == "NO_DECISION" and "per-slot/member coverage" in desc
 
 
-# ---- topk_overlap slots (the generic selection-audit mode; no registered slot
-# ---- currently uses it, so the tests register a synthetic one) ------------------
-
-TOPK_SLOT = "test.selection"
+# ---- selected-index grading, the grader `cacheon verify` still uses ---------------
 
 
 def _sel(rows):
     return torch.tensor(rows, dtype=torch.int32).unsqueeze(0)  # (H=1, rows, k)
 
 
-def _arm_topk(monkeypatch):
-    from cacheon.slots import SLOTS, SILU_AND_MUL, Correctness
-    from dataclasses import replace as _dc_replace
+def test_selection_overlap_grades_rows_and_refuses_rewritten_padding():
+    from cacheon.selection_overlap import NOTHING_SELECTED, selection_overlap
 
-    _arm(monkeypatch)
-    spec = _dc_replace(
-        SILU_AND_MUL,
-        name=TOPK_SLOT,
-        correctness=Correctness("topk_overlap", top_k=8, min_overlap=0.9),
-    )
-    monkeypatch.setitem(SLOTS, TOPK_SLOT, spec)
-
-
-def test_topk_identical_selection_no_violation(monkeypatch):
-    _arm_topk(monkeypatch)
-    idx = _sel([[0, 1, 2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 12, 13, 14, 15]])
-    audit.record(TOPK_SLOT, (idx,), (idx.clone(),))
-    s = audit._stats[TOPK_SLOT]
-    assert s["n"] == 1 and s["violations"] == 0 and s["worst_frac"] == 1.0
-    assert s["mode"] == "topk_overlap" and s["min_ratio"] == 0.9
-
-
-def test_topk_disjoint_row_is_violation(monkeypatch):
-    # One fully-wrong row of four -> mean overlap 0.75 < the slot's 0.9 floor.
-    _arm_topk(monkeypatch)
     base = [[i * 8 + j for j in range(8)] for i in range(4)]
-    actual = [row[:] for row in base]
-    actual[0] = [100 + j for j in range(8)]
-    audit.record(TOPK_SLOT, (_sel(actual),), (_sel(base),))
-    s = audit._stats[TOPK_SLOT]
-    assert s["n"] == 1 and s["violations"] == 1
-    assert abs(s["worst_frac"] - 0.75) < 1e-6
-
-
-def test_topk_candidate_may_not_replace_padding_with_extra_blocks(monkeypatch):
-    _arm_topk(monkeypatch)
-    expected = _sel([[0, 1, 2, 3, -1, -1, -1, -1]])
-    actual = _sel([[0, 1, 2, 3, 9, 10, 11, 12]])
-    audit.record(TOPK_SLOT, (actual,), (expected,))
-    s = audit._stats[TOPK_SLOT]
-    assert s["n"] == 1 and s["violations"] == 1 and s["worst_frac"] == 0.0
-
-
-def test_topk_all_invalid_expected_counts_refused(monkeypatch):
-    _arm_topk(monkeypatch)
+    assert selection_overlap(_sel(base), _sel(base)) == (1.0, "")
+    # One fully-wrong row of four.
+    wrong = [[100 + j for j in range(8)], *base[1:]]
+    assert selection_overlap(_sel(wrong), _sel(base)) == (0.75, "")
+    # A candidate may not replace the reference's padding with extra blocks.
+    padded = _sel([[0, 1, 2, 3, -1, -1, -1, -1]])
+    score, reason = selection_overlap(_sel([[0, 1, 2, 3, 9, 10, 11, 12]]), padded)
+    assert score == 0.0 and "padding" in reason
     empty = _sel([[-1] * 8])
-    audit.record(TOPK_SLOT, (empty.clone(),), (empty,))
-    s = audit._stats[TOPK_SLOT]
-    assert s["n"] == 0 and s["violations"] == 0 and s["baseline_refused"] == 1
+    assert selection_overlap(empty.clone(), empty) == (0.0, NOTHING_SELECTED)

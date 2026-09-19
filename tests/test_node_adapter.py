@@ -270,6 +270,46 @@ def test_skipping_a_state_write_is_a_violation_even_with_the_right_output(audite
     assert audited["layers.0.mlp"]["violations"] == 1
 
 
+@pytest.mark.parametrize(("written", "violations"), [("negative zero", 0), ("doubled", 1)])
+def test_an_fp8_cache_stored_as_bytes_is_graded_as_the_numbers_it_holds(
+    audited, written, violations
+):
+    fp8 = torch.float8_e4m3fn
+
+    class _Fp8Block(nn.Module):
+        def __init__(self, runner):
+            super().__init__()
+            self.runner = [runner]
+
+        def forward(self, x, batch, *, scale=1.0, zero=0.0):
+            rows = torch.cat([x[:, :3] * scale, torch.full((x.shape[0], 1), zero)], dim=1)
+            self.runner[0].token_to_kv_pool.k_buffer[0][batch.out_cache_loc] = (
+                rows.to(fp8).view(torch.uint8)
+            )
+            return x * 2.0
+
+    runner = SimpleNamespace(
+        token_to_kv_pool=SimpleNamespace(
+            dtype=fp8, k_buffer=[torch.zeros(8, 4, dtype=torch.uint8)]
+        ),
+        req_to_token_pool=SimpleNamespace(),
+    )
+    runner.model = nn.Module()
+    runner.model.leaf = _Fp8Block(runner)
+    batch = SimpleNamespace(
+        out_cache_loc=torch.tensor([1, 2]), req_pool_indices=torch.tensor([0])
+    )
+
+    def candidate(module, x, batch):
+        # As bytes -0.0 is 128 away from +0.0; as a number it is the same value.
+        how = dict(zero=-0.0) if written == "negative zero" else dict(scale=2.0)
+        return module.forward(x, batch, **how)
+
+    nodes.bind(runner, _registry("leaf", candidate))
+    runner.model.leaf(torch.rand(2, 4) + 1.0, batch)
+    assert (audited["leaf"]["n"], audited["leaf"]["violations"]) == (1, violations)
+
+
 def test_a_result_that_is_a_record_is_graded_through_its_fields(audited):
     class _Head(nn.Module):
         def forward(self, x):
