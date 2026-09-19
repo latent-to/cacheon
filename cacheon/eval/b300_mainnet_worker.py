@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 
 from cacheon.arena_service import (
     ArenaCandidateBinding,
@@ -34,23 +33,14 @@ from cacheon.chain.evaluation_coordinator import (
     EvaluationRun,
     WorkerReadiness,
 )
-from cacheon.chain.remote_qualification_hold import RemoteQualificationHoldReason
+from cacheon.chain.remote_qualification_hold import (
+    RemoteQualificationHoldReason,
+    RemoteQualificationWorkerHold,
+)
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
     B300DeploymentAuthorities,
     B300ScreenDeploymentAuthorities,
-)
-from cacheon.eval.b300_qualification_graph_gate import (
-    B300QualificationGraphGateFail,
-    B300QualificationGraphGateHold,
-    B300QualificationGraphGatePass,
-    B300QualificationGraphHoldCode,
-    qualification_graph_gate_hold,
-    run_b300_qualification_graph_gate,
-)
-from cacheon.eval.b300_qualification_graph_store_io import (
-    B300QualificationGraphEvidenceHold,
-    B300QualificationGraphEvidenceStoreError,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_backend import OCIEngineExecutor
@@ -87,7 +77,7 @@ def _resident_evidence_hold(
     authority_digest: str,
     source_digest: str,
     failure: BaseException | None = None,
-) -> B300QualificationGraphGateHold:
+) -> RemoteQualificationWorkerHold:
     failure_type = ""
     failure_message = ""
     diagnostic_digest = ""
@@ -107,7 +97,7 @@ def _resident_evidence_hold(
         failure_message = " <- ".join(chain)
         if len(failure_message) > 2_000:
             failure_message = failure_message[:500] + " ... " + failure_message[-1_495:]
-    return B300QualificationGraphGateHold(
+    return RemoteQualificationWorkerHold(
         RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE,
         diagnostic_digest or canonical_digest(
             "cacheon.eval.b300-resident-qualification-hold.v1",
@@ -202,7 +192,6 @@ class B300MainnetWorker:
             if type(authorities) is B300DeploymentAuthorities
             else None
         )
-        self._remote_qualification_graph_root: Path | None = None
         self._closed = False
         self._lock = threading.RLock()
         self.worker_digest = canonical_digest(
@@ -262,7 +251,7 @@ class B300MainnetWorker:
         screen_lane: str,
         continuation_store: QualificationContinuationStore,
         request_digest: str,
-    ) -> B300RemoteQualificationRun | B300QualificationGraphGateHold:
+    ) -> B300RemoteQualificationRun | RemoteQualificationWorkerHold:
         """Run one path-free, lane-bound remote qualification cohort.
 
         The CPU transport sends immutable publications, reservations, promoted
@@ -319,7 +308,7 @@ class B300MainnetWorker:
                 continuation_store=continuation_store,
                 request_digest=request_digest,
             )
-            if type(execution) is B300QualificationGraphGateHold:
+            if type(execution) is RemoteQualificationWorkerHold:
                 return execution
             payload, authority_manifest, supporting_evidence_refs = execution
             disposition = "released" if self._systemic(payload) else "completed"
@@ -362,25 +351,6 @@ class B300MainnetWorker:
         with self._lock:
             return self._provider.resident_screen_latched
 
-    def _bind_remote_qualification_graph_gate_root(self, root: Path) -> None:
-        """Bind the adapter-owned CAS root once for this resident worker epoch."""
-
-        if not isinstance(root, Path) or not root.is_absolute() or root != Path(
-            root.as_posix()
-        ):
-            raise B300MainnetWorkerError(
-                "remote qualification graph root is not canonical and absolute"
-            )
-        with self._lock:
-            if self._closed:
-                raise B300MainnetWorkerError("B300 mainnet worker is closed")
-            current = self._remote_qualification_graph_root
-            if current is not None and current != root:
-                raise B300MainnetWorkerError(
-                    "remote qualification graph root changed within the worker epoch"
-                )
-            self._remote_qualification_graph_root = root
-
     def __enter__(self) -> "B300MainnetWorker":
         with self._lock:
             if self._closed:
@@ -419,111 +389,22 @@ class B300MainnetWorker:
             QualificationAuthorityManifest,
             tuple[EvidenceArtifactRef, ...],
         ]
-        | B300QualificationGraphGateHold
+        | RemoteQualificationWorkerHold
     ):
-        try:
-            work = self.service.plan_qualification(
-                candidates,
-                screen_receipts,
-                state=None,
-            )
-        except (
-            B300QualificationGraphEvidenceHold,
-            B300QualificationGraphEvidenceStoreError,
-        ) as exc:
-            if request_digest is None:
-                raise
-            planning_context_digest = canonical_digest(
-                "cacheon.eval.b300-qualification-graph-provider-context.v1",
-                {
-                    "candidate_digests": [row.digest for row in candidates],
-                    "reservation_digests": [
-                        row.reservation.reservation_digest for row in candidates
-                    ],
-                },
-            )
-            _LOG.exception(
-                "qualification graph evidence unavailable while planning for "
-                "request %s; the qualification is held without a candidate decision",
-                request_digest,
-            )
-            return qualification_graph_gate_hold(
-                RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
-                authenticated_request_digest=request_digest,
-                authority_context_digest=planning_context_digest,
-                code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
-                failure=exc,
-            )
+        work = self.service.plan_qualification(
+            candidates,
+            screen_receipts,
+            state=None,
+        )
         self._validate_work(work, candidates)
         supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
-        graph_root = self._remote_qualification_graph_root
         if request_digest is not None:
-            if graph_root is None:
-                return qualification_graph_gate_hold(
-                    RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
-                    authenticated_request_digest=request_digest,
-                    authority_context_digest=work.factory.manifest.digest,
-                    code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
-                )
             try:
                 plan = work.factory.build()
-            except (
-                B300QualificationGraphEvidenceHold,
-                B300QualificationGraphEvidenceStoreError,
-            ) as exc:
-                _LOG.exception(
-                    "qualification graph evidence unavailable while building "
-                    "the plan for request %s; the qualification is held "
-                    "without a candidate decision",
-                    request_digest,
-                )
-                return qualification_graph_gate_hold(
-                    RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
-                    authenticated_request_digest=request_digest,
-                    authority_context_digest=work.factory.manifest.digest,
-                    code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
-                    failure=exc,
-                )
             except QualificationIntakeError as exc:
                 raise B300MainnetWorkerError(
-                    "remote graph gate could not reopen the prebuilt qualification plan"
+                    "remote qualification could not reopen the prebuilt qualification plan"
                 ) from exc
-            graph = run_b300_qualification_graph_gate(
-                work.factory,
-                plan,
-                evidence_root=graph_root,
-                candidates=candidates,
-                authenticated_request_digest=request_digest,
-            )
-            if type(graph) is B300QualificationGraphGateHold:
-                _LOG.error(
-                    "qualification graph gate held request %s with reason %s "
-                    "diagnostic %s",
-                    request_digest,
-                    graph.reason,
-                    graph.diagnostic_digest,
-                )
-                return graph
-            if (
-                graph.plan is not plan
-                or graph.factory is not work.factory
-                or type(graph)
-                not in {
-                    B300QualificationGraphGatePass,
-                    B300QualificationGraphGateFail,
-                }
-            ):
-                raise B300MainnetWorkerError(
-                    "graph gate changed the exact prebuilt qualification plan"
-                )
-            supporting_evidence_refs = graph.supporting_evidence_refs
-            if type(graph) is B300QualificationGraphGateFail:
-                self._validate_batch(graph.batch, work, candidates)
-                return (
-                    graph.batch,
-                    work.factory.manifest,
-                    supporting_evidence_refs,
-                )
         try:
             batch = run_qualification_intake(
                 work.factory,

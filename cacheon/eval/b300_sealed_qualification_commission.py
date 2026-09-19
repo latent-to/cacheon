@@ -45,7 +45,8 @@ from cacheon.stack_identity import canonical_digest
 from cacheon.target_catalog import TargetCatalog
 
 
-QUALIFICATION_COMMISSION_SCHEMA = "cacheon-private-b300-qualification-commission-v3"
+# v4 dropped v3's graph_facts_builder_digest with the offline graph stage.
+QUALIFICATION_COMMISSION_SCHEMA = "cacheon-private-b300-qualification-commission-v4"
 QUALIFICATION_DEADLINE_MAXIMUM_SECONDS = 14_400
 CALIBRATION_PACKAGE_SCHEMA = "cacheon-private-b300-calibration-pair-v1"
 QUALIFICATION_STAGES = frozenset({"primary", "reproduction"})
@@ -55,7 +56,6 @@ QUALIFICATION_EVIDENCE_POLICY_DIGEST = canonical_digest(
     {
         "calibration": "frozen-reopened",
         "evidence_root": "content-addressed",
-        "graph_observations": "published-and-reopened",
     },
 )
 
@@ -63,7 +63,6 @@ _COMMISSION_FIELDS = frozenset(
     {
         "builder_source_digest",
         "candidate_binding_builder_digest",
-        "graph_facts_builder_digest",
         "policy",
         "resident_speed",
         "schema",
@@ -149,8 +148,6 @@ class B300QualificationCapabilities:
     hidden_judge: object
     source_resolver: object
     source_resolver_digest: str
-    graph_facts_builder: object
-    graph_facts_builder_digest: str
     incumbent_entries: dict[str, object]
 
     def __post_init__(self) -> None:
@@ -171,7 +168,6 @@ class B300QualificationCapabilities:
                 callable(self.hidden_judge)
                 or callable(getattr(self.hidden_judge, "bind_prompt_plan", None))
             )
-            or not callable(self.graph_facts_builder)
             or not callable(getattr(self.source_resolver, "resolve_proposal", None))
         ):
             raise B300QualificationCommissionError(
@@ -181,16 +177,15 @@ class B300QualificationCapabilities:
             raise B300QualificationCommissionError(
                 "hidden judge capability lacks an exact sealed binding"
             )
-        for field in ("source_resolver_digest", "graph_facts_builder_digest"):
-            value = getattr(self, field)
-            if (
-                type(value) is not str
-                or len(value) != 64
-                or any(char not in "0123456789abcdef" for char in value)
-            ):
-                raise B300QualificationCommissionError(
-                    f"capability {field} is not one SHA-256 identity"
-                )
+        value = self.source_resolver_digest
+        if (
+            type(value) is not str
+            or len(value) != 64
+            or any(char not in "0123456789abcdef" for char in value)
+        ):
+            raise B300QualificationCommissionError(
+                "capability source_resolver_digest is not one SHA-256 identity"
+            )
 
 
 def parse_sealed_calibration_package(
@@ -328,7 +323,6 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     for field in (
         "builder_source_digest",
         "candidate_binding_builder_digest",
-        "graph_facts_builder_digest",
         "selection_store_digest",
         "source_resolver_digest",
         "support_policy_digest",

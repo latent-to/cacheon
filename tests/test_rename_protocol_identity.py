@@ -12,10 +12,6 @@ import ast
 from pathlib import Path
 
 from cacheon.chain.publish import DEFAULT_BUNDLE_KEY_PREFIX
-from cacheon.eval.qualification import (
-    GRAPH_EVIDENCE_MEDIA_TYPE,
-    GRAPH_EVIDENCE_SCHEMA,
-)
 from cacheon.eval.runtime_preflight import (
     CONTAINER_RECEIPT_SCHEMA,
     HOST_RECEIPT_SCHEMA,
@@ -31,8 +27,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_protocol_and_runtime_abi_vocabulary_is_cacheon() -> None:
-    assert GRAPH_EVIDENCE_MEDIA_TYPE == "application/vnd.cacheon.graph-verification+json"
-    assert GRAPH_EVIDENCE_SCHEMA == "cacheon.qualification.graph-raw-evidence.v1"
     assert SESSION_SCHEMA == "cacheon-isolated-engine-session-v1"
     assert CONTAINER_RECEIPT_SCHEMA == "cacheon-runtime-container-preflight-v2"
     assert HOST_RECEIPT_SCHEMA == "cacheon-runtime-preflight-v2"

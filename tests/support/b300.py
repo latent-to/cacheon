@@ -66,8 +66,6 @@ def qualification_capabilities(**overrides: object) -> B300QualificationCapabili
         "hidden_judge": StubHiddenJudge(),
         "source_resolver": StubSourceResolver(),
         "source_resolver_digest": sha("source-resolver"),
-        "graph_facts_builder": lambda *_args: None,
-        "graph_facts_builder_digest": sha("graph-facts"),
         "incumbent_entries": {},
     }
     values.update(overrides)

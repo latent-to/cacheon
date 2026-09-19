@@ -63,7 +63,7 @@ def test_capabilities_seal_exact_callables_and_identities() -> None:
     with pytest.raises(commission.B300QualificationCommissionError):
         _capabilities(hidden_judge=lambda **_kwargs: None)
     with pytest.raises(commission.B300QualificationCommissionError):
-        _capabilities(graph_facts_builder_digest="not-a-digest")
+        _capabilities(source_resolver_digest="not-a-digest")
     with pytest.raises(commission.B300QualificationCommissionError):
         _capabilities(source_resolver_digest=_h("upper").upper())
     with pytest.raises(commission.B300QualificationCommissionError):

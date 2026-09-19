@@ -58,7 +58,9 @@ cannot crown, settle or authorize rewards.
 
 Standing-resident deployments defer separate ABI/graph lifetimes to this
 all-rank swap/read, preserving their fixed stage positions. Full qualification
-still supplies independent audit, numerics and crownable graph evidence.
+still supplies the independent audit, the pristine quality gate, and the
+captured completions of the timed run, which together are the crownable graph
+proof.
 Non-swappable AOT artifacts, dependency patches, native rebuilds and setup
 hooks receive an explicit routing waiver into full qualification, never a
 performance pass.

@@ -53,7 +53,7 @@ producers may impose tighter bounds.
 
 `reopen_causal_qualification(..., expected=...)` requires a reconstructed
 `CausalQualificationInput`. The expected object supplies the full prepared plan, candidate
-authorities, graph evidence references and requirements, calibration artifact/reference
+authorities, calibration artifact/reference
 context, runtime resource policy, T/reference authority, and commitment. The persisted
 `QualificationAuthorityManifest` carries identity fields and commitments, not this full
 object. Production retention must therefore preserve enough reviewed private deployment

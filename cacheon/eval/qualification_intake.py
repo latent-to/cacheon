@@ -1,8 +1,7 @@
 """Finalized-intake projection for causal qualification evidence.
 
 This module is deliberately narrower than the qualification runner.  It binds an
-already prepared validator-owned plan to finalized reservation identities, turns
-exact per-shape graph observations into the runner's canonical raw evidence, and
+already prepared validator-owned plan to finalized reservation identities and
 projects a completed attempt (or a retryable cohort failure) into per-reservation
 three-way outcomes.  It does not fetch submissions, execute candidate code, settle
 scores, or publish weights.
@@ -18,25 +17,11 @@ from cacheon._strict import NODE_ADDRESS, require_digest, require_identifier, re
 if TYPE_CHECKING:
     from cacheon.settlement import SettlementQualification
 
-from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
+from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.candidate_failure_product import (
     candidate_failure_batch,
 )
-from cacheon.eval.qualification import (
-    GRAPH_EVIDENCE_DOMAIN,
-    GRAPH_EVIDENCE_MEDIA_TYPE,
-    GRAPH_EVIDENCE_SCHEMA,
-    GraphMemberEvidence,
-    GraphShapeEvidence,
-    GraphVariantEvidence,
-    GraphVerificationEvidenceRef,
-    GraphVerificationGrade,
-    GraphVerificationRawEvidence,
-    GraphVerificationRequirement,
-    QualificationDecision,
-    regrade_graph_verification,
-    reopen_graph_verification,
-)
+from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_runner import (
     CandidateQualificationReport,
     CausalQualificationInput,
@@ -57,7 +42,7 @@ from cacheon.eval.oci_outer_session import (
 )
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.scoring import RawSpeedEvidenceError
-from cacheon.stack_identity import canonical_digest, canonical_json_bytes
+from cacheon.stack_identity import canonical_digest
 
 
 AUTHORITY_SCHEMA_VERSION = 1
@@ -316,217 +301,6 @@ class QualificationPlanFactory:
         if observed != self.manifest:
             raise QualificationIntakeError("rebuilt qualification authority differs")
         return value
-
-
-@dataclass(frozen=True)
-class GraphShapeObservation:
-    """Non-aggregate facts for one validator-named verification shape."""
-
-    descriptor_digest: str
-    applicable: bool
-    eager_passed: bool
-    capture_succeeded: bool
-    replay_count: int
-    replay_passed: bool
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "descriptor_digest", _digest(self.descriptor_digest, "shape descriptor")
-        )
-        for field in (
-            "applicable",
-            "eager_passed",
-            "capture_succeeded",
-            "replay_passed",
-        ):
-            if type(getattr(self, field)) is not bool:
-                raise QualificationIntakeError(f"{field} must be an exact boolean")
-        object.__setattr__(self, "replay_count", _integer(self.replay_count, "replay_count"))
-        if (
-            (not self.applicable and any(
-                (self.eager_passed, self.capture_succeeded, self.replay_passed, self.replay_count)
-            ))
-            or (not self.eager_passed and any(
-                (self.capture_succeeded, self.replay_passed, self.replay_count)
-            ))
-            or (not self.capture_succeeded and any((self.replay_passed, self.replay_count)))
-            or (self.replay_passed and self.replay_count < 1)
-        ):
-            raise QualificationIntakeError("graph shape observation is causally inconsistent")
-
-    @property
-    def failure_kind(self) -> str:
-        if not self.applicable:
-            return "not_applicable"
-        if not self.eager_passed:
-            return "eager"
-        if not self.capture_succeeded:
-            return "capture"
-        if not self.replay_passed:
-            return "replay"
-        return "none"
-
-    def evidence(self) -> GraphShapeEvidence:
-        return GraphShapeEvidence(
-            self.descriptor_digest,
-            self.applicable,
-            self.eager_passed,
-            self.applicable,
-            self.replay_count,
-            self.replay_passed,
-            self.failure_kind,
-        )
-
-
-@dataclass(frozen=True)
-class GraphVariantObservation:
-    slot_id: str
-    variant_id: str
-    context_applicable: bool
-    domain_coverage_complete: bool
-    shapes: tuple[GraphShapeObservation, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "slot_id", _identifier(self.slot_id, "slot_id"))
-        object.__setattr__(self, "variant_id", _identifier(self.variant_id, "variant_id"))
-        for field in ("context_applicable", "domain_coverage_complete"):
-            if type(getattr(self, field)) is not bool:
-                raise QualificationIntakeError(f"{field} must be an exact boolean")
-        shapes = tuple(self.shapes)
-        if not shapes or any(type(row) is not GraphShapeObservation for row in shapes):
-            raise QualificationIntakeError("graph variant requires exact per-shape facts")
-        object.__setattr__(self, "shapes", shapes)
-
-
-@dataclass(frozen=True)
-class GraphMemberObservation:
-    slot_id: str
-    variants: tuple[GraphVariantObservation, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "slot_id", _identifier(self.slot_id, "slot_id"))
-        variants = tuple(self.variants)
-        if not variants or any(
-            type(row) is not GraphVariantObservation or row.slot_id != self.slot_id
-            for row in variants
-        ):
-            raise QualificationIntakeError("graph member variants are incomplete")
-        object.__setattr__(self, "variants", variants)
-
-
-@dataclass(frozen=True)
-class GraphVerificationObservation:
-    requirement_digest: str
-    members: tuple[GraphMemberObservation, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "requirement_digest", _digest(self.requirement_digest, "requirement")
-        )
-        members = tuple(self.members)
-        if not members or any(type(row) is not GraphMemberObservation for row in members):
-            raise QualificationIntakeError(
-                "graph observation must contain exact member/variant/shape facts"
-            )
-        object.__setattr__(self, "members", members)
-
-
-@dataclass(frozen=True)
-class GraphEvidenceProduct:
-    requirement_digest: str
-    artifact_ref: EvidenceArtifactRef
-    evidence_ref: GraphVerificationEvidenceRef
-    raw_evidence_digest: str
-    grade: GraphVerificationGrade
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "requirement_digest", _digest(self.requirement_digest, "requirement")
-        )
-        object.__setattr__(
-            self, "raw_evidence_digest", _digest(self.raw_evidence_digest, "raw evidence")
-        )
-        if (
-            type(self.artifact_ref) is not EvidenceArtifactRef
-            or type(self.evidence_ref) is not GraphVerificationEvidenceRef
-            or type(self.grade) is not GraphVerificationGrade
-            or self.artifact_ref.domain != GRAPH_EVIDENCE_DOMAIN
-            or self.artifact_ref.media_type != GRAPH_EVIDENCE_MEDIA_TYPE
-            or self.artifact_ref.schema != GRAPH_EVIDENCE_SCHEMA
-            or self.evidence_ref.requirement_digest != self.requirement_digest
-            or self.evidence_ref.raw_evidence_digest != self.raw_evidence_digest
-            or self.grade.requirement_digest != self.requirement_digest
-            or self.grade.evidence_ref_digest != self.evidence_ref.digest
-            or self.grade.raw_evidence_digest != self.raw_evidence_digest
-        ):
-            raise QualificationIntakeError("published graph evidence identities differ")
-
-
-def publish_graph_observation(
-    evidence_root,
-    requirement: GraphVerificationRequirement,
-    observation: GraphVerificationObservation,
-) -> GraphEvidenceProduct:
-    """Publish raw graph facts without accepting a verifier aggregate verdict."""
-
-    if type(requirement) is not GraphVerificationRequirement:
-        raise QualificationIntakeError("graph requirement is not exactly typed")
-    if type(observation) is not GraphVerificationObservation:
-        raise QualificationIntakeError(
-            "graph evidence requires exact observations, not VerifyResult or booleans"
-        )
-    if observation.requirement_digest != requirement.digest:
-        raise QualificationIntakeError("graph observation names another requirement")
-    expected_members = tuple(row.slot_id for row in requirement.binding.members)
-    if tuple(row.slot_id for row in observation.members) != expected_members:
-        raise QualificationIntakeError("graph member observations differ from the requirement")
-    required_by_member: dict[str, tuple] = {}
-    for row in requirement.variants:
-        required_by_member[row.slot_id] = required_by_member.get(row.slot_id, ()) + (row,)
-    members = []
-    for observed_member in observation.members:
-        required_variants = required_by_member[observed_member.slot_id]
-        if tuple(row.variant_id for row in observed_member.variants) != tuple(
-            row.variant_id for row in required_variants
-        ):
-            raise QualificationIntakeError("graph variant observations differ")
-        variants = []
-        for observed, required in zip(
-            observed_member.variants, required_variants, strict=True
-        ):
-            if tuple(row.descriptor_digest for row in observed.shapes) != (
-                required.shape_descriptor_digests
-            ):
-                raise QualificationIntakeError("graph shape observations differ")
-            variants.append(
-                GraphVariantEvidence(
-                    observed.slot_id,
-                    observed.variant_id,
-                    observed.context_applicable,
-                    observed.domain_coverage_complete,
-                    tuple(row.evidence() for row in observed.shapes),
-                )
-            )
-        members.append(GraphMemberEvidence(observed_member.slot_id, tuple(variants)))
-    raw = GraphVerificationRawEvidence(requirement.digest, tuple(members))
-    evidence_ref = GraphVerificationEvidenceRef(
-        requirement.binding, requirement.digest, raw.digest
-    )
-    artifact_ref = publish_evidence(
-        evidence_root,
-        canonical_json_bytes(raw.to_dict()),
-        domain=GRAPH_EVIDENCE_DOMAIN,
-        media_type=GRAPH_EVIDENCE_MEDIA_TYPE,
-        schema=GRAPH_EVIDENCE_SCHEMA,
-    )
-    grade = reopen_graph_verification(
-        evidence_root, artifact_ref, requirement, evidence_ref
-    )
-    if grade != regrade_graph_verification(requirement, evidence_ref, raw):
-        raise QualificationIntakeError("published graph evidence regraded differently")
-    return GraphEvidenceProduct(
-        requirement.digest, artifact_ref, evidence_ref, raw.digest, grade
-    )
 
 
 @dataclass(frozen=True)
@@ -1008,11 +782,6 @@ def run_qualification_intake(
 
 
 __all__ = [
-    "GraphEvidenceProduct",
-    "GraphMemberObservation",
-    "GraphShapeObservation",
-    "GraphVariantObservation",
-    "GraphVerificationObservation",
     "QualificationAuthorityManifest",
     "QualificationIntakeBatch",
     "QualificationIntakeError",
@@ -1020,6 +789,5 @@ __all__ = [
     "QualificationPlanFactory",
     "QualificationReservation",
     "QualificationRetryPlan",
-    "publish_graph_observation",
     "run_qualification_intake",
 ]

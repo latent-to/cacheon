@@ -247,11 +247,7 @@ def compose_commissioned_qualifications(
         raise B300QualificationCommissionError(
             "hidden judge capability differs from the sealed prompt identity"
         )
-    if (
-        capabilities.source_resolver_digest != block["source_resolver_digest"]
-        or capabilities.graph_facts_builder_digest
-        != block["graph_facts_builder_digest"]
-    ):
+    if capabilities.source_resolver_digest != block["source_resolver_digest"]:
         raise B300QualificationCommissionError(
             "capability identities differ from the sealed commission block"
         )
@@ -658,8 +654,6 @@ def _compose_locked(
                 "candidate_binding_builder_digest"
             ],
             candidate_binding_builder=bind_candidate,
-            graph_facts_builder_digest=capabilities.graph_facts_builder_digest,
-            graph_facts_builder=capabilities.graph_facts_builder,
             evidence_root=evidence_root,
             reference_manifest=reference,
             calibration_threshold_policy=threshold,

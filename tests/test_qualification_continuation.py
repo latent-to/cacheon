@@ -679,7 +679,6 @@ def _resident_pass_harness(monkeypatch):
 
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
@@ -787,7 +786,6 @@ def test_resident_audit_completion_survives_a_crash_before_producer_return(
 ) -> None:
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
@@ -874,7 +872,6 @@ def test_continuation_identity_mismatch_holds_before_any_execution(
 def test_untyped_continuation_is_rejected_before_any_execution(monkeypatch) -> None:
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
@@ -895,7 +892,6 @@ def test_quality_record_without_speed_record_holds(
 ) -> None:
     resident_harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )

@@ -47,7 +47,6 @@ def _block() -> dict[str, object]:
         "schema": sealed.QUALIFICATION_COMMISSION_SCHEMA,
         "builder_source_digest": _h("builder-source"),
         "candidate_binding_builder_digest": _h("binding-builder"),
-        "graph_facts_builder_digest": _h("graph-facts"),
         "selection_store_digest": _h("selection-store"),
         "source_resolver_digest": _h("source-resolver"),
         "support_policy_digest": _h("support-policy"),

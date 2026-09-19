@@ -5,8 +5,8 @@ plugin loader.  A remote request names only an exact
 :class:`ArenaQualificationRequest` and retained ``primary``/``reproduction``
 stage; it cannot select code, paths, profiles, executors, judges, or deadlines.
 
-``B300RegisteredProfileAuthority`` binds the candidate-dynamic graph and
-quality authority behind one sealed resolver per registered target.  This
+``B300RegisteredProfileAuthority`` binds the candidate-dynamic quality
+authority behind one sealed resolver per registered target.  This
 module independently compares its exact typed result with the plan builder's
 result.  No boolean "profile passed" callback is accepted.
 
@@ -38,7 +38,6 @@ from cacheon.eval.b300_arena_provider import (
     B300ScreenDeploymentAuthorities,
     b300_arena_provider_digest,
 )
-from cacheon.eval.b300_qualification_graph_store_io import B300QualificationGraphEvidenceHold
 from cacheon.eval.marginal_runtime import PreparedCandidateRuntime
 from cacheon.eval.oci_backend import OCIEngineExecutor
 from cacheon.eval.qualification_intake import (
@@ -158,8 +157,8 @@ ProfileResolver = Callable[
 class B300RegisteredProfileAuthority:
     """One validator-registered target's candidate-specific profile resolver.
 
-    A graph requirement necessarily binds a candidate launch and selected delta,
-    so it cannot be a static catalog row.  The resolver is deployment-owned and
+    A qualification profile binds a candidate's selected delta, so it cannot be
+    a static catalog row.  The resolver is deployment-owned and
     is selected only after the candidate's finalized registered target has been
     checked against the immutable :class:`TargetCatalog`.
     """
@@ -185,8 +184,6 @@ class B300RegisteredProfileAuthority:
     ) -> CandidateQualificationAuthority:
         try:
             value = self.resolver(candidate, prepared)
-        except B300QualificationGraphEvidenceHold:
-            raise
         except Exception as exc:
             raise B300QualificationDeploymentError(
                 "registered profile authority failed"
@@ -603,50 +600,14 @@ def _validate_profile_binding(
     construction: B300QualificationConstructionAuthority,
 ) -> None:
     reservation = candidate.reservation
-    graph = authority.graph_requirement.binding
     target = construction.catalog.require(reservation.target_id)
-    expected_spec = construction.catalog.target_spec_digest(reservation.target_id)
-    expected_members = []
-    for member_id in target.members:
-        member_spec = construction.catalog.require(member_id)
-        contract = member_spec.contract_ref
-        if contract is None or member_spec.members != (member_id,):
-            raise B300QualificationDeploymentError(
-                "registered target member lacks singleton contract authority"
-            )
-        expected_members.append(
-            (
-                member_id,
-                construction.catalog.target_spec_digest(member_id),
-                construction.catalog.contract_digest(member_id),
-                contract.verification_profile_id,
-            )
-        )
-    observed_members = tuple(
-        (
-            row.slot_id,
-            row.target_spec_digest,
-            row.contract_digest,
-            row.verification_profile_id,
-        )
-        for row in graph.members
-    )
-    arm = prepared.arm
     if (
-        type(arm) is not MarginalArmPlan
+        type(prepared.arm) is not MarginalArmPlan
         or authority.selected_delta_digest != reservation.selected_delta_digest
-        or graph.target_id != reservation.target_id
-        or graph.target_spec_digest != expected_spec
-        or graph.catalog_digest != construction.catalog.digest
-        or graph.selected_delta_digest != reservation.selected_delta_digest
-        or graph.marginal_arm_digest != arm.digest
-        or graph.candidate_launch_digest != prepared.launch.digest
-        or graph.contribution_ref_digest != arm.transition.replacement.digest
-        or observed_members != tuple(expected_members)
         or not construction.catalog.admits(target, reservation.target_members)
     ):
         raise B300QualificationDeploymentError(
-            "qualification profile/graph authority differs from the registered target"
+            "qualification profile authority differs from the registered target"
         )
     profile = authority.profile
     judge = construction.hidden_judge.binding
@@ -803,8 +764,6 @@ def _factory_builder(
         def plan(secret: bytes) -> CausalQualificationInput:
             try:
                 value = construction.plan_builder(cohort, secret)
-            except B300QualificationGraphEvidenceHold:
-                raise
             except Exception as exc:
                 raise B300QualificationDeploymentError(
                     "sealed qualification plan construction failed"

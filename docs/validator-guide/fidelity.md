@@ -183,8 +183,10 @@ Cacheon quality contract.
 
 Missing teacher coverage, wrong prompt/trajectory identity, tampered evidence, or
 unreopenable calibration yields `NO_DECISION`. A measured candidate regression yields
-`FAIL`. Quality `PASS` is still only one prerequisite alongside execution, graph, speed,
-identity, and reproduction evidence.
+`FAIL`. Quality `PASS` is still only one prerequisite alongside execution, speed, audit,
+and identity evidence. It is also the leg of the graph proof that catches a stale replay:
+a candidate that is captured but returns its capture-time answer passes the execution
+check and fails here.
 
 ## Honest limits
 

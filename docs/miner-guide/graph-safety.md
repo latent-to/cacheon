@@ -36,39 +36,27 @@ routes the candidate under capture exactly as it routes it eagerly, and a kernel
 that cannot be captured fails there loudly instead of being quietly skipped while
 the captured graph keeps serving stock.
 
-The validator creates a graph requirement bound to all of the following:
+## How qualification proves it
 
-- target specification and every target member;
-- selected candidate delta and candidate launch identity;
-- slot and variant identity;
-- the exact shape-descriptor set and applicability projection;
-- the required replay count.
+Qualification has no separate graph test. The proof is taken from the timed run
+and the two checks that already surround it:
 
-It then stores raw, content-addressed observations and regrades them. Qualification
-does not trust one aggregate `graph_passed` boolean supplied by a worker.
-The schema and veto logic are in
-[qualification.py](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py),
-and finalized-intake projection is in
-[qualification_intake.py](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py).
-
-## What each observation proves
-
-For every required variant and shape, graph evidence records:
-
-- whether the variant and shape were applicable;
-- whether eager execution passed;
-- whether a graph was required;
-- how many replays completed;
-- whether replay outputs passed;
-- a failure class such as eager execution, capture, or replay.
-
-Coverage is as important as a successful sample. Missing members, variants, or
-shapes produce `NO_DECISION`; applicability disagreement, incomplete domain
-coverage, an applicable failed shape, or a member with no applicable passing
-shape fails the veto. A replay-count mismatch is also not a pass.
+- **Captured completion.** The dispatcher, not the candidate, records whether
+  each invocation happened inside a CUDA-graph capture. On a graphs-on run every
+  claimed slot on every rank must have completed inside one. A candidate that
+  only ever ran eagerly, for example because its declared domain excludes the
+  captured shapes, would have been timed as stock; it fails with
+  `never invoked inside a CUDA-graph capture`.
+- **Audit.** The eager, untimed audit role checks each slot's output against the
+  stock computation on live calls.
+- **Quality.** The pristine reference scores the text the timed run produced. A
+  kernel that is captured but replays its capture-time answer passes the first
+  check and fails this one
+  ([measured](../results/qwen-h100-node-slots.md#stale-under-capture)).
 
 In short: every selected implementation path must be evidenced. A fallback that
-silently makes the candidate N/A cannot create a crown.
+silently makes the candidate N/A cannot create a crown. The execution check is in
+[engine_worker.py](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/engine_worker.py).
 
 ## Local graph diagnostics
 
@@ -93,7 +81,7 @@ on homogeneous GPUs matching the arena architecture.
 
 A CPU `verify` can prove eager numerical behavior, but it cannot produce CUDA
 capture evidence. Likewise, a local CUDA pass is a developer diagnostic—not
-the authority-bound evidence retained by production qualification.
+the evidence production qualification retains from its own timed run.
 
 When reading local output:
 
@@ -105,7 +93,7 @@ When reading local output:
   contract did not; and
 - N/A profiles add no graph evidence because the candidate was not applicable.
 
-Production needs the authority-bound shape and applicability projection, so even a local
+Production takes its proof from the served shapes of its own timed run, so even a local
 `graph=verified` is preparation rather than a qualification receipt.
 
 ## Common capture failures
@@ -140,14 +128,13 @@ fresh logical input values through the captured path. A kernel that bakes in
 first-replay data can appear correct at capture and fail replay.
 
 If algorithms genuinely differ by shape, use explicit disjoint variants and
-capability domains. Do not branch on a host read of a runtime tensor. The graph
-requirement covers every selected variant and all of its applicable descriptor
-profiles.
+capability domains. Do not branch on a host read of a runtime tensor. Every
+claimed slot must complete inside a capture on every rank, whichever variant
+served it.
 
 An eager-only seam, when one is registered by an arena, is a validator-owned
-descriptor fact rather than an exemption a bundle can claim. Crownability is
-decided by the published target/graph requirement, and the graph veto requires
-complete positive evidence for selected members.
+descriptor fact rather than an exemption a bundle can claim. No slot is
+registered eager today, so every claimed slot must complete inside a capture.
 
 ## Do not benchmark a different regime
 

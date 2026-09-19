@@ -188,15 +188,20 @@ each choice launches different kernels, and the list names the one taken.
 
 ## 4. Graph evidence
 
-Graph failures are classified separately:
+Qualification has no separate graph stage; a graph problem shows up in one of
+three places:
 
-- `graph_eager_failed`: the callable failed before capture;
-- `graph_capture_failed`: capture was not legal;
-- `graph_replay_failed`: capture completed but replay or replay output failed;
-- `graph_applicability_failed`: observed applicability differs from the bound
-  requirement;
-- `graph_domain_coverage_failed`: the declared domain was not completely tested;
-- missing member/variant/shape evidence or replay-count mismatch: `NO_DECISION`.
+- the candidate raises while the engine captures its graphs: the timed run
+  stops with the candidate's original error;
+- `never invoked inside a CUDA-graph capture`: every claimed slot completed,
+  but at least one only ever ran eagerly, usually because the declared domain
+  excludes the captured shapes. The candidate would have been timed as stock,
+  so this is a `FAIL`;
+- a captured kernel that replays a stale answer passes execution and fails the
+  pristine quality gate.
+
+A local `cacheon verify` on CUDA runs its own capture and replay and names the
+phase that failed.
 
 Common causes are host synchronization, data-dependent Python branching,
 capture-time compilation/allocation, stale pointers, partial replay writes, or

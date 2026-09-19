@@ -6,20 +6,19 @@ builder.  A finalized candidate supplies only an
 directory, graph policy, workload, calibration, reference, resident lane, or
 evidence store.
 
-The construction deliberately stops at three validator capabilities which are
+The construction deliberately stops at two validator capabilities which are
 deployment facts rather than data that can be inferred from a target ID:
 
-* a source resolver for already-active incumbent contributions;
-* a reviewed binding factory for a newly materialized candidate tree; and
-* focused graph observations from the validator's commissioned verifier.
+* a source resolver for already-active incumbent contributions; and
+* a reviewed binding factory for a newly materialized candidate tree.
 
-All three capabilities have explicit source digests and are supplied in
-process.  The generic layer independently inspects the immutable publication,
-derives the proposal ref and marginal stack transition, materializes the C
-tree below a fixed private root, prepares B/C/B-prime, constructs the catalog-
-bound graph requirement, publishes raw graph evidence, builds the quality and
-resident-v3 authorities, and returns the exact ``CausalQualificationInput``
-consumed by :mod:`cacheon.eval.b300_qualification_deployment`.
+Both capabilities have explicit source digests and are supplied in process.
+The generic layer independently inspects the immutable publication, derives the
+proposal ref and marginal stack transition, materializes the C tree below a
+fixed private root, prepares B/C/B-prime, builds the quality and resident-v3
+authorities, and returns the exact ``CausalQualificationInput`` consumed by
+:mod:`cacheon.eval.b300_qualification_deployment`. The graph proof is not built
+here: it is the captured completion of the timed run itself.
 
 There is no FE campaign/profile identity and no expected-submission allowlist
 in this module.  The supported registry is exactly the complete registered
@@ -44,10 +43,6 @@ from cacheon.eval.b300_qualification_deployment import (
     B300QualificationCohort,
     B300RegisteredProfileAuthority,
 )
-from cacheon.eval.b300_qualification_graph_store_io import (
-    B300QualificationGraphEvidenceHold,
-    B300QualificationGraphEvidenceStoreError,
-)
 from cacheon.eval.crossover_runtime import (
     ResidentArmPlan,
     ResidentCrossoverPlan,
@@ -61,18 +56,9 @@ from cacheon.eval.marginal_runtime import (
 )
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.eval.qualification import (
-    GraphVerificationBinding,
-    GraphVerificationMemberBinding,
-    GraphVerificationRequirement,
     QualificationProfile,
-    ReferenceManifest,
     SelectionCommitment,
     declared_qualification_entropy_digest,
-)
-from cacheon.eval.qualification_intake import (
-    GraphMemberObservation,
-    GraphVerificationObservation,
-    publish_graph_observation,
 )
 from cacheon.eval.qualification_runner import (
     CandidateQualificationAuthority,
@@ -100,7 +86,6 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     FACTORY_SCHEMA,
     POLICY_SCHEMA,
     RESOLVER_SCHEMA,
-    B300FocusedGraphFacts,
     B300MemberContractProjection,
     B300RegisteredQualificationError,
     B300RegisteredQualificationInputs,
@@ -388,89 +373,10 @@ class B300RegisteredQualificationFactory:
             raise B300RegisteredQualificationError(
                 "registered target differs from its ordered member authority"
             )
-        try:
-            facts = inputs.graph_facts_builder(
-                candidate, prepared, inputs.policy.model_profile_key
-            )
-        except B300QualificationGraphEvidenceHold:
-            raise
-        except B300QualificationGraphEvidenceStoreError:
-            raise B300QualificationGraphEvidenceHold(
-                "commissioned graph evidence is unavailable or unauthenticated"
-            ) from None
-        except Exception as exc:
-            raise B300RegisteredQualificationError(
-                "validator focused graph authority failed"
-            ) from exc
-        if type(facts) is not B300FocusedGraphFacts:
-            raise B300RegisteredQualificationError(
-                "focused graph authority returned untyped facts"
-            )
-        fact_members = tuple(sorted({row.slot_id for row in facts.variants}))
-        observation_members = tuple(
-            sorted({row.slot_id for row in facts.observations})
-        )
-        if (
-            fact_members != target_projection.members
-            or observation_members != target_projection.members
-        ):
-            raise B300RegisteredQualificationError(
-                "focused graph authority returned another or incomplete member domain"
-            )
-        members = tuple(
-            GraphVerificationMemberBinding(
-                row.slot_id,
-                row.target_spec_digest,
-                row.contract_digest,
-                row.verification_profile_id,
-            )
-            for row in target_projection.member_contracts
-        )
-        binding = GraphVerificationBinding(
-            arm.digest,
-            prepared.launch.digest,
-            arm.transition.replacement.digest,
-            arm.selected_delta_digest,
-            target_id,
-            arm.transition.target_spec_digest,
-            inputs.catalog.digest,
-            members,
-            inputs.policy.verification_policy_digest,
-        )
-        requirement = GraphVerificationRequirement(
-            binding,
-            facts.variants,
-            facts.expected_graph_replays,
-        )
-        observation = GraphVerificationObservation(
-            requirement.digest,
-            tuple(
-                GraphMemberObservation(
-                    member_id,
-                    tuple(
-                        row
-                        for row in facts.observations
-                        if row.slot_id == member_id
-                    ),
-                )
-                for member_id in target_projection.members
-            ),
-        )
-        try:
-            product = publish_graph_observation(
-                inputs.evidence_root,
-                requirement,
-                observation,
-            )
-        except (OSError, TypeError, ValueError) as exc:
-            raise B300RegisteredQualificationError(
-                f"focused graph evidence failed publication/reopen: {exc}"
-            ) from None
         profile = QualificationProfile(
             inputs.reference_manifest,
             inputs.calibration_context.digest,
             inputs.calibration_manifest.digest,
-            requirement.digest,
             tuple(row.name for row in inputs.calibration_manifest.quality_metrics),
             inputs.policy.nll_tail_threshold,
             inputs.policy.tokens_per_prompt,
@@ -482,13 +388,7 @@ class B300RegisteredQualificationFactory:
             inputs.policy.hidden_tasks_required,
             inputs.policy.select_count,
         )
-        return CandidateQualificationAuthority(
-            reservation.selected_delta_digest,
-            profile,
-            requirement,
-            product.artifact_ref,
-            product.evidence_ref,
-        )
+        return CandidateQualificationAuthority(reservation.selected_delta_digest, profile)
 
     def plan_builder(
         self,
@@ -639,7 +539,6 @@ def build_b300_registered_qualification_factory(
 
 
 __all__ = [
-    "B300FocusedGraphFacts",
     "B300MemberContractProjection",
     "B300RegisteredQualificationComponents",
     "B300RegisteredQualificationError",

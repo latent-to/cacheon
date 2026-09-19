@@ -201,7 +201,7 @@ The implementation is split between [`verify_collective.py`](https://github.com/
 
 Production qualification is graphs-on. A candidate cannot earn authority by passing only eager execution when the arena serves captured graphs.
 
-Each slot declares the tensor inputs whose values may change between replays while their addresses and shapes remain stable. Graph verification:
+Each slot declares the tensor inputs whose values may change between replays while their addresses and shapes remain stable. The local graph check in `cacheon verify`:
 
 1. captures the candidate route;
 2. mutates every declared dynamic input in place for each replay;
@@ -209,7 +209,7 @@ Each slot declares the tensor inputs whose values may change between replays whi
 4. validates every replay output;
 5. rejects cached-answer, stale-input, or graph-unsafe behavior.
 
-Model weights and prepare-time state are capture-static. Python scalar changes require a different graph bucket unless the slot explicitly tensorizes them. Block and collective proposals must declare graph-safe behavior; the arena screen and retained qualification evidence bind the result.
+Model weights and prepare-time state are capture-static. Python scalar changes require a different graph bucket unless the slot explicitly tensorizes them. Qualification runs no separate graph stage: its proof is the captured completions of the timed run, the audit, and the pristine quality gate ([Qualification](../validator-guide/qualification.md#gates-and-three-way-decisions)).
 
 See [Graph safety](../miner-guide/graph-safety.md) for bundle-facing guidance.
 
@@ -362,7 +362,7 @@ This keeps experimentation possible without widening every ordinary submission's
 | Pre-selection live routing | Shape or topology is outside a registered variant | Use the stock path when policy permits; do not count a candidate firing |
 | Selected non-collective call | Candidate raises, corrupts output identity, or violates layout | In strict qualification, invalidate the candidate execution; a silent stock retry cannot produce crown evidence |
 | Selected collective call | One rank fails after all-rank candidate selection | Abort the candidate engine; rank-local fallback is unsafe |
-| Graph replay | Output reflects capture-time input after a declared dynamic tensor changes | Fail graph verification/screening |
+| Graph replay | Output reflects capture-time input after a declared dynamic tensor changes | Fail local `verify`; in qualification, fail the pristine quality gate |
 | End-to-end quality | Per-slot numerics pass but sealed trajectory regresses | Fail under pristine T quality authority |
 | Infrastructure | Worker, device, or evidence authority cannot establish a valid result | `NO_DECISION`, not an attributable candidate loss |
 

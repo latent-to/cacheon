@@ -17,7 +17,6 @@ from cacheon.eval.oci_backend import OCIBackendError, OCIEngineExecutor
 from cacheon.eval.oci_outer_session import OuterSessionWorkerError
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.qualification import (
-    GraphVerificationGrade,
     QualificationDecision,
     SelectionCommitment,
     SelectionEntropyReceipt,
@@ -59,21 +58,6 @@ def _quiescence(sequence: int, observed: float) -> OCIQuiescenceReceipt:
     )
 
 
-def _graph_grade(decision: QualificationDecision, index: int) -> GraphVerificationGrade:
-    reason = {
-        QualificationDecision.PASS: "graph_verification_pass",
-        QualificationDecision.FAIL: "graph_replay_failed",
-        QualificationDecision.NO_DECISION: "graph_evidence_missing",
-    }[decision]
-    return GraphVerificationGrade(
-        decision,
-        reason,
-        _d(f"graph-requirement-{index}"),
-        _d(f"graph-reference-{index}"),
-        _d(f"graph-raw-{index}"),
-    )
-
-
 def _quality_verdict(
     decision: QualificationDecision, index: int, calibration_digest: str
 ) -> ReferenceQualityVerdict:
@@ -94,17 +78,15 @@ class _Harness:
         self,
         monkeypatch,
         *,
-        graph: tuple[QualificationDecision, ...],
         speed: tuple[QualificationDecision, ...],
         quality: tuple[QualificationDecision, ...],
         audit: tuple[QualificationDecision, ...] | None = None,
         fail_pre_t_quiescence: bool = False,
         exercise_judge_cache: bool = False,
     ) -> None:
-        assert len(graph) == len(speed)
-        assert len(quality) == len(graph)
-        audit = audit or (QualificationDecision.PASS,) * len(graph)
-        assert len(audit) == len(graph)
+        assert len(quality) == len(speed)
+        audit = audit or (QualificationDecision.PASS,) * len(speed)
+        assert len(audit) == len(speed)
         # This runner harness predates the typed authority constructor and
         # intentionally replaces the fully validated input boundary with
         # lightweight records. Preserve exact production type checks while
@@ -136,10 +118,6 @@ class _Harness:
             _d("entropy-authority"),
         )
         self.calibration = SimpleNamespace(digest=_d("calibration"))
-        self.grades = {
-            _d(f"delta-{index}"): _graph_grade(decision, index)
-            for index, decision in enumerate(graph)
-        }
         reference = SimpleNamespace(
             digest=self.commitment.reference_manifest_digest,
             measured_digest=_d("reference-measured"),
@@ -156,13 +134,8 @@ class _Harness:
                     digest=_d(f"profile-{index}"),
                     hidden_task_policy_digest=hidden_task_policy,
                 ),
-                graph_requirement=SimpleNamespace(digest=_d(f"requirement-{index}")),
-                graph_artifact_ref=_artifact(f"graph-{index}"),
-                graph_evidence_ref=SimpleNamespace(
-                    digest=_d(f"graph-evidence-ref-{index}")
-                ),
             )
-            for index in range(len(graph))
+            for index in range(len(speed))
         )
         lifecycle_candidates = tuple(
             SimpleNamespace(
@@ -342,7 +315,7 @@ class _Harness:
         monkeypatch.setattr(OCIEngineExecutor, "execute_reference", execute_reference)
         def prevalidate(_value, *_args, **_kwargs):
             self.calls.append("prevalidate")
-            return self.calibration, self.grades
+            return self.calibration
         monkeypatch.setattr(runner, "_validate_pre_execution", prevalidate)
         def run_audits(value, _lifecycle, *, completion_sink=None, **_kwargs):
             self.calls.append("audit")
@@ -807,7 +780,6 @@ def _resident_case(
 ):
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=quality,
         **harness_kwargs,
@@ -1176,9 +1148,6 @@ def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
     assert set(authority_payload["candidates"][0]) == {
         "arm",
         "delta",
-        "graph_artifact",
-        "graph_evidence_ref",
-        "graph_requirement",
         "launch",
         "native",
         "preflight",
@@ -1194,8 +1163,6 @@ def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
         "target_id",
         "profile_digest",
         "calibration_digest",
-        "graph_grade_digest",
-        "graph_decision",
         "speed_evidence_digest",
         "speed_decision",
         "speedup",
@@ -1562,18 +1529,10 @@ def _typed_resident_qualification_input(
         prepare_marginal_runtime,
     )
     from cacheon.eval.oci_backend import expected_runtime_preflight
-    from cacheon.eval.qualification import (
-        GRAPH_EVIDENCE_DOMAIN,
-        GRAPH_EVIDENCE_MEDIA_TYPE,
-        GRAPH_EVIDENCE_SCHEMA,
-        GraphVerificationEvidenceRef,
-        QualificationProfile,
-        ReferenceManifest,
-    )
+    from cacheon.eval.qualification import QualificationProfile, ReferenceManifest
     from tests.test_calibration import _manifest as calibration_manifest
     from tests.test_crossover_runtime import _resident_policy
     from tests.test_marginal_runtime import _case
-    from tests.test_qualification import _requirement
 
     if candidate_lane not in {"left", "right"}:
         raise AssertionError("test candidate lane is unsupported")
@@ -1645,20 +1604,6 @@ def _typed_resident_qualification_input(
         f"typed-resident-{baseline_lane}-runtime-policy"
     )
 
-    requirement = _requirement(atomic=False)
-    requirement = replace(
-        requirement,
-        binding=replace(
-            requirement.binding,
-            marginal_arm_digest=candidate.arm.digest,
-            candidate_launch_digest=candidate.launch.digest,
-            contribution_ref_digest=candidate.arm.transition.replacement.digest,
-            selected_delta_digest=candidate.arm.selected_delta_digest,
-            target_id=candidate.arm.transition.target_id,
-            target_spec_digest=candidate.arm.transition.target_spec_digest,
-            catalog_digest=candidate.arm.candidate.catalog_digest,
-        ),
-    )
     workload_digest = runner.marginal_workload_digest(
         prepared.baseline_session_plan
     )
@@ -1720,7 +1665,7 @@ def _typed_resident_qualification_input(
         reference.model_content_digest,
         reference.logical_hardware_digest,
         reference.workload_digest,
-        requirement.binding.verification_policy_digest,
+        _d("verification-policy"),
     )
     base_calibration = calibration_manifest()
     calibration = replace(
@@ -1744,7 +1689,6 @@ def _typed_resident_qualification_input(
         reference,
         calibration_context.digest,
         calibration.digest,
-        requirement.digest,
         tuple(row.name for row in calibration.quality_metrics),
         "2",
         prepared.baseline_session_plan.max_new_tokens,
@@ -1756,23 +1700,8 @@ def _typed_resident_qualification_input(
         True,
         2,
     )
-    graph_evidence_ref = GraphVerificationEvidenceRef(
-        requirement.binding,
-        requirement.digest,
-        _d(f"typed-resident-{candidate_lane}-graph-raw"),
-    )
     authority = runner.CandidateQualificationAuthority(
-        candidate.arm.selected_delta_digest,
-        profile,
-        requirement,
-        EvidenceArtifactRef(
-            GRAPH_EVIDENCE_DOMAIN,
-            _d(f"typed-resident-{candidate_lane}-graph-artifact"),
-            1,
-            GRAPH_EVIDENCE_MEDIA_TYPE,
-            GRAPH_EVIDENCE_SCHEMA,
-        ),
-        graph_evidence_ref,
+        candidate.arm.selected_delta_digest, profile
     )
     secret = (f"typed resident {candidate_lane} qualification secret").encode()
     commitment = SelectionCommitment.seal(
@@ -1789,7 +1718,7 @@ def _typed_resident_qualification_input(
         "1" * 32,
         250_000,
         32,
-        (requirement.binding.members[0].slot_id,),
+        ("activation.silu_and_mul",),
         prepared.baseline_session_plan.engine_config.tp_size,
     )
     resident_audit_plan = runner.ResidentAuditExecutionAuthority.derive(
@@ -1846,7 +1775,6 @@ def test_typed_resident_input_derives_calibration_from_candidate_reference(
     plan = value.resident_speed_plan
     assert plan is not None
     reference = value.candidates[0].profile.reference
-    verification_policy = value.candidates[0].graph_requirement.binding
     assert (
         plan.baseline.runtime_resource_policy_digest
         != plan.candidate.runtime_resource_policy_digest
@@ -1865,7 +1793,7 @@ def test_typed_resident_input_derives_calibration_from_candidate_reference(
         reference.model_content_digest,
         reference.logical_hardware_digest,
         reference.workload_digest,
-        verification_policy.verification_policy_digest,
+        _d("verification-policy"),
     )
     assert reference.logical_hardware_digest == plan.candidate.launch.hardware.digest
     assert reference.workload_digest == runner.marginal_workload_digest(
