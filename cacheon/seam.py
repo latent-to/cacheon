@@ -1,6 +1,6 @@
 """Shared seam activation, used by both the .pth bootstrap and the plugin hook.
 
-Installs the validator-owned dispatcher into SiluAndMul and, when the env marks
+Installs the validator-owned dispatchers from the seam table and, when the env marks
 this process as the candidate, loads + enables the vetted bundle. Driven by env
 so the same code serves both runs of the two-launch eval:
 
@@ -329,7 +329,6 @@ def _load_bundle_into_registry(bundle: str) -> None:
     from cacheon.manifest import load_manifest, resolve_source
     from cacheon.registry import REGISTRY, KernelImpl, eligibility_from_metadata
     from cacheon.sandbox import callable_from, load_module, scan_path, scan_tree
-    from cacheon.slots import SLOTS
 
     manifest = load_manifest(bundle)
     if any(op.setup for op in manifest.ops) and not _truthy(
@@ -380,8 +379,6 @@ def _load_bundle_into_registry(bundle: str) -> None:
     # does not make candidate execution trusted—the later OCI/no-egress boundary does.
     setup_done: set[tuple[Path, str]] = set()
     for op in manifest.ops:
-        if op.slot not in SLOTS:
-            continue
         src = resolve_source(bundle, op)
         scan = scan_path(src)
         if not scan.ok:  # defense-in-depth: re-scan in the worker before load

@@ -1,8 +1,8 @@
 """Pure planning for one-target evaluation-stack transitions.
 
-The types in this module describe immutable B/C/B-prime arms, sealed candidate
-cohorts, and exact rollback reconstruction.  They do not launch engines,
-interpret measurements, select winners, or mutate incumbent state.
+The types in this module describe immutable B/C/B-prime arms and sealed candidate
+cohorts.  They do not launch engines, interpret measurements, select winners, or
+mutate incumbent state.
 """
 
 from __future__ import annotations
@@ -27,10 +27,6 @@ _PLAN_POLICY_VERSION = "stack-plan.v2"
 
 class StackPlanError(ValueError):
     """A requested stack transition is not one registered marginal delta."""
-
-
-class StaleStackPlanError(StackPlanError):
-    """A plan no longer applies to the supplied incumbent identity."""
 
 
 def _digest(value: object, *, field: str) -> str:
@@ -398,107 +394,6 @@ def plan_marginal_arm(
         challenger=StackArmIdentity(candidate.digest, candidate_tree),
         baseline_after=StackArmIdentity(incumbent.digest, incumbent_tree),
     )
-
-
-@dataclass(frozen=True)
-class RollbackPlan:
-    """Pure reconstruction of the exact stack preceding one marginal arm."""
-
-    expected_current: StackArmIdentity
-    restored: StackArmIdentity
-    restored_manifest: EvaluationStackManifest
-    source_arm_digest: str
-    schema_version: int = _PLAN_SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.expected_current, StackArmIdentity) or not isinstance(
-            self.restored, StackArmIdentity
-        ):
-            raise StackPlanError("rollback stack identities are invalid")
-        if not isinstance(self.restored_manifest, EvaluationStackManifest):
-            raise StackPlanError("rollback restored manifest is invalid")
-        if type(self.schema_version) is not int or self.schema_version != _PLAN_SCHEMA_VERSION:
-            raise StackPlanError("rollback schema_version must be 1")
-        object.__setattr__(
-            self,
-            "source_arm_digest",
-            _digest(self.source_arm_digest, field="rollback source_arm_digest"),
-        )
-        if self.restored.stack_digest != self.restored_manifest.digest:
-            raise StackPlanError("rollback manifest does not match restored stack")
-        if self.expected_current == self.restored:
-            raise StackPlanError("rollback must restore a different whole stack")
-
-    @classmethod
-    def from_arm(
-        cls,
-        arm: MarginalArmPlan,
-        *,
-        catalog: TargetCatalog,
-        expected_context: EvaluationStackContext,
-    ) -> "RollbackPlan":
-        arm.reopen(catalog=catalog, expected_context=expected_context)
-        return cls(
-            expected_current=arm.challenger,
-            restored=StackArmIdentity(
-                arm.baseline_before.stack_digest,
-                arm.baseline_before.tree_digest,
-            ),
-            restored_manifest=arm.incumbent,
-            source_arm_digest=arm.digest,
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "expected_current": self.expected_current.to_dict(),
-            "restored": self.restored.to_dict(),
-            "restored_manifest_digest": self.restored_manifest.digest,
-            "source_arm_digest": self.source_arm_digest,
-        }
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest("cacheon.stack.rollback-plan", self.to_dict())
-
-    def reopen(
-        self,
-        source_arm: MarginalArmPlan,
-        *,
-        catalog: TargetCatalog,
-        expected_context: EvaluationStackContext,
-    ) -> "RollbackPlan":
-        expected = RollbackPlan.from_arm(
-            source_arm,
-            catalog=catalog,
-            expected_context=expected_context,
-        )
-        if expected.to_dict() != self.to_dict():
-            raise StackPlanError("rollback does not reopen to its source arm")
-        return self
-
-    def reconstruct(
-        self,
-        current: EvaluationStackManifest,
-        *,
-        tree_digest: str,
-        source_arm: MarginalArmPlan,
-        catalog: TargetCatalog,
-        expected_context: EvaluationStackContext,
-    ) -> tuple[EvaluationStackManifest, str]:
-        self.reopen(
-            source_arm,
-            catalog=catalog,
-            expected_context=expected_context,
-        )
-        current.validate_against(expected_context)
-        current_tree = _digest(tree_digest, field="current tree_digest")
-        if current.digest != self.expected_current.stack_digest:
-            raise StaleStackPlanError("rollback current stack is stale")
-        if current_tree != self.expected_current.tree_digest:
-            raise StaleStackPlanError("rollback current tree is stale")
-        self.restored_manifest.validate_against(expected_context)
-        return self.restored_manifest, self.restored.tree_digest
 
 
 @dataclass(frozen=True)

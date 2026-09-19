@@ -231,9 +231,9 @@ module entry point preserves the required guard.
   `import cacheon.bootstrap` in a `.pth` file.
 - `cacheon/seams.py` is the only adapter registry. Bootstrap, activation, binding
   vocabulary, and compatibility checks derive from it.
-- Adding a slot starts in `cacheon/slots.py`. A whole-method chokepoint adds only a
-  data-bound `SeamAdapter` row (`cacheon/integrations/sglang_method.py` serves it);
-  only a span no single method names adds an adapter. No parallel registry.
+- A module of the served model is a node address (`model.layers.*.mlp`, `model`), served at
+  every width by `cacheon/integrations/sglang_nodes.py` against stock in the running engine.
+  Only a span no module names starts in `cacheon/slots.py` with its own adapter. No parallel registry.
 - Block and collective contributions must satisfy graph capture/replay and
   declare the required graph metadata.
 - Collective verification binds each process to its CUDA device before process

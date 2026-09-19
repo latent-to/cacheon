@@ -26,7 +26,7 @@ def test_qwen_tp1_reuses_contracts_without_glm_quantization_or_collectives():
 
     key = "Qwen3.6-35B-A3B-BF16"
     profiles = MODEL_PROFILES[key]
-    assert set(profiles) == {"linear.dense", "activation.silu_and_mul", "moe.fused_experts"}
+    assert set(profiles) == {"linear.dense", "moe.fused_experts"}
     assert default_target_catalog().validate_active_targets(profiles) == tuple(sorted(profiles))
     moe = slot_for_model("moe.fused_experts", key)
     assert all(s["num_experts"] == 256 and s["topk"] == 8 and s["inter"] == 512 for s in moe.shapes)
@@ -38,9 +38,6 @@ def test_qwen_tp1_reuses_contracts_without_glm_quantization_or_collectives():
     )
     assert descriptor["quant"] == "dense"
     assert inputs["w13"].dtype == torch.bfloat16
-    silu = slot_for_model("activation.silu_and_mul", key)
-    inputs = silu.make_inputs(dtype=torch.bfloat16, device="cpu", seed=5, **silu.shapes[0])
-    assert inputs["x"].shape == (1, 1024)
 
 
 def test_slot_for_model_generic_unchanged():

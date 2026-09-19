@@ -125,11 +125,16 @@ def test_record_none_expected_counts_refused(monkeypatch):
     assert s["baseline_refused"] == 1 and s["n"] == 0 and s["violations"] == 0
 
 
-def test_record_unknown_slot_counts_compare_error(monkeypatch):
+def test_a_name_outside_the_slot_table_is_a_node_graded_against_stock(monkeypatch):
+    # A node address has no SlotSpec: stock's tensors are the reference, and an
+    # output that cannot be compared with them is the candidate's fault.
     _arm(monkeypatch)
     x = torch.randn(4, 8)
-    audit.record("no.such.slot", (x,), (x,))
-    assert audit._stats["no.such.slot"]["compare_errors"] == 1
+    audit.record("model.layers.*.mlp", (x,), (x,))
+    audit.record("model.layers.*.mlp", (x * 1.5,), (x,))
+    audit.record("model.layers.*.mlp", (x[:, :4],), (x,))
+    stats = audit._stats["model.layers.*.mlp"]
+    assert (stats["n"], stats["violations"], stats["compare_errors"]) == (2, 1, 1)
 
 
 def test_run_baseline_error_is_a_refusal_not_a_crash_or_compare_error(monkeypatch):

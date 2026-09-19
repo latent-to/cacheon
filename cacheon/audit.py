@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+from types import SimpleNamespace
 from typing import Callable, Optional, Sequence
 
 import torch
@@ -66,6 +67,19 @@ _ALLCLOSE_MIN_RATIO = 0.995
 # at 0.9901, and residual-dropping sabotage at 0.0029. The margin splits honest
 # rounding (~0.989+) from garbage (~0.003) with three orders of magnitude to spare.
 _MATCHED_RATIO_AUDIT_MARGIN = 0.005
+
+
+
+class _NodeContract:
+    """A node address has no SlotSpec: stock is its reference, graded elementwise."""
+
+    correctness = SimpleNamespace(mode="allclose")
+
+    @staticmethod
+    def tolerance_for(dtype: torch.dtype) -> SimpleNamespace:
+        half = dtype in (torch.float16, torch.bfloat16)
+        return SimpleNamespace(atol=2e-2 if half else 1e-4, rtol=2e-2 if half else 1e-4)
+
 
 _state: dict = {"rate": None, "rng": None}
 _stats: dict[str, dict] = {}
@@ -131,12 +145,8 @@ def record(slot: str, actual: Sequence[torch.Tensor],
     try:
         from cacheon.slots import SLOTS
 
-        spec = SLOTS.get(slot)
+        spec = SLOTS.get(slot) or _NodeContract
         s = _slot_stats(slot)
-        if spec is None:
-            s["compare_errors"] += 1
-            _receipt(slot)
-            return
         if any(e is None for e in expected) or len(actual) != len(expected):
             baseline_refused(slot)
             return

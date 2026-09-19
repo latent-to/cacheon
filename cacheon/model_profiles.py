@@ -189,9 +189,6 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
                                (2048, 1024, "column"), (512, 2048, "row"),
                                (2048, 256, "replicated"))
         )),
-        "activation.silu_and_mul": SlotProfile(shapes=tuple(
-            dict(num_tokens=m, d=512) for m in (1, 2, 8, 128, 4096)
-        )),
         "moe.fused_experts": SlotProfile(shapes=tuple(
             dict(num_tokens=m, num_experts=256, hidden=2048, inter=512, topk=8)
             for m in (1, 2, 8, 128, 4096)

@@ -34,7 +34,7 @@ cacheon/eval/qualification_intake.py 1025
 cacheon/eval/qualification_runner.py 2902
 cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1205
-cacheon/receipts.py 908
+cacheon/receipts.py 906
 cacheon/settlement.py 1075
 cacheon/target_catalog.py 952
 cacheon/verify.py 988
@@ -44,7 +44,7 @@ tests/test_b300_remote_worker_adapter.py 1123
 tests/test_chain_intake.py 2073
 tests/test_crossover_runtime.py 918
 tests/test_device_state.py 1001
-tests/test_engine_tree.py 1187
+tests/test_engine_tree.py 1175
 tests/test_eval_cost.py 1019
 tests/test_evaluation_coordinator.py 1110
 tests/test_oci_backend.py 1134

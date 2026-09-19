@@ -42,13 +42,6 @@ class SeamAdapter:
     # one binding/gate.
     binding_id: str | None = None
     environment_gate: str | None = None
-    # A data-bound row is served by the one generic adapter
-    # (cacheon/integrations/sglang_method.py) instead of hand-written glue: each pair
-    # maps a slot ABI tensor name onto the stock method's parameter name.
-    inputs: tuple[tuple[str, str], ...] = ()
-    # Sibling methods of the same class patched identically. BaseFusedOp resolves
-    # one forward_* per platform and switches to forward_native under torch.compile.
-    also: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,9 +73,6 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     SeamAdapter("sparse_mla", "sglang.srt.layers.attention.dsa_backend", "sglang_sparse_mla",
                 "DeepseekSparseAttnBackend._forward_trtllm", ("attention.sparse_mla",),
                 binding_id="sparse_mla", environment_gate="CACHEON_SPARSE_MLA_SEAM"),
-    SeamAdapter("activation", "sglang.srt.layers.activation",
-                "sglang_method", "SiluAndMul.forward_cuda", ("activation.silu_and_mul",),
-                inputs=(("x", "x"),), also=("forward_native",)),
     SeamAdapter("layernorm", "sglang.srt.layers.layernorm",
                 "sglang_norm", "RMSNorm.forward_cuda",
                 ("norm.fused_add_rmsnorm", "norm.rmsnorm")),
@@ -154,6 +144,12 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     # it in. See cacheon/integrations/sglang_resident_swap.py.
     SeamAdapter("resident_swap", "sglang.srt.model_executor.model_runner",
                 "sglang_resident_swap", "ModelRunner.init_decode_cuda_graph", ()),
+    # NOT a fixed-slot seam: the generic node binder. After the model loads it binds
+    # every registered slot that is a node address (a name outside cacheon.slots) to
+    # that module of the served model. Which addresses an arena opens is decided at
+    # admission by the target catalog, not here.
+    SeamAdapter("nodes", "sglang.srt.model_executor.model_runner",
+                "sglang_nodes", "ModelRunner.load_model", ()),
 )
 
 
@@ -169,14 +165,6 @@ def _derive_seam_bindings(
         if adapter.name in adapter_names:
             raise RuntimeError(f"duplicate seam adapter name {adapter.name!r}")
         adapter_names.add(adapter.name)
-        if (adapter.integration == "sglang_method") != bool(adapter.inputs) or (
-            adapter.inputs
-            and (len(adapter.slots) != 1 or "." not in adapter.chokepoint)
-        ):
-            raise RuntimeError(
-                f"data-bound seam adapter {adapter.name!r} must map inputs for "
-                "exactly one slot at one Class.method"
-            )
         binding_id, gate = adapter.binding_id, adapter.environment_gate
         if (binding_id is None) != (gate is None):
             raise RuntimeError(

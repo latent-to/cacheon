@@ -76,19 +76,6 @@ def run_checks(expected_sglang_version: str = PINNED_SGLANG) -> list[Check]:
             ok = _chokepoint_present(mod, adapter.chokepoint)
             add(f"seam table: {adapter.name} ({adapter.chokepoint})", ok,
                 "" if ok else f"missing {adapter.chokepoint} in {adapter.target_module}")
-            if ok and adapter.inputs:
-                # A data-bound row is only as good as the stock signature it names.
-                cls = getattr(mod, adapter.chokepoint.partition(".")[0])
-                methods = (adapter.chokepoint.partition(".")[2], *adapter.also)
-                missing = sorted(
-                    f"{method}({param})"
-                    for method in methods
-                    for _name, param in adapter.inputs
-                    if not hasattr(cls, method)
-                    or param not in inspect.signature(getattr(cls, method)).parameters
-                )
-                add(f"seam row: {adapter.name} binds {methods}", not missing,
-                    f"stock parameters missing: {missing}" if missing else "")
         except Exception as exc:  # noqa: BLE001
             add(f"seam table: {adapter.name} ({adapter.chokepoint})", False, repr(exc))
 

@@ -30,7 +30,7 @@ from cacheon.stack_manifest import (
     EvaluationStackManifest,
     ProposalContributionRef,
 )
-from cacheon.stack_plan import RollbackPlan, plan_candidate_stack, plan_marginal_arm
+from cacheon.stack_plan import plan_candidate_stack, plan_marginal_arm
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
@@ -1105,18 +1105,6 @@ def test_fixture_materialization_binds_marginal_arm_and_exact_rollback(
     assert arm.candidate == candidate
     assert arm.baseline_before == arm.baseline_after
     assert arm.baseline_before is not arm.baseline_after
-    rollback = RollbackPlan.from_arm(
-        arm, catalog=catalog, expected_context=context
-    )
-    restored, restored_tree = rollback.reconstruct(
-        candidate,
-        tree_digest=challenger.tree_digest,
-        source_arm=arm,
-        catalog=catalog,
-        expected_context=context,
-    )
-    assert restored == incumbent
-    assert restored_tree == baseline.tree_digest
 
 
 def test_source_and_materialized_symlinks_are_rejected(tmp_path: Path) -> None:

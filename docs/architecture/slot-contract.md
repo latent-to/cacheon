@@ -246,12 +246,62 @@ Adding or changing a slot is a validator code change. It requires coordinated up
 1. `SlotSpec` and its reference/shape/graph contract;
 2. the target catalog's frozen contract projection;
 3. offline and, for collectives, distributed verification;
-4. the live SGLang seam: one data-bound row in [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) when the boundary is one whole method, which [`sglang_method.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_method.py) serves with the shared call and audit body, or a hand-written adapter for a span no single method names;
+4. the live SGLang seam: a hand-written adapter and its row in [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py);
 5. compatibility canaries against the pinned runtime;
 6. graph, failure, fallback, and end-to-end tests;
 7. arena policy and documentation.
 
 The stable waist is the four invariants, not a promise that the catalog's set of slots will never grow.
+
+A boundary that is a module of the served model needs none of the seven: it is a
+[node address](#node-addresses).
+
+## Node addresses
+
+A slot name that `cacheon/slots.py` does not define is a node address: a dotted
+name from `named_modules()` of the served model, where `*` stands for exactly one
+segment. `model.layers.*.mlp` is every MoE block, `model.layers.3` one decoder
+layer, `model` the whole decoder stack. One adapter,
+[`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
+serves every width, and a bundle that lists several addresses replaces several
+nodes at once. Granularity is the model's own module tree: a span that is not a
+module (on Qwen3.5 the attention block has no module of its own) is reached
+through the nearest enclosing node.
+
+The candidate is a drop-in for the node's stock `forward`.
+`entry(prepared, *args, **kwargs)` receives the stock arguments and returns what
+stock returns. `prepare(module)` runs once per bound node; a bundle without one
+receives the module itself. While a candidate runs, the nodes beneath it serve
+stock, so a wide candidate may call the stock children it does not replace.
+
+Correctness has no declared reference math and therefore no offline verification.
+Truth is the stock node in the running engine, on the same call:
+
+1. on an audited eager call the stock node runs first;
+2. its result tensors are kept, together with the engine-state rows the batch may
+   write: the cache rows at `out_cache_loc` and, on hybrid models, the recurrent
+   state rows of the batch's requests;
+3. the arguments and the state rows stock changed are put back;
+4. the candidate runs on the same call, and its result and state rows are graded
+   elementwise against stock's, with an absolute tolerance that shrinks with the
+   stock tensor's own RMS.
+
+What stock leaves in its own arguments is not graded. The fused RMSNorm overwrites
+its arguments and returns them, and a decoder layer leaves normed intermediates in
+its dead input; values reach the caller through the result and the engine state.
+A result that is a record rather than a tuple is graded through its fields.
+
+A bundle's addresses must not contain one another, and an address must name at
+least one module. Either failure raises at binding and is receipted as the
+candidate's. Binding happens once, after `ModelRunner.load_model`, which is early
+enough for the prefill and decode CUDA graph runners to capture the bound
+`forward` at every width.
+
+The target catalog does not yet register a node target, so no arena admits a
+node-address bundle. The single tolerance separates honest from wrong up to a
+block; at a decoder layer and above honest BF16 rounding exceeds it, so the check
+cannot yet carry a verdict at those widths. Both are measured in
+[Qwen H100 node slots](../results/qwen-h100-node-slots.md).
 
 ## Escape hatches
 

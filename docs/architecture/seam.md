@@ -47,13 +47,16 @@ The registered rows are:
 
 | Adapter | SGLang chokepoint | Served slot or role | Public binding |
 |---|---|---|---|
-| `activation` | `SiluAndMul.forward_cuda` | `activation.silu_and_mul` | Registry-selected |
 | `layernorm` | `RMSNorm.forward_cuda` | `norm.rmsnorm`, `norm.fused_add_rmsnorm` | Registry-selected |
 | `dense` | `UnquantizedLinearMethod.apply` | `linear.dense` | `dense` |
 | `moe` family | `FusedMoE.forward_impl` plus the deferred FlashInfer runner/finalize chokepoints | `moe.fused_experts`, `moe.fused_routed_experts` | `moe` |
 | `collective` family | `GroupCoordinator.all_reduce`, in/out-place variants, all-gather, and reduce-scatter | `collective.all_reduce`, `collective.all_gather_into_tensor`, `collective.reduce_scatter_tensor` | `collective` |
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot | None |
 | `resident_swap` | `ModelRunner.init_decode_cuda_graph` plus idle-gated scheduler cache flush | Persistent resident screening only; not qualification or a slot | None |
+| `nodes` | `ModelRunner.load_model` | Every registered [node address](slot-contract.md#node-addresses); binds the named modules of the served model once the weights are loaded | None |
+
+`activation.silu_and_mul` has no row: it is verified offline only. On a served
+model the activation is reached as a node address.
 
 Several adapter rows may share one binding when they implement one semantic
 product. The MoE and collective families use this to keep every version-pinned

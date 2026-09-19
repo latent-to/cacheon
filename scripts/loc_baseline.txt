@@ -1,13 +1,13 @@
 # Reviewed tracked-line ceilings per top-level directory.
 # Raising a ceiling is a reviewed decision made in the same diff
 # that needs it; lowering one locks in a deletion. check_loc_ratchet.py
-(root) 1151
+(root) 1152
 .github 345
 bundles 587
-cacheon 108409
+cacheon 108394
 cacheon_kernels 1045
 dashboard 2964
-docs 12862
+docs 12997
 examples 971
 scripts 2293
-tests 81193
+tests 81285
