@@ -17,6 +17,15 @@ Without the restore every call of a node that carries recurrent state false-fail
 and a 1.5x-wrong stack left greedy tokens unchanged, so the end-to-end gate cannot
 replace this check (H100 Qwen runs, 2026-09-19).
 
+The tolerance is measured, not declared, because honest rounding grows with the
+width of the node: a stock node whose fused ops run on SGLang's native reference
+paths sat 0.4% from stock at a block and 4-11% at the whole stack, and one fixed
+elementwise bar failed that honest twin on 295 of 1,560 layer calls and 39 of 39
+stack calls (same runs). So the twin also answers every audited call, and a row of
+the candidate passes when its relative error is within a small multiple of the
+twin's. Rows are graded, not tensors, because a routing flip moves a whole token
+and nothing else; rows pool across calls so a one-token call is not a verdict.
+
 Binding happens once, right after ``ModelRunner.load_model``: late enough that the
 weights exist, early enough that the breakable prefill runner and the decode graph
 runner both capture the bound forward at every width, whole stack included (same
@@ -28,6 +37,8 @@ from __future__ import annotations
 
 import re
 import sys
+from collections import deque
+from contextlib import contextmanager
 from typing import Callable
 
 import torch
@@ -43,6 +54,22 @@ _RUNNER = "sglang.srt.model_executor.model_runner"
 _STOCK_LOAD = "_cacheon_stock_load_model"
 # The pinned engine's per-token cache buffers: the MHA pair or the MLA latent.
 _KV_BUFFERS = ("k_buffer", "v_buffer", "kv_buffer")
+# A row passes within max(_FLOOR, _TWIN_FACTOR x the twin's 90th-percentile row
+# error). No honest single kernel reached a quarter of the floor; the wrong controls
+# sat at 0.5 (H100 Qwen runs, 2026-09-19).
+_FLOOR = 0.02
+_TWIN_FACTOR = 3.0
+# Share of rows that must pass, graded once this many rows have pooled. Honest noise
+# is heavy-tailed (the twin graded against itself kept 84% of rows in the worst of
+# 2,280 decoder-layer windows and 90% at the whole stack) while a wrong answer keeps
+# none, so the bar sits well below honest.
+_ROW_BAR = 0.75
+_WINDOW = 256
+_MODE = "stock_twin"
+# Per bound node and graded-tensor position: recent twin noise, and [passed, seen]
+# rows. Per node, not per address: layers under one `*` differ severalfold in noise.
+_noise: dict[tuple[int, int], deque] = {}
+_pooled: dict[tuple[int, int], list[int]] = {}
 
 
 def node_pattern(slot: str) -> re.Pattern[str]:
@@ -113,8 +140,8 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
     return rows
 
 
-def _stock_answer(slot: str, stock: Callable, runner, args: tuple, kwargs: dict):
-    """Run stock on the live call, keep its outputs and state rows, then put the call back.
+def _answer(slot: str, stock: Callable, runner, args: tuple, kwargs: dict):
+    """Run stock on the live call, keep its ``(tensor, row dim)`` answer, put the call back.
 
     What stock leaves in its own arguments is not part of the answer. The fused norm
     overwrites its arguments and returns them, so an honest norm that returns fresh
@@ -139,7 +166,57 @@ def _stock_answer(slot: str, stock: Callable, runner, args: tuple, kwargs: dict)
     for (buffer, dim, index), saved, after in zip(rows, before[len(handed):], written):
         if not torch.equal(saved, after):
             buffer.index_copy_(dim, index, saved)
-    return None if outputs is None else [*outputs, *written]
+    if outputs is None:
+        return None
+    return [(t, 0) for t in outputs] + [(t, dim) for t, (_, dim, _) in zip(written, rows)]
+
+
+@contextmanager
+def _native(module):
+    """Run the node's fused ops on SGLang's native reference paths: the honest twin."""
+
+    sites = [m for m in module.modules() if "_forward_method" in vars(m)]
+    saved = [m._forward_method for m in sites]
+    for m in sites:
+        m._forward_method = m.forward_native
+    try:
+        yield
+    finally:
+        for m, method in zip(sites, saved):
+            m._forward_method = method
+
+
+def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int) -> torch.Tensor:
+    if actual.shape != expected.shape:
+        raise ValueError(f"shape {tuple(actual.shape)} is not stock's {tuple(expected.shape)}")
+    a = actual.detach().float().reshape(-1, 1) if actual.dim() < 2 else actual.detach().float()
+    e = expected.detach().float().reshape(-1, 1) if expected.dim() < 2 else expected.detach().float()
+    a, e = a.movedim(dim, 0).flatten(1), e.movedim(dim, 0).flatten(1)
+    return (a - e).norm(dim=1) / e.norm(dim=1).clamp_min(1e-12)
+
+
+def _grade(slot: str, node: int, actual: list, expected: list, twin: list) -> None:
+    """Pool each graded tensor's passing rows; record a unit when a window fills."""
+
+    filled = []
+    for position, ((a, dim), (e, _), (t, _)) in enumerate(zip(actual, expected, twin)):
+        if not e.numel():
+            continue
+        key = (node, position)
+        noise = _noise.setdefault(key, deque(maxlen=64))
+        noise.append(torch.quantile(_row_errors(t, e, dim), 0.9).item())
+        # A one-row call is one draw of heavy-tailed noise (a routing flip moved the
+        # twin's single token 19% at the stack), so the scale is the recent calls'.
+        tolerance = max(_FLOOR, _TWIN_FACTOR * sorted(noise)[int(0.9 * (len(noise) - 1))])
+        errors = _row_errors(a, e, dim)
+        pooled = _pooled.setdefault(key, [0, 0])
+        pooled[0] += int((errors <= tolerance).sum().item())
+        pooled[1] += errors.numel()
+        if pooled[1] >= _WINDOW:
+            filled.append(pooled[0] / pooled[1])
+            pooled[:] = [0, 0]
+    if filled:
+        _audit.record_fraction(slot, min(filled), _ROW_BAR, _MODE)
 
 
 def _descriptor(module, args: tuple, kwargs: dict, in_graph: bool) -> CallDescriptor | None:
@@ -183,24 +260,26 @@ def make_node_dispatcher(
                 if impl.prepare is not None
                 else module
             )
-        expected = (
-            _stock_answer(slot, stock, runner, args, kwargs)
-            if not in_graph and _audit.sampled()
-            else None
-        )
+        expected = twin = None
+        if not in_graph and _audit.sampled():
+            expected = _answer(slot, stock, runner, args, kwargs)
+            with _native(module):
+                twin = _answer(slot, stock, runner, args, kwargs)
         result = _receipts.invoke(
             slot, impl.entry, prepared[id(impl)], *args, kwargs=kwargs
         )
-        if expected is not None:
-            actual = _tensors(result, [], fields=True)
-            actual += [b.index_select(d, i) for b, d, i in _state_rows(runner, (*args, *kwargs.values()))]
-            if len(actual) != len(expected):
-                error = RuntimeError(
-                    f"candidate for {slot} returned a different tensor structure than stock"
-                )
-                _receipts.failed(slot, error, entry=impl.entry)
-                raise error
-            _audit.record(slot, actual, expected, scaled=True)
+        if expected is not None and twin is not None:
+            actual = [(t, 0) for t in _tensors(result, [], fields=True)]
+            actual += [
+                (b.index_select(d, i), d)
+                for b, d, i in _state_rows(runner, (*args, *kwargs.values()))
+            ]
+            try:
+                if len(actual) != len(expected):
+                    raise ValueError("the result does not have stock's tensor structure")
+                _grade(slot, id(module), actual, expected, twin)
+            except ValueError:
+                _audit.compare_error(slot)
         _receipts.completed(slot)
         return result
 

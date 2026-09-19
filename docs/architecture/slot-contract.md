@@ -282,9 +282,23 @@ Truth is the stock node in the running engine, on the same call:
    write: the cache rows at `out_cache_loc` and, on hybrid models, the recurrent
    state rows of the batch's requests;
 3. the arguments and the state rows stock changed are put back;
-4. the candidate runs on the same call, and its result and state rows are graded
-   elementwise against stock's, with an absolute tolerance that shrinks with the
-   stock tensor's own RMS.
+4. the honest twin answers the same call and is put back the same way: the stock
+   node with its fused ops on SGLang's native reference paths, which is the same
+   math with different rounding;
+5. the candidate runs on the same call, and each row of its result and state rows
+   (a token, a cache row, a request's state) is graded by its relative error
+   against stock's.
+
+A row passes within the larger of 2% and three times the twin's recent
+90th-percentile row error on that node. The tolerance is measured because honest
+rounding grows with the width of the node: the twin sits 0.4% from stock at a block
+and 4–11% at the whole stack. It is kept per bound node, not per address, because
+the same address is quieter at layer 0 than at layer 39. Rows are graded rather
+than tensors because a mixture-of-experts routing flip moves one whole token and
+nothing else. Rows pool across calls into windows of 256 per node and graded
+tensor, and a window passes when 75% of its rows do, so a one-token decode call is
+never a verdict by itself. A wide node is therefore held only as tightly as honest
+BF16 rounding allows at that width; a narrow node inside it is held tighter.
 
 What stock leaves in its own arguments is not graded. The fused RMSNorm overwrites
 its arguments and returns them, and a decoder layer leaves normed intermediates in
@@ -298,9 +312,8 @@ enough for the prefill and decode CUDA graph runners to capture the bound
 `forward` at every width.
 
 The target catalog does not yet register a node target, so no arena admits a
-node-address bundle. The single tolerance separates honest from wrong up to a
-block; at a decoder layer and above honest BF16 rounding exceeds it, so the check
-cannot yet carry a verdict at those widths. Both are measured in
+node-address bundle. The check itself separates honest from wrong at every width
+from one activation to the whole forward pass; the runs are in
 [Qwen H100 node slots](../results/qwen-h100-node-slots.md).
 
 ## Escape hatches

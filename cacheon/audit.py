@@ -40,7 +40,6 @@ from __future__ import annotations
 import logging
 import os
 import random
-from types import SimpleNamespace
 from typing import Callable, Optional, Sequence
 
 import torch
@@ -68,17 +67,6 @@ _ALLCLOSE_MIN_RATIO = 0.995
 # rounding (~0.989+) from garbage (~0.003) with three orders of magnitude to spare.
 _MATCHED_RATIO_AUDIT_MARGIN = 0.005
 
-
-
-class _NodeContract:
-    """A node address has no SlotSpec: stock is its reference, graded elementwise."""
-
-    correctness = SimpleNamespace(mode="allclose")
-
-    @staticmethod
-    def tolerance_for(dtype: torch.dtype) -> SimpleNamespace:
-        half = dtype in (torch.float16, torch.bfloat16)
-        return SimpleNamespace(atol=2e-2 if half else 1e-4, rtol=2e-2 if half else 1e-4)
 
 
 _state: dict = {"rate": None, "rng": None}
@@ -131,22 +119,43 @@ def baseline_refused(slot: str) -> None:
     _receipt(slot)
 
 
-def record(slot: str, actual: Sequence[torch.Tensor],
-           expected: Sequence[Optional[torch.Tensor]], *, scaled: bool = False) -> None:
-    """Compare miner outputs vs the stock baseline's, under the slot's verify
-    tolerances, and fold the result into the receipted stats. Never raises.
+def record_fraction(slot: str, fraction: float, bar: float, mode: str) -> None:
+    """Fold one unit the caller graded itself into the receipted stats.
 
-    ``scaled`` shrinks the absolute tolerance with the stock tensor's own RMS and
-    never widens it. A flat bf16 atol of 2e-2 passed a 1.5x-wrong MoE block on 109
-    of 240 calls, because early-layer outputs sit below 0.04 (H100 Qwen run,
-    2026-09-19). The data-bound adapter uses it; slots whose bars were calibrated
-    on a live arena keep their flat tolerance until they are recalibrated.
+    The node adapter grades against stock in the engine with a tolerance measured on
+    the same calls; a flat bf16 atol of 2e-2 passed a 1.5x-wrong MoE block on 109 of
+    240 calls, because early-layer outputs sit below 0.04 (H100 Qwen run, 2026-09-19).
     """
+    s = _slot_stats(slot)
+    s["mode"], s["min_ratio"] = mode, bar
+    s["n"] += 1
+    s["worst_frac"] = min(s["worst_frac"], fraction)
+    if fraction < bar:
+        s["violations"] += 1
+        if s["violations"] <= 4:
+            logger.warning("cacheon.audit VIOLATION slot=%s unit=%d frac=%.4f (bar %.4f)",
+                           slot, s["n"], fraction, bar)
+    _receipt(slot)
+
+
+def compare_error(slot: str) -> None:
+    """Count a candidate result that could not be compared with stock's."""
+    _slot_stats(slot)["compare_errors"] += 1
+    _receipt(slot)
+
+
+def record(slot: str, actual: Sequence[torch.Tensor],
+           expected: Sequence[Optional[torch.Tensor]]) -> None:
+    """Compare miner outputs vs the stock baseline's, under the slot's verify
+    tolerances, and fold the result into the receipted stats. Never raises."""
     try:
         from cacheon.slots import SLOTS
 
-        spec = SLOTS.get(slot) or _NodeContract
+        spec = SLOTS.get(slot)
         s = _slot_stats(slot)
+        if spec is None:
+            compare_error(slot)
+            return
         if any(e is None for e in expected) or len(actual) != len(expected):
             baseline_refused(slot)
             return
@@ -180,10 +189,7 @@ def record(slot: str, actual: Sequence[torch.Tensor],
                 s["min_ratio"] = corr.min_overlap
             else:
                 tol = spec.tolerance_for(a.dtype)
-                atol = tol.atol
-                if scaled:  # floor: below 1e-3 no served activation carries signal
-                    atol *= min(1.0, max(1e-3, ef.square().mean().sqrt().item()))
-                within = ((af - ef).abs() <= atol + tol.rtol * ef.abs())
+                within = ((af - ef).abs() <= tol.atol + tol.rtol * ef.abs())
                 frac = within.float().mean().item()
                 bar = (max(0.0, corr.min_ratio - _MATCHED_RATIO_AUDIT_MARGIN)
                        if corr.mode == "matched_ratio" else _ALLCLOSE_MIN_RATIO)

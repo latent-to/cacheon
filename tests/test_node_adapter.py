@@ -73,6 +73,10 @@ def audited(monkeypatch):
     monkeypatch.setattr(audit, "sampled", lambda: True)
     monkeypatch.setattr(audit, "_stats", {})
     monkeypatch.setattr(nodes._receipts, "completed", lambda slot: None)
+    # Every call is its own graded unit here; the engine pools rows into windows.
+    monkeypatch.setattr(nodes, "_WINDOW", 1)
+    monkeypatch.setattr(nodes, "_noise", {})
+    monkeypatch.setattr(nodes, "_pooled", {})
     return audit._stats
 
 
@@ -132,6 +136,83 @@ def test_a_candidate_that_leaves_its_arguments_alone_passes_where_stock_overwrit
     runner.model.layers[0].mlp(x, batch)
     assert torch.equal(x, original)
     assert (audited["layers.0.mlp"]["n"], audited["layers.0.mlp"]["violations"]) == (1, 0)
+
+
+class _Fused(nn.Module):
+    """Stands in for an SGLang fused op: a fast path and a native reference path."""
+
+    def __init__(self):
+        super().__init__()
+        self._forward_method = self.forward_fast
+
+    def forward_fast(self, x):
+        return x * 2.0
+
+    def forward_native(self, x):
+        return x * 2.0 * 1.05
+
+    def forward(self, x):
+        return self._forward_method(x)
+
+
+class _Wide(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.op = _Fused()
+
+    def forward(self, x):
+        return self.op(x)
+
+
+def test_the_tolerance_is_the_noise_the_native_twin_shows_on_the_same_call(audited):
+    runner, _ = _served_model()
+    runner.model.wide, runner.model.leaf = _Wide(), nn.Identity()
+
+    def off_by_eight_percent(module, x):
+        return module.forward(x) * 1.08
+
+    registry = _registry("wide", off_by_eight_percent)
+    registry.register(
+        KernelImpl(
+            slot="leaf", bundle_id="test", entry=off_by_eight_percent, prepare=None,
+            eligibility=Eligibility(dtypes=frozenset({"float32"})),
+        )
+    )
+    nodes.bind(runner, registry)
+    runner.model.wide(torch.randn(4, 8))
+    runner.model.leaf(torch.randn(4, 8))
+    # The twin sits 5% from stock inside the wide node, so 8% is rounding there; the
+    # leaf has no native path, its twin is stock, and the same 8% is a wrong answer.
+    assert (audited["wide"]["violations"], audited["leaf"]["violations"]) == (0, 1)
+    assert runner.model.wide.op._forward_method == runner.model.wide.op.forward_fast
+
+
+def test_a_wrong_answer_on_tiny_activations_is_still_a_violation(audited):
+    # Early-layer MoE outputs sit below 0.04, where a flat absolute tolerance hid a
+    # 1.5x-wrong block on 109 of 240 calls; a row's relative error has no scale.
+    runner, _ = _served_model()
+    runner.model.leaf = nn.Identity()
+    nodes.bind(runner, _registry("leaf", lambda module, x: x * 1.5))
+    runner.model.leaf(torch.randn(64, 64) * 1e-6)
+    assert audited["leaf"]["violations"] == 1
+
+
+@pytest.mark.parametrize("flipped, violations", [(1, 0), (5, 1)])
+def test_rows_pool_across_calls_so_one_flipped_token_is_not_a_verdict(
+    audited, monkeypatch, flipped, violations
+):
+    monkeypatch.setattr(nodes, "_WINDOW", 16)
+    runner, _ = _served_model()
+    runner.model.leaf = nn.Identity()
+    calls = iter(range(16))
+
+    def flips_some_rows(module, x):
+        return x * (1.5 if next(calls) < flipped else 1.0)
+
+    nodes.bind(runner, _registry("leaf", flips_some_rows))
+    for _ in range(16):
+        runner.model.leaf(torch.randn(1, 8))
+    assert (audited["leaf"]["n"], audited["leaf"]["violations"]) == (1, violations)
 
 
 def test_skipping_a_state_write_is_a_violation_even_with_the_right_output(audited):

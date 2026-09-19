@@ -93,18 +93,6 @@ def test_record_garbage_is_violation(monkeypatch):
     assert s["n"] == 1 and s["violations"] == 1 and s["worst_frac"] < 0.5
 
 
-def test_scaled_record_catches_a_wrong_kernel_on_small_activations(monkeypatch):
-    # Early-layer MoE outputs sit below 0.04; the flat float32 atol of 1e-5 is scaled
-    # here to the same regime: a 1.5x-wrong output hides under a flat atol, not a scaled one.
-    _arm(monkeypatch)
-    x = torch.randn(64, 64) * 1e-6
-    audit.record(SLOT, (x * 1.5,), (x,))
-    audit.record(SLOT, (x * 1.5,), (x,), scaled=True)
-    audit.record(SLOT, (x * (1 + 1e-6),), (x,), scaled=True)
-    s = audit._stats[SLOT]
-    assert s["n"] == 3 and s["violations"] == 1
-
-
 def test_record_ulp_noise_passes(monkeypatch):
     # A few elements at the tolerance edge must NOT fail an otherwise-faithful kernel
     # (the outlier-channel single-ULP class measured on the v6 stockcheck).
@@ -125,16 +113,17 @@ def test_record_none_expected_counts_refused(monkeypatch):
     assert s["baseline_refused"] == 1 and s["n"] == 0 and s["violations"] == 0
 
 
-def test_a_name_outside_the_slot_table_is_a_node_graded_against_stock(monkeypatch):
-    # A node address has no SlotSpec: stock's tensors are the reference, and an
-    # output that cannot be compared with them is the candidate's fault.
+def test_a_node_address_is_graded_by_its_adapter_and_recorded_as_units(monkeypatch):
+    # A node address has no SlotSpec, so the declared-tolerance path cannot compare
+    # it; the node adapter grades against stock and records the units it graded.
     _arm(monkeypatch)
     x = torch.randn(4, 8)
     audit.record("model.layers.*.mlp", (x,), (x,))
-    audit.record("model.layers.*.mlp", (x * 1.5,), (x,))
-    audit.record("model.layers.*.mlp", (x[:, :4],), (x,))
+    audit.record_fraction("model.layers.*.mlp", 1.0, 0.9, "stock_twin")
+    audit.record_fraction("model.layers.*.mlp", 0.5, 0.9, "stock_twin")
     stats = audit._stats["model.layers.*.mlp"]
     assert (stats["n"], stats["violations"], stats["compare_errors"]) == (2, 1, 1)
+    assert (stats["worst_frac"], stats["min_ratio"], stats["mode"]) == (0.5, 0.9, "stock_twin")
 
 
 def test_run_baseline_error_is_a_refusal_not_a_crash_or_compare_error(monkeypatch):

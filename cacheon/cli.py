@@ -2268,12 +2268,12 @@ def cmd_verify(args: argparse.Namespace) -> int:
               "only — it does not predict GPU throughput, CUDA-graph capture, or the "
               "fidelity gates (see docs/dev/gpu-setup.md).")
     rc = 0
-    known_rows = 0
-    context_inapplicable_rows = 0
+    known_rows = context_inapplicable_rows = 0
     for row_index, op in enumerate(m.ops):
         label = f"{op.slot} variant={op.variant!r}"
-        if op.slot not in SLOTS:
-            print(f"  [SKIP] {label}: not a known slot on this validator")
+        if op.slot not in SLOTS:  # exiting 0 here reported an unchecked bundle as verified
+            print(f"  [FAIL] {label}: no offline reference; a node address is checked in the arena engine")
+            rc = 2
             continue
         known_rows += 1
         metadata = metadata_by_row[row_index]
