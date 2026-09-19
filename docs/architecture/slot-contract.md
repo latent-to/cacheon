@@ -290,7 +290,9 @@ Truth is the stock node in the running engine, on the same call:
    against stock's.
 
 A row passes within the larger of 2% and three times the twin's recent
-90th-percentile row error on that node. The tolerance is measured because honest
+90th-percentile row error on that node, and never above 40%: the widest honest node
+measured needed 33% and the wrong controls sat at 50%. Rows stock itself left
+non-finite (an idle data-parallel rank's padding) are not graded. The tolerance is measured because honest
 rounding grows with the width of the node: the twin sits 0.4% from stock at a block
 and 4–11% at the whole stack. It is kept per bound node, not per address, because
 the same address is quieter at layer 0 than at layer 39. Rows are graded rather
@@ -305,11 +307,38 @@ its arguments and returns them, and a decoder layer leaves normed intermediates 
 its dead input; values reach the caller through the result and the engine state.
 A result that is a record rather than a tuple is graded through its fields.
 
+`prepare` and `entry` receive the live module and must leave its methods alone.
+Every callable on the node's modules and their classes is recorded at binding,
+before any candidate code has run, and compared before each audited reference: a
+candidate that rebinds a `forward` makes stock agree with it, and one that rebinds
+a native path makes the twin noisy. A change raises, names the module and
+attribute, and is receipted as the candidate's. One change is the engine's own:
+SGLang's fused ops leave their dispatch target empty until the first call, so an
+attribute that was empty at binding may be filled with one of that module's own
+recorded methods and with nothing else. Weights are not recorded; a rewritten
+weight changes the served model itself, which the end-to-end quality gate grades
+against the pristine reference.
+
+The audit draw and both reference passes happen before the dispatcher looks at the
+candidate's eligibility. Eligibility can differ by rank (data-parallel ranks hold
+different batches), and a node that contains a collective hangs unless every rank
+runs it the same number of times.
+
 A bundle's addresses must not contain one another, and an address must name at
 least one module. Either failure raises at binding and is receipted as the
 candidate's. Binding happens once, after `ModelRunner.load_model`, which is early
 enough for the prefill and decode CUDA graph runners to capture the bound
 `forward` at every width.
+
+The graph proof for a node bundle is taken from the timed run itself. The
+dispatcher, not the candidate, records whether each invocation happened inside a
+CUDA-graph capture, and a graphs-on run requires that of every claimed node on
+every rank: a candidate whose declared domain excludes every captured shape would
+otherwise be timed as stock. A candidate that is captured but returns a stale
+answer on replay is caught by the end-to-end quality gate: with one decoder layer
+or one MoE block of forty returning its warm-up answer, the pristine reference's
+NLL of the output went from 0.09 to 15.5 and 9.0
+([runs](../results/qwen-h100-node-slots.md#stale-under-capture)).
 
 A node-address bundle resolves to the
 [`forward_pass` target](../reference/target-catalog.md#registered-targets), and

@@ -616,6 +616,7 @@ def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
                 expected_slots=["moe.fused_experts"],
                 expected_member_count=config.tp_size,
                 audit_policy=policy,
+                graphs=False,
             )
 
         yield SimpleNamespace(
@@ -672,6 +673,7 @@ def test_candidate_coverage_failure_remains_hard_error_outside_audit(monkeypatch
             expected_slots=["moe.fused_experts"],
             expected_member_count=4,
             audit_policy=None,
+            graphs=True,
         )
 
 

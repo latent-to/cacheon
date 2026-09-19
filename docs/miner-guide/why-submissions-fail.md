@@ -121,6 +121,13 @@ members actually captured) and `graph_eager_failed`. A kernel that is correct in
 eager mode but cannot be captured and replayed is not shippable here. See
 [Graph correctness](graph-safety.md).
 
+A [node-address](../architecture/slot-contract.md#node-addresses) bundle is proven
+on the timed run itself. Every claimed module must have run inside a captured
+graph there; one that only ever ran eagerly fails with `never invoked inside a
+CUDA-graph capture`. `prepare` and `entry` must also leave the live module's
+methods alone: `a method inside node ... was rebound after binding (Class: attr)`
+names the attribute the bundle changed.
+
 ## The audit compares your kernel with stock
 
 After the speed stage, an untimed eager run samples live calls to your slot and

@@ -140,11 +140,12 @@ def test_a_candidate_that_leaves_its_arguments_alone_passes_where_stock_overwrit
 
 
 class _Fused(nn.Module):
-    """Stands in for an SGLang fused op: a fast path and a native reference path."""
+    """Stands in for an SGLang fused op: a fast path, a native reference path, and a
+    dispatch target that stays empty until the first call caches it."""
 
     def __init__(self):
         super().__init__()
-        self._forward_method = self.forward_fast
+        self._forward_method = None
 
     def forward_fast(self, x):
         return x * 2.0
@@ -153,6 +154,8 @@ class _Fused(nn.Module):
         return x * 2.0 * 1.05
 
     def forward(self, x):
+        if self._forward_method is None:
+            self._forward_method = self.forward_fast
         return self._forward_method(x)
 
 
@@ -180,12 +183,52 @@ def test_the_tolerance_is_the_noise_the_native_twin_shows_on_the_same_call(audit
         )
     )
     nodes.bind(runner, registry)
+    # Twice: the op caches its dispatch target on the first call, after the node's
+    # methods were sealed, and the second audited call must not read that as a rebind.
+    runner.model.wide(torch.randn(4, 8))
     runner.model.wide(torch.randn(4, 8))
     runner.model.leaf(torch.randn(4, 8))
     # The twin sits 5% from stock inside the wide node, so 8% is rounding there; the
     # leaf has no native path, its twin is stock, and the same 8% is a wrong answer.
     assert (audited["wide"]["violations"], audited["leaf"]["violations"]) == (0, 1)
     assert runner.model.wide.op._forward_method == runner.model.wide.op.forward_fast
+
+
+@pytest.mark.parametrize("attr", ["forward_native", "_forward_method"])
+def test_a_candidate_cannot_widen_its_tolerance_by_making_the_twin_noisy(
+    audited, monkeypatch, attr
+):
+    failed = []
+    monkeypatch.setattr(
+        nodes._receipts, "failed", lambda slot, exc, **_d: failed.append((slot, str(exc)))
+    )
+    runner, _ = _served_model()
+    runner.model.wide = _Wide()
+
+    def prepare(module):
+        # Hostile: the twin's native path now answers garbage, so its measured noise,
+        # and with it the tolerance, would be as wide as the candidate likes; or the
+        # op's dispatch target is the candidate's, so stock agrees with it.
+        setattr(module.op, attr, lambda x: x * 40.0)
+        return module
+
+    nodes.bind(runner, _registry("wide", lambda module, x: module.forward(x) * 1.5, prepare=prepare))
+    # The first audited call takes both references before ``prepare`` has ever run.
+    runner.model.wide(torch.randn(4, 8))
+    assert audited["wide"]["violations"] == 1
+    with pytest.raises(RuntimeError, match=rf"rebound after binding \(_Fused: {attr}\)"):
+        runner.model.wide(torch.randn(4, 8))
+    assert failed and failed[0][0] == "wide"
+
+
+def test_the_measured_tolerance_has_a_ceiling_below_a_wrong_answer(audited, monkeypatch):
+    runner, _ = _served_model()
+    runner.model.wide = _Wide()
+    # A twin that is honestly 30% noisy would earn 0.9; the ceiling holds it at 0.4.
+    monkeypatch.setattr(_Fused, "forward_native", lambda self, x: x * 1.3)
+    nodes.bind(runner, _registry("wide", lambda module, x: module.forward(x) * 1.5))
+    runner.model.wide(torch.randn(4, 8))
+    assert audited["wide"]["violations"] == 1
 
 
 def test_a_wrong_answer_on_tiny_activations_is_still_a_violation(audited):

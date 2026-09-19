@@ -57,10 +57,13 @@ _STOCK_LOAD = "_cacheon_stock_load_model"
 # The pinned engine's per-token cache buffers: the MHA pair or the MLA latent.
 _KV_BUFFERS = ("k_buffer", "v_buffer", "kv_buffer")
 # A row passes within max(_FLOOR, _TWIN_FACTOR x the twin's 90th-percentile row
-# error). No honest single kernel reached a quarter of the floor; the wrong controls
-# sat at 0.5 (H100 Qwen runs, 2026-09-19).
+# error), never above _CEILING. No honest single kernel reached a quarter of the
+# floor; the widest honest node needed 0.33 (three times 11% at the whole stack) and
+# the wrong controls sat at 0.5 (H100 Qwen runs, 2026-09-19). The ceiling is what a
+# candidate that managed to make the twin noisy could buy at most.
 _FLOOR = 0.02
 _TWIN_FACTOR = 3.0
+_CEILING = 0.4
 # Share of rows that must pass, graded once this many rows have pooled. Honest noise
 # is heavy-tailed (the twin graded against itself kept 84% of rows in the worst of
 # 2,280 decoder-layer windows and 90% at the whole stack) while a wrong answer keeps
@@ -175,6 +178,57 @@ def _answer(slot: str, stock: Callable, runner, args: tuple, kwargs: dict):
     return [(t, 0) for t in outputs] + [(t, dim) for t, (_, dim, _) in zip(written, rows)]
 
 
+def _seal(module) -> list[tuple]:
+    """The methods stock and its twin run through, held so identity can be re-checked.
+
+    ``prepare`` and ``entry`` receive the live module. A candidate that rebinds a
+    ``forward`` inside its node makes stock agree with it, and one that rebinds a
+    ``forward_native`` makes the twin noisy and the tolerance wide. Weights are not
+    sealed: a rewritten weight changes the served model itself, which the
+    end-to-end quality gate grades against the pristine reference.
+    """
+
+    return [(m, _methods(m)) for m in module.modules()]
+
+
+def _methods(m) -> dict:
+    """Every callable, and every empty attribute, on a module and its classes below ``nn.Module``."""
+
+    found = {n: v for n, v in vars(m).items() if callable(v) or v is None}
+    for cls in type(m).__mro__:
+        if cls is torch.nn.Module:
+            break
+        found.update(((cls, n), v) for n, v in vars(cls).items() if callable(v))
+    return found
+
+
+def _rebound(sealed: list[tuple]) -> str | None:
+    """Name the first sealed callable that changed, or None."""
+
+    # Equality compares bound methods by function and instance, so a method the
+    # engine re-reads and stores again is not a change; a rebound one is.
+    for m, methods in sealed:
+        now = _methods(m)
+        own = [v for k, v in methods.items() if not isinstance(k, str)]
+        for key in methods.keys() | now.keys():
+            old, new = methods.get(key), now.get(key)
+            if old == new:
+                continue
+            # SGLang's fused ops hold ``_forward_method = None`` until their first
+            # call and then cache one of their own methods there; the first seal
+            # refused every honest bundle for it (H100 Qwen run, 2026-09-19, "TopK:
+            # _forward_method"). An empty attribute may be filled with the module's
+            # own sealed method and with nothing else.
+            if (
+                key in methods and old is None
+                and getattr(new, "__self__", None) is m and new.__func__ in own
+            ):
+                continue
+            name = key if isinstance(key, str) else f"{key[0].__name__}.{key[1]}"
+            return f"{type(m).__name__}: {name}"
+    return None
+
+
 @contextmanager
 def _native(module):
     """Run the node's fused ops on SGLang's native reference paths: the honest twin."""
@@ -215,7 +269,8 @@ def _grade(slot: str, node: int, actual: list, expected: list, twin: list) -> No
         noise.append(torch.quantile(honest, 0.9).item())
         # A one-row call is one draw of heavy-tailed noise (a routing flip moved the
         # twin's single token 19% at the stack), so the scale is the recent calls'.
-        tolerance = max(_FLOOR, _TWIN_FACTOR * sorted(noise)[int(0.9 * (len(noise) - 1))])
+        measured = _TWIN_FACTOR * sorted(noise)[int(0.9 * (len(noise) - 1))]
+        tolerance = min(_CEILING, max(_FLOOR, measured))
         errors = _row_errors(a, e, dim)
         pooled = _pooled.setdefault(key, [0, 0])
         pooled[0] += int((errors <= tolerance).sum().item())
@@ -247,10 +302,15 @@ def make_node_dispatcher(
     module,
     stock: Callable[..., object],
     runner,
+    sealed: list[tuple],
     *,
     registry: KernelRegistry = REGISTRY,
 ) -> Callable[..., object]:
-    """Build the replacement ``forward`` for one bound node."""
+    """Build the replacement ``forward`` for one bound node.
+
+    ``sealed`` is filled by ``bind`` once every node is bound and before any
+    candidate code has run.
+    """
 
     prepared: dict[int, object] = {}
 
@@ -267,6 +327,13 @@ def make_node_dispatcher(
         # every rank runs it the same number of times with the same seeded draws.
         expected = twin = None
         if not in_graph and _audit.sampled():
+            changed = _rebound(sealed)
+            if changed is not None:
+                failure = RuntimeError(
+                    f"a method inside node {slot!r} was rebound after binding ({changed})"
+                )
+                _receipts.failed(slot, failure, phase="entry")
+                raise failure
             expected = _answer(slot, stock, runner, args, kwargs)
             with _native(module):
                 twin = _answer(slot, stock, runner, args, kwargs)
@@ -329,11 +396,14 @@ def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
             failure = RuntimeError(error)
             _receipts.failed(slot, failure, phase="prepare")
             raise failure
+    seals: dict[str, list[tuple]] = {name: [] for name in bound}
     for name, slot in bound.items():
         module = named[name]
         module.forward = make_node_dispatcher(
-            slot, module, module.forward, runner, registry=registry
+            slot, module, module.forward, runner, seals[name], registry=registry
         )
+    for name in bound:
+        seals[name].extend(_seal(named[name]))
     return sorted(bound)
 
 

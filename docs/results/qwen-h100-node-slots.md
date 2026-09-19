@@ -129,6 +129,54 @@ is several times noisier than layer 0, and the honest layer control failed 14 of
 252 windows (worst 0.843 against a 0.90 bar). The scale and the row pool are now
 kept per bound node.
 
+## Stale under capture
+
+The per-node check grades eager calls. A candidate could be honest there and, under
+CUDA-graph capture, return the answer it computed during warm-up, so every replay
+serves a stale tensor. Three such controls ran with graphs on, 16 real prompts of
+1,024 tokens and 96 greedy tokens each; a stock engine then teacher-forced the
+candidate's tokens.
+
+| Bundle | tok/s | Distinct tokens per reply | Stock NLL of the output | Stock-argmax agreement | Top-20 KL |
+|---|---|---|---|---|---|
+| `model`, do-nothing | 1,744 | 59.0 | 0.095 | 0.958 | 0.008 |
+| `model`, stale | 5,973 | 1.9 | 12.66 | 0.000 | 12.60 |
+| `model.layers.20`, stale | 1,677 | 4.4 | 15.47 | 0.010 | 18.28 |
+| `model.layers.20.mlp`, stale | 1,737 | 6.9 | 9.04 | 0.014 | 13.89 |
+
+One stale block of forty moves every end-to-end quality metric by two orders of
+magnitude. Every one of these bundles carried `captured: true` on its completed
+receipt: the receipt proves the candidate was in the graph, and end-to-end quality
+proves the graph reads fresh inputs.
+
+The changes that followed (audit draw before selection, non-finite stock rows
+ungraded) were re-run on the same node:
+decoder layer honest 160 windows, 0 failed, worst 0.853; decoder layer wrong 120 of
+160 failed; four addresses do-nothing 323, 0 failed; whole stack honest 4, 0 failed,
+worst 0.914. The numbers are those of the first run.
+
+## A candidate that rewires its node
+
+`prepare` receives the live module. A hostile control used that to rebind the
+rotary embedding's `forward_native` inside every decoder layer, which makes the twin
+noisy and the tolerance wide. The adapter records every callable on the node's
+modules at binding and compares before each audited reference.
+
+| Bundle | Result |
+|---|---|
+| `model.layers.*`, hostile | refused: `a method inside node 'model.layers.*' was rebound after binding (MRotaryEmbedding: forward_native)` |
+| `model.layers.*`, honest | 160 windows, 0 failed, worst 0.853 |
+| four addresses, do-nothing | 323 windows, 0 failed |
+| `model`, honest | 4 windows, 0 failed, worst 0.914 |
+
+The first version of the record refused every honest bundle at every width with
+`TopK: _forward_method`: SGLang's fused ops leave their dispatch target empty until
+the first call, and the engine's own fill read as a rebind. An attribute that was
+empty at binding may be filled with one of that module's own recorded methods; the
+honest rows above are the re-run with that rule. The measured tolerance is also
+capped at 40% per row, above the 33% the noisiest honest width earns and below a
+wrong answer.
+
 ## Limits
 
 - One model, one GPU per engine, no tensor or data parallelism. A node that

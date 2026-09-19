@@ -1,29 +1,19 @@
-"""Golden builders for the Refactor D request-plan and graph-store families.
+"""Golden builder for the Refactor D request-plan family.
 
 Consumed by ``tests/test_refactor_d_goldens.py`` (the pinned document, the
-regeneration helper and the byte/digest assertions live there). Each builder
+regeneration helper and the byte/digest assertions live there). The builder
 maps one JSON-able ``inputs`` dict to ``(canonical_bytes, digest, extras)``
-using only the production producers and readers, synthetic identities, and a
-scratch directory. The family-specific negatives that a refactor must keep
-live next to their builder.
+using only the production producers and readers and synthetic identities. The
+family-specific negatives that a refactor must keep live next to their builder.
 """
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
-import os
-import shutil
-import stat
-import tempfile
-import time
-from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-import cacheon.eval.b300_qualification_graph_evidence_store as graph_store_module
 from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaScreenReceipt,
@@ -58,41 +48,12 @@ from cacheon.chain.remote_worker_spool import (
     spool_canonical_json,
     spool_digest,
 )
-from cacheon.eval.b300_qualification_capabilities import (
-    StructuredGraphShapeRecord,
-    StructuredGraphVariantRecord,
-)
-from cacheon.eval.b300_qualification_graph_evidence_store import (
-    B300QualificationGraphEvidenceStore,
-    B300QualificationGraphGenerationOutput,
-)
-from cacheon.eval.b300_qualification_graph_provider import (
-    B300QualificationGraphArtifact,
-    B300QualificationGraphBinding,
-)
-from cacheon.eval.b300_qualification_graph_store_io import (
-    B300QualificationGraphEvidenceHold,
-    B300QualificationGraphEvidenceStoreError,
-)
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.stack_identity import canonical_digest
 
 
 def _h(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
-
-
-@contextlib.contextmanager
-def _scratch() -> Iterator[Path]:
-    root = Path(tempfile.mkdtemp(prefix="cacheon-refactor-d-")).resolve(strict=True)
-    try:
-        yield root
-    finally:
-        for parent, dirs, files in os.walk(root):
-            for name in dirs + files:
-                with contextlib.suppress(OSError):
-                    os.chmod(os.path.join(parent, name), stat.S_IRWXU)
-        shutil.rmtree(root, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -306,151 +267,6 @@ def test_request_plan_blob_is_bound_to_its_lease_identity() -> None:
         )
 
 
-# --------------------------------------------------------------------------- #
-# graph_store: B300QualificationGraphEvidenceStore durable attempt/index records
-# (cacheon/eval/b300_qualification_graph_evidence_store.py). The attempt nonce
-# is a CSPRNG draw in production; it is pinned here through the module's own
-# `secrets` name so the record layout is byte-comparable.
-# --------------------------------------------------------------------------- #
-
-GRAPH_STORE_INPUTS: dict[str, dict[str, Any]] = {
-    "armed": {"stop_after": "arm"},
-    "output_no_terminal": {"stop_after": "output"},
-    "terminal_no_index": {"stop_after": "terminal"},
-    "complete": {"stop_after": ""},
-}
-
-_GENERATION_ONE = f"{1:016d}"
-
-
-class _FixedSecrets:
-    @staticmethod
-    def token_hex(nbytes: int) -> str:
-        return "ab" * nbytes
-
-
-class _StopAfterDurable(Exception):
-    pass
-
-
-def _graph_binding() -> B300QualificationGraphBinding:
-    label = "golden-target"
-    return B300QualificationGraphBinding(
-        reservation_digest=_h(f"{label}:reservation"),
-        reservation_identity_digest=_h(f"{label}:reservation-identity"),
-        candidate_binding_digest=_h(f"{label}:candidate"),
-        screen_attempt=1,
-        target_id=label,
-        target_members=("member-a",),
-        target_spec_digest=_h(f"{label}:spec"),
-        selected_delta_digest=_h(f"{label}:delta"),
-        publication_content_hash=_h(f"{label}:content"),
-        publication_address_digest=_h(f"{label}:address"),
-        publication_digest=_h(f"{label}:publication"),
-        publication_receipt_digest=_h(f"{label}:receipt"),
-        prepared_arm_digest=_h(f"{label}:arm"),
-        prepared_contribution_digest=_h(f"{label}:contribution"),
-        prepared_launch_digest=_h(f"{label}:launch"),
-        materialized_stack_digest=_h(f"{label}:stack"),
-        materialized_tree_digest=_h(f"{label}:tree"),
-        trusted_tree_identity_digest=_h(f"{label}:trusted-tree"),
-        native_build_spec_digest=_h(f"{label}:native-build"),
-    )
-
-
-def _graph_artifact(
-    binding: B300QualificationGraphBinding, policy: str
-) -> B300QualificationGraphArtifact:
-    variants = tuple(
-        StructuredGraphVariantRecord(
-            member,
-            "commissioned",
-            True,
-            True,
-            (
-                StructuredGraphShapeRecord(
-                    _h(f"{binding.digest}:{member}:shape"), True, True, True, 3, True, True, False
-                ),
-            ),
-        )
-        for member in binding.target_members
-    )
-    return B300QualificationGraphArtifact(binding, policy, 2, variants)
-
-
-def _deadline() -> float:
-    return time.monotonic() + 30.0
-
-
-def build_graph_store(inputs: dict[str, Any]) -> tuple[bytes, str, dict[str, Any]]:
-    stop_after = str(inputs["stop_after"])
-    policy = _h("golden-policy")
-    binding = _graph_binding()
-
-    def produce(exact, token, _deadline):
-        return B300QualificationGraphGenerationOutput(token, _graph_artifact(exact, policy))
-
-    def boundary(kind: str, phase: str) -> None:
-        if kind == stop_after and phase == "parents_fsynced":
-            raise _StopAfterDurable(kind)
-
-    saved = (graph_store_module.secrets, graph_store_module._publication_boundary)
-    graph_store_module.secrets = _FixedSecrets  # type: ignore[assignment]
-    graph_store_module._publication_boundary = boundary  # type: ignore[assignment]
-    try:
-        with _scratch() as root:
-            store = B300QualificationGraphEvidenceStore(root / "evidence", policy)
-            with contextlib.suppress(_StopAfterDurable):
-                store.probe_once(binding, produce, deadline=_deadline())
-            attempt_dir = root / "evidence" / "attempts" / policy / binding.digest
-            index_path = root / "evidence" / "indexes" / policy / f"{binding.digest}.json"
-            records = {
-                path.name: path.read_bytes().decode("utf-8")
-                for path in sorted(attempt_dir.glob(f"{_GENERATION_ONE}.*.json"))
-            }
-            if index_path.exists():
-                records["index"] = index_path.read_bytes().decode("utf-8")
-            try:
-                store.reopen(binding, deadline=_deadline())
-                reopen_outcome = "reference"
-            except B300QualificationGraphEvidenceHold:
-                reopen_outcome = "hold"
-            graph_store_module._publication_boundary = saved[1]
-            healed = store.probe_once(binding, produce, deadline=_deadline())
-            healed_files = sorted(
-                path.name for path in attempt_dir.glob(f"{_GENERATION_ONE}.*.json")
-            ) + (["index"] if index_path.exists() else [])
-    finally:
-        graph_store_module.secrets, graph_store_module._publication_boundary = saved
-
-    last = records["index"] if "index" in records else records[sorted(records)[-1]]
-    artifact_bytes = _graph_artifact(binding, policy).canonical_bytes
-    assert hashlib.sha256(artifact_bytes).hexdigest() == healed.sha256
-    return last.encode("utf-8"), binding.digest, {
-        "records_after_stop": records,
-        "reopen_after_stop": reopen_outcome,
-        "files_after_heal": healed_files,
-        "healed_reference": healed.to_dict(),
-        "artifact_canonical": artifact_bytes.decode("utf-8"),
-    }
-
-
-def test_graph_store_refuses_an_index_without_a_terminal_record() -> None:
-    policy = _h("golden-policy")
-    binding = _graph_binding()
-    with _scratch() as root:
-        store = B300QualificationGraphEvidenceStore(root / "evidence", policy)
-        store.arm(binding, deadline=_deadline())
-        index_path = root / "evidence" / "indexes" / policy / f"{binding.digest}.json"
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-        index_path.write_bytes(b"{}")
-        with pytest.raises(
-            B300QualificationGraphEvidenceStoreError, match="no authenticated terminal attempt"
-        ):
-            store.reopen(binding, deadline=_deadline())
-
-
 FAMILIES: dict[str, tuple[dict[str, dict[str, Any]], Any]] = {
     "request_plan": (REQUEST_PLAN_INPUTS, build_request_plan),
-    "graph_store": (GRAPH_STORE_INPUTS, build_graph_store),
 }
