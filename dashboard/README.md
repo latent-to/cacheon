@@ -75,6 +75,21 @@ hotkey and, when already resolved before rejection, target. It reads current sta
 linked reservation. The UI links to that evaluation beside the original payment
 error; it preserves both submissions' identities, errors and evaluation history.
 
+Bundle URLs and public raw-log downloads are withheld until **eight hours after
+the terminal evaluation result**, not eight hours after submission. Queued,
+running and held submissions remain withheld. The detail API returns an empty
+`url` and `bundle_visibility` with `available`, `release_at` (Unix seconds or
+null), and `result_block`. It uses the latest completed evaluation/retained PASS
+block and its exact cached chain timestamp; missing or estimated result times
+do not release source. Results and performance measurements remain visible.
+Raw logs and source-bearing exception messages follow the same delay because
+compiler output can contain source. Direct raw-log requests return HTTP 403
+until release; validator intake and private diagnostic access are unchanged.
+
+This controls disclosure through this dashboard. The existing revealed chain
+payload includes the miner-hosted HTTPS URL, so it cannot make that external
+URL private or withdraw copies already obtained elsewhere.
+
 The submission detail renders the signed evaluation records in full. Each
 screen attempt carries `stages` — every graded check from the signed receipt
 (stage, grade, reason, elapsed time), so a `screen_rejected` names the exact

@@ -4,6 +4,13 @@ Production submission is a hotkey-signed, timelock commit-reveal containing a
 content hash and an HTTPS fetch URL. The chain carries a reference, not the
 archive bytes.
 
+The public dashboard withholds bundle links and raw evaluation logs until eight
+hours after a terminal evaluation result. Queue time does not count toward that
+delay; queued, running and held bundles remain withheld. Results and performance
+numbers stay visible, and validator fetching/evaluation continues normally.
+This is a dashboard disclosure delay: the HTTPS URL in the revealed chain
+payload and any public copies at the miner's host remain publicly accessible.
+
 The miner-side implementation is in
 [submit.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/submit.py),
 and the canonical payload is defined by
