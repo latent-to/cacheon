@@ -348,10 +348,6 @@ class SelectionDecision:
     def impl(self) -> KernelImpl | None:
         return self.candidate if self.outcome is SelectionOutcome.SELECTED else None
 
-    @property
-    def use_candidate(self) -> bool:
-        return self.impl is not None
-
 
 class KernelRegistry:
     """Process-global registry. One active bundle at a time (MVP)."""

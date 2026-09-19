@@ -70,6 +70,11 @@ _CEILING = 0.4
 # none, so the bar sits well below honest.
 _ROW_BAR = 0.75
 _WINDOW = 256
+# Elements of engine state read, compared or put back at a time. A hybrid model
+# keeps 63 MB of recurrent state per request: at 48 requests one copy is 2.8 GiB,
+# and holding the before, stock, twin and candidate copies at once ran an 80 GiB
+# H100 out of memory with 5 GiB spare (Qwen cell-width audit, 2026-09-20).
+_PIECE = 64 << 20
 # The wire vocabulary (oci_session_protocol.AuditReceiptFacts) is closed: a share of
 # rows within tolerance against a bar is its matched_ratio.
 _MODE = "matched_ratio"
@@ -164,37 +169,82 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
     return rows
 
 
-def _answer(slot: str, stock: Callable, runner, args: tuple, kwargs: dict):
-    """Run stock on the live call, keep its ``(tensor, row dim)`` answer, put the call back.
+def _pieces(buffer: torch.Tensor, dim: int, index: torch.Tensor) -> list[tuple[int, torch.Tensor]]:
+    """Split a row index into ``(start, rows)`` runs of at most ``_PIECE`` elements."""
 
-    What stock leaves in its own arguments is not part of the answer. The fused norm
-    overwrites its arguments and returns them, so an honest norm that returns fresh
-    tensors failed 1,521 of 1,560 calls while that was graded, and a whole decoder
-    layer leaves normed intermediates in its dead input (H100 Qwen runs, 2026-09-19).
-    Values reach the caller through the result and the engine state; both are graded.
+    step = max(1, _PIECE // max(1, buffer.numel() // max(1, buffer.shape[dim])))
+    return [(start, index[start : start + step]) for start in range(0, index.numel(), step)]
+
+
+def _errors(outputs: list, rows: list, expected: list) -> list[torch.Tensor]:
+    """Row errors of a result and of the live engine state against stock's answer."""
+
+    if len(outputs) + len(rows) != len(expected):
+        raise ValueError("the result does not have stock's tensor structure")
+    found = [_row_errors(a, e, dim) for (a, dim), (e, _) in zip(outputs, expected)]
+    for (buffer, dim, index, held), (e, _) in zip(rows, expected[len(outputs):]):
+        parts = [
+            _row_errors(
+                buffer.index_select(dim, piece).view(held),
+                e.narrow(dim, start, piece.numel()), dim,
+            )
+            for start, piece in _pieces(buffer, dim, index)
+        ]
+        found.append(torch.cat(parts) if parts else torch.empty(0))
+    return found
+
+
+def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs: dict):
+    """Stock's ``(tensor, row dim)`` answer and the honest twin's row errors against it.
+
+    Both run on the live call, and the call is put back after each. What stock leaves
+    in its own arguments is not part of the answer. The fused norm overwrites its
+    arguments and returns them, so an honest norm that returns fresh tensors failed
+    1,521 of 1,560 calls while that was graded, and a whole decoder layer leaves
+    normed intermediates in its dead input (H100 Qwen runs, 2026-09-19). Values reach
+    the caller through the result and the engine state; both are graded.
+
+    Only stock's state rows stay on the device. The copy the call is put back from
+    waits on the host when it is more than one piece, and the twin's and the
+    candidate's rows are compared a piece at a time.
     """
 
     handed = _tensors((args, kwargs), [])
     rows = _state_rows(runner, (*args, *kwargs.values()))
     before = [t.clone() for t in handed]
-    before += [buffer.index_select(dim, index) for buffer, dim, index, _ in rows]
-    outputs = _audit.capture_reference(
-        slot, lambda: _tensors(stock(*args, **kwargs), [], fields=True)
-    )
-    written = [buffer.index_select(dim, index) for buffer, dim, index, _ in rows]
-    # Write back only what stock changed: an untouched input may be an expanded
-    # or otherwise unwritable view.
-    for tensor, saved in zip(handed, before):
-        if not torch.equal(tensor, saved):
-            tensor.copy_(saved)
-    for (buffer, dim, index, _), saved, after in zip(rows, before[len(handed):], written):
-        if not torch.equal(saved, after):
-            buffer.index_copy_(dim, index, saved)
-    if outputs is None:
-        return None
-    return [(t, 0) for t in outputs] + [
-        (t.view(held), dim) for t, (_, dim, _, held) in zip(written, rows)
-    ]
+    state = []
+    for buffer, dim, index, _ in rows:
+        pieces = _pieces(buffer, dim, index)
+        # More than one piece waits on the host, each its own pinned tensor: slices of
+        # one host copy cost 4.4 s of CPU per call against 0.2 s, forty calls a decode
+        # step (H100, 2026-09-20).
+        state.append([
+            part if len(pieces) < 2
+            else torch.empty(part.shape, dtype=part.dtype, pin_memory=part.is_cuda).copy_(part)
+            for part in (buffer.index_select(dim, piece) for _, piece in pieces)
+        ])
+
+    def run(keep):
+        outputs = _audit.capture_reference(
+            slot, lambda: _tensors(stock(*args, **kwargs), [], fields=True)
+        )
+        kept = None if outputs is None else keep([(t, 0) for t in outputs])
+        # Write back only what stock changed: an untouched input may be an expanded
+        # or otherwise unwritable view.
+        for tensor, saved in zip(handed, before):
+            if not torch.equal(tensor, saved):
+                tensor.copy_(saved)
+        for (buffer, dim, index, _), saved in zip(rows, state):
+            for (_, piece), part in zip(_pieces(buffer, dim, index), saved):
+                buffer.index_copy_(dim, piece, part.to(buffer.device))
+        return kept
+
+    expected = run(lambda outputs: outputs + [
+        (buffer.index_select(dim, index).view(held), dim) for buffer, dim, index, held in rows
+    ])
+    with _native(module):
+        twin = run(lambda outputs: expected and _errors(outputs, rows, expected))
+    return expected, twin
 
 
 def _seal(module) -> list[tuple]:
@@ -275,12 +325,11 @@ def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int) -> torch
     return errors[torch.isfinite(e).all(dim=1)]
 
 
-def _grade(slot: str, node: int, actual: list, expected: list, twin: list) -> None:
+def _grade(slot: str, node: int, actual: list, twin: list) -> None:
     """Pool each graded tensor's passing rows; record a unit when a window fills."""
 
     filled = []
-    for position, ((a, dim), (e, _), (t, _)) in enumerate(zip(actual, expected, twin)):
-        honest = _row_errors(t, e, dim)
+    for position, (errors, honest) in enumerate(zip(actual, twin)):
         if not honest.numel():
             continue
         key = (node, position)
@@ -290,7 +339,6 @@ def _grade(slot: str, node: int, actual: list, expected: list, twin: list) -> No
         # twin's single token 19% at the stack), so the scale is the recent calls'.
         measured = _TWIN_FACTOR * sorted(noise)[int(0.9 * (len(noise) - 1))]
         tolerance = min(_CEILING, max(_FLOOR, measured))
-        errors = _row_errors(a, e, dim)
         pooled = _pooled.setdefault(key, [0, 0])
         pooled[0] += int((errors <= tolerance).sum().item())
         pooled[1] += errors.numel()
@@ -353,9 +401,7 @@ def make_node_dispatcher(
                 )
                 _receipts.failed(slot, failure, phase="entry")
                 raise failure
-            expected = _answer(slot, stock, runner, args, kwargs)
-            with _native(module):
-                twin = _answer(slot, stock, runner, args, kwargs)
+            expected, twin = _references(slot, module, stock, runner, args, kwargs)
         descriptor = _descriptor(module, args, kwargs, in_graph)
         impl = registry.select(slot, descriptor).impl if descriptor is not None else None
         if impl is None:
@@ -370,15 +416,12 @@ def make_node_dispatcher(
             slot, impl.entry, prepared[id(impl)], *args, kwargs=kwargs
         )
         if expected is not None and twin is not None:
-            actual = [(t, 0) for t in _tensors(result, [], fields=True)]
-            actual += [
-                (b.index_select(d, i).view(held), d)
-                for b, d, i, held in _state_rows(runner, (*args, *kwargs.values()))
-            ]
             try:
-                if len(actual) != len(expected):
-                    raise ValueError("the result does not have stock's tensor structure")
-                _grade(slot, id(module), actual, expected, twin)
+                actual = _errors(
+                    [(t, 0) for t in _tensors(result, [], fields=True)],
+                    _state_rows(runner, (*args, *kwargs.values())), expected,
+                )
+                _grade(slot, id(module), actual, twin)
             except ValueError:
                 _audit.compare_error(slot)
         _receipts.completed(slot)

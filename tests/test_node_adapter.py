@@ -69,8 +69,12 @@ def _registry(slot, entry, *, prepare=None):
     return registry
 
 
-@pytest.fixture()
-def audited(monkeypatch):
+@pytest.fixture(params=["one piece", "row by row"])
+def audited(monkeypatch, request):
+    # Row by row, engine state is copied aside, compared and put back in pieces: the
+    # path a 48-request batch's recurrent state takes on the GPU.
+    if request.param == "row by row":
+        monkeypatch.setattr(nodes, "_PIECE", 1)
     monkeypatch.setattr(audit, "sampled", lambda: True)
     monkeypatch.setattr(audit, "_stats", {})
     monkeypatch.setattr(nodes._receipts, "completed", lambda slot: None)

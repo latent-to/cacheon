@@ -281,7 +281,7 @@ Truth is the stock node in the running engine, on the same call:
 2. its result tensors are kept, together with the engine-state rows the batch may
    write: the cache rows at `out_cache_loc` and, on hybrid models, the recurrent
    state rows of the batch's requests;
-3. the arguments and the state rows stock changed are put back;
+3. the arguments stock changed and the state rows are put back;
 4. the honest twin answers the same call and is put back the same way: the stock
    node with its fused ops on SGLang's native reference paths, which is the same
    math with different rounding;

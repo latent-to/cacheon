@@ -33,19 +33,17 @@ def _arm(monkeypatch, rate="1.0", seed="7"):
 
 
 def test_disabled_without_env():
-    assert not audit.enabled()
-    assert not audit.sampled()
+    assert not any(audit.sampled() for _ in range(20))
 
 
 def test_rate_one_always_samples(monkeypatch):
     _arm(monkeypatch)
-    assert audit.enabled()
     assert all(audit.sampled() for _ in range(20))
 
 
 def test_bad_rate_is_disabled(monkeypatch):
     monkeypatch.setenv("CACHEON_SLOT_AUDIT", "not-a-number")
-    assert not audit.enabled()
+    assert not any(audit.sampled() for _ in range(20))
 
 
 def test_seeded_sampling_is_reproducible(monkeypatch):

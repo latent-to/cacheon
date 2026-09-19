@@ -64,9 +64,6 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     "kv_cache_dtype": "token",
     "language_model_only": "bool",
     "linear_attn_backend": "token",
-    # Qwen's H100 baseline decodes its linear-attention layers on a different backend
-    # than it prefills them (the best arm of the 2026-09-19 sweep).
-    "linear_attn_decode_backend": "token",
     "max_mamba_cache_size": "positive_int",
     "mamba_ssm_dtype": "token",
     "max_prefill_tokens": "positive_int",

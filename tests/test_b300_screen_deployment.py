@@ -83,7 +83,7 @@ def _qwen_engine_config():
         "chunked_prefill_size": 4096, "disable_radix_cache": True,
         "cuda_graph_bs_decode": [1, 2, 4, 8, 16, 24, 32, 40, 48],
         "kv_cache_dtype": "fp8_e4m3", "language_model_only": True,
-        "linear_attn_backend": "triton", "linear_attn_decode_backend": "cutedsl",
+        "linear_attn_backend": "triton",
         "max_mamba_cache_size": 48, "mamba_ssm_dtype": "float32",
     }
     return config

@@ -190,12 +190,12 @@ def test_registry_selection_exposes_validator_owned_fallback_reasons():
 
     inactive = registry.select("attention.msa_prefill_block_score", good)
     assert inactive.outcome is SelectionOutcome.REGISTRY_INACTIVE
-    assert not inactive.use_candidate
+    assert inactive.impl is None
 
     registry.enable()
     missing = registry.select("unknown.slot", good)
     assert missing.outcome is SelectionOutcome.SLOT_UNREGISTERED
-    assert not missing.use_candidate
+    assert missing.impl is None
 
     wrong = registry.select(
         "attention.msa_prefill_block_score",
@@ -208,7 +208,7 @@ def test_registry_selection_exposes_validator_owned_fallback_reasons():
     selected = registry.select(
         "attention.msa_prefill_block_score", good,     )
     assert selected.outcome is SelectionOutcome.SELECTED
-    assert selected.use_candidate and selected.impl is selected.candidate
+    assert selected.impl is not None and selected.impl is selected.candidate
 
 
 def test_quant_context_is_enforced_by_canonical_selection():
@@ -221,7 +221,7 @@ def test_quant_context_is_enforced_by_canonical_selection():
     registry.enable()
     base = CallDescriptor(dtype="bfloat16", quant="nvfp4", graph_mode="eager")
     assert registry.select(
-        "attention.msa_prefill_block_score", base,     ).use_candidate
+        "attention.msa_prefill_block_score", base,     ).impl is not None
 
     quant = registry.select(
         "attention.msa_prefill_block_score",

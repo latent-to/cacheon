@@ -68,10 +68,6 @@ def _rate() -> float:
     return _state["rate"]
 
 
-def enabled() -> bool:
-    return _rate() > 0.0
-
-
 def sampled() -> bool:
     """Decide (per dispatcher call) whether this call is audited."""
     r = _rate()

@@ -207,8 +207,77 @@ independent draws instead of 256. The rows above slice past the shared prefix.
 Earlier tables on this page used the shared slices; their verdicts stand and their
 worst-window figures are, if anything, pessimistic.
 
+## At the arena's width
+
+The runs above hold eight requests of a few hundred tokens. The arena's cells hold
+48 requests of 8,192 tokens and 6 of 65,536, and the audit role runs every charged
+batch at that width. The controls were repeated there, eager, FP8 cache, three
+generated tokens per request.
+
+The first audited 48-request decode step ran an 80 GiB H100 out of memory. The model
+keeps 63 MB of FP32 recurrent state per request, stacked over its 30 linear-attention
+layers in one tensor, so one copy of a batch's state rows is 2.81 GiB. The adapter
+held four (before, stock, twin, candidate) with 5 GiB spare. It now holds one on the
+device, stock's answer. The copy the call is put back from waits in pinned host
+memory, and the twin's and the candidate's rows are compared 64M elements at a time.
+Peak device memory with the audit running is 80,250 MiB.
+
+How the host copy is laid out decides what an audited call costs. One host tensor
+sliced along the request dimension makes every piece a strided copy that the CPU
+gathers: 2.3 s to copy the state out and 0.7 s for each of three put-backs, 4.4 s a
+call, with the scheduler at 98% CPU and the GPU idle. One pinned tensor per piece
+costs 0.06 s out and 0.05 s back, 0.22 s a call.
+
+| Bundle | Graded windows | Failed windows | Worst window |
+|---|---|---|---|
+| `model`, do-nothing | 104 | 0 | 1.0 |
+| `model`, wrong | 104 | 100 | 0.0 |
+| `model`, honest | 104 | 21 | 0.554 |
+| `model.layers.*`, honest | 3,880 | 0 | 0.856 |
+| `model.layers.*`, wrong | 3,880 | 3,840 | 0.0 |
+
+With all forty layers audited on every call, the 48-request cell took 159 s and the
+6-request 64k cell 110 s; the first audited 48-request decode step took 18 s.
+
+The do-nothing row is the put-back check: stock, the twin and the candidate each ran
+every call, and a candidate that is stock matched stock on every row of every window
+at both context lengths.
+
+The honest whole-model control fails, and the failure is the measurement, not the
+candidate. All 21 failed windows are 8,192-token prefill chunks of the 64k requests,
+at the final hidden state and the deepest layers' cache rows. There the twin itself,
+which is stock with its fused norms and activations on their native paths, sits at a
+median row error of 20 to 25% and a 90th percentile of 72 to 87% against stock; in a
+request's first 8k chunk it sits at 13 to 15% and 41 to 63%. The candidate's errors
+follow the same distribution. Forty layers of BF16 rounding compound over a 64k
+context into differences as large as a wrong answer's, and the 40% cap cannot rise to
+admit them because a result scaled by 1.5 sits at 50%. A per-layer claim compares one
+layer's rounding and is graded cleanly at the same width.
+
+## Stock throughput at the arena's width
+
+Output tokens per second, stock, CUDA graphs, the H100-tuned fused-MoE table, static
+memory fraction 0.93:
+
+| KV cache | Linear-attention decode backend | 8k in, 1k out, 48 requests | 64k in, 4k out, 6 requests |
+|---|---|---|---|
+| FP8 | triton (default) | 1,903 | 516 |
+| FP8 | flashinfer | 1,554 | 470 |
+| BF16 | triton | 1,337 | 360 |
+
+The `cutedsl` decode backend measured 2,150 and 524 and is excluded: what it generates
+is not the model's output. Its first tokens are unrelated text and it answers none of
+eight questions about a number planted earlier in the prompt; the default backend
+answers eight of eight at 8k and six of six at 64k. The arena serves the first row.
+
 ## Limits
 
+- A `model` claim cannot be graded by the row check at 64k context: an honest
+  candidate fails it (see above). The forward pass is covered at that context by
+  `model.layers.*` and the leaf nodes.
+- SGLang stacks the recurrent state of every linear-attention layer in one tensor, so
+  each audited node copies all thirty layers' rows aside, and a per-layer claim pays
+  that forty times a step. The audit does not restrict the copy to the node's layer.
 - One model, one GPU per engine, no tensor or data parallelism. A node that
   contains a collective needs rank-identical audit sampling; that is not measured.
 - The twin perturbs SGLang's fused ops only. A node with none inside it (an
