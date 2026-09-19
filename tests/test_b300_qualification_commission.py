@@ -119,30 +119,16 @@ def test_tracked_deadline_is_lease_bounded_monotonic() -> None:
     assert deadline(None) == deadline(object())
 
 
-def test_pristine_reference_authority_removes_seam_selection(
+def test_pristine_reference_is_the_baseline_at_genesis_and_stock_after_a_crown(
     tmp_path: Path,
 ) -> None:
     case = oci_backend_fixtures._case(tmp_path)
-    incumbent_config = replace(
-        case.plan.engine_config,
-        seam_bindings=("collective",),
-    )
-    incumbent_launch = replace(
-        case.launch,
-        engine_config_digest=incumbent_config.digest,
-    )
-    incumbent_plan = replace(
-        case.plan,
-        launch_digest=incumbent_launch.digest,
-        expected_engine_config_digest=incumbent_config.digest,
-        engine_config=incumbent_config,
-        expected_preflight=commission.expected_runtime_preflight(
-            incumbent_launch, case.preflight
-        ),
-    )
+    incumbent_launch, incumbent_plan = case.launch, case.plan
 
-    # Genesis: the declared incumbent is the empty stock stack, so the
-    # pristine tree/native identities coincide with the incumbent's.
+    # Genesis: the declared incumbent is the empty stock stack, so the pristine
+    # tree/native identities coincide with the incumbent's and T is that launch.
+    # A node arena binds no seam selection that could tell the two apart, and
+    # requiring a difference here refused every genesis commission.
     pristine_launch, pristine_plan = commission._pristine_reference_authority(
         incumbent_launch,
         incumbent_plan,
@@ -156,9 +142,7 @@ def test_pristine_reference_authority_removes_seam_selection(
         ),
     )
 
-    assert incumbent_plan.engine_config.seam_bindings == ("collective",)
-    assert pristine_plan.engine_config.seam_bindings == ()
-    assert pristine_launch.digest != incumbent_launch.digest
+    assert pristine_launch.digest == incumbent_launch.digest
     assert pristine_launch.engine_config_digest == pristine_plan.engine_config.digest
     assert pristine_plan.launch_digest == pristine_launch.digest
     assert pristine_plan.expected_preflight.engine_config_digest == (

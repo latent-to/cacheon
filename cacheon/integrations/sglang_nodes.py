@@ -46,7 +46,9 @@ import torch
 from cacheon import audit as _audit
 from cacheon import receipts as _receipts
 from cacheon.capabilities import CallDescriptor
-from cacheon.dispatch import _arch_tag, _dtype_name, _dynamo_compiling, _in_cuda_graph
+from cacheon.dispatch import (
+    _arch_tag, _dtype_name, _dynamo_compiling, _flashinfer_tuning, _in_cuda_graph,
+)
 from cacheon.registry import REGISTRY, KernelRegistry
 from cacheon.slots import SLOTS
 
@@ -194,7 +196,10 @@ def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int) -> torch
     a = actual.detach().float().reshape(-1, 1) if actual.dim() < 2 else actual.detach().float()
     e = expected.detach().float().reshape(-1, 1) if expected.dim() < 2 else expected.detach().float()
     a, e = a.movedim(dim, 0).flatten(1), e.movedim(dim, 0).flatten(1)
-    return (a - e).norm(dim=1) / e.norm(dim=1).clamp_min(1e-12)
+    errors = (a - e).norm(dim=1) / e.norm(dim=1).clamp_min(1e-12)
+    # Rows stock itself left non-finite are nobody's answer: the 2026-09-18 retained
+    # bundle matched every real token and failed on NaNs in an idle rank's padding.
+    return errors[torch.isfinite(e).all(dim=1)]
 
 
 def _grade(slot: str, node: int, actual: list, expected: list, twin: list) -> None:
@@ -202,11 +207,12 @@ def _grade(slot: str, node: int, actual: list, expected: list, twin: list) -> No
 
     filled = []
     for position, ((a, dim), (e, _), (t, _)) in enumerate(zip(actual, expected, twin)):
-        if not e.numel():
+        honest = _row_errors(t, e, dim)
+        if not honest.numel():
             continue
         key = (node, position)
         noise = _noise.setdefault(key, deque(maxlen=64))
-        noise.append(torch.quantile(_row_errors(t, e, dim), 0.9).item())
+        noise.append(torch.quantile(honest, 0.9).item())
         # A one-row call is one draw of heavy-tailed noise (a routing flip moved the
         # twin's single token 19% at the stack), so the scale is the recent calls'.
         tolerance = max(_FLOOR, _TWIN_FACTOR * sorted(noise)[int(0.9 * (len(noise) - 1))])
@@ -249,9 +255,21 @@ def make_node_dispatcher(
     prepared: dict[int, object] = {}
 
     def dispatched(*args, **kwargs):
-        if _dynamo_compiling() or _receipts.is_invoking() or not registry.active:
+        if (
+            _dynamo_compiling() or _flashinfer_tuning()
+            or _receipts.is_invoking() or not registry.active
+        ):
             return stock(*args, **kwargs)
         in_graph = _in_cuda_graph()
+        # Drawn, and both references run, before any rank-local branch: selection
+        # can differ by rank (eligibility bounds the token count, and DP ranks hold
+        # different batches), and a node that contains a collective hangs unless
+        # every rank runs it the same number of times with the same seeded draws.
+        expected = twin = None
+        if not in_graph and _audit.sampled():
+            expected = _answer(slot, stock, runner, args, kwargs)
+            with _native(module):
+                twin = _answer(slot, stock, runner, args, kwargs)
         descriptor = _descriptor(module, args, kwargs, in_graph)
         impl = registry.select(slot, descriptor).impl if descriptor is not None else None
         if impl is None:
@@ -262,11 +280,6 @@ def make_node_dispatcher(
                 if impl.prepare is not None
                 else module
             )
-        expected = twin = None
-        if not in_graph and _audit.sampled():
-            expected = _answer(slot, stock, runner, args, kwargs)
-            with _native(module):
-                twin = _answer(slot, stock, runner, args, kwargs)
         result = _receipts.invoke(
             slot, impl.entry, prepared[id(impl)], *args, kwargs=kwargs
         )

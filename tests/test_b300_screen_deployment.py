@@ -473,12 +473,8 @@ def test_graph_engine_config_derives_from_the_declared_cell() -> None:
     template = deployment._engine_template(
         {"engine_config": _m3_engine_config()}
     )
-    eager = deployment._engine_config(
-        template, ("msa",), cell, disable_cuda_graph=True
-    )
-    graph = deployment._engine_config(
-        template, ("msa",), cell, disable_cuda_graph=False
-    )
+    eager = deployment._engine_config(template, cell, disable_cuda_graph=True)
+    graph = deployment._engine_config(template, cell, disable_cuda_graph=False)
     runtime = deployment._runtime_policy(_preflight())
     assert "watchdog_timeout" not in eager.engine_kwargs
     assert (runtime.init_timeout_seconds, runtime.batch_timeout_seconds) == (1800, 1800)
@@ -506,12 +502,7 @@ def test_glm_engine_profile_is_data_not_an_evaluator_branch() -> None:
     )
     template = deployment._engine_template({"engine_config": glm})
     cell = WorkloadCell("l65", 65536, 4096, 24, 3)
-    config = deployment._engine_config(
-        template,
-        ("moe.fused_routed_experts",),
-        cell,
-        disable_cuda_graph=False,
-    )
+    config = deployment._engine_config(template, cell, disable_cuda_graph=False)
 
     assert config.engine_kwargs["enable_dp_attention"] is True
     assert config.engine_kwargs["dp_size"] == 4
@@ -522,7 +513,6 @@ def test_glm_engine_profile_is_data_not_an_evaluator_branch() -> None:
 
     mixed = deployment._engine_config(
         template,
-        ("moe.fused_routed_experts",),
         (
             WorkloadCell("s8", 8192, 1024, 128, 2),
             WorkloadCell("l65", 65536, 4096, 24, 3),

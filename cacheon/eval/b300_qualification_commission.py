@@ -76,41 +76,28 @@ def _pristine_reference_authority(
     pristine_tree,
     pristine_native,
 ) -> tuple[EngineLaunchSpec, SessionExecutionPlan]:
-    """Derive pristine T without the candidate/stock seam selection.
+    """Derive pristine T on the empty stock tree.
 
     Pristine T stays anchored to the empty stock tree even when the incumbent
     carries crowned entries, so the quality/audit reference never moves with
-    the speed baseline; at genesis the two trees coincide and every replaced
-    field below is a no-op.
+    the speed baseline; at genesis the two trees coincide and T is the baseline
+    launch. Candidate code reaches an engine only through its tree, so the empty
+    tree is what keeps T stock.
     """
 
-    pristine_config = replace(
-        baseline_session_plan.engine_config,
-        seam_bindings=(),
-    )
     pristine_launch = replace(
         incumbent_launch,
         stack_digest=pristine_tree.stack_digest,
         tree_digest=pristine_tree.tree_digest,
         native_build_spec_digest=pristine_native.digest,
-        engine_config_digest=pristine_config.digest,
     )
     pristine_session_plan = replace(
         baseline_session_plan,
         launch_digest=pristine_launch.digest,
-        expected_engine_config_digest=pristine_config.digest,
-        engine_config=pristine_config,
         expected_preflight=expected_runtime_preflight(
             pristine_launch, runtime_preflight
         ),
     )
-    if (
-        pristine_config.seam_bindings
-        or pristine_launch.digest == incumbent_launch.digest
-    ):
-        raise B300QualificationCommissionError(
-            "pristine T did not remove the incumbent seam selection"
-        )
     return pristine_launch, pristine_session_plan
 
 
@@ -434,7 +421,6 @@ def _compose_locked(
     )
     engine_config = screen_deployment._engine_config(
         inputs.engine_template,
-        target_members,
         inputs.workload.cells,
         disable_cuda_graph=False,
     )

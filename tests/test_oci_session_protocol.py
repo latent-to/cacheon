@@ -12,13 +12,6 @@ from pathlib import Path
 import pytest
 
 import cacheon.eval.oci_session_protocol as protocol
-from cacheon.seams import (
-    SEAM_ADAPTERS,
-    SEAM_BINDINGS,
-    SEAM_BINDING_ENV_GATES,
-    normalize_seam_bindings,
-    seam_binding_environment,
-)
 from cacheon.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     EVIDENCE_MAGIC,
@@ -89,7 +82,6 @@ def _config(**changes: object) -> EngineSessionConfig:
             "page_size": 64,
             "enable_flashinfer_allreduce_fusion": True,
         },
-        "seam_bindings": (),
     }
     values.update(changes)
     return EngineSessionConfig(**values)  # type: ignore[arg-type]
@@ -150,86 +142,6 @@ def test_engine_config_is_exact_immutable_and_digest_stable() -> None:
     assert len(config.digest) == 64
 
 
-def test_seam_binding_table_is_closed() -> None:
-    assert dict(SEAM_BINDING_ENV_GATES) == {
-        "collective": "CACHEON_COLLECTIVE_SEAM",
-        "dense": "CACHEON_DENSE_SEAM",
-        "dp_output": "CACHEON_DP_OUTPUT_PROJECTION_SEAM",
-        "moe": "CACHEON_MOE_SEAM",
-        "sparse_mla": "CACHEON_SPARSE_MLA_SEAM",
-        "indexer_select": "CACHEON_INDEXER_SELECT_SEAM",
-    }
-    bindings = {binding.binding_id: binding for binding in SEAM_BINDINGS}
-    assert bindings["moe"].adapters == (
-        "moe",
-        "moe_deferred",
-        "moe_deferred_finalize",
-    )
-    for binding in SEAM_BINDINGS:
-        adapter_rows = tuple(
-            adapter
-            for adapter in SEAM_ADAPTERS
-            if adapter.binding_id == binding.binding_id
-        )
-        assert tuple(adapter.name for adapter in adapter_rows) == binding.adapters
-        assert {adapter.environment_gate for adapter in adapter_rows} == {
-            binding.environment_gate
-        }
-
-
-def test_seam_bindings_normalize_and_emit_complete_explicit_environment() -> None:
-    selected = normalize_seam_bindings(["collective", "moe"])
-    assert selected == ("collective", "moe")
-    assert seam_binding_environment(selected) == {
-        "CACHEON_COLLECTIVE_SEAM": "1",
-        "CACHEON_DENSE_SEAM": "0",
-        "CACHEON_DP_OUTPUT_PROJECTION_SEAM": "0",
-        "CACHEON_MOE_SEAM": "1",
-        "CACHEON_SPARSE_MLA_SEAM": "0",
-        "CACHEON_INDEXER_SELECT_SEAM": "0",
-    }
-    assert seam_binding_environment(()) == {
-        "CACHEON_COLLECTIVE_SEAM": "0",
-        "CACHEON_DENSE_SEAM": "0",
-        "CACHEON_DP_OUTPUT_PROJECTION_SEAM": "0",
-        "CACHEON_MOE_SEAM": "0",
-        "CACHEON_SPARSE_MLA_SEAM": "0",
-        "CACHEON_INDEXER_SELECT_SEAM": "0",
-    }
-
-
-@pytest.mark.parametrize(
-    ("value", "match"),
-    [
-        ("collective", "array"),
-        ({"collective"}, "array"),
-        (("unknown",), "unknown"),
-        (("moe", "collective"), "sorted"),
-        (("collective", "collective"), "duplicates"),
-        (("collective", 1), "strings"),
-    ],
-)
-def test_seam_bindings_reject_noncanonical_or_open_input(
-    value: object, match: str
-) -> None:
-    with pytest.raises(ValueError, match=match):
-        normalize_seam_bindings(value)
-    with pytest.raises(ValueError, match=match):
-        seam_binding_environment(value)
-
-
-def test_engine_config_binds_seams_in_wire_and_digest() -> None:
-    config = _config(seam_bindings=("collective", "moe"))
-    row = config.to_dict()
-    assert row["seam_bindings"] == ["collective", "moe"]
-    assert EngineSessionConfig.from_dict(row) == config
-    assert config.digest != _config().digest
-
-    row["seam_bindings"] = ("collective",)
-    with pytest.raises(SessionProtocolError, match="array"):
-        EngineSessionConfig.from_dict(row)
-
-
 @pytest.mark.parametrize(
     ("changes", "match"),
     [
@@ -245,10 +157,6 @@ def test_engine_config_binds_seams_in_wire_and_digest() -> None:
         ({"moe_runner_backend": "x\n"}, "moe_runner_backend"),
         ({"engine_kwargs": {"arbitrary": True}}, "unsupported keys"),
         ({"engine_kwargs": {"page_size": False}}, "page_size"),
-        ({"seam_bindings": "collective"}, "array"),
-        ({"seam_bindings": ("moe", "collective")}, "sorted"),
-        ({"seam_bindings": ("collective", "collective")}, "duplicates"),
-        ({"seam_bindings": ("unknown",)}, "unknown"),
     ],
 )
 def test_engine_config_rejects_invalid_and_unreviewed_fields(

@@ -724,7 +724,6 @@ class _CommissionedScreenPlanResolver:
         cell = _scored_cell(self.inputs.workload)
         graph_config = _engine_config(
             self.inputs.engine_template,
-            target.members,
             cell,
             disable_cuda_graph=False,
         )

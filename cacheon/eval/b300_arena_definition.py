@@ -13,14 +13,12 @@ from cacheon.eval.oci_session_protocol import (
     ENGINE_CONFIG_FIELDS,
     EngineSessionConfig,
 )
-from cacheon.seams import SEAM_ADAPTERS
 from cacheon.target_catalog import TargetCatalog
 
 _ARENA_ENGINE_FIELDS = ENGINE_CONFIG_FIELDS - {
     "disable_cuda_graph",
     "max_running_requests",
     "model_path",
-    "seam_bindings",
 }
 _DERIVED_ENGINE_KWARGS = {
     "context_length",
@@ -162,28 +160,12 @@ def hardware_bindings(
     )
 
 
-def _seam_bindings(target_members: tuple[str, ...]) -> tuple[str, ...]:
-    members = set(target_members)
-    return tuple(
-        sorted(
-            {
-                adapter.binding_id
-                for adapter in SEAM_ADAPTERS
-                if adapter.binding_id is not None
-                and members.intersection(adapter.slots)
-            }
-        )
-    )
-
-
 def engine_config(
     template: EngineSessionConfig,
-    target_members: tuple[str, ...],
     cell: WorkloadCell | tuple[WorkloadCell, ...],
     *,
     disable_cuda_graph: bool,
 ) -> EngineSessionConfig:
-    bindings = _seam_bindings(target_members)
     cells = (cell,) if type(cell) is WorkloadCell else tuple(cell)
     if not cells or any(type(row) is not WorkloadCell for row in cells):
         raise B300ScreenDeploymentError("engine workload cells are not exact")
@@ -198,7 +180,6 @@ def engine_config(
         disable_cuda_graph=disable_cuda_graph,
         max_running_requests=max(row.concurrency for row in cells),
         engine_kwargs=kwargs,
-        seam_bindings=bindings,
     )
 
 
@@ -226,7 +207,6 @@ def engine_template(prompt: dict[str, object]) -> EngineSessionConfig:
             model_path=CONTAINER_MODEL_PATH,
             disable_cuda_graph=False,
             max_running_requests=None,
-            seam_bindings=(),
             **row,  # type: ignore[arg-type]
         )
     except (TypeError, ValueError) as exc:

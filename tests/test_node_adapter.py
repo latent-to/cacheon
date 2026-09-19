@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
 from torch import nn
 
-from cacheon import audit
+from cacheon import audit, dispatch
 from cacheon.integrations import sglang_nodes as nodes
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
@@ -318,3 +319,28 @@ def test_a_slot_that_names_no_module_or_overlaps_another_claim_fails_as_the_cand
         nodes.bind(runner, registry)
     assert runner.model.layers[1].mlp.forward == stock_forward
     assert [phase for _, phase in failed] == ["prepare", "prepare"]
+
+
+def test_cuda_graph_detector_supports_current_legacy_and_direct_capture(monkeypatch):
+    current_name = (
+        "sglang.srt.model_executor.runner_backend_utils."
+        "tc_piecewise_cuda_graph"
+    )
+    legacy_name = "sglang.srt.compilation.piecewise_context_manager"
+    current = ModuleType(current_name)
+    legacy = ModuleType(legacy_name)
+    current.is_in_tc_piecewise_cuda_graph = lambda: True
+    legacy.is_in_piecewise_cuda_graph = lambda: False
+    monkeypatch.setitem(sys.modules, current_name, current)
+    monkeypatch.setitem(sys.modules, legacy_name, legacy)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert dispatch._in_cuda_graph()
+
+    current.is_in_tc_piecewise_cuda_graph = lambda: False
+    legacy.is_in_piecewise_cuda_graph = lambda: True
+    assert dispatch._in_cuda_graph()
+
+    legacy.is_in_piecewise_cuda_graph = lambda: False
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    assert dispatch._in_cuda_graph()

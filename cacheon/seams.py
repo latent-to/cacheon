@@ -9,12 +9,9 @@ N-file edit (see the project review). So all three derive from the ONE table her
 adding a seam is a single entry, and the bootstrap watch-list, the install loop, and
 the canary all pick it up.
 
-This is deliberately SEPARATE from ``slots.py``. ``SlotSpec`` is the miner-facing
-contract — frozen and model-agnostic. A seam adapter is version-pinned glue to a
-specific sglang internal that churns on every ``PINNED_SGLANG`` bump. Coupling them
-would tie the stable contract to sglang's internals, the exact inversion of the LLVM
-lesson (freeze the contract, let the adapters churn). The ``slots`` field below is a
-cross-REFERENCE (which slots an adapter serves), not the source of either.
+No row names an operation of the model. Candidate code is served by the one ``nodes``
+row, which binds whatever modules a bundle named; the per-operation rows it replaced
+each pinned one sglang method and churned on every ``PINNED_SGLANG`` bump.
 
 Import-light on purpose (stdlib only): the ``.pth`` bootstrap imports this at
 interpreter startup, before — and without — importing torch or sglang.
@@ -23,8 +20,6 @@ interpreter startup, before — and without — importing torch or sglang.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Mapping
 
 
 @dataclass(frozen=True)
@@ -36,106 +31,18 @@ class SeamAdapter:
     # patch, a bare "function_name" (no dot) for a module-LEVEL function rebind, or
     # "attr:Name" for a (possibly non-callable) module attribute the adapter rebinds.
     chokepoint: str
-    slots: tuple[str, ...]  # the slot(s) this adapter serves (cross-ref into slots.py)
-    # Optional validator protocol binding. Both fields are validator-owned table
-    # metadata and must appear together. Multiple adapters may intentionally share
-    # one binding/gate.
-    binding_id: str | None = None
-    environment_gate: str | None = None
-
-
-@dataclass(frozen=True)
-class SeamBinding:
-    """One validator-owned activation gate for a fixed adapter set.
-
-    Binding identifiers cross the isolated-session protocol; environment variable
-    names never do. Several adapters may share one binding when they implement one
-    semantic product.
-    """
-
-    binding_id: str
-    environment_gate: str
-    adapters: tuple[str, ...]
 
 
 # THE table. Add a seam here and the bootstrap watch-list, the activate() install loop,
 # and the compat canary all pick it up — no parallel list to keep in sync.
 SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
-    SeamAdapter("indexer_select_paged", "sglang.srt.layers.attention.dsa.dsa_indexer", "sglang_indexer_select",
-                "Indexer._get_topk_paged", ("attention.indexer_select",),
-                binding_id="indexer_select", environment_gate="CACHEON_INDEXER_SELECT_SEAM"),
-    SeamAdapter("indexer_select_ragged", "sglang.srt.layers.attention.dsa.dsa_indexer", "sglang_indexer_select",
-                "Indexer._get_topk_ragged", ("attention.indexer_select",),
-                binding_id="indexer_select", environment_gate="CACHEON_INDEXER_SELECT_SEAM"),
-    SeamAdapter("indexer_select_prepare", "sglang.srt.layers.attention.dsa.dsa_indexer", "sglang_indexer_select",
-                "Indexer._fused_q_prepare_and_store", ("attention.indexer_select",),
-                binding_id="indexer_select", environment_gate="CACHEON_INDEXER_SELECT_SEAM"),
-    SeamAdapter("sparse_mla", "sglang.srt.layers.attention.dsa_backend", "sglang_sparse_mla",
-                "DeepseekSparseAttnBackend._forward_trtllm", ("attention.sparse_mla",),
-                binding_id="sparse_mla", environment_gate="CACHEON_SPARSE_MLA_SEAM"),
-    SeamAdapter("layernorm", "sglang.srt.layers.layernorm",
-                "sglang_norm", "RMSNorm.forward_cuda",
-                ("norm.fused_add_rmsnorm", "norm.rmsnorm")),
-    SeamAdapter("dense", "sglang.srt.layers.quantization.unquant",
-                "sglang_dense", "UnquantizedLinearMethod.apply", ("linear.dense",),
-                binding_id="dense", environment_gate="CACHEON_DENSE_SEAM"),
-    SeamAdapter("dense_router", "sglang.srt.models.deepseek_v2",
-                "sglang_dense", "MoEGate.forward", ("linear.dense",),
-                binding_id="dense", environment_gate="CACHEON_DENSE_SEAM"),
-    SeamAdapter("dense_bmm", "sglang.srt.models.deepseek_common.attention_forward_methods.forward_mla",
-                "sglang_dense", "attr:torch", ("linear.dense",),
-                binding_id="dense", environment_gate="CACHEON_DENSE_SEAM"),
-    SeamAdapter("dp_output_bind", "sglang.srt.models.deepseek_v2", "sglang_dp_output",
-                "DeepseekV2DecoderLayer.__init__", ("collective.dp_output_projection_norm",),
-                binding_id="dp_output", environment_gate="CACHEON_DP_OUTPUT_PROJECTION_SEAM"),
-    SeamAdapter("dp_output_scope", "sglang.srt.models.deepseek_v2", "sglang_dp_output",
-                "DeepseekV2DecoderLayer.forward", ("collective.dp_output_projection_norm",),
-                binding_id="dp_output", environment_gate="CACHEON_DP_OUTPUT_PROJECTION_SEAM"),
-    SeamAdapter("dp_output_prepare", "sglang.srt.layers.communicator", "sglang_dp_output",
-                "LayerCommunicator.prepare_mlp", ("collective.dp_output_projection_norm",),
-                binding_id="dp_output", environment_gate="CACHEON_DP_OUTPUT_PROJECTION_SEAM"),
-    SeamAdapter("dp_output_quant", "sglang.srt.layers.moe.moe_runner.flashinfer_trtllm", "sglang_dp_output",
-                "fused_experts_none_to_flashinfer_trtllm_fp4", ("collective.dp_output_projection_norm",),
-                binding_id="dp_output", environment_gate="CACHEON_DP_OUTPUT_PROJECTION_SEAM"),
-    SeamAdapter("moe", "sglang.srt.layers.moe.fused_moe_triton.layer",
-                "sglang_moe", "FusedMoE.forward_impl",
-                ("moe.fused_experts", "moe.fused_routed_experts"),
-                binding_id="moe", environment_gate="CACHEON_MOE_SEAM"),
-    SeamAdapter("moe_deferred", "sglang.srt.layers.moe.fused_moe_triton.layer",
-                "sglang_moe", "FusedMoE.forward_deferred_finalize",
-                ("moe.fused_routed_experts",),
-                binding_id="moe", environment_gate="CACHEON_MOE_SEAM"),
-    SeamAdapter("moe_deferred_finalize",
-                "sglang.srt.layers.moe.moe_runner.flashinfer_trtllm",
-                "sglang_moe", "finalize_flashinfer_trtllm_deferred_output",
-                ("moe.fused_routed_experts",),
-                binding_id="moe", environment_gate="CACHEON_MOE_SEAM"),
-    SeamAdapter("collective", "sglang.srt.distributed.parallel_state",
-                "sglang_allreduce", "GroupCoordinator.all_reduce", ("collective.all_reduce",),
-                binding_id="collective", environment_gate="CACHEON_COLLECTIVE_SEAM"),
-    SeamAdapter("collective_all_reduce_inplace",
-                "sglang.srt.distributed.parallel_state", "sglang_allreduce",
-                "GroupCoordinator._all_reduce_in_place", ("collective.all_reduce",),
-                binding_id="collective", environment_gate="CACHEON_COLLECTIVE_SEAM"),
-    SeamAdapter("collective_all_reduce_outplace",
-                "sglang.srt.distributed.parallel_state", "sglang_allreduce",
-                "GroupCoordinator._all_reduce_out_place", ("collective.all_reduce",),
-                binding_id="collective", environment_gate="CACHEON_COLLECTIVE_SEAM"),
-    SeamAdapter("collective_all_gather", "sglang.srt.distributed.parallel_state",
-                "sglang_allreduce", "GroupCoordinator._all_gather_into_tensor",
-                ("collective.all_gather_into_tensor",), binding_id="collective",
-                environment_gate="CACHEON_COLLECTIVE_SEAM"),
-    SeamAdapter("collective_reduce_scatter", "sglang.srt.distributed.parallel_state",
-                "sglang_allreduce", "GroupCoordinator._reduce_scatter_tensor",
-                ("collective.reduce_scatter_tensor",), binding_id="collective",
-                environment_gate="CACHEON_COLLECTIVE_SEAM"),
     # NOT a slot seam: the candidate-bundle load gate. sglang spawns scheduler ranks
     # AND a detokenizer (output-path!) through the same bootstrap, and the detokenizer
     # imports watched modules too — so seam.activate() never loads miner code; this
     # adapter wraps the scheduler spawn entry so the load happens only in positively-
     # identified scheduler execution processes (active receipts == tp_size exactly).
     SeamAdapter("scheduler_gate", "sglang.srt.managers.scheduler",
-                "sglang_scheduler_gate", "run_scheduler_process", ()),
+                "sglang_scheduler_gate", "run_scheduler_process"),
     # NOT a slot seam: the resident-SCREEN-tier hot-swap hook. Inert unless the
     # validator sets CACHEON_RESIDENT_SWAP (a control directory) — which only the
     # persistent screening engine does, never qualification/crown launches. BEFORE
@@ -143,118 +50,14 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     # the recapture warmup JIT-compiles the new kernel and the recorded graphs bake
     # it in. See cacheon/integrations/sglang_resident_swap.py.
     SeamAdapter("resident_swap", "sglang.srt.model_executor.model_runner",
-                "sglang_resident_swap", "ModelRunner.init_decode_cuda_graph", ()),
-    # NOT a fixed-slot seam: the generic node binder. After the model loads it binds
-    # every registered slot that is a node address (a name outside cacheon.slots) to
-    # that module of the served model. Which addresses an arena opens is decided at
-    # admission by the target catalog, not here.
+                "sglang_resident_swap", "ModelRunner.init_decode_cuda_graph"),
+    # The generic node binder. After the model loads it binds every registered slot
+    # that is a node address (a name outside cacheon.slots) to that module of the
+    # served model. Which addresses an arena opens is decided at admission by the
+    # target catalog, not here.
     SeamAdapter("nodes", "sglang.srt.model_executor.model_runner",
-                "sglang_nodes", "ModelRunner.load_model", ()),
+                "sglang_nodes", "ModelRunner.load_model"),
 )
-
-
-def _derive_seam_bindings(
-    adapters: tuple[SeamAdapter, ...],
-) -> tuple[SeamBinding, ...]:
-    """Derive the closed protocol vocabulary from the adapter source of truth."""
-
-    adapter_names: set[str] = set()
-    grouped: dict[str, tuple[str, list[str]]] = {}
-    gate_owners: dict[str, str] = {}
-    for adapter in adapters:
-        if adapter.name in adapter_names:
-            raise RuntimeError(f"duplicate seam adapter name {adapter.name!r}")
-        adapter_names.add(adapter.name)
-        binding_id, gate = adapter.binding_id, adapter.environment_gate
-        if (binding_id is None) != (gate is None):
-            raise RuntimeError(
-                f"seam adapter {adapter.name!r} must declare binding and gate together"
-            )
-        if binding_id is None:
-            continue
-        if (
-            type(binding_id) is not str
-            or not binding_id
-            or binding_id != binding_id.lower()
-            or not binding_id.replace("_", "").isalnum()
-        ):
-            raise RuntimeError(f"seam adapter {adapter.name!r} has invalid binding id")
-        if (
-            type(gate) is not str
-            or not gate.startswith("CACHEON_")
-            or not gate.endswith("_SEAM")
-            or not gate.replace("_", "").isalnum()
-            or gate != gate.upper()
-        ):
-            raise RuntimeError(f"seam adapter {adapter.name!r} has invalid fixed gate")
-        owner = gate_owners.setdefault(gate, binding_id)
-        if owner != binding_id:
-            raise RuntimeError(
-                f"seam environment gate {gate!r} belongs to multiple bindings"
-            )
-        existing = grouped.get(binding_id)
-        if existing is None:
-            grouped[binding_id] = (gate, [adapter.name])
-        else:
-            existing_gate, names = existing
-            if existing_gate != gate:
-                raise RuntimeError(
-                    f"seam binding {binding_id!r} declares inconsistent gates"
-                )
-            names.append(adapter.name)
-    return tuple(
-        SeamBinding(binding_id, grouped[binding_id][0], tuple(grouped[binding_id][1]))
-        for binding_id in sorted(grouped)
-    )
-
-
-# Closed protocol vocabulary for validator-selected live seam activation, derived
-# from the same rows that own import watching/install/compat. Callers can select only
-# these public IDs; process environment names and values never cross the wire.
-SEAM_BINDINGS = _derive_seam_bindings(SEAM_ADAPTERS)
-SEAM_BINDING_ENV_GATES: Mapping[str, str] = MappingProxyType(
-    {binding.binding_id: binding.environment_gate for binding in SEAM_BINDINGS}
-)
-
-
-def normalize_seam_bindings(value: object) -> tuple[str, ...]:
-    """Validate and freeze a canonical sequence of closed binding identifiers.
-
-    JSON arrays arrive as lists while trusted construction normally uses tuples, so
-    those are the only accepted containers.  In particular, a bare string is never
-    treated as an iterable of identifiers.  Duplicates and non-canonical order fail
-    rather than being repaired, keeping the same digest on every validator.
-    """
-
-    if not isinstance(value, (tuple, list)):
-        raise ValueError("seam_bindings must be an array of binding identifiers")
-    bindings = tuple(value)
-    if any(type(binding) is not str for binding in bindings):
-        raise ValueError("seam_bindings must contain only strings")
-    if len(set(bindings)) != len(bindings):
-        raise ValueError("seam_bindings must not contain duplicates")
-    unknown = sorted(set(bindings) - set(SEAM_BINDING_ENV_GATES))
-    if unknown:
-        raise ValueError(f"seam_bindings contains unknown identifiers: {unknown!r}")
-    if bindings != tuple(sorted(bindings)):
-        raise ValueError("seam_bindings must be sorted in canonical order")
-    return bindings
-
-
-def seam_binding_environment(value: object) -> dict[str, str]:
-    """Return the complete fixed seam environment for canonical bindings.
-
-    Every known gate is emitted as an explicit ``"0"`` or ``"1"`` so inherited
-    process state cannot activate a seam omitted by the trusted session config.
-    """
-
-    enabled = set(normalize_seam_bindings(value))
-    return {
-        binding.environment_gate: (
-            "1" if binding.binding_id in enabled else "0"
-        )
-        for binding in SEAM_BINDINGS
-    }
 
 # The modules whose import should trigger seam installation (consumed by bootstrap).
 TARGET_MODULES = frozenset(a.target_module for a in SEAM_ADAPTERS)

@@ -6,14 +6,11 @@ captured stock baseline on pre-call clones and compare under the slot's verify
 tolerances; per-rank rolling receipts feed the eval driver's gate.
 """
 
-from types import SimpleNamespace
 
 import pytest
 import torch
 
 from cacheon import audit, receipts
-from cacheon.dispatch import make_rmsnorm_dispatcher
-from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
 SLOT = "norm.rmsnorm"
 
@@ -321,84 +318,6 @@ def test_gate_requires_minimum_calls_on_every_slot_rank_receipt():
         expected_member_count=2,
     )
     assert decision == "NO_DECISION" and "per-slot/member coverage" in desc
-
-
-# ---- dispatcher wiring (rmsnorm: the pure-op case) -------------------------------
-
-
-def _rmsnorm_ref(x, weight, eps):
-    var = x.float().pow(2).mean(dim=-1, keepdim=True)
-    return (x.float() * torch.rsqrt(var + eps) * weight.float()).to(x.dtype)
-
-
-def _module():
-    return SimpleNamespace(variance_epsilon=1e-6,
-                           weight=SimpleNamespace(data=torch.ones(64)))
-
-
-def _baseline_forward(self, x, residual=None, post_residual_addition=None):
-    if residual is None:
-        return _rmsnorm_ref(x, self.weight.data, self.variance_epsilon)
-    added = x + residual
-    return _rmsnorm_ref(added, self.weight.data, self.variance_epsilon), added
-
-
-def _reg(entry):
-    reg = KernelRegistry()
-    reg.register(KernelImpl(slot=SLOT, bundle_id="t", entry=entry,
-                            eligibility=Eligibility(dtypes=frozenset({"float32"}))))
-    reg.enable()
-    return reg
-
-
-def test_rmsnorm_dispatcher_faithful_audits_clean(monkeypatch):
-    _arm(monkeypatch)
-
-    def entry(x, weight, out, eps):
-        out.copy_(_rmsnorm_ref(x, weight, eps))
-
-    d = make_rmsnorm_dispatcher(_baseline_forward, registry=_reg(entry))
-    d(_module(), torch.randn(8, 64))
-    s = audit._stats[SLOT]
-    assert s["n"] == 1 and s["violations"] == 0
-
-
-def test_rmsnorm_dispatcher_garbage_audited_as_violation(monkeypatch):
-    _arm(monkeypatch)
-
-    def entry(x, weight, out, eps):
-        out.zero_()  # wrong function
-
-    d = make_rmsnorm_dispatcher(_baseline_forward, registry=_reg(entry))
-    d(_module(), torch.randn(8, 64))
-    s = audit._stats[SLOT]
-    assert s["n"] == 1 and s["violations"] == 1
-
-
-def test_rmsnorm_dispatcher_fused_path_audits_both_outputs(monkeypatch):
-    _arm(monkeypatch)
-
-    def entry(x, weight, out, eps):
-        out.copy_(_rmsnorm_ref(x, weight, eps))
-
-    d = make_rmsnorm_dispatcher(_baseline_forward, registry=_reg(entry))
-    x, res = torch.randn(8, 64), torch.randn(8, 64)
-    out, new_res = d(_module(), x, res)
-    s = audit._stats[SLOT]
-    assert s["n"] == 1 and s["violations"] == 0
-    assert torch.equal(new_res, x + res)
-
-
-def test_rmsnorm_dispatcher_no_audit_without_env():
-    calls = {"n": 0}
-
-    def entry(x, weight, out, eps):
-        calls["n"] += 1
-        out.copy_(_rmsnorm_ref(x, weight, eps))
-
-    d = make_rmsnorm_dispatcher(_baseline_forward, registry=_reg(entry))
-    d(_module(), torch.randn(8, 64))
-    assert calls["n"] == 1 and SLOT not in audit._stats
 
 
 # ---- topk_overlap slots (the generic selection-audit mode; no registered slot

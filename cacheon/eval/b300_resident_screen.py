@@ -50,7 +50,7 @@ def _resident_factory(
                 "resident service manifest differs from commission"
             )
         snapshot = catalog.snapshot()
-        target_members, _context, _stock, tree = _commissioned_stock_authority(
+        _members, _context, _stock, tree = _commissioned_stock_authority(
             inputs,
             manifest,
             catalog,
@@ -79,7 +79,6 @@ def _resident_factory(
         )
         config = _engine_config(
             inputs.engine_template,
-            target_members,
             _scored_cell(inputs.workload),
             disable_cuda_graph=False,
         )

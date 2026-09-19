@@ -20,7 +20,6 @@ from cacheon.eval.resident_execution_evidence import (
     UNOBSERVED,
     ResidentExecutionEvidence,
 )
-from cacheon.seams import normalize_seam_bindings
 from cacheon.stack_identity import canonical_digest
 from cacheon._strict import NODE_ADDRESS, require_digest
 
@@ -79,7 +78,7 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
 ENGINE_CONFIG_FIELDS = frozenset("""
 attention_backend deterministic disable_cuda_graph disable_custom_all_reduce dtype
 engine_kwargs log_level max_running_requests mem_fraction_static model_path
-moe_runner_backend seam_bindings tp_size
+moe_runner_backend tp_size
 """.split())
 
 PREFLIGHT_FACT_FIELDS = frozenset("""
@@ -471,7 +470,6 @@ class EngineSessionConfig:
     moe_runner_backend: str | None
     disable_custom_all_reduce: bool
     engine_kwargs: Mapping[str, object] = field(default_factory=dict)
-    seam_bindings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.model_path != CONTAINER_MODEL_PATH:
@@ -512,16 +510,10 @@ class EngineSessionConfig:
         set_value(self, "engine_kwargs", MappingProxyType(
             _validate_engine_kwargs(self.engine_kwargs)
         ))
-        try:
-            bindings = normalize_seam_bindings(self.seam_bindings)
-        except ValueError as exc:
-            raise SessionProtocolError(str(exc)) from exc
-        set_value(self, "seam_bindings", bindings)
 
     def to_dict(self) -> dict[str, object]:
         row = {name: getattr(self, name) for name in ENGINE_CONFIG_FIELDS}
         row["engine_kwargs"] = dict(self.engine_kwargs)
-        row["seam_bindings"] = list(self.seam_bindings)
         return row
 
     @property
@@ -535,12 +527,7 @@ class EngineSessionConfig:
     @classmethod
     def from_dict(cls, value: object) -> "EngineSessionConfig":
         row = _exact_object(value, fields=ENGINE_CONFIG_FIELDS, label="engine_config")
-        values = dict(row)
-        bindings = values.get("seam_bindings")
-        if not isinstance(bindings, list):
-            raise SessionProtocolError("engine_config.seam_bindings must be an array")
-        values["seam_bindings"] = tuple(bindings)
-        return cls(**values)  # type: ignore[arg-type]
+        return cls(**dict(row))  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)

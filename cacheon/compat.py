@@ -64,8 +64,7 @@ def run_checks(expected_sglang_version: str = PINNED_SGLANG) -> list[Check]:
 
     # Table-driven baseline: every adapter in the single seam table (cacheon/seams.py)
     # must have its target module import and its Class.method chokepoint present. Adding
-    # a seam to that table auto-adds this canary (no separate edit here). The bespoke
-    # signature checks below enrich these for the known seams.
+    # a seam to that table auto-adds this canary (no separate edit here).
     import importlib
 
     from cacheon.seams import SEAM_ADAPTERS
@@ -79,78 +78,15 @@ def run_checks(expected_sglang_version: str = PINNED_SGLANG) -> list[Check]:
         except Exception as exc:  # noqa: BLE001
             add(f"seam table: {adapter.name} ({adapter.chokepoint})", False, repr(exc))
 
+    # The node check's honest twin reroutes every fused op of a node onto its
+    # ``forward_native``; without this base the twin is stock and measures no noise.
     try:
         from sglang.kernels.fused_op import BaseFusedOp
-        fused_op_base = BaseFusedOp
-        add("BaseFusedOp base present", True)
+
+        ok = hasattr(BaseFusedOp, "forward_native")
+        add("BaseFusedOp.forward_native present", ok)
     except Exception as exc:  # noqa: BLE001
-        fused_op_base = None
-        add("BaseFusedOp base present", False, repr(exc))
-
-    # norm seam (RMSNorm slot)
-    try:
-        from sglang.srt.layers.layernorm import RMSNorm
-
-        params = list(inspect.signature(RMSNorm.forward_cuda).parameters)
-        ok = (
-            hasattr(RMSNorm, "forward_cuda")
-            and {"residual", "quant_linear"} <= set(params)
-        )
-        if fused_op_base is not None:
-            ok = ok and issubclass(RMSNorm, fused_op_base)
-        add("seam: RMSNorm (layernorm)", ok, f"forward_cuda params={tuple(params)}")
-    except Exception as exc:  # noqa: BLE001
-        add("seam: RMSNorm (layernorm)", False, repr(exc))
-
-    try:
-        from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
-
-        apply_params = set(inspect.signature(UnquantizedLinearMethod.apply).parameters)
-        into_params = set(
-            inspect.signature(UnquantizedLinearMethod.apply_into).parameters
-        )
-        ok = {"layer", "x", "bias"} <= apply_params and {
-            "layer", "x", "output", "bias"
-        } <= into_params
-        add(
-            "seam: UnquantizedLinearMethod (linear.dense)",
-            ok,
-            f"apply params={tuple(sorted(apply_params))}; "
-            f"apply_into params={tuple(sorted(into_params))}",
-        )
-    except Exception as exc:  # noqa: BLE001
-        add("seam: UnquantizedLinearMethod (linear.dense)", False, repr(exc))
-
-    # MoE seams. Ordinary runners reach forward_impl; FlashInfer TRT-LLM skips it
-    # through forward_deferred_finalize when it fuses routed finalize + shared add.
-    try:
-        from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
-
-        params = set(inspect.signature(FusedMoE.forward_impl).parameters)
-        deferred = set(
-            inspect.signature(FusedMoE.forward_deferred_finalize).parameters
-        )
-        ok = hasattr(FusedMoE, "forward_impl") and {
-            "hidden_states", "topk_output", "pre_quant_input"
-        } <= params and {"hidden_states", "topk_output"} <= deferred
-        add(
-            "seam: FusedMoE routed paths (moe.fused_experts)",
-            ok,
-            f"forward_impl params={tuple(sorted(params))}; "
-            f"deferred params={tuple(sorted(deferred))}",
-        )
-    except Exception as exc:  # noqa: BLE001
-        add("seam: FusedMoE.forward_impl (moe.fused_experts)", False, repr(exc))
-
-    # collective seam (the TP-comms chokepoint: GroupCoordinator.all_reduce)
-    try:
-        from sglang.srt.distributed.parallel_state import GroupCoordinator
-
-        params = set(inspect.signature(GroupCoordinator.all_reduce).parameters)
-        ok = hasattr(GroupCoordinator, "all_reduce") and "input_" in params
-        add("seam: GroupCoordinator.all_reduce (collective)", ok, f"all_reduce params={tuple(sorted(params))}")
-    except Exception as exc:  # noqa: BLE001
-        add("seam: GroupCoordinator.all_reduce (collective)", False, repr(exc))
+        add("BaseFusedOp.forward_native present", False, repr(exc))
 
     # Engine logprob API (we read top-k logprobs for KL)
     try:

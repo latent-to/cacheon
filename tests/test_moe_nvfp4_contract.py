@@ -6,8 +6,6 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import cacheon.dispatch as dispatch  # noqa: E402
-from cacheon.dispatch import make_moe_dispatcher  # noqa: E402
 from cacheon.moe_nvfp4_contract import (  # noqa: E402
     NVFP4_GATE_UP_LAYOUT,
     NVFP4_PREPARE_TAG,
@@ -15,7 +13,7 @@ from cacheon.moe_nvfp4_contract import (  # noqa: E402
     prepare_args_from_inputs,
     prepare_args_from_layer,
 )
-from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
+from cacheon.registry import Eligibility  # noqa: E402
 from cacheon.sandbox import load_entry  # noqa: E402
 from cacheon.slots import Activation, _moe_reference, slot_for_model  # noqa: E402
 from cacheon.verify import verify_entry  # noqa: E402
@@ -212,39 +210,6 @@ def test_m3_moe_profile_uses_live_shape_topology_and_nvfp4_prepare():
     assert (view.moe_tp_size, view.moe_ep_size, view.num_fused_shared_experts) == (
         4, 1, 1,
     )
-
-
-@pytest.mark.parametrize(
-    ("quant", "complete", "routed"),
-    ((frozenset(), True, False),
-     (frozenset({"nvfp4"}), False, False),
-     (frozenset({"nvfp4"}), True, True)),
-)
-def test_live_dispatch_selects_only_matching_finalized_nvfp4(
-    monkeypatch, quant, complete, routed
-):
-    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", lambda: 1)
-    slot = slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4")
-    inputs = slot.make_inputs(**SHAPE, dtype=torch.float32, device="cpu", seed=5)
-    prepare, entry, prepared = _candidate()
-    registry = KernelRegistry()
-    registry.register(KernelImpl(
-        slot="moe.fused_experts", bundle_id="candidate", entry=entry,
-        prepare=prepare, eligibility=Eligibility(
-            dtypes=frozenset({"float32"}), quant=quant,
-        ),
-    ))
-    registry.enable()
-    completed, stock = [], object()
-    monkeypatch.setattr(dispatch._receipts, "completed", completed.append)
-    wrapped = make_moe_dispatcher(lambda *_: stock, registry=registry,
-                                  slots=("moe.fused_experts",))
-    topk = SimpleNamespace(topk_ids=inputs["topk_ids"],
-                           topk_weights=inputs["topk_weights"])
-    output = wrapped(_live_layer(inputs, complete=complete), inputs["x"], topk)
-    assert (output is not stock) is routed
-    assert bool(prepared) is routed and bool(completed) is routed
 
 
 def test_explicit_dense_quant_remains_applicable():

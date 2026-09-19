@@ -241,7 +241,6 @@ def build_session_environment(
     receipt_dir: str,
     audit_policy: object,
     install_seams: bool,
-    gate_environment: dict[str, str],
 ) -> dict[str, str]:
     """The environment the in-container engine and its TP ranks inherit.
 
@@ -270,7 +269,6 @@ def build_session_environment(
         # bundle and have nothing to wrap, so it is inert there regardless.
         "CACHEON_KERNEL_TRACE": "1" if audited else "",
         "SGLANG_PLUGINS": "cacheon" if install_seams else "",
-        **gate_environment,
     }
 
 
@@ -476,11 +474,6 @@ def isolated_engine_session(
 
         seam.mark_driver()
         receipts = receipt_module
-    from cacheon.seams import seam_binding_environment
-
-    gate_environment = seam_binding_environment(
-        getattr(cfg, "seam_bindings", ()) if install_seams else ()
-    )
     receipt_dir = tempfile.mkdtemp(prefix="cacheon_receipts_") if active else ""
     try:
         session_environment = build_session_environment(
@@ -490,7 +483,6 @@ def isolated_engine_session(
             receipt_dir=receipt_dir,
             audit_policy=audit_policy,
             install_seams=install_seams,
-            gate_environment=gate_environment,
         )
         with _environment(**session_environment):
             import sglang as sgl

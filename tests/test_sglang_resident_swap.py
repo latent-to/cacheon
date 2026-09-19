@@ -107,58 +107,6 @@ def test_swap_evicts_prepared_weights_before_success_ack(monkeypatch, tmp_path, 
     assert ack["ok"] is True and ack["evicted_prepared_entries"] == 2
 
 
-@pytest.mark.parametrize("slot", ["moe.fused_experts", "moe.fused_routed_experts"])
-def test_same_bundle_reuses_prepare_through_stock_but_new_bundle_evicts(
-    monkeypatch, tmp_path, slot,
-):
-    import cacheon.seam as seam
-    import cacheon.manifest as manifest
-    from cacheon.dispatch import _moe_prepared
-    from cacheon.registry import KernelImpl, KernelRegistry
-    from cacheon.slots import get_slot
-    from dataclasses import replace
-
-    real_swap = seam.swap_resident_bundle
-    reg = KernelRegistry()
-    loads, prepares, captured = [], [], []
-    scheduler, layer, _events = _runtime(monkeypatch, tmp_path)
-    monkeypatch.setattr(seam, "swap_resident_bundle", real_swap)
-    monkeypatch.setattr(seam, "_bundle_loaded", False)
-    monkeypatch.setattr(swap, "REGISTRY", reg)
-    monkeypatch.setattr("cacheon.registry.REGISTRY", reg)
-    monkeypatch.setattr(manifest, "load_manifest", lambda _: SimpleNamespace(ops=()))
-    spec = replace(get_slot(slot), prepare_from_layer=lambda _: ())
-    monkeypatch.setattr("cacheon.slots.get_slot", lambda _: spec)
-    monkeypatch.setenv("CACHEON_ACTIVE", "0")
-    monkeypatch.delenv("CACHEON_BUNDLE_PATH", raising=False)
-
-    def load(bundle):
-        loads.append(bundle)
-
-        def prepare():
-            prepares.append(bundle)
-            return object()
-
-        reg.register(KernelImpl(slot, bundle, lambda *_: None, prepare))
-
-    monkeypatch.setattr(seam, "_load_bundle_into_registry", load)
-    for generation, bundle in enumerate(("a", None, "a", "b", None, "b"), 1):
-        (tmp_path / "command.json").write_text(json.dumps({"bundle": bundle, "generation": generation}))
-        assert scheduler.flush_cache()
-        ack = json.loads((tmp_path / "ack.rank0.json").read_text())
-        assert ack["ok"] and ack["slots"] == ([slot] if bundle else [])
-        assert reg.active == (bundle is not None)
-        if bundle:
-            captured.append(_moe_prepared(layer, reg.variants(slot)[0], slot))
-        else:
-            assert layer._cacheon_moe_prepared_by_impl
-        if bundle == "b":
-            assert len(layer._cacheon_moe_prepared_by_impl) == 1
-    assert loads == prepares == ["a", "b"]
-    assert captured[0] is captured[1] and captured[2] is captured[3]
-    assert captured[0] is not captured[2]
-
-
 def test_recapture_error_is_returned_immediately_in_ack(monkeypatch, tmp_path):
     scheduler, _layer, _events = _runtime(
         monkeypatch, tmp_path, recapture_error=RuntimeError("CUDA out of memory")
