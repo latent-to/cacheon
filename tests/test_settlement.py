@@ -359,7 +359,7 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     # Epoch 2026-09-05 retired artifact-provider registration and added sparse MLA.
     # Epoch 2026-09-06 widens families and makes sparse attention atomic.
     # Epoch 2026-09-16 adds fused DP output projection with explicit displacement.
-    # Epoch 2026-09-19 retired both reduce-owning targets and the conflicts table.
+    # Epoch 2026-09-19 retired both reduce-owning targets and the conflicts table; added forward_pass.
     # Historical records are unaffected: they embed their own catalog snapshot.
     catalog = default_target_catalog()
     candidate = _candidate(
@@ -368,10 +368,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "50930bdc6b19c14885eee4ced26eff85033556ca6197f524063fe954b296901f"
+        "b54b8ad5364ad5e5dbb4948a1d01edb6161733b70128c6710c45667afac452ee"
     )
     assert candidate.digest == (
-        "afa447fffb048d0e3e3c5713fc82258b4f51e6e6fe6ae82329aceb43eeee17af"
+        "b594423086dad74d0a2ca824ffef5ed20179effb03ef1930a667d127829cd2e5"
     )
 
 

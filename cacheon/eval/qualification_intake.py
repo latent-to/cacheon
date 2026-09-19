@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
-from cacheon._strict import require_digest, require_identifier, require_int
+from cacheon._strict import NODE_ADDRESS, require_digest, require_identifier, require_int
 
 if TYPE_CHECKING:
     from cacheon.settlement import SettlementQualification
@@ -128,7 +128,7 @@ class QualificationReservation:
         if (
             not members
             or members != tuple(sorted(set(members)))
-            or any(_identifier(member, "target member") != member for member in members)
+            or not all(isinstance(m, str) and NODE_ADDRESS.fullmatch(m) for m in members)
         ):
             raise QualificationIntakeError("reservation target members are not canonical")
         object.__setattr__(self, "target_members", members)

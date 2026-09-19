@@ -311,9 +311,12 @@ candidate's. Binding happens once, after `ModelRunner.load_model`, which is earl
 enough for the prefill and decode CUDA graph runners to capture the bound
 `forward` at every width.
 
-The target catalog does not yet register a node target, so no arena admits a
-node-address bundle. The check itself separates honest from wrong at every width
-from one activation to the whole forward pass; the runs are in
+A node-address bundle resolves to the
+[`forward_pass` target](../reference/target-catalog.md#registered-targets), and
+its reservation carries the addresses it declared. The resident hot-swap screen
+refuses node bundles, because a swap never re-runs the hook that binds them. The
+check separates honest from wrong at every width from one activation to the whole
+forward pass; the runs are in
 [Qwen H100 node slots](../results/qwen-h100-node-slots.md).
 
 ## Escape hatches

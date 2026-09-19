@@ -225,6 +225,13 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
             raise RuntimeError(
                 "engine-setup bundles are not swappable in the screen tier"
             )
+        from cacheon.target_catalog import SINGLETON_TARGET_IDS
+
+        if any(op.slot not in SINGLETON_TARGET_IDS for op in manifest.ops):
+            # sglang_nodes.bind runs only inside ModelRunner.load_model.
+            raise RuntimeError(
+                "node-address bundles are not swappable in the screen tier"
+            )
         os.environ["CACHEON_BUNDLE_PATH"] = bundle
         os.environ["CACHEON_ACTIVE"] = "1"
         result["slots"] = _enable_loaded_bundle(bundle, reuse=reuse)

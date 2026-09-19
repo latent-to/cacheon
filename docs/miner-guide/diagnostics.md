@@ -66,6 +66,8 @@ Common failures and fixes:
 | unsafe/missing path | absolute path, traversal, symlink, or undeclared file | make every declaration bundle-relative and source-only |
 | competition mode mismatch | `slot`/`atomic` assertion disagrees with catalog | select the exact registered target and mode |
 | target members differ | op rows do not implement the complete registered delta | use the exact singleton member or all atomic members |
+| `node addresses must sit under ...` | a node-address row names a module outside the roots, is malformed, or shares the bundle with a registered slot id | name modules under `model` or `logits_processor` only; `*` stands for one whole segment |
+| `... overlap; claim the wider node alone` | two rows of one bundle name a node and a node inside it | keep the wider address and drop the narrower one |
 | feature not allowed | `setup`, dependency patch, rebuild, override, CUDA source, or unknown extra is outside policy | remove it or use a target/lane that explicitly permits it |
 | incomplete feature evidence | intake could not independently observe the rebuild feature set | use only registered rebuild declarations and complete source inventory |
 | duplicate slot requires variants | repeated rows omit explicit unique `variant` | name every variant |

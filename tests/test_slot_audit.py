@@ -119,11 +119,22 @@ def test_a_node_address_is_graded_by_its_adapter_and_recorded_as_units(monkeypat
     _arm(monkeypatch)
     x = torch.randn(4, 8)
     audit.record("model.layers.*.mlp", (x,), (x,))
-    audit.record_fraction("model.layers.*.mlp", 1.0, 0.9, "stock_twin")
-    audit.record_fraction("model.layers.*.mlp", 0.5, 0.9, "stock_twin")
+    from cacheon.eval.oci_session_protocol import AuditReceiptFacts, SlotAuditControl
+    from cacheon.integrations.sglang_nodes import _MODE
+
+    audit.record_fraction("model.layers.*.mlp", 1.0, 0.9, _MODE)
+    audit.record_fraction("model.layers.*.mlp", 0.5, 0.9, _MODE)
     stats = audit._stats["model.layers.*.mlp"]
     assert (stats["n"], stats["violations"], stats["compare_errors"]) == (2, 1, 1)
-    assert (stats["worst_frac"], stats["min_ratio"], stats["mode"]) == (0.5, 0.9, "stock_twin")
+    assert (stats["worst_frac"], stats["min_ratio"]) == (0.5, 0.9)
+    # The adapter's own mode name and a starred slot were each refused by the wire
+    # protocol, which would have turned every node verdict into an infrastructure error.
+    facts = AuditReceiptFacts(
+        "model.layers.*.mlp", stats["n"], stats["violations"], 0, stats["compare_errors"],
+        stats["worst_frac"], stats["min_ratio"], stats["mode"], 1, 0, 1,
+    )
+    assert facts.mode == "matched_ratio"
+    assert SlotAuditControl(125_000, 32, ("logits_processor", "model.layers.*.mlp"), 1)
 
 
 def test_run_baseline_error_is_a_refusal_not_a_crash_or_compare_error(monkeypatch):

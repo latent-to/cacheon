@@ -18,7 +18,7 @@ from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 def test_bundle_declares_preparation_and_reviewed_native_build():
     from cacheon.manifest import load_manifest
     from cacheon.rebuild import parse_rebuild_plan
-    from cacheon.target_catalog import resolve_intake_target, FEATURE_REBUILD_BUILD_CUDA_EXT
+    from cacheon.target_catalog import default_target_catalog, FEATURE_REBUILD_BUILD_CUDA_EXT
     from cacheon.slots import get_slot
 
     root = Path(__file__).resolve().parents[1] / "bundles/dp_output_projection"
@@ -26,7 +26,9 @@ def test_bundle_declares_preparation_and_reviewed_native_build():
     assert manifest.ops[0].prepare == get_slot(SLOT).prepare == "prepare"
     assert manifest.ops[0].cuda_sources == ("kernels/dp_projection_native.cu",)
     assert parse_rebuild_plan(root).steps[0].patcher_id == "cacheon.build-cuda-ext.v1"
-    resolved = resolve_intake_target(manifest, observed_features={FEATURE_REBUILD_BUILD_CUDA_EXT})
+    resolved = default_target_catalog().resolve_intake(
+        manifest, observed_features={FEATURE_REBUILD_BUILD_CUDA_EXT}
+    )
     assert resolved.target_id == SLOT
     from cacheon.chain.reference_copy_policy import reference_copy_match, library_copy_match
     from cacheon.copy_fingerprint import fingerprint_submitted_delta

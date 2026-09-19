@@ -22,7 +22,7 @@ from cacheon.eval.resident_execution_evidence import (
 )
 from cacheon.seams import normalize_seam_bindings
 from cacheon.stack_identity import canonical_digest
-from cacheon._strict import require_digest
+from cacheon._strict import NODE_ADDRESS, require_digest
 
 
 SESSION_SCHEMA = "cacheon-isolated-engine-session-v1"
@@ -129,10 +129,10 @@ class SlotAuditControl:
             not slots
             or len(slots) > MAX_AUDIT_RECEIPTS
             or slots != tuple(sorted(set(slots)))
-            or any(_TOKEN.fullmatch(slot) is None for slot in slots)
+            or any(NODE_ADDRESS.fullmatch(slot) is None for slot in slots)  # never widen _TOKEN
         ):
             raise SessionProtocolError(
-                "audit expected_slots must be a nonempty sorted unique token array"
+                "audit expected_slots must be a nonempty sorted unique slot array"
             )
         object.__setattr__(self, "expected_slots", slots)
         object.__setattr__(
@@ -266,7 +266,7 @@ class AuditReceiptFacts:
     world_size: int
 
     def __post_init__(self) -> None:
-        if not isinstance(self.slot, str) or _TOKEN.fullmatch(self.slot) is None:
+        if not isinstance(self.slot, str) or NODE_ADDRESS.fullmatch(self.slot) is None:
             raise SessionProtocolError("audit receipt slot is invalid")
         for name in ("n", "violations", "baseline_refused", "compare_errors"):
             object.__setattr__(

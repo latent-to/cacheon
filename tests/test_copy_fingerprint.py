@@ -285,6 +285,29 @@ def test_padding_an_extra_op_cannot_even_resolve_a_target(tmp_path):
         fingerprint_submitted_delta(b)
 
 
+def test_a_stolen_node_body_relabelled_at_another_width_and_padded_is_still_a_copy(tmp_path):
+    # Node bundles name their own addresses, so no member string is shared and the
+    # exact-member rule that stops padding on slot targets does not apply. The
+    # target is the namespace; per-file containment does the rest.
+    pad = "import torch\n\ndef attend(module, *args, **kwargs):\n    return module.forward(*args, **kwargs)\n"
+    a = _write_bundle(tmp_path / "a", [("model.layers.*.mlp", "kernels/moe.py", "silu_and_mul")],
+                      {"kernels/moe.py": ORIG})
+    b = _write_bundle(tmp_path / "b",
+                      [("model.layers.*.linear_attn", "kernels/main.py", "silu_and_mul"),
+                       ("model.layers.*.attn", "kernels/attn.py", "attend")],
+                      {"kernels/main.py": "from ._impl import silu_and_mul\n",
+                       "kernels/_impl.py": REFORMATTED, "kernels/attn.py": pad})
+    earlier, later = fingerprint_submitted_delta(a), fingerprint_submitted_delta(b)
+    assert earlier.target_id == later.target_id == "forward_pass"
+    assert later.members == ("model.layers.*.attn", "model.layers.*.linear_attn")
+    decision = compare_submitted_deltas(earlier, later)
+    assert decision.authoritative and decision.reason == "symmetric_delta_containment"
+    # An unrelated kernel at the same address is not a copy.
+    c = _write_bundle(tmp_path / "c", [("model.layers.*.mlp", "kernels/moe.py", "silu_and_mul")],
+                      {"kernels/moe.py": DIFFERENT})
+    assert not compare_submitted_deltas(earlier, fingerprint_submitted_delta(c)).authoritative
+
+
 def test_shared_vendored_utility_alone_is_not_a_copy(tmp_path):
     # Both miners vendor the SAME public helper next to genuinely different kernels:
     # file-set INTERSECTION is non-empty but neither set CONTAINS the other -> no

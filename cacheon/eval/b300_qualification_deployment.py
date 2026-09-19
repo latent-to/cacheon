@@ -643,7 +643,7 @@ def _validate_profile_binding(
         or graph.candidate_launch_digest != prepared.launch.digest
         or graph.contribution_ref_digest != arm.transition.replacement.digest
         or observed_members != tuple(expected_members)
-        or tuple(reservation.target_members) != tuple(target.members)
+        or not construction.catalog.admits(target, reservation.target_members)
     ):
         raise B300QualificationDeploymentError(
             "qualification profile/graph authority differs from the registered target"

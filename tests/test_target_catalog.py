@@ -40,9 +40,15 @@ from cacheon.target_catalog import (
     ToleranceContractRef,
     default_target_catalog,
     manifest_declared_features,
-    resolve_intake_target,
-    resolve_target,
 )
+
+
+def resolve_target(manifest):
+    return default_target_catalog().resolve_manifest(manifest)
+
+
+def resolve_intake_target(manifest, *, observed_features):
+    return default_target_catalog().resolve_intake(manifest, observed_features=observed_features)
 
 
 SILU = "activation.silu_and_mul"

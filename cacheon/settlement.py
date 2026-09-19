@@ -18,7 +18,7 @@ from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.stack_plan import StackArmIdentity
-from cacheon._strict import require_digest, require_identifier, require_int
+from cacheon._strict import members_overlap, require_digest, require_identifier, require_int
 
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
@@ -1014,7 +1014,7 @@ def plan_settlement(
     ):
         reason = (
             "conflict_lost"
-            if set(row.members) & set(winner.members)
+            if members_overlap(row.members, winner.members)
             else "incumbent_advanced"
         )
         journal.add(

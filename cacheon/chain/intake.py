@@ -29,6 +29,7 @@ from cacheon.copy_fingerprint import (
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
+from cacheon._strict import members_overlap
 from cacheon.chain.eval_cost_credit import EVAL_COST_CREDITS_DDL
 
 if TYPE_CHECKING:
@@ -1517,7 +1518,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 break
             if row.status in _TERMINAL or row.competition_arena != candidate.competition_arena:
                 continue
-            if not row.target_members or set(row.target_members) & set(candidate.target_members):
+            if not row.target_members or members_overlap(row.target_members, candidate.target_members):
                 blockers.append(row)
         return tuple(blockers)
 
@@ -2062,9 +2063,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 continue
             if row.status in {"failed", "expired"}:
                 continue
-            if row.target_members and not (
-                set(row.target_members) & set(candidate.members)
-            ):
+            if row.target_members and not members_overlap(row.target_members, candidate.members):
                 continue
             if row.status == "qualified":
                 economic = self._db.execute(

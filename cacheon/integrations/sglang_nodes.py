@@ -65,7 +65,9 @@ _TWIN_FACTOR = 3.0
 # none, so the bar sits well below honest.
 _ROW_BAR = 0.75
 _WINDOW = 256
-_MODE = "stock_twin"
+# The wire vocabulary (oci_session_protocol.AuditReceiptFacts) is closed: a share of
+# rows within tolerance against a bar is its matched_ratio.
+_MODE = "matched_ratio"
 # Per bound node and graded-tensor position: recent twin noise, and [passed, seen]
 # rows. Per node, not per address: layers under one `*` differ severalfold in noise.
 _noise: dict[tuple[int, int], deque] = {}

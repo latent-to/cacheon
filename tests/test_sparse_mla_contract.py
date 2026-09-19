@@ -11,7 +11,7 @@ from cacheon.model_profiles import model_profile, verification_call_descriptor
 from cacheon.sandbox import load_entry
 from cacheon.slots import get_slot
 from cacheon.sparse_mla_contract import DYNAMIC_INPUTS, SLOT, call_descriptor, invoke_entry, query_reference, reference
-from cacheon.target_catalog import default_target_catalog, resolve_target
+from cacheon.target_catalog import default_target_catalog
 from cacheon.verify import verify_entry
 from support.graph_backend import FakeGraphBackend
 
@@ -149,7 +149,7 @@ def test_faithful_replay_orchestration_and_profile_descriptor_agree():
     profile = model_profile("GLM-5.3", SLOT)
     assert {s["query_chunk"] for s in profile.shapes} >= {1, 128, 16384}
     assert all(s["num_heads"] == 64 and s["value_dim"] == 512 for s in profile.shapes)
-    assert resolve_target(load_manifest(BUNDLE)).target_id == SLOT
+    assert default_target_catalog().resolve_manifest(load_manifest(BUNDLE)).target_id == SLOT
     assert default_target_catalog().target_spec_digest(SLOT)
 
 

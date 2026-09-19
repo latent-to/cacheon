@@ -99,7 +99,7 @@ An unknown selector stays unclaimed and is subject to the ordinary intake SLA.
 
 | Field | Required | Meaning |
 |---|---:|---|
-| `slot` | yes | Registered execution slot |
+| `slot` | yes | Registered execution slot, or a [node address](../architecture/slot-contract.md#node-addresses) such as `model.layers.*.mlp` (target `forward_pass`) |
 | `source` | yes | Python source module within the bundle |
 | `entry` | yes | Entry callable name |
 | `variant` | conditional | Capability variant; required on every row when a slot repeats |
@@ -123,6 +123,12 @@ hook. The validator resolves `source` inside the bundle and looks up the named
 Python identifier only after structural and static gates. It allocates outputs
 and passes arguments in the registered slot order. Candidate code fills those
 outputs; it does not redefine shapes, references, tolerances, or the call site.
+
+A node-address row is called in place of the named module instead: `entry`
+receives the prepared state and then the module's own forward arguments, and
+returns what the module would. Every row of such a bundle is a node address, no
+two rows may overlap, and the bundle resolves to `forward_pass` whether or not
+`[competition]` names it.
 
 For prepare/forward slots, `prepare` names the registered one-time weight
 transformation while `entry` names the runtime call. `setup` is a legacy direct

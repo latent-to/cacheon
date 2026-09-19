@@ -679,9 +679,8 @@ def fingerprint_submitted_delta(
     normalized_by_slot = bundle_slot_fingerprints(root)
     files_by_slot = bundle_slot_file_fingerprints(root)
     structural_by_slot = bundle_slot_structural_fingerprints(root)
+    # inspect_contribution resolved these through the catalog's one member rule.
     members = tuple(sorted({op.slot for op in inspected.manifest.ops}))
-    if members != tuple(sorted(active_catalog.require(inspected.target_id).members)):
-        raise ValueError("submitted delta members differ from the resolved target")
     normalized_rows = [
         f"{member}\x00{normalized_by_slot[member]}"
         for member in members
@@ -728,7 +727,11 @@ def compare_submitted_deltas(
         raise TypeError("copy comparison requires typed submitted-delta fingerprints")
     if earlier.product_kind != later.product_kind:
         return DeltaCopyDecision(False, "different_product_kind")
-    if not set(earlier.reward_namespace) & set(later.reward_namespace):
+    # Node bundles of one target name their own addresses, so a stolen body relabelled
+    # at another width shares no member string; the target is their namespace.
+    if earlier.target_id != later.target_id and not (
+        set(earlier.reward_namespace) & set(later.reward_namespace)
+    ):
         return DeltaCopyDecision(False, "different_reward_namespace")
     if earlier.exact_payload_digest == later.exact_payload_digest:
         return DeltaCopyDecision(True, "exact_delta_identity")

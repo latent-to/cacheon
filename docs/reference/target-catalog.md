@@ -43,6 +43,18 @@ atomic targets. GLM opens family targets, not every internal member identity:
 | `norm.rmsnorm` | slot | Same-named slot |
 | `collective.dp_attention_exchange.v1` | atomic | Owns both DP-attention exchange members below |
 | `attention.sparse_mla.v1` | atomic | Owns `attention.sparse_mla` and `attention.indexer_select` together |
+| `forward_pass` | slot | The model's forward pass: a bundle names the modules it replaces |
+
+`forward_pass` is the node target. Its `node_roots` are `model` and
+`logits_processor`, the two top-level modules SGLang gives every causal LM, so it
+carries no model or arena identity. A bundle resolves to it when every `slot` it
+declares is a [node address](../architecture/slot-contract.md#node-addresses) at
+or under a root. Its resolved members are the addresses the bundle declared, from
+one activation up to both roots; one bundle may not name a node and another node
+inside it. Two reservations overlap when any of their addresses do, which for
+slot ids is the same as sharing a member. Copy detection treats every
+`forward_pass` bundle as one namespace, so a stolen body relabelled at another
+width or padded with a second node is still a copy.
 
 The DP atomic target owns and displaces both
 `collective.all_gather_into_tensor` and

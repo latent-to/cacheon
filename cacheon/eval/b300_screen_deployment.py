@@ -629,7 +629,7 @@ class _CommissionedScreenPlanResolver:
             or inspected.target_spec_digest
             != self.catalog.target_spec_digest(reservation.target_id)
             or inspected.selected_delta_digest != reservation.selected_delta_digest
-            or target.members != reservation.target_members
+            or not self.catalog.admits(target, reservation.target_members)
         ):
             raise B300ScreenDeploymentError(
                 "candidate contribution differs from finalized reservation"

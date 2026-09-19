@@ -210,4 +210,17 @@ def singleton_contracts() -> dict:
             binding_family_id="sglang.norm.rmsnorm.v1",
             correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
         ),
+        # The model's forward pass: a bundle names the modules it replaces. The numbers
+        # are sglang_nodes' row bar and relative floor; the honest twin scales the rest.
+        "forward_pass": _contract_ref(
+            "forward_pass", kind="block", entry="entry", prepare="prepare",
+            graph_dynamic_inputs=(),
+            input_abi_id="node.stock-forward-arguments.input.v1",
+            output_abi_id="node.stock-forward-result.output.v1",
+            reference_id="node.stock-module-in-engine.reference.v1",
+            verification_profile_id="node.stock-twin-rows.verify.v1",
+            binding_family_id="sglang.named-module.v1",
+            correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.75"),
+            tolerances=(ToleranceContractRef("bfloat16", "0", "0.02"),),
+        ),
     }

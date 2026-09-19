@@ -238,7 +238,7 @@ class B300RegisteredQualificationFactory:
         target_id = reservation.target_id
         self.profile_for(target_id)
         spec = inputs.catalog.require(target_id)
-        if tuple(reservation.target_members) != tuple(sorted(spec.members)):
+        if not inputs.catalog.admits(spec, reservation.target_members):
             raise B300RegisteredQualificationError(
                 "finalized reservation members differ from the registered target"
             )
@@ -382,7 +382,7 @@ class B300RegisteredQualificationFactory:
             target_projection is None
             or target_projection.target_spec_digest
             != arm.transition.target_spec_digest
-            or target_projection.members != tuple(reservation.target_members)
+            or not self._inputs.catalog.admits(spec, reservation.target_members)
             or target_projection.members != tuple(spec.members)
         ):
             raise B300RegisteredQualificationError(
