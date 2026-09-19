@@ -28,7 +28,7 @@ Threat notes:
     launch sets it); timed launches never carry the overhead.
   * A failed comparison NEVER crashes the engine: violations are counted and
     receipted; the eval driver reads the receipts and fails the bundle.
-  * The baseline call itself may be collective (e.g. the fused AR+norm
+  * The baseline call itself may be collective (e.g. the all-reduce
     chokepoint): safe only because every rank reaches the dispatcher for the
     same calls in lockstep AND the sampling RNG is seeded identically across
     ranks of one launch (CACHEON_SLOT_AUDIT_SEED, set by the driver) — a
@@ -118,9 +118,16 @@ def baseline_refused(slot: str) -> None:
 
 
 def record(slot: str, actual: Sequence[torch.Tensor],
-           expected: Sequence[Optional[torch.Tensor]]) -> None:
+           expected: Sequence[Optional[torch.Tensor]], *, scaled: bool = False) -> None:
     """Compare miner outputs vs the stock baseline's, under the slot's verify
-    tolerances, and fold the result into the receipted stats. Never raises."""
+    tolerances, and fold the result into the receipted stats. Never raises.
+
+    ``scaled`` shrinks the absolute tolerance with the stock tensor's own RMS and
+    never widens it. A flat bf16 atol of 2e-2 passed a 1.5x-wrong MoE block on 109
+    of 240 calls, because early-layer outputs sit below 0.04 (H100 Qwen run,
+    2026-09-19). The data-bound adapter uses it; slots whose bars were calibrated
+    on a live arena keep their flat tolerance until they are recalibrated.
+    """
     try:
         from cacheon.slots import SLOTS
 
@@ -163,7 +170,10 @@ def record(slot: str, actual: Sequence[torch.Tensor],
                 s["min_ratio"] = corr.min_overlap
             else:
                 tol = spec.tolerance_for(a.dtype)
-                within = ((af - ef).abs() <= tol.atol + tol.rtol * ef.abs())
+                atol = tol.atol
+                if scaled:  # floor: below 1e-3 no served activation carries signal
+                    atol *= min(1.0, max(1e-3, ef.square().mean().sqrt().item()))
+                within = ((af - ef).abs() <= atol + tol.rtol * ef.abs())
                 frac = within.float().mean().item()
                 bar = (max(0.0, corr.min_ratio - _MATCHED_RATIO_AUDIT_MARGIN)
                        if corr.mode == "matched_ratio" else _ALLCLOSE_MIN_RATIO)

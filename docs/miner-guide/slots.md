@@ -30,12 +30,10 @@ manifest; it does not require the Python function itself to be named `entry`.
 | `attention.sparse_mla` | block | `entry(q, q_rope, positions, cos_sin_cache, is_neox, kv_cache, indices, seq_lens, out, value_dim, qk_scale, value_scale)` | query RoPE/FP8 preparation and BF16 latent attention output; internal atomic member |
 | `collective.all_gather_into_tensor` | collective | `entry(x, out, group)` | rank-ordered gathered tensor |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | sum across the supplied process group |
-| `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | reduced residual and normalized output |
 | `collective.dp_output_projection_norm` | collective | `prepare(weight, gamma, eps, quant_scale)` plus `entry(x, residual, prepared, normalized, local_residual, fp4, scales, group)` | rank-ordered normalized rows, local updated residual and optional NVFP4 bytes/scales |
 | `collective.reduce_scatter_tensor` | collective | `entry(x, out, group)` | this rank's SUM-reduced shard |
 | `linear.dense` | block | `prepare(weight)` plus `entry(x, prepared, out)` | ordinary GEMM, FP32 gate projection and strided absorbed BMM; communication stays outside |
 | `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
-| `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
 | `moe.fused_routed_experts` | block | `prepare(w13, w2, topk, routed_scaling)` plus `entry(x, router_logits, correction_bias, prepared, out)` | routed, combined expert result; the implementation owns the routing head |
 | `norm.fused_add_rmsnorm` | block | `entry(x, residual, weight, eps, out_norm, out_residual)` | plain or residual-add RMSNorm; plain calls supply both residual arguments as `None` |
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
@@ -98,9 +96,9 @@ whose model never executes the adapter's callsite. Check the deployed arena's
 registered target set before paying.
 
 Closing a standalone lane removes only that lane. Activation remains claimable
-inside a fused MoE target, normalization inside
-`collective.ar_residual_rmsnorm`, and a fused kernel is judged only by its
-named target contract. See the slot contract's closure section.
+inside a fused MoE target, normalization inside `norm.fused_add_rmsnorm`, and a
+fused kernel is judged only by its named target contract. See the slot
+contract's closure section.
 
 Registration and installation remain different facts: the catalog can register
 a slot before the pinned runtime binds a live adapter for it.
@@ -115,7 +113,7 @@ See [Kernel ABI](kernel-abi.md) for tensor semantics and
 ## Singleton targets
 
 The current default target catalog registers one singleton target for each of
-the 14 slots. Its target ID is the slot ID. A normal proposal therefore names
+the 12 slots. Its target ID is the slot ID. A normal proposal therefore names
 the slot target explicitly:
 
 ```toml
@@ -198,7 +196,7 @@ third option, and unregistered work is not submittable.
 |---|---|---|
 | fuse SiLU and multiply for a particular token range | `activation.silu_and_mul` singleton with a constrained variant | both operations and the output are already inside one slot |
 | add a residual connection to pure RMSNorm | not `norm.rmsnorm`; use a matching registered collective boundary only if its full semantics apply, otherwise not submittable | the singleton RMSNorm contract explicitly does not own residual addition |
-| replace local expert compute and its trailing reduction as one implementation | `moe.fused_experts_reduce` | this slot, unlike `moe.fused_experts`, owns the supplied-group reduction |
+| replace local expert compute, the routing head and the weighted combine as one implementation | `moe.fused_routed_experts` | this slot, unlike `moe.fused_experts`, owns routing and combine; the trusted path still owns the trailing reduction |
 | jointly optimize GLM DP-attention exchange | `collective.dp_attention_exchange.v1`, implementing both members | the target owns the measured gather/scatter exchange as one reward unit |
 | patch scheduler batching or invent a new attention seam | not submittable | engine control flow lies outside every component callable ABI |
 

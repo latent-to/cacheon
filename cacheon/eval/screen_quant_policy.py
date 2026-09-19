@@ -17,7 +17,6 @@ class ScreenQuantPolicyError(RuntimeError):
 #: must declare the checkpoint's format to be eligible at all.
 MOE_QUANT_SLOTS: tuple[str, ...] = (
     "moe.fused_experts",
-    "moe.fused_experts_reduce",
     "moe.fused_routed_experts",
 )
 

@@ -397,7 +397,7 @@ def test_materializer_refuses_single_tp4_as_declared_qualification_pair(
 
 
 @pytest.mark.parametrize("gpu_model,count,bundle", (
-    ("b300", 4, "miner_moe_fused_experts_reduce_torch"),
+    ("b300", 4, "miner_moe_fused_experts_torch"),
     ("h100", 1, "miner_silu_torch"),
 ))
 def test_concrete_resolver_binds_the_commissioned_model_and_hardware(tmp_path, gpu_model, count, bundle):

@@ -1,4 +1,4 @@
-"""Offline/live parity for the three non-deep collective bindings."""
+"""Offline/live parity for the non-deep collective bindings."""
 
 from __future__ import annotations
 
@@ -25,12 +25,9 @@ from cacheon.verify_collective import _collective_descriptor  # noqa: E402
 
 
 ALL_REDUCE = "collective.all_reduce"
-AR_NORM = "collective.ar_residual_rmsnorm"
-MOE_REDUCE = "moe.fused_experts_reduce"
 MOE_PLAIN = "moe.fused_experts"
 _STOCK = object()
 _REAL_ALLREDUCE_GROUP_ROLE = dispatch._allreduce_group_role
-_REAL_ARFUSION_GROUP_ROLE = dispatch._arfusion_group_role
 _REAL_MOE_DP_WORLD_SIZE = dispatch._moe_data_parallel_world_size
 
 
@@ -63,7 +60,6 @@ def _quiet_runtime(monkeypatch):
     monkeypatch.setattr(dispatch._receipts, "completed", lambda _slot: None)
     monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", lambda: 1)
     monkeypatch.setattr(dispatch, "_allreduce_group_role", lambda _coord, _group: "tp")
-    monkeypatch.setattr(dispatch, "_arfusion_group_role", lambda _use_attn: "tp")
 
 
 def _register(
@@ -111,7 +107,7 @@ def _moe_call(num_tokens, *, hidden=8, inter=4, experts=4, top_k=2):
     return x, routed
 
 
-def _moe_layer(*, hidden=8, inter=4, experts=4, tp_size=2, reduce=True):
+def _moe_layer(*, hidden=8, inter=4, experts=4, tp_size=2, reduce=False):
     return SimpleNamespace(
         w13_weight=_Param(torch.randn(experts, 2 * inter, hidden)),
         w2_weight=_Param(torch.randn(experts, hidden, inter)),
@@ -161,89 +157,6 @@ def test_allreduce_live_descriptor_exactly_matches_offline(
     )
 
 
-def test_shallow_live_descriptor_exactly_matches_offline(monkeypatch):
-    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: _Group(2))
-
-    def entry(x, residual, _weight, _eps, out_norm, out_residual, _group):
-        out_norm.copy_(x)
-        out_residual.copy_(residual)
-
-    registry = _register(AR_NORM, entry)
-    wrapped = dispatch.make_arfusion_dispatcher(
-        lambda *_args, **_kwargs: _STOCK, registry=registry
-    )
-    x = torch.randn(3, 8)
-    result = wrapped(x, torch.randn_like(x), torch.ones(8))
-
-    assert all(torch.is_tensor(value) for value in result)
-    _assert_two_phase_parity(
-        registry,
-        AR_NORM,
-        _offline({"num_tokens": 3, "hidden": 8}),
-    )
-
-
-def test_moe_reduce_live_descriptor_exactly_matches_offline(monkeypatch):
-    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
-
-    def entry(x, _ids, _weights, prepared, out, _group):
-        assert prepared == "prepared"
-        out.copy_(x)
-
-    registry = _register(
-        MOE_REDUCE,
-        entry,
-        prepare=lambda _w13, _w2: "prepared",
-    )
-    wrapped = dispatch.make_moe_dispatcher(
-        lambda *_args: _STOCK,
-        registry=registry,
-        slots=(MOE_REDUCE,),
-    )
-    x, routed = _moe_call(3)
-    result = wrapped(_moe_layer(), x, routed)
-
-    assert torch.equal(result, x)
-    _assert_two_phase_parity(
-        registry,
-        MOE_REDUCE,
-        _offline(
-            {
-                "num_tokens": 3,
-                "hidden": 8,
-                "num_experts": 4,
-                "inter": 4,
-                "topk": 2,
-            },
-            slot_name=MOE_REDUCE,
-        ),
-    )
-
-
-def test_moe_reduce_m3_descriptor_is_nvfp4_on_both_rails(monkeypatch):
-    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: False)
-    x = torch.empty(1, 6144)
-    live = dispatch._collective_call_descriptor(
-        x,
-        group_size=4,
-        quant="nvfp4",
-        ep_size=1,
-        top_k=5,
-        num_experts=129,
-        intermediate_dim=768,
-    )
-    offline = _offline(
-        {"num_tokens": 1, "hidden": 6144, "num_experts": 129,
-         "inter": 768, "topk": 5},
-        slot_name=MOE_REDUCE,
-        world_size=4,
-        model_key="MiniMax-M3-NVFP4",
-    )
-    assert live == offline and live["quant"] == "nvfp4"
-
-
 def test_collective_model_constraint_is_consistently_unavailable_until_arena_binding():
     descriptor = _collective_descriptor(
         {"num_tokens": 3, "hidden": 8},
@@ -264,28 +177,6 @@ def test_collective_model_constraint_is_consistently_unavailable_until_arena_bin
     assert any(mismatch.field == "model" for mismatch in match.mismatches)
 
 
-def test_missing_stock_group_serves_stock_without_prepare(monkeypatch):
-    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: None)
-    prepared = []
-    entered = []
-    registry = _register(
-        MOE_REDUCE,
-        lambda *_args: entered.append(True),
-        prepare=lambda *_args: prepared.append(True),
-    )
-    wrapped = dispatch.make_moe_dispatcher(
-        lambda *_args: _STOCK,
-        registry=registry,
-        slots=(MOE_REDUCE,),
-    )
-    x, routed = _moe_call(3)
-
-    assert wrapped(_moe_layer(tp_size=2), x, routed) is _STOCK
-    assert prepared == entered == []
-    assert registry.selections == []
-
-
 @pytest.mark.parametrize("dp_size", (None, 2))
 def test_moe_data_parallel_topology_serves_stock_without_miner_code(
     monkeypatch, dp_size
@@ -294,18 +185,17 @@ def test_moe_data_parallel_topology_serves_stock_without_miner_code(
     monkeypatch.setattr(
         dispatch, "_moe_data_parallel_world_size", lambda: dp_size
     )
-    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     prepared = []
     entered = []
     registry = _register(
-        MOE_REDUCE,
+        MOE_PLAIN,
         lambda *_args: entered.append(True),
         prepare=lambda *_args: prepared.append(True),
     )
     wrapped = dispatch.make_moe_dispatcher(
         lambda *_args: _STOCK,
         registry=registry,
-        slots=(MOE_REDUCE,),
+        slots=(MOE_PLAIN,),
     )
     x, routed = _moe_call(3)
 
@@ -314,37 +204,22 @@ def test_moe_data_parallel_topology_serves_stock_without_miner_code(
     assert registry.selections == []
 
 
-def test_arfusion_group_mirrors_pinned_stock_group_selection(monkeypatch):
-    attn, moe_tp, moe_ep, generic = (_Group(2) for _ in range(4))
+def test_pinned_parallel_state_owns_dp_size_and_allreduce_role(monkeypatch):
+    generic = _Group(2)
     ps = ModuleType("sglang.srt.distributed.parallel_state")
-    ps.get_attn_tp_group = lambda: SimpleNamespace(device_group=attn)
-    ps.get_moe_tp_group = lambda: SimpleNamespace(device_group=moe_tp)
-    ps.get_moe_ep_group = lambda: SimpleNamespace(device_group=moe_ep)
     ps.get_tp_group = lambda: SimpleNamespace(device_group=generic)
-    ps.get_moe_expert_parallel_world_size = lambda: 1
     ps.get_moe_data_parallel_world_size = lambda: 1
     distributed = ModuleType("sglang.srt.distributed")
     distributed.parallel_state = ps
     monkeypatch.setitem(sys.modules, "sglang.srt.distributed", distributed)
     monkeypatch.setitem(sys.modules, ps.__name__, ps)
 
-    assert dispatch._arfusion_group(True) is attn
-    assert dispatch._arfusion_group(False) is moe_tp
-    assert _REAL_ARFUSION_GROUP_ROLE(True) == "tp"
-    assert _REAL_ARFUSION_GROUP_ROLE(False) == "tp"
     assert _REAL_MOE_DP_WORLD_SIZE() == 1
     ps.get_moe_data_parallel_world_size = lambda: 2
     assert _REAL_MOE_DP_WORLD_SIZE() == 2
     del ps.get_moe_data_parallel_world_size
     with pytest.raises(RuntimeError, match="cannot resolve MoE-DP topology"):
         _REAL_MOE_DP_WORLD_SIZE()
-    ps.get_moe_expert_parallel_world_size = lambda: 2
-    assert dispatch._arfusion_group(False) is moe_ep
-    assert _REAL_ARFUSION_GROUP_ROLE(False) == "ep"
-
-    del ps.get_attn_tp_group
-    assert dispatch._arfusion_group(True) is None
-    assert dispatch._tp_device_group() is generic
 
     tp_coord = ps.get_tp_group()
     assert _REAL_ALLREDUCE_GROUP_ROLE(tp_coord, generic) == "tp"
@@ -352,36 +227,12 @@ def test_arfusion_group_mirrors_pinned_stock_group_selection(monkeypatch):
     assert _REAL_ALLREDUCE_GROUP_ROLE(dp_coord, dp_coord.device_group) is None
 
 
-def test_stock_group_not_layer_moe_tp_hint_defines_reduce_topology(monkeypatch):
+def test_quantized_moe_rejects_incomplete_layout(monkeypatch):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(4))
-
-    def entry(x, _ids, _weights, _prepared, out, _group):
-        out.copy_(x)
-
-    registry = _register(
-        MOE_REDUCE, entry, prepare=lambda _w13, _w2: "prepared"
-    )
-    wrapped = dispatch.make_moe_dispatcher(
-        lambda *_args: _STOCK, registry=registry, slots=(MOE_REDUCE,)
-    )
-    x, routed = _moe_call(3)
-
-    assert torch.equal(wrapped(_moe_layer(tp_size=2), x, routed), x)
-    assert all(
-        descriptor["tp_size"] == 4 and descriptor["world_size"] == 4
-        for slot, descriptor in registry.selections
-        if slot == MOE_REDUCE
-    )
-
-
-def test_quantized_moe_reduce_rejects_incomplete_layout(monkeypatch):
-    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     prepared = []
     entered = []
     registry = _register(
-        MOE_REDUCE,
+        MOE_PLAIN,
         lambda *_args: entered.append(True),
         prepare=lambda *_args: prepared.append(True),
         eligibility=Eligibility(
@@ -389,7 +240,7 @@ def test_quantized_moe_reduce_rejects_incomplete_layout(monkeypatch):
         ),
     )
     wrapped = dispatch.make_moe_dispatcher(
-        lambda *_args: _STOCK, registry=registry, slots=(MOE_REDUCE,)
+        lambda *_args: _STOCK, registry=registry, slots=(MOE_PLAIN,)
     )
     layer = _moe_layer()
     layer.w13_weight = _Param(layer.w13_weight.data.to(torch.uint8))
@@ -401,33 +252,6 @@ def test_quantized_moe_reduce_rejects_incomplete_layout(monkeypatch):
     assert registry.selections == []
 
 
-@pytest.mark.parametrize(
-    ("ids_dtype", "weights_dtype"),
-    ((torch.int64, torch.float32), (torch.int32, torch.bfloat16)),
-)
-def test_moe_reduce_rejects_unverified_routing_dtypes(
-    monkeypatch, ids_dtype, weights_dtype
-):
-    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
-    prepared = []
-    entered = []
-    registry = _register(
-        MOE_REDUCE,
-        lambda *_args: entered.append(True),
-        prepare=lambda *_args: prepared.append(True),
-    )
-    wrapped = dispatch.make_moe_dispatcher(
-        lambda *_args: _STOCK, registry=registry, slots=(MOE_REDUCE,)
-    )
-    x, routed = _moe_call(3)
-    routed.topk_ids = routed.topk_ids.to(ids_dtype)
-    routed.topk_weights = routed.topk_weights.to(weights_dtype)
-
-    assert wrapped(_moe_layer(), x, routed) is _STOCK
-    assert prepared == entered == []
-
-
 def test_collective_moe_prepare_failure_is_receipted_without_stock(
     tmp_path, monkeypatch
 ):
@@ -436,7 +260,6 @@ def test_collective_moe_prepare_failure_is_receipted_without_stock(
     monkeypatch.setattr(receipts, "_ONCE", set())
     monkeypatch.setattr(receipts, "_SCOPE", "")
     receipts.set_scope("prepare-failure")
-    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     stock_calls = []
 
     def corrupt_then_raise(w13, w2):
@@ -445,14 +268,14 @@ def test_collective_moe_prepare_failure_is_receipted_without_stock(
         raise RuntimeError("prepare failed")
 
     registry = _register(
-        MOE_REDUCE,
+        MOE_PLAIN,
         lambda *_args: pytest.fail("entry must not run"),
         prepare=corrupt_then_raise,
     )
     wrapped = dispatch.make_moe_dispatcher(
         lambda *_args: stock_calls.append(True) or _STOCK,
         registry=registry,
-        slots=(MOE_REDUCE,),
+        slots=(MOE_PLAIN,),
     )
     x, routed = _moe_call(3)
 
@@ -460,7 +283,7 @@ def test_collective_moe_prepare_failure_is_receipted_without_stock(
         wrapped(_moe_layer(), x, routed)
     assert stock_calls == []
     (failed,) = receipts.collect(tmp_path / "prepare-failure", "failed")
-    assert failed["slot"] == MOE_REDUCE
+    assert failed["slot"] == MOE_PLAIN
     assert failed["phase"] == "prepare"
     assert failed["source"] == "test_live_collective_contracts.py"
     assert failed["line"] > 0
@@ -468,7 +291,6 @@ def test_collective_moe_prepare_failure_is_receipted_without_stock(
 
 def test_two_moe_variants_prepare_once_and_gap_serves_stock(monkeypatch):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     prepared = {"small": 0, "large": 0}
     entered = []
     registry = _RecordingRegistry()
@@ -483,13 +305,13 @@ def test_two_moe_variants_prepare_once_and_gap_serves_stock(monkeypatch):
             prepared[name] += 1
             return name
 
-        def entry(x, _ids, _weights, state, out, _group, *, name=variant, fill=value):
+        def entry(x, _ids, _weights, state, out, *, name=variant, fill=value):
             assert state == name
             entered.append(name)
             out.fill_(fill)
 
         _register(
-            MOE_REDUCE,
+            MOE_PLAIN,
             entry,
             prepare=prepare,
             eligibility=eligibility,
@@ -500,7 +322,7 @@ def test_two_moe_variants_prepare_once_and_gap_serves_stock(monkeypatch):
     wrapped = dispatch.make_moe_dispatcher(
         lambda *_args: _STOCK,
         registry=registry,
-        slots=(MOE_REDUCE,),
+        slots=(MOE_PLAIN,),
     )
     layer = _moe_layer()
     for tokens, value in ((2, 2.0), (6, 6.0), (2, 2.0), (6, 6.0)):
@@ -511,57 +333,6 @@ def test_two_moe_variants_prepare_once_and_gap_serves_stock(monkeypatch):
 
     assert prepared == {"small": 1, "large": 1}
     assert entered == ["small", "large", "small", "large"]
-
-
-def test_prepare_cache_identity_includes_slot_and_implementation(monkeypatch):
-    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
-    prepared = {MOE_REDUCE: 0, MOE_PLAIN: 0}
-    registry = _RecordingRegistry()
-
-    def make_impl(slot, state, *, eligibility):
-        def prepare(_w13, _w2):
-            prepared[slot] += 1
-            return state
-
-        def entry(x, _ids, _weights, actual, out, *maybe_group):
-            assert actual == state
-            out.copy_(x)
-
-        _register(
-            slot,
-            entry,
-            prepare=prepare,
-            eligibility=eligibility,
-            registry=registry,
-        )
-
-    make_impl(
-        MOE_REDUCE,
-        "reduce-state",
-        eligibility=eligibility_from_metadata(
-            {"capabilities": {"num_tokens": 2}}, ("float32",)
-        ),
-    )
-    make_impl(
-        MOE_PLAIN,
-        "plain-state",
-        eligibility=Eligibility(dtypes=frozenset({"float32"})),
-    )
-    wrapped = dispatch.make_moe_dispatcher(
-        lambda *_args: _STOCK,
-        registry=registry,
-        slots=(MOE_REDUCE, MOE_PLAIN),
-    )
-    layer = _moe_layer()
-
-    x, routed = _moe_call(2)
-    assert torch.equal(wrapped(layer, x, routed), x)
-    layer.reduce_results = False
-    x, routed = _moe_call(3)
-    assert torch.equal(wrapped(layer, x, routed), x)
-
-    assert prepared == {MOE_REDUCE: 1, MOE_PLAIN: 1}
 
 
 def _typed_slot(slot_name, output_count):
@@ -586,9 +357,9 @@ def _typed_slot(slot_name, output_count):
     return replace(original, output_spec=output_spec)
 
 
-@pytest.mark.parametrize("slot", [ALL_REDUCE, AR_NORM, MOE_REDUCE])
+@pytest.mark.parametrize("slot", [ALL_REDUCE, MOE_PLAIN])
 def test_live_candidate_observes_typed_strided_outputs(monkeypatch, slot):
-    output_count = 2 if slot == AR_NORM else 1
+    output_count = 1
     typed = _typed_slot(slot, output_count)
     monkeypatch.setattr(
         dispatch,
@@ -597,9 +368,13 @@ def test_live_candidate_observes_typed_strided_outputs(monkeypatch, slot):
     )
 
     seen = []
+    # The all-reduce ABI ends with the process group; the MoE ABI ends with the
+    # validator-owned output. Locate the outputs from the slot's own trailing shape.
+    trailing = 1 if slot == ALL_REDUCE else 0
 
     def check(*args):
-        outputs = args[-(output_count + 1):-1]
+        end = len(args) - trailing
+        outputs = args[end - output_count:end]
         assert len(outputs) == output_count
         for out in outputs:
             seen.append((out.dtype, out.is_contiguous(), out.data_ptr() % 64))
@@ -616,18 +391,8 @@ def test_live_candidate_observes_typed_strided_outputs(monkeypatch, slot):
             torch.randn(3, 8),
         )
         outputs = (result,)
-    elif slot == AR_NORM:
-        monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
-        monkeypatch.setattr(dispatch, "_arfusion_group", lambda _arg: _Group(2))
-        registry = _register(slot, check)
-        wrapped = dispatch.make_arfusion_dispatcher(
-            lambda *_args, **_kwargs: _STOCK, registry=registry
-        )
-        x = torch.randn(3, 8)
-        outputs = wrapped(x, torch.randn_like(x), torch.ones(8))
     else:
         monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-        monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
         registry = _register(
             slot,
             check,

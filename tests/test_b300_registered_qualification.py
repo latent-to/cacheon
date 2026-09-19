@@ -446,8 +446,7 @@ def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identi
     # when the cross-arena catalog does.
     expected = (
         "activation.silu_and_mul", "collective.all_reduce",
-        "collective.ar_residual_rmsnorm", "moe.fused_experts",
-        "moe.fused_experts_reduce", "norm.rmsnorm",
+        "moe.fused_experts", "norm.rmsnorm",
     )
     snapshot_ids = tuple(
         row["target_id"]
@@ -455,7 +454,7 @@ def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identi
     )
     assert M3_REGISTERED_TARGET_IDS == expected
     assert set(M3_REGISTERED_TARGET_IDS) <= set(snapshot_ids)
-    assert len(M3_REGISTERED_TARGET_IDS) == 6
+    assert len(M3_REGISTERED_TARGET_IDS) == 4
     projection = registered.registered_b300_member_contract_projection(
         harness.inputs.catalog, M3_REGISTERED_TARGET_IDS
     )
@@ -750,7 +749,7 @@ def test_graph_facts_cannot_relabel_another_registered_target(
 def test_graph_facts_reject_duplicate_or_reordered_variants() -> None:
     members = (
         "collective.all_reduce",
-        "collective.ar_residual_rmsnorm",
+        "collective.reduce_scatter_tensor",
     )
     facts = _graph_facts_for_members(members)
     with pytest.raises(

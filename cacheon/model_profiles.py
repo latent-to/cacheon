@@ -27,7 +27,7 @@ from cacheon.slots import (
     get_slot,
 )
 
-_MOE_SLOTS = ("moe.fused_experts", "moe.fused_experts_reduce")
+_MOE_SLOTS = ("moe.fused_experts",)
 _ROUTED_MOE_SLOTS = ("moe.fused_routed_experts",)
 
 
@@ -199,7 +199,6 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
     },
     "MiniMax-M3": {
         "moe.fused_experts": _M3_MOE_NVFP4_PROFILE,
-        "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
     },
     "GLM-5.3": {
         "attention.indexer_select": SlotProfile(shapes=tuple(

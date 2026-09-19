@@ -280,20 +280,6 @@ Selection uses `topk(sigmoid(router_logits) + correction_bias)`. Combine weights
 come from the unbiased sigmoid scores, are renormalized, and are multiplied by
 the registered routed scaling factor.
 
-`moe.fused_experts_reduce` owns that trailing reduction and therefore receives a
-process group:
-
-```python
-def fused_experts_reduce(
-    x, topk_ids, topk_weights, prepared, out, group
-):
-    # Fill out with the sum of local expert results across group.
-    ...
-```
-
-The validator does not replay a second stock reduce after this slot. That wider
-authority is why it is a distributed contract.
-
 The prepare/forward split exists because weight transformation and request-time work have
 different lifetimes. Packing fixed expert weights once can be a legitimate optimization;
 packing them on every token would distort the serving path. Conversely, `prepare` is not
@@ -335,20 +321,6 @@ def reduce_scatter_tensor(x, out, group):
 GLM-5.3 rewards these two callables together through the atomic
 `collective.dp_attention_exchange.v1` target. A bundle for that target must
 implement both members.
-
-### `collective.ar_residual_rmsnorm`
-
-```python
-def ar_residual_rmsnorm(
-    x, residual, weight, eps, out_norm, out_residual, group
-):
-    # out_residual = sum_group(x) + residual
-    # out_norm = rmsnorm(out_residual, weight, eps)
-    ...
-```
-
-Both outputs must be filled. `x` differs by rank; `residual` and `weight` are
-replicated inputs.
 
 ## Correctness is target-owned
 

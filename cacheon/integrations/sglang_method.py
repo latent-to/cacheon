@@ -98,7 +98,7 @@ def make_method_dispatcher(
             contract, allocation, tensor_inputs, input_bindings, like=x
         )
         if expected is not None:
-            _audit.record(slot, allocation.outputs, expected)
+            _audit.record(slot, allocation.outputs, expected, scaled=True)
         _receipts.completed(slot)
         outputs = allocation.outputs
         return outputs[0] if len(outputs) == 1 else tuple(outputs)

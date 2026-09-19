@@ -111,10 +111,9 @@ def test_m3_nvfp4_verification_executes_the_quantized_contract(corrupt, passed):
     assert result.shape_results[0].case_descriptor.calls[0]["quant"] == "nvfp4"
 
 
-@pytest.mark.parametrize("target", ("moe.fused_experts", "moe.fused_experts_reduce"))
 @pytest.mark.parametrize("topk", (2, 3))
-def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema(target, topk):
-    slot = slot_for_model(target, "MiniMax-M3-NVFP4")
+def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema(topk):
+    slot = slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4")
     inputs = slot.make_inputs(
         **(SHAPE | {"topk": topk}), dtype=torch.float32, device="cpu", seed=3
     )
@@ -201,19 +200,13 @@ def test_live_nvfp4_prepare_identifies_the_backend_layout(trtllm, mma, expected,
     assert view.w2_weight.data_ptr() == layer.w2_weight.data_ptr()
 
 
-def test_m3_reduce_profile_uses_live_shape_topology_and_nvfp4_prepare():
-    slot = slot_for_model("moe.fused_experts_reduce", "MiniMax-M3-NVFP4")
+def test_m3_moe_profile_uses_live_shape_topology_and_nvfp4_prepare():
+    slot = slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4")
     assert slot.shapes[0] == {
         "num_tokens": 1, "num_experts": 129, "hidden": 6144,
         "inter": 768, "topk": 5,
     }
-    inputs = slot.make_inputs(
-        **SHAPE, dtype=torch.float32, device="cpu", seed=7, rank=0, world_size=4
-    )
-    assert torch.equal(inputs["topk_ids"][:, -1], torch.full((4,), 3, dtype=torch.int32))
-    assert torch.all(inputs["topk_ids"][:, :-1] != 3)
-    assert torch.allclose(inputs["topk_weights"][:, :-1].sum(-1), torch.full((4,), 2.0))
-    assert torch.equal(inputs["topk_weights"][:, -1], torch.ones(4))
+    inputs = slot.make_inputs(**SHAPE, dtype=torch.float32, device="cpu", seed=7)
     tag, view = prepare_args_from_inputs(inputs)
     assert tag == NVFP4_PREPARE_TAG
     assert (view.moe_tp_size, view.moe_ep_size, view.num_fused_shared_experts) == (

@@ -266,34 +266,6 @@ def test_collective_nccl_cuda_graph_rejects_first_shape_capture_cache(tmp_path):
     assert not graph_rows[0].passed
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.device_count() < 4,
-    reason="requires four CUDA GPUs",
-)
-def test_collective_nccl_cuda_graph_multi_output_tp4(tmp_path):
-    source = tmp_path / "ar_norm.py"
-    source.write_text(
-        "import torch\n"
-        "import torch.distributed as dist\n\n"
-        "def ar_residual_rmsnorm(x, residual, weight, eps, out_norm, out_residual, group):\n"
-        "    reduced = x.float().clone()\n"
-        "    dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=group)\n"
-        "    new_residual = reduced + residual.float()\n"
-        "    variance = new_residual.pow(2).mean(dim=-1, keepdim=True)\n"
-        "    norm = new_residual * torch.rsqrt(variance + float(eps)) * weight.float()\n"
-        "    out_residual.copy_(new_residual.to(out_residual.dtype))\n"
-        "    out_norm.copy_(norm.to(out_norm.dtype))\n"
-    )
-    result = _verify(
-        source, slot="collective.ar_residual_rmsnorm",
-        entry="ar_residual_rmsnorm", world_size=4, timeout_s=180.0,
-    )
-
-    assert result.passed, result.shape_results[0].detail
-    assert result.graph_verified
-    assert result.shape_results[0].graph_replays == 3
-
-
 def test_collective_nccl_cuda_graph_divergent_rank_is_bounded(tmp_path):
     source = tmp_path / "divergent.py"
     source.write_text(

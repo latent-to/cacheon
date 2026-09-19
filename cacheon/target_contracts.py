@@ -143,19 +143,6 @@ def singleton_contracts() -> dict:
             binding_family_id="sglang.collective.dp-attention-exchange.v1",
             correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
         ),
-        "collective.ar_residual_rmsnorm": _contract_ref(
-            "collective.ar_residual_rmsnorm",
-            kind="collective",
-            entry="ar_residual_rmsnorm",
-            prepare=None,
-            graph_dynamic_inputs=("x", "residual"),
-            input_abi_id="collective.ar_residual_rmsnorm.input.v1",
-            output_abi_id="collective.ar_residual_rmsnorm.output.v1",
-            reference_id="collective.ar_residual_rmsnorm.reference.v1",
-            verification_profile_id="collective.ar_residual_rmsnorm.verify.v1",
-            binding_family_id="sglang.collective.ar-fusion.v1",
-            correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
-        ),
         "linear.dense": _contract_ref(
             "linear.dense",
             kind="block",
@@ -196,19 +183,6 @@ def singleton_contracts() -> dict:
             # Generic contract projection; the GLM arena registration bumps the
             # verify id and swaps in the measured NVFP4 cosine floor.
             correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.97"),
-        ),
-        "moe.fused_experts_reduce": _contract_ref(
-            "moe.fused_experts_reduce",
-            kind="collective",
-            entry="fused_experts_reduce",
-            prepare="prepare",
-            graph_dynamic_inputs=("x", "topk_ids", "topk_weights"),
-            input_abi_id="moe.fused_experts_reduce.modelopt-nvfp4-gate-up.input.v3",
-            output_abi_id="moe.fused_experts_reduce.output.v1",
-            reference_id="moe.fused_experts_reduce.m3-swigluoai.reference.v2",
-            verification_profile_id="moe.fused_experts_reduce.m3-nvfp4.verify.v3",
-            binding_family_id="sglang.moe.fused-experts.dispatch.v1",
-            correctness=CorrectnessContractRef(mode="cosine", min_cosine="0.985"),
         ),
         "norm.rmsnorm": _contract_ref(
             "norm.rmsnorm",

@@ -61,7 +61,7 @@ The live catalog supports three kinds. Kind changes the breadth and capability o
 
 ## Current catalog
 
-The current API contains **14 slots**.
+The current API contains **12 slots**.
 
 | Slot | Kind | Entry point | Semantic boundary |
 |---|---|---|---|
@@ -70,12 +70,10 @@ The current API contains **14 slots**.
 | `attention.sparse_mla` | `block` | `sparse_mla` | Query RoPE/FP8 preparation and sparse attention; internal atomic member |
 | `collective.all_gather_into_tensor` | `collective` | `all_gather_into_tensor` | Equal-size all-gather into a validator-owned output |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |
-| `collective.ar_residual_rmsnorm` | `collective` | `ar_residual_rmsnorm` | Fused all-reduce, residual add, and RMSNorm |
 | `collective.dp_output_projection_norm` | `collective` | `prepare` + `project_gather_norm` | Attention-DP output projection, residual-add, RMSNorm, row gather and optional NVFP4 preparation |
 | `collective.reduce_scatter_tensor` | `collective` | `reduce_scatter_tensor` | Equal-size SUM reduce-scatter into a validator-owned output |
 | `linear.dense` | `block` | `prepare` + `dense` | Unquantized GEMM family, including FP32 gates and absorbed BMM; communication stays outside |
 | `moe.fused_experts` | `block` | `prepare` + `fused_experts` | Prepared MoE expert execution |
-| `moe.fused_experts_reduce` | `collective` | `prepare` + `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
 | `moe.fused_routed_experts` | `block` | `prepare` + `fused_routed_experts` | Routing, expert execution, and weighted combine |
 | `norm.fused_add_rmsnorm` | `block` | `fused_add_rmsnorm` | Plain or residual-add RMSNorm with optional residual input/output |
 | `norm.rmsnorm` | `op` | `rmsnorm` | RMS normalization; residual addition remains outside |
@@ -218,6 +216,8 @@ See [Graph safety](../miner-guide/graph-safety.md) for bundle-facing guidance.
 ## Variants and eligibility
 
 A slot may expose several implementation variants for disjoint, validator-observable capability domains such as dtype, shape, compute capability, or topology. Variants do not create new reward units: all rows for one semantic slot resolve to one singleton target.
+
+A slot's registered shape set must cover every dispatch mode of its kernel class. Where the expected kernel mode-switches on token count — one-shot for small `T`, two-shot for large — a shape list that samples only one side leaves the other unverified: on 2026-07-07 that exact hole shipped an engine-garbage kernel past `verify`, because engine decode at `T=8` took the one-shot path the slot never exercised.
 
 Eligibility is evaluated before candidate selection. Unknown capability fields, overlapping ambiguous variants, unsupported topology, and missing prerequisites fail closed or route to stock according to the registered pre-selection policy. The miner cannot introduce a new capability vocabulary through manifest extras.
 

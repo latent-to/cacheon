@@ -25,7 +25,7 @@ integration, and releases; a target ID alone cannot reopen authority.
 
 ## Registered targets
 
-The `target-catalog.v2` policy contains 14 singleton contract identities and two
+The `target-catalog.v2` policy contains 12 singleton contract identities and two
 atomic targets. GLM opens family targets, not every internal member identity:
 
 | Target | Kind | Members / effect |
@@ -35,11 +35,9 @@ atomic targets. GLM opens family targets, not every internal member identity:
 | `attention.sparse_mla` | slot | Internal sparse-attention member: query preparation and sparse attention |
 | `collective.all_gather_into_tensor` | slot | Same-named slot |
 | `collective.all_reduce` | slot | Same-named slot |
-| `collective.ar_residual_rmsnorm` | slot | Same-named slot |
 | `collective.reduce_scatter_tensor` | slot | Same-named slot |
 | `linear.dense` | slot | Same-named slot |
 | `moe.fused_experts` | slot | Experts without ownership of the trailing reduction |
-| `moe.fused_experts_reduce` | slot | Experts plus their trailing reduction |
 | `moe.fused_routed_experts` | slot | Routing head plus experts plus combine (the fat MoE boundary) |
 | `norm.fused_add_rmsnorm` | slot | Plain or residual-add RMSNorm |
 | `norm.rmsnorm` | slot | Same-named slot |

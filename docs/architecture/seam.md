@@ -50,9 +50,8 @@ The registered rows are:
 | `activation` | `SiluAndMul.forward_cuda` | `activation.silu_and_mul` | Registry-selected |
 | `layernorm` | `RMSNorm.forward_cuda` | `norm.rmsnorm`, `norm.fused_add_rmsnorm` | Registry-selected |
 | `dense` | `UnquantizedLinearMethod.apply` | `linear.dense` | `dense` |
-| `moe` family | `FusedMoE.forward_impl` plus the deferred FlashInfer runner/finalize chokepoints | `moe.fused_experts`, `moe.fused_experts_reduce`, `moe.fused_routed_experts` | `moe` |
+| `moe` family | `FusedMoE.forward_impl` plus the deferred FlashInfer runner/finalize chokepoints | `moe.fused_experts`, `moe.fused_routed_experts` | `moe` |
 | `collective` family | `GroupCoordinator.all_reduce`, in/out-place variants, all-gather, and reduce-scatter | `collective.all_reduce`, `collective.all_gather_into_tensor`, `collective.reduce_scatter_tensor` | `collective` |
-| `arfusion` | `flashinfer_allreduce_residual_rmsnorm` | `collective.ar_residual_rmsnorm` | `arfusion` |
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot | None |
 | `resident_swap` | `ModelRunner.init_decode_cuda_graph` plus idle-gated scheduler cache flush | Persistent resident screening only; not qualification or a slot | None |
 
@@ -111,7 +110,6 @@ Inside the engine, each binding maps to one fixed gate:
 
 | Binding | Fixed gate |
 |---|---|
-| `arfusion` | `CACHEON_ARFUSION_SEAM` |
 | `collective` | `CACHEON_COLLECTIVE_SEAM` |
 | `dense` | `CACHEON_DENSE_SEAM` |
 | `moe` | `CACHEON_MOE_SEAM` |

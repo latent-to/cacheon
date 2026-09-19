@@ -27,8 +27,8 @@ def _chokepoint_present(mod, chokepoint: str) -> bool:
     """True iff the adapter's chokepoint exists on ``mod``.
 
     ``"Class.method"`` asserts a method on a class; a bare ``"function_name"`` (no dot)
-    asserts a callable MODULE-LEVEL attribute — the rebind-style seams (e.g. arfusion's
-    ``flashinfer_allreduce_residual_rmsnorm``) patch a module function, not a class.
+    asserts a callable MODULE-LEVEL attribute — the rebind-style seams (e.g. the scheduler
+    gate's ``run_scheduler_process``) patch a module function, not a class.
     ``"attr:Name"`` asserts a module attribute that need not be callable (rebind
     targets like flashinfer's ``JitSpec`` / env constants).
     """

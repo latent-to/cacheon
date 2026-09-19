@@ -131,7 +131,7 @@ def _plan(
     [
         (None, ROUTED, ()),
         (ROUTED, ROUTED, ()),
-        ("moe.fused_experts", "moe.fused_experts_reduce", ("moe.fused_experts",)),
+        ("moe.fused_experts", ROUTED, ("moe.fused_experts",)),
     ],
 )
 def test_registered_stock_and_same_target_transitions(
@@ -166,9 +166,8 @@ def test_registered_stock_and_same_target_transitions(
 def test_subset_challenger_replaces_wide_incumbent_instead_of_being_shadowed():
     catalog = default_target_catalog()
     for wide, narrow in (
-        ("moe.fused_experts_reduce", "moe.fused_experts"),
+        (ROUTED, "moe.fused_experts"),
         ("norm.fused_add_rmsnorm", "norm.rmsnorm"),
-        ("collective.ar_residual_rmsnorm", "collective.all_reduce"),
     ):
         incumbent = _stack(catalog, {wide: _ref(catalog, wide, "wide")})
         arm = _plan(

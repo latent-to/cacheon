@@ -1310,7 +1310,7 @@ def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
 
 def test_audit_witness_grades_policy_bound_empty_receipts_as_no_decision() -> None:
     policy = runner.SlotAuditPolicy(
-        "a" * 32, 250_000, 32, ("moe.fused_experts_reduce",), 4
+        "a" * 32, 250_000, 32, ("moe.fused_experts",), 4
     )
     witness = _audit_witness("empty-audit", policy, (), "3" * 32)
 

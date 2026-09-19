@@ -67,9 +67,9 @@ def test_capabilities_seal_exact_callables_and_identities() -> None:
     with pytest.raises(commission.B300QualificationCommissionError):
         _capabilities(source_resolver_digest=_h("upper").upper())
     with pytest.raises(commission.B300QualificationCommissionError):
-        _capabilities(incumbent_entries=[("moe.fused_experts_reduce", object())])
+        _capabilities(incumbent_entries=[("moe.fused_experts", object())])
     with pytest.raises(commission.B300QualificationCommissionError):
-        _capabilities(incumbent_entries={"moe.fused_experts_reduce": object()})
+        _capabilities(incumbent_entries={"moe.fused_experts": object()})
 
 
 def test_deferred_hidden_judge_binds_only_the_exact_composed_plan() -> None:

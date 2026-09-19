@@ -402,7 +402,7 @@ def test_atomic_execution_routes_both_collectives_and_includes_graph_sequence_on
 
 def test_no_target_literal_or_shape_detail_parsing_in_production_source() -> None:
     source = Path(probe.__file__).read_text()
-    assert "collective.ar_residual_rmsnorm" not in source
+    assert "collective.all_reduce" not in source
     assert "activation.silu_and_mul" not in source
     assert "row.detail" not in source
     assert "row.shape" not in source

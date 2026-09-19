@@ -191,8 +191,6 @@ def engine_config(
     kwargs["context_length"] = max(
         row.input_tokens + row.output_tokens for row in cells
     ) + 128
-    if "arfusion" in bindings:
-        kwargs["enable_flashinfer_allreduce_fusion"] = True
     if not disable_cuda_graph:
         kwargs["watchdog_timeout"] = 1800
     return replace(

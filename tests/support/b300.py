@@ -24,9 +24,7 @@ from cacheon.eval.qualification_runner import HiddenJudgeBinding
 M3_REGISTERED_TARGET_IDS = (
     "activation.silu_and_mul",
     "collective.all_reduce",
-    "collective.ar_residual_rmsnorm",
     "moe.fused_experts",
-    "moe.fused_experts_reduce",
     "norm.rmsnorm",
 )
 

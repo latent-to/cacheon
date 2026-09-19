@@ -136,7 +136,7 @@ def test_data_bound_row_audits_stock_and_candidate_on_the_same_pristine_inputs(
     monkeypatch.setattr(dispatch._audit, "sampled", lambda: True)
     monkeypatch.setattr(
         dispatch._audit, "record",
-        lambda slot, actual, expected: graded.append((actual[0].clone(), expected[0])),
+        lambda slot, actual, expected, **_: graded.append((actual[0].clone(), expected[0])),
     )
     seen = []
 
@@ -176,9 +176,7 @@ def _moe_call(entry, *, slot="moe.fused_experts", baseline=lambda *_: "stock"):
         topk_weights=torch.ones(2, 1),
     )
     registry = _registry(slot, entry, prepare=lambda *_: object())
-    wrapped = dispatch.make_moe_dispatcher(
-        baseline, registry=registry, slots=("moe.fused_experts_reduce", slot)
-    )
+    wrapped = dispatch.make_moe_dispatcher(baseline, registry=registry)
     return wrapped, layer, x, topk
 
 
@@ -318,34 +316,3 @@ def test_compiled_exchange_runtime_bodies_route_candidates(
         broken(coordinator, torch.empty(output_rows, 4), torch.randn(input_rows, 4))
 
 
-def _fusion_baseline(x, residual, *_args, **_kwargs):
-    return "stock", x + residual
-
-
-def test_shallow_fusion_receipts(events, monkeypatch):
-    completed = events
-    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
-    group = SimpleNamespace(size=lambda: 2)
-    monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: group)
-    monkeypatch.setattr(dispatch, "_arfusion_group_role", lambda _use_attn: "tp")
-    x = torch.randn(2, 4)
-    residual = torch.randn(2, 4)
-    weight = torch.ones(4)
-
-    def shallow_entry(x, residual, _weight, _eps, out_norm, out_residual, _group):
-        out_norm.copy_(x)
-        out_residual.copy_(residual)
-
-    shallow = dispatch.make_arfusion_dispatcher(
-        _fusion_baseline,
-        registry=_registry("collective.ar_residual_rmsnorm", shallow_entry),
-    )
-    assert torch.is_tensor(shallow(x, residual, weight)[0])
-    shallow_bad = dispatch.make_arfusion_dispatcher(
-        _fusion_baseline,
-        registry=_registry("collective.ar_residual_rmsnorm", _boom),
-    )
-    with pytest.raises(RuntimeError, match="candidate path failed"):
-        shallow_bad(x, residual, weight)
-
-    assert completed == ["collective.ar_residual_rmsnorm"]

@@ -378,20 +378,20 @@ def test_independent_contributions_compose_without_source_name_collisions(
                 sys.modules.pop(name, None)
 
 
-def test_plain_experts_candidate_cannot_retain_shadowing_reduce_route(
+def test_plain_experts_candidate_cannot_retain_shadowing_routed_route(
     tmp_path: Path,
 ) -> None:
     experts = _write_moe_fixture(
         tmp_path / "experts", "moe.fused_experts", "fused_experts"
     )
-    reduce = _write_moe_fixture(
-        tmp_path / "reduce", "moe.fused_experts_reduce", "fused_experts_reduce"
+    routed = _write_moe_fixture(
+        tmp_path / "routed", "moe.fused_routed_experts", "fused_routed_experts"
     )
     catalog = default_target_catalog()
     context = _evaluation_context(catalog)
     experts_ref = _proposal_ref(experts, catalog)
-    reduce_ref = _proposal_ref(reduce, catalog)
-    incumbent = _evaluation_stack(catalog, context, reduce_ref)
+    routed_ref = _proposal_ref(routed, catalog)
+    incumbent = _evaluation_stack(catalog, context, routed_ref)
 
     candidate = plan_candidate_stack(
         incumbent,
@@ -411,18 +411,18 @@ def test_plain_experts_candidate_cannot_retain_shadowing_reduce_route(
         candidate,
         context,
         catalog,
-        _sources((experts_ref, experts), (reduce_ref, reduce)),
+        _sources((experts_ref, experts), (routed_ref, routed)),
         tmp_path / "candidate-engine",
     )
     manifest = load_manifest(materialized.root)
 
-    assert tuple(incumbent.entries) == ("moe.fused_experts_reduce",)
+    assert tuple(incumbent.entries) == ("moe.fused_routed_experts",)
     assert tuple(candidate.entries) == ("moe.fused_experts",)
     assert tuple(ref.target_id for ref in arm.transition.displaced) == (
-        "moe.fused_experts_reduce",
+        "moe.fused_routed_experts",
     )
     assert [op.slot for op in manifest.ops] == ["moe.fused_experts"]
-    assert all("fused_experts_reduce" not in row.path for row in materialized.files)
+    assert all("fused_routed_experts" not in row.path for row in materialized.files)
 
 
 def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(

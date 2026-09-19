@@ -141,11 +141,11 @@ def test_rmsnorm_semantic_overrides_fall_back(attrs):
     assert dispatched(_rms_self(**attrs), torch.randn(4, 16)) is _BASELINE
 
 
-# ---- moe.fused_experts_reduce: layers that defer their reduce --------------------------
+# ---- moe.fused_experts: stock forwarding across pinned signatures ----------------------
 
 
 def _moe_inputs():
-    slot = get_slot("moe.fused_experts_reduce")
+    slot = get_slot("moe.fused_experts")
     shape = {"num_tokens": 8, "num_experts": 4, "hidden": 64, "inter": 32, "topk": 2}
     return slot.make_inputs(**shape, dtype=torch.float32, device="cpu", seed=0)
 
@@ -157,38 +157,24 @@ def _moe_layer(inputs, *, moe_tp_size, reduce_results):
     )
 
 
-def _moe_reduce_registry(calls):
+def _moe_registry(calls):
     def prepare(_w13, _w2):
         with torch.inference_mode():
             return torch.zeros(1)
 
-    def entry(x, topk_ids, topk_weights, prepared, out, group=None):
+    def entry(x, topk_ids, topk_weights, prepared, out):
         calls.append(torch.is_inference_mode_enabled())
         prepared.zero_()
         out.zero_()
 
     reg = KernelRegistry()
     reg.register(KernelImpl(
-        slot="moe.fused_experts_reduce", bundle_id="t", entry=entry,
+        slot="moe.fused_experts", bundle_id="t", entry=entry,
         prepare=prepare,
         eligibility=Eligibility(dtypes=frozenset({"float32"})),
     ))
     reg.enable()
     return reg
-
-
-def test_reduce_owning_kernel_skipped_when_tp_layer_defers_its_reduce(monkeypatch):
-    import cacheon.dispatch as dispatch
-
-    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", lambda: 1)
-    inputs = _moe_inputs()
-    calls: list = []
-    dispatched = make_moe_dispatcher(lambda *a: _BASELINE, registry=_moe_reduce_registry(calls))
-    topk = SimpleNamespace(topk_ids=inputs["topk_ids"], topk_weights=inputs["topk_weights"])
-    layer = _moe_layer(inputs, moe_tp_size=2, reduce_results=False)
-    assert dispatched(layer, inputs["x"], topk) is _BASELINE
-    assert calls == []  # the kernel never ran — an extra all-reduce would diverge from stock
 
 
 def test_moe_forwards_v0518_pre_quant_input_to_stock(monkeypatch):
@@ -232,20 +218,18 @@ def test_moe_omits_new_optional_argument_for_an_older_stock_signature(monkeypatc
     ) is _BASELINE
 
 
-def test_reduce_owning_kernel_runs_when_layer_reduces(monkeypatch):
+def test_moe_kernel_runs_in_inference_mode_into_a_writable_validator_buffer(monkeypatch):
     import cacheon.dispatch as dispatch
 
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", lambda: 1)
-    monkeypatch.setattr(
-        dispatch, "_tp_device_group", lambda: SimpleNamespace(size=lambda: 2)
-    )
     inputs = _moe_inputs()
     calls: list = []
-    dispatched = make_moe_dispatcher(lambda *a: _BASELINE, registry=_moe_reduce_registry(calls))
+    dispatched = make_moe_dispatcher(lambda *a: _BASELINE, registry=_moe_registry(calls))
     topk = SimpleNamespace(topk_ids=inputs["topk_ids"], topk_weights=inputs["topk_weights"])
-    layer = _moe_layer(inputs, moe_tp_size=2, reduce_results=True)
+    layer = _moe_layer(inputs, moe_tp_size=1, reduce_results=False)
     out = dispatched(layer, inputs["x"], topk)
     assert out is not _BASELINE and calls == [True]
+    # The returned buffer is validator-owned and still mutable outside inference mode.
     out.add_(1)
     assert torch.equal(out, torch.ones_like(out))

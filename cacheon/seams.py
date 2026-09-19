@@ -109,8 +109,7 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
                 binding_id="dp_output", environment_gate="CACHEON_DP_OUTPUT_PROJECTION_SEAM"),
     SeamAdapter("moe", "sglang.srt.layers.moe.fused_moe_triton.layer",
                 "sglang_moe", "FusedMoE.forward_impl",
-                ("moe.fused_experts", "moe.fused_experts_reduce",
-                 "moe.fused_routed_experts"),
+                ("moe.fused_experts", "moe.fused_routed_experts"),
                 binding_id="moe", environment_gate="CACHEON_MOE_SEAM"),
     SeamAdapter("moe_deferred", "sglang.srt.layers.moe.fused_moe_triton.layer",
                 "sglang_moe", "FusedMoE.forward_deferred_finalize",
@@ -140,14 +139,6 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
                 "sglang_allreduce", "GroupCoordinator._reduce_scatter_tensor",
                 ("collective.reduce_scatter_tensor",), binding_id="collective",
                 environment_gate="CACHEON_COLLECTIVE_SEAM"),
-    # Module-LEVEL function chokepoint (no dot): sglang's fused AR+residual+RMSNorm
-    # epilogue waist. Callers resolve the symbol per call via a function-local import,
-    # so rebinding the module attribute reroutes every call site. Only hot when the
-    # arena serves --enable-flashinfer-allreduce-fusion (arena server flag).
-    SeamAdapter("arfusion", "sglang.srt.layers.flashinfer_comm_fusion",
-                "sglang_arfusion", "flashinfer_allreduce_residual_rmsnorm",
-                ("collective.ar_residual_rmsnorm",), binding_id="arfusion",
-                environment_gate="CACHEON_ARFUSION_SEAM"),
     # NOT a slot seam: the candidate-bundle load gate. sglang spawns scheduler ranks
     # AND a detokenizer (output-path!) through the same bootstrap, and the detokenizer
     # imports watched modules too — so seam.activate() never loads miner code; this

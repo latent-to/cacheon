@@ -207,13 +207,12 @@ def make_moe_dispatcher(
     baseline_forward: Callable[..., object],
     *,
     registry: KernelRegistry = REGISTRY,
-    slots: tuple[str, ...] = ("moe.fused_experts_reduce", "moe.fused_experts"),
+    slots: tuple[str, ...] = ("moe.fused_experts",),
 ) -> Callable[..., object]:
     """Wrap the backend-neutral ``FusedMoE.forward_impl`` chokepoint.
 
     The validator owns routing, weights and output allocation. EP/DP and
-    unsupported domains remain stock. The plain slot replays the trusted TP
-    reduce; the reduce-owning slot receives the real process group.
+    unsupported domains remain stock. The slot replays the trusted TP reduce.
     """
 
     def stock(self, hidden_states, topk_output, pre_quant_input):
@@ -257,136 +256,60 @@ def make_moe_dispatcher(
                     for slot in slots:
                         if not registry.variants(slot):
                             continue
-                        reduce_slot = slot.endswith(".fused_experts_reduce")
-                        group = None
-                        descriptor = None
-                        if reduce_slot:
-                            topk_ids, topk_weights = routed
-                            if quant_fmt not in {None, "nvfp4"} or (
-                                quant_fmt == "nvfp4"
-                                and not supports_nvfp4_moe_layer(self)
-                            ):
-                                continue
-                            if not (
-                                x.is_contiguous()
-                                and torch.is_tensor(topk_ids)
-                                and torch.is_tensor(topk_weights)
-                                and topk_ids.dim() == 2
-                                and topk_weights.dim() == 2
-                                and tuple(topk_ids.shape) == tuple(topk_weights.shape)
-                                and topk_ids.shape[0] == x.shape[0]
-                                and topk_ids.dtype == torch.int32
-                                and topk_weights.dtype == torch.float32
-                                and topk_ids.is_contiguous()
-                                and topk_weights.is_contiguous()
-                                and topk_ids.device == x.device
-                                and topk_weights.device == x.device
-                            ):
-                                continue
-                            if not getattr(self, "reduce_results", False):
-                                continue
-                            group = _tp_device_group()
-                            group_size = _process_group_size(group)
-                            if group_size is None or group_size <= 1:
-                                continue
-                            dimensions = {
-                                "ep_size": int(getattr(self, "moe_ep_size", 1)),
-                                "top_k": int(topk_ids.shape[-1]),
-                            }
-                            num_experts = getattr(self, "num_local_experts", None)
-                            if (
-                                isinstance(num_experts, int)
-                                and not isinstance(num_experts, bool)
-                                and num_experts >= 0
-                            ):
-                                dimensions["num_experts"] = num_experts
-                            intermediate = getattr(
-                                self, "intermediate_size_per_partition", None
-                            )
-                            if (
-                                isinstance(intermediate, int)
-                                and not isinstance(intermediate, bool)
-                                and intermediate >= 0
-                            ):
-                                dimensions["intermediate_dim"] = intermediate
-                            descriptor = _collective_call_descriptor(
-                                x,
-                                group_size=group_size,
-                                quant=quant_fmt or "dense",
-                                **dimensions,
-                            )
-                            decision = registry.select(slot, descriptor)
-                            impl = decision.impl
-                        else:
-                            if (
-                                quant_fmt == "nvfp4"
-                                and not supports_nvfp4_moe_layer(self)
-                            ):
-                                continue
-                            topk_ids, _topk_weights = routed
-                            tp_size, world_size = _runtime_parallel_sizes()
-                            w13 = self.w13_weight.data
-                            w2 = self.w2_weight.data
-                            descriptor = moe_call_descriptor(
-                                x,
-                                topk_ids,
-                                architecture=(
-                                    _arch_tag(x.device.index or 0)
-                                    if x.is_cuda else None
-                                ),
-                                graph_mode="cuda_graph" if in_graph else "eager",
-                                quant=quant_fmt or "dense",
-                                num_experts=int(w13.shape[0]),
-                                intermediate_dim=int(
-                                    getattr(
-                                        self,
-                                        "intermediate_size_per_partition",
-                                        w2.shape[-1] * (2 if quant_fmt else 1),
-                                    )
-                                ),
-                                tp_size=tp_size,
-                                world_size=world_size,
-                            )
-                            impl = registry.select(slot, descriptor).impl
+                        if (
+                            quant_fmt == "nvfp4"
+                            and not supports_nvfp4_moe_layer(self)
+                        ):
+                            continue
+                        topk_ids, _topk_weights = routed
+                        tp_size, world_size = _runtime_parallel_sizes()
+                        w13 = self.w13_weight.data
+                        w2 = self.w2_weight.data
+                        descriptor = moe_call_descriptor(
+                            x,
+                            topk_ids,
+                            architecture=(
+                                _arch_tag(x.device.index or 0)
+                                if x.is_cuda else None
+                            ),
+                            graph_mode="cuda_graph" if in_graph else "eager",
+                            quant=quant_fmt or "dense",
+                            num_experts=int(w13.shape[0]),
+                            intermediate_dim=int(
+                                getattr(
+                                    self,
+                                    "intermediate_size_per_partition",
+                                    w2.shape[-1] * (2 if quant_fmt else 1),
+                                )
+                            ),
+                            tp_size=tp_size,
+                            world_size=world_size,
+                        )
+                        impl = registry.select(slot, descriptor).impl
                         if impl is None:
                             continue
                         if impl.prepare is None:
                             raise RuntimeError(
                                 f"selected MoE candidate for {slot} has no prepare"
                             )
-                        if reduce_slot:
-                            # Commit the routing receipt only after every non-miner
-                            # preflight gate passed. Registry state is immutable in a
-                            # live engine, so identity must remain exact.
-                            committed = registry.select(slot, descriptor)
-                            if committed.impl is not impl:
-                                raise RuntimeError(
-                                    "collective selection changed between "
-                                    "preflight and commit"
-                                )
-                        else:
-                            committed = registry.select(slot, descriptor)
-                            if committed.impl is not impl:
-                                raise RuntimeError(
-                                    "MoE selection changed between preflight and commit"
-                                )
+                        # Commit the routing receipt only after every non-miner
+                        # preflight gate passed. Registry state is immutable in a
+                        # live engine, so identity must remain exact.
+                        committed = registry.select(slot, descriptor)
+                        if committed.impl is not impl:
+                            raise RuntimeError(
+                                "MoE selection changed between preflight and commit"
+                            )
                         # Stock consumes the upstream FP4 bound to x's address;
                         # snapshot its output before the candidate, not a clone of x.
                         # Its TP reduce is collective; rank-seeded sampling stays lockstep.
                         # Both sides are post-reduce here (the kernel path replays the
-                        # validator reduce for plain fused_experts), so comparable.
+                        # validator reduce), so comparable.
                         aud = not in_graph and _audit.sampled()
                         expected = _audit.capture_reference(
                             slot, lambda: stock(self, x, topk_output, pre_quant_input)
                         ) if aud else None
-                        out = _run_moe_kernel(
-                            self,
-                            x,
-                            routed,
-                            impl,
-                            slot,
-                            group=group,
-                        )
+                        out = _run_moe_kernel(self, x, routed, impl, slot)
                         if expected is not None:
                             _record_moe_audit(slot, out, expected)
                         _log_once_active(slot)
@@ -713,16 +636,8 @@ def _run_routed_moe_kernel(
 
 
 @torch.inference_mode()
-def _run_moe_kernel(
-    self,
-    x,
-    routed,
-    impl,
-    slot,
-    *,
-    group=None,
-):
-    """Run the local-expert or reduce-owning expert contract into validator output."""
+def _run_moe_kernel(self, x, routed, impl, slot):
+    """Run the local-expert contract into validator output."""
     topk_ids, topk_weights = routed
     live_inputs = {
         "x": x,
@@ -736,22 +651,6 @@ def _run_moe_kernel(
         raise RuntimeError(f"{slot} must declare exactly one live output")
     out = allocation.outputs[0]
 
-    if slot.endswith(".fused_experts_reduce"):
-        # The kernel does experts AND the cross-rank reduce. Hand it the TP group; do not
-        # replay a second reduce. The caller resolved and verified this actual group
-        # before committing selection.
-        if group is None:
-            raise RuntimeError("reduce-owning MoE kernel requires a live TP group")
-        # ``prepare`` is miner code and receives the live layer's weight tensors.
-        # The caller has already made this route non-recoverable before entering
-        # any rank-local fallible prelude.
-        prepared = _moe_prepared(self, impl, slot)
-        _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out, group)
-        _validate_live_outputs(
-            contract, allocation, tensor_inputs, input_bindings, like=x
-        )
-        return out
-
     prepared = _moe_prepared(self, impl, slot)
     _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out)
     _validate_live_outputs(
@@ -764,24 +663,6 @@ def _run_moe_kernel(
 
         out = tensor_model_parallel_all_reduce(out)
     return out
-
-
-def _tp_device_group():
-    """The exact group reduced by the replaced ``FusedMoE.forward_impl`` tail.
-
-    That stock boundary calls ``tensor_model_parallel_all_reduce``, whose pinned
-    Sglang implementation owns ``get_tp_group()``. This can differ from the layer's
-    internal MoE-TP group under MoE-DP; the slot must follow the model-consumed stock
-    product rather than a similarly named cached layer field."""
-    try:
-        from sglang.srt.distributed.parallel_state import get_tp_group
-
-        group = getattr(get_tp_group(), "device_group", None)
-    except Exception as exc:  # noqa: BLE001 - preserve pinned-runtime cause
-        raise RuntimeError("selected MoE target cannot resolve its TP group") from exc
-    if group is None:
-        raise RuntimeError("selected MoE target resolved no TP device group")
-    return group
 
 
 def _moe_data_parallel_world_size() -> int:
@@ -874,7 +755,7 @@ def make_allreduce_dispatcher(
                 else:
                     impl = None
                 if impl is not None:
-                    # Audited baseline is COLLECTIVE (see arfusion note): rank-seeded
+                    # Audited baseline is COLLECTIVE (see cacheon/audit.py threat notes): rank-seeded
                     # sampling + lockstep dispatch make the extra reduce safe.
                     aud = not _in_cuda_graph() and _audit.sampled()
                     a_in = input_.clone() if aud else None
@@ -923,11 +804,6 @@ def _log_collective_active() -> None:
     if not _COLLECTIVE_LOGGED_ACTIVE:
         _COLLECTIVE_LOGGED_ACTIVE = True
         logger.warning("cacheon: collective.all_reduce seam ACTIVE — TP reduce routed through miner kernel")
-# ---------------------------------------------------------------------------
-# collective.ar_residual_rmsnorm — the fused AR+residual+RMSNorm epilogue waist
-# ---------------------------------------------------------------------------
-
-_ARFUSION_LOGGED_ACTIVE = False
 
 
 def _flashinfer_tuning() -> bool:
@@ -941,195 +817,6 @@ def _flashinfer_tuning() -> bool:
         return False
 
 
-def make_arfusion_dispatcher(
-    baseline_fn: Callable[..., object],
-    *,
-    registry: KernelRegistry = REGISTRY,
-    slot: str = "collective.ar_residual_rmsnorm",
-) -> Callable[..., object]:
-    """Build a replacement for the MODULE-LEVEL function
-    ``sglang.srt.layers.flashinfer_comm_fusion.flashinfer_allreduce_residual_rmsnorm``
-    — sglang's own fused-epilogue waist. With ``--enable-flashinfer-allreduce-fusion``
-    (an arena server flag) every participating layer epilogue funnels through this one
-    function: the layer defers its TP all-reduce, and the next norm call performs
-    AR + residual-add + RMSNorm fused. The call site resolves the symbol per call via a
-    function-local import, so rebinding the module attribute reroutes every caller
-    (the mechanism the 2026-07-02 M3 fused-epilogue campaign validated in production).
-
-    The validator owns the call site, BOTH output buffers (norm_out, new_residual), and
-    the process group; the miner owns the reduce transport + the fused add/norm math.
-    Mid-network, upstream of the sampler — nothing to substitute. Stock signature and
-    the ``Tuple[Tensor, Tensor]`` return are preserved exactly; any deviation from the
-    plain path (extra semantics via kwargs, missing residual, non-2D input) falls back.
-
-    SCOPE: 2D input with a residual, multi-rank group, opt-in via
-    ``CACHEON_ARFUSION_SEAM=1``. Token-count dispatch windows (a kernel measured to win
-    only at decode-sized T) are declared via eligibility ``max_num_tokens`` — oversized
-    calls (prefill) route to the trusted baseline rather than trusting the kernel to
-    decline.
-    """
-
-    def dispatched(input_tensor, residual, weight, eps=1e-6, max_token_num=2048,
-                   use_oneshot=None, trigger_completion_at_end=False, fp32_acc=False,
-                   use_attn_tp_group=True):
-        # FIRST, before any Python machinery: inside a Dynamo trace this constant-folds
-        # to True and the compiled piece bakes pure stock (see _dynamo_compiling — the
-        # piecewise-prefill trace of this exact call site hard-errored otherwise).
-        if _dynamo_compiling():
-            return baseline_fn(input_tensor, residual, weight, eps, max_token_num,
-                               use_oneshot, trigger_completion_at_end, fp32_acc,
-                               use_attn_tp_group)
-        if _arfusion_seam_active():
-            # FlashInfer profiles stock tactics under this same epilogue call site.
-            # Miner collectives must be invisible to that lifecycle: decide before
-            # deep consume, capability preflight, or the receipted commit boundary.
-            if _flashinfer_tuning():
-                return baseline_fn(
-                    input_tensor, residual, weight, eps, max_token_num, use_oneshot,
-                    trigger_completion_at_end, fp32_acc, use_attn_tp_group
-                )
-            # Contiguity guard = STOCK PARITY: the stock function refuses
-            # non-contiguous input/residual/weight (real call sites pass views —
-            # upstream guards for it, flashinfer_comm_fusion.py). A raw-pointer
-            # kernel fed a strided view reads the wrong layout silently; verify
-            # can't see it (it always builds contiguous tensors), only the
-            # engine's own call mix does.
-            if (
-                torch.is_tensor(input_tensor)
-                and input_tensor.dim() == 2
-                and input_tensor.is_floating_point()
-                and torch.is_tensor(residual)
-                and tuple(residual.shape) == tuple(input_tensor.shape)
-                and residual.dtype == input_tensor.dtype
-                and residual.device == input_tensor.device
-                and torch.is_tensor(weight)
-                and weight.dim() == 1
-                and weight.shape[0] == input_tensor.shape[-1]
-                and weight.dtype == input_tensor.dtype
-                and weight.device == input_tensor.device
-                and input_tensor.is_contiguous()
-                and residual.is_contiguous()
-                and weight.is_contiguous()
-            ):
-                group = _arfusion_group(use_attn_tp_group)
-                group_size = _process_group_size(group)
-                impl = None
-                if (
-                    group_size is not None
-                    and group_size > 1
-                    and _arfusion_group_role(use_attn_tp_group) == "tp"
-                ):
-                    descriptor = _collective_call_descriptor(
-                        input_tensor, group_size=group_size
-                    )
-                    impl = registry.select(
-                        slot, descriptor
-                    ).impl
-                if impl is not None:
-                    # The audited baseline is COLLECTIVE: safe only because the
-                    # sampling RNG is rank-identically seeded (audit.py) and all
-                    # ranks reach this dispatcher in lockstep; never under capture.
-                    aud = not _in_cuda_graph() and _audit.sampled()
-                    if aud:
-                        a_x, a_res = input_tensor.clone(), residual.clone()
-                    live_inputs = {
-                        "x": input_tensor,
-                        "residual": residual,
-                        "weight": weight,
-                        "eps": float(eps),
-                    }
-                    contract, allocation, tensor_inputs, input_bindings = (
-                        _allocate_live_outputs(
-                            slot, live_inputs, like=input_tensor
-                        )
-                    )
-                    if len(allocation.outputs) != 2:
-                        raise RuntimeError(
-                            f"{slot} must declare exactly two live outputs"
-                        )
-                    out_norm, out_residual = allocation.outputs
-                    committed = registry.select(slot, descriptor)
-                    if committed.impl is not impl:
-                        raise RuntimeError(
-                            "collective selection changed between preflight and commit"
-                        )
-                    _receipts.invoke(slot, impl.entry, input_tensor, residual, weight, float(eps),
-                            out_norm, out_residual, group)
-                    _validate_live_outputs(
-                        contract,
-                        allocation,
-                        tensor_inputs,
-                        input_bindings,
-                        like=input_tensor,
-                    )
-                    if aud:
-                        _audit.run(slot, (out_norm, out_residual),
-                                   lambda: baseline_fn(a_x, a_res, weight, eps,
-                                                       max_token_num, use_oneshot,
-                                                       trigger_completion_at_end,
-                                                       fp32_acc, use_attn_tp_group))
-                    _log_arfusion_active()
-                    _receipts.completed(slot)
-                    return out_norm, out_residual
-        return baseline_fn(input_tensor, residual, weight, eps, max_token_num,
-                           use_oneshot, trigger_completion_at_end, fp32_acc,
-                           use_attn_tp_group)
-
-    return dispatched
-
-
-def _arfusion_seam_active() -> bool:
-    import os
-
-    return os.environ.get("CACHEON_ARFUSION_SEAM") == "1"
-
-
-# (The 2026-07-07 one-off "stockcheck" diagnostic that lived here was productized
-# into cacheon/audit.py — the in-engine audit is the same mechanism, generic across
-# dispatchers, receipted, and gated by the eval driver.)
-
-
-def _arfusion_group(use_attn_tp_group: bool):
-    """The torch ProcessGroup the stock call would reduce over. ``use_attn_tp_group``
-    mirrors the stock argument (attention-TP vs full-TP chain); under plain TP the two
-    coincide. Resolution failure -> None -> baseline (never guess a group)."""
-    try:
-        from sglang.srt.distributed import parallel_state as ps
-
-        if use_attn_tp_group:
-            coord = ps.get_attn_tp_group()
-        elif int(ps.get_moe_expert_parallel_world_size()) > 1:
-            coord = ps.get_moe_ep_group()
-        else:
-            coord = ps.get_moe_tp_group()
-        return getattr(coord, "device_group", None)
-    except Exception:  # noqa: BLE001 - a different group is never a safe fallback
-        return None
-
-
-def _arfusion_group_role(use_attn_tp_group: bool) -> Optional[str]:
-    """Role of the exact stock fusion communicator, without guessing aliases."""
-
-    if use_attn_tp_group:
-        return "tp"
-    try:
-        from sglang.srt.distributed import parallel_state as ps
-
-        return (
-            "ep"
-            if int(ps.get_moe_expert_parallel_world_size()) > 1
-            else "tp"
-        )
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _log_arfusion_active() -> None:
-    global _ARFUSION_LOGGED_ACTIVE
-    if not _ARFUSION_LOGGED_ACTIVE:
-        _ARFUSION_LOGGED_ACTIVE = True
-        logger.warning(
-            "cacheon: collective.ar_residual_rmsnorm seam ACTIVE — fused AR+norm epilogue routed through miner kernel")
 def _dtype_name(dtype: torch.dtype) -> str:
     return {
         torch.bfloat16: "bfloat16",

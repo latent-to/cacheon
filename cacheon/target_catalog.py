@@ -884,8 +884,8 @@ class TargetCatalog:
 SINGLETON_TARGET_IDS = (
     "activation.silu_and_mul", "attention.indexer_select", "attention.sparse_mla",
     "collective.all_gather_into_tensor", "collective.all_reduce",
-    "collective.ar_residual_rmsnorm", "collective.reduce_scatter_tensor",
-    "linear.dense", "moe.fused_experts", "moe.fused_experts_reduce",
+    "collective.reduce_scatter_tensor",
+    "linear.dense", "moe.fused_experts",
     "moe.fused_routed_experts", "norm.fused_add_rmsnorm", "norm.rmsnorm",
     "collective.dp_output_projection_norm",
 )
@@ -906,19 +906,8 @@ def default_target_catalog() -> TargetCatalog:
     # other dense calls or input norms. Evicting their entire contributions
     # removed working optimizations in the 2026-09-16 mainnet candidate.
     displacements = {
-        "collective.ar_residual_rmsnorm": frozenset(
-            {
-                "collective.all_reduce",
-                "norm.fused_add_rmsnorm",
-            }
-        ),
-        "moe.fused_experts_reduce": frozenset({"moe.fused_experts"}),
         "moe.fused_routed_experts": frozenset({"moe.fused_experts"}),
         "norm.fused_add_rmsnorm": frozenset({"norm.rmsnorm"}),
-    }
-    conflicts = {
-        "moe.fused_experts_reduce": frozenset({"moe.fused_routed_experts"}),
-        "moe.fused_routed_experts": frozenset({"moe.fused_experts_reduce"}),
     }
     specs = [
         TargetSpec(
@@ -926,7 +915,6 @@ def default_target_catalog() -> TargetCatalog:
             kind=TargetKind.SLOT,
             members=(target_id,),
             displaces=displacements.get(target_id, frozenset()),
-            conflicts_with=conflicts.get(target_id, frozenset()),
             allowed_features=_STANDARD_COMPONENT_FEATURES,
             contract_ref=contracts[target_id],
         )

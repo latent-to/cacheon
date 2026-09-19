@@ -564,7 +564,7 @@ def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
     config = _config()
     session, launch = "6" * 32, _digest("a")
     policy = SlotAuditPolicy(
-        "c" * 32, 250_000, 32, ("moe.fused_experts_reduce",), config.tp_size
+        "c" * 32, 250_000, 32, ("moe.fused_experts",), config.tp_size
     )
     _bind_init(monkeypatch, config, launch)
     request_row = batch_request(
@@ -632,7 +632,7 @@ def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
             engine_policy._complete_candidate_execution(
                 "receipts",
                 active_receipts=[],
-                expected_slots=["moe.fused_experts_reduce"],
+                expected_slots=["moe.fused_experts"],
                 expected_member_count=config.tp_size,
                 audit_policy=policy,
             )
@@ -688,7 +688,7 @@ def test_candidate_coverage_failure_remains_hard_error_outside_audit(monkeypatch
         engine_policy._complete_candidate_execution(
             "receipts",
             active_receipts=[],
-            expected_slots=["moe.fused_experts_reduce"],
+            expected_slots=["moe.fused_experts"],
             expected_member_count=4,
             audit_policy=None,
         )

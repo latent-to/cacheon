@@ -4,7 +4,6 @@
  "examples/miner_dp_attention_exchange_torch": "3ccc5695615698c3a1493fc24cb7ebb1b18d26df79f1219b3c46ed7f7e7d1dda",
  "examples/miner_fused_add_rmsnorm_torch": "33e5ec5ac78b3568cf858db58c2e8c27864cf51d092a83a134ec0b61084f5d92",
  "examples/miner_indexer_select_torch": "e6a6a0cedcc556e7db48226c7b0ad9faf1b1f681f06fed739f311865ff0ffcb4",
- "examples/miner_moe_fused_experts_reduce_torch": "edf967fe578becaece04c26ece0777fd4e9f600577a1bc34d975d94f0bde248b",
  "examples/miner_moe_fused_experts_torch": "5376645cb576601d279ab30c890c519dccb72db980e547df531dd21b36d162be",
  "examples/miner_moe_fused_routed_torch": "72ae0f568323e83545255b0ab472b1b444405ebb3213515caf8afd600d01895b",
  "examples/miner_rmsnorm_broken": "9d3c91f9eeed12832a78706aab5e2990cf6a997889e12801aa8837de2e581a99",

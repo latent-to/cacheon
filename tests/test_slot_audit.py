@@ -93,6 +93,18 @@ def test_record_garbage_is_violation(monkeypatch):
     assert s["n"] == 1 and s["violations"] == 1 and s["worst_frac"] < 0.5
 
 
+def test_scaled_record_catches_a_wrong_kernel_on_small_activations(monkeypatch):
+    # Early-layer MoE outputs sit below 0.04; the flat float32 atol of 1e-5 is scaled
+    # here to the same regime: a 1.5x-wrong output hides under a flat atol, not a scaled one.
+    _arm(monkeypatch)
+    x = torch.randn(64, 64) * 1e-6
+    audit.record(SLOT, (x * 1.5,), (x,))
+    audit.record(SLOT, (x * 1.5,), (x,), scaled=True)
+    audit.record(SLOT, (x * (1 + 1e-6),), (x,), scaled=True)
+    s = audit._stats[SLOT]
+    assert s["n"] == 3 and s["violations"] == 1
+
+
 def test_record_ulp_noise_passes(monkeypatch):
     # A few elements at the tolerance edge must NOT fail an otherwise-faithful kernel
     # (the outlier-channel single-ULP class measured on the v6 stockcheck).
