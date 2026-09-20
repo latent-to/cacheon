@@ -179,12 +179,29 @@ def _pieces(buffer: torch.Tensor, dim: int, index: torch.Tensor) -> list[tuple[i
     return [(start, index[start : start + step]) for start in range(0, index.numel(), step)]
 
 
-def _errors(outputs: list, rows: list, expected: list) -> list[torch.Tensor]:
+def _dsa_choice_position(module, count: int) -> int | None:
+    """Identify the unordered token-index result in the pinned DSA node signatures."""
+    indexer = sys.modules.get("sglang.srt.layers.attention.dsa.dsa_indexer")
+    if isinstance(module, getattr(indexer, "Indexer", ())):
+        return 0
+    model = sys.modules.get("sglang.srt.models.deepseek_v2")
+    if (isinstance(module, getattr(model, "DeepseekV2AttentionMLA", ()))
+            and module.use_dsa and count == 2):
+        return 1
+    if (isinstance(module, getattr(model, "DeepseekV2DecoderLayer", ()))
+            and module.self_attn.use_dsa and count == 3):
+        return 2
+    return None
+
+
+def _errors(outputs: list, rows: list, expected: list, *, module=None) -> list[torch.Tensor]:
     """Row errors of a result and of the live engine state against stock's answer."""
 
     if len(outputs) + len(rows) != len(expected):
         raise ValueError("the result does not have stock's tensor structure")
-    found = [_row_errors(a, e, dim) for (a, dim), (e, _) in zip(outputs, expected)]
+    unordered = _dsa_choice_position(module, len(outputs))
+    found = [_row_errors(a, e, dim, unordered=position == unordered)
+             for position, ((a, dim), (e, _)) in enumerate(zip(outputs, expected))]
     for (buffer, dim, index, held), (e, _) in zip(rows, expected[len(outputs):]):
         parts = [
             _row_errors(
@@ -246,7 +263,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
         (state_values(buffer.index_select(dim, index), held), dim) for buffer, dim, index, held in rows
     ])
     with _native(module):
-        twin = run(lambda outputs: expected and _errors(outputs, rows, expected))
+        twin = run(lambda outputs: expected and _errors(outputs, rows, expected, module=module))
     return expected, twin
 
 
@@ -323,13 +340,24 @@ def _native(module):
             m._forward_method = method
 
 
-def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int) -> torch.Tensor:
+def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int,
+                *, unordered: bool = False) -> torch.Tensor:
     if actual.shape != expected.shape:
         raise ValueError(f"shape {tuple(actual.shape)} is not stock's {tuple(expected.shape)}")
     a = actual.detach().reshape(-1, 1) if actual.dim() < 2 else actual.detach()
     e = expected.detach().reshape(-1, 1) if expected.dim() < 2 else expected.detach()
     a, e = a.movedim(dim, 0).flatten(1), e.movedim(dim, 0).flatten(1)
     if not expected.is_floating_point():
+        if unordered:
+            # DSA's selector emits an unordered index set. Ordered grading rejected
+            # stock at all 19 index-producing GLM layers (B300, 2026-09-20). Match
+            # occurrences so duplicate IDs and padding cannot manufacture overlap.
+            a, e = a.sort(dim=1).values.contiguous(), e.sort(dim=1).values.contiguous()
+            occurrence = (torch.arange(e.shape[1], device=e.device)
+                          - torch.searchsorted(e, e, right=False))
+            available = (torch.searchsorted(a, e, right=True)
+                         - torch.searchsorted(a, e, right=False))
+            return (occurrence >= available).sum(dim=1) / max(1, e.shape[1])
         # Ids and flags are choices: the error is the share that differ, in stock's order,
         # which the other outputs line up with. As magnitudes, a router that only picked
         # a quarter of the experts kept 96.6% of its rows inside the floor (2026-09-20).
@@ -440,7 +468,7 @@ def make_node_dispatcher(
             try:
                 actual = _errors(
                     [(t, 0) for t in _tensors(result, [], fields=True)],
-                    _state_rows(runner, (*args, *kwargs.values())), expected,
+                    _state_rows(runner, (*args, *kwargs.values())), expected, module=module,
                 )
                 grade = _grade(slot, id(module), actual, twin)
                 if grade is not None and grade[0] < _ROW_BAR and not reported:

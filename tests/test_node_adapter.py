@@ -195,6 +195,53 @@ def test_wildcard_failure_log_names_each_concrete_node(audited, caplog):
     assert "node=layers.1.mlp tensor_position=0" in caplog.text
 
 
+def test_unordered_choices_preserve_members_and_multiplicity():
+    expected = torch.tensor([[-1, -1, 10, 20], [10, 20, 30, 40], [10, 20, 30, 40]])
+    actual = torch.tensor([[-1, 20, -1, 10], [10, 10, 10, 10], [20, 30, 40, 50]])
+    assert torch.equal(nodes._row_errors(actual, expected, 0, unordered=True),
+                       torch.tensor([0.0, 0.75, 0.25]))
+    assert nodes._row_errors(actual[:1], expected[:1], 0).item() == 0.75
+
+
+@pytest.mark.parametrize("kind", ["layer", "attention", "indexer"])
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_dsa_choice_permutation_is_not_a_false_failure(audited, monkeypatch, corrupt, kind):
+    class Decoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = SimpleNamespace(use_dsa=True)
+            self.use_dsa = True
+            self.calls = 0
+
+        def forward(self, x):
+            self.calls += 1
+            ids = torch.arange(8).repeat(x.shape[0], 1).roll(self.calls, -1)
+            if kind == "indexer":
+                return ids
+            return (x * 2, x + 1, ids) if kind == "layer" else (x * 2, ids)
+
+    module_name = ("sglang.srt.layers.attention.dsa.dsa_indexer" if kind == "indexer"
+                   else "sglang.srt.models.deepseek_v2")
+    model = ModuleType(module_name)
+    setattr(model, {"layer": "DeepseekV2DecoderLayer", "attention": "DeepseekV2AttentionMLA",
+                    "indexer": "Indexer"}[kind], Decoder)
+    monkeypatch.setitem(sys.modules, model.__name__, model)
+    runner, _ = _served_model()
+    runner.model.decoder = Decoder()
+
+    def candidate(module, x):
+        result = module.forward(x)
+        ids = result if kind == "indexer" else result[-1]
+        ids = ids // 4 * 4 if corrupt else ids
+        return ids if kind == "indexer" else (*result[:-1], ids)
+
+    nodes.bind(runner, _registry("decoder", candidate))
+    result = runner.model.decoder(torch.ones(4, 4))
+    if kind != "indexer":
+        assert torch.equal(result[0], torch.full((4, 4), 2.0))
+    assert audited["decoder"]["violations"] == int(corrupt)
+
+
 def test_star_stands_for_exactly_one_segment():
     pattern = nodes.node_pattern("model.layers.*.mlp")
     assert pattern.match("model.layers.3.mlp")
