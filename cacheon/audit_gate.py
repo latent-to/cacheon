@@ -150,3 +150,25 @@ def grade(receipts, policy) -> tuple[str, str]:
         expected_slots=policy.expected_slots,
         expected_member_count=policy.expected_member_count,
     )
+
+
+def infrastructure_failure(
+    audit_receipts: list[dict],
+    *,
+    min_calls: int,
+    expected_slots: Sequence[str] | None = None,
+    expected_member_count: int | None = None,
+) -> str | None:
+    """Identify unavailable comparisons without turning them into miner FAIL.
+
+    Reuse the registered gate with only numerical violations suppressed. Missing
+    rank coverage, insufficient calls and reference/comparator errors then keep
+    their exact diagnostics; a complete numerical mismatch remains a real FAIL.
+    """
+    decision, detail = gate(
+        [{**row, "violations": 0} if type(row) is dict else row
+         for row in audit_receipts],
+        min_calls=min_calls, expected_slots=expected_slots,
+        expected_member_count=expected_member_count,
+    )
+    return None if decision == PASS else detail

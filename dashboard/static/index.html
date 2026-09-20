@@ -713,10 +713,14 @@ window.openDetail = async (rid) => {
   if (request !== detailRequest) return;
   history.replaceState(null, "", submissionURL(d.reservation_id));
   const kv = (k, v) => `<dt>${esc(k)}</dt><dd>${v}</dd>`;
-  let sourceLink = esc(d.url || "Not recorded");
+  const sourceHidden = d.bundle_visibility && !d.bundle_visibility.available;
+  const sourceNotice = d.bundle_visibility?.release_at
+    ? `Source and raw logs available ${new Date(d.bundle_visibility.release_at * 1000).toLocaleString()}`
+    : "Source and raw logs become available eight hours after the final evaluation result.";
+  let sourceLink = sourceHidden ? esc(sourceNotice) : esc(d.url || "Not recorded");
   try {
-    const source = new URL(d.url);
-    if (["https:", "http:"].includes(source.protocol))
+    const source = new URL(d.url, location.origin);
+    if (!sourceHidden && ["https:", "http:"].includes(source.protocol))
       sourceLink = `<a href="${esc(source.href)}" target="_blank" rel="noopener noreferrer" style="overflow-wrap:anywhere">${esc(source.hostname)} ↗</a><div class="muted small" style="overflow-wrap:anywhere">${esc(d.url)}</div>`;
   } catch {}
   const settle = d.settlement ? `
@@ -773,7 +777,7 @@ window.openDetail = async (rid) => {
     const log = r.worker_log;
     const hold = r.qualification_hold;
     const holdDetail = hold ? `<p>${pill("HOLD")} ${esc(hold.reason)}</p>
-      <pre class="forensics-log">${esc(hold.failure_message || "No underlying exception was retained for this attempt.")}</pre>` : "";
+      <pre class="forensics-log">${esc(sourceHidden ? sourceNotice : hold.failure_message || "No underlying exception was retained for this attempt.")}</pre>` : "";
     const qualificationError = r.qualification_error
       ? `<p class="callout">Qualification evidence unreadable: ${esc(r.qualification_error)}</p>` : "";
     if (!log) return `<div class="forensics-run">
@@ -786,7 +790,7 @@ window.openDetail = async (rid) => {
       <div class="forensics-head"><code>${esc(short(r.request_id, 16))}</code>
         ${pill(r.result_state || "no result")}
         <span class="pill ${complete ? "ok" : "warn"}">${esc(log.retention)} logs</span>
-        <a class="btn" href="${esc(log.download_url)}">Download ${complete ? "full" : "retained"} raw output (.log)</a>
+        ${log.download_url ? `<a class="btn" href="${esc(log.download_url)}">Download ${complete ? "full" : "retained"} raw output (.log)</a>` : `<span class="muted small">${esc(sourceNotice)}</span>`}
       </div>
       ${holdDetail}${qualificationError}
       <p class="muted small">Worker log ${Number(log.size).toLocaleString()} bytes · sha256 <code>${esc(short(log.sha256, 18))}</code></p>

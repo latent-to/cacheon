@@ -34,7 +34,7 @@ from cacheon.stack_identity import (
 
 
 RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v2"
-_STAGES = ("speed", "audit_armed", "audit_completed", "t_armed", "quality", "final")
+_STAGES = ("speed", "audit_armed", "audit_completed", "t_armed", "quality", "final", "recovery")
 
 
 def _decimal(value: object, where: str) -> str:
@@ -173,6 +173,7 @@ class QualificationContinuation:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.directory.chmod(0o700)
         self._codec = _codec()
+        self.recovery_reference: EvidenceArtifactRef | None = None
 
     # -- closed record file handling ----------------------------------------
 

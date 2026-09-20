@@ -151,35 +151,20 @@ identity.
 
 This is authority only when the frozen qualification plan contains the matching typed
 audit requirement. It is not a universal cross-slot gate, and a diagnostic receipt from
-another runtime cannot be attached later. A plan that requires audit cannot treat a
+another runtime cannot be attached as the original audit. A validator-error
+correction must instead retain an explicit audit-recovery artifact binding the
+original evidence and corrected execution under the unchanged candidate,
+workload and numerical policy. A plan that requires audit cannot treat a
 missing or incomplete witness as either a PASS or an attributable candidate FAIL.
 
-### Example: reopening a disputed speed pass
+### Reopening a disputed speed pass
 
-A reviewer starts with the settlement candidate, not with a dashboard's reported
-speedup. They reopen both qualification attempt references and verify that their
-reproduction identities match while the seven required authority, attempt, report,
-commitment, and selection digests differ. The references may share one
-content-addressed store root. For each attempt they then:
-
-1. reopen each report's `ResidentSpeedWitness` (version 8 or 9; anything older
-   is refused), verify its exact B/C/B′ schedule, and confirm that reproduction
-   exchanges the incumbent and candidate physical-lane roles when required;
-2. verify retained conditioning/timed/charged token counts, intervals, sums, and the witness
-   projection digest;
-3. recompute aggregate rates, baseline drift, and candidate speed result under
-   the frozen calibration;
-4. reopen and regrade any required eager/untimed audit witness;
-5. reopen selection commitments and the sealed candidate trajectory;
-6. verify the separate T lifetime is candidate-free and regrade quality;
-7. reconstruct the attempt verdict; and
-8. verify settlement used the lower accepted speedup and the exact live target transition.
-
-If the dashboard rounded both attempts to “1.04×” but the retained aggregate witnesses
-regrade to different accepted values, those exact values and the conservative settlement
-rule govern. The persisted attempt cannot answer a dispute that requires raw batch frames,
-per-arm device samples, or lifecycle receipts; logs must not be presented as if the schema
-had authenticated those absent products.
+Start with the settlement candidate and its retained qualification attempt.
+Regrade the exact B/C/B′ schedule, charged spans, drift and calibration, then
+verify audit, selection, candidate-free T and the live target transition.
+New bundles require one complete audited PASS. Historical paired qualifications
+retain their original identities and conservative settlement rule. Dashboard
+rounding and logs cannot replace the artifacts required by the retained schema.
 
 ## Failure semantics
 
