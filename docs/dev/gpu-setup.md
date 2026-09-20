@@ -128,66 +128,32 @@ Only the first two are covered by the commands above.
 
 ## Verify a contribution
 
-Start with a known example, then the contribution:
+Use the node interface smoke check before loading the model:
 
 ```bash
-python -m cacheon.cli scan examples/miner_silu_triton
-python -m cacheon.cli verify examples/miner_silu_triton \
-  --device cuda --dtype bfloat16
-
-python -m cacheon.cli scan path/to/bundle
-python -m cacheon.cli verify path/to/bundle \
-  --device cuda --dtype bfloat16 --model <registered-model-key>
+python -m cacheon.cli verify examples/miner_node_identity
+python -m cacheon.cli verify path/to/bundle
 ```
 
-Collective targets need the arena's real world size and homogeneous visible
-devices:
+This scans the bundle and checks imports and entry signatures in a child process.
+Run the numerical audit and graph checks in the published arena image, using that
+arena's model, engine options, public requests and full tensor-parallel width.
+For GLM, after building the bundle as described in the
+[bundle format](../miner-guide/bundle-format.md):
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
-python -m cacheon.cli verify path/to/collective-bundle \
-  --device cuda --world-size 4
+python -m cacheon.cli check path/to/bundle \
+  --model /models/GLM-5.3-NVFP4 \
+  --engine-config examples/arena_inputs/glm53/engine-config.json \
+  --requests examples/arena_inputs/glm53/development-requests.json \
+  --output /tmp/glm-node-check
 ```
 
-CUDA verification captures applicable entries, refreshes registered dynamic
-inputs, poisons outputs, and checks multiple replays. It remains a component
-gate, not a serving crown.
-
-For collectives, “the command returned” is not enough. Check that every rank
-selected the same candidate, received the validator-owned group, activated the
-registered seam, completed it, and produced the expected output. A rank-local
-fallback would diverge the collective, so the candidate engine must abort
-rather than continue with mixed implementations.
-
-## Live serving activation tier (opt-in)
-
-`tests/test_seam_activation_live.py` proves on demand that an armed bundle
-kernel executes inside the real serving path: it boots a server three times in
-a validator worker image — null-armed baseline, exact-math silu bundle, broken
-silu bundle — and requires the exact bundle to reproduce the baseline
-completion byte-identically while the broken bundle corrupts it. Activation is
-log-silent by design, so this behavioral comparison is the only honest
-detector.
-
-The tier never runs by default, in CI or on GPU hosts. Arm it explicitly:
-
-```bash
-CACHEON_LIVE_SERVE_TESTS=1 \
-CACHEON_SERVE_IMAGE=<worker image ref> \
-CACHEON_SERVE_MODEL=/path/to/small-local-model \
-python -m pytest tests/test_seam_activation_live.py
-```
-
-Optional variables: `CACHEON_SERVE_REPO` (a docker-mountable copy of this
-repository when the checkout itself cannot be bind-mounted; the test verifies
-the copy's source identity against the running checkout before trusting it),
-`CACHEON_SERVE_GPU` (device index, default 0; a comma pair under tp=2,
-default 0,1), `CACHEON_SERVE_TP` (tensor-parallel width, 1 or 2, default 1),
-and `CACHEON_SERVE_BOOT_TIMEOUT_S` (per-boot readiness budget, default 320).
-`CACHEON_SERVE_TP=2` boots every arm with `--tp-size 2`, proving the
-spawn-safe seam arms each tensor-parallel rank process rather than only
-rank 0. Once armed, a missing prerequisite is a loud failure, never a skip.
-Expect roughly ten minutes for the three boots.
+Use a fresh output directory and check the per-node, per-rank table. The command
+retains numerical and graph receipts and reports missing coverage. A successful
+check is development evidence; qualification uses the validator's full workload,
+paired timing and final quality gate.
 
 ## Complete-engine performance development
 

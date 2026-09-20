@@ -11,13 +11,13 @@ from pathlib import Path
 
 from cacheon.bundle_hash import content_hash
 
-TRITON = "examples/miner_silu_triton"
-BROKEN = "examples/miner_silu_broken"
+HONEST = "examples/miner_node_identity"
+BROKEN = "examples/miner_node_wrong"
 
 
 def test_content_hash_stable_and_distinct():
-    h1 = content_hash(TRITON)
-    h2 = content_hash(TRITON)
+    h1 = content_hash(HONEST)
+    h2 = content_hash(HONEST)
     assert h1 == h2 and len(h1) == 64
     assert content_hash(BROKEN) != h1  # different bundle -> different hash
 
