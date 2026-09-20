@@ -12,6 +12,7 @@ import hashlib
 import re
 import stat
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -21,9 +22,11 @@ from cacheon.chain.fetch import (
     FETCH_TIMEOUT_S,
     MAX_ARCHIVE_BYTES,
     FetchError,
+    _download_https,
     fetch_bundle,
     fetch_bundle_from_local_file_for_testing,
 )
+from cacheon.chain.bundle_privacy import MAGIC
 from cacheon.object_store import (
     ObjectStoreConfig,
     ObjectStoreError,
@@ -321,12 +324,12 @@ class S3PublicBundlePublisher:
             "Key": key,
             "Body": data,
             "ACL": "public-read",
-            "ContentType": "application/gzip",
+            "ContentType": "application/octet-stream" if data.startswith(MAGIC) else "application/gzip",
             "CacheControl": "public, max-age=31536000, immutable",
             "Metadata": {
                 "cacheon-content-sha256": content_hash,
                 "cacheon-archive-sha256": archive_sha256,
-                "cacheon-schema": "bundle-archive-v1",
+                "cacheon-schema": "bundle-sealed-v1" if data.startswith(MAGIC) else "bundle-archive-v1",
             },
         }
         try:
@@ -357,9 +360,17 @@ class S3PublicBundlePublisher:
                     f"existing object could not be made public-read: {exc}"
                 ) from None
 
-    def _verify_public(self, url: str, content_hash: str, *, timeout_s: float) -> None:
+    def _verify_public(self, url: str, content_hash: str, *, timeout_s: float,
+                       encrypted: bytes | None = None) -> None:
         with tempfile.TemporaryDirectory(prefix="cacheon-public-fetch.") as temporary:
             try:
+                if encrypted is not None:
+                    wire = Path(temporary) / "encrypted"
+                    _download_https(url, wire, MAX_ARCHIVE_BYTES,
+                                    deadline=time.monotonic() + timeout_s)
+                    if wire.read_bytes() != encrypted:
+                        raise FetchError("anonymous download differs from encrypted upload")
+                    return
                 self.public_fetch(
                     url,
                     content_hash,
@@ -379,6 +390,7 @@ class S3PublicBundlePublisher:
         *,
         create_bucket: bool = False,
         verify_timeout_s: float = FETCH_TIMEOUT_S,
+        encrypt_for: str | None = None,
     ) -> PublicBundlePublication:
         """Publish, re-open, and anonymously validate one proposal archive."""
 
@@ -392,8 +404,15 @@ class S3PublicBundlePublisher:
         archive = Path(archive_path)
         data = _read_stable_archive(archive)
         _validate_archive_bytes(data, content_hash, label="local archive")
+        if encrypt_for:
+            from cacheon.chain.bundle_privacy import encrypt_archive
+
+            data = encrypt_archive(data, encrypt_for)
         archive_sha256 = hashlib.sha256(data).hexdigest()
-        key = self.config.resolve_key(bundle_object_name(content_hash))
+        # Ciphertext is randomized; never overwrite an earlier submission or a
+        # plaintext object at the same content-hash URL.
+        name = f"{content_hash}/{archive_sha256}.sealed" if encrypt_for else bundle_object_name(content_hash)
+        key = self.config.resolve_key(name)
         url = public_object_url(
             self.config, key, public_base_url=self.public_base_url
         )
@@ -405,16 +424,19 @@ class S3PublicBundlePublisher:
         reused = existing is not None
         public_verified = False
         if existing is not None:
-            _validate_archive_bytes(
-                existing, content_hash, label="existing content-addressed object"
-            )
+            if encrypt_for:
+                if existing != data:
+                    raise BundlePublishError("encrypted object differs from its address")
+            else:
+                _validate_archive_bytes(existing, content_hash, label="existing content-addressed object")
             # A bucket policy or CDN may already expose this object even when the
             # caller lacks PutObjectAcl. Avoid an unnecessary ACL mutation in that
             # case. If anonymous fetch fails, try the object-level public-read path
             # and let the mandatory retry decide whether publication succeeded.
             try:
                 self._verify_public(
-                    url, content_hash, timeout_s=float(verify_timeout_s)
+                    url, content_hash, timeout_s=float(verify_timeout_s),
+                    encrypted=data if encrypt_for else None,
                 )
                 public_verified = True
             except BundlePublishError:
@@ -432,11 +454,18 @@ class S3PublicBundlePublisher:
             raise BundlePublishError("uploaded object disappeared before verification")
         if not reused and remote != data:
             raise BundlePublishError("uploaded object bytes differ from the local archive")
-        _validate_archive_bytes(remote, content_hash, label="stored object")
+        if encrypt_for:
+            if remote != data:
+                raise BundlePublishError("stored ciphertext differs from the encrypted archive")
+        else:
+            _validate_archive_bytes(remote, content_hash, label="stored object")
         if not public_verified:
             self._verify_public(
-                url, content_hash, timeout_s=float(verify_timeout_s)
+                url, content_hash, timeout_s=float(verify_timeout_s),
+                encrypted=data if encrypt_for else None,
             )
+        if encrypt_for:
+            archive.write_bytes(data)
         return PublicBundlePublication(
             archive,
             content_hash,
@@ -470,7 +499,78 @@ def open_public_bundle_publisher(
     )
 
 
+def cmd_chain_package(args) -> int:
+    """Package recipient-encrypted bytes for any miner-controlled HTTPS host."""
+    from cacheon.chain.fetch import package_bundle
+    from cacheon.chain.bundle_privacy import encrypt_archive, recipient_key
+
+    key = recipient_key(getattr(args, "encrypt_for", None))
+    out, ch = package_bundle(args.bundle, args.out)
+    out.write_bytes(encrypt_archive(out.read_bytes(), key))
+    print(f"archive:      {out}")
+    print(f"content_hash: {ch}")
+    print("host the archive at a stable URL, then commit it: cacheon chain-submit "
+          f"{args.bundle} --url <URL> --netuid <N> --network <WSS>")
+    return 0
+
+
+def cmd_chain_publish(args) -> int:
+    """Encrypt before upload; the public host never receives plaintext."""
+
+    from cacheon.chain.fetch import package_bundle
+    from cacheon.chain.bundle_privacy import encrypt_archive, recipient_key
+    from cacheon.object_store import ObjectStoreError
+
+    from cacheon.cli import _bundle_store_config_from_args
+
+    key = recipient_key(getattr(args, "encrypt_for", None))
+    out, content_hash = package_bundle(args.bundle, args.out)
+    try:
+        config = _bundle_store_config_from_args(args)
+        public_base_url = getattr(args, "public_base_url", "") or None
+        if args.dry_run:
+            out.write_bytes(encrypt_archive(out.read_bytes(), key))
+            object_key = config.resolve_key(f"{content_hash}/{hashlib.sha256(out.read_bytes()).hexdigest()}.sealed")
+            url = public_object_url(config, object_key, public_base_url=public_base_url)
+            print(f"archive:      {out}")
+            print(f"content_hash: {content_hash}")
+            print(f"object_key:   {object_key}")
+            print(f"url:          {url}")
+            print("DRY RUN — archive built locally; no bucket or object was changed.")
+            return 0
+        publisher = open_public_bundle_publisher(
+            config,
+            public_base_url=public_base_url,
+        )
+        publication = publisher.publish_archive(
+            out,
+            content_hash,
+            create_bucket=bool(args.create_bucket),
+            verify_timeout_s=float(args.verify_timeout),
+            encrypt_for=key,
+        )
+    except (BundlePublishError, ObjectStoreError) as exc:
+        print(f"PUBLICATION REFUSED: {exc}")
+        return 2
+
+    print(f"archive:      {publication.archive_path}")
+    print(f"content_hash: {publication.content_hash}")
+    print(f"stored_hash:  {publication.stored_archive_sha256}")
+    print(f"stored_bytes: {publication.stored_archive_bytes}")
+    print(f"object_key:   {publication.object_key}")
+    print(f"url:          {publication.url}")
+    print(f"reused:       {str(publication.reused).lower()}")
+    print("anonymous encrypted download: verified")
+    print(
+        "commit this exact reference: cacheon chain-submit "
+        f"{args.bundle} --url {publication.url} --netuid <N> --network <WSS>"
+    )
+    return 0
+
+
 __all__ = [
+    "cmd_chain_package",
+    "cmd_chain_publish",
     "BundlePublishError",
     "DEFAULT_BUNDLE_KEY_PREFIX",
     "PublicBundlePublication",

@@ -444,6 +444,8 @@ class B300MainnetWorker:
                 supporting_evidence_refs += tuple(
                     report.raw_quality_artifact for report in attempt.reports
                 )
+                if attempt.audit_recovery is not None:
+                    supporting_evidence_refs += (attempt.audit_recovery,)
             supporting_evidence_refs = tuple(sorted(
                 set(supporting_evidence_refs),
                 key=lambda row: (

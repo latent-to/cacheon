@@ -18,6 +18,8 @@ Do not run this on a machine you care about without that isolation. See
 
 from __future__ import annotations
 
+from cacheon.chain.publish import cmd_chain_package, cmd_chain_publish
+
 import argparse
 import json
 import sys
@@ -1363,74 +1365,6 @@ def cmd_set_weights(args: argparse.Namespace) -> int:
         what="weight publication",
     )
 
-
-def cmd_chain_package(args: argparse.Namespace) -> int:
-    from cacheon.chain.fetch import package_bundle
-
-    out, ch = package_bundle(args.bundle, args.out)
-    print(f"archive:      {out}")
-    print(f"content_hash: {ch}")
-    print("host the archive at a stable URL, then commit it: cacheon chain-submit "
-          f"{args.bundle} --url <URL> --netuid <N> --network <WSS>")
-    return 0
-
-
-def cmd_chain_publish(args: argparse.Namespace) -> int:
-    """Package and publish a miner bundle to anonymous public object storage."""
-
-    from cacheon.chain.fetch import package_bundle
-    from cacheon.chain.publish import (
-        BundlePublishError,
-        bundle_object_name,
-        open_public_bundle_publisher,
-        public_object_url,
-    )
-    from cacheon.object_store import ObjectStoreError
-
-    out, content_hash = package_bundle(args.bundle, args.out)
-    try:
-        config = _bundle_store_config_from_args(args)
-        object_key = config.resolve_key(bundle_object_name(content_hash))
-        public_base_url = getattr(args, "public_base_url", "") or None
-        url = public_object_url(
-            config,
-            object_key,
-            public_base_url=public_base_url,
-        )
-        if args.dry_run:
-            print(f"archive:      {out}")
-            print(f"content_hash: {content_hash}")
-            print(f"object_key:   {object_key}")
-            print(f"url:          {url}")
-            print("DRY RUN — archive built locally; no bucket or object was changed.")
-            return 0
-        publisher = open_public_bundle_publisher(
-            config,
-            public_base_url=public_base_url,
-        )
-        publication = publisher.publish_archive(
-            out,
-            content_hash,
-            create_bucket=bool(args.create_bucket),
-            verify_timeout_s=float(args.verify_timeout),
-        )
-    except (BundlePublishError, ObjectStoreError) as exc:
-        print(f"PUBLICATION REFUSED: {exc}")
-        return 2
-
-    print(f"archive:      {publication.archive_path}")
-    print(f"content_hash: {publication.content_hash}")
-    print(f"stored_hash:  {publication.stored_archive_sha256}")
-    print(f"stored_bytes: {publication.stored_archive_bytes}")
-    print(f"object_key:   {publication.object_key}")
-    print(f"url:          {publication.url}")
-    print(f"reused:       {str(publication.reused).lower()}")
-    print("anonymous validator fetch: verified")
-    print(
-        "commit this exact reference: cacheon chain-submit "
-        f"{args.bundle} --url {publication.url} --netuid <N> --network <WSS>"
-    )
-    return 0
 
 
 def cmd_chain_eval_cost(args: argparse.Namespace) -> int:
@@ -2791,19 +2725,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ---- chain: miner submission + the validator loop ----
     sp = sub.add_parser("chain-package",
-                        help="tar.gz a bundle for hosting; prints the content hash to commit")
+                        help="encrypt a bundle for hosting; prints the content hash to commit")
     sp.add_argument("bundle")
     sp.add_argument("--out", default=None, help="archive path (default <bundle>.tar.gz)")
+    sp.add_argument("--encrypt-for", default=None, help="validator public key (default: published key)")
     sp.set_defaults(func=cmd_chain_package)
 
     sp = sub.add_parser(
         "chain-publish",
         help=(
             "miner: package a bundle, publish it from the miner's S3-compatible "
-            "bucket, and verify anonymous validator fetch"
+            "bucket, and verify the encrypted download"
         ),
     )
     sp.add_argument("bundle")
+    sp.add_argument("--encrypt-for", default=None, help="validator public key (default: published key)")
     sp.add_argument("--out", default=None, help="archive path (default <bundle>.tar.gz)")
     sp.add_argument(
         "--object-store-provider",

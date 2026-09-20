@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 # torch is required but intentionally NOT pinned here: install the build that
 # matches the validator's CUDA/SGLang environment first, then `pip install -e .`.
 dependencies = [
+  "PyNaCl>=1.6.2,<2",
   # Python 3.11+ has tomllib in the stdlib; 3.10 needs the same parser API.
   "tomli>=2; python_version<'3.11'",
 ]

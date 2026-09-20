@@ -328,5 +328,6 @@ def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path,
     assert detail["qualification_attempts"] == []
     hold = detail["forensics"][0]["qualification_hold"]
     assert hold["reason"] == "graph_evidence_unavailable"
-    assert hold["failure_message"] == message
+    assert "failure_message" not in hold
+    assert hold["failure_type"] == ("PreparedGraphProbeIncompleteError" if detailed else "")
     assert "qualification" not in detail["forensics"][0]

@@ -27,12 +27,10 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from dashboard.forensics import (
     DashboardForensicsError,
-    ForensicsNotFound,
-    ForensicsUnavailable,
-    forensics_log,
     submission_forensics,
     submission_qualifications,
 )
+from dashboard.disclosure import disclose_bundle, install_disclosure_routes
 from dashboard.competition import competition_label, submission_baseline
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
 from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
@@ -811,7 +809,8 @@ def submissions(
 
 
 @app.get("/api/submissions/{reservation_id}")
-def submission_detail(reservation_id: str) -> dict[str, Any]:
+def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
     con = intake_conn()
     row = con.execute(
         "SELECT * FROM reservations WHERE reservation_id = ? OR reservation_id LIKE ?",
@@ -823,7 +822,6 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
     rid = r["reservation_id"]
     detail = submission_row(r)
     detail["evaluation_recovery"] = evaluation_recovery(con, detail)
-    detail["url"] = r.get("url") or ""
     detail["payload_digest"] = r.get("payload_digest") or ""
     detail["publication_digest"] = r.get("publication_digest") or ""
     detail["block_hash"] = r.get("block_hash") or ""
@@ -880,29 +878,13 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
     for lease in detail["leases"]:
         lease["claimed"] = with_time(int(lease["claimed_block"]))
         lease["expires"] = with_time(int(lease["expires_block"]))
+    disclose_bundle(con, detail, ENRICHER.block_time)
     con.close()
     return detail
 
 
-@app.get("/api/submissions/{reservation_id}/forensics/{request_id}.log")
-def download_forensics(reservation_id: str, request_id: str) -> Response:
-    try:
-        log = forensics_log(SPOOL, reservation_id, request_id)
-    except ForensicsNotFound as exc:
-        raise HTTPException(404, str(exc)) from None
-    except ForensicsUnavailable as exc:
-        raise HTTPException(404, str(exc)) from None
-    except DashboardForensicsError as exc:
-        raise HTTPException(409, str(exc)) from None
-    return Response(
-        content=log.payload,
-        media_type="text/plain",
-        headers={
-            "Content-Disposition": f'attachment; filename="{log.filename}"',
-            "ETag": f'"{log.etag}"',
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+install_disclosure_routes(app, intake_conn, lambda block: ENRICHER.block_time(block),
+                          lambda: MISSION / "private", lambda: SPOOL)
 
 
 @app.get("/api/queue")

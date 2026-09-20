@@ -42,6 +42,7 @@ from cacheon.eval.qualification_continuation import (
     AuditContinuation, QualificationContinuation, QualificationContinuationError,
     QualityContinuation,
 )
+from cacheon.eval.qualification_timing import QualificationTimingWitness
 from cacheon.eval.qualification_continuation_runner import (
     QualificationContinuationRunnerSeams, run_continuation_quality_stage,
 )
@@ -1165,104 +1166,6 @@ class QualificationStageExit:
         return canonical_digest(STAGE_EXIT_SCHEMA, self.to_dict())
 
 
-@dataclass(frozen=True)
-class QualificationTimingWitness:
-    """Bounded speed/audit/T wall times for the production resident path."""
-
-    policy_digest: str
-    speed_evidence_digest: str
-    audit_evidence_digest: str
-    reference_session_digest: str
-    max_qualification_seconds: int
-    speed_started_monotonic_s: float
-    speed_completed_monotonic_s: float
-    audit_started_monotonic_s: float
-    audit_completed_monotonic_s: float
-    t_started_monotonic_s: float
-    t_completed_monotonic_s: float
-    qualification_completed_monotonic_s: float
-
-    def __post_init__(self) -> None:
-        for name in (
-            "policy_digest",
-            "speed_evidence_digest",
-            "audit_evidence_digest",
-            "reference_session_digest",
-        ):
-            object.__setattr__(
-                self, name, require_sha256_hex(getattr(self, name), field=name)
-            )
-        if (
-            type(self.max_qualification_seconds) is not int
-            or not 60 <= self.max_qualification_seconds <= 14_400
-        ):
-            raise QualificationRunnerError(
-                "qualification timing wall budget is malformed"
-            )
-        timestamps = tuple(
-            getattr(self, name)
-            for name in self.__dataclass_fields__
-            if name.endswith("_monotonic_s")
-        )
-        if (
-            any(type(row) is not float or not math.isfinite(row) for row in timestamps)
-            or not (
-                self.speed_started_monotonic_s
-                < self.speed_completed_monotonic_s
-                <= self.audit_started_monotonic_s
-                < self.audit_completed_monotonic_s
-                <= self.t_started_monotonic_s
-                < self.t_completed_monotonic_s
-                <= self.qualification_completed_monotonic_s
-            )
-            or self.qualification_completed_monotonic_s
-            - self.speed_started_monotonic_s
-            > self.max_qualification_seconds
-        ):
-            raise QualificationRunnerError(
-                "qualification timing order or total wall time is invalid"
-            )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            name: (
-                format(value, ".17g")
-                if name.endswith("_monotonic_s")
-                else value
-            )
-            for name, value in (
-                (field, getattr(self, field))
-                for field in self.__dataclass_fields__
-            )
-        }
-
-    @classmethod
-    def from_dict(cls, value: object) -> "QualificationTimingWitness":
-        # dict(...) copy: _strict returns the caller's mapping, and the float
-        # decode below must never mutate a reopened payload in place — the
-        # publish/reopen self-check compares to_dict() against that payload.
-        raw = dict(_strict(value, set(cls.__dataclass_fields__), "qualification timing"))
-        for name in cls.__dataclass_fields__:
-            if name.endswith("_monotonic_s"):
-                encoded = raw[name]
-                try:
-                    decoded = float(encoded)
-                except (TypeError, ValueError) as exc:
-                    raise QualificationRunnerError(
-                        f"qualification timing {name} is malformed"
-                    ) from exc
-                if not math.isfinite(decoded) or format(decoded, ".17g") != encoded:
-                    raise QualificationRunnerError(
-                        f"qualification timing {name} is noncanonical"
-                    )
-                raw[name] = decoded
-        return cls(**raw)  # type: ignore[arg-type]
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest(
-            "cacheon.qualification.operational-timing.v1", self.to_dict()
-        )
 
 
 def _candidate_runtime_resource_policy_digest(value: object) -> str:
@@ -1508,6 +1411,7 @@ class CohortQualificationAttempt:
     teardown_after_t: OCIQuiescenceReceipt
     reports: tuple[CandidateQualificationReport, ...]
     operational_timing: QualificationTimingWitness
+    audit_recovery: EvidenceArtifactRef | None = None
 
     def __post_init__(self) -> None:
         for field in (
@@ -1524,6 +1428,8 @@ class CohortQualificationAttempt:
             or type(self.entropy_observed_monotonic_s) is not float
             or not math.isfinite(self.entropy_observed_monotonic_s)
             or type(self.operational_timing) is not QualificationTimingWitness
+            or (self.audit_recovery is not None
+                and type(self.audit_recovery) is not EvidenceArtifactRef)
         ):
             raise QualificationRunnerError("cohort attempt authority is not typed")
         reports = tuple(self.reports)
@@ -1565,17 +1471,23 @@ class CohortQualificationAttempt:
             raise QualificationRunnerError("cohort causal ordering or executor identity differs")
 
     def to_dict(self) -> dict[str, object]:
-        return _record_dict(self)
+        result = _record_dict(self)
+        if self.audit_recovery is None:
+            result.pop("audit_recovery")
+        return result
 
     @classmethod
     def from_dict(cls, value: object) -> "CohortQualificationAttempt":
         if type(value) is not dict:
             raise QualificationRunnerError("cohort attempt is not an object")
         raw = _strict(
-            value, set(cls.__dataclass_fields__) - {"_domain"}, "cohort attempt"
+            {"audit_recovery": None, **value},
+            set(cls.__dataclass_fields__) - {"_domain"}, "cohort attempt"
         )
         return cls(**{
             **raw,
+            "audit_recovery": (None if raw["audit_recovery"] is None else
+                               EvidenceArtifactRef.from_dict(raw["audit_recovery"])),
             "commitment": SelectionCommitment.from_dict(raw["commitment"]),
             "entropy": SelectionEntropyReceipt.from_dict(raw["entropy"]),
             "entropy_observed_monotonic_s": float(raw["entropy_observed_monotonic_s"]),
@@ -2268,6 +2180,14 @@ def reopen_causal_qualification(
         attempt = CohortQualificationAttempt.from_dict(payload)
         if attempt.to_dict() != payload:
             raise QualificationRunnerError("qualification artifact is not semantically canonical")
+        corrected_audit = None
+        if attempt.audit_recovery is not None:
+            from cacheon.eval.qualification_recovery import reopen_audit_recovery
+            correction, corrected_audit, _ = reopen_audit_recovery(
+                root, attempt.audit_recovery, expected=expected,
+            )
+            if correction["speed"] != attempt.reports[0].speed_evidence_digest:
+                raise QualificationRunnerError("audit recovery changed retained speed")
         if attempt.authority_digest != qualification_authority_digest(expected):
             raise QualificationRunnerError("qualification authority digest differs")
         if _attempt_speed_policy(attempt.reports) != expected.speed_evidence_policy:
@@ -2363,11 +2283,13 @@ def reopen_causal_qualification(
             audit_witness = report.audit_witness
             audit_grade, audit_detail = audit_witness.regrade()
             if (
-                audit_witness.policy != audit_policy
+                audit_witness.policy != (corrected_audit.policy if corrected_audit else audit_policy)
+                or (corrected_audit is not None and audit_witness != corrected_audit)
                 or audit_witness.selected_delta_digest
                 != authority.selected_delta_digest
                 or audit_witness.candidate_launch_digest
-                != expected.resident_audit_plan.launch.digest
+                != (corrected_audit.candidate_launch_digest if corrected_audit else
+                    expected.resident_audit_plan.launch.digest)
                 or audit_witness.runtime_resource_policy_digest
                 != expected.expected_runtime_resource_policy_digest
                 or audit_witness.session_id in {row.session_id for row in rates}
@@ -2536,6 +2458,8 @@ def run_causal_qualification(
         )
     calibration = _validate_pre_execution(value)
     if continuation is not None:
+        from cacheon.eval.qualification_recovery import resolve_audit_recovery
+        continuation = resolve_audit_recovery(value, continuation)
         durable_final = continuation.load_final()
         if durable_final is not None:
             if durable_final.domain == STAGE_EXIT_DOMAIN:
@@ -2818,7 +2742,10 @@ def run_causal_qualification(
             t_post.completed_monotonic_s,
             teardown_after.observed_monotonic_s,
         )
-        attempt = CohortQualificationAttempt(*attempt_args, timing)
+        attempt = CohortQualificationAttempt(
+            *attempt_args, timing,
+            None if continuation is None else continuation.recovery_reference,
+        )
     else:
         attempt = CohortQualificationAttempt(*attempt_args)
     reference = publish_causal_qualification(value.evidence_root, attempt)
