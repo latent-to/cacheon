@@ -4,6 +4,8 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .venv/
+/.python-version
+/uv.lock
 build/
 dist/
 site/

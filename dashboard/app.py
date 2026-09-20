@@ -17,7 +17,6 @@ import sqlite3
 import threading
 import time
 from collections import Counter
-from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -31,7 +30,7 @@ from dashboard.forensics import (
     submission_forensics,
     submission_qualifications,
 )
-from dashboard.disclosure import disclose_bundle, download_public_log
+from dashboard.disclosure import disclose_bundle, install_disclosure_routes
 from dashboard.competition import competition_label, submission_baseline
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
 from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
@@ -883,15 +882,13 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
     for lease in detail["leases"]:
         lease["claimed"] = with_time(int(lease["claimed_block"]))
         lease["expires"] = with_time(int(lease["expires_block"]))
-    disclose_bundle(con, detail, r.get("url") or "", ENRICHER.block_time)
+    disclose_bundle(con, detail, ENRICHER.block_time)
     con.close()
     return detail
 
 
-@app.get("/api/submissions/{reservation_id}/forensics/{request_id}.log")
-def download_forensics(reservation_id: str, request_id: str) -> Response:
-    with closing(intake_conn()) as con:
-        return download_public_log(con, SPOOL, reservation_id, request_id, ENRICHER.block_time)
+install_disclosure_routes(app, intake_conn, lambda block: ENRICHER.block_time(block),
+                          lambda: MISSION / "private", lambda: SPOOL)
 
 
 @app.get("/api/queue")

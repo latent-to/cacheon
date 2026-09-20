@@ -75,7 +75,7 @@ hotkey and, when already resolved before rejection, target. It reads current sta
 linked reservation. The UI links to that evaluation beside the original payment
 error; it preserves both submissions' identities, errors and evaluation history.
 
-Bundle URLs and public raw-log downloads are withheld until **eight hours after
+Bundle downloads and public raw-log downloads are withheld until **eight hours after
 the terminal evaluation result**, not eight hours after submission. Queued,
 running and held submissions remain withheld. The detail API returns an empty
 `url` and `bundle_visibility` with `available`, `release_at` (Unix seconds or
@@ -86,9 +86,15 @@ Raw logs and source-bearing exception messages follow the same delay because
 compiler output can contain source. Direct raw-log requests return HTTP 403
 until release; validator intake and private diagnostic access are unchanged.
 
-This controls disclosure through this dashboard. The existing revealed chain
-payload includes the miner-hosted HTTPS URL, so it cannot make that external
-URL private or withdraw copies already obtained elsewhere.
+Updated miner clients encrypt archives before uploading. The revealed chain URL
+points to ciphertext; `/api/bundle-encryption-key` supplies only the recipient
+public key. Set `CACHEON_BUNDLE_DECRYPTION_KEY` for both intake and the dashboard
+to the validator-owned mode-0600 file containing the 32-byte private key as hex.
+Back up this key privately and retain it while submissions encrypted to it remain
+pending. The dashboard reads checked bundles from `CACHEON_DASH_MISSION/private`.
+After release, detail `url` names `/api/submissions/{id}/bundle.tar.gz`, which
+rechecks the retained bundle hash before download. Existing plaintext uploads
+remain readable by intake and cannot be made confidential retroactively.
 
 The submission detail renders the signed evaluation records in full. Each
 screen attempt carries `stages` — every graded check from the signed receipt

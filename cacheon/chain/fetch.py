@@ -770,6 +770,9 @@ def _fetch_bundle(
             )
         else:
             _download_https(url, archive, MAX_ARCHIVE_BYTES, deadline=deadline)
+        from cacheon.chain.bundle_privacy import decrypt_archive
+
+        decrypt_archive(archive)
         extract_dir = temporary_path / "extract"
         extract_dir.mkdir(mode=0o700)
         _safe_extract(archive, extract_dir, deadline=deadline)

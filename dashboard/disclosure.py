@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import time
+import tempfile
+from contextlib import closing
+from pathlib import Path
 
 from fastapi import HTTPException
 from fastapi.responses import Response
@@ -45,11 +48,12 @@ def bundle_visibility(connection, reservation_id, block_time):
             "release_at": release_at, "result_block": result_block or None}
 
 
-def disclose_bundle(connection, detail, url, block_time):
+def disclose_bundle(connection, detail, block_time):
     """Keep results visible while withholding links and source-bearing diagnostics."""
     visibility = bundle_visibility(connection, detail["reservation_id"], block_time)
     detail["bundle_visibility"] = visibility
-    detail["url"] = url if visibility["available"] else ""
+    detail["url"] = (f"/api/submissions/{detail['reservation_id']}/bundle.tar.gz"
+                     if visibility["available"] else "")
     if visibility["available"]:
         return
     for run in detail.get("forensics", []):
@@ -78,3 +82,46 @@ def download_public_log(connection, spool, reservation_id, request_id, block_tim
         "ETag": f'"{log.etag}"', "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-store",
     })
+
+
+def install_disclosure_routes(app, connection, block_time, private_root, spool):
+    """Use the same result clock for logs and the validator's checked bundle bytes."""
+    @app.get("/api/bundle-encryption-key")
+    def encryption_key():
+        from cacheon.chain.bundle_privacy import validator_key
+        from cacheon.chain.fetch import FetchTransientError
+
+        try:
+            return {"algorithm": "x25519-sealedbox-v1", "public_key": bytes(validator_key().public_key).hex()}
+        except FetchTransientError:
+            raise HTTPException(503, "Bundle encryption is not configured") from None
+
+    @app.get("/api/submissions/{reservation_id}/forensics/{request_id}.log")
+    def log(reservation_id: str, request_id: str):
+        with closing(connection()) as con:
+            return download_public_log(con, spool(), reservation_id, request_id, block_time)
+
+    @app.get("/api/submissions/{reservation_id}/bundle.tar.gz")
+    def bundle(reservation_id: str):
+        from cacheon.chain.fetch import package_bundle, _validate_private_tree, FetchError
+
+        with closing(connection()) as con:
+            visibility = bundle_visibility(con, reservation_id, block_time)
+            if not visibility["available"]:
+                raise HTTPException(403, visibility, headers={"Cache-Control": "no-store"})
+            digest = con.execute("SELECT content_hash FROM reservations WHERE reservation_id=?",
+                                 (reservation_id,)).fetchone()[0]
+        source = private_root() / digest
+        if not source.is_dir():
+            raise HTTPException(404, "Checked bundle is not retained")
+        with tempfile.TemporaryDirectory(prefix="cacheon-disclosure.") as temporary:
+            try:
+                _validate_private_tree(source)
+                archive, actual = package_bundle(source, Path(temporary) / "bundle.tar.gz")
+                if actual != digest:
+                    raise FetchError("retained bundle differs from committed hash")
+            except (OSError, ValueError, FetchError) as exc:
+                raise HTTPException(409, "Retained bundle verification failed") from exc
+            return Response(archive.read_bytes(), media_type="application/gzip", headers={
+                "Content-Disposition": f'attachment; filename="{digest}.tar.gz"',
+                "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})

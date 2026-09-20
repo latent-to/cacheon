@@ -719,7 +719,7 @@ window.openDetail = async (rid) => {
     : "Source and raw logs become available eight hours after the final evaluation result.";
   let sourceLink = sourceHidden ? esc(sourceNotice) : esc(d.url || "Not recorded");
   try {
-    const source = new URL(d.url);
+    const source = new URL(d.url, location.origin);
     if (!sourceHidden && ["https:", "http:"].includes(source.protocol))
       sourceLink = `<a href="${esc(source.href)}" target="_blank" rel="noopener noreferrer" style="overflow-wrap:anywhere">${esc(source.hostname)} ↗</a><div class="muted small" style="overflow-wrap:anywhere">${esc(d.url)}</div>`;
   } catch {}

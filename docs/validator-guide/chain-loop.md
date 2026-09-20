@@ -4,6 +4,14 @@ The production loop is a non-emitting, restart-safe intake and qualification
 controller. It does **not** accept a shell evaluator, keep a JSON scoring ledger, or
 submit weights after each pass.
 
+Encrypted submissions use the private key named by
+`CACHEON_BUNDLE_DECRYPTION_KEY`: a validator-owned mode-0600 file containing a
+32-byte X25519 key encoded as 64 hexadecimal characters. Configure the same key
+for intake and the dashboard before advertising its public key. Back it up
+privately; changing or losing it while encrypted submissions are pending prevents
+their decryption. Missing key provisioning is a transport retry, not a miner
+failure. Plaintext submissions from older clients remain readable.
+
 ## One pass
 
 `run_pass(...)` performs these operations in order:
@@ -15,7 +23,8 @@ submit weights after each pass.
 3. **Reserve before transport.** Persist every arrival in chain order before any fetch.
    Slow hosting therefore cannot rewrite priority.
 4. **Fetch privately.** Accept HTTPS only, validate DNS and every redirect, enforce
-   archive limits, extract regular files safely, and rederive the committed hash.
+   archive limits, decrypt recipient-encrypted archives, extract regular files
+   safely, and rederive the committed hash.
 5. **Classify and fingerprint.** Parse the target-scoped proposal; a bundle the
    component parser rejects is refused. Copy identity covers the submitted delta,
    never the validator's incumbent stack.

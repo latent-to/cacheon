@@ -62,7 +62,7 @@ def test_result_plus_eight_hours_gates_detail_prefix_and_direct_download(
     private_log = worker_log_download(submission.parent / "spool", REQUEST)
     assert b"miner diagnostic output" in private_log.payload
     monkeypatch.setattr(disclosure.time, "time", lambda: release)
-    assert client.get(f"/api/submissions/{RID}").json()["url"] == URL
+    assert client.get(f"/api/submissions/{RID}").json()["url"] == f"/api/submissions/{RID}/bundle.tar.gz"
     visible = client.get(path)
     assert visible.status_code == 200
     assert b"miner diagnostic output" in visible.content
@@ -110,3 +110,41 @@ def test_no_completed_evaluation_keeps_source_hidden(submission, client, monkeyp
         con.execute("DELETE FROM evaluation_leases")
     assert client.get(f"/api/submissions/{RID}").json()["bundle_visibility"]["release_at"] is None
     assert client.get(f"/api/submissions/{'9' * 64}/forensics/{REQUEST}.log").status_code == 404
+
+
+def test_public_bundle_download_uses_the_result_clock_and_checked_cache(submission, client, monkeypatch):
+    from dashboard import app
+    from cacheon.chain.fetch import package_bundle, fetch_bundle_from_local_file_for_testing
+    from tests.test_chain_fetch import _make_bundle
+
+    monkeypatch.setattr(app, "MISSION", submission.parent)
+    archive, digest = package_bundle(_make_bundle(submission.parent), submission.parent / "input.tar.gz")
+    fetched = fetch_bundle_from_local_file_for_testing(archive.as_uri(), digest, submission.parent / "private")
+    with sqlite3.connect(submission) as con:
+        con.execute("UPDATE reservations SET content_hash=?", (digest,))
+    url = f"/api/submissions/{RID}/bundle.tar.gz"
+    monkeypatch.setattr(disclosure.time, "time", lambda: RESULT + 8 * 3600 - 1)
+    assert client.get(url).status_code == 403
+    assert (fetched / "manifest.toml").is_file()
+    monkeypatch.setattr(disclosure.time, "time", lambda: RESULT + 8 * 3600)
+    response = client.get(url)
+    assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
+    archive.write_bytes(response.content)
+    assert fetch_bundle_from_local_file_for_testing(archive.as_uri(), digest, submission.parent / "released").is_dir()
+    (fetched / "manifest.toml").write_text("changed")
+    assert client.get(url).status_code == 409
+
+
+def test_key_endpoint_never_returns_the_private_key(client, monkeypatch, tmp_path):
+    from nacl.public import PrivateKey
+    from cacheon.chain.bundle_privacy import KEY_ENV
+
+    key = PrivateKey.generate()
+    path = tmp_path / "key"
+    path.write_text(bytes(key).hex());path.chmod(0o600)
+    monkeypatch.setenv(KEY_ENV, str(path))
+    response = client.get('/api/bundle-encryption-key')
+    assert response.json()['public_key'] == bytes(key.public_key).hex()
+    assert bytes(key).hex() not in response.text
+    monkeypatch.delenv(KEY_ENV)
+    assert client.get('/api/bundle-encryption-key').status_code == 503
