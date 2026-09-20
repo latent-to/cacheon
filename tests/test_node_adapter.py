@@ -11,6 +11,7 @@ from torch import nn
 
 from cacheon import audit, dispatch
 from cacheon.integrations import sglang_nodes as nodes
+from cacheon.integrations.sglang_dsa_state import dsa_state_rows, state_values
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
 
@@ -87,6 +88,110 @@ def audited(monkeypatch, request):
 
 def _do_nothing(module, *args, **kwargs):
     return module.forward(*args, **kwargs)
+
+
+def _dsa_pool():
+    keys = torch.ones(130, 1, 512).to(torch.float8_e4m3fn)
+    scales = torch.full((130, 1, 4), 2.0)
+    rope = torch.arange(64).to(torch.bfloat16).expand(130, 1, 64).contiguous()
+    mla = torch.cat((keys.view(torch.uint8), scales.view(torch.uint8),
+                     rope.view(torch.uint8)), -1)
+    index = torch.cat((torch.ones(2, 64 * 128).to(torch.float8_e4m3fn).view(torch.uint8),
+                       torch.full((2, 64), 3.0).view(torch.uint8)), -1)
+    return SimpleNamespace(
+        kv_buffer=[mla], index_k_with_scale_buffer=[index, index[:0]],
+        dtype=torch.float8_e4m3fn, dsa_kv_cache_store_fp8=True,
+        page_size=64, index_head_dim=128, kv_lora_rank=512, qk_rope_head_dim=64,
+    )
+
+
+def test_dsa_records_grade_dequantized_values_and_keep_rotary_bf16():
+    pool = _dsa_pool()
+    rows = dsa_state_rows(pool, torch.tensor([1, 64, 65]))
+    assert len(rows) == 2  # skip-topk's zero-page placeholder owns no state
+    buffer, dim, index, held = rows[0]
+    raw = buffer.index_select(dim, index)
+    expected = torch.cat((torch.full((3, 1, 512), 2.0),
+                          torch.arange(64).float().expand(3, 1, 64)), -1)
+    assert torch.equal(state_values(raw, held), expected)
+    equivalent = raw.clone()
+    equivalent[..., :512] = torch.full((3, 1, 512), 2.0).to(torch.float8_e4m3fn).view(torch.uint8)
+    equivalent[..., 512:528] = torch.ones(3, 1, 4).view(torch.uint8)
+    assert torch.equal(state_values(equivalent, held), expected)
+    assert (nodes._row_errors(equivalent.view(pool.dtype), raw.view(pool.dtype), 0) > 0.02).all()
+    buffer, dim, pages, held = rows[1]
+    assert pages.tolist() == [0, 1]
+    assert torch.equal(state_values(buffer.index_select(dim, pages), held), torch.full((2, 64, 128), 3.0))
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_dsa_sidecar_is_restored_before_candidate_and_wrong_state_fails(audited, corrupt):
+    runner, batch = _served_model()
+    runner.token_to_kv_pool = pool = _dsa_pool()
+    batch.out_cache_loc = torch.tensor([1, 64])
+
+    class DsaNode(nn.Module):
+        def forward(self, x, batch):
+            pool.index_k_with_scale_buffer[0][:, :64 * 128] += 1
+            return x * 2
+
+    seen = []
+    before = pool.index_k_with_scale_buffer[0].clone()
+
+    def candidate(module, x, batch):
+        seen.append(pool.index_k_with_scale_buffer[0].clone())
+        result = module.forward(x, batch)
+        if corrupt:
+            pool.index_k_with_scale_buffer[0].zero_()
+        return result
+
+    runner.model.dsa = DsaNode()
+    nodes.bind(runner, _registry("dsa", candidate))
+    assert torch.equal(runner.model.dsa(torch.ones(2, 4), batch), torch.full((2, 4), 2.0))
+    assert torch.equal(seen[0], before)
+    assert audited["dsa"]["violations"] == int(corrupt)
+
+
+def test_dsa_indexer_twin_uses_supported_children_and_still_rejects_wrong_output(audited, monkeypatch):
+    class Indexer(_Wide):
+        def __init__(self):
+            super().__init__()
+            self._forward_method = self.forward_fast
+
+        def forward_fast(self, x):
+            return self.op(x)
+
+        def forward(self, x):
+            return self._forward_method(x)
+
+        def forward_native(self, x):
+            raise NotImplementedError("Indexer has no native (pure-torch) path")
+
+    module = ModuleType("sglang.srt.layers.attention.dsa.dsa_indexer")
+    module.Indexer = Indexer
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    runner, _ = _served_model()
+    runner.model.indexer = indexer = Indexer()
+    with nodes._native(indexer):
+        assert torch.allclose(indexer(torch.ones(2, 4)), torch.full((2, 4), 2.1))
+    assert indexer._forward_method == indexer.forward_fast
+    nodes.bind(runner, _registry("indexer", lambda m, x: m.forward(x) * 1.5))
+    indexer(torch.ones(2, 4))
+    assert (audited["indexer"]["violations"], audited["indexer"]["baseline_refused"]) == (1, 0)
+    def broken_native(x):
+        raise RuntimeError("native failed")
+    monkeypatch.setattr(indexer.op, "forward_native", broken_native)
+    with pytest.raises(RuntimeError, match="native failed"), nodes._native(indexer.op):
+        indexer.op(torch.ones(2, 4))
+
+
+def test_wildcard_failure_log_names_each_concrete_node(audited, caplog):
+    runner, batch = _served_model()
+    nodes.bind(runner, _registry("layers.*.mlp", lambda m, *a: m.forward(*a) * 1.5))
+    for layer in runner.model.layers:
+        layer.mlp(torch.ones(2, 4), batch)
+    assert "node=layers.0.mlp tensor_position=0" in caplog.text
+    assert "node=layers.1.mlp tensor_position=0" in caplog.text
 
 
 def test_star_stands_for_exactly_one_segment():

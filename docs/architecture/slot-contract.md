@@ -283,11 +283,20 @@ Truth is the stock node in the running engine, on the same call:
    state rows of the batch's requests;
 3. the arguments stock changed and the state rows are put back;
 4. the honest twin answers the same call and is put back the same way: the stock
-   node with its fused ops on SGLang's native reference paths, which is the same
-   math with different rounding;
+   node with supported fused ops on SGLang's native reference paths, giving the
+   same math with different rounding. The DSA indexer has no native implementation
+   and retains hardware dispatch; its children and surrounding ops still use
+   native paths where called;
 5. the candidate runs on the same call, and each row of its result and state rows
    (a token, a cache row, a request's state) is graded by its relative error
    against stock's.
+
+Packed DSA MLA records are decoded as FP8 latent values with FP32 scales and BF16
+rotary values. The separate index cache is decoded as FP8 keys with FP32 scales;
+its touched pages are preserved and restored as raw bytes. An unrecognized
+packed layout raises instead of being interpreted as homogeneous FP8. The first
+failed window of each bound node is logged with its concrete name and tensor
+position, including when the contribution claims a wildcard address.
 
 A row passes within the larger of 2% and three times the twin's recent
 90th-percentile row error on that node, and never above 40%: the widest honest node

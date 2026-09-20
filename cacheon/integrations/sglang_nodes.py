@@ -35,6 +35,7 @@ call the stock children it does not replace.
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 from collections import deque
@@ -49,6 +50,7 @@ from cacheon.capabilities import CallDescriptor
 from cacheon.dispatch import (
     _arch_tag, _dtype_name, _dynamo_compiling, _flashinfer_tuning, _in_cuda_graph,
 )
+from cacheon.integrations.sglang_dsa_state import StateFormat, dsa_state_rows, state_values
 from cacheon.registry import REGISTRY, KernelRegistry
 from cacheon.slots import SLOTS
 
@@ -116,7 +118,7 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     return found
 
 
-def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tensor, torch.dtype]]:
+def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]]:
     """Engine-state rows this call may write, as ``(buffer, dim, index, graded dtype)``.
 
     Only a call that carries the engine's batch can reach the cache pools: cache
@@ -136,7 +138,7 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
     )
     if batch is None:
         return []
-    rows: list[tuple[torch.Tensor, int, torch.Tensor, torch.dtype]] = []
+    rows: list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]] = []
     if batch.out_cache_loc is not None:
         pool = getattr(runner.token_to_kv_pool, "full_kv_pool", runner.token_to_kv_pool)
         buffers = [
@@ -149,7 +151,8 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
             raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
         held = getattr(pool, "dtype", None)
         fp8 = held is not None and held.is_floating_point and held.itemsize == 1
-        rows.extend(
+        dsa = dsa_state_rows(pool, batch.out_cache_loc)
+        rows.extend(dsa if dsa is not None else [
             (
                 buffer,
                 0,
@@ -157,7 +160,7 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
                 held if fp8 and buffer.dtype == torch.uint8 else buffer.dtype,
             )
             for buffer in buffers
-        )
+        ])
     requests = runner.req_to_token_pool
     recurrent = getattr(requests, "mamba_pool", None)
     if recurrent is not None:
@@ -185,7 +188,7 @@ def _errors(outputs: list, rows: list, expected: list) -> list[torch.Tensor]:
     for (buffer, dim, index, held), (e, _) in zip(rows, expected[len(outputs):]):
         parts = [
             _row_errors(
-                buffer.index_select(dim, piece).view(held),
+                state_values(buffer.index_select(dim, piece), held),
                 e.narrow(dim, start, piece.numel()), dim,
             )
             for start, piece in _pieces(buffer, dim, index)
@@ -240,7 +243,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
         return kept
 
     expected = run(lambda outputs: outputs + [
-        (buffer.index_select(dim, index).view(held), dim) for buffer, dim, index, held in rows
+        (state_values(buffer.index_select(dim, index), held), dim) for buffer, dim, index, held in rows
     ])
     with _native(module):
         twin = run(lambda outputs: expected and _errors(outputs, rows, expected))
@@ -300,9 +303,16 @@ def _rebound(sealed: list[tuple]) -> str | None:
 
 @contextmanager
 def _native(module):
-    """Run the node's fused ops on SGLang's native reference paths: the honest twin."""
+    """Use supported native paths while the DSA indexer retains hardware dispatch.
 
-    sites = [m for m in module.modules() if "_forward_method" in vars(m)]
+    The pinned Indexer explicitly has no native implementation. Its children and
+    surrounding ops still take native paths; forcing its stub refused 6,048
+    references in the first full GLM layer-bundle audit (B300, 2026-09-20).
+    """
+
+    indexer = getattr(sys.modules.get("sglang.srt.layers.attention.dsa.dsa_indexer"), "Indexer", ())
+    sites = [m for m in module.modules()
+             if "_forward_method" in vars(m) and not isinstance(m, indexer)]
     saved = [m._forward_method for m in sites]
     for m in sites:
         m._forward_method = m.forward_native
@@ -331,7 +341,7 @@ def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int) -> torch
     return errors[torch.isfinite(e).all(dim=1)]
 
 
-def _grade(slot: str, node: int, actual: list, twin: list) -> None:
+def _grade(slot: str, node: int, actual: list, twin: list) -> tuple[float, int] | None:
     """Pool each graded tensor's passing rows; record a unit when a window fills."""
 
     filled = []
@@ -349,10 +359,12 @@ def _grade(slot: str, node: int, actual: list, twin: list) -> None:
         pooled[0] += int((errors <= tolerance).sum().item())
         pooled[1] += errors.numel()
         if pooled[1] >= _WINDOW:
-            filled.append(pooled[0] / pooled[1])
+            filled.append((pooled[0] / pooled[1], position))
             pooled[:] = [0, 0]
     if filled:
-        _audit.record_fraction(slot, min(filled), _ROW_BAR, _MODE)
+        worst = min(filled)
+        _audit.record_fraction(slot, worst[0], _ROW_BAR, _MODE)
+        return worst
 
 
 def _descriptor(module, args: tuple, kwargs: dict, in_graph: bool) -> CallDescriptor | None:
@@ -378,6 +390,7 @@ def make_node_dispatcher(
     sealed: list[tuple],
     *,
     registry: KernelRegistry = REGISTRY,
+    node_name: str | None = None,
 ) -> Callable[..., object]:
     """Build the replacement ``forward`` for one bound node.
 
@@ -386,8 +399,10 @@ def make_node_dispatcher(
     """
 
     prepared: dict[int, object] = {}
+    reported = False
 
     def dispatched(*args, **kwargs):
+        nonlocal reported
         if (
             _dynamo_compiling() or _flashinfer_tuning()
             or _receipts.is_invoking() or not registry.active
@@ -427,7 +442,13 @@ def make_node_dispatcher(
                     [(t, 0) for t in _tensors(result, [], fields=True)],
                     _state_rows(runner, (*args, *kwargs.values())), expected,
                 )
-                _grade(slot, id(module), actual, twin)
+                grade = _grade(slot, id(module), actual, twin)
+                if grade is not None and grade[0] < _ROW_BAR and not reported:
+                    logging.getLogger(__name__).warning(
+                        "node audit mismatch: node=%s tensor_position=%d passing_fraction=%.6f",
+                        node_name or slot, grade[1], grade[0],
+                    )
+                    reported = True
             except ValueError:
                 _audit.compare_error(slot)
         _receipts.completed(slot)
@@ -468,7 +489,7 @@ def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
     for name, slot in bound.items():
         module = named[name]
         module.forward = make_node_dispatcher(
-            slot, module, module.forward, runner, seals[name], registry=registry
+            slot, module, module.forward, runner, seals[name], registry=registry, node_name=name
         )
     for name in bound:
         seals[name].extend(_seal(named[name]))
