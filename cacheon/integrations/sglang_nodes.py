@@ -423,13 +423,13 @@ def _descriptor(module, args: tuple, kwargs: dict, in_graph: bool) -> CallDescri
     if not handed or not handed[0].dim():
         return None
     # Rotary positions can lead the call as (3, M); the activations carry M.
-    floating = next((t for t in handed if t.is_floating_point()), handed[0])
-    weight = next(module.parameters(), floating)
+    floating = next((t for t in handed if t.is_floating_point()), None)
+    dtype_source = floating if floating is not None else next(module.parameters(), handed[0])
+    floating = floating if floating is not None else handed[0]
     return CallDescriptor.from_legacy(
-        dtype_name=_dtype_name(weight.dtype),
+        dtype_name=_dtype_name(dtype_source.dtype),
         last_dim=int(floating.shape[-1]),
         arch=_arch_tag(floating.device.index or 0) if floating.is_cuda else None,
-        num_tokens=int(floating.shape[0]),
     ).with_updates(graph_mode="cuda_graph" if in_graph else "eager")
 
 
@@ -461,8 +461,7 @@ def make_node_dispatcher(
             return stock(*args, **kwargs)
         in_graph = _in_cuda_graph()
         # Drawn, and both references run, before any rank-local branch: selection
-        # can differ by rank (eligibility bounds the token count, and DP ranks hold
-        # different batches), and a node that contains a collective hangs unless
+        # must not affect the seeded audit draws, and a node with a collective hangs unless
         # every rank runs it the same number of times with the same seeded draws.
         expected = twin = None
         if not in_graph and _audit.sampled():

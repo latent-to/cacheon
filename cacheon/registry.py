@@ -363,7 +363,18 @@ class KernelRegistry:
     # ---- registration (validator-side) ----
 
     def register(self, impl: KernelImpl) -> None:
+        from cacheon.target_catalog import FORWARD_PASS_ROOTS
+
         with self._lock:
+            if any(impl.slot == root or impl.slot.startswith(root + ".")
+                   for root in FORWARD_PASS_ROOTS):
+                constraints: dict[str, _FieldConstraint] = {}
+                _add_eligibility_constraints(constraints, impl.eligibility)
+                if "num_tokens" in constraints:
+                    raise VariantRegistrationError(
+                        "node token-count specialization belongs inside the entry; "
+                        "per-rank eligibility can split collective participation"
+                    )
             if (
                 not isinstance(impl.variant, str)
                 or not impl.variant

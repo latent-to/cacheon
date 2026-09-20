@@ -176,6 +176,10 @@ and FP16-only metadata before candidate execution.
 
 Multiple implementations of one slot are permitted only when all rows name
 unique variants and their effective capability domains are provably disjoint.
+Node rows cannot constrain `num_tokens`, `min_num_tokens`, or `max_num_tokens`.
+Keep token-count specialization inside the entry so differing DP batches cannot
+select different collective implementations.
+
 The following example describes retained catalog fixtures. Node eligibility
 follows the commissioned node contract; do not copy catalog token-count gates
 into a collective node implementation.

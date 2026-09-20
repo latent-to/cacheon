@@ -46,6 +46,14 @@ compatible communication sequence. A single-GPU smoke test cannot prove that.
 Use the arena's actual tensor/data-parallel topology and workload, including
 idle and uneven ranks.
 
+Node metadata cannot restrict `num_tokens`, including the legacy
+`min_num_tokens` and `max_num_tokens` fields. DP ranks may hold different local
+batch sizes, so registry selection on that field could split a collective.
+Implement shape and phase specialization inside the entry and preserve every
+rank's required communication calls. Node dtype eligibility describes the
+floating activation passed to `forward`, even when weights use packed storage;
+integer-only calls use the module's parameter dtype.
+
 ## Correctness is target-owned
 
 Node audit compares the candidate with stock on the same live call, including
