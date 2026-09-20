@@ -186,6 +186,7 @@ def test_dsa_indexer_twin_uses_supported_children_and_still_rejects_wrong_output
 
 
 def test_wildcard_failure_log_names_each_concrete_node(audited, caplog):
+    caplog.set_level("ERROR")  # The commissioned GLM engine suppresses warnings.
     runner, batch = _served_model()
     nodes.bind(runner, _registry("layers.*.mlp", lambda m, *a: m.forward(*a) * 1.5))
     for layer in runner.model.layers:

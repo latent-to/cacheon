@@ -444,7 +444,7 @@ def make_node_dispatcher(
                 )
                 grade = _grade(slot, id(module), actual, twin)
                 if grade is not None and grade[0] < _ROW_BAR and not reported:
-                    logging.getLogger(__name__).warning(
+                    logging.getLogger(__name__).error(
                         "node audit mismatch: node=%s tensor_position=%d passing_fraction=%.6f",
                         node_name or slot, grade[1], grade[0],
                     )
