@@ -318,6 +318,29 @@ def _rebound(sealed: list[tuple]) -> str | None:
     return None
 
 
+def _native_forward(module):
+    """Keep the unfused residual-add rounding boundary in the native norm twin.
+
+    SGLang's RMSNorm native path still fuses the add in FP32. An independent
+    PyTorch rounded-add norm and the qualified norm both false-failed through
+    GLM's quantized layers when that was the only twin (B300, 2026-09-20).
+    """
+    native = module.forward_native
+    norm = getattr(sys.modules.get("sglang.srt.layers.layernorm"), "RMSNorm", ())
+    if not isinstance(module, norm):
+        return native
+
+    def unfused(x, residual=None, post_residual_addition=None, quant_linear=None):
+        if (residual is not None and residual.dtype == x.dtype
+                and not module.fp32_residual and module.override_orig_dtype is None
+                and post_residual_addition is None and quant_linear is None):
+            summed = x + residual
+            return native(summed), summed
+        return native(x, residual, post_residual_addition, quant_linear)
+
+    return unfused
+
+
 @contextmanager
 def _native(module):
     """Use supported native paths while the DSA indexer retains hardware dispatch.
@@ -332,7 +355,7 @@ def _native(module):
              if "_forward_method" in vars(m) and not isinstance(m, indexer)]
     saved = [m._forward_method for m in sites]
     for m in sites:
-        m._forward_method = m.forward_native
+        m._forward_method = _native_forward(m)
     try:
         yield
     finally:

@@ -284,7 +284,9 @@ Truth is the stock node in the running engine, on the same call:
 3. the arguments stock changed and the state rows are put back;
 4. the honest twin answers the same call and is put back the same way: the stock
    node with supported fused ops on SGLang's native reference paths, giving the
-   same math with different rounding. The DSA indexer has no native implementation
+   same math with different rounding. Ordinary residual RMSNorm uses an unfused
+   addition in the input dtype before native normalization; explicit FP32-residual
+   and other semantic overrides retain their native path. The DSA indexer has no native implementation
    and retains hardware dispatch; its children and surrounding ops still use
    native paths where called;
 5. the candidate runs on the same call, and each row of its result and state rows
