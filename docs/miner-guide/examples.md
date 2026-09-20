@@ -16,6 +16,14 @@ omit it so local checks do not invent an arena identity.
 Follow [Your first bundle](your-first-kernel.md) to copy, scan, smoke-test and
 run the real engine check. Keep results and compiler caches outside the bundle.
 
+## GLM baseline
+
+The [GLM champion node bundle](https://github.com/latent-to/cacheon/tree/main/bundles/glm53_champion_nodes)
+packages the four retained GLM implementations behind decoder-layer and final-norm
+nodes. Its README specifies the B300 topology and checker inputs; its provenance
+file identifies the unchanged kernel sources. It is the model-specific baseline
+assembly, while the controls above demonstrate the minimal node interface.
+
 ## Retained catalog fixtures
 
 Other examples in the tree exercise older `SlotSpec` contracts, adversarial

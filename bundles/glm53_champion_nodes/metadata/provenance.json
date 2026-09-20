@@ -1,0 +1,50 @@
+[
+  {
+    "role": "exchange",
+    "source_bundle": "39e87e2bec26a9fa666d758edac323ebdf8ce227a02e15b8a34b274eb09518f5",
+    "file": "glm53_baseline/arm_slots.cu",
+    "sha256": "2e04913878bcf1a94cae49f47406b22672827d5619b8bc84221b625a4939a2bf",
+    "lines": 36,
+    "original_file": "kernels/arm_slots.cu"
+  },
+  {
+    "role": "exchange",
+    "source_bundle": "39e87e2bec26a9fa666d758edac323ebdf8ce227a02e15b8a34b274eb09518f5",
+    "file": "glm53_baseline/exchange.py",
+    "sha256": "a52ff5116bf5ab92c51449cc8510cdda2c5c9f7002040c9224e1e6b3fa5f6649",
+    "lines": 617,
+    "original_file": "kernels/exchange.py"
+  },
+  {
+    "role": "projection",
+    "source_bundle": "58d3402ec2983aa58bb699fd257c47638eef207c2284d4f84c7c0378c1ac1357",
+    "file": "glm53_baseline/dpo.py",
+    "sha256": "047780a45dc4471d3902e108dd215bc79e7812e8abdbda8d66e91d75e260d1ad",
+    "lines": 211,
+    "original_file": "kernels/dpo.py"
+  },
+  {
+    "role": "projection",
+    "source_bundle": "58d3402ec2983aa58bb699fd257c47638eef207c2284d4f84c7c0378c1ac1357",
+    "file": "glm53_baseline/dpo_native.cu",
+    "sha256": "b601fbaaeff1e91529b0bd3d79cb9136923cd9f780afea36015687db0d82baa8",
+    "lines": 569,
+    "original_file": "kernels/dpo_native.cu"
+  },
+  {
+    "role": "moe",
+    "source_bundle": "63083f9e661b319dc533f613502882f139e35b794560d8fb63afe20c4fce5597",
+    "file": "glm53_baseline/moe_routed_experts.py",
+    "sha256": "d79ca0e5909a3ccea4ed392c4280ed113759573e56cce7619265076782c5fa0c",
+    "lines": 546,
+    "original_file": "kernels/moe_routed_experts.py"
+  },
+  {
+    "role": "norm",
+    "source_bundle": "5cbb4a580214b04139f97019d1b609b6c98e4f88d8f8933949859d2a1427383c",
+    "file": "glm53_baseline/fused_add_rmsnorm.py",
+    "sha256": "8c5f2a56eb177d0f59d1d14a6f2445b91803dba4776f847a5c20ffe85011b288",
+    "lines": 110,
+    "original_file": "kernels/fused_add_rmsnorm.py"
+  }
+]
