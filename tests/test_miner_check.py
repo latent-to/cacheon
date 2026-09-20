@@ -46,6 +46,15 @@ def test_smoke_checks_prepare_arity_without_executing_a_fake_model(tmp_path, cap
     assert "missing" in capsys.readouterr().out
 
 
+def test_verify_loads_bundle_local_helpers_without_importing_them_in_controller(tmp_path):
+    bundle = _bundle(tmp_path / "bundle", "from glm_check_helper import forward\n")
+    (bundle / "glm_check_helper.py").write_text(
+        "def forward(module, *args, **kwargs):\n    return module.forward(*args, **kwargs)\n"
+    )
+    assert miner_check.verify_nodes(str(bundle)) == 0
+    assert "glm_check_helper" not in sys.modules
+
+
 def test_child_timeout_reaps_its_owned_process(tmp_path, monkeypatch):
     popen = subprocess.Popen
     children = []

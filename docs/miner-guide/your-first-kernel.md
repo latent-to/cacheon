@@ -50,12 +50,12 @@ JIT work remain available inside the development container.
 python -m cacheon.cli verify my_bundle
 ```
 
-For node bundles this repeats scanning, loads the real candidate entries in a
-fresh child process and checks that entry accepts its first positional argument
-and optional prepare accepts one module. It does not fabricate tensors or a
-module to exercise arbitrary model code. `INTERFACE OK` means import/signature
-smoke only; a numerically wrong function can pass it. Dependencies that import
-CUDA code need the published image even for this smoke test.
+For node bundles this scans and imports the entries in a fresh child, resolving
+local helpers from the bundle root. It checks that entry accepts its first
+positional argument and optional prepare accepts one module. It does not run
+arbitrary preparation or forward calls without a model. `INTERFACE OK` establishes
+no numerical correctness. CUDA dependencies need the published image for this
+smoke test too.
 
 ## 5. Add a real specialization
 

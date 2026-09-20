@@ -253,9 +253,11 @@ def add_parser(subparsers) -> None:
 def _main() -> None:
     phase, source, destination = sys.argv[1:]
     if phase == "smoke":
+        sys.path.insert(0, str(Path(source).resolve()))
         Path(destination).write_text(json.dumps(_smoke(source)))
     else:
         inputs = json.loads(Path(source).read_text())
+        sys.path.insert(0, inputs["bundle"])
         _engine(inputs["config"], inputs["bundle"], inputs["requests"], Path(destination),
                 phase=phase, seed=inputs["seed"])
 
