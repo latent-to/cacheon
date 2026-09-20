@@ -8,6 +8,7 @@ candidate imports stay out of the command's controller.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import inspect
 import json
 import math
@@ -17,6 +18,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def _manifest(bundle: str):
@@ -49,31 +51,70 @@ def _smoke(bundle: str) -> list[dict]:
     return rows
 
 
-def _child(arguments: list[str], log: Path, *, timeout: float) -> None:
+def _child(arguments: list[str], log: Path, *, timeout: float,
+           failure_check: Callable[[], dict | None] | None = None) -> dict | None:
     """Bound the owned process group, retaining its output even after a failure."""
     with log.open("w") as output:
         process = subprocess.Popen(
             [sys.executable, "-m", "cacheon.miner_check", *arguments],
             stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
         )
+        deadline, returncode = time.monotonic() + timeout, None
         try:
-            returncode = process.wait(timeout=timeout)
-        except BaseException:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=5)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                pass
-            finally:
-                # The leader can exit while a rank still holds the process group.
+            while returncode is None:
+                remaining = max(0, deadline - time.monotonic())
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
+                    returncode = process.wait(timeout=min(1, remaining) if failure_check else remaining)
+                except subprocess.TimeoutExpired:
+                    failure = failure_check() if failure_check else None
+                    if failure is not None:
+                        return failure
+                    if time.monotonic() >= deadline:
+                        raise subprocess.TimeoutExpired(process.args, timeout)
+        finally:
+            if returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=5)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
                     pass
-                process.wait(timeout=5)
-            raise
+                finally:
+                    # The leader can exit while a rank still holds the process group.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait(timeout=5)
     if returncode:
         raise RuntimeError(f"check process exited {returncode}; see {log}")
+
+
+def _early_audit_failure(root: Path, slots: list[str], ranks: int, minimum: int) -> dict | None:
+    """Stop only on a gross numerical mismatch that later calls cannot repair."""
+    from cacheon import receipts
+    from cacheon.audit_gate import FAIL, _GROSS_MARGIN, gate
+    from cacheon.eval.oci_session_protocol import AuditReceiptFacts
+
+    try:
+        result = root / "result.json"
+        report = json.loads(result.read_text()) if result.exists() else {}
+        if not isinstance(report, dict) or report.get("decision") not in (None, "COMPLETED"):
+            return None
+        rows = {kind: receipts.collect(root / "receipts", kind)
+                for kind in ("active", "audit", "completed", "failed", "load_failed", "not_selected")}
+        if rows["failed"] or rows["load_failed"]:
+            return None
+        facts = [AuditReceiptFacts.from_receipt_dict(row) for row in rows["audit"]]
+        decision, detail = gate(rows["audit"], min_calls=minimum,
+                                expected_slots=slots, expected_member_count=ranks)
+        if decision == FAIL and any(row.violations and row.min_ratio is not None
+                                    and row.worst_frac < row.min_ratio - _GROSS_MARGIN for row in facts):
+            report.update(phase="audit", decision=FAIL, receipts=rows,
+                          detail=f"Early stop: gross numerical audit violation; {detail}")
+            return report
+    except (OSError, ValueError, TypeError, receipts.ReceiptFormatError):
+        pass  # A live receipt may still be incomplete; terminal handling owns errors.
+    return None
 
 
 def verify_nodes(bundle: str) -> int:
@@ -208,8 +249,14 @@ def check(args: argparse.Namespace) -> int:
             folder.mkdir()
             print(f"Running {phase}; log: {folder / 'engine.log'}", flush=True)
             try:
-                _child([phase, str(root / "inputs.json"), str(folder)],
-                       folder / "engine.log", timeout=args.timeout_seconds)
+                early = _child([phase, str(root / "inputs.json"), str(folder)],
+                               folder / "engine.log", timeout=args.timeout_seconds,
+                               failure_check=(lambda: _early_audit_failure(
+                                   folder, slots, ranks, args.minimum_audit_windows)) if phase == "audit" else None)
+                if early is not None:
+                    (folder / "result.json").write_text(json.dumps(early, indent=2) + "\n")
+                    print(f"FAIL: {early['detail']}")
+                    return 2
                 if not (folder / "result.json").is_file():
                     raise RuntimeError(f"check process returned no report; see {folder / 'engine.log'}")
             finally:

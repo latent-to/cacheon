@@ -1,0 +1,18 @@
+{
+  "dtype": "bfloat16",
+  "mem_fraction_static": 0.8,
+  "random_seed": 7,
+  "log_level": "error",
+  "attention_backend": "dsa",
+  "tp_size": 4,
+  "moe_runner_backend": "flashinfer_trtllm",
+  "chunked_prefill_size": 16384,
+  "disable_radix_cache": true,
+  "dp_size": 4,
+  "enable_dp_attention": true,
+  "kv_cache_dtype": "fp8_e4m3",
+  "max_prefill_tokens": 16384,
+  "page_size": 64,
+  "quantization": "modelopt_fp4",
+  "trust_remote_code": true
+}

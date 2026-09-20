@@ -120,6 +120,10 @@ per-rank receipts remain under the new output directory even on failure.
 Use the arena's published development values. A failed or under-covered audit
 stops before graph execution. Exit 0 means the diagnostic passed, 2 is failure
 or execution error, and 3 is `NO_DECISION` from incomplete audit coverage.
+During the audit, a well-formed receipt proving a gross numerical mismatch stops
+the engine and its child ranks early with `FAIL` (exit 2). Logs and raw receipts
+remain in the output directory. Clean or incomplete evidence never ends a run
+early as `PASS`; the command does not shorten the supplied request list.
 
 This command uses the serving binder and audit; it does not produce an
 end-to-end quality verdict, speed claim, qualification or crown. See the

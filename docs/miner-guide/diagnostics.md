@@ -90,6 +90,12 @@ The point at which output stops identifies the layer:
 | per-shape `FAIL` | candidate ran for an applicable shape and failed its ABI/comparator | shape-specific math, output ownership, mutation, stride, metric detail |
 | `NUMERICAL_PASS` with `graph=NOT_VERIFIED` | eager math passed but required capture/replay proof did not | graph phase and failure class, not numerical tolerance |
 
+`check` reports `Early stop: gross numerical audit violation` as soon as a valid
+rolling receipt proves a large numerical mismatch. It stops the owned engine
+and ranks, retains the receipts and logs, and skips graph execution. Near misses,
+comparison/reference errors and incomplete receipts do not trigger this early
+stop; they retain their normal terminal handling.
+
 Run `scan` separately even though `verify` repeats recursive policy checks. The separate
 command gives the cheapest no-import result; `verify` then tests domain registration and
 candidate execution. Neither command performs production target feature resolution, so a
