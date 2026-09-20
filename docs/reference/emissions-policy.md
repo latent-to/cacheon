@@ -30,18 +30,28 @@ operator commission; a crown alone does not change it.
 Duplicate packaging of the same contribution earns once.
 
 For speedup `s > 1`, finalized submission block `b`, the preceding distinct PASS
-block `p` in the same arena (or `b` for the first), current block `n`, half-life
-`h`, and fixed stall scale `1,800` blocks:
+block `p` in the same arena (or `b` for the first), current block `n`, decay start
+`d`, half-life `h`, and fixed stall scale `1,800` blocks:
 
 ```text
-credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - b) / h) × 10^12)
+credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - d) / h) × 10^12)
 ```
 
-Submission time, not evaluation completion time, controls age and stall credit.
+Submission time controls stall credit. New PASS claims hold their decay factor
+at one until a matching weight vector containing their evidence and a positive
+share for their hotkey is confirmed. The first qualifying confirmation fixes
+`d`; retries and restarts cannot move it. An older identical vector or an
+inclusion receipt without sufficiently recent active-weight readback does not
+start the clock. Existing deployments can retain their original `d = b` clocks
+through the recorded legacy-claim set.
+
+Publication starts and recovery adjustments are append-only intake metadata,
+bound into the projection's evidence and policy identity. They never rewrite
+submission blocks, retained PASS records, or claim identities.
 Logarithmic units make compounded gains path-independent. Policy version
 `cacheon.emissions.v1.5` projects every accepted qualification and replaces v1.4's
 CROWN-only restriction. Existing v1.1/v1.3/v1.4 bindings move forward only
-when all numeric policy fields match; the credit formula is unchanged.
+when all numeric policy fields match.
 
 The active standing claim validates its evaluation stack against that stack's
 sealed catalog and target-spec bytes. Historical v1 composition and v2 exclusion
@@ -51,6 +61,11 @@ history is derived from existing settlement candidates and their retained
 PASS records; there is no parallel accepted-history table. Missing or corrupt
 evidence holds the projection. If a claimant leaves the metagraph, its share
 goes to the validator for that tick and returns if the claimant re-registers.
+
+A validator rebuild may change a carried contribution's selected payload. Its
+original PASS remains payable when the reopened source artifact, attribution,
+target and target contract still match. A rebuild creates no second claim;
+changing any of those identities requires its own earned qualification.
 
 A discovery qualification can create one non-renewable bounded claim. It does not
 install an evaluation-stack contribution or create a standing family. Duplicate

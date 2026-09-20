@@ -290,7 +290,6 @@ def test_enabled_weights_is_actually_wired_into_the_supervisor(
     """The flag has to reach ``weights_once`` as an HTTP push, not a chain signer."""
 
     from cacheon import chain
-    from cacheon.chain.standing_weights_stage import WEIGHTS_CONFIG_SCHEMA
     from cacheon.chain.weight_push_auth import (
         PushCredentialSet,
         mint_push_credential,
@@ -326,7 +325,7 @@ def test_enabled_weights_is_actually_wired_into_the_supervisor(
                 "push_credentials": str(cred_path),
                 "push_url": "http://127.0.0.1:8080",
                 "refresh_blocks": 600,
-                "schema": WEIGHTS_CONFIG_SCHEMA,
+                "schema": "cacheon-standing-weights-config-v1",
             }
         )
         + b"\n",

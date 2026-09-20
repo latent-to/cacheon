@@ -9,7 +9,7 @@ from itertools import combinations
 from typing import Iterable, Mapping
 
 from cacheon.stack_identity import canonical_digest
-from cacheon.stack_manifest import EvaluationStackManifest
+from cacheon.stack_manifest import EvaluationStackManifest, ProposalContributionRef
 from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
@@ -220,17 +220,22 @@ class StandingRewardClaim:
         policy: EmissionsPolicyManifest,
         *,
         predecessor_block: int | None = None,
+        decay_start_block: int | None = None,
     ) -> int:
         predecessor = self.crowned_block if predecessor_block is None else predecessor_block
         _integer(block, "credit block", minimum=self.crowned_block)
         _integer(predecessor, "predecessor_block")
         if predecessor > self.crowned_block:
             raise EconomicsError("reward predates its arena stall clock")
+        start = self.crowned_block if decay_start_block is None else decay_start_block
+        _integer(start, "decay_start_block", minimum=self.crowned_block)
+        if start > block:
+            raise EconomicsError("reward decay start is in the future")
         with localcontext(_MATH_CONTEXT):
             credit = (
                 (Decimal(self.speedup_ppm) / WEIGHT_PPM).ln()
                 * (Decimal(1) + (Decimal(self.crowned_block - predecessor) / STALL_SCALE_BLOCKS).sqrt())
-                * Decimal(2) ** (-Decimal(block - self.crowned_block) / policy.half_life_blocks)
+                * Decimal(2) ** (-Decimal(block - start) / policy.half_life_blocks)
                 * CREDIT_SCALE
             )
         return int(credit.to_integral_value(rounding=ROUND_FLOOR))
@@ -553,6 +558,9 @@ def project_global_rewards(
     arenas: Iterable[ArenaRewardAuthority],
     earning_claims: Iterable[StandingRewardClaim],
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
+    *,
+    earned_contributions: Iterable[ProposalContributionRef] = (),
+    decay_start_blocks: Mapping[str, int | None] | None = None,
 ) -> GlobalRewardProjection:
     """Pool the store-selected earning claims before one indivisible vector."""
 
@@ -571,6 +579,13 @@ def project_global_rewards(
         raise EconomicsError("PASS reward claims are not exactly typed")
     if len({row.digest for row in earning}) != len(earning):
         raise EconomicsError("PASS reward claims are duplicated")
+    contributions = tuple(earned_contributions)
+    if any(type(row) is not ProposalContributionRef for row in contributions):
+        raise EconomicsError("earned contributions are not exactly typed")
+    refs = {row.digest: row for row in contributions}
+    starts = dict(decay_start_blocks or {})
+    if set(starts) - {row.digest for row in earning}:
+        raise EconomicsError("reward decay adjustment has no earning PASS")
     eligible = context.eligible_hotkeys
     standing_index: dict[tuple[str, str, str], StandingRewardClaim] = {}
     for claim in earning:
@@ -597,11 +612,23 @@ def project_global_rewards(
             if claim is None:
                 # A composed crown carries the commissioned incumbent from its
                 # original arena; its existing PASS earns once, under that age.
+                # A validator rebuild may change the selected payload, but never
+                # the source artifact, attribution or target contract. Reopen the
+                # original PASS's reference instead of creating a second claim.
                 if any(
                     row.arena_digest != stack.arena_digest
                     and row.target_id == target_id
-                    and row.contribution_digest == contribution.digest
                     and row.target_spec_digest == sealed_specs.get(target_id)
+                    and (
+                        row.contribution_digest == contribution.digest
+                        or (
+                            (original := refs.get(row.contribution_digest)) is not None
+                            and original.target_id == contribution.target_id
+                            and original.target_spec_digest == contribution.target_spec_digest
+                            and original.artifact_digest == contribution.artifact_digest
+                            and original.attribution_digest == contribution.attribution_digest
+                        )
+                    )
                     for row in earning
                 ):
                     continue
@@ -633,7 +660,11 @@ def project_global_rewards(
     ):
         predecessor = previous.get(claim.arena_digest, claim.crowned_block)
         credit = claim.credit_at(
-            context.current_block, policy, predecessor_block=predecessor
+            context.current_block, policy, predecessor_block=predecessor,
+            decay_start_block=(
+                context.current_block if claim.digest in starts and starts[claim.digest] is None
+                else starts.get(claim.digest)
+            ),
         )
         previous[claim.arena_digest] = claim.crowned_block
         family_credits.append(

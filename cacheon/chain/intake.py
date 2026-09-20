@@ -2518,87 +2518,11 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                     "emissions policy differs from the bound validator consensus state"
                 )
 
-    def build_weight_projection(
-        self,
-        *,
-        policy,
-        context,
-        netuid: int,
-    ) -> WeightProjection:
-        """Pool all retained earning claims under each crown's sealed catalog."""
+    def build_weight_projection(self, *, policy, context, netuid: int) -> WeightProjection:
+        """Build the durable producer's projection from original PASS evidence."""
+        from cacheon.chain.qualification_settlement import build_weight_projection
 
-        from cacheon.chain.weights import WeightProjection
-        from cacheon.economics import (
-            ArenaRewardAuthority,
-            EmissionsPolicyManifest,
-            GlobalRewardProjectionContext,
-            project_global_rewards,
-        )
-
-        if (
-            type(policy) is not EmissionsPolicyManifest
-            or type(context) is not GlobalRewardProjectionContext
-            or type(netuid) is not int
-            or netuid < 0
-        ):
-            raise IntakeError("weight projection authority is malformed")
-        standing, discovery = self.active_reward_claims()
-        earning = self.passed_reward_claims()
-        by_arena: dict[str, list[object]] = {}
-        for claim in standing:
-            by_arena.setdefault(claim.arena_digest, []).append(claim)
-        states = self.evaluation_stacks()
-        state_ids = {row.arena_digest for row in states}
-        active_states = tuple(row for row in states if row.generation > 0)
-        active_ids = {row.arena_digest for row in active_states}
-        if set(by_arena) - state_ids:
-            raise IntakeError("active reward claim belongs to an absent evaluation arena")
-        if set(by_arena) - active_ids:
-            raise IntakeError("active reward claim belongs to an uncrowned evaluation arena")
-        for claim in standing:
-            self._reopen_claim_evidence(claim.retained_evidence_digest, "crowned")
-        for claim in discovery:
-            self._reopen_claim_evidence(
-                claim.retained_evidence_digest, "discovery_bounty"
-            )
-        authorities = []
-        for state in active_states:
-            authorities.append(
-                ArenaRewardAuthority(
-                    state.manifest,
-                    state.generation,
-                    tuple(by_arena.get(state.arena_digest, ())),
-                )
-            )
-        projection = project_global_rewards(
-            policy, context, tuple(authorities), earning, discovery
-        )
-        self._bind_emissions_policy(policy)
-        evidence = tuple(
-            sorted(
-                {
-                    claim.retained_evidence_digest
-                    for claim in (*standing, *earning, *discovery)
-                }
-            )
-        )
-        return WeightProjection(
-            context.chain_scope_digest,
-            netuid,
-            context.validator_hotkey,
-            policy.digest,
-            self.settlement_state_digest(),
-            projection.digest,
-            context.metagraph_digest,
-            projection.arena_authority_digests,
-            max((row.generation for row in active_states), default=0),
-            context.current_block,
-            len(standing),
-            evidence,
-            tuple(
-                (row.hotkey, row.weight_ppm) for row in projection.weights
-            ),
-        )
+        return build_weight_projection(self, policy=policy, context=context, netuid=netuid)
 
     def build_burn_weight_projection(
         self,
@@ -3582,6 +3506,12 @@ class SQLiteWeightPublicationJournal:
                 "INSERT INTO metadata(key,value) VALUES('weight_publication_head',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (encoded,),
+            )
+            from cacheon.chain.qualification_settlement import confirm_reward_decay
+            from cacheon.chain.weights import WeightProjection
+
+            confirm_reward_decay(
+                self.store, WeightProjection.from_dict(json.loads(projection_json)), replacement,
             )
 
     def retained_projection(self, projection_digest: str) -> WeightProjection:
