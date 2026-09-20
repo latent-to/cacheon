@@ -6,6 +6,8 @@
  "examples/miner_indexer_select_torch": "e6a6a0cedcc556e7db48226c7b0ad9faf1b1f681f06fed739f311865ff0ffcb4",
  "examples/miner_moe_fused_experts_torch": "5376645cb576601d279ab30c890c519dccb72db980e547df531dd21b36d162be",
  "examples/miner_moe_fused_routed_torch": "72ae0f568323e83545255b0ab472b1b444405ebb3213515caf8afd600d01895b",
+ "examples/miner_node_identity": "cd8e8c59db85104f260e7fdcbe908f712f6fd74ebadda891310ef9b3a01e92dd",
+ "examples/miner_node_wrong": "16c05c40c67a4d16eca862397d28db13a7fe0cc7ea037cd81d66ef5e164a8cbd",
  "examples/miner_rmsnorm_broken": "9d3c91f9eeed12832a78706aab5e2990cf6a997889e12801aa8837de2e581a99",
  "examples/miner_rmsnorm_triton": "7d2415ec527ed3d5b81622d4fb0d9ccdfc8736fef72c35c6fc3495efefb79eb9",
  "examples/miner_setup_demo": "f05d468b64f0b76b7b0f5b83337da0ebe3a4d48417179495524cdb11ef16ebc7",

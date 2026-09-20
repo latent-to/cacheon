@@ -2,11 +2,85 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
 
 from cacheon.chain import ssh_worker_transport as transport
+
+
+@pytest.mark.parametrize("copy_operation", ["transfer_request", "pull_result"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_cpu_relay_heartbeat_survives_long_copy_and_stops_on_exit(
+    tmp_path, monkeypatch, copy_operation, interrupted,
+):
+    registration = {
+        "worker_epoch": "a" * 32, "ready_receipt_digest": "b" * 64,
+        "worker_readiness_digest": "c" * 64, "credential_path": "unused",
+    }
+    registration_path = tmp_path / "registration.json"
+    registration_path.write_text(json.dumps(registration))
+    monkeypatch.setattr(transport, "verify_registration", lambda row: row)
+    monkeypatch.setattr(transport, "registration_transport_identity", lambda _row: None)
+    monkeypatch.setattr(transport, "registration_credential", lambda *_args: None)
+    current = iter([True, False])
+    monkeypatch.setattr(transport, "registration_is_current", lambda *_args: next(current))
+    monkeypatch.setattr(transport, "DEFAULT_HEARTBEAT_SECONDS", 0.01)
+    now = [1_000]
+    monkeypatch.setattr(transport.time, "time", lambda: now[0])
+    request_id = "d" * 64
+    request = {"request_id": request_id, "deadline_unix": 2_000}
+    job = tmp_path / "job"
+    job.mkdir()
+    monkeypatch.setattr(transport, "iter_queue", lambda *_args, **_kwargs: [(job, request)])
+    monkeypatch.setattr(
+        transport, "remote_heartbeat",
+        lambda *_args: {"state": "idle", "active_request_id": None},
+    )
+    monkeypatch.setattr(transport, "pull_result", lambda *_args, **_kwargs: False)
+    heartbeat_path = tmp_path / "state" / "heartbeat.json"
+    heartbeat_path.parent.mkdir()
+    updated = threading.Event()
+    original_write = transport.atomic_json
+
+    def write_heartbeat(path, payload, **kwargs):
+        original_write(path, payload, **kwargs)
+        if path == heartbeat_path:
+            updated.set()
+
+    monkeypatch.setattr(transport, "atomic_json", write_heartbeat)
+    transport.atomic_json(heartbeat_path, transport.heartbeat_payload(registration, "running", None))
+    observed = []
+
+    def slow_copy(*_args, **_kwargs):
+        for _ in range(8):
+            updated.clear()
+            now[0] += 10
+            assert updated.wait(1), "relay stopped heartbeating during the copy"
+            heartbeat = transport.verify_heartbeat(
+                transport.load_json(heartbeat_path), registration, 20
+            )
+            observed.append(heartbeat["time_unix"])
+        if interrupted:
+            raise RuntimeError("copy interrupted")
+        return copy_operation == "pull_result"
+
+    monkeypatch.setattr(transport, copy_operation, slow_copy)
+    with pytest.raises(RuntimeError, match="copy interrupted") if interrupted else nullcontext():
+        transport.cpu_serve(
+            registration_path=registration_path, current_registration_path=registration_path,
+            spool_root=tmp_path, site=transport.RemotePodSite("/pod", "/pod/service.py"),
+            poll_seconds=0,
+        )
+    assert len(observed) == 8
+    assert max(observed) - min(observed) >= 60
+    after_exit = heartbeat_path.read_bytes()
+    updated.clear()
+    now[0] += 100
+    assert not updated.wait(0.03)
+    assert heartbeat_path.read_bytes() == after_exit
 
 
 @pytest.mark.parametrize("status,active,ready,archived", [

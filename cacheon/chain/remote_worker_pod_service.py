@@ -660,22 +660,14 @@ class PersistentAdapterProcess:
         if control == {**expected, "retired": True}:
             self._retire(request_id)
             return None
-        request_failed = {
-            "request_id": request_id,
-            "schema": SCHEMA_ADAPTER_CONTROL,
-            "state": "request_failed",
-        }
-        if control == request_failed:
+        if control == {**expected, "state": "request_failed"}:
             return "adapter_request_failed"
-        epoch_failed = {
-            "request_id": request_id,
-            "schema": SCHEMA_ADAPTER_CONTROL,
-            "state": "epoch_failed",
-        }
-        if control == epoch_failed:
+        if control == {**expected, "state": "epoch_failed"}:
             self.close()
             return "adapter_epoch_failed"
         timed_out = int(time.time()) >= deadline
+        if timed_out:
+            self.close()  # Late frames must not become the next request's response.
         return "adapter_timeout" if timed_out else "adapter_exit_nonzero"
 
     def close(self) -> None:

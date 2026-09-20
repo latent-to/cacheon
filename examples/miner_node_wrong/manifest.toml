@@ -1,0 +1,11 @@
+bundle_id = "node-wrong-control"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "forward_pass"
+mode = "slot"
+
+[[ops]]
+slot = "model.layers.*.mlp"
+source = "kernels/forward.py"
+entry = "forward"

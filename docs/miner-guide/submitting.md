@@ -81,10 +81,12 @@ python -m cacheon.cli chain-register \
 
 ```bash
 python -m cacheon.cli scan "$BUNDLE"
-python -m cacheon.cli verify "$BUNDLE" --device cuda --dtype bfloat16
+python -m cacheon.cli verify "$BUNDLE"
 ```
 
-`scan` and `verify` are diagnostics; they do not pre-approve intake. See
+`scan` and `verify` are diagnostics; they do not pre-approve intake. For node
+bundles, `verify` is import/signature smoke; run the [engine check](your-first-kernel.md#6-move-to-the-matching-gpu-environment)
+for live numerical and capture coverage. See
 [Bundle checks](#bundle-checks) for what to inspect.
 
 ### 3. Host the archive

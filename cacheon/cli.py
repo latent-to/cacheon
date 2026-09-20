@@ -2216,6 +2216,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
     from cacheon.verify import format_verify, verify_entry
 
     m = load_manifest(args.bundle)
+    if any(op.slot not in SLOTS for op in m.ops):
+        from cacheon.miner_check import verify_nodes
+
+        return verify_nodes(args.bundle)
     if not _recursive_scan_ok(args.bundle, manifest=m):  # vendored-tree guard (every .py, not just entries)
         return 2
 
@@ -2231,8 +2235,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
         raise AssertionError("domain preflight entries are never invoked")
 
     for row_index, op in enumerate(m.ops):
-        if op.slot not in SLOTS:
-            continue
         label = f"{op.slot} variant={op.variant!r}"
         try:
             metadata = _declared_metadata(args.bundle, op)
@@ -2271,10 +2273,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
     known_rows = context_inapplicable_rows = 0
     for row_index, op in enumerate(m.ops):
         label = f"{op.slot} variant={op.variant!r}"
-        if op.slot not in SLOTS:  # exiting 0 here reported an unchecked bundle as verified
-            print(f"  [FAIL] {label}: no offline reference; a node address is checked in the arena engine")
-            rc = 2
-            continue
         known_rows += 1
         metadata = metadata_by_row[row_index]
         model_key = args.model or metadata.get("model") or metadata.get("model_profile")
@@ -3247,14 +3245,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_explain)
 
     sp = sub.add_parser(
-        "verify", help="op-level correctness vs reference",
+        "verify", help="scan and interface smoke for nodes; reference check for catalog slots",
         epilog=("examples:\n"
-                "  # CPU dry-run (no GPU needed; the miner-guide inner loop)\n"
-                "  cacheon verify examples/miner_silu_torch --device cpu --dtype float32\n"
-                "  # real shapes/dtypes on a GPU box\n"
-                "  cacheon verify my_bundle --device cuda --dtype bfloat16\n"
-                "  # a collective slot at the arena's TP size\n"
-                "  cacheon verify my_bundle --device cuda --world-size 4"),
+                "  cacheon verify examples/miner_node_identity\n"
+                "  # node numerical checks need the published image and model\n"
+                "  cacheon check --help"),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("bundle")
     sp.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
@@ -3270,6 +3265,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "low-bit metric), e.g. MiniMax-M3. Default: the model declared in the "
                          "op's metadata (dev convenience); production uses the served-model key.")
     sp.set_defaults(func=cmd_verify)
+
+    from cacheon.miner_check import add_parser
+
+    add_parser(sub)
 
     return p
 

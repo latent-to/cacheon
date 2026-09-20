@@ -44,47 +44,34 @@ That sentence contains the whole discipline:
 
 ## Choose your path before writing code
 
-| Your idea | Correct path | Why |
-|---|---|---|
-| replaces one published callable seam | singleton component target | the catalog already defines its ABI and reward identity |
-| must replace every member of a published coupled seam | registered atomic target | one measured/rewarded delta owns the coupled semantics |
-| specializes one slot for a narrow shape or topology | component variant with an explicit capability domain | the incumbent safely handles non-matching calls |
-| changes scheduler/model-executor behavior or proposes a new seam | not submittable; a reviewed catalog change must register the seam first | the change crosses the closed component ABI |
-| only changes how reviewed contributions are packaged or served | product integration, not mining | release authority is separate from competition authority |
-
-Do not force a cross-cutting idea into a component bundle by vendoring SGLang or
-using `setup`. No registered target currently permits engine-wide setup, and legacy
-`mode = "system"` is not crownable.
+For a node arena, name one supported module or several disjoint modules in the
+served model. The bundle replaces each module's `forward`, accepts its stock
+arguments and returns its result structure. Use an enclosing module when the
+optimization crosses internal calls. Scheduler policy and unrelated serving
+configuration remain outside the contribution.
 
 ## The three identities to keep separate
 
-A **slot** is a callable seam in the engine, such as
-`activation.silu_and_mul` or `collective.all_reduce`. Its ABI says which inputs
-you receive and which validator-allocated outputs you must fill.
-
-A **registered target** is the economic identity of a contribution. The target
-catalog fixes its members, overlap rules, allowed features, and semantic
-contract. The current catalog registers a singleton target with the same
-identifier for each slot.
-
-An **atomic target** is one registered target whose delta necessarily spans
-multiple slots. It is not “two entries in one bundle” by itself. The catalog
-must explicitly register the combined semantics and say which singleton
-targets it displaces. The current catalog includes one such target,
-`collective.dp_attention_exchange.v1`, over the all-gather and reduce-scatter
-collective seams.
-
-The manifest requests a target; it does not define one. For a competitive
-bundle, declare the request explicitly:
+The **arena** identifies the commissioned model/runtime and workload. A **node
+address** identifies an execution boundary such as `model.layers.*.mlp`. The
+registered **target** admits the bundle's declared node addresses and ties them
+to evaluation and reward policy.
 
 ```toml
 [competition]
-target = "activation.silu_and_mul"
+target = "forward_pass"
 mode = "slot"
+arena = "<published-arena-id>"
 ```
 
-See [Slots and targets](slots.md) and the authoritative
-[target catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
+The manifest requests an existing target; it does not grant new authority. See
+[Slots and targets](slots.md) and [Kernel ABI](kernel-abi.md). Retained catalog
+examples follow their old `SlotSpec` contracts; their signatures are not node
+interfaces.
+
+For node bundles, `verify` is scanning plus import/signature smoke. Use
+[`check` in the published image](your-first-kernel.md#6-move-to-the-matching-gpu-environment)
+for the live model binder, audit and captured execution.
 
 ## What happens to a submission
 
@@ -144,7 +131,7 @@ The local CLI provides static and component diagnostics:
 
 ```bash
 python -m cacheon.cli scan my_bundle
-python -m cacheon.cli verify my_bundle --device cuda --dtype bfloat16
+python -m cacheon.cli verify my_bundle
 ```
 
 These commands find manifest, static-policy, ABI, correctness, routing, and graph

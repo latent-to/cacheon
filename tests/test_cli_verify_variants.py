@@ -94,7 +94,7 @@ def test_cmd_verify_forwards_each_variant_with_its_declared_domain(
     assert large_kwargs["world_size"] is None
 
 
-def test_cmd_verify_fails_a_node_address_instead_of_passing_it_unchecked(
+def test_cmd_verify_smokes_a_node_address_without_claiming_numerical_correctness(
     tmp_path, monkeypatch, capsys
 ):
     (tmp_path / "kernels").mkdir()
@@ -111,8 +111,11 @@ def test_cmd_verify_fails_a_node_address_instead_of_passing_it_unchecked(
         bundle=str(tmp_path), dtype="bfloat16", device="cpu", seed=7,
         model=None, world_size=None, tp_size=None,
     )
-    assert cli.cmd_verify(args) == 2
-    assert "no offline reference" in capsys.readouterr().out
+    assert cli.cmd_verify(args) == 0
+    output = capsys.readouterr().out
+    assert "[INTERFACE OK] model.layers.*.mlp" in output
+    assert "import/signature smoke passed" in output
+    assert "require cacheon check" in output
 
 
 def test_cmd_verify_runs_two_shape_variants_through_real_verifier(

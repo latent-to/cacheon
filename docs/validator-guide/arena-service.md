@@ -166,6 +166,14 @@ Monitor queue age/depth, capacity, stage latency, verdicts, holds, restarts,
 stock-canary drift and evidence reopen failures. Label these by service digest,
 runtime/model identity and lane; arena ID alone does not distinguish epochs.
 
+The CPU relay refreshes its heartbeat during request and result copies; this
+reports dispatcher liveness, while the pod heartbeat and request deadlines
+retain their separate checks. An adapter timeout closes and reaps that adapter
+before another request can use it. The existing cooldown then permits one fresh
+boot; the timed-out request retains its infrastructure outcome and diagnostics.
+Reopening retained qualification evidence preserves the audit's PASS, FAIL or
+NO_DECISION verdict, including insufficient coverage.
+
 ## Nonclaims
 
 Registration is not a performance win or proof of a representative workload.

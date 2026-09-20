@@ -85,7 +85,7 @@ The point at which output stops identifies the layer:
 | TOML/path exception before the bundle summary | manifest parsing or declared-path validation stopped | syntax, required fields, identifier spelling, file existence, relative path containment |
 | bundle summary plus `[VIOLATIONS]` | the manifest loaded, but one declared or recursive-tree source policy failed | every printed file/line and any undeclared executable material |
 | clean `scan`, then `invalid or ambiguous variant domain` in `verify` | static source is clean, but metadata/manifest eligibility cannot register deterministically | JSON types, canonical values, manifest/metadata intersection, variant overlap |
-| `[FAIL] ... no offline reference` | the row's slot has no declared reference math in this checkout: a node address, or a slot name this version does not define | slot name and validator version; a node address is checked against the stock node in the arena engine, never offline |
+| `[INTERFACE OK]` | node entry imports and accepts the prepared/module argument | run `check` in the published image for numerical and graph diagnostics |
 | every row N/A and `no bundle variant is applicable` | domains registered, but no row matched the selected invariant context | dtype, architecture, model, phase, topology, and required descriptor fields |
 | per-shape `FAIL` | candidate ran for an applicable shape and failed its ABI/comparator | shape-specific math, output ownership, mutation, stride, metric detail |
 | `NUMERICAL_PASS` with `graph=NOT_VERIFIED` | eager math passed but required capture/replay proof did not | graph phase and failure class, not numerical tolerance |

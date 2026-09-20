@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -247,6 +248,71 @@ def test_epoch_failure_retires_adapter_before_another_request(
     assert failure == "adapter_epoch_failed"
     assert process.process is None
     assert fake.returncode == 0
+
+
+def test_timeout_reaps_real_adapter_and_cooldown_allows_next_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = {
+        "python_executable": sys.executable, "worker_epoch": "b" * 32,
+        "ready_receipt_digest": "a" * 64, "worker_readiness_digest": "c" * 64,
+    }
+    paths = _pod_paths(tmp_path)
+    paths.adapter.write_text(
+        "import json, sys, time\n"
+        "def emit(**fields):\n"
+        f"    fields['schema'] = {spool.SCHEMA_ADAPTER_CONTROL!r}\n"
+        "    print(json.dumps(fields, sort_keys=True, separators=(',', ':')), flush=True)\n"
+        "emit(state='ready')\n"
+        "for line in sys.stdin:\n"
+        "    request = json.loads(line)\n"
+        "    if request['request_id'].startswith('d'):\n"
+        "        time.sleep(300)\n"
+        "    emit(state='completed', request_id=request['request_id'])\n"
+    )
+    monkeypatch.setattr(pod_service, "verify_fixed_adapter", lambda *_args: None)
+    monkeypatch.setattr(pod_service, "adapter_environment", lambda *_args: {})
+    # Exercise actual wait/TERM/reap while shortening only its 20-second grace.
+    original_wait = subprocess.Popen.wait
+    monkeypatch.setattr(
+        subprocess.Popen, "wait",
+        lambda self, timeout=None: original_wait(
+            self, timeout=min(timeout, 0.1) if timeout is not None else None
+        ),
+    )
+    process = pod_service.PersistentAdapterProcess(
+        registration, paths=paths, heartbeat_seconds=1
+    )
+    children = []
+    original_start = process._start
+
+    def start(**kwargs):
+        ready = original_start(**kwargs)
+        children.append(process.process)
+        return ready
+
+    monkeypatch.setattr(process, "_start", start)
+    try:
+        assert process.evaluate(
+            {"request_id": "d" * 64}, tmp_path / "first", tmp_path / "first-result",
+            deadline=int(time.time()) + 2,
+        ) == "adapter_timeout"
+        assert children[0].poll() is not None
+        assert process.process is None
+        assert process.evaluate(
+            {"request_id": "e" * 64}, tmp_path / "next", tmp_path / "next-result",
+            deadline=int(time.time()) + 10,
+        ) == "adapter_exit_nonzero"
+        assert process.start_count == 1
+        process.permit_restart()
+        assert process.evaluate(
+            {"request_id": "e" * 64}, tmp_path / "next", tmp_path / "next-result",
+            deadline=int(time.time()) + 10,
+        ) is None
+        assert process.start_count == 2
+        assert children[0].pid != children[1].pid
+    finally:
+        process.close()
 
 
 class _ReapedDeadProcess:

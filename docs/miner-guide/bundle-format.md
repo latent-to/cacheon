@@ -67,73 +67,36 @@ is valid manifest syntax, but no current registered target permits that observed
 
 ## A competitive singleton bundle
 
-Use an explicit competition table even though old development examples may
-still resolve through a legacy singleton convenience:
+For a node arena, the registered target is broad and the bundle declares its
+actual module addresses:
 
 ```toml
-bundle_id = "alice-silu-sm90-v1"
+bundle_id = "alice-mlp-v1"
 abi_version = "cacheon-op-abi-v0"
 
 [competition]
-target = "activation.silu_and_mul"
+target = "forward_pass"
 mode = "slot"
+arena = "<published-arena-id>"
 
 [[ops]]
-slot = "activation.silu_and_mul"
-source = "kernels/silu_and_mul.py"
-entry = "silu_and_mul"
-dtypes = ["bfloat16", "float16"]
-architectures = ["sm90"]
-metadata = "metadata/silu.json"
+slot = "model.layers.*.mlp"
+source = "kernels/forward.py"
+entry = "forward"
 ```
-
-`competition.target` selects a validator-registered reward unit. It does not
-create a target or alter its contract.
 
 ### Complete anatomy of this example
 
-The matching source file must export the named callable and write the supplied output:
-
 ```python
-# kernels/silu_and_mul.py
-import torch
-
-
-def silu_and_mul(x, out):
-    d = x.shape[-1] // 2
-    gate = torch.nn.functional.silu(x[..., :d].float()).to(x.dtype)
-    out.copy_(gate * x[..., d:])
+def forward(module, *args, **kwargs):
+    return module.forward(*args, **kwargs)
 ```
 
-The metadata narrows where the row may route:
+The first argument is the live module, or state from an optional
+`prepare(module)`. Other arguments and the return value follow stock's method.
+See [Kernel ABI](kernel-abi.md) for state and nesting behavior. This identity
+control establishes wiring only; replace its internal computation to compete.
 
-```json
-{
-  "capabilities": {
-    "num_tokens": {"min": 1, "max": 4096}
-  }
-}
-```
-
-Read the three files together:
-
-- the competition table asks for the economic target;
-- the op row maps one semantic slot to one source callable;
-- manifest and metadata constraints intersect to form the effective routing domain;
-- the source implements the computation but does not choose when it is called; and
-- the target catalog supplies correctness, reference, feature permissions, overlap, and
-  serving binding.
-
-The numeric range is a routing claim, not a verifier-shape request. If a live call
-descriptor lacks a field you constrain, routing fails closed rather than treating the
-field as a wildcard.
-
-Valid modes are:
-
-- `slot` for a registered singleton target;
-- `atomic` for a registered multi-slot target;
-- legacy `system`, which remains parseable for migration but is never
-  registered or crownable.
 
 ## Op rows
 
@@ -213,6 +176,9 @@ and FP16-only metadata before candidate execution.
 
 Multiple implementations of one slot are permitted only when all rows name
 unique variants and their effective capability domains are provably disjoint.
+The following example describes retained catalog fixtures. Node eligibility
+follows the commissioned node contract; do not copy catalog token-count gates
+into a collective node implementation.
 Manifest order never chooses a winner.
 
 ```toml
@@ -274,48 +240,16 @@ execution-bearing declaration change does.
 
 ## Prepare/forward slots
 
-MoE slots use a load-time preparation callable plus a serving callable:
-
-```toml
-[competition]
-target = "moe.fused_experts"
-mode = "slot"
-
-[[ops]]
-slot = "moe.fused_experts"
-source = "kernels/moe.py"
-prepare = "prepare"
-entry = "fused_experts"
-```
-
-`prepare(w13, w2)` may derive a weight layout. The serving call receives the
-returned object as `prepared`. This does not authorize engine-wide mutation.
+For node bundles, optional `prepare(module)` creates state once per bound
+module. The serving entry receives that state followed by stock's arguments.
+This does not authorize modifying the module's methods or unrelated engine
+behavior. The [node ABI](kernel-abi.md) is the complete interface.
 
 ## Atomic bundles
 
-An atomic bundle must request a registered atomic target and implement its
-complete member set. The current example shape is:
-
-```toml
-[competition]
-target = "collective.dp_attention_exchange.v1"
-mode = "atomic"
-
-[[ops]]
-slot = "collective.all_gather_into_tensor"
-source = "kernels/exchange.py"
-entry = "all_gather_into_tensor"
-
-[[ops]]
-slot = "collective.reduce_scatter_tensor"
-source = "kernels/exchange.py"
-entry = "reduce_scatter_tensor"
-```
-
-The committed
-[DP-attention exchange example](https://github.com/latent-to/cacheon/tree/main/examples/miner_dp_attention_exchange_torch)
-provides both required member rows and faithful PyTorch collective entries. It
-is an ABI template, not a competitive collective implementation.
+Retained catalog fixtures can request registered atomic targets. A node bundle
+instead names its modules under `forward_pass`, including multiple disjoint
+addresses when necessary. It does not need a new atomic target for each fusion.
 
 ## Advanced declarations
 

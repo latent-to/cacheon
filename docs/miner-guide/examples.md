@@ -1,62 +1,29 @@
 # Example bundles
 
-Examples are ABI fixtures, not active crowns or validator decisions. A fixture
-without `[competition]` uses legacy singleton resolution; add the explicit
-target and revalidate before submission.
+Examples are development controls, not crowns or performance claims.
 
-## Positive learning examples
+## Node controls
 
-| Example | What it demonstrates | Limits |
-|---|---|---|
-| [`miner_silu_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_silu_torch) | smallest CPU-importable `entry(x, out)` bundle | correctness/packaging only; not expected to beat a tuned incumbent |
-| [`miner_silu_triton`](https://github.com/latent-to/cacheon/tree/main/examples/miner_silu_triton) | Triton activation implementation and architecture constraints | needs matching GPU/Triton environment |
-| [`miner_rmsnorm_triton`](https://github.com/latent-to/cacheon/tree/main/examples/miner_rmsnorm_triton) | pure RMSNorm output ownership in Triton | local example, not crown evidence |
-| [`miner_moe_fused_experts_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_moe_fused_experts_torch) | MoE `prepare` plus serving `entry` | dense reference-style code, not a quantized fast path |
-| [`miner_moe_fused_routed_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_moe_fused_routed_torch) | GLM fat-MoE boundary: tagged NVFP4 prepare plus routing, experts, and combine | correctness control that dequantizes the view; not a quantized fast path |
-| [`miner_allreduce_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_allreduce_torch) | simplest collective ABI using the supplied group | correctness example, not a competitive collective algorithm |
-| [`miner_dense_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_dense_torch) | GLM BF16 dense `prepare` plus output-buffer entry | faithful local GEMM, not a speed winner |
-| [`miner_fused_add_rmsnorm_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_fused_add_rmsnorm_torch) | fused residual ownership and RMSNorm output ABI | faithful PyTorch control, not a fused fast path |
-| [`miner_dp_attention_exchange_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_dp_attention_exchange_torch) | both members of the atomic DP-attention exchange target | needs four-rank verification; engine still owns attention and KV policy |
-
-Start with `miner_silu_torch` for the workflow in
-[Your first component bundle](your-first-kernel.md). For a new target, use the
-signature in [Kernel ABI](kernel-abi.md), not a superficially similar example.
-
-## Negative and adversarial examples
-
-These bundles are meant to fail or expose a gate:
-
-| Example | Intended lesson |
+| Example | Expected behavior |
 |---|---|
-| [`miner_silu_broken_torch`](https://github.com/latent-to/cacheon/tree/main/examples/miner_silu_broken_torch) | wrong activation math fails CPU correctness |
-| [`miner_silu_broken`](https://github.com/latent-to/cacheon/tree/main/examples/miner_silu_broken) | a GPU implementation cannot win by skipping required work |
-| [`miner_silu_sparse`](https://github.com/latent-to/cacheon/tree/main/examples/miner_silu_sparse) | sparse corruption can evade naive averages, so tail/disagreement and end-to-end gates matter |
-| [`miner_rmsnorm_broken`](https://github.com/latent-to/cacheon/tree/main/examples/miner_rmsnorm_broken) | an incorrect normalization is rejected despite plausible output shape |
-| [`miner_setup_demo`](https://github.com/latent-to/cacheon/tree/main/examples/miner_setup_demo) | legacy engine-wide `setup` surface for isolation tests |
+| [miner_node_identity](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_identity) | Returns the original MLP result; import smoke passes and engine audit should match stock. |
+| [miner_node_wrong](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_wrong) | Scales a tensor-valued MLP result by 1.5; import smoke passes and engine audit should fail. |
 
-No registered target permits `miner_setup_demo`'s engine-wide `setup` hook;
-widening the catalog is a reviewed validator change, not a miner submission.
+Both name `model.layers.*.mlp`. Use them only where that node exists and is
+supported. Set the actual `competition.arena` before submitting; the examples
+omit it so local checks do not invent an arena identity.
 
-## Identity fixtures are not kernels
+Follow [Your first bundle](your-first-kernel.md) to copy, scan, smoke-test and
+run the real engine check. Keep results and compiler caches outside the bundle.
 
-One test fixture is useful for inspecting modern singleton manifest structure:
+## Retained catalog fixtures
 
-- [`stack_norm_singleton`](https://github.com/latent-to/cacheon/tree/main/tests/fixtures/stack_norm_singleton)
-  shows explicit singleton competition identity and capability metadata.
+Other examples in the tree exercise older `SlotSpec` contracts, adversarial
+controls, native-build paths and identity tests. Their output-buffer signatures
+are not the node ABI. The presence of a fixture does not open a serving lane or
+establish that it beats the current incumbent. Use the node controls for the
+current miner workflow and the [source catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
+when maintaining a retained reference fixture.
 
-They test intake, identity, and publication machinery. Their callable/native
-bodies are deliberately minimal and may not implement the live slot ABI. Do not
-copy them as performance kernels.
-
-## A safe way to reuse an example
-
-1. Copy only a committed source example whose ABI matches your target.
-2. Change `bundle_id` and add explicit `[competition]` identity.
-3. Replace descriptive metadata with an honest capability domain.
-4. Remove files and declarations your implementation does not use.
-5. Run `scan` and `verify` on the matching target environment.
-6. Inspect the packaged archive before hosting it.
-
-Do not copy caches, generated binaries, local result directories, machine paths,
-wallet material, or performance claims into a proposal. The submission must be
-self-contained source and declarations that the validator can reproduce.
+No registered target permits the old `miner_setup_demo` engine-wide setup hook.
+A candidate optimizes only its declared node, not unrelated model-serving policy.

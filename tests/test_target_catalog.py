@@ -238,6 +238,8 @@ def test_tracked_examples_preserve_legacy_or_name_modern_target_identity():
         "miner_moe_fused_routed_torch": CompetitionEntry(
             "moe.fused_routed_experts", "slot"
         ),
+        "miner_node_identity": CompetitionEntry("forward_pass", "slot"),
+        "miner_node_wrong": CompetitionEntry("forward_pass", "slot"),
     }
     for path in manifests:
         assert load_manifest(path.parent).competition == explicit.get(path.parent.name)

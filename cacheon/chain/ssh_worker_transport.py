@@ -14,14 +14,16 @@ the durable lease without consuming an attempt.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import os
 import shutil
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -393,6 +395,30 @@ def _archive_completed_request(job_dir: Path, request: Mapping[str, Any], intake
     append_event(job_dir.parent.parent, "request_archived", request_id=request["request_id"])
 
 
+@contextlib.contextmanager
+def _dispatcher_heartbeat(
+    registration: Mapping[str, Any], path: Path, active_request: Callable[[], str | None],
+) -> Iterator[None]:
+    """Keep relay liveness independent of bounded SSH and archive operations."""
+    stopped = threading.Event()
+
+    def write() -> None:
+        atomic_json(path, heartbeat_payload(registration, "running", active_request()))
+
+    def pulse() -> None:
+        while not stopped.wait(DEFAULT_HEARTBEAT_SECONDS):
+            write()
+
+    write()
+    thread = threading.Thread(target=pulse, name="dispatcher-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join()
+
+
 def cpu_serve(
     *,
     registration_path: Path,
@@ -416,7 +442,8 @@ def cpu_serve(
     for path in (outbox, results, state_root):
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock_path = state_root / f"dispatch-{registration['worker_epoch']}.lock"
-    with lock_path.open("a+b") as lock:
+    with contextlib.ExitStack() as lifetime:
+        lock = lifetime.enter_context(lock_path.open("a+b"))
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -424,6 +451,10 @@ def cpu_serve(
         append_event(
             spool_root, "dispatcher_started", worker_epoch=registration["worker_epoch"]
         )
+        active: str | None = None
+        lifetime.enter_context(_dispatcher_heartbeat(
+            registration, state_root / "heartbeat.json", lambda: active
+        ))
         worker_hold_state: str | None = None
         while True:
             if not registration_is_current(registration, current_registration_path):
@@ -506,10 +537,6 @@ def cpu_serve(
                             spool_root, "request_transferred", request_id=request_id
                         )
                     break
-                atomic_json(
-                    state_root / "heartbeat.json",
-                    heartbeat_payload(registration, "running", active),
-                )
             except RemoteWorkerError as exc:
                 append_event(spool_root, "dispatcher_retry", error=str(exc)[:1024])
             time.sleep(poll_seconds)

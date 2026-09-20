@@ -145,6 +145,7 @@
  "cacheon.integrations.sglang_scheduler_gate": {"all":null,"exceptions":[],"public":["install","is_installed","uninstall"]},
  "cacheon.kernel_trace": {"all":null,"exceptions":[],"public":["arm","format_kernels","launched_kernels"]},
  "cacheon.manifest": {"all":null,"exceptions":["ManifestError"],"public":["ABI_VERSION","CompetitionEntry","DEFAULT_VARIANT","Manifest","ManifestError","OpEntry","SUPPORTED_ABI_VERSIONS","all_declared_cuda_sources","load_manifest","resolve_cuda_sources","resolve_source"]},
+ "cacheon.miner_check": {"all":null,"exceptions":[],"public":["add_parser","check","verify_nodes"]},
  "cacheon.model_profiles": {"all":null,"exceptions":[],"public":["MODEL_PROFILES","model_profile","slot_for_model","specialize_slot","verification_call_descriptor"]},
  "cacheon.model_provision": {"all":["MODEL_PROVISION_SCHEMA_VERSION","MODEL_RECEIPT_PREFIX","ModelFileRecord","ModelProvisionError","ModelProvisionReceipt","ProvisionedModel","provision_model","reopen_model_provision"],"exceptions":["ModelProvisionError"]},
  "cacheon.moe_nvfp4_contract": {"all":null,"exceptions":[],"public":["NVFP4_GATE_UP_LAYOUT","NVFP4_INTERLEAVED_LAYOUT","NVFP4_PREPARE_TAG","NVFP4_TRTLLM_LAYOUT","call_descriptor","dequantize_prepare_args","prepare_args_from_inputs","prepare_args_from_layer","routed_call_descriptor","supports_layer","verification_inputs"]},

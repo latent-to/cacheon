@@ -2361,12 +2361,7 @@ def reopen_causal_qualification(
                 expected_policy=expected.speed_evidence_policy,
             )
             audit_witness = report.audit_witness
-            audit_passed, audit_detail = audit_witness.regrade()
-            audit_grade = (
-                QualificationDecision.PASS
-                if audit_passed
-                else QualificationDecision.FAIL
-            )
+            audit_grade, audit_detail = audit_witness.regrade()
             if (
                 audit_witness.policy != audit_policy
                 or audit_witness.selected_delta_digest
