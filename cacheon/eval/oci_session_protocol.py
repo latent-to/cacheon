@@ -62,8 +62,6 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     "enable_dp_attention": "bool",
     "enable_flashinfer_allreduce_fusion": "bool",
     "kv_cache_dtype": "token",
-    "language_model_only": "bool",
-    "linear_attn_backend": "token",
     "max_mamba_cache_size": "positive_int",
     "mamba_ssm_dtype": "token",
     "max_prefill_tokens": "positive_int",

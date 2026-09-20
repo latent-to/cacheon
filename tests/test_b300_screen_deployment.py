@@ -79,11 +79,13 @@ def _m3_engine_config() -> dict[str, object]:
 def _qwen_engine_config():
     config = _m3_engine_config()
     config.update(tp_size=1, mem_fraction_static=0.93, moe_runner_backend="triton")
+    # The measured H100 arena settings. SGLang 0.5.19 refuses language_model_only for
+    # this model, and chunked prefill at 4096 served 1,599 tok/s against 1,903 at the
+    # engine default (2026-09-20).
     config["engine_kwargs"] = {
-        "chunked_prefill_size": 4096, "disable_radix_cache": True,
+        "disable_radix_cache": True,
         "cuda_graph_bs_decode": [1, 2, 4, 8, 16, 24, 32, 40, 48],
-        "kv_cache_dtype": "fp8_e4m3", "language_model_only": True,
-        "linear_attn_backend": "triton",
+        "kv_cache_dtype": "fp8_e4m3",
         "max_mamba_cache_size": 48, "mamba_ssm_dtype": "float32",
     }
     return config

@@ -316,9 +316,15 @@ def _native(module):
 def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int) -> torch.Tensor:
     if actual.shape != expected.shape:
         raise ValueError(f"shape {tuple(actual.shape)} is not stock's {tuple(expected.shape)}")
-    a = actual.detach().float().reshape(-1, 1) if actual.dim() < 2 else actual.detach().float()
-    e = expected.detach().float().reshape(-1, 1) if expected.dim() < 2 else expected.detach().float()
+    a = actual.detach().reshape(-1, 1) if actual.dim() < 2 else actual.detach()
+    e = expected.detach().reshape(-1, 1) if expected.dim() < 2 else expected.detach()
     a, e = a.movedim(dim, 0).flatten(1), e.movedim(dim, 0).flatten(1)
+    if not expected.is_floating_point():
+        # Ids and flags are choices: the error is the share that differ, in stock's order,
+        # which the other outputs line up with. As magnitudes, a router that only picked
+        # a quarter of the experts kept 96.6% of its rows inside the floor (2026-09-20).
+        return (a != e).sum(dim=1) / max(1, e.shape[1])
+    a, e = a.float(), e.float()
     errors = (a - e).norm(dim=1) / e.norm(dim=1).clamp_min(1e-12)
     # Rows stock itself left non-finite are nobody's answer: the 2026-09-18 retained
     # bundle matched every real token and failed on NaNs in an idle rank's padding.

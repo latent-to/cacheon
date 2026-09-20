@@ -302,6 +302,15 @@ tensor, and a window passes when 75% of its rows do, so a one-token decode call 
 never a verdict by itself. A wide node is therefore held only as tightly as honest
 BF16 rounding allows at that width; a narrow node inside it is held tighter.
 
+A whole-number or true/false result (expert ids, selected token indices, a mask) is
+a choice, not a magnitude. Its row error is the share of the row's entries that
+differ from stock's, position by position, under the same tolerance and the same
+75% bar. Stock's order is part of the answer because the other outputs line up with
+it: router weights are given in the order of the expert ids. A kernel that returns
+the same picks in another order, or whose rounding moves many near-ties, fails at
+that node and belongs in a claim on the enclosing module, whose activations are
+graded as numbers.
+
 What stock leaves in its own arguments is not graded. The fused RMSNorm overwrites
 its arguments and returns them, and a decoder layer leaves normed intermediates in
 its dead input; values reach the caller through the result and the engine state.

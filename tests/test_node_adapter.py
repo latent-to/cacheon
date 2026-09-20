@@ -332,6 +332,28 @@ def test_a_result_that_is_a_record_is_graded_through_its_fields(audited):
     assert audited["head"]["violations"] == 1
 
 
+@pytest.mark.parametrize(("picks", "violations"), [("stock's", 0), ("a quarter of the experts", 1)])
+def test_whole_number_results_are_graded_as_choices_not_magnitudes(audited, picks, violations):
+    class _Router(nn.Module):
+        def forward(self, x):
+            weights, ids = x.topk(8, dim=-1)
+            return SimpleNamespace(topk_weights=weights, topk_ids=ids)
+
+    runner, _ = _served_model()
+    runner.model.router = _Router()
+
+    def candidate(module, x):
+        result = module.forward(x)
+        if picks != "stock's":
+            # Three ids in four move by at most 3 of 255: as magnitudes, under the floor.
+            result.topk_ids = result.topk_ids // 4 * 4
+        return result
+
+    nodes.bind(runner, _registry("router", candidate))
+    runner.model.router(torch.randn(64, 256))
+    assert (audited["router"]["n"], audited["router"]["violations"]) == (1, violations)
+
+
 def test_prepare_runs_once_per_node_and_nested_nodes_serve_stock_to_a_running_candidate(audited):
     runner, batch = _served_model()
     prepared = []

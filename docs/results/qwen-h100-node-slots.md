@@ -270,6 +270,29 @@ is not the model's output. Its first tokens are unrelated text and it answers no
 eight questions about a number planted earlier in the prompt; the default backend
 answers eight of eight at 8k and six of six at 64k. The arena serves the first row.
 
+On the first row's settings, a repeat run measured 1,902.5 and 515.8. Chunked prefill
+below the engine default is slower: 1,599 and 507 at 4,096 tokens, 1,484 and 481 at
+2,048. At 16,384 the engine runs out of memory, and SGLang 0.5.19 refuses
+`language_model_only` for this model class.
+
+The validator's reference scoring asks for the log-probability of every output
+position of 24 prompts in one request. At SGLang's default chunk of 2,048 positions
+that request needs 1.89 GiB for one chunk of vocabulary logits and fails with 1.23 GiB
+free. With `SGLANG_LOGPROB_CHUNK_SIZE=256` set in the worker image the same request
+scores all 24 prompts in 8.6 s at the same 79.4 GiB peak.
+
+## Whole-number results
+
+A router returns expert ids. Graded as magnitudes, a wrong id is a small relative
+error: on the row check's own comparison, a router that only ever picks a quarter of
+the 256 experts gets three ids in four wrong and keeps 96.6% of 4,096 rows inside the
+2% floor, against a bar of 75% (CPU, 2026-09-20). Whole-number and true/false
+results are therefore graded as choices: a row's error is the share of its entries
+that differ from stock's. The same router then passes none of the 4,096 rows, and
+stock's own picks pass all of them. The hole was
+open only to a claim whose own result holds ids, such as `model.layers.*.mlp.topk`;
+a claim on the enclosing block was already graded on its activations.
+
 ## Limits
 
 - A `model` claim cannot be graded by the row check at 64k context: an honest
