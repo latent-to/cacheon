@@ -21,6 +21,7 @@ cacheon/eval/b300_screen_stages.py 1020
 cacheon/eval/calibration.py 922
 cacheon/eval/crossover_runtime.py 933
 cacheon/eval/device_state.py 1519
+cacheon/eval/explain.py 910
 cacheon/eval/native_artifact.py 1220
 cacheon/eval/oci_backend.py 1978
 cacheon/eval/oci_outer_session.py 925

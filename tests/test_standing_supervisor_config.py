@@ -310,6 +310,7 @@ def test_enabled_weights_is_actually_wired_into_the_supervisor(
         cred_path,
         PushCredentialSet((mint_push_credential(credential_id="test"),)),
     )
+    _private_file(standing_path.parent / "signer.sqlite3", b"")
     weights_path = standing_path.parent / "weights-stage.json"
     _private_file(
         weights_path,
@@ -317,6 +318,7 @@ def test_enabled_weights_is_actually_wired_into_the_supervisor(
             {
                 "attribution_hotkey": "validator",
                 "burn_hotkey": "",
+                "confirmation_journal": str(standing_path.parent / "signer.sqlite3"),
                 "discovery_lifetime_blocks": 2160,
                 "discovery_pool_ppm": 100_000,
                 "fallback_endpoint": "wss://archive-backup.example.invalid",
@@ -325,7 +327,7 @@ def test_enabled_weights_is_actually_wired_into_the_supervisor(
                 "push_credentials": str(cred_path),
                 "push_url": "http://127.0.0.1:8080",
                 "refresh_blocks": 600,
-                "schema": "cacheon-standing-weights-config-v1",
+                "schema": "cacheon-standing-weights-config-v2",
             }
         )
         + b"\n",

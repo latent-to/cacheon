@@ -394,12 +394,14 @@ one-field change; enabling settlement with an empty endpoint is refused.
 `enable_weights` installs the eval-side weight-offer push stage
 (`chain/standing_weights_stage.py`) and requires `weights_stage_config`, an
 absolute path to a second sealed, closed, owner-controlled file with schema
-`cacheon-standing-weights-config-v1` and exactly these fields: `network`
+`cacheon-standing-weights-config-v2` and exactly these fields: `network`
 (explicit `wss://` finalized-head reader), `fallback_endpoint` (empty or
 `wss://`), `push_url` (`http(s)` serve-weights offer endpoint),
 `push_credentials` (owner-only path to the push credential set),
-`attribution_hotkey`, `half_life_blocks`, `discovery_lifetime_blocks`,
-`discovery_pool_ppm`, `refresh_blocks`, and `burn_hotkey`. Every
+`confirmation_journal` (owner-only path to the signer's publication journal,
+which starts each reward's decay), `attribution_hotkey`, `half_life_blocks`,
+`discovery_lifetime_blocks`, `discovery_pool_ppm`, `refresh_blocks`, and
+`burn_hotkey`. The retired v1 file, which had no journal, is refused. Every
 `refresh_blocks` the stage reads the finalized head and metagraph, reopens the
 intake store, and pushes the current V1 offer: the real projection whenever an
 active reward claim, a crowned arena, or an activated composition exists;

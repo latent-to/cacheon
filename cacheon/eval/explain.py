@@ -59,16 +59,19 @@ _TRACE_ERROR = re.compile(
 #: about — did my kernel help — harder to read, not more precise. Unknown roles
 #: print their raw name rather than being dropped.
 _ARM_LABEL = {
-    "B": "SGLang alone (before)",
+    "B": "{baseline} (before)",
     "C": "with your kernel",
-    "B_prime": "SGLang alone (after)",
-    "B_prefill": "SGLang alone, prompt pass (before)",
+    "B_prime": "{baseline} (after)",
+    "B_prefill": "{baseline}, prompt pass (before)",
     "C_prefill": "with your kernel, prompt pass",
-    "B_prime_prefill": "SGLang alone, prompt pass (after)",
+    "B_prime_prefill": "{baseline}, prompt pass (after)",
 }
 
 _ARM_LABEL.update({role + "_repeat": label + " (repeat)"
                    for role, label in tuple(_ARM_LABEL.items())})
+
+#: What a baseline run is called unless the product's incumbent carries crowned kernels.
+_STOCK = "SGLang alone"
 
 
 def _tagged(stderr: str, prefix: str) -> Iterable[dict]:
@@ -91,7 +94,7 @@ def _tagged(stderr: str, prefix: str) -> Iterable[dict]:
             yield parsed
 
 
-def config_lines(stderr: object) -> list[str]:
+def config_lines(stderr: object, *, baseline: str = _STOCK) -> list[str]:
     """State the engine settings each arm ran under, and any difference between them.
 
     A speed pair is only a measurement if both arms were built the same way. The
@@ -110,7 +113,7 @@ def config_lines(stderr: object) -> list[str]:
             by_arm[str(row.get("arm") or "unnamed")] = engine
     if not by_arm:
         return []
-    label = {"candidate": "with your kernel", "stock": "SGLang alone"}
+    label = {"candidate": "with your kernel", "stock": baseline}
     lines = []
     for arm, engine in sorted(by_arm.items()):
         settings = ", ".join(f"{k}={v}" for k, v in sorted(engine.items()))
@@ -275,20 +278,23 @@ def _audit_lines(stage_exit: dict) -> list[str]:
     return [f"  {'audit against stock':<26s} {verdict}", f"  {'per rank':<26s} {grid}"]
 
 
-def _speed_lines(stage_exit: dict) -> list[str]:
+def _speed_lines(stage_exit: dict, *, baseline: str = _STOCK) -> list[str]:
     rates = _get(stage_exit, "speed_witness", "rates", default=[])
     rates = [r for r in rates if isinstance(r, dict)] if isinstance(rates, list) else []
     if not rates:
         return [f"  {'speed':<26s} not measured — the run stopped before timing"]
 
+    named = baseline if baseline == _STOCK else "the " + baseline
+    versus, slower = ("SGLang", "SGLang-only") if baseline == _STOCK else (named, "baseline")
     lines: list[str] = []
     measured: dict[str, float] = {}
     for row in rates:
         role = str(row.get("role") or "?")
+        label = _ARM_LABEL.get(role, role).replace("{baseline}", baseline)
         seconds = _number(row.get("timed_seconds"))
         tokens = _number(row.get("timed_tokens"))
         if not seconds or not tokens:
-            lines.append(f"  {_ARM_LABEL.get(role, role):<26s} recorded, but its timing is unusable")
+            lines.append(f"  {label:<26s} recorded, but its timing is unusable")
             continue
         rate = tokens / seconds
         measured[role] = rate
@@ -297,11 +303,9 @@ def _speed_lines(stage_exit: dict) -> list[str]:
         spread = _window_spread(windows)
         spread_text = f", varying by {spread * 100:.2f}%" if spread is not None else ""
         detail = f"  ({len(windows)} runs{spread_text})" if windows else ""
-        lines.append(
-            f"  {_ARM_LABEL.get(role, role):<26s} {rate:10.2f} tokens/sec{detail}"
-        )
+        lines.append(f"  {label:<26s} {rate:10.2f} tokens/sec{detail}")
 
-    # Compared against the SLOWEST SGLang-only run, which is the reading most
+    # Compared against the SLOWEST baseline run, which is the reading most
     # generous to the miner. Saying which rule was used matters more than the
     # number, because a miner who disagrees can then recompute it themselves.
     sglang = [rate for role, rate in measured.items() if role.startswith("B")]
@@ -310,8 +314,8 @@ def _speed_lines(stage_exit: dict) -> list[str]:
         ratio = with_kernel / min(sglang)
         lines.append(
             f"  {'result':<26s} your kernel is {max(ratio, 1 / ratio):.2f}x "
-            f"{'FASTER' if ratio > 1 else 'SLOWER'} than SGLang "
-            f"({ratio:.4f}x, measured against the slower SGLang-only run)"
+            f"{'FASTER' if ratio > 1 else 'SLOWER'} than {versus} "
+            f"({ratio:.4f}x, measured against the slower {slower} run)"
         )
         if len(sglang) > 1:
             # The machine's own run-to-run variation. If it is bigger than the
@@ -319,7 +323,7 @@ def _speed_lines(stage_exit: dict) -> list[str]:
             noise = (max(sglang) - min(sglang)) / min(sglang)
             claim = abs(ratio - 1.0)
             lines.append(
-                f"  {'machine noise':<26s} SGLang alone measured {noise * 100:.1f}% "
+                f"  {'machine noise':<26s} {named} measured {noise * 100:.1f}% "
                 f"apart on the same hardware"
             )
             if noise > claim:
@@ -454,7 +458,13 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
     # numbers and a ratio, and a miner who reads that first walks away believing
     # they were 1.37x faster. Say the disqualifying fact before the numbers, or
     # the numbers do the talking.
-    headline = _headline(execution, _speed_lines(stage_exit))
+    # 2026-09-21: the first bundle timed against the Qwen winner read "SGLang alone 1054
+    # tokens/sec" on a machine whose stock engine serves 977.
+    entries = _get(product, "incumbent_stack", "entries")
+    crowned = sorted(entries) if isinstance(entries, dict) else []
+    baseline = "current baseline" if crowned else _STOCK
+    speed = _speed_lines(stage_exit, baseline=baseline)
+    headline = _headline(execution, speed)
     if headline:
         lines.append("")
         lines.append(headline)
@@ -468,8 +478,10 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
     lines.extend(_audit_lines(stage_exit))
     lines.append("")
     lines.append("was it faster")
-    lines.extend(_speed_lines(stage_exit))
-    settings = config_lines(stderr)
+    if crowned:
+        lines.append(f"  {'baseline':<26s} SGLang with the crowned kernels for {', '.join(crowned)}")
+    lines.extend(speed)
+    settings = config_lines(stderr, baseline=baseline)
     if settings:
         lines.append("")
         lines.append("what we ran you under")
