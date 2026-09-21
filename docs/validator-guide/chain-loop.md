@@ -360,6 +360,15 @@ stack. Restarting an unchanged service retains the existing recovery path.
 
 ## Standing CPU supervisor
 
+A bounded qualification-result wait can expire while the published request is
+still pending. With a healthy lease heartbeat and the same retained carrier,
+the supervisor reports `qualification` / `waiting` and continues its existing
+no-progress backoff. It resumes that request without publishing another job,
+consuming another attempt, or assigning a miner verdict. Restart preserves the
+same request too. Missing carriers, failed lease renewal, invalid results and
+unclassified transport errors retain their existing HOLD/error behavior; a
+timeout is not permission to repeat GPU work on a replacement machine.
+
 `python -m cacheon.chain.standing_cpu_supervisor --config <path>` is the
 standing CPU daemon over those pieces. Its sealed, closed, owner-controlled
 config names the screen-dispatcher config (`chain/mainnet_screen_dispatcher.py`

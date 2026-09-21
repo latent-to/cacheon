@@ -11,6 +11,23 @@ import pytest
 from cacheon.chain import ssh_worker_transport as transport
 
 
+@pytest.mark.parametrize("stage", ["qualification", "screen"])
+def test_result_deadline_distinguishes_qualification_wait_from_screen_failure(tmp_path, monkeypatch, stage):
+    from tests.test_remote_worker_request_plan import _authority
+
+    worker = _authority(tmp_path).transport()
+    worker.response_timeout_seconds = 1
+    ticks = iter((0, 2))
+    monkeypatch.setattr(transport.time, "monotonic", lambda: next(ticks))
+    with pytest.raises(transport.RemoteEvaluationDispatcherError) as caught:
+        worker._await_completed_result("request", tmp_path / "job", stage=stage)
+    if stage == "qualification":
+        assert type(caught.value) is transport.RemoteQualificationWaitTimeout
+        assert caught.value.request_id == "request"
+    else:
+        assert type(caught.value) is transport.RemoteEvaluationDispatcherError
+
+
 @pytest.mark.parametrize("copy_operation", ["transfer_request", "pull_result"])
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_cpu_relay_heartbeat_survives_long_copy_and_stops_on_exit(

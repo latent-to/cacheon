@@ -7,7 +7,7 @@ cacheon/chain/evaluation_coordinator.py 1038
 cacheon/chain/evaluation_lease_store.py 911
 cacheon/chain/evaluation_recovery_store.py 1227
 cacheon/chain/intake.py 3834
-cacheon/chain/recoverable_qualification_dispatcher.py 1048
+cacheon/chain/recoverable_qualification_dispatcher.py 937
 cacheon/chain/remote_evaluation_dispatcher.py 1072
 cacheon/chain/remote_worker_pod_service.py 1106
 cacheon/chain/remote_worker_request_plan.py 940

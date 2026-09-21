@@ -142,6 +142,9 @@ class _ComposedTransport:
         self.resume_request_ids.append(plan.request_id)
         if self.fail_next_resume:
             self.fail_next_resume = False
+            if getattr(self, "pending_wait", False):
+                from cacheon.chain.ssh_worker_transport import RemoteQualificationWaitTimeout
+                raise RemoteQualificationWaitTimeout(plan.request_id)
             raise TimeoutError("simulated waiter interruption")
         return self.delegate.resume_planned_qualification(plan)
 
@@ -303,10 +306,45 @@ def _supervisor(harness, screen_runs: list[EvaluationRun]) -> StandingCpuSupervi
     )
 
 
+@pytest.mark.parametrize("fault", ["wrong_request", "heartbeat", "missing_carrier"])
+def test_pending_wait_requires_healthy_same_request_recovery(tmp_path, monkeypatch, fault):
+    from cacheon.chain import qualification_wait
+    from cacheon.chain.ssh_worker_transport import RemoteQualificationWaitTimeout
+
+    harness = _harness(tmp_path, profile="collective-alpha", hold_after_publish=False)
+    supervisor = _supervisor(harness, [])
+    assert supervisor.tick().phase is SupervisorPhase.SCREEN
+    def resume(plan):
+        if fault == "missing_carrier":
+            observed = harness.transport.inspect_planned_qualification(plan)
+            (observed.carrier_path / "REQUEST_READY").unlink()
+        raise RemoteQualificationWaitTimeout("0" * 64 if fault == "wrong_request" else plan.request_id)
+    monkeypatch.setattr(harness.transport, "resume_planned_qualification", resume)
+    if fault == "heartbeat":
+        stop = qualification_wait._RecoveryHeartbeat.stop
+        def broken_stop(heartbeat):
+            latest, _ = stop(heartbeat)
+            return latest, RuntimeError("lease heartbeat failed")
+        monkeypatch.setattr(qualification_wait._RecoveryHeartbeat, "stop", broken_stop)
+    if fault == "missing_carrier":
+        status = supervisor.tick()
+        assert status.phase is SupervisorPhase.HOLD
+        assert status.last_disposition == "hold"
+    else:
+        with pytest.raises(StandingCpuSupervisorError, match="same-request") as caught:
+            supervisor.tick()
+        assert supervisor.status().phase is SupervisorPhase.FAILED
+        if fault == "heartbeat":
+            assert "lease heartbeat failed" in str(caught.value)
+    assert (harness.transport.plans, harness.transport.publications) == (1, 1)
+
+
 @pytest.mark.parametrize("profile", ["collective-alpha", "block-beta"])
+@pytest.mark.parametrize("wait_mode", ["interrupted", "pending", "pending_restart"])
 def test_screen_to_qualification_restart_reuses_one_request(
     tmp_path: Path,
     profile: str,
+    wait_mode: str,
 ) -> None:
     harness = _harness(tmp_path, profile=profile, hold_after_publish=False)
     screen_runs: list[EvaluationRun] = []
@@ -323,14 +361,23 @@ def test_screen_to_qualification_restart_reuses_one_request(
     ) as store:
         assert store.get(reservation_id).status == "promoted"
 
-    with pytest.raises(StandingCpuSupervisorError, match="same-request"):
-        supervisor.tick()
+    progress = supervisor.status().last_progress_unix
+    harness.transport.pending_wait = wait_mode != "interrupted"
+    if wait_mode == "interrupted":
+        with pytest.raises(StandingCpuSupervisorError, match="same-request"):
+            supervisor.tick()
+    else:
+        status = supervisor.tick()
+        assert status.phase is SupervisorPhase.QUALIFICATION
+        assert status.last_disposition == "waiting"
+        assert status.request_id == harness.transport.plan.request_id
+        assert status.last_progress_unix == progress
     plan = harness.transport.plan
     assert plan is not None
     request_id = plan.request_id
     harness.transport.complete()
 
-    restarted = _supervisor(harness, screen_runs)
+    restarted = supervisor if wait_mode == "pending" else _supervisor(harness, screen_runs)
     assert restarted.weights_once is None
     assert restarted.tick().phase is SupervisorPhase.QUALIFICATION
     assert harness.transport.plan.request_id == request_id
