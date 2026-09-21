@@ -1,5 +1,6 @@
 """Retained PASS attribution and publication clocks in the production producer."""
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -55,8 +56,9 @@ def test_rebuilt_payload_keeps_original_pass_across_arenas(changed):
     assert earned.to_dict() == before
 
 
+@pytest.mark.parametrize("reason", ["", "block_inclusion"])
 @pytest.mark.parametrize("channel", ["direct", "follower"])
-def test_decay_waits_for_fresh_confirmation_and_survives_restart(tmp_path, channel):
+def test_decay_waits_for_fresh_confirmation_and_survives_restart(tmp_path, channel, reason):
     with intake._store(tmp_path) as store, intake._store(tmp_path / "signer") as signer:
         candidate = intake._qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
@@ -73,9 +75,10 @@ def test_decay_waits_for_fresh_confirmation_and_survives_restart(tmp_path, chann
             journal = SQLiteFollowerWeightPublicationJournal(signer, CurrentWeightOffer.from_legacy_projection(projection))
         previous = None
         for status, update, expected in [("pending", 0, None), ("confirmed", 11, None), ("confirmed", 20, 20), ("confirmed", 30, 20)]:
+            included = reason and status == "confirmed"  # the live signer: confirmed_block set, last_update 0
             record = WeightPublicationRecord(
-                projection.digest, status, prior_record_digest=previous,
-                submit_block=10, retry_after_block=10, confirmed_block=update, confirmed_last_update=update,
+                projection.digest, status, prior_record_digest=previous, submit_block=10, retry_after_block=10,
+                confirmed_block=update, confirmed_last_update=0 if included else update, reason=reason if included else "",
             )
             journal.compare_and_swap(previous, record)
             previous = record.digest
@@ -95,14 +98,12 @@ def test_decay_waits_for_fresh_confirmation_and_survives_restart(tmp_path, chann
             rewards.record_reward_decay_start(store, claim_digest=claim.digest, start_block=30, reason="retry")
 
 
-def test_legacy_reward_clocks_are_preserved_once(tmp_path):
+def test_migrated_legacy_claims_keep_their_clock_and_new_claims_wait(tmp_path):
     with intake._store(tmp_path) as store:
         intake._qualified_settlement_candidate(store)
-        rewards.preserve_existing_reward_clocks(store)
-        first = store._db.execute("SELECT value FROM metadata WHERE key='reward_decay_legacy_claims'").fetchone()[0]
+        legacy = json.dumps([row.digest for row in store.passed_reward_claims()])
+        store._db.execute("INSERT INTO metadata(key,value) VALUES('reward_decay_legacy_claims',?)", (legacy,))
         intake._qualified_settlement_candidate(store, index=1, marker="next", arena_marker="next")
-        rewards.preserve_existing_reward_clocks(store)
-        assert store._db.execute("SELECT value FROM metadata WHERE key='reward_decay_legacy_claims'").fetchone()[0] == first
         rewards._hold_unpublished_claims(store, store.passed_reward_claims())
         assert len(rewards.reward_decay_adjustments(store)) == 1
         assert rewards.reward_decay_adjustments(store)[0]["start_block"] is None

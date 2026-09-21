@@ -293,16 +293,9 @@ def record_reward_decay_start(
         )
 
 
-def preserve_existing_reward_clocks(store: FinalizedIntakeStore) -> None:
-    """Migrate an existing deployment once; new stores need no legacy exemption."""
-    with store._transaction():
-        store._db.execute(
-            "INSERT OR IGNORE INTO metadata(key,value) VALUES('reward_decay_legacy_claims',?)",
-            (json.dumps(sorted(row.digest for row in passed_reward_claims(store))),),
-        )
-
-
 def _hold_unpublished_claims(store, claims):
+    # 'reward_decay_legacy_claims' was written once, when this producer took over the GLM store on
+    # 2026-09-20: those PASSes keep their crown-block clock. A new store never has the key.
     row = store._db.execute(
         "SELECT value FROM metadata WHERE key='reward_decay_legacy_claims'"
     ).fetchone()
@@ -322,7 +315,10 @@ def confirm_reward_decay(store: FinalizedIntakeStore, projection, record) -> Non
 
     if record.projection_digest != projection.digest:
         raise IntakeError("decay confirmation differs from its retained projection")
-    if record.status != "confirmed" or record.confirmed_last_update < projection.effective_block:
+    # The signer confirms at inclusion with confirmed_last_update=0: until 2026-09-21 no clock had
+    # started since block 9097653 and two unclocked PASSes held 52% of the vector.
+    published = record.confirmed_block if record.reason == "block_inclusion" else record.confirmed_last_update
+    if record.status != "confirmed" or published < projection.effective_block:
         return  # an older identical vector does not publish a newly accepted PASS
     starts = {row["claim_digest"]: row["start_block"] for row in reward_decay_adjustments(store)}
     pending = {digest for digest, start in starts.items() if start is None}
