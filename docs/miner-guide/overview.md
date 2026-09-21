@@ -111,7 +111,7 @@ registered sampled slot regrade, and T prevents “fast because behavior changed
 from becoming a win. Static, build, ABI, graph, and abbreviated-serving checks
 are admission screens only; they cannot crown a proposal.
 
-A promoted proposal must pass two complete, independent qualification attempts.
+One complete audited PASS qualifies a promoted proposal for settlement.
 The crown records the accepted qualification speedup. After the complete audited attempt,
 the durable intake state is `qualified`; settlement and confirmed weights remain separate.
 
@@ -139,7 +139,7 @@ problems. Profile and bracket serving performance in an environment matching the
 published arena contract. Neither the CLI checks nor a contributor-controlled A/B run
 reproduces crown authority: local work does not possess the finalized intake record,
 validator stack manifest, hidden inputs, calibrated policies, immutable publications,
-isolated service, or second independent qualification attempt.
+isolated service, or authoritative qualification evidence.
 
 Use the technical guide in this order:
 

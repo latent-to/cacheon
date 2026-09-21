@@ -5,6 +5,15 @@ image on four B300 GPUs (TP4 and attention DP4). Keep this folder outside
 the submitted bundle. Mount it read-only at `/arena`, the model at `/model`,
 and a writable result/cache directory at `/work`.
 
+Route the bundle to this arena in its existing competition table:
+
+```toml
+[competition]
+target = "forward_pass"
+mode = "slot"
+arena = "glm53-b300-node-v1"
+```
+
 ```bash
 python -m cacheon.cli check /bundles/my_bundle \
   --model /model --engine-config /arena/engine-config.json \

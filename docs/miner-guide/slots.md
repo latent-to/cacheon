@@ -24,11 +24,11 @@ coverage are checked separately.
 
 ## Current GLM-5.3 availability
 
-An existing GLM commission retains its sealed runtime and target identities.
-The node-contract migration requires converted champion bundles and B300
-acceptance on the exact GLM topology. A source catalog entry or Qwen result does
-not establish that the new GLM path is commissioned. Consult the published
-arena packet before paying for a submission.
+The GLM node arena is `glm53-b300-node-v1`, using GLM-5.3 NVFP4 with
+SGLang 0.5.18 on B300, TP4 and attention DP4. Its incumbent is the composed
+champion implementation. Use the [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
+with that model and topology. Arena-specific inputs and supported boundaries
+remain part of the published contract; Qwen checks do not establish GLM coverage.
 
 ## Arena availability
 
