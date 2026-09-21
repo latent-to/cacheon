@@ -369,10 +369,6 @@ class CapabilityDomain:
                 )
         return CapabilityMatch(tuple(mismatches))
 
-    @property
-    def constrained_fields(self) -> frozenset[str]:
-        return frozenset(predicate.field for predicate in self.predicates)
-
 
 _PREDICATE_KEYS = frozenset({"exact", "one_of", "min", "max"})
 

@@ -16,12 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-WEIGHTS_CONFIG_SCHEMA = "cacheon-standing-weights-config-v1"
+WEIGHTS_CONFIG_SCHEMA = "cacheon-standing-weights-config-v2"
 WEIGHTS_CONFIG_DOMAIN = "cacheon.chain.standing-weights-config.v1"
 _WEIGHTS_CONFIG_FIELDS = frozenset(
     {
         "attribution_hotkey",
         "burn_hotkey",
+        "confirmation_journal",
         "discovery_lifetime_blocks",
         "discovery_pool_ppm",
         "fallback_endpoint",
@@ -54,6 +55,8 @@ class WeightsStageConfig:
     # refusing. Empty disables the fallback: a crownless store then surfaces
     # the builder's refusal as a stage error, exactly as before.
     burn_hotkey: str
+    confirmation_journal: Path | None = None
+    arena_allocation_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -84,8 +87,12 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
         raise StandingCpuSupervisorError(
             f"weights stage config cannot reopen: {exc}"
         ) from None
-    row = _closed_config(raw, _WEIGHTS_CONFIG_FIELDS, "weights stage config")
-    if row["schema"] != WEIGHTS_CONFIG_SCHEMA:
+    legacy = isinstance(raw, dict) and raw.get("schema") == "cacheon-standing-weights-config-v1"
+    fields = _WEIGHTS_CONFIG_FIELDS - {"confirmation_journal"} if legacy else _WEIGHTS_CONFIG_FIELDS
+    if isinstance(raw, dict) and "arena_allocation_path" in raw:
+        fields |= {"arena_allocation_path"}
+    row = _closed_config(raw, fields, "weights stage config")
+    if not legacy and row["schema"] != WEIGHTS_CONFIG_SCHEMA:
         raise StandingCpuSupervisorError("weights stage config schema is unsupported")
 
     network = row["network"]
@@ -114,6 +121,18 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
         raise StandingCpuSupervisorError("weights burn_hotkey is malformed")
     credentials_path = _absolute_path(row["push_credentials"], "weights push_credentials")
     _authority_file(credentials_path, "weights push credentials", secret=True)
+    journal = None
+    if not legacy:
+        journal = _absolute_path(row["confirmation_journal"], "confirmation_journal")
+        _authority_file(journal, "weight confirmation journal", secret=True)
+    allocation_path = None
+    if "arena_allocation_path" in row:
+        from cacheon.chain.arena_weight_projection import load_allocation
+
+        if journal is None:
+            raise StandingCpuSupervisorError("static allocation requires confirmation_journal")
+        allocation_path = _absolute_path(row["arena_allocation_path"], "arena_allocation_path")
+        load_allocation(allocation_path)
     return WeightsStageConfig(
         network=network,
         fallback_endpoint=fallback_endpoint,
@@ -137,6 +156,8 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
             row["refresh_blocks"], "weights refresh_blocks", maximum=86_400
         ),
         burn_hotkey=burn_hotkey,
+        confirmation_journal=journal,
+        arena_allocation_path=allocation_path,
     )
 
 
@@ -204,32 +225,51 @@ def compose_weight_offer_push(
                 ),
             )
             with store_factory() as store:
-                states = store.evaluation_stacks()
-                standing, discovery = store.active_reward_claims()
-                crowned = any(state.generation > 0 for state in states)
-                if standing or discovery or crowned:
-                    # Real economic authority exists: project it. A mixed or
-                    # torn state (claims without a crowned arena, or the
-                    # reverse) is the builder's refusal to surface, not a
-                    # reason to burn.
-                    projection = store.build_weight_projection(
-                        policy=policy,
-                        context=context,
-                        netuid=netuid,
-                    )
-                elif stage.burn_hotkey:
-                    projection = store.build_burn_weight_projection(
-                        policy=policy,
-                        context=context,
-                        netuid=netuid,
-                        burn_hotkey=stage.burn_hotkey,
+                from cacheon.chain.arena_weight_projection import (
+                    build_static_projection, load_allocation, require_legacy_projection,
+                )
+
+                if stage.arena_allocation_path is not None:
+                    projection = build_static_projection(
+                        store, allocation=load_allocation(stage.arena_allocation_path),
+                        policy=policy, context=context, netuid=netuid,
+                        confirmation_journal=stage.confirmation_journal,
+                        max_lag_blocks=stage.refresh_blocks,
                     )
                 else:
-                    projection = store.build_weight_projection(
-                        policy=policy,
-                        context=context,
-                        netuid=netuid,
-                    )
+                    require_legacy_projection(store, context.current_block)
+                    if stage.confirmation_journal is not None:
+                        from cacheon.chain.qualification_settlement import reconcile_follower_reward_decay
+
+                        reconcile_follower_reward_decay(
+                            store, stage.confirmation_journal, validator_hotkey=stage.attribution_hotkey,
+                        )
+                    states = store.evaluation_stacks()
+                    standing, discovery = store.active_reward_claims()
+                    crowned = any(state.generation > 0 for state in states)
+                    if standing or discovery or crowned:
+                        # Real economic authority exists: project it. A mixed or
+                        # torn state (claims without a crowned arena, or the
+                        # reverse) is the builder's refusal to surface, not a
+                        # reason to burn.
+                        projection = store.build_weight_projection(
+                            policy=policy,
+                            context=context,
+                            netuid=netuid,
+                        )
+                    elif stage.burn_hotkey:
+                        projection = store.build_burn_weight_projection(
+                            policy=policy,
+                            context=context,
+                            netuid=netuid,
+                            burn_hotkey=stage.burn_hotkey,
+                        )
+                    else:
+                        projection = store.build_weight_projection(
+                            policy=policy,
+                            context=context,
+                            netuid=netuid,
+                        )
             offer = CurrentWeightOffer.from_legacy_projection(projection)
             response = push_current_weights(
                 stage.push_url,

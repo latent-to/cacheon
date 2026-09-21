@@ -22,8 +22,7 @@ Before a candidate runs, the validator binds:
 - incumbent and candidate `EvaluationStackManifest` digests;
 - materialized engine-tree and launch identities;
 - model, runtime, topology, native build, seccomp, and worker distribution;
-- calibration, resident speed, physical-lane, slot-audit, and graph-verification
-  requirements; and
+- calibration, resident speed, physical-lane, and slot-audit requirements; and
 - selection commitment, private selection secret reference, and candidate order.
 
 For a registered candidate, C is the incumbent stack with exactly one target replaced.
@@ -228,7 +227,7 @@ A sealed commission enables the lane with an optional block inside
 ```json
 "resident_speed": {
   "max_stage_seconds": 900,
-  "prefill_lane": {"min_margin": "0.05", "credit_weight": "0.33"}
+  "prefill_lane": {"min_margin": "0.02", "credit_weight": "0.5"}
 }
 ```
 
@@ -304,12 +303,32 @@ coarse code `speed_regression`, which remains valid for them and is never record
 a new verdict.
 
 The audit-only role is distinct from both timed lanes. Trusted-host grading imports no
-PyTorch and requires the expected slot × TP-rank/PID coverage, minimum call counts, and
-absence of retained violations or protocol errors. Live floating-point facts are
+PyTorch and returns `PASS`, `FAIL` (`slot_audit_failed`: compared calls show a wrong
+kernel), or `NO_DECISION` (`audit_not_covered`: the audit compared too little to grade
+the kernel, which requeues the bundle instead of failing it). The rule is in
+[Audit outcomes](fidelity.md#audit-outcomes). Live floating-point facts are
 canonicalized into stable decimal strings before they enter the durable witness.
 The audit policy names the selected target's slots. A composed engine also runs
 the incumbent contributions; their audit receipts are excluded from the selected
 delta's grade, while execution coverage still requires every active slot on every rank.
+
+MoE audits run stock on the original inputs before invoking the candidate and
+retain a copy of the stock outputs. This preserves the input-address binding of
+upstream FP4 outputs while preventing candidate writes from changing the reference.
+A failed stock call is a baseline refusal: it adds no coverage and is never a
+successful comparison, and it is not evidence against the candidate.
+When MoE consumes gathered DP projection outputs, its audit uses the same original
+per-rank token counts as the projection audit. Unused padding is excluded from
+comparison; entirely idle calls and tuner batches without token counts add no
+audit coverage. Candidate execution and returned buffers are unchanged.
+The slot's numerical comparison and acceptance thresholds are unchanged.
+
+Resident screening retains one candidate's loaded module and prepared MoE state
+across stock/candidate swaps. Stock disables candidate dispatch; a different
+bundle evicts the prepared state. Every swap still recaptures both graph phases.
+Retained worker logs report `CACHEON-PREPARE` start, completion or failure, and
+host wall time, separately from graph capture. An interrupted prepare has no
+completion marker; a session timeout alone does not establish prepare failure.
 
 The eager audit preserves the charged workload's prompt batches, concurrency,
 and per-batch input-token expectations, including mixed-length workloads.
@@ -318,8 +337,23 @@ when needed to reach the required minimum number of checked batches. Generation
 length remains bounded by the audit policy. Reducing these batches to single
 prompts can select a different DP padding or dispatch path and leave a serving
 collective completely unaudited. The host verifies the exact derivation; missing
-slot/rank coverage still fails the audit. Semantic quality remains the separate
+slot/rank coverage never passes the audit and grades `NO_DECISION`. Semantic quality remains the separate
 pristine T reference's responsibility.
+
+Reference errors and incomplete audit coverage produce an infrastructure HOLD,
+preserving completed speed evidence. Only complete, attributable numerical
+violations produce a candidate FAIL. The validator may correct its own audit
+failure with `qualification_recovery.authorize_recovery`: an append-only child
+continuation retains the original speed and historical disposition, binds the
+corrected audit execution, and runs only missing pristine T. A passed audit can
+also be reused when only T is missing. The operator must authenticate the original
+request and establish executor quiescence before authorizing recovery.
+
+Recovery charges completed speed, audit and reference execution against the
+existing qualification budget; downtime between durable stages is excluded.
+Original timestamps, speed policy, numerical thresholds and bundle identity stay
+intact. Conflicting evidence, exhausted time or a clock reset stop before launch. Recovery grants no PASS or reward by itself: the
+normal grader, evidence import and settlement still consume the completed result.
 
 T remains untimed and candidate-free. The host owns role assignment, monotonic clocks,
 token numerators, conditioning windows, absolute deadlines, device observations, audit
@@ -363,16 +397,23 @@ are never assigned to a convenient candidate.
 
 Qualification reopens and grades several evidence products:
 
-1. **Execution:** required roles completed under the expected launch and device state.
-2. **Graph verification:** required target members, variants, shapes, capture, and replay
-   have complete evidence.
-3. **Speed:** C beats the policy-required B or B/B′ comparison and
+1. **Execution:** required roles completed under the expected launch and device state,
+   and on a graphs-on run every claimed slot on every rank completed inside a CUDA-graph
+   capture, as recorded by the dispatcher.
+2. **Speed:** C beats the policy-required B or B/B′ comparison and
    noise-derived bar.
-4. **Audit:** the sealed audit-only plan has complete exact slot × rank authority.
-5. **Quality:** pristine T validates sealed trajectories and hidden work under the
+3. **Audit:** the sealed audit-only plan has complete exact slot × rank authority.
+4. **Quality:** pristine T validates sealed trajectories and hidden work under the
    registered calibration.
-6. **Whole-stack identity:** the report still describes the frozen incumbent and exact
+5. **Whole-stack identity:** the report still describes the frozen incumbent and exact
    candidate stack.
+
+There is no separate offline graph stage. The graph proof is those three products read
+together: the captured completions of the timed run show the candidate served from inside
+the graphs, the audit checks each slot's output against the stock computation, and the
+quality gate catches a candidate that is captured but replays a stale answer. Reports
+before `cacheon.qualification.candidate-report.v3` carried a graph grade from a separate
+capture-and-replay probe; this source does not produce or reopen them.
 
 The result is one of:
 
@@ -388,8 +429,8 @@ The evidence-to-verdict mapping is fail closed:
 
 | Observation | Decision | Example |
 |---|---|---|
-| Complete, bound, and green across every required product | `PASS` | C clears calibrated speed bar; graph and pristine quality pass |
-| Complete attributable violation of a frozen candidate requirement | `FAIL` | Wrong output, graph replay failure, or measured quality regression |
+| Complete, bound, and green across every required product | `PASS` | C clears calibrated speed bar; audit and pristine quality pass |
+| Complete attributable violation of a frozen candidate requirement | `FAIL` | Wrong output, never invoked inside a capture, or measured quality regression |
 | Authority incomplete, stale, unreopenable, too noisy, timed out, or infrastructurally invalid | `NO_DECISION` | Missing evidence bytes, baseline drift, controller/worker failure |
 
 An unexpected exception is not evidence of candidate guilt. The intake projection turns
@@ -423,13 +464,10 @@ converted into candidate PASS or FAIL. The durable store represents this as a
 reservation HOLD with no candidate decision, which is semantically
 `NO_DECISION` without reviving the retired literal decision field.
 
-Collective graph qualification requires the sequence cases generated by the
-verifier's applicable shape domain. A single applicable shape retains its
-individual graph capture/replay check; temporal shape transitions require at
-least two distinct token counts, and a graph sequence requires at least two
-applicable shapes. A missing required sequence remains a HOLD. Graph-provider
-HOLD responses retain the exception type and a bounded cause chain in the
-existing failure fields, shown in the dashboard's evaluation forensics.
+A worker HOLD retains the exception type and a bounded cause chain in the
+existing failure fields, shown in the dashboard's evaluation forensics. The three
+graph HOLD reasons remain readable so durable rows written by earlier source
+reopen; no worker on this source produces them.
 
 This evidence is written from inside the candidate's own process. It closes
 accidental non-invocation as a verdict condition, but it is not proof against a
@@ -440,7 +478,7 @@ the boundary.
 
 One complete audited PASS becomes `qualified` and creates a `SettlementCandidate`
 in the same intake transaction. Settlement reopens the exact retained attempt,
-report, disposition, graph, audit, and quality evidence. No second qualification
+report, disposition, audit, and quality evidence. No second qualification
 is scheduled.
 
 New single-run candidates use `cacheon.settlement.candidate.v5` and encode only
@@ -454,7 +492,7 @@ is accepted on restart after its evidence reopens; GPU work is not repeated.
 
 Full regrade requires more than the persisted attempt reference. The caller must
 reconstruct the exact `CausalQualificationInput`, including prepared plans, candidate
-authorities, graph/calibration references and requirements, runtime policy, reference
+authorities, calibration references, runtime policy, reference
 authority, and commitment. SQLite's authority manifest and
 `CohortQualificationAttempt` bind identities but do not embed that complete private
 provider/plan object. Settlement restart authenticates attempt bytes and stored PASS

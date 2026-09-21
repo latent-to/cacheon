@@ -66,6 +66,8 @@ Common failures and fixes:
 | unsafe/missing path | absolute path, traversal, symlink, or undeclared file | make every declaration bundle-relative and source-only |
 | competition mode mismatch | `slot`/`atomic` assertion disagrees with catalog | select the exact registered target and mode |
 | target members differ | op rows do not implement the complete registered delta | use the exact singleton member or all atomic members |
+| `node addresses must sit under ...` | a node-address row names a module outside the roots, is malformed, or shares the bundle with a registered slot id | name modules under `model` or `logits_processor` only; `*` stands for one whole segment |
+| `... overlap; claim the wider node alone` | two rows of one bundle name a node and a node inside it | keep the wider address and drop the narrower one |
 | feature not allowed | `setup`, dependency patch, rebuild, override, CUDA source, or unknown extra is outside policy | remove it or use a target/lane that explicitly permits it |
 | incomplete feature evidence | intake could not independently observe the rebuild feature set | use only registered rebuild declarations and complete source inventory |
 | duplicate slot requires variants | repeated rows omit explicit unique `variant` | name every variant |
@@ -83,10 +85,16 @@ The point at which output stops identifies the layer:
 | TOML/path exception before the bundle summary | manifest parsing or declared-path validation stopped | syntax, required fields, identifier spelling, file existence, relative path containment |
 | bundle summary plus `[VIOLATIONS]` | the manifest loaded, but one declared or recursive-tree source policy failed | every printed file/line and any undeclared executable material |
 | clean `scan`, then `invalid or ambiguous variant domain` in `verify` | static source is clean, but metadata/manifest eligibility cannot register deterministically | JSON types, canonical values, manifest/metadata intersection, variant overlap |
-| `[SKIP] ... not a known slot` | this checkout has no such slot contract | active validator version and slot name; a skip is not evidence |
+| `[INTERFACE OK]` | node entry imports and accepts the prepared/module argument | run `check` in the published image for numerical and graph diagnostics |
 | every row N/A and `no bundle variant is applicable` | domains registered, but no row matched the selected invariant context | dtype, architecture, model, phase, topology, and required descriptor fields |
 | per-shape `FAIL` | candidate ran for an applicable shape and failed its ABI/comparator | shape-specific math, output ownership, mutation, stride, metric detail |
 | `NUMERICAL_PASS` with `graph=NOT_VERIFIED` | eager math passed but required capture/replay proof did not | graph phase and failure class, not numerical tolerance |
+
+`check` reports `Early stop: gross numerical audit violation` as soon as a valid
+rolling receipt proves a large numerical mismatch. It stops the owned engine
+and ranks, retains the receipts and logs, and skips graph execution. Near misses,
+comparison/reference errors and incomplete receipts do not trigger this early
+stop; they retain their normal terminal handling.
 
 Run `scan` separately even though `verify` repeats recursive policy checks. The separate
 command gives the cheapest no-import result; `verify` then tests domain registration and
@@ -186,15 +194,20 @@ each choice launches different kernels, and the list names the one taken.
 
 ## 4. Graph evidence
 
-Graph failures are classified separately:
+Qualification has no separate graph stage; a graph problem shows up in one of
+three places:
 
-- `graph_eager_failed`: the callable failed before capture;
-- `graph_capture_failed`: capture was not legal;
-- `graph_replay_failed`: capture completed but replay or replay output failed;
-- `graph_applicability_failed`: observed applicability differs from the bound
-  requirement;
-- `graph_domain_coverage_failed`: the declared domain was not completely tested;
-- missing member/variant/shape evidence or replay-count mismatch: `NO_DECISION`.
+- the candidate raises while the engine captures its graphs: the timed run
+  stops with the candidate's original error;
+- `never invoked inside a CUDA-graph capture`: every claimed slot completed,
+  but at least one only ever ran eagerly, usually because the declared domain
+  excludes the captured shapes. The candidate would have been timed as stock,
+  so this is a `FAIL`;
+- a captured kernel that replays a stale answer passes execution and fails the
+  pristine quality gate.
+
+A local `cacheon verify` on CUDA runs its own capture and replay and names the
+phase that failed.
 
 Common causes are host synchronization, data-dependent Python branching,
 capture-time compilation/allocation, stale pointers, partial replay writes, or

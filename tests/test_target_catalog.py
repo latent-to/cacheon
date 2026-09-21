@@ -40,9 +40,15 @@ from cacheon.target_catalog import (
     ToleranceContractRef,
     default_target_catalog,
     manifest_declared_features,
-    resolve_intake_target,
-    resolve_target,
 )
+
+
+def resolve_target(manifest):
+    return default_target_catalog().resolve_manifest(manifest)
+
+
+def resolve_intake_target(manifest, *, observed_features):
+    return default_target_catalog().resolve_intake(manifest, observed_features=observed_features)
 
 
 SILU = "activation.silu_and_mul"
@@ -232,6 +238,8 @@ def test_tracked_examples_preserve_legacy_or_name_modern_target_identity():
         "miner_moe_fused_routed_torch": CompetitionEntry(
             "moe.fused_routed_experts", "slot"
         ),
+        "miner_node_identity": CompetitionEntry("forward_pass", "slot"),
+        "miner_node_wrong": CompetitionEntry("forward_pass", "slot"),
     }
     for path in manifests:
         assert load_manifest(path.parent).competition == explicit.get(path.parent.name)
@@ -399,7 +407,7 @@ def test_default_contract_refs_match_every_live_serializable_slot_field():
 
     catalog = default_target_catalog()
     for slot_id, slot in sorted(SLOTS.items()):
-        if slot_id in {"moe.fused_experts", "moe.fused_experts_reduce"}:
+        if slot_id == "moe.fused_experts":
             slot = slot_for_model(slot_id, "MiniMax-M3-NVFP4")
         ref = catalog.require(slot_id).contract_ref
         assert ref is not None
@@ -714,19 +722,20 @@ def test_catalog_registration_order_does_not_change_resolution():
 def test_default_displacement_and_conflicts_are_explicit():
     catalog = default_target_catalog()
 
-    assert catalog.require("moe.fused_experts_reduce").displaces == frozenset(
+    assert catalog.require("moe.fused_routed_experts").displaces == frozenset(
         {"moe.fused_experts"}
     )
-    assert catalog.require("moe.fused_routed_experts").conflicts_with == frozenset(
-        {"moe.fused_experts_reduce"}
+    assert all(
+        catalog.require(row["target_id"]).conflicts_with == frozenset()
+        for row in catalog.snapshot()["targets"]
     )
     with pytest.raises(TargetResolutionError, match="displaces"):
         catalog.validate_active_targets(
-            ("moe.fused_experts", "moe.fused_experts_reduce")
+            ("moe.fused_experts", "moe.fused_routed_experts")
         )
     assert all(
         not any(feature.startswith("aot:") for feature in catalog.require(slot).allowed_features)
-        for slot in ("moe.fused_experts", "moe.fused_experts_reduce")
+        for slot in ("moe.fused_experts", "moe.fused_routed_experts")
     )
     with pytest.raises(TargetResolutionError, match="must be strings"):
         catalog.validate_active_targets((["unhashable"],))  # type: ignore[list-item]
@@ -788,11 +797,11 @@ def test_shallow_native_bundle_admits_exact_reviewed_builder(tmp_path):
             tmp_path,
             rows=(
                 {
-                    "slot": "collective.ar_residual_rmsnorm",
+                    "slot": "collective.all_reduce",
                     "cuda_sources": True,
                 },
             ),
-            competition=_competition("collective.ar_residual_rmsnorm", "slot"),
+            competition=_competition("collective.all_reduce", "slot"),
         )
     )
 

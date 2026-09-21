@@ -9,6 +9,7 @@ flags on one builder. Anything a caller varies per test stays an argument.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import os
 
@@ -23,9 +24,7 @@ from cacheon.eval.qualification_runner import HiddenJudgeBinding
 M3_REGISTERED_TARGET_IDS = (
     "activation.silu_and_mul",
     "collective.all_reduce",
-    "collective.ar_residual_rmsnorm",
     "moe.fused_experts",
-    "moe.fused_experts_reduce",
     "norm.rmsnorm",
 )
 
@@ -67,8 +66,6 @@ def qualification_capabilities(**overrides: object) -> B300QualificationCapabili
         "hidden_judge": StubHiddenJudge(),
         "source_resolver": StubSourceResolver(),
         "source_resolver_digest": sha("source-resolver"),
-        "graph_facts_builder": lambda *_args: None,
-        "graph_facts_builder_digest": sha("graph-facts"),
         "incumbent_entries": {},
     }
     values.update(overrides)
@@ -175,6 +172,12 @@ def gpu(index: int = 0, model: str = "b300") -> GPUConfiguration:
     reference suite runs the RTX profile for exactly that reason.
     """
 
+    if model == "h100":
+        return replace(
+            gpu(index), name="NVIDIA H100 80GB HBM3", memory_total_mib=81_559,
+            power_limit_mw=700_000, max_graphics_clock_mhz=1_980,
+            max_memory_clock_mhz=2_619,
+        )
     if model == "rtx6000":
         return GPUConfiguration(
             physical_id=index,

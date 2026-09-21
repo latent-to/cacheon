@@ -4,6 +4,17 @@ Production submission is a hotkey-signed, timelock commit-reveal containing a
 content hash and an HTTPS fetch URL. The chain carries a reference, not the
 archive bytes.
 
+`chain-package` and `chain-publish` encrypt the archive automatically to the
+validator's public key. The publicly revealed HTTPS URL therefore serves
+ciphertext. Intake decrypts before the existing archive and content-hash checks;
+the original bundle identity and evaluation are unchanged.
+
+The dashboard serves the checked plaintext bundle and raw logs **eight hours
+after the final evaluation result**. Queue time does not count; queued, running
+and held bundles remain withheld. Results and performance numbers stay visible.
+Update the miner client before publishing. Previously uploaded plaintext files
+and archives uploaded without the updated packager remain public at their host.
+
 The miner-side implementation is in
 [submit.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/submit.py),
 and the canonical payload is defined by
@@ -81,10 +92,12 @@ python -m cacheon.cli chain-register \
 
 ```bash
 python -m cacheon.cli scan "$BUNDLE"
-python -m cacheon.cli verify "$BUNDLE" --device cuda --dtype bfloat16
+python -m cacheon.cli verify "$BUNDLE"
 ```
 
-`scan` and `verify` are diagnostics; they do not pre-approve intake. See
+`scan` and `verify` are diagnostics; they do not pre-approve intake. For node
+bundles, `verify` is import/signature smoke; run the [engine check](your-first-kernel.md#6-move-to-the-matching-gpu-environment)
+for live numerical and capture coverage. See
 [Bundle checks](#bundle-checks) for what to inspect.
 
 ### 3. Host the archive
@@ -102,9 +115,15 @@ Or package and upload the archive yourself:
 python -m cacheon.cli chain-package "$BUNDLE" --out dist/my_bundle.tar.gz
 ```
 
-Copy the printed content hash and the public HTTPS URL. Set `URL` to that
+Copy the printed content hash and the encrypted archive's HTTPS URL. Set `URL` to that
 exact URL. Bucket variables, CDN origins, and fetch limits are under
 [Publish from the miner's object store](#publish-from-the-miners-object-store).
+
+The commands fetch the recipient key from
+`https://dash.cacheon.ai/api/bundle-encryption-key`; no manual encryption or key
+handling is required. Another validator can be selected with `--encrypt-for HEX`,
+`CACHEON_BUNDLE_PUBLIC_KEY`, or `CACHEON_BUNDLE_KEY_URL` (HTTPS), in that order.
+Key-discovery failure stops publication; it never uploads plaintext instead.
 
 !!! warning "Check the arena's registered targets"
     A registered slot can be absent from the current arena. See
@@ -149,8 +168,9 @@ Then skip to [Inspect public chain state](#7-inspect-public-chain-state).
 ### 6. Submit — eval-cost gate on
 
 If the operator requires a TAO admission transfer, quote, dry-run `--pay`, then
-pay and commit. The published quote is 0.5 TAO (500,000,000 rao), paid to the
-current subnet owner coldkey.
+pay the current subnet owner coldkey and commit. The default quote is 0.5 TAO
+(500,000,000 rao). The Qwen arena `qwen36-35b-h100-bf16-tp1` charges 0.2 TAO:
+add `--eval-cost-tao-rao 200000000` to `chain-eval-cost` and every `chain-submit`.
 
 ```bash
 python -m cacheon.cli chain-eval-cost --netuid "$NETUID" --network "$NET"

@@ -27,7 +27,7 @@ from cacheon.slots import (
     get_slot,
 )
 
-_MOE_SLOTS = ("moe.fused_experts", "moe.fused_experts_reduce")
+_MOE_SLOTS = ("moe.fused_experts",)
 _ROUTED_MOE_SLOTS = ("moe.fused_routed_experts",)
 
 
@@ -39,102 +39,54 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
             f"profile for {slot.name!r} sets quant={profile.quant!r} but no shapes; "
             "a quantized profile must carry the arena's per-rank verification shapes"
         )
-    if slot.name in _ROUTED_MOE_SLOTS:
-        routed_act = profile.activation
+    routed = slot.name in _ROUTED_MOE_SLOTS
+    moe = routed or slot.name in _MOE_SLOTS
+    if moe:
+        def reference(inputs):
+            if routed:
+                return [_routed_moe_reference(inputs, profile.activation)]
+            return [_moe_reference(
+                inputs["x"], inputs["w13"], inputs["w2"], inputs["topk_ids"],
+                inputs["topk_weights"], profile.activation,
+            )]
 
-        def _routed_ref(i, _act=routed_act):
-            return [_routed_moe_reference(i, _act)]
-
-        repl["invoke_reference"] = _routed_ref
-        if profile.quant == "nvfp4":
-            make_dense_routed = slot.make_inputs
-            routed_fused = profile.num_fused_shared_experts
-
-            def _routed_quant_inputs(**kwargs):
-                dense = make_dense_routed(**kwargs)
-                dense.update(
-                    __moe_tp_size__=int(kwargs.get("world_size", 4)),
-                    __moe_ep_size__=1,
-                    __moe_ep_rank__=0,
-                    __moe_reduce_results__=False,
-                    __moe_num_fused_shared_experts__=routed_fused,
-                    __moe_activation__=routed_act.kind,
-                )
-                return _moe_nvfp4_verification_inputs(dense)
-
-            repl["make_inputs"] = _routed_quant_inputs
-            repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
-                *_moe_prepare_args_from_inputs(i), i["topk"], i["routed_scaling"]
-            )
-    if slot.name in _MOE_SLOTS:
-        act = profile.activation
-
-        def _ref(i, _act=act):
-            return [
-                _moe_reference(
-                    i["x"], i["w13"], i["w2"], i["topk_ids"],
-                    i["topk_weights"], _act,
-                )
-            ]
-
-        repl["invoke_reference"] = _ref
-        if slot.collective_partial is not None:
-            def _partial(i, prepared, _act=act):
-                return _moe_reference(
-                    i["x"], i["w13"], i["w2"], i["topk_ids"],
-                    i["topk_weights"], _act,
-                ).float()
-
-            repl["collective_partial"] = _partial
+        repl["invoke_reference"] = reference
+        if not routed and slot.collective_partial is not None:
+            repl["collective_partial"] = lambda inputs, prepared: reference(inputs)[0].float()
     if profile.correctness is not None:
         repl["correctness"] = profile.correctness
-    if slot.name in _MOE_SLOTS and profile.quant == "nvfp4":
-        make_dense_inputs = slot.make_inputs
-        fused = profile.num_fused_shared_experts
-        scale = profile.routed_weight_scale
-        act_kind = profile.activation.kind
-
-        def _quant_inputs(**kwargs):
-            dense = make_dense_inputs(**kwargs)
-            tokens, top_k = dense["topk_ids"].shape
-            experts = dense["w13"].shape[0]
-            routed_k = top_k - fused
-            generator = torch.Generator(device=kwargs["device"]).manual_seed(
-                int(kwargs["seed"]) + 17_171
-            )
-            routed = torch.rand(
-                tokens, experts - fused,
-                generator=generator, device=kwargs["device"],
-            ).topk(routed_k, dim=-1).indices.to(torch.int32)
-            scores = torch.rand(
-                tokens, routed_k, generator=generator, device=kwargs["device"]
-            )
-            routed_weights = scale * scores / scores.sum(-1, keepdim=True)
-            if fused:
-                shared_ids = torch.arange(
-                    experts - fused, experts,
-                    device=kwargs["device"], dtype=torch.int32,
-                ).expand(tokens, fused)
-                dense["topk_ids"] = torch.cat((routed, shared_ids), dim=-1)
-                dense["topk_weights"] = torch.cat(
-                    (routed_weights, torch.ones_like(scores[:, :fused])), dim=-1
+    if moe and profile.quant == "nvfp4":
+        def quant_inputs(**kwargs):
+            dense = slot.make_inputs(**kwargs)
+            fused = profile.num_fused_shared_experts
+            if not routed:
+                tokens, top_k = dense["topk_ids"].shape
+                experts = dense["w13"].shape[0]
+                routed_k = top_k - fused
+                generator = torch.Generator(device=kwargs["device"]).manual_seed(
+                    int(kwargs["seed"]) + 17_171
                 )
-            else:
-                dense["topk_ids"] = routed
-                dense["topk_weights"] = routed_weights
+                ids = torch.rand(
+                    tokens, experts - fused, generator=generator, device=kwargs["device"],
+                ).topk(routed_k, dim=-1).indices.to(torch.int32)
+                scores = torch.rand(tokens, routed_k, generator=generator, device=kwargs["device"])
+                weights = profile.routed_weight_scale * scores / scores.sum(-1, keepdim=True)
+                if fused:
+                    shared_ids = torch.arange(experts - fused, experts, device=kwargs["device"], dtype=torch.int32).expand(tokens, fused)
+                    ids = torch.cat((ids, shared_ids), dim=-1)
+                    weights = torch.cat((weights, torch.ones_like(scores[:, :fused])), dim=-1)
+                dense.update(topk_ids=ids, topk_weights=weights)
             dense.update(
                 __moe_tp_size__=int(kwargs.get("world_size", 4)),
-                __moe_ep_size__=1,
-                __moe_ep_rank__=0,
-                __moe_reduce_results__=False,
+                __moe_ep_size__=1, __moe_ep_rank__=0, __moe_reduce_results__=False,
                 __moe_num_fused_shared_experts__=fused,
-                __moe_activation__=act_kind,
+                __moe_activation__=profile.activation.kind,
             )
             return _moe_nvfp4_verification_inputs(dense)
 
-        repl["make_inputs"] = _quant_inputs
+        repl["make_inputs"] = quant_inputs
         repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
-            *_moe_prepare_args_from_inputs(i)
+            *_moe_prepare_args_from_inputs(i), *((i["topk"], i["routed_scaling"]) if routed else ())
         )
     if profile.shapes is not None:
         repl["shapes"] = profile.shapes
@@ -226,9 +178,24 @@ _GLM53_SPARSE_MLA_PROFILE = SlotProfile(shapes=tuple(
 ))
 
 MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
+    "Qwen3.6-35B-A3B-BF16": {
+        # SGLang Qwen3_5 at TP1: GDN qkvz/ba, gated full-attention qkv,
+        # attention/GDN output, shared MLP and the unquantized router.
+        "linear.dense": SlotProfile(shapes=tuple(
+            dict(num_tokens=m, input_dim=k, output_dim=n, parallel_role=role, local_tp_size=1)
+            for m in (1, 2, 8, 128, 4096)
+            for k, n, role in ((2048, 12288, "column"), (2048, 64, "column"),
+                               (2048, 9216, "column"), (4096, 2048, "row"),
+                               (2048, 1024, "column"), (512, 2048, "row"),
+                               (2048, 256, "replicated"))
+        )),
+        "moe.fused_experts": SlotProfile(shapes=tuple(
+            dict(num_tokens=m, num_experts=256, hidden=2048, inter=512, topk=8)
+            for m in (1, 2, 8, 128, 4096)
+        )),
+    },
     "MiniMax-M3": {
         "moe.fused_experts": _M3_MOE_NVFP4_PROFILE,
-        "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
     },
     "GLM-5.3": {
         "attention.indexer_select": SlotProfile(shapes=tuple(

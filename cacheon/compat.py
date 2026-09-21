@@ -1,15 +1,7 @@
-"""SGLang compatibility canary — enforce the pin and integration surface.
+"""Check an arena's exact SGLang version and installed integration surfaces.
 
-Our harness patches sglang internals (the `SiluAndMul` / `RMSNorm` seams, the
-`BaseFusedOp` base, the Engine logprob API, specific `ServerArgs` kwargs). Any
-sglang upgrade can move those. This canary introspects the INSTALLED sglang —
-imports + signatures only, **no GPU, no model** — and checks every seam and API we
-depend on still exists.
-
-Run `cacheon compat` after bumping sglang. If it goes red, the seams need an
-adapter before that version can be used for scoring. (A green canary is necessary
-but not sufficient — the runtime smoke test, "broken kernel still FAILs the gate,"
-is the behavioral confirmation on the pod.)
+Imports and signatures establish compatibility without a GPU or model. The
+commission's faithful/broken runtime controls establish behavioral acceptance.
 """
 
 from __future__ import annotations
@@ -19,13 +11,8 @@ import inspect
 from dataclasses import dataclass
 from typing import Optional
 
-# The sglang version scored against. Bump DELIBERATELY and in a coordinated way —
-# see docs/dev/sglang-tracking.md. All validators must run the same version (consensus).
-#
-# 0.5.18 (CUDA 13). This is the GLM-5.3 branch's source compatibility target.
-# The exact release source and served GLM image were inspected on 2026-08-30;
-# runtime seam activation, broken/faithful controls, and arena rebaseline remain
-# pending.
+# Default compatibility target for existing GLM deployments. Another arena
+# supplies its own exact pin; its RuntimePreflightConfig enforces the same value.
 PINNED_SGLANG = "0.5.18"
 
 
@@ -40,8 +27,8 @@ def _chokepoint_present(mod, chokepoint: str) -> bool:
     """True iff the adapter's chokepoint exists on ``mod``.
 
     ``"Class.method"`` asserts a method on a class; a bare ``"function_name"`` (no dot)
-    asserts a callable MODULE-LEVEL attribute — the rebind-style seams (e.g. arfusion's
-    ``flashinfer_allreduce_residual_rmsnorm``) patch a module function, not a class.
+    asserts a callable MODULE-LEVEL attribute — the rebind-style seams (e.g. the scheduler
+    gate's ``run_scheduler_process``) patch a module function, not a class.
     ``"attr:Name"`` asserts a module attribute that need not be callable (rebind
     targets like flashinfer's ``JitSpec`` / env constants).
     """
@@ -54,7 +41,8 @@ def _chokepoint_present(mod, chokepoint: str) -> bool:
     return cls is not None and hasattr(cls, meth)
 
 
-def run_checks() -> list[Check]:
+def run_checks(expected_sglang_version: str = PINNED_SGLANG) -> list[Check]:
+    """Check the exact version commissioned for this arena and its seams."""
     checks: list[Check] = []
 
     def add(name: str, ok: bool, detail: str = "") -> None:
@@ -67,17 +55,16 @@ def run_checks() -> list[Check]:
         return checks
 
     ver = getattr(sglang, "__version__", "?")
-    version_matches = ver == PINNED_SGLANG
+    version_matches = ver == expected_sglang_version
     add(
-        f"sglang installed (pinned {PINNED_SGLANG})",
+        f"sglang installed (pinned {expected_sglang_version})",
         version_matches,
         f"found {ver}" + ("" if version_matches else "  <-- DIFFERS from pin"),
     )
 
     # Table-driven baseline: every adapter in the single seam table (cacheon/seams.py)
     # must have its target module import and its Class.method chokepoint present. Adding
-    # a seam to that table auto-adds this canary (no separate edit here). The bespoke
-    # signature checks below enrich these for the known seams.
+    # a seam to that table auto-adds this canary (no separate edit here).
     import importlib
 
     from cacheon.seams import SEAM_ADAPTERS
@@ -91,89 +78,15 @@ def run_checks() -> list[Check]:
         except Exception as exc:  # noqa: BLE001
             add(f"seam table: {adapter.name} ({adapter.chokepoint})", False, repr(exc))
 
+    # The node check's honest twin reroutes every fused op of a node onto its
+    # ``forward_native``; without this base the twin is stock and measures no noise.
     try:
         from sglang.kernels.fused_op import BaseFusedOp
-        fused_op_base = BaseFusedOp
-        add("BaseFusedOp base present", True)
+
+        ok = hasattr(BaseFusedOp, "forward_native")
+        add("BaseFusedOp.forward_native present", ok)
     except Exception as exc:  # noqa: BLE001
-        fused_op_base = None
-        add("BaseFusedOp base present", False, repr(exc))
-
-    # activation seam (SiluAndMul slot)
-    try:
-        from sglang.srt.layers.activation import SiluAndMul
-
-        ok = hasattr(SiluAndMul, "forward_cuda") and hasattr(SiluAndMul, "forward_native")
-        if fused_op_base is not None:
-            ok = ok and issubclass(SiluAndMul, fused_op_base)
-        add("seam: SiluAndMul (activation)", ok, "needs forward_cuda/native on BaseFusedOp")
-    except Exception as exc:  # noqa: BLE001
-        add("seam: SiluAndMul (activation)", False, repr(exc))
-
-    # norm seam (RMSNorm slot)
-    try:
-        from sglang.srt.layers.layernorm import RMSNorm
-
-        params = list(inspect.signature(RMSNorm.forward_cuda).parameters)
-        ok = (
-            hasattr(RMSNorm, "forward_cuda")
-            and {"residual", "quant_linear"} <= set(params)
-        )
-        if fused_op_base is not None:
-            ok = ok and issubclass(RMSNorm, fused_op_base)
-        add("seam: RMSNorm (layernorm)", ok, f"forward_cuda params={tuple(params)}")
-    except Exception as exc:  # noqa: BLE001
-        add("seam: RMSNorm (layernorm)", False, repr(exc))
-
-    try:
-        from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
-
-        apply_params = set(inspect.signature(UnquantizedLinearMethod.apply).parameters)
-        into_params = set(
-            inspect.signature(UnquantizedLinearMethod.apply_into).parameters
-        )
-        ok = {"layer", "x", "bias"} <= apply_params and {
-            "layer", "x", "output", "bias"
-        } <= into_params
-        add(
-            "seam: UnquantizedLinearMethod (linear.dense)",
-            ok,
-            f"apply params={tuple(sorted(apply_params))}; "
-            f"apply_into params={tuple(sorted(into_params))}",
-        )
-    except Exception as exc:  # noqa: BLE001
-        add("seam: UnquantizedLinearMethod (linear.dense)", False, repr(exc))
-
-    # MoE seams. Ordinary runners reach forward_impl; FlashInfer TRT-LLM skips it
-    # through forward_deferred_finalize when it fuses routed finalize + shared add.
-    try:
-        from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
-
-        params = set(inspect.signature(FusedMoE.forward_impl).parameters)
-        deferred = set(
-            inspect.signature(FusedMoE.forward_deferred_finalize).parameters
-        )
-        ok = hasattr(FusedMoE, "forward_impl") and {
-            "hidden_states", "topk_output", "pre_quant_input"
-        } <= params and {"hidden_states", "topk_output"} <= deferred
-        add(
-            "seam: FusedMoE routed paths (moe.fused_experts)",
-            ok,
-            f"forward_impl params={tuple(sorted(params))}; "
-            f"deferred params={tuple(sorted(deferred))}",
-        )
-    except Exception as exc:  # noqa: BLE001
-        add("seam: FusedMoE.forward_impl (moe.fused_experts)", False, repr(exc))
-
-    # collective seam (the TP-comms chokepoint: GroupCoordinator.all_reduce)
-    try:
-        from sglang.srt.distributed.parallel_state import GroupCoordinator
-
-        params = set(inspect.signature(GroupCoordinator.all_reduce).parameters)
-        ok = hasattr(GroupCoordinator, "all_reduce") and "input_" in params
-        add("seam: GroupCoordinator.all_reduce (collective)", ok, f"all_reduce params={tuple(sorted(params))}")
-    except Exception as exc:  # noqa: BLE001
-        add("seam: GroupCoordinator.all_reduce (collective)", False, repr(exc))
+        add("BaseFusedOp.forward_native present", False, repr(exc))
 
     # Engine logprob API (we read top-k logprobs for KL)
     try:
@@ -209,21 +122,9 @@ def run_checks() -> list[Check]:
     return checks
 
 
-# ---- blessed dependency base (consensus pin surface) ----
-# The kernel-library surface the subnet scores on. A miner kernel runs against
-# these libraries and a base override-kernel is composed from them, so for
-# CONSENSUS they must be identical across validators: two validators on
-# different flashinfer (or cutlass / triton) JIT *different* kernels ->
-# different throughput AND numerics -> divergent weight vectors -> Yuma
-# penalty. Only sglang is pinned (PINNED_SGLANG above); the kernel libs ride
-# along implicitly, so this makes the whole import surface an explicit,
-# canary-checked pin. stdlib-only (no torch import) so the canary runs
-# anywhere. Per-arena: when arenas merge this becomes part of the Arena (the
-# docker_image should expose this enumerated, hashed set, not an opaque blob).
-# A pinned version of None = record-only: the canary reports the installed
-# version (the consensus-audit surface) but does not enforce, because the
-# exact arena versions aren't validated yet. Set a version to enforce it (a
-# mismatch then fails the canary, like the sglang pin).
+# Kernel library versions are part of the commissioned image/runtime identity.
+# None below means record-only in this canary; an explicit version is enforced.
+# A matching library list does not replace the image or end-to-end acceptance.
 
 
 @dataclass(frozen=True)

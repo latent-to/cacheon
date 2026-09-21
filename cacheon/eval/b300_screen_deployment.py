@@ -44,9 +44,15 @@ from cacheon.eval.b300_arena_provider import (
 from cacheon.eval.b300_arena_definition import (
     B300ScreenDeploymentError,
     data_parallel_size as _data_parallel_size,
+    device_policy as _device_policy,
     engine_config as _engine_config,
     engine_template as _engine_template,
+    hardware_bindings as _hardware_bindings,
     prompt_batch_cells as _prompt_batch_cells,
+    ready_gpu_ids as _ready_gpu_ids,
+    ready_lane as _ready_lane,
+    ready_lanes as _ready_lanes,
+    resource_policy as _resource_policy,
     scored_cell as _scored_cell,
     string_rows as _string_rows,
     target_partition as _target_partition,
@@ -112,9 +118,6 @@ DEPLOYMENT_FILE = "screen-deployment.json"
 MANIFEST_FILE = "arena-service-manifest.json"
 READINESS_FILE = "worker-readiness.json"
 MATERIALIZATION_SCHEMA = "cacheon-b300-screen-materialization-v1"
-ARCHITECTURE = "sm103"
-GPU_COUNT = 4
-TP_SIZE = 4
 DEFAULT_OUTPUT_ROOT = Path("/data/cacheon-b300/remote-worker/commissioned")
 def _digest(value: object, field: str) -> str:
     return require_digest(value, field=field, error=B300ScreenDeploymentError)
@@ -344,36 +347,6 @@ def _gpu_from_dict(row_value: object) -> GPUConfiguration:
         ) from None
 
 
-def _device_policy(gpus: tuple[GPUConfiguration, ...]) -> DeviceStatePolicy:
-    if (
-        len(gpus) != GPU_COUNT
-        or tuple(gpu.physical_id for gpu in gpus)
-        != tuple(sorted(gpu.physical_id for gpu in gpus))
-        or any("B300" not in gpu.name.upper() for gpu in gpus)
-        or len({gpu.max_memory_clock_mhz for gpu in gpus}) != 1
-    ):
-        raise B300ScreenDeploymentError(
-            "selected lane must contain exactly four ordered B300 configurations"
-        )
-    return DeviceStatePolicy(
-        expected_gpus=gpus,
-        maximum_temperature_c=90,
-        maximum_gpu_utilization_percent=5,
-        maximum_memory_utilization_percent=5,
-        allowed_active_pstates=("P0",),
-        active_maximum_graphics_clock_mhz=max(
-            gpu.max_graphics_clock_mhz for gpu in gpus
-        ),
-        active_memory_clock_mhz=gpus[0].max_memory_clock_mhz,
-        active_maximum_power_draw_mw=max(gpu.power_limit_mw for gpu in gpus),
-        active_require_process_on_every_gpu=True,
-        required_consecutive_idle_samples=2,
-        poll_interval_s=0.05,
-        ready_poll_interval_s=0.05,
-        maximum_samples=1024,
-    )
-
-
 def _runtime_policy(preflight: RuntimePreflightReceipt) -> OCIRuntimeResourcePolicy:
     return OCIRuntimeResourcePolicy(
         uid=preflight.uid,
@@ -427,8 +400,12 @@ def _backend_config(
     *,
     executor_id: str,
     runtime_seed_root: Path | None = None,
+    resources: dict | None = None,
 ) -> OCIBackendConfig:
-    runtime = _runtime_policy(preflight)
+    capacity = {} if resources is None else _mapping(resources, "OCI resources")
+    if set(capacity) - {"runtime", "prebuild"}:
+        raise B300ScreenDeploymentError("unknown OCI resource policy")
+    runtime = _resource_policy(_runtime_policy(preflight), capacity.get("runtime", {}))
     return OCIBackendConfig(
         OCIPrebuildConfig(
             docker_binary=preflight.docker_binary,
@@ -436,7 +413,7 @@ def _backend_config(
             publication_root=root / "native-publications",
             seccomp_profile=_seccomp_path(),
             executor_id=executor_id,
-            policy=_prebuild_policy(runtime),
+            policy=_resource_policy(_prebuild_policy(runtime), capacity.get("prebuild", {})),
             runtime_seed_root=runtime_seed_root,
         ),
         runtime,
@@ -451,12 +428,13 @@ def _build_executor(
     *,
     executor_id: str = "b300-screen",
     runtime_seed_root: Path | None = None,
+    resources: dict | None = None,
 ) -> OCIEngineExecutor:
     config = _backend_config(
         root,
         preflight,
         executor_id=executor_id,
-        runtime_seed_root=runtime_seed_root,
+        runtime_seed_root=runtime_seed_root, resources=resources,
     )
     manager = OCIProcessManager(
         docker_binary=config.prebuild.docker_binary,
@@ -557,6 +535,7 @@ def _native_build(
     tree_digest: str,
     preflight: RuntimePreflightReceipt,
     policy: OCIPrebuildPolicy,
+    architecture: str,
 ) -> NativeBuildSpec:
     return NativeBuildSpec(
         tree_digest=tree_digest,
@@ -574,9 +553,9 @@ def _native_build(
             image_digest=preflight.image_digest,
             worker_distribution_digest=preflight.worker_distribution_digest,
             dependency_policy_digest=policy.dependency_policy_digest,
-            target_architecture=ARCHITECTURE,
+            target_architecture=architecture,
         ),
-        target_architecture=ARCHITECTURE,
+        target_architecture=architecture,
         dependency_policy_digest=policy.dependency_policy_digest,
     )
 
@@ -650,7 +629,7 @@ class _CommissionedScreenPlanResolver:
             or inspected.target_spec_digest
             != self.catalog.target_spec_digest(reservation.target_id)
             or inspected.selected_delta_digest != reservation.selected_delta_digest
-            or target.members != reservation.target_members
+            or not self.catalog.admits(target, reservation.target_members)
         ):
             raise B300ScreenDeploymentError(
                 "candidate contribution differs from finalized reservation"
@@ -718,30 +697,14 @@ class _CommissionedScreenPlanResolver:
 
         policy = self.inputs.device_policy
         dp_size = _data_parallel_size(self.inputs.engine_template)
-        hardware = LogicalHardwareSpec(
-            visible_gpu_count=GPU_COUNT,
-            architecture=ARCHITECTURE,
-            topology_class=self.inputs.runtime.topology_class,
-            topology_digest=self.inputs.topology_digest,
-            tp_size=TP_SIZE,
-            ep_size=1,
-            dp_size=dp_size,
-            device_policy_digest=policy.policy_sha256,
-        )
-        physical = PhysicalHardwareBinding(
-            physical_gpu_ids=tuple(str(gpu.physical_id) for gpu in self.inputs.gpus),
-            architecture=ARCHITECTURE,
-            topology_class=self.inputs.runtime.topology_class,
-            topology_digest=self.inputs.topology_digest,
-            tp_size=TP_SIZE,
-            ep_size=1,
-            dp_size=dp_size,
-            device_policy_digest=policy.policy_sha256,
+        hardware, physical = _hardware_bindings(
+            self.inputs.runtime, policy, dp_size=dp_size,
         )
         native = _native_build(
             tree.tree_digest,
             self.inputs.preflight,
             self.executor.config.prebuild.policy,
+            self.inputs.runtime.target_architecture,
         )
         binding = TrustedLaunchBinding(
             materialized_tree_root=tree.root,
@@ -761,7 +724,6 @@ class _CommissionedScreenPlanResolver:
         cell = _scored_cell(self.inputs.workload)
         graph_config = _engine_config(
             self.inputs.engine_template,
-            target.members,
             cell,
             disable_cuda_graph=False,
         )
@@ -836,14 +798,14 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
         inputs.preflight,
         inputs.device_policy,
         executor_id="b300-screen-build",
-        runtime_seed_root=inputs.runtime_seed_root,
+        runtime_seed_root=inputs.runtime_seed_root, resources=inputs.authority.get("resources"),
     )
     resident_executor = _build_executor(
         inputs.root,
         inputs.preflight,
         inputs.device_policy,
         executor_id="b300-screen-resident",
-        runtime_seed_root=inputs.runtime_seed_root,
+        runtime_seed_root=inputs.runtime_seed_root, resources=inputs.authority.get("resources"),
     )
     resolver = _CommissionedScreenPlanResolver(inputs, build_executor, catalog)
     static = B300StaticScreenAdapter(
@@ -959,7 +921,7 @@ def _same_authority_identity(
     authority: dict[str, object],
     measurement: dict[str, object],
 ) -> None:
-    for field in ("arena_id", "qualification_builder_digest"):
+    for field in ("arena_id", "qualification_builder_digest", "resources"):
         if authority.get(field) != measurement.get(field):
             raise B300ScreenDeploymentError(
                 f"authority and measurement differ at {field}"
@@ -979,53 +941,16 @@ def _same_authority_identity(
             )
 
 
-def _ready_lane(ready: dict[str, object]) -> tuple[int, ...]:
-    lane = _mapping(ready.get("lane"), "READY lane")
-    raw = lane.get("devices")
-    if type(raw) is not list or any(type(row) is not int for row in raw):
-        raise B300ScreenDeploymentError("READY lane devices are malformed")
-    selected = tuple(raw)
-    if (
-        len(selected) != GPU_COUNT
-        or selected != tuple(sorted(set(selected)))
-        or lane.get("tensor_parallel_size") != TP_SIZE
-    ):
-        raise B300ScreenDeploymentError("READY lane must be one ordered TP4 lane")
-    _digest(lane.get("lane_digest"), "READY lane digest")
-    return selected
-
-
-def _ready_gpu_ids(ready: dict[str, object]) -> tuple[int, ...]:
-    gpu = _mapping(ready.get("gpu"), "READY GPU inventory")
-    inventory = gpu.get("inventory")
-    if gpu.get("count") != 8 or type(inventory) is not list or len(inventory) != 8:
-        raise B300ScreenDeploymentError("READY receipt is not an eight-B300 pod")
-    try:
-        physical_ids = tuple(
-            _integer(
-                _mapping(row, "READY GPU row").get("index"),
-                "READY GPU index",
-            )
-            for row in inventory
-        )
-    except B300ScreenDeploymentError:
-        raise
-    if physical_ids != tuple(sorted(set(physical_ids))):
-        raise B300ScreenDeploymentError(
-            "READY GPU inventory is not one canonical eight-device set"
-        )
-    return physical_ids
-
-
 def _validate_ready_inventory(
     ready: dict[str, object],
     gpus: tuple[GPUConfiguration, ...],
 ) -> None:
     gpu = _mapping(ready.get("gpu"), "READY GPU inventory")
     inventory = gpu.get("inventory")
-    if tuple(gpu.physical_id for gpu in gpus) != _ready_gpu_ids(ready):
+    allocated = tuple(sorted(index for lane in _ready_lanes(ready) for index in lane))
+    if tuple(gpu.physical_id for gpu in gpus) != allocated:
         raise B300ScreenDeploymentError(
-            "provisioned GPU set differs from the commissioned eight-device pod"
+            "provisioned GPU set differs from the commissioned lane pair"
         )
     for configured in gpus:
         try:
@@ -1075,31 +1000,17 @@ def _derive_inputs(
     gpus: tuple[GPUConfiguration, ...],
 ) -> _CommissionedInputs:
     _same_authority_identity(authority, measurement)
-    selected = _ready_lane(ready)
-    if (
-        type(gpus) is not tuple
-        or len(gpus) != 2 * GPU_COUNT
-        or tuple(gpu.physical_id for gpu in gpus) != _ready_gpu_ids(ready)
-        or any("B300" not in gpu.name.upper() for gpu in gpus)
-    ):
-        raise B300ScreenDeploymentError(
-            "qualification identity requires the exact commissioned eight-B300 pair"
-        )
+    selected, complement_ids = _ready_lanes(ready)
     _validate_ready_inventory(ready, gpus)
+    if len({(gpu.name, gpu.memory_total_mib) for gpu in gpus}) != 1:
+        raise B300ScreenDeploymentError("qualification lanes require the same GPU model and memory capacity")
     by_id = {gpu.physical_id: gpu for gpu in gpus}
     try:
         selected_gpus = tuple(by_id[physical_id] for physical_id in selected)
     except KeyError:
         raise B300ScreenDeploymentError(
-            "commissioned screen lane is absent from the eight-device pair"
+            "commissioned screen lane is absent from the allocated pair"
         ) from None
-    complement_ids = tuple(
-        physical_id for physical_id in _ready_gpu_ids(ready) if physical_id not in selected
-    )
-    if len(complement_ids) != GPU_COUNT:
-        raise B300ScreenDeploymentError(
-            "commissioned screen lane has no disjoint TP4 complement"
-        )
     complement_gpus = tuple(by_id[physical_id] for physical_id in complement_ids)
     device_policy = _device_policy(selected_gpus)
     physical_lanes = sorted(
@@ -1120,13 +1031,12 @@ def _derive_inputs(
     except (TypeError, ValueError):
         raise B300ScreenDeploymentError("topology authority lane is malformed") from None
     if (
-        topology.get("architecture") != ARCHITECTURE
-        or topology.get("gpu_count") != GPU_COUNT
-        or topology.get("tensor_parallel_size") != TP_SIZE
+        topology.get("gpu_count") != len(selected)
+        or topology.get("tensor_parallel_size") != len(selected)
         or authority_lane != selected
     ):
         raise B300ScreenDeploymentError(
-            "sealed topology is not the commissioned sm103 TP4 lane"
+            "sealed topology differs from the commissioned TP lane"
         )
     authority_lane_digest = _digest(
         topology.get("lane_digest"), "topology authority lane digest"
@@ -1204,11 +1114,11 @@ def _derive_inputs(
         model_content_digest=_digest(
             model.get("content_digest"), "model content digest"
         ),
-        target_architecture=ARCHITECTURE,
+        target_architecture=_text(topology.get("architecture"), "target architecture"),
         topology_class=topology_class,
         topology_digest=topology_digest,
-        gpu_count=GPU_COUNT,
-        tensor_parallel_size=TP_SIZE,
+        gpu_count=len(selected),
+        tensor_parallel_size=len(selected),
     )
     prompt_identity = _prompt_identity(
         prompt, authority_refs["prompt_authority"]["sha256"]
@@ -1258,7 +1168,7 @@ def _derive_inputs(
         "cacheon.eval.b300-resident-routing-factory.v1",
         {
             "candidate_limit_per_lifetime": 1_000,
-            "engine_mode": "stock-tp4-graph-resident",
+            "engine_mode": f"stock-tp{runtime.tensor_parallel_size}-graph-resident",
             "lifetime_deadline_seconds": 30 * 24 * 60 * 60,
             "native_rebuild_route": "qualification-waiver",
             "prompt_authority_sha256": prompt_identity["sha256"],
@@ -1274,7 +1184,7 @@ def _derive_inputs(
             registered_target_ids=registered_target_ids,
             lane_pair=qualification_lane_pair,
             backend_config_factory=lambda executor_id: _backend_config(
-                root, preflight, executor_id=executor_id
+                root, preflight, executor_id=executor_id, resources=authority.get("resources")
             ),
         )
     except B300ScreenQualificationBridgeError as exc:
@@ -1371,7 +1281,7 @@ def _authority_inputs(
             "explicit sealed authority paths or SHA-256 values differ from config"
         )
     preflight = _runtime_preflight(_find_preflight(device_execution))
-    selected = _ready_gpu_ids(ready)
+    selected = tuple(sorted(index for lane in _ready_lanes(ready) for index in lane))
     if (provisioner is None) == (provisioned_gpus is None):
         raise B300ScreenDeploymentError(
             "GPU configuration requires exactly one provisioner or sealed inventory"
@@ -1616,6 +1526,7 @@ def _canonical_artifact(path: Path, field: str) -> dict[str, object]:
 def replay_commissioned_screen_composition(
     registration: dict[str, object],
     ready_receipt: dict[str, object],
+    *, commissioned_root: Path | None = None,
 ) -> tuple[_CommissionedInputs, _Composition, WorkerReadiness]:
     """Replay the fixed commissioned artifacts into one live composition.
 
@@ -1630,7 +1541,7 @@ def replay_commissioned_screen_composition(
         raise B300ScreenDeploymentError(
             "commissioned worker inputs must be exact JSON objects"
         )
-    root = _prepare_private_root(DEFAULT_OUTPUT_ROOT)
+    root = _prepare_private_root(DEFAULT_OUTPUT_ROOT if commissioned_root is None else commissioned_root)
     deployment_path = root / DEPLOYMENT_FILE
     manifest_path = root / MANIFEST_FILE
     readiness_path = root / READINESS_FILE
@@ -1734,11 +1645,12 @@ def commissioned_screen_worker_from_composition(
 def build_commissioned_b300_screen_worker(
     registration: dict[str, object],
     ready_receipt: dict[str, object],
+    *, commissioned_root: Path | None = None,
 ) -> B300MainnetWorker:
     """Reopen the fixed commissioned artifacts and build one screen worker."""
 
     _inputs, composition, readiness = replay_commissioned_screen_composition(
-        registration, ready_receipt
+        registration, ready_receipt, commissioned_root=commissioned_root
     )
     try:
         worker = commissioned_screen_worker_from_composition(composition, readiness)

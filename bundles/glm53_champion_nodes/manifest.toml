@@ -1,0 +1,18 @@
+bundle_id = "glm53-node-baseline-20260920"
+abi_version = "cacheon-op-abi-v0"
+[competition]
+target = "forward_pass"
+mode = "slot"
+[[ops]]
+slot = "model.layers.*"
+source = "glm53_baseline/layer.py"
+entry = "forward"
+prepare = "prepare"
+architectures = ["sm103"]
+cuda_sources = ["glm53_baseline/dpo_native.cu", "glm53_baseline/arm_slots.cu"]
+[[ops]]
+slot = "model.norm"
+source = "glm53_baseline/layer.py"
+entry = "forward"
+prepare = "prepare_norm"
+architectures = ["sm103"]

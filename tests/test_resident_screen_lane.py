@@ -405,6 +405,13 @@ class TestScreenSwappability:
         manifest = load_manifest(_bundle_tree(tmp_path, **bundle_options))
         assert reason in screen_swappability(manifest)
 
+    def test_node_address_bundle_is_not_swappable(self, tmp_path) -> None:
+        # A swap never re-runs the load_model hook that binds nodes.
+        source = _bundle_tree(tmp_path)
+        text = (source / "manifest.toml").read_text()
+        (source / "manifest.toml").write_text(text.replace(SLOT, "model.layers.*.mlp"))
+        assert "node-address" in screen_swappability(load_manifest(source))
+
     @pytest.mark.parametrize(
         ("bundle_options", "reason"),
         [

@@ -13,19 +13,12 @@ from cacheon.eval.oci_outer_session import (
     OuterSessionProcessError,
     OuterSessionWorkerError,
 )
-from cacheon.eval.qualification import (
-    GraphVariantRequirement,
-    GraphVerificationBinding,
-    GraphVerificationMemberBinding,
-    GraphVerificationRequirement,
-    QualificationDecision,
-)
+from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_runner import (
     QualificationRunnerError,
     SpeedStageDisposition,
 )
 from cacheon.eval.scoring import RawSpeedEvidenceError
-from cacheon.verify import VerifyResult
 
 
 def _d(label: str) -> str:
@@ -100,63 +93,6 @@ def _factory(plan, manifest):
     )
 
 
-def _requirement() -> GraphVerificationRequirement:
-    slot, variant = "collective.all_reduce", "default"
-    descriptors = tuple(sorted((_d("shape-a"), _d("shape-b"))))
-    member = GraphVerificationMemberBinding(
-        slot, _d("target-spec"), _d("contract"), "collective.tp8"
-    )
-    binding = GraphVerificationBinding(
-        _d("arm"),
-        _d("launch"),
-        _d("contribution"),
-        _d("delta"),
-        slot,
-        _d("target-spec"),
-        _d("catalog"),
-        (member,),
-        _d("verification-policy"),
-    )
-    return GraphVerificationRequirement(
-        binding,
-        (
-            GraphVariantRequirement(
-                slot, variant, descriptors, True, descriptors
-            ),
-        ),
-        3,
-    )
-
-
-def _graph_observation(
-    requirement: GraphVerificationRequirement,
-) -> intake.GraphVerificationObservation:
-    variant = requirement.variants[0]
-    shapes = tuple(
-        intake.GraphShapeObservation(
-            descriptor, True, True, True, requirement.expected_graph_replays, True
-        )
-        for descriptor in variant.shape_descriptor_digests
-    )
-    return intake.GraphVerificationObservation(
-        requirement.digest,
-        (
-            intake.GraphMemberObservation(
-                variant.slot_id,
-                (
-                    intake.GraphVariantObservation(
-                        variant.slot_id,
-                        variant.variant_id,
-                        True,
-                        True,
-                        shapes,
-                    ),
-                ),
-            ),
-        ),
-    )
-
-
 def test_authority_manifest_roundtrip_contains_only_private_secret_reference(
     monkeypatch,
 ) -> None:
@@ -213,98 +149,6 @@ def test_prebuilt_plan_is_handed_to_the_runner_unchanged(monkeypatch) -> None:
     assert len(calls) == 1
     assert calls[0][0] is plan
     assert result.outcomes[0].reason == "qualification_runner"
-
-
-def test_graph_observation_publishes_and_reopens_canonical_raw_facts(tmp_path) -> None:
-    requirement = _requirement()
-    product = intake.publish_graph_observation(
-        tmp_path / "evidence", requirement, _graph_observation(requirement)
-    )
-
-    assert product.requirement_digest == requirement.digest
-    assert product.evidence_ref.raw_evidence_digest == product.raw_evidence_digest
-    assert product.grade.decision is QualificationDecision.PASS
-    assert product.grade.reason == "graph_verification_pass"
-
-
-def test_graph_regrade_enforces_the_required_replay_count(tmp_path) -> None:
-    requirement = _requirement()
-    observation = _graph_observation(requirement)
-    variant = observation.members[0].variants[0]
-    short = tuple(
-        intake.GraphShapeObservation(
-            row.descriptor_digest, True, True, True, 2, True
-        )
-        for row in variant.shapes
-    )
-    altered = intake.GraphVerificationObservation(
-        requirement.digest,
-        (
-            intake.GraphMemberObservation(
-                variant.slot_id,
-                (
-                    intake.GraphVariantObservation(
-                        variant.slot_id, variant.variant_id, True, True, short
-                    ),
-                ),
-            ),
-        ),
-    )
-
-    product = intake.publish_graph_observation(
-        tmp_path / "evidence", requirement, altered
-    )
-    assert product.grade.decision is QualificationDecision.NO_DECISION
-    assert product.grade.reason == "graph_replay_count_mismatch"
-
-
-@pytest.mark.parametrize(
-    "aggregate",
-    [True, VerifyResult("collective.all_reduce", "bfloat16", True, [])],
-)
-def test_graph_adapter_rejects_aggregate_verdicts(tmp_path, aggregate) -> None:
-    with pytest.raises(
-        intake.QualificationIntakeError, match="not VerifyResult or booleans"
-    ):
-        intake.publish_graph_observation(
-            tmp_path / "evidence", _requirement(), aggregate
-        )
-
-
-def test_graph_observation_requires_causal_eager_capture_replay_facts() -> None:
-    with pytest.raises(intake.QualificationIntakeError, match="causally inconsistent"):
-        intake.GraphShapeObservation(_d("shape"), True, False, True, 1, True)
-    with pytest.raises(intake.QualificationIntakeError, match="exact boolean"):
-        intake.GraphShapeObservation(_d("shape"), 1, True, True, 3, True)  # type: ignore[arg-type]
-
-
-def test_graph_adapter_rejects_missing_descriptor_even_with_passing_facts(
-    tmp_path,
-) -> None:
-    requirement = _requirement()
-    observation = _graph_observation(requirement)
-    variant = observation.members[0].variants[0]
-    missing = intake.GraphVerificationObservation(
-        requirement.digest,
-        (
-            intake.GraphMemberObservation(
-                variant.slot_id,
-                (
-                    intake.GraphVariantObservation(
-                        variant.slot_id,
-                        variant.variant_id,
-                        True,
-                        True,
-                        variant.shapes[:-1],
-                    ),
-                ),
-            ),
-        ),
-    )
-    with pytest.raises(intake.QualificationIntakeError, match="shape observations"):
-        intake.publish_graph_observation(
-            tmp_path / "evidence", requirement, missing
-        )
 
 
 class _FakeReport:

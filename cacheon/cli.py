@@ -18,6 +18,8 @@ Do not run this on a machine you care about without that isolation. See
 
 from __future__ import annotations
 
+from cacheon.chain.publish import cmd_chain_package, cmd_chain_publish
+
 import argparse
 import json
 import sys
@@ -51,11 +53,10 @@ def cmd_slots(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_compat(_: argparse.Namespace) -> int:
-    from cacheon.compat import format_checks, run_checks
+def cmd_compat(args: argparse.Namespace) -> int:
+    from cacheon.compat import PINNED_SGLANG, format_checks, run_checks
 
-    checks = run_checks()
-    print("sglang pin + compatibility canary (run after any sglang bump):")
+    checks = run_checks(args.sglang_version or PINNED_SGLANG)
     print(format_checks(checks))
     return 0 if all(c.ok for c in checks) else 2
 
@@ -1365,74 +1366,6 @@ def cmd_set_weights(args: argparse.Namespace) -> int:
     )
 
 
-def cmd_chain_package(args: argparse.Namespace) -> int:
-    from cacheon.chain.fetch import package_bundle
-
-    out, ch = package_bundle(args.bundle, args.out)
-    print(f"archive:      {out}")
-    print(f"content_hash: {ch}")
-    print("host the archive at a stable URL, then commit it: cacheon chain-submit "
-          f"{args.bundle} --url <URL> --netuid <N> --network <WSS>")
-    return 0
-
-
-def cmd_chain_publish(args: argparse.Namespace) -> int:
-    """Package and publish a miner bundle to anonymous public object storage."""
-
-    from cacheon.chain.fetch import package_bundle
-    from cacheon.chain.publish import (
-        BundlePublishError,
-        bundle_object_name,
-        open_public_bundle_publisher,
-        public_object_url,
-    )
-    from cacheon.object_store import ObjectStoreError
-
-    out, content_hash = package_bundle(args.bundle, args.out)
-    try:
-        config = _bundle_store_config_from_args(args)
-        object_key = config.resolve_key(bundle_object_name(content_hash))
-        public_base_url = getattr(args, "public_base_url", "") or None
-        url = public_object_url(
-            config,
-            object_key,
-            public_base_url=public_base_url,
-        )
-        if args.dry_run:
-            print(f"archive:      {out}")
-            print(f"content_hash: {content_hash}")
-            print(f"object_key:   {object_key}")
-            print(f"url:          {url}")
-            print("DRY RUN — archive built locally; no bucket or object was changed.")
-            return 0
-        publisher = open_public_bundle_publisher(
-            config,
-            public_base_url=public_base_url,
-        )
-        publication = publisher.publish_archive(
-            out,
-            content_hash,
-            create_bucket=bool(args.create_bucket),
-            verify_timeout_s=float(args.verify_timeout),
-        )
-    except (BundlePublishError, ObjectStoreError) as exc:
-        print(f"PUBLICATION REFUSED: {exc}")
-        return 2
-
-    print(f"archive:      {publication.archive_path}")
-    print(f"content_hash: {publication.content_hash}")
-    print(f"stored_hash:  {publication.stored_archive_sha256}")
-    print(f"stored_bytes: {publication.stored_archive_bytes}")
-    print(f"object_key:   {publication.object_key}")
-    print(f"url:          {publication.url}")
-    print(f"reused:       {str(publication.reused).lower()}")
-    print("anonymous validator fetch: verified")
-    print(
-        "commit this exact reference: cacheon chain-submit "
-        f"{args.bundle} --url {publication.url} --netuid <N> --network <WSS>"
-    )
-    return 0
-
 
 def cmd_chain_eval_cost(args: argparse.Namespace) -> int:
     from cacheon.chain.eval_cost import (
@@ -2217,6 +2150,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
     from cacheon.verify import format_verify, verify_entry
 
     m = load_manifest(args.bundle)
+    if any(op.slot not in SLOTS for op in m.ops):
+        from cacheon.miner_check import verify_nodes
+
+        return verify_nodes(args.bundle)
     if not _recursive_scan_ok(args.bundle, manifest=m):  # vendored-tree guard (every .py, not just entries)
         return 2
 
@@ -2232,8 +2169,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
         raise AssertionError("domain preflight entries are never invoked")
 
     for row_index, op in enumerate(m.ops):
-        if op.slot not in SLOTS:
-            continue
         label = f"{op.slot} variant={op.variant!r}"
         try:
             metadata = _declared_metadata(args.bundle, op)
@@ -2269,13 +2204,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
               "only — it does not predict GPU throughput, CUDA-graph capture, or the "
               "fidelity gates (see docs/dev/gpu-setup.md).")
     rc = 0
-    known_rows = 0
-    context_inapplicable_rows = 0
+    known_rows = context_inapplicable_rows = 0
     for row_index, op in enumerate(m.ops):
         label = f"{op.slot} variant={op.variant!r}"
-        if op.slot not in SLOTS:
-            print(f"  [SKIP] {label}: not a known slot on this validator")
-            continue
         known_rows += 1
         metadata = metadata_by_row[row_index]
         model_key = args.model or metadata.get("model") or metadata.get("model_profile")
@@ -2380,6 +2311,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_slots)
 
     sp = sub.add_parser("compat", help="check our sglang integration points survived an upgrade")
+    sp.add_argument("--sglang-version", help="exact version from the arena's runtime authority")
     sp.set_defaults(func=cmd_compat)
 
     sp = sub.add_parser("chain-compat",
@@ -2793,19 +2725,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ---- chain: miner submission + the validator loop ----
     sp = sub.add_parser("chain-package",
-                        help="tar.gz a bundle for hosting; prints the content hash to commit")
+                        help="encrypt a bundle for hosting; prints the content hash to commit")
     sp.add_argument("bundle")
     sp.add_argument("--out", default=None, help="archive path (default <bundle>.tar.gz)")
+    sp.add_argument("--encrypt-for", default=None, help="validator public key (default: published key)")
     sp.set_defaults(func=cmd_chain_package)
 
     sp = sub.add_parser(
         "chain-publish",
         help=(
             "miner: package a bundle, publish it from the miner's S3-compatible "
-            "bucket, and verify anonymous validator fetch"
+            "bucket, and verify the encrypted download"
         ),
     )
     sp.add_argument("bundle")
+    sp.add_argument("--encrypt-for", default=None, help="validator public key (default: published key)")
     sp.add_argument("--out", default=None, help="archive path (default <bundle>.tar.gz)")
     sp.add_argument(
         "--object-store-provider",
@@ -3247,14 +3181,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_explain)
 
     sp = sub.add_parser(
-        "verify", help="op-level correctness vs reference",
+        "verify", help="scan and interface smoke for nodes; reference check for catalog slots",
         epilog=("examples:\n"
-                "  # CPU dry-run (no GPU needed; the miner-guide inner loop)\n"
-                "  cacheon verify examples/miner_silu_torch --device cpu --dtype float32\n"
-                "  # real shapes/dtypes on a GPU box\n"
-                "  cacheon verify my_bundle --device cuda --dtype bfloat16\n"
-                "  # a collective slot at the arena's TP size\n"
-                "  cacheon verify my_bundle --device cuda --world-size 4"),
+                "  cacheon verify examples/miner_node_identity\n"
+                "  # node numerical checks need the published image and model\n"
+                "  cacheon check --help"),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("bundle")
     sp.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
@@ -3270,6 +3201,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "low-bit metric), e.g. MiniMax-M3. Default: the model declared in the "
                          "op's metadata (dev convenience); production uses the served-model key.")
     sp.set_defaults(func=cmd_verify)
+
+    from cacheon.miner_check import add_parser
+
+    add_parser(sub)
 
     return p
 

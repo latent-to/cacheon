@@ -12,9 +12,7 @@ from cacheon.stack_manifest import (
 )
 from cacheon.stack_plan import (
     CohortPlan,
-    RollbackPlan,
     StackPlanError,
-    StaleStackPlanError,
     plan_marginal_arm,
 )
 from cacheon.target_catalog import (
@@ -131,7 +129,7 @@ def _plan(
     [
         (None, ROUTED, ()),
         (ROUTED, ROUTED, ()),
-        ("moe.fused_experts", "moe.fused_experts_reduce", ("moe.fused_experts",)),
+        ("moe.fused_experts", ROUTED, ("moe.fused_experts",)),
     ],
 )
 def test_registered_stock_and_same_target_transitions(
@@ -166,9 +164,8 @@ def test_registered_stock_and_same_target_transitions(
 def test_subset_challenger_replaces_wide_incumbent_instead_of_being_shadowed():
     catalog = default_target_catalog()
     for wide, narrow in (
-        ("moe.fused_experts_reduce", "moe.fused_experts"),
+        (ROUTED, "moe.fused_experts"),
         ("norm.fused_add_rmsnorm", "norm.rmsnorm"),
-        ("collective.ar_residual_rmsnorm", "collective.all_reduce"),
     ):
         incumbent = _stack(catalog, {wide: _ref(catalog, wide, "wide")})
         arm = _plan(
@@ -409,58 +406,6 @@ def test_cohort_rejects_duplicate_work_and_invalid_authority(case):
         )
 
 
-def test_rollback_is_exact_and_rejects_stale_stack_or_tree():
-    catalog, context, _, routed, _ = _two_arms()
-    rollback = RollbackPlan.from_arm(
-        routed, catalog=catalog, expected_context=context
-    )
-
-    restored, restored_tree = rollback.reconstruct(
-        routed.candidate,
-        tree_digest=routed.challenger.tree_digest,
-        source_arm=routed,
-        catalog=catalog,
-        expected_context=context,
-    )
-    assert restored.digest == routed.incumbent.digest
-    assert restored_tree == routed.baseline_before.tree_digest
-    with pytest.raises(StaleStackPlanError, match="current stack is stale"):
-        rollback.reconstruct(
-            routed.incumbent,
-            tree_digest=routed.challenger.tree_digest,
-            source_arm=routed,
-            catalog=catalog,
-            expected_context=context,
-        )
-    with pytest.raises(StaleStackPlanError, match="current tree is stale"):
-        rollback.reconstruct(
-            routed.candidate,
-            tree_digest=_h("wrong tree"),
-            source_arm=routed,
-            catalog=catalog,
-            expected_context=context,
-        )
-
-    forged_manifest = _stack(catalog)
-    forged = replace(
-        rollback,
-        restored=replace(
-            rollback.restored,
-            stack_digest=forged_manifest.digest,
-            tree_digest=_h("forged tree"),
-        ),
-        restored_manifest=forged_manifest,
-    )
-    with pytest.raises(StackPlanError, match="does not reopen"):
-        forged.reconstruct(
-            routed.candidate,
-            tree_digest=routed.challenger.tree_digest,
-            source_arm=routed,
-            catalog=catalog,
-            expected_context=context,
-        )
-
-
 def test_plan_schema_versions_are_type_exact():
     catalog, context, _, routed, sdpa = _two_arms()
     cohort = CohortPlan.seal(
@@ -470,9 +415,6 @@ def test_plan_schema_versions_are_type_exact():
         catalog=catalog,
         expected_context=context,
     )
-    rollback = RollbackPlan.from_arm(
-        routed, catalog=catalog, expected_context=context
-    )
-    for record in (routed, cohort, rollback):
+    for record in (routed, cohort):
         with pytest.raises(StackPlanError, match="schema_version"):
             replace(record, schema_version=True)

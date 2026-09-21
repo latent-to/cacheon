@@ -102,18 +102,13 @@ class AdapterPaths:
     processing_root: Path
     results_root: Path
     continuation_root: Path
+    commissioned_root: Path | None = None
 
     def __post_init__(self) -> None:
-        for name in (
-            "registration",
-            "ready_receipt",
-            "credential",
-            "publication_root",
-            "processing_root",
-            "results_root",
-            "continuation_root",
-        ):
+        for name in self.__dataclass_fields__:
             value = getattr(self, name)
+            if name == "commissioned_root" and value is None:
+                continue
             if not isinstance(value, Path) or not value.is_absolute():
                 raise AdapterError(f"adapter {name} path must be an absolute Path")
 
@@ -292,7 +287,7 @@ class AdapterRuntime:
             # One replay yields both the screen worker and the qualification
             # commission over the same resident model lifetime.
             service = build_commissioned_b300_qualification_service(
-                registration, ready, qualification_capabilities
+                registration, ready, qualification_capabilities, commissioned_root=paths.commissioned_root
             )
             self._commissioned_service = service
             self.worker = service.worker
@@ -328,7 +323,7 @@ class AdapterRuntime:
                 build_commissioned_b300_screen_worker,
             )
 
-            self.worker = build_commissioned_b300_screen_worker(registration, ready)
+            self.worker = build_commissioned_b300_screen_worker(registration, ready, commissioned_root=paths.commissioned_root)
             self.qualification_commission = None
         self.qualification_continuation_store = qualification_continuation_store
         self.closed = False
@@ -800,15 +795,11 @@ def _serve(paths: AdapterPaths, qualification_capabilities=None) -> int:
 
 
 def _adapter_paths(args: argparse.Namespace) -> AdapterPaths:
-    return AdapterPaths(
-        registration=Path(args.registration),
-        ready_receipt=Path(args.ready_receipt),
-        credential=Path(args.credential),
-        publication_root=Path(args.publication_root),
-        processing_root=Path(args.processing_root),
-        results_root=Path(args.results_root),
-        continuation_root=Path(args.continuation_root),
-    )
+    return AdapterPaths(**{
+        name: Path(value) if (value := getattr(args, name)) is not None else None
+        for name in AdapterPaths.__dataclass_fields__
+    })
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -821,6 +812,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--processing-root", required=True)
     parser.add_argument("--results-root", required=True)
     parser.add_argument("--continuation-root", required=True)
+    parser.add_argument("--commissioned-root", help="absolute root emitted by screen materialization")
     parser.add_argument("--request-dir")
     parser.add_argument("--result-dir")
     parser.add_argument(

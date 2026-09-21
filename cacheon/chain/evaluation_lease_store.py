@@ -343,108 +343,6 @@ class EvaluationLeaseStoreMixin:
             expired.append(lease)
         return tuple(expired)
 
-    def _select_evaluation_rows(
-        self, stage: str, bound: int
-    ) -> tuple[sqlite3.Row, ...]:
-        """Shared, non-mutating ordered selector for preview and atomic claim."""
-
-        if stage == "qualification" and self._db.execute(
-            "SELECT 1 FROM evaluation_leases WHERE state='active' "
-            "AND stage='qualification' LIMIT 1"
-        ).fetchone() is not None:
-            # One mutable evaluation-stack authority is shared by every
-            # qualification cohort.  Until leases bind an arena/stack
-            # generation, concurrent qualification must fail closed globally.
-            return ()
-        if stage == "screen":
-            predicate = "r.status IN ('published','reproduction_pending')"
-            priority = "CASE r.status WHEN 'reproduction_pending' THEN 0 ELSE 1 END"
-            segment_join = " "
-            segment_predicate = ""
-            segment_parameters: tuple[object, ...] = ()
-        else:
-            baseline = self.qualification_queue_baseline()
-            if baseline is None:
-                # Genesis may be installed by the recoverable dispatcher only
-                # after reopening a qualification lease claimed by legacy CPU
-                # composition. Preserve that bootstrap path; once any durable
-                # stack exists, an unbound queue head must wait for binding.
-                if self._db.execute(
-                    "SELECT 1 FROM evaluation_stacks LIMIT 1"
-                ).fetchone() is not None:
-                    return ()
-                segment_join = " "
-                segment_predicate = ""
-                segment_parameters = ()
-            else:
-                segment_join = (
-                    " JOIN reservation_baseline_segments AS b USING(reservation_id) "
-                )
-                segment_predicate = (
-                    " AND b.arena_id=? AND b.generation=? AND b.stack_digest=? "
-                    "AND b.tree_digest=? AND b.stack_json=? "
-                    "AND b.transition_event_id=?"
-                )
-                segment_parameters = (
-                    baseline.arena_digest,
-                    baseline.generation,
-                    baseline.manifest.digest,
-                    baseline.tree_digest,
-                    self._encoded_stack_manifest(baseline),
-                    baseline.transition_event_id,
-                )
-            predicate = "r.status='promoted'"
-            priority = "CASE r.screen_lane WHEN 'reproduction' THEN 0 ELSE 1 END"
-        first = self._db.execute(
-            "SELECT r.* FROM reservations AS r"
-            f"{segment_join}WHERE "
-            f"{predicate} AND NOT EXISTS (SELECT 1 FROM evaluation_lease_members AS em "
-            "WHERE em.reservation_id=r.reservation_id AND em.active=1) "
-            f"{segment_predicate} "
-            f"ORDER BY {priority},r.block,r.event_index,r.event_subindex,"
-            "r.hotkey,r.content_hash LIMIT 1",
-            segment_parameters,
-        ).fetchone()
-        if first is None:
-            return ()
-        if stage == "screen" or first["screen_lane"] == "reproduction":
-            return (first,)
-        if first["retry_group_digest"]:
-            selected = tuple(
-                self._db.execute(
-                    "SELECT r.* FROM reservations AS r"
-                    f"{segment_join}WHERE r.status='promoted' "
-                    "AND r.retry_group_digest=? AND NOT EXISTS (SELECT 1 FROM "
-                    "evaluation_lease_members AS em WHERE "
-                    "em.reservation_id=r.reservation_id AND em.active=1) "
-                    f"{segment_predicate} ORDER BY r.retry_position",
-                    (first["retry_group_digest"], *segment_parameters),
-                )
-            )
-            total = self._db.execute(
-                "SELECT COUNT(*) AS n FROM reservations WHERE status='promoted' "
-                "AND retry_group_digest=?",
-                (first["retry_group_digest"],),
-            ).fetchone()["n"]
-            if len(selected) != total:
-                raise _intake_error("qualification retry group is partially leased")
-            if len(selected) > bound:
-                raise _intake_error("qualification retry group exceeds lease capacity")
-            return selected
-        return tuple(
-            self._db.execute(
-                "SELECT r.* FROM reservations AS r"
-                f"{segment_join}WHERE r.status='promoted' "
-                "AND r.screen_lane='primary' AND r.retry_group_digest='' "
-                "AND NOT EXISTS (SELECT 1 FROM evaluation_lease_members AS em "
-                "WHERE em.reservation_id=r.reservation_id AND em.active=1) "
-                f"{segment_predicate} "
-                "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,"
-                "r.content_hash LIMIT ?",
-                (*segment_parameters, bound),
-            )
-        )
-
     def preview_evaluation_claim(
         self, *, stage: str, max_members: int | None = None
     ) -> tuple[str, ...]:
@@ -549,8 +447,8 @@ class EvaluationLeaseStoreMixin:
             with authority:
                 self._db.execute(
                     "INSERT INTO evaluation_leases(lease_id,generation,stage,owner,"
-                    "claimed_block,initial_expires_block,expires_block,state) "
-                    "VALUES(?,?,?,?,?,?,?,'active')",
+                    "claimed_block,initial_expires_block,expires_block,state,competition_arena) "
+                    "VALUES(?,?,?,?,?,?,?,'active',?)",
                     (
                         lease_id,
                         generation,
@@ -559,6 +457,7 @@ class EvaluationLeaseStoreMixin:
                         current_block,
                         expires,
                         expires,
+                        self._competition_arena,
                     ),
                 )
                 self._db.executemany(

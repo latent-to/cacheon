@@ -59,7 +59,7 @@ def test_completion_retains_rank_and_graph_facts_before_oci_reaps_worker(tmp_pat
             }, f"{rank}-{slot}")
     engine_worker._complete_candidate_execution(
         str(tmp_path), active_receipts=active, expected_slots=["a", "b"],
-        expected_member_count=2, audit_policy=None,
+        expected_member_count=2, audit_policy=None, graphs=True,
     )
     # OCI may terminate the process after its batch response; no teardown runs.
     summary = json.loads(capsys.readouterr().err.split(engine_worker.EXECUTION_SUMMARY_PREFIX)[1])
@@ -67,6 +67,30 @@ def test_completion_retains_rank_and_graph_facts_before_oci_reaps_worker(tmp_pat
         (slot, rank) for slot in ("a", "b") for rank in (0, 1)
     }
     assert all(r["captured"] is True and r["calls"] == 32 for r in summary["completed"])
+
+
+def test_a_timed_run_requires_the_candidate_inside_a_capture(tmp_path):
+    # A candidate whose declared domain excludes every captured shape completes on
+    # eager warmup and is then timed as stock. On a graphs-on run that is the
+    # candidate never executing; the eager audit role asks for no capture.
+    active = [_active(10, 0, slots=("model.layers.*.mlp",), world_size=1)]
+    _write(tmp_path, "completed", {
+        "pid": 10, "rank": 0, "world_size": 1, "slot": "model.layers.*.mlp",
+        "calls": 5, "captured": False,
+    }, 0)
+    run = dict(
+        active_receipts=active, expected_slots=["model.layers.*.mlp"], expected_member_count=1
+    )
+    assert "1/1" in engine_worker._require_execution_completion(str(tmp_path), **run)
+    with pytest.raises(
+        engine_worker.CandidateNeverExecutedError, match="never invoked inside a CUDA-graph"
+    ):
+        engine_worker._require_execution_completion(
+            str(tmp_path), require_captured=True, **run
+        )
+    engine_worker._complete_candidate_execution(
+        str(tmp_path), audit_policy=None, graphs=False, **run
+    )
 
 
 def test_only_candidate_owned_receipts_type_the_engine_failure(tmp_path):
@@ -206,17 +230,17 @@ def test_composed_audit_keeps_selected_target_and_full_execution_coverage(
             (selected, rank) for rank in range(tp_size)
         }
         grade = dict(min_calls=4, expected_slots=(selected,), expected_member_count=tp_size)
-        assert gate(rows, **grade)[0]
+        assert gate(rows, **grade)[0] == "PASS"
         rows[0]["violations"] = 1
-        assert not gate(handle.collect_audit_receipts(), **grade)[0]
+        assert gate(handle.collect_audit_receipts(), **grade)[0] == "FAIL"
         rows[0]["violations"] = 0
         audits.append({**rows[0], "slot": "unregistered.slot"})
-        assert not gate(handle.collect_audit_receipts(), **grade)[0]
+        assert gate(handle.collect_audit_receipts(), **grade)[0] == "NO_DECISION"
         audits.pop()
         observed["audit"] = [row for row in audits if not (
             row["slot"] == selected and row["rank"] == 0
         )]
-        assert not gate(handle.collect_audit_receipts(), **grade)[0]
+        assert gate(handle.collect_audit_receipts(), **grade)[0] == "NO_DECISION"
 
     for invalid in (replace(policy, expected_slots=("missing.slot",)),
                     replace(policy, expected_member_count=tp_size + 1)):

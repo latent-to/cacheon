@@ -574,13 +574,12 @@ def test_sglang_plugin_resolves_only_materialized_namespace_after_spawn(
     module = tree / ("cacheon_c_" + "a" * 64) / "kernels"
     module.mkdir(parents=True)
     trusted.mkdir()
-    target = trusted / "sglang/srt/layers"
+    target = trusted / "sglang/srt/model_executor"
     target.mkdir(parents=True)
     for package in (trusted / "sglang", trusted / "sglang/srt", target):
         (package / "__init__.py").write_text("")
-    (target / "activation.py").write_text("""class SiluAndMul:
-    def forward_cuda(self, *args): pass
-    def forward_native(self, *args): pass
+    (target / "model_runner.py").write_text("""class ModelRunner:
+    def load_model(self): pass
 """)
     (tree / "torch.py").write_text("origin = 'candidate'\n")
     (module / "kernel.py").write_text("loaded = True\n")
@@ -596,22 +595,22 @@ def child(send, bundle):
     import cacheon.integrations.sglang_plugin as plugin
     from cacheon import seam, seams
     seam._ENGINE_TREE = TREE
-    seams.SEAM_ADAPTERS = tuple(a for a in seams.SEAM_ADAPTERS if a.integration == 'sglang_silu')
+    seams.SEAM_ADAPTERS = tuple(a for a in seams.SEAM_ADAPTERS if a.integration == 'sglang_nodes')
     os.environ.update(CACHEON_ENGINE_WORKER='1', CACHEON_BUNDLE_PATH=bundle,
         CACHEON_ENGINE_TREE_DIGEST='1' * 64, CACHEON_STACK_DIGEST='2' * 64,
         CACHEON_ACTIVE='0')
     plugin.register()
-    importlib.import_module('sglang.srt.layers.activation')
-    from cacheon.integrations import sglang_silu
+    importlib.import_module('sglang.srt.model_executor.model_runner')
+    from cacheon.integrations import sglang_nodes
     found = importlib.util.find_spec(NAMESPACE)
     if bundle == TREE:
         import torch
         kernel = importlib.import_module(NAMESPACE + '.kernels.kernel')
         shadowed = os.path.realpath(torch.__file__) == os.path.join(TREE, 'torch.py')
         send.send((TREE in sys.path, shadowed, kernel.loaded, found is not None,
-            sglang_silu.is_installed()))
+            sglang_nodes.is_installed()))
     else:
-        send.send((found is None, sglang_silu.is_installed()))
+        send.send((found is None, sglang_nodes.is_installed()))
 if __name__ == '__main__':
     results = []
     for bundle in (TREE, '/raw/miner/bundle'):

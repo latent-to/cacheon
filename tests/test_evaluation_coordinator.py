@@ -149,7 +149,7 @@ def _store(tmp_path: Path) -> FinalizedIntakeStore:
     return FinalizedIntakeStore(_db_path(tmp_path), POLICY, scope=SCOPE)
 
 
-def _published_rows(tmp_path: Path, count: int):
+def _published_rows(tmp_path: Path, count: int, *, arenas=()):
     publications = []
     arrivals = []
     for index in range(count):
@@ -183,9 +183,7 @@ def _published_rows(tmp_path: Path, count: int):
             finalized_block_hash=_block_hash(BLOCK),
         )
         result = []
-        for index, (row, publication) in enumerate(
-            zip(reserved, publications, strict=True)
-        ):
+        for index, (row, publication) in enumerate(zip(reserved, publications, strict=True)):
             store.mark_fetching(row.reservation_id)
             result.append(
                 store.mark_published(
@@ -203,6 +201,7 @@ def _published_rows(tmp_path: Path, count: int):
                     ),
                     publication_digest=publication.digest,
                     publication_root=publication.root,
+                    competition_arena=arenas[index] if arenas else "",
                 )
             )
         return tuple(result)

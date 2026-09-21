@@ -72,17 +72,17 @@ def test_exit_flush_keeps_the_identity_the_execution_actually_had(
 
 def test_write_and_collect_roundtrip(receipt_dir):
     receipts.write("active", {"bundle": "b", "slots": ["s"]})
-    receipts.write("completed", {"slot": "collective.ar_residual_rmsnorm"},
-                   tag="collective.ar_residual_rmsnorm")
+    receipts.write("completed", {"slot": "collective.all_reduce"},
+                   tag="collective.all_reduce")
     active = receipts.collect(receipt_dir, "active")
     assert active[0]["bundle"] == "b" and active[0]["slots"] == ["s"]
     assert active[0]["pid"] == os.getpid()
     done = receipts.collect(receipt_dir, "completed")
-    assert done[0]["slot"] == "collective.ar_residual_rmsnorm"
+    assert done[0]["slot"] == "collective.all_reduce"
     assert {"pid", "rank", "world_size"} <= done[0].keys()
     # tag is sanitized into the filename; pid keeps concurrent ranks from colliding
     names = [p.name for p in receipt_dir.iterdir()]
-    assert any(n.startswith("completed.collective.ar_residual_rmsnorm") for n in names)
+    assert any(n.startswith("completed.collective.all_reduce") for n in names)
     assert all(str(os.getpid()) in n for n in names)
 
 

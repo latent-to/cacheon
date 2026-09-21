@@ -201,7 +201,7 @@ def test_selection_fail_closes_runtime_ambiguity_for_future_private_predicate():
     )
 
     assert decision.outcome is SelectionOutcome.AMBIGUOUS
-    assert decision.impl is None and not decision.use_candidate
+    assert decision.impl is None
 
 
 def test_selection_across_variants_writes_no_receipt(monkeypatch):

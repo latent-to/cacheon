@@ -27,7 +27,6 @@ def _env(**overrides):
         "receipt_dir": "/receipts",
         "audit_policy": None,
         "install_seams": True,
-        "gate_environment": {},
     }
     row.update(overrides)
     return build_session_environment(**row)
@@ -72,11 +71,8 @@ def test_a_stock_arm_carries_no_bundle_and_no_trace():
     assert env["CACHEON_KERNEL_TRACE"] == ""
 
 
-def test_seam_gate_environment_cannot_be_dropped_or_shadowed():
-    env = _env(gate_environment={"CACHEON_SEAM_GATE_X": "1"})
-
-    assert env["CACHEON_SEAM_GATE_X"] == "1"
-    assert env["SGLANG_PLUGINS"] == "cacheon"
+def test_the_plugin_is_named_only_when_seams_install():
+    assert _env()["SGLANG_PLUGINS"] == "cacheon"
     assert _env(install_seams=False)["SGLANG_PLUGINS"] == ""
 
 

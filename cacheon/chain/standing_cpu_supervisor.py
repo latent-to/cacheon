@@ -328,11 +328,20 @@ class StandingCpuSupervisor:
 
     def _run_stage(self, stage: str, callback: Callable[[], Any]) -> SupervisorStageResult | None:
         from cacheon.chain.remote_qualification_evidence import RemoteEvaluationReleased
+        from cacheon.chain.qualification_wait import QualificationWaitPending
 
         try:
             raw = callback()
         except StandingCpuSupervisorError:
             raise
+        except QualificationWaitPending as exc:
+            if stage != "qualification":
+                raise StandingCpuSupervisorError("qualification waiter surfaced in another stage") from exc
+            return SupervisorStageResult(
+                stage=stage, progressed=False, disposition="waiting",
+                request_id=exc.recovery.request_id, lease_id=exc.recovery.lease.lease_id,
+                phase=SupervisorPhase.QUALIFICATION,
+            )
         except RemoteEvaluationReleased as exc:
             # The dispatcher committed the lease release with its typed reason
             # (release-cap accounting included) before raising.  That is a

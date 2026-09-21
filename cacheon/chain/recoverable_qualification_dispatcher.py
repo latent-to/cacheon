@@ -6,7 +6,6 @@ A retained plan keeps its original carrier and authenticated request.
 from __future__ import annotations
 
 import os
-import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -30,7 +29,6 @@ from cacheon.chain.execution_disposition import (
     COMPLETED_NO_DECISION_HOLD_REASON,
     ExecutionDisposition,
     ExecutionOutcome,
-    resolve_infrastructure_result,
 )
 from cacheon.chain.baseline_segments import commission_boundary
 from cacheon.chain.intake import IntakeError
@@ -63,6 +61,7 @@ from cacheon.chain.remote_worker_request_plan import (
     QualificationRequestPlan,
 )
 from cacheon.chain.publication import reopen_worker_bundle
+from cacheon.chain.qualification_wait import await_response, _PreResidentRefusalObserved
 from cacheon.chain.qualification_request import qualification_request_body
 from cacheon.stack_identity import require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -196,17 +195,6 @@ class RecoverableQualificationRequeue:
             )
 
 
-class _PreResidentRefusalObserved(Exception):
-    """Internal control flow: an authenticated refusal permits one requeue."""
-
-    def __init__(
-        self, refusal: AuthenticatedPreResidentRefusal, outcome: ExecutionOutcome
-    ) -> None:
-        super().__init__(refusal.failure_code)
-        self.refusal = refusal
-        self.outcome = outcome
-
-
 class _RecoveryLeaseRenewalDenied(Exception):
     """Internal control flow: the retained recovery can no longer renew."""
 
@@ -220,54 +208,6 @@ class _RecoveryLeaseRenewalDenied(Exception):
 class _RecoveryClaim:
     recovery: EvaluationRecovery
     claim: ClaimedQualificationEvaluation | None
-
-
-class _RecoveryHeartbeat:
-    """Serially renew one recovery while the same published request is awaited."""
-
-    def __init__(
-        self,
-        dispatcher: "RecoverableQualificationDispatcher",
-        recovery: EvaluationRecovery,
-    ) -> None:
-        self._dispatcher = dispatcher
-        self._recovery = recovery
-        self._error: BaseException | None = None
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f"cacheon-recovery-heartbeat-{recovery.recovery_id[:12]}",
-            daemon=True,
-        )
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def _run(self) -> None:
-        interval = self._dispatcher.coordinator.heartbeat_interval_s
-        while not self._stop.wait(interval):
-            with self._lock:
-                recovery = self._recovery
-            try:
-                renewed = self._dispatcher._renew_if_due(recovery)
-            except BaseException as exc:
-                with self._lock:
-                    self._error = exc
-                return
-            with self._lock:
-                self._recovery = renewed
-
-    def stop(self) -> tuple[EvaluationRecovery, BaseException | None]:
-        self._stop.set()
-        self._thread.join(self._dispatcher.coordinator.heartbeat_join_timeout_s)
-        with self._lock:
-            recovery, error = self._recovery, self._error
-        if self._thread.is_alive() and error is None:
-            error = RecoverableQualificationDispatcherError(
-                "recovery heartbeat did not stop within its bounded join"
-            )
-        return recovery, error
 
 
 class RecoverableQualificationDispatcher:
@@ -782,57 +722,6 @@ class RecoverableQualificationDispatcher:
         finally:
             store.close()
 
-    def _await_response(
-        self,
-        recovery: EvaluationRecovery,
-        plan: QualificationRequestPlan,
-    ) -> tuple[EvaluationRecovery, AuthenticatedRemoteEvaluationResponse]:
-        observed = self.transport.inspect_planned_qualification(plan)
-        if observed.state == "result_ready":
-            outcome = resolve_infrastructure_result(
-                observed.failure_code, observed.refusal, request_id=plan.request_id
-            )
-            if (
-                outcome.disposition is ExecutionDisposition.REQUEUE
-                and recovery.phase is RecoveryPhase.REQUEST_READY
-            ):
-                assert observed.refusal is not None
-                raise _PreResidentRefusalObserved(observed.refusal, outcome)
-            # September 2026: absent completion is not proof that paid work never ran.
-            raise QualificationRecoveryHold(
-                "worker_infrastructure_result",
-                plan.request_id,
-                observed.failure_code or "worker returned no completed response",
-            )
-        if observed.state not in {"request_ready", "completed_response"}:
-            raise QualificationRecoveryHold(
-                "published_request_missing",
-                plan.request_id,
-                "durable recovery says published but spool does not",
-            )
-        heartbeat = _RecoveryHeartbeat(self, recovery)
-        heartbeat.start()
-        try:
-            response = self.transport.resume_planned_qualification(plan)
-        except Exception as exc:
-            latest, heartbeat_error = heartbeat.stop()
-            if isinstance(exc, QualificationRecoveryHold):
-                raise
-            cause = heartbeat_error or exc
-            raise RecoverableQualificationDispatcherError(
-                "same-request qualification result is not ready"
-            ) from cause
-        latest, heartbeat_error = heartbeat.stop()
-        if type(response) is not AuthenticatedRemoteEvaluationResponse:
-            raise RecoverableQualificationDispatcherError(
-                "same-request resume returned another response type"
-            )
-        if heartbeat_error is not None:
-            # The authenticated local result is durable. Continue from it; a
-            # later CAS failure leaves RESULT_READY/SAME_REQUEST recoverable.
-            latest = self._renew_if_due(latest)
-        return latest, response
-
     def _product(
         self,
         plan: QualificationRequestPlan,
@@ -997,14 +886,14 @@ class RecoverableQualificationDispatcher:
                     recovery = self._observe_request_ready(recovery)
                     continue
                 if recovery.phase is RecoveryPhase.REQUEST_READY:
-                    recovery, response = self._await_response(recovery, plan)
+                    recovery, response = await_response(self, recovery, plan)
                     product = self._product(plan, response)
                     recovery = self._record_result(recovery)
                 elif recovery.phase in {
                     RecoveryPhase.RESULT_READY,
                     RecoveryPhase.EVIDENCE_IMPORTED,
                 }:
-                    _latest, response = self._await_response(recovery, plan)
+                    _latest, response = await_response(self, recovery, plan)
                     product = self._product(plan, response)
                 else:
                     raise RecoverableQualificationDispatcherError(

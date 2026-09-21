@@ -314,7 +314,7 @@ def _validate_static_candidate(
         or inspected.target_spec_digest
         != catalog.target_spec_digest(reservation.target_id)
         or inspected.selected_delta_digest != reservation.selected_delta_digest
-        or target.members != reservation.target_members
+        or not catalog.admits(target, reservation.target_members)
     ):
         raise _CandidateStaticFailure(
             "candidate static identity differs from finalized reservation"
@@ -348,7 +348,7 @@ class B300StaticScreenAdapter:
         try:
             for slot, _quant in requirements:
                 catalog.require(slot)
-        except TargetCatalogError as exc:
+        except TargetResolutionError as exc:  # what require() raises; the sibling class never fired
             raise B300ScreenStagesError(
                 "static screen quant policy names an unknown target"
             ) from exc
@@ -385,7 +385,7 @@ class B300StaticScreenAdapter:
                 eligibility = eligibility_from_metadata(
                     value, operation.dtypes, operation.architectures
                 )
-                accepts = accepts or required_quant in eligibility.quant
+                accepts = accepts or required_quant in (eligibility.quant or {"dense"})  # empty = dense
             if not accepts:
                 return slot, required_quant
         return None

@@ -1,11 +1,7 @@
-"""Bounded, non-executable wire protocol for one isolated engine session.
+"""Bounded JSON control and binary token evidence for isolated engine sessions.
 
-The host controller and the in-container worker exchange strict JSON control
-frames and fixed-width binary token evidence.  The protocol carries no Python
-objects, worker timing, verdict, score, hidden quality input, or model-generated
-text.  The module remains independent of evaluator and chain packages so
-importing it cannot pull candidate or inference-runtime code into the trusted
-controller.
+No Python objects, worker timing, verdicts, hidden quality inputs or generated
+text cross this protocol. Imports cannot execute candidate or inference code.
 """
 
 from __future__ import annotations
@@ -24,9 +20,8 @@ from cacheon.eval.resident_execution_evidence import (
     UNOBSERVED,
     ResidentExecutionEvidence,
 )
-from cacheon.seams import normalize_seam_bindings
 from cacheon.stack_identity import canonical_digest
-from cacheon._strict import require_digest
+from cacheon._strict import NODE_ADDRESS, require_digest
 
 
 SESSION_SCHEMA = "cacheon-isolated-engine-session-v1"
@@ -55,19 +50,20 @@ _HEX_128 = re.compile(r"[0-9a-f]{32}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 
-# A reviewed extension of this table is required before a new runtime option
-# can cross the hostile boundary.  Arbitrary ``sglang.Engine`` kwargs are not a
-# protocol feature.
+# Only reviewed runtime options cross this boundary; arbitrary Engine kwargs do not.
 _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     "chunked_prefill_size": "positive_int",
     "context_length": "positive_int",
     "cuda_graph_backend_prefill": "token",
     "cuda_graph_bs": "int_list",
+    "cuda_graph_bs_decode": "int_list",
     "disable_radix_cache": "bool",
     "dp_size": "positive_int",
     "enable_dp_attention": "bool",
     "enable_flashinfer_allreduce_fusion": "bool",
     "kv_cache_dtype": "token",
+    "max_mamba_cache_size": "positive_int",
+    "mamba_ssm_dtype": "token",
     "max_prefill_tokens": "positive_int",
     "page_size": "positive_int",
     "quantization": "token",
@@ -80,7 +76,7 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
 ENGINE_CONFIG_FIELDS = frozenset("""
 attention_backend deterministic disable_cuda_graph disable_custom_all_reduce dtype
 engine_kwargs log_level max_running_requests mem_fraction_static model_path
-moe_runner_backend seam_bindings tp_size
+moe_runner_backend tp_size
 """.split())
 
 PREFLIGHT_FACT_FIELDS = frozenset("""
@@ -130,10 +126,10 @@ class SlotAuditControl:
             not slots
             or len(slots) > MAX_AUDIT_RECEIPTS
             or slots != tuple(sorted(set(slots)))
-            or any(_TOKEN.fullmatch(slot) is None for slot in slots)
+            or any(NODE_ADDRESS.fullmatch(slot) is None for slot in slots)  # never widen _TOKEN
         ):
             raise SessionProtocolError(
-                "audit expected_slots must be a nonempty sorted unique token array"
+                "audit expected_slots must be a nonempty sorted unique slot array"
             )
         object.__setattr__(self, "expected_slots", slots)
         object.__setattr__(
@@ -267,7 +263,7 @@ class AuditReceiptFacts:
     world_size: int
 
     def __post_init__(self) -> None:
-        if not isinstance(self.slot, str) or _TOKEN.fullmatch(self.slot) is None:
+        if not isinstance(self.slot, str) or NODE_ADDRESS.fullmatch(self.slot) is None:
             raise SessionProtocolError("audit receipt slot is invalid")
         for name in ("n", "violations", "baseline_refused", "compare_errors"):
             object.__setattr__(
@@ -282,16 +278,9 @@ class AuditReceiptFacts:
             )
         if self.violations > self.n:
             raise SessionProtocolError("audit violations exceed compared calls")
-        object.__setattr__(
-            self,
-            "worst_frac",
-            _bounded_float(
-                self.worst_frac,
-                field_name="audit receipt worst_frac",
-                minimum=-1.0,
-                maximum=1.0,
-            ),
-        )
+        object.__setattr__(self, "worst_frac", _bounded_float(
+            self.worst_frac, field_name="audit receipt worst_frac", minimum=-1.0, maximum=1.0,
+        ))
         if self.min_ratio is not None:
             object.__setattr__(
                 self,
@@ -472,7 +461,6 @@ class EngineSessionConfig:
     moe_runner_backend: str | None
     disable_custom_all_reduce: bool
     engine_kwargs: Mapping[str, object] = field(default_factory=dict)
-    seam_bindings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.model_path != CONTAINER_MODEL_PATH:
@@ -513,16 +501,10 @@ class EngineSessionConfig:
         set_value(self, "engine_kwargs", MappingProxyType(
             _validate_engine_kwargs(self.engine_kwargs)
         ))
-        try:
-            bindings = normalize_seam_bindings(self.seam_bindings)
-        except ValueError as exc:
-            raise SessionProtocolError(str(exc)) from exc
-        set_value(self, "seam_bindings", bindings)
 
     def to_dict(self) -> dict[str, object]:
         row = {name: getattr(self, name) for name in ENGINE_CONFIG_FIELDS}
         row["engine_kwargs"] = dict(self.engine_kwargs)
-        row["seam_bindings"] = list(self.seam_bindings)
         return row
 
     @property
@@ -536,12 +518,7 @@ class EngineSessionConfig:
     @classmethod
     def from_dict(cls, value: object) -> "EngineSessionConfig":
         row = _exact_object(value, fields=ENGINE_CONFIG_FIELDS, label="engine_config")
-        values = dict(row)
-        bindings = values.get("seam_bindings")
-        if not isinstance(bindings, list):
-            raise SessionProtocolError("engine_config.seam_bindings must be an array")
-        values["seam_bindings"] = tuple(bindings)
-        return cls(**values)  # type: ignore[arg-type]
+        return cls(**dict(row))  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)

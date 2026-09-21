@@ -241,11 +241,8 @@ def test_candidate_first_replay_exception_is_typed_at_zero_completed_replays():
     assert outcome.failure_is_candidate_attributable
 
 
-@pytest.mark.parametrize(
-    "slot_name", ("moe.fused_experts", "moe.fused_experts_reduce")
-)
-def test_moe_topk_one_generators_emit_raw_varying_weights(slot_name):
-    slot = get_slot(slot_name)
+def test_moe_topk_one_generators_emit_raw_varying_weights():
+    slot = get_slot("moe.fused_experts")
     shape = {
         "num_tokens": 4,
         "num_experts": 3,

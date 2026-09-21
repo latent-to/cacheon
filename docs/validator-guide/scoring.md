@@ -119,8 +119,7 @@ A candidate can pass only when all required products agree:
 
 | Product | Failure meaning |
 |---|---|
-| Execution evidence | Wrong/missing role, launch, device, protocol, or completion; current source requires complete per-rank execution evidence before grading |
-| Graph evidence | Missing target member/variant/shape coverage or capture/replay failure |
+| Execution evidence | Wrong/missing role, launch, device, protocol, or completion; current source requires complete per-rank execution evidence before grading, and on a graphs-on run a completion counts only when the dispatcher recorded the candidate inside a CUDA-graph capture |
 | Speed evidence | Below the calibrated bar, or missing/unfit evidence that prevents a valid decision |
 | Audit-only evidence | Missing slot × rank/PID coverage, retained violation, or protocol error |
 | Pristine quality evidence | Regression against frozen metric envelopes or hidden work |

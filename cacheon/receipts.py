@@ -491,10 +491,8 @@ def is_invoking() -> bool:
 
 
 def invoke(
-    slot: str,
-    entry: Callable[..., object],
-    *args: object,
-    phase: str = "entry",
+    slot: str, entry: Callable[..., object], *args: object,
+    phase: str = "entry", kwargs: dict | None = None,
 ) -> object:
     """Run the selected implementation; a raise is receipted before it propagates.
 
@@ -505,7 +503,7 @@ def invoke(
 
     token = _INVOKING.set(True)
     try:
-        return entry(*args)
+        return entry(*args, **(kwargs or {}))
     except BaseException as exc:
         failed(slot, exc, phase=phase, entry=entry)
         raise

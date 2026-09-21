@@ -18,7 +18,6 @@ from cacheon.eval.qualification_runner import (
     _retained_reason,
 )
 
-_PASSING_GRAPH = SimpleNamespace(decision=QualificationDecision.PASS, reason=None)
 _PASSING_AUDIT = SimpleNamespace(decision=QualificationDecision.PASS)
 
 
@@ -26,7 +25,6 @@ def test_report_carries_the_graded_band_reason() -> None:
     for reason in ("speed_threshold_not_met", "candidate_slower"):
         assert (
             _report_reason(
-                _PASSING_GRAPH,
                 QualificationDecision.FAIL,
                 None,
                 _PASSING_AUDIT,
@@ -42,7 +40,6 @@ def test_report_refuses_a_speed_fail_without_its_graded_reason() -> None:
     for reason in (None, "speed_regression", "made_up"):
         with pytest.raises(QualificationRunnerError, match="graded reason"):
             _report_reason(
-                _PASSING_GRAPH,
                 QualificationDecision.FAIL,
                 None,
                 _PASSING_AUDIT,

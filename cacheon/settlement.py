@@ -18,6 +18,7 @@ from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.stack_plan import StackArmIdentity
+from cacheon._strict import NODE_ADDRESS, members_overlap
 from cacheon._strict import require_digest, require_identifier, require_int
 
 
@@ -55,8 +56,8 @@ def _digest(value: object, field: str, *, optional: bool = False) -> str:
     return require_digest(value, field=field, error=SettlementError, optional=optional)
 
 
-def _identifier(value: object, field: str) -> str:
-    return require_identifier(value, field=field, error=SettlementError, pattern=_ID)
+def _identifier(value: object, field: str, pattern: re.Pattern[str] = _ID) -> str:
+    return require_identifier(value, field=field, error=SettlementError, pattern=pattern)
 
 
 def _integer(value: object, field: str) -> int:
@@ -102,9 +103,7 @@ class TargetLineageNode:
                 optional=True,
             ),
         )
-        object.__setattr__(
-            self, "winner_speedup", _speedup(self.winner_speedup)
-        )
+        object.__setattr__(self, "winner_speedup", _speedup(self.winner_speedup))
         object.__setattr__(
             self,
             "transition_event_id",
@@ -371,10 +370,11 @@ class SettlementQualification:
         for field in ("hotkey", "target_id"):
             object.__setattr__(self, field, _identifier(getattr(self, field), field))
         members = tuple(self.members)
+        # Slot ids or node addresses: ``_ID`` refused the ``*`` of ``model.layers.*.mlp``.
         if (
             not members
             or members != tuple(sorted(set(members)))
-            or any(_identifier(row, "member") != row for row in members)
+            or any(_identifier(row, "member", NODE_ADDRESS) != row for row in members)
         ):
             raise SettlementError("settlement members are not canonical")
         object.__setattr__(self, "members", members)
@@ -1014,7 +1014,7 @@ def plan_settlement(
     ):
         reason = (
             "conflict_lost"
-            if set(row.members) & set(winner.members)
+            if members_overlap(row.members, winner.members)
             else "incumbent_advanced"
         )
         journal.add(

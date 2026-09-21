@@ -110,6 +110,8 @@ class PodPaths:
 
 
 def verify_ready_receipt(row: object) -> dict[str, Any]:
+    from cacheon.eval.b300_arena_definition import B300ScreenDeploymentError, ready_lanes
+
     if type(row) is dict and row.get("schema") == "cacheon-current-pod-commission-v1":
         fields = frozenset(
             {
@@ -145,15 +147,8 @@ def verify_ready_receipt(row: object) -> dict[str, Any]:
         if (
             type(gpu) is not dict
             or set(gpu) != {"count", "inventory", "inventory_sha256", "topology_sha256"}
-            or gpu["count"] != 8
-            or type(gpu["inventory"]) is not list
-            or len(gpu["inventory"]) != 8
-            or any(
-                type(item) is not dict or "B300" not in str(item.get("name", ""))
-                for item in gpu["inventory"]
-            )
         ):
-            fail("current-pod commission GPU identity is not 8xB300")
+            fail("current-pod commission GPU inventory fields are not closed")
         for section, expected in (
             ("source", {"path", "revision", "tree_digest"}),
             ("runtime", {"path", "tree_digest"}),
@@ -172,6 +167,8 @@ def verify_ready_receipt(row: object) -> dict[str, Any]:
             ("python", {"executable_sha256", "path", "resolved_path", "version"}),
             ("lane", {"devices", "lane_digest", "tensor_parallel_size"}),
         ):
+            if section == "lane" and type(value[section]) is dict and "baseline_devices" in value[section]:
+                expected = expected | {"baseline_devices"}
             if type(value[section]) is not dict or set(value[section]) != expected:
                 fail(f"current-pod commission {section} fields are not closed")
         for digest in (
@@ -195,21 +192,10 @@ def verify_ready_receipt(row: object) -> dict[str, Any]:
             or not value["python"]["version"].startswith("Python 3.")
         ):
             fail("commissioned Python identity is malformed")
-        lane_devices = value["lane"]["devices"]
-        tp = require_int(
-            value["lane"]["tensor_parallel_size"],
-            "commissioned tensor parallel size",
-            minimum=1,
-            maximum=8,
-        )
-        if (
-            type(lane_devices) is not list
-            or len(lane_devices) != tp
-            or any(type(device) is not int for device in lane_devices)
-            or lane_devices != sorted(set(lane_devices))
-            or any(device < 0 or device >= 8 for device in lane_devices)
-        ):
-            fail("commissioned lane devices are malformed")
+        try:
+            ready_lanes(value)
+        except B300ScreenDeploymentError as exc:
+            fail(str(exc))
         return value
     fields = frozenset(
         {
@@ -347,7 +333,7 @@ def verify_registration(row: object) -> dict[str, Any]:
         or len(lane_devices) != readiness["gpu_count"]
         or readiness["tensor_parallel_size"] != len(lane_devices)
         or any(
-            type(device) is not int or device < 0 or device >= 8
+            type(device) is not int or not 0 <= device <= 65_535
             for device in lane_devices
         )
     ):

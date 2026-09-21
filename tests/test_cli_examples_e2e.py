@@ -35,7 +35,7 @@ _CUDA = torch.cuda.is_available()
 _CUDA2 = _CUDA and torch.cuda.device_count() >= 2
 
 # Pure-torch bundles verify on every device; triton bundles need a CUDA box.
-_CUDA_PASS_BUNDLES = ("miner_silu_torch", "miner_silu_triton", "miner_rmsnorm_triton")
+_CUDA_PASS_BUNDLES = ("miner_silu_torch", "miner_rmsnorm_triton")
 _CUDA_FAIL_BUNDLES = ("miner_silu_broken_torch", "miner_rmsnorm_broken")
 
 

@@ -49,6 +49,7 @@ from cacheon.eval.resident_queue import (
 )
 from cacheon.manifest import Manifest, load_manifest
 from cacheon.stack_identity import canonical_digest
+from cacheon.target_catalog import SINGLETON_TARGET_IDS
 
 
 SERVING_SCREEN_STAGE = "abbreviated_serving"
@@ -148,6 +149,10 @@ def screen_swappability(manifest: Manifest) -> str | None:
     if any(op.setup is not None for op in manifest.ops):
         # Registry.clear() cannot reverse arbitrary engine-wide mutations.
         return "engine-setup bundles are not swappable in the screen tier"
+    if any(op.slot not in SINGLETON_TARGET_IDS for op in manifest.ops):
+        # Nodes bind once, inside ModelRunner.load_model. A swap never re-runs it, so
+        # the lane would time stock against stock under the bundle's name.
+        return "node-address bundles are not swappable in the screen tier"
     return None
 
 

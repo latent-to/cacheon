@@ -35,7 +35,6 @@ from cacheon.arena_service import (
 )
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.b300_qualification_lanes import (
-    B300_GPU_COUNT,
     QUALIFICATION_LANE_PAIR_SCHEMA,
     QUALIFICATION_LANE_SCHEMA,
     QUALIFICATION_ROLE_SWAP_SCHEMA,
@@ -46,9 +45,6 @@ from cacheon.eval.b300_qualification_lanes import (
     _digest,
 )
 from cacheon.eval.oci_backend import OCIBackendConfig, OCIEngineExecutor
-from cacheon.eval.b300_qualification_graph_store_io import (
-    B300QualificationGraphEvidenceHold,
-)
 from cacheon.eval.qualification_intake import QualificationPlanFactory
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_screen_lane import (
@@ -60,8 +56,6 @@ from cacheon.stack_identity import canonical_digest
 
 PROVIDER_SCHEMA = "cacheon.eval.b300-arena-provider.v2"
 SCREEN_EXCEPTION_SCHEMA = "cacheon.eval.b300-screen-exception.v1"
-B300_ARCHITECTURE = "sm103"
-B300_TENSOR_PARALLEL_SIZE = 4
 _NON_SERVING_STAGES = SCREEN_STAGES[:-1]
 _SERVING_STAGE = SCREEN_STAGES[-1]
 
@@ -240,7 +234,6 @@ def _validate_screen_authorities(
 ) -> tuple[B300ScreenStageHandler, ...]:
     if type(runtime_identity) is not ArenaRuntimeIdentity:
         raise B300ArenaProviderError("runtime identity is not exact")
-    _validate_b300_runtime(runtime_identity)
     handlers = tuple(screen_handlers)
     if (
         type(screen_handlers) is not tuple
@@ -283,6 +276,7 @@ class B300ScreenDeploymentAuthorities:
             raise B300ArenaProviderError(
                 "declared qualification authority is not exact"
             )
+        self.qualification.lane_pair.validate_runtime(self.runtime_identity)
 
     @property
     def qualification_policy_digest(self) -> str:
@@ -333,6 +327,7 @@ class B300DeploymentAuthorities:
             raise B300ArenaProviderError("qualification factory builder is not callable")
         if type(self.qualification_lane_pair) is not B300QualificationLanePair:
             raise B300ArenaProviderError("qualification lane pair is not exact")
+        self.qualification_lane_pair.validate_runtime(self.runtime_identity)
         orientation = self.qualification_lane_pair.orientation(
             self.qualification_stage
         )
@@ -345,17 +340,6 @@ class B300DeploymentAuthorities:
             raise B300ArenaProviderError("qualification executors are not exact and distinct")
         _executor_identity(self.executor, role="candidate")
         _executor_identity(self.resident_baseline_executor, role="resident_baseline")
-        for role, executor in (
-            ("candidate", self.executor),
-            ("resident baseline", self.resident_baseline_executor),
-        ):
-            gpus = executor.device_policy.expected_gpus
-            if len(gpus) != B300_GPU_COUNT or any(
-                "B300" not in gpu.name.upper() for gpu in gpus
-            ):
-                raise B300ArenaProviderError(
-                    f"{role} executor does not bind exactly four B300 devices"
-                )
         _validate_executor_lane(
             self.executor,
             orientation.candidate,
@@ -406,17 +390,6 @@ class B300DeploymentAuthorities:
     @property
     def qualification_orientation(self) -> B300QualificationLaneOrientation:
         return self.qualification_lane_pair.orientation(self.qualification_stage)
-
-
-def _validate_b300_runtime(runtime: ArenaRuntimeIdentity) -> None:
-    if (
-        runtime.target_architecture != B300_ARCHITECTURE
-        or runtime.gpu_count != B300_GPU_COUNT
-        or runtime.tensor_parallel_size != B300_TENSOR_PARALLEL_SIZE
-    ):
-        raise B300ArenaProviderError(
-            "runtime must be an exact sm103, four-GPU, TP4 authority"
-        )
 
 
 def _native_limits_payload(config: OCIBackendConfig) -> dict[str, int]:
@@ -532,9 +505,9 @@ def b300_arena_provider_digest(authorities: _AuthorityBundle) -> str:
         PROVIDER_SCHEMA,
         {
             "implementation": {
-                "architecture": B300_ARCHITECTURE,
-                "gpu_count": B300_GPU_COUNT,
-                "tensor_parallel_size": B300_TENSOR_PARALLEL_SIZE,
+                "architecture": authorities.runtime_identity.target_architecture,
+                "gpu_count": authorities.runtime_identity.gpu_count,
+                "tensor_parallel_size": authorities.runtime_identity.tensor_parallel_size,
             },
             "qualification": {
                 "builder_digest": qualification.qualification_builder_digest,
@@ -724,8 +697,6 @@ class B300ArenaServiceProvider:
             self.retire_resident_screen()
             try:
                 factory = capabilities.qualification_factory_builder(request, state)
-            except B300QualificationGraphEvidenceHold:
-                raise
             except Exception as exc:
                 raise B300ArenaProviderError(
                     "qualification factory construction failed"

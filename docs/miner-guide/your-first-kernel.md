@@ -1,218 +1,132 @@
 # Your first component bundle
 
-This walkthrough builds a registered singleton proposal and runs the cheap
-developer diagnostics. It needs no GPU. The result is a valid learning bundle,
-not evidence of a competitive win.
+Start with a node control, then replace its implementation. The CPU command
+checks packaging and callable interfaces. The engine command uses the real
+model, binder and audit in the published arena image.
 
 ## 1. Install a development checkout
 
 ```bash
-git clone https://github.com/latent-to/cacheon.git
-cd cacheon
-python -m pip install -e '.[cpu,dev]'
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[cpu,dev]"
 ```
 
-On a GPU host, install the Torch build matched to the arena's pinned
-CUDA/SGLang environment first, then install Cacheon without replacing it. The
-[GPU setup guide](../dev/gpu-setup.md) explains the current development
-boundary. The operator's frozen arena image and runtime identities are the
-source of truth for an authoritative environment.
-
-Use `python -m cacheon.cli` in commands below. It is explicit about the active
-checkout and behaves correctly when engine diagnostics spawn worker processes.
+For GPU checks use the arena's published image and local model. Keep its CUDA,
+SGLang and kernel-library versions; a different installation tests a different
+environment. Run candidate code only in the disposable development container.
 
 ## 2. Copy the CPU example
 
 ```bash
-cp -R examples/miner_silu_torch my_silu
+cp -R examples/miner_node_identity my_bundle
 ```
 
-The committed
-[example bundle](https://github.com/latent-to/cacheon/tree/main/examples/miner_silu_torch)
-contains a source implementation that fills the supplied output:
+The [identity control](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_identity)
+claims `model.layers.*.mlp` and returns the original module's answer:
 
 ```python
-def silu_and_mul(x, out):
-    d = x.shape[-1] // 2
-    result = torch.nn.functional.silu(x[..., :d].float()).to(x.dtype)
-    out.copy_(result * x[..., d:])
+def forward(module, *args, **kwargs):
+    return module.forward(*args, **kwargs)
 ```
 
-Replace `my_silu/manifest.toml` with an explicitly targeted manifest:
-
-```toml
-bundle_id = "my-silu-v1"
-abi_version = "cacheon-op-abi-v0"
-
-[competition]
-target = "activation.silu_and_mul"
-mode = "slot"
-
-[[ops]]
-slot = "activation.silu_and_mul"
-source = "kernels/silu_and_mul.py"
-entry = "silu_and_mul"
-dtypes = ["float32", "bfloat16", "float16"]
-metadata = "metadata/silu_and_mul.json"
-```
-
-The `[competition]` table asks for the registered singleton target. The op row
-supplies its implementation. Those are separate identities even though both
-currently use the string `activation.silu_and_mul`.
+Choose an address supported by your model and arena. Change `bundle_id` and set
+`competition.arena` to the published arena ID before submission. The optional
+`prepare(module)` returns state passed as the entry's first argument.
 
 ## 3. Scan the source tree
 
 ```bash
-python -m cacheon.cli scan my_silu
+python -m cacheon.cli scan my_bundle
 ```
 
-`scan` checks manifest/path structure and performs the development static-policy
-scan. Fix every reported item. A clean scan does not make code safe or
-crownable; production still fetches, republishes, builds, and runs the proposal
-inside validator-owned isolation.
-
-`scan` also reports broken Triton kernels, marked `[BROKEN KERNEL]`, and exits
-non-zero. **Run it before every submission.**
-
-Triton is a JIT and compiles *per kernel, on that kernel's first invocation*. A
-report means the kernel raises at trace time **if it is ever invoked**. If it is
-never reached it is latent dead code and your bundle still evaluates — so this
-is a warning about your kernel, not a prediction that your bundle fails. Fix it
-regardless: a kernel that crashes the moment a shape reaches it is a defect
-waiting for the workload that triggers it.
-
-The most common instance is calling a host-side Triton helper from inside a
-`@triton.jit` body:
-
-```python
-@triton.jit
-def _kernel(out_ptr, D: tl.constexpr):
-    col_offsets = tl.arange(0, triton.next_power_of_2(D))   # fails to compile
-```
-
-At trace time `D` is a `tl.constexpr` wrapper object, not a Python `int`, so the
-host-side helper raises and compilation aborts. There is no in-language
-replacement to swap to — `triton.language` does not export `next_power_of_2`.
-Compute the value at the launch site and pass it in as its own `tl.constexpr`
-parameter:
-
-```python
-@triton.jit
-def _kernel(out_ptr, D: tl.constexpr, BLOCK_D: tl.constexpr):
-    col_offsets = tl.arange(0, BLOCK_D)
-    mask = col_offsets < D
-
-BLOCK_D = triton.next_power_of_2(D)          # host, at the launch site
-_kernel[grid](out, D=D, BLOCK_D=BLOCK_D)
-```
-
-`tl.arange` requires a compile-time power-of-two bound in any case, so passing it
-as a `constexpr` argument is the required shape rather than a workaround.
+Scanning covers declared sources and the rest of the bundle. Remove generated
+artifacts from the submission directory. Writable compiler caches and ordinary
+JIT work remain available inside the development container.
 
 ## 4. Verify the callable contract
 
 ```bash
-python -m cacheon.cli verify my_silu --device cpu --dtype float32
+python -m cacheon.cli verify my_bundle
 ```
 
-This diagnostic constructs validator-owned inputs and poisoned outputs, invokes
-the bundle over the slot's profiles, detects input mutation and incomplete
-writes, and compares the result with the trusted reference. The applicable
-shape rows should be `ok`. Because the example declares graph-safe operation,
-the CPU headline is `NUMERICAL_PASS ... graph=NOT_VERIFIED`, not a CUDA graph
-pass.
-
-A CPU pass proves only the local numerical ABI. It does not prove:
-
-- CUDA compilation or architecture eligibility;
-- CUDA-graph capture and replay;
-- performance in the incumbent engine stack;
-- serving quality on the arena workload;
-- authoritative qualification or a crown.
-
-For an intentional failure, run the committed wrong implementation:
-
-```bash
-python -m cacheon.cli verify \
-  examples/miner_silu_broken_torch --device cpu --dtype float32
-```
-
-That bundle computes different math. It should exit nonzero with failed shape
-results. Use it to confirm that your environment is exercising the gate you
-think it is.
+For node bundles this scans and imports the entries in a fresh child, resolving
+local helpers from the bundle root. It checks that entry accepts its first
+positional argument and optional prepare accepts one module. It does not run
+arbitrary preparation or forward calls without a model. `INTERFACE OK` establishes
+no numerical correctness. CUDA dependencies need the published image for this
+smoke test too.
 
 ## 5. Add a real specialization
 
-Once you replace the Torch body with a Triton, CUDA, or other target-approved
-implementation, declare only the domain you actually support. For example:
-
-```toml
-[[ops]]
-slot = "activation.silu_and_mul"
-variant = "sm90-bf16"
-source = "kernels/silu_sm90.py"
-entry = "silu_and_mul"
-dtypes = ["bfloat16"]
-architectures = ["sm90"]
-metadata = "metadata/silu_sm90.json"
-```
-
-```json
-{
-  "capabilities": {
-    "num_tokens": {"min": 1, "max": 4096}
-  }
-}
-```
-
-An architecture mismatch is N/A, not a pass. A capability domain matching none
-of the verifier's applicable shapes also fails verification. If you add a
-second variant, give every row a unique `variant` and make the domains provably
-disjoint; there is no manifest-order priority.
+Implement the computation inside the selected stock method interface. Keep its
+arguments, return structure and state effects. Do not modify the scheduler or
+engine configuration. See [Kernel ABI](kernel-abi.md) and
+[Finding a win](finding-a-win.md).
 
 ## 6. Move to the matching GPU environment
 
-First rerun ABI verification on the real dtype and architecture:
+Inside the published image, mount the model and public arena inputs read-only,
+with writable cache and result directories. Expose the full arena GPU topology.
+The [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
+provide a bounded eight-request batch for its published B300 configuration.
+The [Qwen3.6-35B-A3B inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/qwen36)
+provide a short and a long-context set, the H100 image recipe and the
+`[competition]` lines for arena `qwen36-35b-h100-bf16-tp1`.
+Use the input set for your arena; its model and topology must match. Then run:
 
 ```bash
-python -m cacheon.cli verify my_silu --device cuda --dtype bfloat16
+python -m cacheon.cli check /bundles/my_bundle \
+  --model /model \
+  --engine-config /arena/engine-config.json \
+  --requests /arena/development-requests.json \
+  --output /work/check-001
 ```
 
-For a collective target, use the arena's topology:
+`engine-config.json` is the published SGLang option object. The model path comes
+from `--model`; a conflicting `model_path` fails. Each item in the requests file
+is a keyword-argument object for `Engine.generate`, for example:
 
-```bash
-python -m cacheon.cli verify my_collective \
-  --device cuda --dtype bfloat16 --world-size 4 --tp-size 4
+```json
+[
+  {
+    "prompt": ["Explain why this loop terminates: for i in range(5): print(i)"],
+    "sampling_params": {"temperature": 0, "max_new_tokens": 32, "ignore_eos": true}
+  }
+]
 ```
 
-Then follow the canonical
-[performance-development procedure](../validator-guide/running-evals.md#performance-development)
-in an environment matching the published arena contract. No repository command
-materializes the incumbent/candidate engines for this local experiment. Bracket the
-candidate with identical incumbent runs:
+That short example explains the file format. Use the arena's real development
+batches, lengths and widths for meaningful coverage; a short prompt is likely
+to return `NO_DECISION`. Tokenized batches can use `input_ids` instead of `prompt`.
 
-```text
-B  -> C -> B′
-speedup = candidate_rate / mean(baseline_before_rate, baseline_after_rate)
-```
+The command starts an eager audit engine first. Only after its receipts pass
+coverage and numerical checks does it start a fresh graphs-on engine. It uses
+the existing scheduler loader, node adapter and receipt gates. It changes graph
+mode for the untimed audit role, not the published graph-pass configuration.
+It does not generate a stock/candidate speed comparison or hidden-quality score.
 
-Keep the arena's CUDA-graph state, topology, model, dtype, workload, and charged-work
-definition fixed. Reject a result when B/B′ drift is comparable to the claimed gain.
-For a long-prefill target, make the workload genuinely prefill-heavy; repeated prompts
-with a live radix cache can silently turn later iterations into decode/cache-hit work.
+The table contains one row per claimed node address and rank. A wildcard row
+aggregates its bound modules, as the production receipt does. Audit windows,
+violations, worst passing fraction and captured execution are shown; per-bound
+module introspection belongs to the arena's supported-node information.
 
-This local bracket is a performance hypothesis, not crown authority. The validator binds
-the two-process B/C/B′ schedule (v10, or v11 for a mixed-cell workload),
-registered eager audit A, then pristine T, together with resources, graph
-evidence, hidden inputs, and calibrated policies, and requires a separately
-bound reproduction.
+The output directory must be new and outside the bundle. It retains inputs,
+`audit/engine.log`, `graph/engine.log`, stage results and the original receipt
+files, including failures. A failed audit stops before the graph launch.
+Default limits are 1,800 seconds per engine and four audit windows per
+address/rank. Set `--timeout-seconds` and `--minimum-audit-windows` to the arena's
+published development limits, not to values chosen after seeing a result.
+
+Exit 0 means the development audit and capture checks passed, 2 means a failure
+or execution error, and 3 means insufficient/incomplete audit evidence. The
+[wrong control](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_wrong)
+has a valid interface but scales tensor-valued MLP outputs by 1.5 and should fail
+the engine audit.
 
 ## 7. Decide whether the target is worth pursuing
 
-A correct kernel is the starting line. Profile the full incumbent engine and
-ask whether this exact slot has enough wall-time share for your measured kernel
-gain to matter. Then compare the complete candidate delta against the current
-incumbent stack, not against a convenient stock or standalone baseline.
-
-Continue with [Finding a win](finding-a-win.md), [Graph evidence](graph-safety.md),
-and [Submitting](submitting.md).
+A development check is not full-model quality, a speed win, qualification or
+settlement. Measure the complete serving workload against the incumbent, then
+follow [Submitting a bundle](submitting.md). Returning correct answers with no
+speed improvement is a successful diagnostic, not a competitive contribution.

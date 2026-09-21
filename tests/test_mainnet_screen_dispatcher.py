@@ -174,6 +174,7 @@ def _setup_authority(tmp_path: Path) -> tuple[Path, dict[str, object]]:
 
     policy = {name: getattr(POLICY, name) for name in POLICY.__dataclass_fields__}
     config: dict[str, object] = {
+        "accept_legacy_bundles": True,
         "arena_service_manifest": manifest.to_dict(),
         "credential_digest": credential.digest,
         "credential_path": str(credential_path),
@@ -461,15 +462,17 @@ def test_config_and_cli_are_closed_and_digest_pinned(tmp_path: Path) -> None:
     config_path, raw = _setup_authority(tmp_path)
     extra = dict(raw)
     extra["candidate_command"] = ["python", "candidate.py"]
-    config_path.chmod(0o600)
-    config_path.write_bytes(spool.spool_canonical_json(extra) + b"\n")
-    config_path.chmod(0o400)
-
-    with pytest.raises(
-        dispatcher_module.MainnetScreenDispatcherError,
-        match="fields are not closed",
-    ):
-        dispatcher_module.load_config(config_path)
+    # An omitted legacy-queue choice must refuse, never default to claiming it.
+    unstated = {k: v for k, v in raw.items() if k != "accept_legacy_bundles"}
+    for refused in (extra, unstated):
+        config_path.chmod(0o600)
+        config_path.write_bytes(spool.spool_canonical_json(refused) + b"\n")
+        config_path.chmod(0o400)
+        with pytest.raises(
+            dispatcher_module.MainnetScreenDispatcherError,
+            match="fields are not closed",
+        ):
+            dispatcher_module.load_config(config_path)
 
     credential_path = Path(raw["credential_path"])
     credential_path.chmod(0o644)

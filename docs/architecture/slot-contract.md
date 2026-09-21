@@ -61,7 +61,7 @@ The live catalog supports three kinds. Kind changes the breadth and capability o
 
 ## Current catalog
 
-The current API contains **14 slots**.
+The current API contains **12 slots**.
 
 | Slot | Kind | Entry point | Semantic boundary |
 |---|---|---|---|
@@ -70,12 +70,10 @@ The current API contains **14 slots**.
 | `attention.sparse_mla` | `block` | `sparse_mla` | Query RoPE/FP8 preparation and sparse attention; internal atomic member |
 | `collective.all_gather_into_tensor` | `collective` | `all_gather_into_tensor` | Equal-size all-gather into a validator-owned output |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |
-| `collective.ar_residual_rmsnorm` | `collective` | `ar_residual_rmsnorm` | Fused all-reduce, residual add, and RMSNorm |
 | `collective.dp_output_projection_norm` | `collective` | `prepare` + `project_gather_norm` | Attention-DP output projection, residual-add, RMSNorm, row gather and optional NVFP4 preparation |
 | `collective.reduce_scatter_tensor` | `collective` | `reduce_scatter_tensor` | Equal-size SUM reduce-scatter into a validator-owned output |
 | `linear.dense` | `block` | `prepare` + `dense` | Unquantized GEMM family, including FP32 gates and absorbed BMM; communication stays outside |
 | `moe.fused_experts` | `block` | `prepare` + `fused_experts` | Prepared MoE expert execution |
-| `moe.fused_experts_reduce` | `collective` | `prepare` + `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
 | `moe.fused_routed_experts` | `block` | `prepare` + `fused_routed_experts` | Routing, expert execution, and weighted combine |
 | `norm.fused_add_rmsnorm` | `block` | `fused_add_rmsnorm` | Plain or residual-add RMSNorm with optional residual input/output |
 | `norm.rmsnorm` | `op` | `rmsnorm` | RMS normalization; residual addition remains outside |
@@ -203,7 +201,7 @@ The implementation is split between [`verify_collective.py`](https://github.com/
 
 Production qualification is graphs-on. A candidate cannot earn authority by passing only eager execution when the arena serves captured graphs.
 
-Each slot declares the tensor inputs whose values may change between replays while their addresses and shapes remain stable. Graph verification:
+Each slot declares the tensor inputs whose values may change between replays while their addresses and shapes remain stable. The local graph check in `cacheon verify`:
 
 1. captures the candidate route;
 2. mutates every declared dynamic input in place for each replay;
@@ -211,13 +209,15 @@ Each slot declares the tensor inputs whose values may change between replays whi
 4. validates every replay output;
 5. rejects cached-answer, stale-input, or graph-unsafe behavior.
 
-Model weights and prepare-time state are capture-static. Python scalar changes require a different graph bucket unless the slot explicitly tensorizes them. Block and collective proposals must declare graph-safe behavior; the arena screen and retained qualification evidence bind the result.
+Model weights and prepare-time state are capture-static. Python scalar changes require a different graph bucket unless the slot explicitly tensorizes them. Qualification runs no separate graph stage: its proof is the captured completions of the timed run, the audit, and the pristine quality gate ([Qualification](../validator-guide/qualification.md#gates-and-three-way-decisions)).
 
 See [Graph safety](../miner-guide/graph-safety.md) for bundle-facing guidance.
 
 ## Variants and eligibility
 
 A slot may expose several implementation variants for disjoint, validator-observable capability domains such as dtype, shape, compute capability, or topology. Variants do not create new reward units: all rows for one semantic slot resolve to one singleton target.
+
+A slot's registered shape set must cover every dispatch mode of its kernel class. Where the expected kernel mode-switches on token count — one-shot for small `T`, two-shot for large — a shape list that samples only one side leaves the other unverified: on 2026-07-07 that exact hole shipped an engine-garbage kernel past `verify`, because engine decode at `T=8` took the one-shot path the slot never exercised.
 
 Eligibility is evaluated before candidate selection. Unknown capability fields, overlapping ambiguous variants, unsupported topology, and missing prerequisites fail closed or route to stock according to the registered pre-selection policy. The miner cannot introduce a new capability vocabulary through manifest extras.
 
@@ -246,12 +246,135 @@ Adding or changing a slot is a validator code change. It requires coordinated up
 1. `SlotSpec` and its reference/shape/graph contract;
 2. the target catalog's frozen contract projection;
 3. offline and, for collectives, distributed verification;
-4. the live SGLang seam adapter and dispatch path;
+4. the live SGLang seam: a hand-written adapter and its row in [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py);
 5. compatibility canaries against the pinned runtime;
 6. graph, failure, fallback, and end-to-end tests;
 7. arena policy and documentation.
 
 The stable waist is the four invariants, not a promise that the catalog's set of slots will never grow.
+
+A boundary that is a module of the served model needs none of the seven: it is a
+[node address](#node-addresses).
+
+## Node addresses
+
+A slot name that `cacheon/slots.py` does not define is a node address: a dotted
+name from `named_modules()` of the served model, where `*` stands for exactly one
+segment. `model.layers.*.mlp` is every MoE block, `model.layers.3` one decoder
+layer, `model` the whole decoder stack. One adapter,
+[`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
+serves every width, and a bundle that lists several addresses replaces several
+nodes at once. Granularity is the model's own module tree: a span that is not a
+module (on Qwen3.5 the attention block has no module of its own) is reached
+through the nearest enclosing node.
+
+The candidate is a drop-in for the node's stock `forward`.
+`entry(prepared, *args, **kwargs)` receives the stock arguments and returns what
+stock returns. `prepare(module)` runs once per bound node; a bundle without one
+receives the module itself. While a candidate runs, the nodes beneath it serve
+stock, so a wide candidate may call the stock children it does not replace.
+
+Correctness has no declared reference math and therefore no offline verification.
+Truth is the stock node in the running engine, on the same call:
+
+1. on an audited eager call the stock node runs first;
+2. its result tensors are kept, together with the engine-state rows the batch may
+   write: the cache rows at `out_cache_loc` and, on hybrid models, the recurrent
+   state rows of the batch's requests;
+3. the arguments stock changed and the state rows are put back;
+4. the honest twin answers the same call and is put back the same way: the stock
+   node with supported fused ops on SGLang's native reference paths, giving the
+   same math with different rounding. Ordinary residual RMSNorm uses an unfused
+   addition in the input dtype before native normalization; explicit FP32-residual
+   and other semantic overrides retain their native path. The DSA indexer has no native implementation
+   and retains hardware dispatch; its children and surrounding ops still use
+   native paths where called;
+5. the candidate runs on the same call, and each row of its result and state rows
+   (a token, a cache row, a request's state) is graded by its relative error
+   against stock's.
+
+Packed DSA MLA records are decoded as FP8 latent values with FP32 scales and BF16
+rotary values. The separate index cache is decoded as FP8 keys with FP32 scales;
+its touched pages are preserved and restored as raw bytes. An unrecognized
+packed layout raises instead of being interpreted as homogeneous FP8. The first
+failed window of each bound node is logged with its concrete name and tensor
+position, including when the contribution claims a wildcard address.
+
+A row passes within the larger of 2% and three times the twin's
+90th-percentile row error on that node, taking the larger of the current call
+and the recent-call estimate. Quiet decode history therefore cannot suppress
+the reference noise of a later prefill call. The limit never exceeds 40%: the widest honest node
+measured needed 33% and the wrong controls sat at 50%. Rows stock itself left
+non-finite (an idle data-parallel rank's padding) are not graded. The tolerance is measured because honest
+rounding grows with the width of the node: the twin sits 0.4% from stock at a block
+and 4–11% at the whole stack. It is kept per bound node, not per address, because
+the same address is quieter at layer 0 than at layer 39. Rows are graded rather
+than tensors because a mixture-of-experts routing flip moves one whole token and
+nothing else. Rows pool across calls into windows of 256 per node and graded
+tensor, and a window passes when 75% of its rows do, so a one-token decode call is
+never a verdict by itself. A wide node is therefore held only as tightly as honest
+BF16 rounding allows at that width; a narrow node inside it is held tighter.
+
+A whole-number or true/false result (expert ids, selected token indices, a mask) is
+a choice, not a magnitude. Its row error is the share of the row's entries that
+differ from stock's, position by position, under the same tolerance and the same
+75% bar. Router weights are given in the order of the expert ids, so those paired
+outputs retain their order. A kernel that changes their order belongs in a claim
+on the enclosing module, whose activations are graded as numbers.
+
+DSA's selected-token indices are an unordered collection: sparse attention reads
+the selected cache positions without accompanying per-position weights. The
+pinned Indexer, DSA attention and decoder-layer index outputs are compared by
+membership and multiplicity. Permutation alone is not an error; missing choices,
+duplicated IDs and changed padding counts still are. The tolerance and window
+bar stay the same. This interpretation is confined to those model-defined index
+outputs; it does not reorder execution results, router pairs or masks.
+
+What stock leaves in its own arguments is not graded. The fused RMSNorm overwrites
+its arguments and returns them, and a decoder layer leaves normed intermediates in
+its dead input; values reach the caller through the result and the engine state.
+A result that is a record rather than a tuple is graded through its fields.
+
+`prepare` and `entry` receive the live module and must leave its methods alone.
+Every callable on the node's modules and their classes is recorded at binding,
+before any candidate code has run, and compared before each audited reference: a
+candidate that rebinds a `forward` makes stock agree with it, and one that rebinds
+a native path makes the twin noisy. A change raises, names the module and
+attribute, and is receipted as the candidate's. One change is the engine's own:
+SGLang's fused ops leave their dispatch target empty until the first call, so an
+attribute that was empty at binding may be filled with one of that module's own
+recorded methods and with nothing else. Weights are not recorded; a rewritten
+weight changes the served model itself, which the end-to-end quality gate grades
+against the pristine reference.
+
+The audit draw and both reference passes happen before the dispatcher looks at the
+candidate's eligibility. Eligibility can differ by rank (data-parallel ranks hold
+different batches), and a node that contains a collective hangs unless every rank
+runs it the same number of times.
+
+A bundle's addresses must not contain one another, and an address must name at
+least one module. Either failure raises at binding and is receipted as the
+candidate's. Binding happens once, after `ModelRunner.load_model`, which is early
+enough for the prefill and decode CUDA graph runners to capture the bound
+`forward` at every width.
+
+The graph proof for a node bundle is taken from the timed run itself. The
+dispatcher, not the candidate, records whether each invocation happened inside a
+CUDA-graph capture, and a graphs-on run requires that of every claimed node on
+every rank: a candidate whose declared domain excludes every captured shape would
+otherwise be timed as stock. A candidate that is captured but returns a stale
+answer on replay is caught by the end-to-end quality gate: with one decoder layer
+or one MoE block of forty returning its warm-up answer, the pristine reference's
+NLL of the output went from 0.09 to 15.5 and 9.0
+([runs](../results/qwen-h100-node-slots.md#stale-under-capture)).
+
+A node-address bundle resolves to the
+[`forward_pass` target](../reference/target-catalog.md#registered-targets), and
+its reservation carries the addresses it declared. The resident hot-swap screen
+refuses node bundles, because a swap never re-runs the hook that binds them. The
+check separates honest from wrong at every width from one activation to the whole
+forward pass; the runs are in
+[Qwen H100 node slots](../results/qwen-h100-node-slots.md).
 
 ## Escape hatches
 
@@ -267,7 +390,7 @@ This keeps experimentation possible without widening every ordinary submission's
 | Pre-selection live routing | Shape or topology is outside a registered variant | Use the stock path when policy permits; do not count a candidate firing |
 | Selected non-collective call | Candidate raises, corrupts output identity, or violates layout | In strict qualification, invalidate the candidate execution; a silent stock retry cannot produce crown evidence |
 | Selected collective call | One rank fails after all-rank candidate selection | Abort the candidate engine; rank-local fallback is unsafe |
-| Graph replay | Output reflects capture-time input after a declared dynamic tensor changes | Fail graph verification/screening |
+| Graph replay | Output reflects capture-time input after a declared dynamic tensor changes | Fail local `verify`; in qualification, fail the pristine quality gate |
 | End-to-end quality | Per-slot numerics pass but sealed trajectory regresses | Fail under pristine T quality authority |
 | Infrastructure | Worker, device, or evidence authority cannot establish a valid result | `NO_DECISION`, not an attributable candidate loss |
 

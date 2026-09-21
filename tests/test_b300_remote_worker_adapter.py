@@ -932,7 +932,7 @@ def test_capabilities_commission_one_service_for_screen_and_qualification(
     )
     observed: list[tuple[object, object, object]] = []
 
-    def build(observed_registration, observed_ready, observed_capabilities):
+    def build(observed_registration, observed_ready, observed_capabilities, *, commissioned_root=None):
         observed.append(
             (observed_registration, observed_ready, observed_capabilities)
         )
@@ -944,7 +944,7 @@ def test_capabilities_commission_one_service_for_screen_and_qualification(
         build,
     )
 
-    def forbidden_screen_only(_registration, _ready):
+    def forbidden_screen_only(_registration, _ready, **_kwargs):
         raise AssertionError(
             "capabilities path must not build a second screen-only worker"
         )
@@ -996,7 +996,7 @@ def test_screen_only_runtime_still_closes_its_worker(
     monkeypatch.setattr(
         screen_deployment,
         "build_commissioned_b300_screen_worker",
-        lambda _registration, _ready: worker,
+        lambda _registration, _ready, **_kwargs: worker,
     )
     runtime = adapter.AdapterRuntime(paths)
     assert runtime.worker is worker

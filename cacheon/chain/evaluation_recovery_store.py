@@ -55,12 +55,23 @@ def configure_evaluation_recovery_connection(
 
 
 def ensure_evaluation_recovery_schema(db: sqlite3.Connection) -> None:
-    """Create or verify additive recovery schema version 1 and its backstops."""
+    """Create or verify arena-scoped recovery schema version 2 and its backstops."""
 
+    schema = db.execute(
+        "SELECT value FROM metadata WHERE key='evaluation_recovery_schema'"
+    ).fetchone()
+    if schema is not None and schema["value"] not in {"1", "2"}:
+        raise EvaluationRecoveryStoreError("evaluation recovery schema is unsupported")
     try:
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(evaluation_recoveries)")}
+        if columns and "competition_arena" not in columns:
+            db.execute("ALTER TABLE evaluation_recoveries ADD COLUMN competition_arena TEXT NOT NULL DEFAULT ''")
+        if schema is not None and schema["value"] == "1":
+            db.execute("DROP INDEX IF EXISTS evaluation_recoveries_one_unresolved")
         db.executescript(
             """
             CREATE TABLE IF NOT EXISTS evaluation_recoveries (
+                competition_arena TEXT NOT NULL DEFAULT '',
                 recovery_id TEXT PRIMARY KEY,
                 lease_id TEXT NOT NULL UNIQUE REFERENCES evaluation_leases(lease_id),
                 revision INTEGER NOT NULL CHECK(revision>=0),
@@ -89,7 +100,7 @@ def ensure_evaluation_recovery_schema(db: sqlite3.Connection) -> None:
                 )
             ) STRICT;
             CREATE UNIQUE INDEX IF NOT EXISTS evaluation_recoveries_one_unresolved
-                ON evaluation_recoveries(resolution) WHERE resolution='';
+                ON evaluation_recoveries(competition_arena) WHERE resolution='';
             CREATE TABLE IF NOT EXISTS evaluation_recovery_events (
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id TEXT NOT NULL UNIQUE,
@@ -245,17 +256,12 @@ def ensure_evaluation_recovery_schema(db: sqlite3.Connection) -> None:
         raise EvaluationRecoveryStoreError(
             "evaluation recovery schema triggers are incomplete"
         )
-    schema = db.execute(
-        "SELECT value FROM metadata WHERE key='evaluation_recovery_schema'"
-    ).fetchone()
     if schema is None:
         db.execute(
-            "INSERT INTO metadata(key,value) VALUES('evaluation_recovery_schema','1')"
+            "INSERT INTO metadata(key,value) VALUES('evaluation_recovery_schema','2')"
         )
-    elif schema["value"] != "1":
-        raise EvaluationRecoveryStoreError(
-            "evaluation recovery schema is unsupported"
-        )
+    elif schema["value"] == "1":
+        db.execute("UPDATE metadata SET value='2' WHERE key='evaluation_recovery_schema'")
 
 
 def _intake_error(message: str) -> RuntimeError:
@@ -414,12 +420,13 @@ class EvaluationRecoveryStoreMixin:
         self._db.execute(
             "INSERT INTO evaluation_recoveries(recovery_id,lease_id,revision,phase,"
             "resolution,created_block,updated_block,request_plan,plan_digest,request_id,"
-            "reason) VALUES(?,?,0,'claimed','',?,?,X'','','','')",
+            "reason,competition_arena) VALUES(?,?,0,'claimed','',?,?,X'','','','',?)",
             (
                 recovery.recovery_id,
                 lease.lease_id,
                 lease.claimed_block,
                 lease.claimed_block,
+                self._competition_arena,
             ),
         )
         self._append_evaluation_recovery_event_locked(
@@ -457,11 +464,7 @@ class EvaluationRecoveryStoreMixin:
         return recovery
 
     def _require_no_orphan_active_qualification(self) -> None:
-        active = self._db.execute(
-            "SELECT * FROM evaluation_leases WHERE stage='qualification' "
-            "AND state='active' LIMIT 1"
-        ).fetchone()
-        if active is not None:
+        for active in self._active_qualification_rows():
             self._active_qualification_recovery(self._evaluation_lease(active))
 
     def _generic_lease_operation_allowed(
@@ -496,12 +499,7 @@ class EvaluationRecoveryStoreMixin:
         return self._active_qualification_recovery(lease)
 
     def pending_qualification_recovery(self) -> EvaluationRecovery | None:
-        rows = tuple(
-            self._db.execute(
-                "SELECT * FROM evaluation_leases WHERE stage='qualification' "
-                "AND state='active'"
-            )
-        )
+        rows = self._active_qualification_rows()
         if not rows:
             return None
         if len(rows) != 1:

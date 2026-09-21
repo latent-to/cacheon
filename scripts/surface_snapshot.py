@@ -6,7 +6,7 @@ regenerates ten such surfaces on CPU with no third-party import and compares
 them with the committed baseline under ``scripts/surface_baseline/``:
 
 - ``cli``: every argparse help text (root, subcommands, nested lease ops);
-- ``seams``: the adapter rows, bindings, gates and target modules;
+- ``seams``: the adapter rows and target modules;
 - ``capability_modules``: the declared private-caller manifest;
 - ``sqlite_ddl``: the verbatim DDL of a fresh intake and recoverable store;
 - ``catalog``: the target-catalog digest and every target's spec digests;
@@ -87,14 +87,9 @@ def cli_surface() -> dict[str, str]:
 def seam_surface() -> dict[str, object]:
     from cacheon import seams
 
-    out: dict[str, object] = {
-        "binding_env_gates": dict(sorted(seams.SEAM_BINDING_ENV_GATES.items())),
-        "target_modules": sorted(seams.TARGET_MODULES),
-    }
+    out: dict[str, object] = {"target_modules": sorted(seams.TARGET_MODULES)}
     for row in seams.SEAM_ADAPTERS:
         out[f"adapter:{row.name}"] = dataclasses.asdict(row)
-    for row in seams.SEAM_BINDINGS:
-        out[f"binding:{row.binding_id}"] = dataclasses.asdict(row)
     return out
 
 

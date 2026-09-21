@@ -1,5 +1,0 @@
-{
-  "op": "moe.fused_experts_reduce",
-  "dtypes": ["float32", "bfloat16", "float16"],
-  "notes": "Correctness demo: local SwiGLU experts + an owned torch all-reduce. A real submission overlaps the expert GEMM with the reduce (reduce-scatter the down-proj as produced). This slot serves from the captured decode graph, so a crownable kernel must capture and replay."
-}

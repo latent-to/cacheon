@@ -21,6 +21,7 @@ from functools import lru_cache
 from itertools import combinations
 from typing import Iterable, Mapping
 
+from cacheon._strict import NODE_ADDRESS, require_node_members
 from cacheon.manifest import CompetitionEntry, DEFAULT_VARIANT, Manifest
 from cacheon.stack_identity import canonical_digest
 from cacheon.target_contracts import singleton_contracts as _singleton_contracts
@@ -259,6 +260,10 @@ class TargetSpec:
     wider target. ``conflicts_with`` is symmetric non-composable overlap. A
     candidate transition removes either relation before materialization; live
     dispatch order never decides which economic target executes.
+
+    ``node_roots`` opens node addresses. A manifest whose slots all name modules at
+    or under one of these roots of the served model resolves to this target, and its
+    members are the addresses it declared, not ``members``.
     """
 
     target_id: str
@@ -270,8 +275,11 @@ class TargetSpec:
     allowed_features: frozenset[str] = frozenset({FEATURE_ENTRY})
     contract_ref: TargetContractRef | None = None
     atomic_semantics_id: str | None = None
+    node_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.node_roots, str):
+            object.__setattr__(self, "node_roots", tuple(self.node_roots))
         if not isinstance(self.members, str):
             object.__setattr__(self, "members", tuple(self.members))
         if not isinstance(self.displaces, str):
@@ -440,6 +448,17 @@ class TargetCatalog:
                     raise TargetCatalogError(
                         f"slot target {target_id!r} may not declare atomic_semantics_id"
                     )
+                roots = spec.node_roots
+                if roots != tuple(sorted(set(roots))) or any(
+                    "*" in root or NODE_ADDRESS.fullmatch(root) is None for root in roots
+                ):
+                    raise TargetCatalogError(
+                        f"slot target {target_id!r} node_roots must be sorted unique names"
+                    )
+            elif spec.node_roots:
+                raise TargetCatalogError(
+                    f"atomic target {target_id!r} may not declare node_roots"
+                )
             elif len(members) < 2:
                 raise TargetCatalogError(
                     f"atomic target {target_id!r} requires at least two members"
@@ -662,6 +681,8 @@ class TargetCatalog:
             "requires": sorted(spec.requires),
             "allowed_features": sorted(spec.allowed_features),
         }
+        if spec.node_roots:  # absent otherwise: existing targets keep their spec digests
+            common["node_roots"] = list(spec.node_roots)
         if spec.kind is TargetKind.SLOT:
             assert spec.contract_ref is not None
             common["contract_ref"] = spec.contract_ref.snapshot()
@@ -722,6 +743,34 @@ class TargetCatalog:
     def requires_closure(self, target_id: str) -> frozenset[str]:
         self.require(target_id)
         return self._requirement_closures[target_id]
+
+    def admitted_members(self, spec: TargetSpec, declared: Iterable[str]) -> tuple[str, ...]:
+        """Members a manifest may declare for ``spec``, or a resolution error.
+
+        A slot or atomic target admits exactly its registered members; a node target
+        admits the manifest's own addresses under its roots.
+        """
+
+        declared = tuple(declared)
+        if spec.node_roots:
+            return require_node_members(
+                declared, roots=spec.node_roots, error=TargetResolutionError
+            )
+        if frozenset(declared) != frozenset(spec.members):
+            raise TargetResolutionError(
+                f"target {spec.target_id!r} requires exact members {spec.members!r}; "
+                f"manifest declares {declared!r}"
+            )
+        return spec.members
+
+    def admits(self, spec: TargetSpec, members: Iterable[str]) -> bool:
+        """Whether a finalized reservation's members are this target's canonical form."""
+
+        members = tuple(members)
+        try:
+            return self.admitted_members(spec, members) == members
+        except TargetResolutionError:
+            return False
 
     def validate_active_targets(self, target_ids: Iterable[str]) -> tuple[str, ...]:
         if isinstance(target_ids, (str, bytes)):
@@ -810,6 +859,17 @@ class TargetCatalog:
 
         if request is None:
             spec = self._by_members.get(member_set)
+            if spec is None and member_set:
+                # No exact member set names a node bundle; its target is the one whose
+                # roots hold every address it declared.
+                rooted = [
+                    row for row in self._by_id.values()
+                    if row.node_roots and all(
+                        any(m == r or m.startswith(r + ".") for r in row.node_roots)
+                        for m in member_set
+                    )
+                ]
+                spec = rooted[0] if len(rooted) == 1 else None
             if spec is None:
                 members = tuple(sorted(member_set))
                 return ResolvedTarget(
@@ -839,11 +899,7 @@ class TargetCatalog:
                 )
             implicit = False
 
-        if member_set != frozenset(spec.members):
-            raise TargetResolutionError(
-                f"target {spec.target_id!r} requires exact members {spec.members!r}; "
-                f"manifest declares {members_in_manifest!r}"
-            )
+        members = self.admitted_members(spec, members_in_manifest)
         unexpected = features - spec.allowed_features
         if unexpected:
             if FEATURE_SETUP in unexpected:
@@ -859,7 +915,7 @@ class TargetCatalog:
         return ResolvedTarget(
             target_id=spec.target_id,
             kind=spec.kind,
-            members=spec.members,
+            members=members,
             registered=True,
             implicit=implicit,
             observed_features=features,
@@ -884,8 +940,8 @@ class TargetCatalog:
 SINGLETON_TARGET_IDS = (
     "activation.silu_and_mul", "attention.indexer_select", "attention.sparse_mla",
     "collective.all_gather_into_tensor", "collective.all_reduce",
-    "collective.ar_residual_rmsnorm", "collective.reduce_scatter_tensor",
-    "linear.dense", "moe.fused_experts", "moe.fused_experts_reduce",
+    "collective.reduce_scatter_tensor",
+    "linear.dense", "moe.fused_experts",
     "moe.fused_routed_experts", "norm.fused_add_rmsnorm", "norm.rmsnorm",
     "collective.dp_output_projection_norm",
 )
@@ -897,6 +953,11 @@ DP_ATTENTION_EXCHANGE_MEMBERS = (
 )
 SPARSE_ATTENTION_TARGET = "attention.sparse_mla.v1"
 SPARSE_ATTENTION_MEMBERS = ("attention.indexer_select", "attention.sparse_mla")
+# One broad target: a bundle names the modules of the served model it replaces, from
+# one activation up to both roots. SGLang gives every causal LM these two top-level
+# modules, so the target carries no model or arena identity.
+FORWARD_PASS_TARGET = "forward_pass"
+FORWARD_PASS_ROOTS = ("logits_processor", "model")
 
 
 @lru_cache(maxsize=1)
@@ -906,19 +967,8 @@ def default_target_catalog() -> TargetCatalog:
     # other dense calls or input norms. Evicting their entire contributions
     # removed working optimizations in the 2026-09-16 mainnet candidate.
     displacements = {
-        "collective.ar_residual_rmsnorm": frozenset(
-            {
-                "collective.all_reduce",
-                "norm.fused_add_rmsnorm",
-            }
-        ),
-        "moe.fused_experts_reduce": frozenset({"moe.fused_experts"}),
         "moe.fused_routed_experts": frozenset({"moe.fused_experts"}),
         "norm.fused_add_rmsnorm": frozenset({"norm.rmsnorm"}),
-    }
-    conflicts = {
-        "moe.fused_experts_reduce": frozenset({"moe.fused_routed_experts"}),
-        "moe.fused_routed_experts": frozenset({"moe.fused_experts_reduce"}),
     }
     specs = [
         TargetSpec(
@@ -926,7 +976,6 @@ def default_target_catalog() -> TargetCatalog:
             kind=TargetKind.SLOT,
             members=(target_id,),
             displaces=displacements.get(target_id, frozenset()),
-            conflicts_with=conflicts.get(target_id, frozenset()),
             allowed_features=_STANDARD_COMPONENT_FEATURES,
             contract_ref=contracts[target_id],
         )
@@ -940,25 +989,11 @@ def default_target_catalog() -> TargetCatalog:
             allowed_features=_STANDARD_COMPONENT_FEATURES,
             atomic_semantics_id=f"{target}.atomic-semantics.v1",
         ))
+    specs.append(TargetSpec(
+        target_id=FORWARD_PASS_TARGET, kind=TargetKind.SLOT,
+        members=(FORWARD_PASS_TARGET,),
+        allowed_features=_STANDARD_COMPONENT_FEATURES,
+        contract_ref=contracts[FORWARD_PASS_TARGET],
+        node_roots=FORWARD_PASS_ROOTS,
+    ))
     return TargetCatalog(specs)
-
-
-def resolve_target(
-    manifest: Manifest,
-    *,
-    catalog: TargetCatalog | None = None,
-) -> ResolvedTarget:
-    """Resolve semantic identity; external bundle features remain incomplete."""
-    return (catalog or default_target_catalog()).resolve_manifest(manifest)
-
-
-def resolve_intake_target(
-    manifest: Manifest,
-    *,
-    observed_features: Iterable[str],
-    catalog: TargetCatalog | None = None,
-) -> ResolvedTarget:
-    """Resolve admission with required trusted external-feature evidence."""
-    return (catalog or default_target_catalog()).resolve_intake(
-        manifest, observed_features=observed_features
-    )
