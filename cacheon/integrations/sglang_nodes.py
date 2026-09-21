@@ -402,9 +402,9 @@ def _grade(slot: str, node: int, actual: list, twin: list) -> tuple[float, int] 
         key = (node, position)
         noise = _noise.setdefault(key, deque(maxlen=64))
         noise.append(torch.quantile(honest, 0.9).item())
-        # A one-row call is one draw of heavy-tailed noise (a routing flip moved the
-        # twin's single token 19% at the stack), so the scale is the recent calls'.
-        measured = _TWIN_FACTOR * sorted(noise)[int(0.9 * (len(noise) - 1))]
+        # History stabilizes one-row calls, but cannot discard this call's reference
+        # noise: quiet decode history falsely rejected GLM's 4096-row prefill calls.
+        measured = _TWIN_FACTOR * max(noise[-1], sorted(noise)[int(0.9 * (len(noise) - 1))])
         tolerance = min(_CEILING, max(_FLOOR, measured))
         pooled = _pooled.setdefault(key, [0, 0])
         pooled[0] += int((errors <= tolerance).sum().item())

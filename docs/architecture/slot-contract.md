@@ -300,8 +300,10 @@ packed layout raises instead of being interpreted as homogeneous FP8. The first
 failed window of each bound node is logged with its concrete name and tensor
 position, including when the contribution claims a wildcard address.
 
-A row passes within the larger of 2% and three times the twin's recent
-90th-percentile row error on that node, and never above 40%: the widest honest node
+A row passes within the larger of 2% and three times the twin's
+90th-percentile row error on that node, taking the larger of the current call
+and the recent-call estimate. Quiet decode history therefore cannot suppress
+the reference noise of a later prefill call. The limit never exceeds 40%: the widest honest node
 measured needed 33% and the wrong controls sat at 50%. Rows stock itself left
 non-finite (an idle data-parallel rank's padding) are not graded. The tolerance is measured because honest
 rounding grows with the width of the node: the twin sits 0.4% from stock at a block
