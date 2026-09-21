@@ -18,10 +18,9 @@ run the real engine check. Keep results and compiler caches outside the bundle.
 
 ## Qwen development inputs
 
-The [Qwen King input kit](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/qwen36)
-contains short- and long-context checks, the H100 image recipe, engine
-settings, measured check times and the arena routing lines. It does not
-change the arena's qualification workload.
+The [Qwen3.6-35B-A3B input kit](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/qwen36)
+has short- and long-context checks, the H100 image recipe, engine settings,
+measured check times and routing lines. It does not change the qualification workload.
 
 ## GLM baseline
 

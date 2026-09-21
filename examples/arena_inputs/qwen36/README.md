@@ -1,8 +1,8 @@
-# Qwen3.6 King development inputs
+# Qwen3.6-35B-A3B development inputs
 
-Arena: `qwen36-35b-h100-bf16-tp1`. Model:
-`dendriteholdings/albedo-qwen3.6-35b-king-CXXV`, revision
-`35281e539b1989695420ca69efb016b0a253a2e0`. Use the published BF16 weights,
+Arena: `qwen36-35b-h100-bf16-tp1`. Model: Qwen3.6-35B-A3B in BF16. Develop
+against the official
+[`Qwen/Qwen3.6-35B-A3B`](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) weights,
 SGLang 0.5.19 and one H100 80 GB per engine (TP1). The engine configuration
 retains FP8 KV, FP32 recurrent state, the Triton MoE runner and CUDA graphs.
 The Gated DeltaNet decode backend stays at the engine default; `cutedsl`
@@ -74,8 +74,8 @@ mode = "slot"
 arena = "qwen36-35b-h100-bf16-tp1"
 ```
 
-Public evaluation pricing and admission must be announced by the operator
-before paid submissions. Operator control credits are not a public subsidy.
+The evaluation fee is 0.2 TAO: pass `--eval-cost-tao-rao 200000000` to
+`chain-eval-cost` and `chain-submit --pay` (the CLI default transfers 0.5 TAO).
 
 ## Building the image
 
