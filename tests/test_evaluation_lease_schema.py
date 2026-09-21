@@ -22,10 +22,10 @@ def test_recovery_schema_is_additive_and_reopens(tmp_path):
         path = store.path
         assert store._db.execute(
             "SELECT value FROM metadata WHERE key='evaluation_lease_schema'"
-        ).fetchone()["value"] == "1"
+        ).fetchone()["value"] == "2"
         assert store._db.execute(
             "SELECT value FROM metadata WHERE key='evaluation_recovery_schema'"
-        ).fetchone()["value"] == "1"
+        ).fetchone()["value"] == "2"
 
     db = sqlite3.connect(path)
     try:
@@ -39,7 +39,7 @@ def test_recovery_schema_is_additive_and_reopens(tmp_path):
     with _store(tmp_path) as reopened:
         assert reopened._db.execute(
             "SELECT value FROM metadata WHERE key='evaluation_recovery_schema'"
-        ).fetchone()["value"] == "1"
+        ).fetchone()["value"] == "2"
         names = {
             row["name"]
             for row in reopened._db.execute(
@@ -55,7 +55,7 @@ def test_recovery_schema_rejects_an_unsupported_version(tmp_path):
     db = sqlite3.connect(path)
     try:
         db.execute(
-            "UPDATE metadata SET value='2' WHERE key='evaluation_recovery_schema'"
+            "UPDATE metadata SET value='999' WHERE key='evaluation_recovery_schema'"
         )
         db.commit()
     finally:

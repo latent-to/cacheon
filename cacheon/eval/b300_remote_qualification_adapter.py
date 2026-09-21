@@ -39,20 +39,17 @@ from cacheon.chain.remote_evaluation_dispatcher import (
 from cacheon.chain.remote_qualification_hold import (
     RemoteQualificationHoldProduct,
     RemoteQualificationHoldReason,
+    RemoteQualificationWorkerHold,
     capture_remote_qualification_hold,
 )
 from cacheon.chain.remote_qualification_evidence import _screen_receipt_from_dict
 from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorker,
-    B300MainnetWorkerError,
     B300RemoteQualificationRun,
 )
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
     B300QualificationDeployment,
-)
-from cacheon.eval.b300_qualification_graph_gate import (
-    B300QualificationGraphGateHold,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_outer_session import OuterSessionWorkerError
@@ -376,16 +373,6 @@ class B300RemoteQualificationAdapter:
             raise B300RemoteQualificationAdapterError(
                 "qualification worker differs from the fixed deployment owner"
             )
-        try:
-            worker._bind_remote_qualification_graph_gate_root(
-                self.construction.evidence_root
-            )
-        except B300MainnetWorkerError as exc:
-            if owns_worker:
-                worker.close()
-            raise B300RemoteQualificationAdapterError(
-                "qualification graph gate differs from the fixed deployment"
-            ) from exc
         object.__setattr__(self, "worker", worker)
         object.__setattr__(self, "_owns_worker", owns_worker)
 
@@ -545,7 +532,7 @@ class B300RemoteQualificationAdapter:
                 failure_type=type(exc).__name__,
                 failure_message=exc.message,
             )
-        if type(result) is B300QualificationGraphGateHold:
+        if type(result) is RemoteQualificationWorkerHold:
             try:
                 hold = capture_remote_qualification_hold(
                     request,
@@ -556,11 +543,11 @@ class B300RemoteQualificationAdapter:
                 )
             except (TypeError, ValueError, RuntimeError) as exc:
                 raise B300RemoteQualificationAdapterError(
-                    f"qualification graph HOLD could not be captured: {exc}"
+                    f"qualification worker HOLD could not be captured: {exc}"
                 ) from exc
             if type(hold) is not RemoteQualificationHoldProduct:
                 raise B300RemoteQualificationAdapterError(
-                    "qualification graph HOLD capture returned an untyped product"
+                    "qualification worker HOLD capture returned an untyped product"
                 )
             return hold
         if (

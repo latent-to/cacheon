@@ -20,7 +20,8 @@ installed `cacheon` console script resolves to the same parser.
 | `compat` | operator | diagnostic | Check the installed SGLang seam surface against the pin |
 | `chain-compat` | operator | diagnostic | Check the installed Bittensor SDK surface without chain access |
 | `scan` | contributor | local gate | Parse a bundle and apply recursive static policy |
-| `verify` | contributor | local gate | Check declared slot behavior against validator-owned references |
+| `verify` | contributor | local gate | Scan and import/signature smoke for node bundles; retained catalog reference checks |
+| `check` | contributor | GPU diagnostic | Run the production node binder, eager audit and captured execution in the published image |
 | `explain` | all | read-only | Say in plain language what an evaluation product records about a bundle |
 | `chain-package` | contributor | packaging | Build a canonical archive and print its content hash |
 | `chain-publish` | contributor | object-store mutation | Package, publish, and anonymously verify a content-addressed proposal archive |
@@ -87,28 +88,46 @@ finding as an inexpensive reason to inspect or fix the source before submission.
 ### `verify`
 
 ```bash
-# CPU contract smoke
-python -m cacheon.cli verify examples/miner_silu_torch \
-  --device cpu --dtype float32
-
-# CUDA contract and graph verification
-python -m cacheon.cli verify path/to/bundle \
-  --device cuda --dtype bfloat16 --model MiniMax-M3
-
-# Distributed verification at the arena topology
-python -m cacheon.cli verify path/to/bundle \
-  --device cuda --world-size 4
+python -m cacheon.cli verify examples/miner_node_identity
 ```
 
-Options are `--dtype`, `--device`, `--seed`, `--world-size`, `--tp-size`, and
-`--model`. The verifier rejects ambiguous variant domains, applies the model-specific
-slot profile, and spawns workers for candidate execution. Collective slots use the
-requested rank count; a host without enough CUDA devices falls back to CPU/Gloo unless
-`--device cuda` makes the requirement explicit.
+For node bundles, scanning and a fresh-process import/signature smoke establish
+that declared entry and prepare functions can be resolved. No model, fake
+module or synthetic forward result is used. Preparation, numerics and CUDA
+graph behavior need `check` in the arena image. A wrong node implementation
+can pass this interface check.
 
-Verification proves only the exercised component contract. It does not establish model
-integration, serving throughput, pristine quality, isolation, audited qualification,
-or settlement.
+Retained catalog bundles still use the existing reference verifier and its
+`--dtype`, `--device`, `--seed`, `--world-size`, `--tp-size` and `--model`
+options. These options do not synthesize a model for node bundles.
+
+### `check`
+
+```bash
+python -m cacheon.cli check /bundles/my_bundle \
+  --model /model --engine-config /arena/engine-config.json \
+  --requests /arena/development-requests.json --output /work/check-001
+```
+
+Run inside the published arena image with the exact model and GPU topology.
+The requests file is a nonempty JSON array of `Engine.generate` keyword-argument
+objects. The command preserves the supplied engine configuration for the graph
+pass and uses a separate eager engine for the audit. Logs and raw per-address,
+per-rank receipts remain under the new output directory even on failure.
+
+`--timeout-seconds` defaults to 1,800 per engine including load;
+`--minimum-audit-windows` defaults to four per address/rank and `--seed` to 7.
+Use the arena's published development values. A failed or under-covered audit
+stops before graph execution. Exit 0 means the diagnostic passed, 2 is failure
+or execution error, and 3 is `NO_DECISION` from incomplete audit coverage.
+During the audit, a well-formed receipt proving a gross numerical mismatch stops
+the engine and its child ranks early with `FAIL` (exit 2). Logs and raw receipts
+remain in the output directory. Clean or incomplete evidence never ends a run
+early as `PASS`; the command does not shorten the supplied request list.
+
+This command uses the serving binder and audit; it does not produce an
+end-to-end quality verdict, speed claim, qualification or crown. See the
+[miner walkthrough](../miner-guide/your-first-kernel.md#6-move-to-the-matching-gpu-environment).
 
 ### `explain`
 

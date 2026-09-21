@@ -14,7 +14,7 @@ hardware. The strongest proposals fused the MoE tail where expert output,
 collective reduction, residual addition, and RMS normalization otherwise cross
 multiple launch and communication boundaries.
 
-That work informed three registered identities:
+That work informed three catalog identities of the time:
 
 - `collective.ar_residual_rmsnorm`;
 - `collective.moe_finalize_ar_rmsnorm`; and
@@ -25,8 +25,10 @@ The atomic target prevents one fused implementation from earning duplicate
 economic titles through overlapping views of the same delta.
 
 Those names describe the campaign-era catalog. The deep-finalize singleton and
-MoE-epilogue atomic target were retired from the current source on 2026-08-30;
-historical evidence keeps its embedded catalog snapshot and is not rewritten.
+MoE-epilogue atomic target were retired from the current source on 2026-08-30,
+and `collective.ar_residual_rmsnorm` and `moe.fused_experts_reduce` on
+2026-09-19; historical evidence keeps its embedded catalog snapshot and is not
+rewritten.
 
 ## Historical measurements
 
@@ -51,11 +53,12 @@ predate:
 
 ### Optimize the complete owned boundary
 
-A reduce-only slot cannot express useful overlap with its producer. Giving
-`moe.fused_experts_reduce` ownership of the trailing reduction and defining a
-bounded fused epilogue target creates a semantic unit large enough for
+A reduce-only slot cannot express useful overlap with its producer. The campaign
+answered that by giving the expert slot ownership of the trailing reduction and
+defining a bounded fused epilogue target: a semantic unit large enough for
 communication and launch optimization while preserving a validator-owned output
-contract.
+contract. The principle carries; those particular identities do not, because no
+arena opened the reduce-owning callsite and both were retired on 2026-09-19.
 
 ### Direct rollout comparison is not universal quality authority
 

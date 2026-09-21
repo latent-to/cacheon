@@ -380,7 +380,6 @@ def test_audit_authority_does_not_leak_into_speed_or_pristine_t(
 
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )

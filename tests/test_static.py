@@ -11,7 +11,7 @@ from cacheon.capabilities import CallDescriptor
 from cacheon.registry import eligibility_from_metadata
 from cacheon.sandbox import scan_source
 
-TRITON_BUNDLE = "examples/miner_silu_triton"
+NODE_BUNDLE = "examples/miner_node_identity"
 
 
 # ---- scanner ----------------------------------------------------------------
@@ -44,15 +44,14 @@ def test_scanner_catches_egress_and_ace():
 # ---- manifest ---------------------------------------------------------------
 
 _GOOD = {
-    "bundle_id": "example-silu-triton-v1",
+    "bundle_id": "node-identity-control",
     "abi_version": M.ABI_VERSION,
     "ops": [
         {
-            "slot": "activation.silu_and_mul",
-            "source": "kernels/silu_and_mul.py",
-            "entry": "silu_and_mul",
+            "slot": "model.layers.*.mlp",
+            "source": "kernels/forward.py",
+            "entry": "forward",
             "dtypes": ["bfloat16"],
-            "metadata": "metadata/silu_and_mul.json",
         }
     ],
 }
@@ -68,15 +67,15 @@ def _with_loader(payload, fn):
 
 
 def test_manifest_valid():
-    m = _with_loader(_GOOD, lambda: M.load_manifest(TRITON_BUNDLE))
-    assert m.bundle_id == "example-silu-triton-v1"
-    assert m.op_for("activation.silu_and_mul").entry == "silu_and_mul"
+    m = _with_loader(_GOOD, lambda: M.load_manifest(NODE_BUNDLE))
+    assert m.bundle_id == "node-identity-control"
+    assert m.op_for("model.layers.*.mlp").entry == "forward"
 
 
 def test_manifest_rejects_path_escape():
     bad = {**_GOOD, "ops": [dict(_GOOD["ops"][0], source="../../../../etc/passwd")]}
     try:
-        _with_loader(bad, lambda: M.load_manifest(TRITON_BUNDLE))
+        _with_loader(bad, lambda: M.load_manifest(NODE_BUNDLE))
         raise AssertionError("expected ManifestError")
     except M.ManifestError as e:
         assert "escapes bundle root" in str(e)
@@ -85,7 +84,7 @@ def test_manifest_rejects_path_escape():
 def test_manifest_rejects_absolute_path():
     bad = {**_GOOD, "ops": [dict(_GOOD["ops"][0], source="/etc/passwd")]}
     try:
-        _with_loader(bad, lambda: M.load_manifest(TRITON_BUNDLE))
+        _with_loader(bad, lambda: M.load_manifest(NODE_BUNDLE))
         raise AssertionError("expected ManifestError")
     except M.ManifestError as e:
         assert "must be relative" in str(e)
@@ -94,7 +93,7 @@ def test_manifest_rejects_absolute_path():
 def test_manifest_rejects_foreign_abi():
     bad = {**_GOOD, "abi_version": "not-ours"}
     try:
-        _with_loader(bad, lambda: M.load_manifest(TRITON_BUNDLE))
+        _with_loader(bad, lambda: M.load_manifest(NODE_BUNDLE))
         raise AssertionError("expected ManifestError")
     except M.ManifestError as e:
         assert "abi_version" in str(e)
@@ -103,8 +102,8 @@ def test_manifest_rejects_foreign_abi():
 def test_manifest_override_point_fields():
     payload = {**_GOOD, "ops": [dict(
         _GOOD["ops"][0], base_kernel="nvfp4_moe_megakernel", override_point="gemm1_epilogue")]}
-    m = _with_loader(payload, lambda: M.load_manifest(TRITON_BUNDLE))
-    op = m.op_for("activation.silu_and_mul")
+    m = _with_loader(payload, lambda: M.load_manifest(NODE_BUNDLE))
+    op = m.op_for("model.layers.*.mlp")
     assert op.base_kernel == "nvfp4_moe_megakernel"
     assert op.override_point == "gemm1_epilogue"
     assert op.is_override
@@ -115,7 +114,7 @@ def test_manifest_override_point_fields():
 def test_manifest_override_point_requires_base_kernel():
     bad = {**_GOOD, "ops": [dict(_GOOD["ops"][0], override_point="gemm1_epilogue")]}
     try:
-        _with_loader(bad, lambda: M.load_manifest(TRITON_BUNDLE))
+        _with_loader(bad, lambda: M.load_manifest(NODE_BUNDLE))
         raise AssertionError("expected ManifestError")
     except M.ManifestError as e:
         assert "requires 'base_kernel'" in str(e)

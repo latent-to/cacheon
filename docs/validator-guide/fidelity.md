@@ -69,14 +69,15 @@ their sealed graph configuration. The audit-only session is eager and untimed; t
 worker disables CUDA graphs for that role. An unexpected audit receipt in a charged
 candidate session is a protocol error.
 
-The tensor comparison still occurs inside the candidate engine through
-[`cacheon/audit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit.py).
-For `matched_ratio` slots it grades against
-`max(0, SlotSpec.correctness.min_ratio - 0.005)`. This `0.005` audit margin is not a
-new slot tolerance and must not be applied by `verify`: component verification compares
-the candidate with a high-precision reference, while the live audit compares candidate
-and stock low-precision results, so both audit operands carry rounding. The margin was
-selected with honest/reference and residual-drop controls; changing it requires fresh
+The tensor comparison still occurs inside the candidate engine. The node adapter,
+[`cacheon/integrations/sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
+grades each row of the candidate's result and engine-state rows against stock's on the
+same call, under the tolerance and 75% window bar the
+[slot contract](../architecture/slot-contract.md) defines, and hands
+[`cacheon/audit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit.py)
+the fraction it measured for the rolling receipt. Both operands are the engine's own
+low-precision results, so the tolerance is measured on an honest twin rather than
+declared; changing the floor, the ceiling or the bar requires fresh honest and wrong
 control evidence and review.
 
 The environment variables and rolling receipt are only worker instrumentation. Running
@@ -84,8 +85,27 @@ that instrumentation during development does not create crown authority. Authori
 requires the independently sealed audit-only plan, a distinct session from every timed
 role, bounded transport out of the worker, and Torch-free host regrading through
 [`cacheon/audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py).
-The host requires the exact slot × TP-rank/PID matrix, the per-member minimum, zero
-violations, and zero comparison errors.
+
+### Audit outcomes
+
+The host grades the receipts into one of three outcomes. A verdict about the kernel
+requires compared calls; an audit that compared too little says nothing about the kernel.
+
+| Outcome | Reason | Condition |
+| --- | --- | --- |
+| `PASS` | — | The exact slot × TP-rank/PID matrix is present, every member meets the per-member minimum, no candidate output was uncomparable, and any call outside tolerance is a rare near miss. |
+| `FAIL` | `slot_audit_failed` | A compared call scored more than `0.03` under its recorded bar, near misses exceed one compared call in 100 for a slot and rank, or a candidate output could not be compared. Terminal for the bundle. |
+| `NO_DECISION` | `audit_not_covered` | Receipts are missing, malformed, or under the per-member minimum. The audit role's shortfall; the bundle takes the ordinary requeue path and is not failed. |
+
+A near miss is a compared call under its bar by at most `0.03`. Recorded honest receipts
+sit within `0.004` of a `0.985` bar; recorded wrong kernels scored `0.18` or lower. Kernel
+faults are graded before coverage, so a wrong kernel on a thinly covered run still fails.
+The timed role has already proved the candidate executes, which is why an under-covered
+audit is attributed to the audit role rather than to the bundle.
+
+A stock baseline that raises inside the audit is counted as `baseline_refused`, not as a
+comparison error: no candidate output was compared, so it can reduce coverage but cannot
+fail a kernel. An error while comparing a candidate output remains a comparison error.
 
 ### Production audit canary
 
@@ -94,8 +114,8 @@ qualification path on the exact production image, model, topology, target set, a
 policy, and runtime identities. Retain the following controls:
 
 1. Run an honest candidate through one complete qualification. Every registered slot
-   on every TP rank must meet the sealed minimum call count with zero violations
-   and comparison errors, and the retained attempt must reopen independently.
+   on every TP rank must meet the sealed minimum call count and grade `PASS` with zero
+   comparison errors, and the retained attempt must reopen independently.
 2. Run the registered residual-drop sabotage candidate through the same audit path. Its
    typed audit witness must make the aggregate qualification a nonretryable failure.
 3. Inspect every charged speed session. Both audit environment values must be
@@ -164,8 +184,10 @@ Cacheon quality contract.
 
 Missing teacher coverage, wrong prompt/trajectory identity, tampered evidence, or
 unreopenable calibration yields `NO_DECISION`. A measured candidate regression yields
-`FAIL`. Quality `PASS` is still only one prerequisite alongside execution, graph, speed,
-identity, and reproduction evidence.
+`FAIL`. Quality `PASS` is still only one prerequisite alongside execution, speed, audit,
+and identity evidence. It is also the leg of the graph proof that catches a stale replay:
+a candidate that is captured but returns its capture-time answer passes the execution
+check and fails here.
 
 ## Honest limits
 

@@ -11,6 +11,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from cacheon.audit_gate import infrastructure_failure
+
 
 @dataclass(frozen=True)
 class QualificationContinuationRunnerSeams:
@@ -98,6 +100,31 @@ def run_continuation_quality_stage(
     """Resume or execute speed, audit, and pristine-T exactly as before."""
 
     lifecycle = resident_lifecycle
+    audit_operation = _audit_operation_digest(value, lifecycle, seams)
+    audit_state = (
+        None if continuation is None else continuation.load_audit(audit_operation)
+    )
+    if quality_state is None:
+        # Charge completed work before launch, excluding downtime between durable
+        # stages. An expired operator session must not buy a replacement B/C/B'.
+        speed = resident_speed_witness
+        used = speed.completed_monotonic_s - speed.started_monotonic_s
+        if audit_state is not None:
+            used += audit_state.audit_completed - audit_state.audit_started
+        remaining = value.resident_speed_plan.policy.max_qualification_seconds - used
+        now = float(executor.manager.clock())
+        last = max(speed.completed_monotonic_s,
+                   audit_state.audit_completed if audit_state is not None else 0.0)
+        if not math.isfinite(now) or now < last:
+            raise seams.qualification_continuation_error(
+                "current clock predates retained qualification; refusing new work"
+            )
+        deadline = min(deadline, now + remaining)
+        if not math.isfinite(remaining) or deadline <= now:
+            raise seams.qualification_continuation_error(
+                "retained qualification exhausted its execution budget"
+            )
+
     def finish_resident_audit(
         audit_witnesses: dict[str, Any],
         audit_started: float,
@@ -105,13 +132,15 @@ def run_continuation_quality_stage(
         teardown: Any,
     ) -> QualificationContinuationStageResult:
         audit = audit_witnesses[value.candidates[0].selected_delta_digest]
+        # The stage exit re-checks this pair against the runner's own vocabulary.
+        failed = audit.decision is seams.qualification_decision.FAIL
         terminal = seams.qualification_stage_exit_type(
             seams.qualification_authority_digest(value),
             value.prepared.source.digest,
             value.candidates[0].selected_delta_digest,
             "audit",
-            seams.qualification_decision.FAIL,
-            "slot_audit_failed",
+            audit.decision,
+            "slot_audit_failed" if failed else "audit_not_covered",
             resident_speed_witness,
             audit,
             audit_started,
@@ -132,8 +161,6 @@ def run_continuation_quality_stage(
 
     if quality_state is not None:
         assert continuation is not None
-        audit_operation = _audit_operation_digest(value, lifecycle, seams)
-        audit_state = continuation.load_audit(audit_operation)
         if audit_state is None:
             raise seams.qualification_continuation_error(
                 "quality continuation exists without durable audit completion"
@@ -199,11 +226,6 @@ def run_continuation_quality_stage(
         t_pre, t_post = reference_execution.device_receipts
     else:
         with executor.exclusive_transaction():
-            audit_operation = _audit_operation_digest(value, lifecycle, seams)
-            audit_state = (
-                None if continuation is None
-                else continuation.load_audit(audit_operation)
-            )
             if audit_state is None:
                 audit_completion: list[float] = []
                 audit_nonce = (
@@ -236,6 +258,17 @@ def run_continuation_quality_stage(
                 audit_started = audit_state.audit_started
                 audit_completed = audit_state.audit_completed
                 audit_last_completed = audit_state.audit_last_completed
+            for audit in audit_witnesses.values():
+                unavailable = infrastructure_failure(
+                    [row.to_gate_dict() for row in audit.receipts],
+                    min_calls=audit.policy.minimum_calls,
+                    expected_slots=audit.policy.expected_slots,
+                    expected_member_count=audit.policy.expected_member_count,
+                )
+                if unavailable is not None:
+                    raise seams.qualification_continuation_error(
+                        "slot audit evidence unavailable: " + unavailable
+                    )
             if any(
                 row.decision is not seams.qualification_decision.PASS
                 for row in audit_witnesses.values()

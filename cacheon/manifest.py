@@ -117,6 +117,7 @@ class CompetitionEntry:
 
     target: str
     mode: str
+    arena: str = ""
 
 
 @dataclass(frozen=True)
@@ -360,7 +361,7 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
             isinstance(competition_raw, dict),
             "top-level 'competition' must be a {target, mode} table",
         )
-        unknown = set(competition_raw) - {"target", "mode"}
+        unknown = set(competition_raw) - {"target", "mode", "arena"}
         _require(not unknown, f"competition has unknown keys: {sorted(unknown)}")
 
         raw_target = competition_raw.get("target")
@@ -387,7 +388,12 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
             mode in {"slot", "atomic", "system"},
             "competition 'mode' must be 'slot', 'atomic', or legacy 'system'",
         )
-        competition = CompetitionEntry(target=target, mode=mode)
+        arena = competition_raw.get("arena", "")
+        _require(
+            isinstance(arena, str) and (not arena or bool(re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,255}", arena))),
+            "competition 'arena' must be a canonical arena identifier",
+        )
+        competition = CompetitionEntry(target=target, mode=mode, arena=arena)
 
     _require(
         "dep_patches" not in data,

@@ -9,7 +9,7 @@ startup (in spawned children too), so this module loads everywhere.
 
 At startup sglang is not yet imported, and importing it here would be heavy and
 fragile. So instead we register a meta-path finder that defers patching until
-``sglang.srt.layers.activation`` is actually imported, then runs ``seam.activate``
+a module the seam table names is actually imported, then runs ``seam.activate``
 against the freshly-loaded module. ``seam.activate`` is env-driven, so a baseline
 process (CACHEON_ACTIVE unset) just installs a pass-through dispatcher.
 """

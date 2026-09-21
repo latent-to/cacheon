@@ -78,10 +78,6 @@ def _collective_descriptor(
     world_size: int,
 ) -> CallDescriptor:
     dimensions: dict[str, Any] = {}
-    if slot_name == "moe.fused_experts_reduce":
-        # These two contracts explicitly exclude expert parallel dispatch/combine.
-        # EP is not a semantic dimension of a bare all-reduce or AR+norm call.
-        dimensions["ep_size"] = 1
     aliases = {
         "alignment": "alignment", "batch_size": "batch_size", "batch": "batch_size",
         "block_size": "block_size", "head_dim": "head_dim", "kv_len": "kv_len",
@@ -163,8 +159,7 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
 
     Slot-driven via the slot's ``collective_partial`` (the fp32 tensor whose cross-rank
     SUM is the reference) and ``invoke_collective`` (how to call the kernel with the group),
-    so this handles a bare all-reduce AND a block that owns its trailing reduce
-    (moe.fused_experts_reduce) without hard-coding either contract.
+    so no collective contract is hard-coded here.
 
     ``run_mode`` separates three distinct claims: ``single`` is one clean-room call;
     ``temporal_eager`` is an unsynchronized multi-call burst that exposes protocol
@@ -359,8 +354,8 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                             last_error or "could not generate fresh graph inputs"
                         )
 
-            # (prepare, forward) collective blocks (e.g. moe.fused_experts_reduce): run
-            # the miner's weight-prep on THIS rank's shard before the forward.
+            # (prepare, forward) collective blocks: run the miner's weight-prep on
+            # THIS rank's shard before the forward.
             if (
                 prepare_fn is not None
                 and slot.invoke_prepare is not None
@@ -378,8 +373,7 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 prepared_cache[prepare_key] = (prepared, static_inputs)
 
             # Validator-owned output buffer(s). Single-output slots keep the original
-            # tensor-valued call shape; multi-output slots (e.g. ar_residual_rmsnorm's
-            # [norm_out, new_residual]) receive the list.
+            # tensor-valued call shape; multi-output slots receive the list.
             output_contract = slot.output_contract(inputs)
             allocation = allocate_output_spec(
                 output_contract,
@@ -516,9 +510,8 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
             )
 
         # PHASE 2 — trusted references + comparison, after the whole burst: the fp32
-        # cross-rank SUM of each rank's partial, then the slot's trusted post-reduce
-        # math (collective_finish) if it does local work after the sum (residual add /
-        # norm). No finish -> the sum IS the single expected output (bare all-reduce).
+        # cross-rank SUM of each rank's partial is the single expected output, unless
+        # the slot supplies its complete distributed oracle (collective_reference).
         passed, max_abs, score, detail, metric = True, 0.0, 1.0, "", "ratio"
         eager_passed = True
         replay_passed = True
@@ -545,9 +538,9 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 # only on the pre-candidate snapshot, then the validator-owned group
                 # performs the fp32 cross-rank reference reduce.
                 if slot.collective_reference is not None:
-                    refs = slot.collective_reference(
-                        reference_inputs, dist.group.WORLD, rank, world_size
-                    )
+                    refs = slot.collective_reference(reference_inputs, dist.group.WORLD, rank, world_size)
+                    if slot.graded_reference is not None:
+                        refs = slot.graded_reference(reference_inputs, checked_outs, refs)
                 else:
                     partial = (
                         slot.collective_partial(reference_inputs, None)
@@ -556,11 +549,7 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                     )
                     summed = partial.detach().float().clone()
                     dist.all_reduce(summed, op=dist.ReduceOp.SUM)
-                    refs = (
-                        slot.collective_finish(reference_inputs, summed, None)
-                        if slot.collective_finish is not None
-                        else [summed]
-                    )
+                    refs = [summed]
                 current = _compare_outputs(
                     checked_outs, list(refs), tolerance_for=slot.tolerance_for, correctness=slot.correctness
                 )

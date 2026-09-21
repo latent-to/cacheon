@@ -14,10 +14,10 @@ receipt files could pass a candidate that sat outside the graph.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from cacheon._strict import NODE_ADDRESS
 from cacheon.eval.continuation_codec import ContinuationCodec
 
 # Sentinel for "not observable", distinct from an observed count of zero. A
@@ -27,7 +27,6 @@ UNOBSERVED = -1
 
 MAX_EXECUTION_TEXT = 256
 MAX_SKIPPED_REASONS = 4
-_SLOT = re.compile(r"[A-Za-z0-9_.\-]{1,128}\Z")
 
 
 def _text(value: object, field: str) -> str:
@@ -47,7 +46,7 @@ class SlotExecution:
     skipped: tuple[str, ...] = ()  # why live calls routed to stock instead
 
     def __post_init__(self) -> None:
-        if type(self.slot) is not str or _SLOT.fullmatch(self.slot) is None:
+        if type(self.slot) is not str or NODE_ADDRESS.fullmatch(self.slot) is None:
             raise ValueError("resident execution slot is invalid")
         if type(self.calls) is not int or self.calls < UNOBSERVED:
             raise ValueError("resident execution calls is invalid")

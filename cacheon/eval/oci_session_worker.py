@@ -27,7 +27,6 @@ from typing import Any, Iterator
 
 from cacheon.eval.engine_worker import (
     CandidateExecutionCoverageError,
-    _environment,
     _path_mount_is_read_only as _path_is_read_only,
 )
 from cacheon.eval.oci_session_protocol import (
@@ -65,7 +64,6 @@ from cacheon.eval.resident_execution_evidence import (
     ResidentExecutionEvidence,
     summarize_rank_acks,
 )
-from cacheon.seams import seam_binding_environment
 
 
 CONTAINER_TREE_PATH = "/cacheon/engine-tree"
@@ -550,27 +548,15 @@ def _engine_session(
 
     session_protocol = os.environ.get("CACHEON_SESSION_PROTOCOL", "ordinary")
     reference_mode = session_protocol == "reference"
-    if reference_mode and config.seam_bindings:
-        raise SessionWorkerError(
-            "pristine reference engine config must not select seam bindings"
-        )
-    gate_environment = seam_binding_environment(
-        () if reference_mode else config.seam_bindings
-    )
-    with _environment(**gate_environment):
-        if reference_mode:
-            os.environ["PYTHONPATH"] = ""
-        else:
-            _prepare_descendant_bootstrap()
-        from cacheon.manifest import load_manifest
+    if reference_mode:
+        os.environ["PYTHONPATH"] = ""
+    else:
+        _prepare_descendant_bootstrap()
+    from cacheon.manifest import load_manifest
 
-        tree_root = Path(getattr(tree, "root"))
-        runtime_manifest = getattr(tree, "runtime_manifest", None)
-        manifest = (
-            load_manifest(tree_root)
-            if runtime_manifest is not None
-            else None
-        )
+    tree_root = Path(getattr(tree, "root"))
+    runtime_manifest = getattr(tree, "runtime_manifest", None)
+    manifest = load_manifest(tree_root) if runtime_manifest is not None else None
     active = bool(manifest is not None and manifest.ops)
     framework_mode = bool(
         manifest is not None
@@ -589,7 +575,6 @@ def _engine_session(
         moe_runner_backend=config.moe_runner_backend,
         disable_custom_all_reduce=config.disable_custom_all_reduce,
         extra_engine_kwargs=dict(config.engine_kwargs),
-        seam_bindings=config.seam_bindings,
         seed=0,
         framework_mode=framework_mode,
         isolate=True,
@@ -1319,12 +1304,12 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                 except CandidateExecutionCoverageError as exc:
                     if audit_policy is None:
                         raise
-                    # The audit gate already treats an empty policy-bound receipt
-                    # set as candidate FAIL. Preserve the exact execution cause in
-                    # captured stderr while allowing the typed FAIL witness to cross
-                    # the worker boundary instead of converting it into HOLD/retry.
+                    # The audit gate grades an empty policy-bound receipt set
+                    # NO_DECISION. Preserve the exact execution cause in captured
+                    # stderr while the typed witness crosses the worker boundary,
+                    # so the host grades it instead of a transport failure.
                     print(
-                        f"CACHEON-AUDIT-CANDIDATE-FAIL: {exc}",
+                        f"CACHEON-AUDIT-NOT-COVERED: {exc}",
                         file=sys.stderr,
                         flush=True,
                     )

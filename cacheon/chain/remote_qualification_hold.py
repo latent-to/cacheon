@@ -33,11 +33,28 @@ _MAX_FAILURE_MESSAGE_CHARS = 16_644
 class RemoteQualificationHoldReason(str, Enum):
     """Closed worker reasons that preserve the exact qualification request."""
 
+    # No worker on this source produces the three graph reasons. They stay because
+    # durable recovery rows, and payloads from a pod on older source, carry them
+    # and must still reopen.
     GRAPH_EVIDENCE_INCOMPLETE = "graph_evidence_incomplete"
     GRAPH_EVIDENCE_UNAVAILABLE = "graph_evidence_unavailable"
     GRAPH_EXIT_PUBLICATION_AMBIGUOUS = "graph_exit_publication_ambiguous"
     RESIDENT_EVIDENCE_UNAVAILABLE = "resident_evidence_unavailable"
     QUALIFICATION_WORKER_ERROR = "qualification_worker_error"
+
+
+@dataclass(frozen=True)
+class RemoteQualificationWorkerHold:
+    """What a worker returns in place of a run when the request must be held.
+
+    The authenticated adapter captures it as a ``RemoteQualificationHoldProduct``,
+    whose constructor validates every field; this only carries them that far.
+    """
+
+    reason: RemoteQualificationHoldReason
+    diagnostic_digest: str
+    failure_type: str = ""
+    failure_message: str = ""
 
 
 def _digest(value: object, field: str) -> str:
@@ -376,6 +393,7 @@ def is_exact_remote_stage_payload(payload: object, stage: object) -> bool:
 __all__ = [
     "RemoteQualificationHoldProduct",
     "RemoteQualificationHoldReason",
+    "RemoteQualificationWorkerHold",
     "RemoteEvaluationResponsePayload",
     "capture_remote_qualification_hold",
     "durable_remote_qualification_hold_reason",

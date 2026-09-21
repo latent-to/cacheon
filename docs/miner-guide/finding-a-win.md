@@ -66,8 +66,8 @@ where to invest, not evidence the candidate won.
 Promising classes include:
 
 - fuse operations already contained in one registered slot;
-- overlap expert compute with the trailing reduction in
-  `moe.fused_experts_reduce`;
+- overlap the routing head with expert compute and the weighted combine in
+  `moe.fused_routed_experts`;
 - reduce memory round-trips inside a collective epilogue;
 - specialize a variant for a provably disjoint shape/topology domain;
 - improve a model-specific score or quantized epilogue while retaining the

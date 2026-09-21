@@ -175,7 +175,15 @@ Credit uses logarithmic speedup, a submission-time stall multiplier, and
 exponential half-life decay as defined in
 [Legacy V1](../reference/emissions-policy.md#legacy-v1). The existing
 `crowned_block` wire field carries the finalized submission block for compatibility;
-evaluation delay cannot reset reward age. Duplicate packaging earns once.
+publication uses a separate confirmed decay-start clock without rewriting that
+submission block. Duplicate packaging earns once.
+
+For static arena allocation, the waiting-bonus strength is also selected at that
+finalized submission block. A future `stall_bonus_ppm: 250000` settings row reduces
+the additional bonus to one quarter without changing earlier claims, speedup
+scoring or decay. It only changes the split inside each arena. See
+[Static allocation configuration](chain-loop.md#static-allocation-configuration)
+for registration, evidence inspection and future updates.
 
 ## Legacy V1 discovery bounties
 
@@ -349,6 +357,11 @@ stateDiagram-v2
 only observes it. At or after the deadline, absent matching readback becomes `held` rather
 than blindly resubmitting.
 
+Journal readers also accept the follower's `block_inclusion` confirmations. Their
+`confirmed_block` cannot precede submission; `confirmed_last_update=0` means active
+weights have not been recorded by that confirmation. Inclusion and effective chain
+weights remain separate observations, and the offer producer can reopen either form.
+
 On every non-dry invocation, `set-weights` and `follow-weights` resume any retained
 `intent` or `pending` projection before adopting a new one. Chain scope, netuid
 and signer must still match. A refreshed offer cannot replace an in-flight vector.
@@ -356,6 +369,10 @@ An authority mismatch or a direct low-level call bypassing resume fails closed.
 
 The reconciler can confirm a preexisting chain match without signing. It refuses
 a real submission with zero `crown_count`, a different signer, or stale authority.
+Before creating submission intent, it checks the chain's current weight rate limit
+at the finalized signing height. A changed offer inside that window produces a
+retryable error with the first eligible block and leaves the journal unchanged;
+it must not become a `pending` transaction that the SDK never submitted.
 
 If the journal is held, investigate and preserve the record. To append an audited release
 without submitting:
@@ -419,6 +436,15 @@ config>`, composes the supervisor's weights stage against the same sealed screen
 and weights authorities on a loop, pushes to `serve-weights`, and never signs.
 Exactly one producer runs per intake database: while it is armed, the standing
 supervisor's `enable_weights` stays false.
+
+Weights-stage config `cacheon-standing-weights-config-v2` adds the absolute
+`confirmation_journal` path to the existing signer's SQLite journal. The file
+must be owner-controlled. Before projecting, the producer reconciles confirmed
+rows against the expected validator, chain scope and netuid, then records the
+first qualifying publication block for each pending PASS. The journal cursor
+and starts survive restart; changing the journal path or truncating its history
+is an error. Schema v1 remains readable without journal reconciliation. Direct
+publication records the same decay start transactionally with its journal CAS.
 
 ```bash
 # one-time on the gateway host: dedicated HTTP authority (not a chain signer)

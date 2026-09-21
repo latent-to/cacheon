@@ -15,12 +15,59 @@ from __future__ import annotations
 
 import operator
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from itertools import combinations
 from typing import Any
 
 from .stack_identity import require_sha256_hex
 
 _ZERO_DIGEST = "0" * 64
+# One grammar wherever a slot name crosses a boundary: dotted segments of a served
+# model's module name, where a whole segment may be ``*``. Registered slot ids are
+# the star-free subset. Seven hand-copied id regexes each refused the star.
+NODE_ADDRESS = re.compile(
+    r"(?=.{1,128}\Z)(?:\*|[0-9A-Za-z_\-]+)(?:\.(?:\*|[0-9A-Za-z_\-]+))*\Z"
+)
+
+
+def members_overlap(left: Iterable[str], right: Iterable[str]) -> bool:
+    """Whether two member sets claim a common unit of the model.
+
+    Members are slot ids or node addresses. Two names overlap when they are equal or
+    one sits at or under the other in the module tree, ``*`` standing for any one
+    segment. No registered slot id is a dotted prefix of another, so for slot ids
+    this is set intersection, which is what the intake and settlement fences used
+    before node addresses existed.
+    """
+
+    return any(
+        all(a == b or "*" in (a, b) for a, b in zip(x.split("."), y.split(".")))
+        for x in left
+        for y in right
+    )
+
+
+def require_node_members(
+    declared: Iterable[str], *, roots: tuple[str, ...], error: type[Exception]
+) -> tuple[str, ...]:
+    """Sorted unique node addresses at or under ``roots``, none containing another.
+
+    The inner node of an overlapping pair would run as the candidate inside the
+    outer node's stock reference (``sglang_nodes.bind`` refuses the same overlap).
+    """
+
+    members = tuple(sorted(set(declared)))
+    for member in members:
+        if NODE_ADDRESS.fullmatch(member) is None or not any(
+            member == root or member.startswith(root + ".") for root in roots
+        ):
+            raise error(f"node addresses must sit under {roots!r}; manifest declares {member!r}")
+    for left, right in combinations(members, 2):
+        if members_overlap((left,), (right,)):
+            raise error(
+                f"node addresses {left!r} and {right!r} overlap; claim the wider node alone"
+            )
+    return members
 
 
 def require_digest(

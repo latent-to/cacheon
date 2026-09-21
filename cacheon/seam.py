@@ -1,6 +1,6 @@
 """Shared seam activation, used by both the .pth bootstrap and the plugin hook.
 
-Installs the validator-owned dispatcher into SiluAndMul and, when the env marks
+Installs the validator-owned dispatchers from the seam table and, when the env marks
 this process as the candidate, loads + enables the vetted bundle. Driven by env
 so the same code serves both runs of the two-launch eval:
 
@@ -98,6 +98,7 @@ def mark_driver() -> None:
 # Bundle is loaded once per process even though activate() may run many times
 # (once per watched module import) and load_candidate_bundle() is re-entrant.
 _bundle_loaded = False
+_resident_bundle: str | None = None
 
 
 def activate() -> None:
@@ -196,19 +197,21 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
     The caller must immediately recapture before serving another batch.
     """
 
-    global _bundle_loaded
+    global _bundle_loaded, _resident_bundle
     import time
 
     from cacheon.registry import REGISTRY
 
     started = time.perf_counter()
+    reuse = bundle is not None and bundle == _resident_bundle
     REGISTRY.disable()
-    REGISTRY.clear()
     _bundle_loaded = False
-    # Drop prior candidates' imported kernel modules so a same-stem source file
-    # re-executes instead of aliasing a previous miner's module.
-    for name in [k for k in list(sys.modules) if k.startswith("cacheon_kernel_")]:
-        sys.modules.pop(name, None)
+    if bundle and not reuse:
+        REGISTRY.clear()
+        _resident_bundle = None
+        # A different miner with the same source stem must get a fresh module.
+        for name in [k for k in list(sys.modules) if k.startswith("cacheon_kernel_")]:
+            sys.modules.pop(name, None)
     result: dict[str, object] = {"bundle": bundle or "", "slots": []}
     if bundle:
         from cacheon.manifest import load_manifest
@@ -222,9 +225,17 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
             raise RuntimeError(
                 "engine-setup bundles are not swappable in the screen tier"
             )
+        from cacheon.target_catalog import SINGLETON_TARGET_IDS
+
+        if any(op.slot not in SINGLETON_TARGET_IDS for op in manifest.ops):
+            # sglang_nodes.bind runs only inside ModelRunner.load_model.
+            raise RuntimeError(
+                "node-address bundles are not swappable in the screen tier"
+            )
         os.environ["CACHEON_BUNDLE_PATH"] = bundle
         os.environ["CACHEON_ACTIVE"] = "1"
-        result["slots"] = _enable_loaded_bundle(bundle)
+        result["slots"] = _enable_loaded_bundle(bundle, reuse=reuse)
+        _resident_bundle = bundle
     else:
         os.environ.pop("CACHEON_BUNDLE_PATH", None)
         logger.info("cacheon: resident swap -> stock dispatch")
@@ -278,7 +289,7 @@ def _load_candidate_bundle_locked(
         raise
 
 
-def _enable_loaded_bundle(bundle: str) -> list[str]:
+def _enable_loaded_bundle(bundle: str, *, reuse: bool = False) -> list[str]:
     """Load and enable one bundle, recording what happened. Returns its slots.
 
     The only path allowed to bring a bundle live. There used to be two, and the
@@ -295,7 +306,8 @@ def _enable_loaded_bundle(bundle: str) -> list[str]:
     # the spawn-safe seam is installed.
     from cacheon.registry import REGISTRY
 
-    _load_bundle_into_registry(bundle)
+    if not reuse:
+        _load_bundle_into_registry(bundle)
     REGISTRY.enable()
     _bundle_loaded = True
     # Between enable and first dispatch is the only window where every entry is
@@ -324,7 +336,6 @@ def _load_bundle_into_registry(bundle: str) -> None:
     from cacheon.manifest import load_manifest, resolve_source
     from cacheon.registry import REGISTRY, KernelImpl, eligibility_from_metadata
     from cacheon.sandbox import callable_from, load_module, scan_path, scan_tree
-    from cacheon.slots import SLOTS
 
     manifest = load_manifest(bundle)
     if any(op.setup for op in manifest.ops) and not _truthy(
@@ -375,8 +386,6 @@ def _load_bundle_into_registry(bundle: str) -> None:
     # does not make candidate execution trusted—the later OCI/no-egress boundary does.
     setup_done: set[tuple[Path, str]] = set()
     for op in manifest.ops:
-        if op.slot not in SLOTS:
-            continue
         src = resolve_source(bundle, op)
         scan = scan_path(src)
         if not scan.ok:  # defense-in-depth: re-scan in the worker before load

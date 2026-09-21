@@ -244,7 +244,7 @@ def test_child_death_reports_only_receipt_backed_candidate_failure(
         root = tmp_path / "receipts" / "1"
         root.mkdir(parents=True)
         (root / "failed.rank0.json").write_text(json.dumps({
-            "failure_owner": owner, "rank": 0, "slot": "moe.fused_experts_reduce",
+            "failure_owner": owner, "rank": 0, "slot": "moe.fused_experts",
             "error_type": "AssertionError", "error": "top-k width mismatch",
             "source": "kernels/moe.py", "line": 1005,
         }))

@@ -66,6 +66,8 @@ _OWNER_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 _CONFIG_FIELDS = frozenset(
     {
+        # Never defaulted: the first dispatcher to claim the pre-namespace queue keeps it.
+        "accept_legacy_bundles",
         "arena_service_manifest",
         "credential_digest",
         "credential_path",
@@ -245,6 +247,8 @@ def load_config(path: str | os.PathLike[str]) -> DispatcherConfig:
     except Exception as exc:
         raise MainnetScreenDispatcherError(f"config cannot reopen: {exc}") from None
     row = _closed(raw, _CONFIG_FIELDS, "dispatcher config")
+    if type(row["accept_legacy_bundles"]) is not bool:
+        raise MainnetScreenDispatcherError("accept_legacy_bundles must be boolean")
     if row["schema"] != CONFIG_SCHEMA:
         raise MainnetScreenDispatcherError("dispatcher config schema is unsupported")
 
@@ -626,6 +630,7 @@ def build_dispatcher(
         # singletons until the cohort fan-out exists at that boundary; retire
         # this pin in the same change that implements it.
         "qualification_max_members": 1,
+        "accept_legacy_bundles": config.raw["accept_legacy_bundles"],
         "heartbeat_interval_s": config.heartbeat_interval_s,
         "heartbeat_join_timeout_s": config.heartbeat_join_timeout_s,
         "lock_attempts": config.lock_attempts,

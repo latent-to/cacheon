@@ -241,7 +241,6 @@ def build_session_environment(
     receipt_dir: str,
     audit_policy: object,
     install_seams: bool,
-    gate_environment: dict[str, str],
 ) -> dict[str, str]:
     """The environment the in-container engine and its TP ranks inherit.
 
@@ -270,7 +269,6 @@ def build_session_environment(
         # bundle and have nothing to wrap, so it is inert there regardless.
         "CACHEON_KERNEL_TRACE": "1" if audited else "",
         "SGLANG_PLUGINS": "cacheon" if install_seams else "",
-        **gate_environment,
     }
 
 
@@ -331,20 +329,32 @@ def _require_execution_completion(
     active_receipts: list[dict],
     expected_slots: list[str],
     expected_member_count: int,
+    require_captured: bool = False,
 ) -> str:
     """Fail closed unless every active member completed every registered slot."""
 
     from cacheon import receipts
 
     completed = receipts.collect(receipt_dir, "completed")
-    passed, detail = receipts.completed_gate(
-        completed,
+    coverage = dict(
         expected_slots=expected_slots,
         member_receipts=active_receipts,
         expected_member_count=expected_member_count,
     )
+    # A completion counts on a graphs-on run only if the dispatcher saw the candidate
+    # invoked inside a capture: one absent from the graph is timed as stock while
+    # its eager-warmup completion sits on disk.
+    captured = [row for row in completed if row.get("captured") is True]
+    passed, detail = receipts.completed_gate(
+        captured if require_captured else completed, **coverage
+    )
     if not passed:
         observed = f"observed_receipts=completed:{len(completed)}"
+        if require_captured:
+            observed += (
+                "; never invoked inside a CUDA-graph capture="
+                f"{len(completed) - len(captured)}"
+            )
         message = (
             "candidate engine run failed execution coverage: "
             + detail
@@ -357,9 +367,13 @@ def _require_execution_completion(
         )
         # Total silence, behind an active-member check that already passed, is
         # the candidate's own defect: the seam wrote ``active`` into this very
-        # root, so the path works and nothing dispatched. Anything partial is
-        # ambiguous and stays infrastructure.
-        if not completed:
+        # root, so the path works and nothing dispatched. So is a candidate that ran
+        # everywhere except inside a capture: the scored window replays graphs, so
+        # in it the candidate never executes. Anything partial is ambiguous and
+        # stays infrastructure.
+        if not completed or (
+            require_captured and receipts.completed_gate(completed, **coverage)[0]
+        ):
             raise CandidateNeverExecutedError(
                 message + "; " + CANDIDATE_NEVER_EXECUTED_MARKER
             )
@@ -374,8 +388,13 @@ def _complete_candidate_execution(
     expected_slots: list[str],
     expected_member_count: int,
     audit_policy: object | None,
+    graphs: bool,
 ) -> None:
-    """Keep missing execution terminal only inside the independent audit role."""
+    """Keep missing execution terminal only inside the independent audit role.
+
+    A graphs-on run is what gets timed, so there the candidate must have been
+    invoked inside a capture. This receipt is the graph proof for a node bundle.
+    """
 
     try:
         _require_execution_completion(
@@ -383,16 +402,18 @@ def _complete_candidate_execution(
             active_receipts=active_receipts,
             expected_slots=expected_slots,
             expected_member_count=expected_member_count,
+            require_captured=graphs,
         )
         _emit_execution_summary(receipt_dir)
     except CandidateExecutionCoverageError as exc:
         if audit_policy is None:
             raise
-        # The host audit gate grades an empty policy-bound receipt set FAIL.
+        # The host audit gate grades an empty policy-bound receipt set
+        # NO_DECISION (a candidate FAIL until the 2026-09-18 owner ruling).
         # This module is the file bind-mounted into the sealed OCI image, so the
         # conversion must live here rather than in the image-owned session loop.
         print(
-            f"CACHEON-AUDIT-CANDIDATE-FAIL: {exc}",
+            f"CACHEON-AUDIT-NOT-COVERED: {exc}",
             file=sys.stderr,
             flush=True,
         )
@@ -475,11 +496,6 @@ def isolated_engine_session(
 
         seam.mark_driver()
         receipts = receipt_module
-    from cacheon.seams import seam_binding_environment
-
-    gate_environment = seam_binding_environment(
-        getattr(cfg, "seam_bindings", ()) if install_seams else ()
-    )
     receipt_dir = tempfile.mkdtemp(prefix="cacheon_receipts_") if active else ""
     try:
         session_environment = build_session_environment(
@@ -489,7 +505,6 @@ def isolated_engine_session(
             receipt_dir=receipt_dir,
             audit_policy=audit_policy,
             install_seams=install_seams,
-            gate_environment=gate_environment,
         )
         with _environment(**session_environment):
             import sglang as sgl
@@ -546,6 +561,7 @@ def isolated_engine_session(
                             expected_slots=expected_slots,
                             expected_member_count=expected_members,
                             audit_policy=audit_policy,
+                            graphs=not kwargs.get("disable_cuda_graph", False),
                         )
 
                 def collect_audits() -> list[dict]:

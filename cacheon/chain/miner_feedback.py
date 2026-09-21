@@ -150,6 +150,14 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
 
 _GUIDANCE.update(
     {
+        "audit_not_covered": (
+            "The untimed audit compared too few calls to grade this kernel.",
+            "This is not a kernel fault; the validator re-evaluates the bundle.",
+        ),
+        "slot_audit_failed": (
+            "In-engine outputs differed from stock beyond the slot's tolerance.",
+            "Compare against stock at the live shapes; rare near misses pass.",
+        ),
         "candidate_exception": (
             "A typed rank receipt proves the selected candidate raised.",
             "Read the attached failure product and request worker log.",

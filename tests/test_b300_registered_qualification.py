@@ -31,10 +31,6 @@ from cacheon.eval.b300_qualification_deployment import B300QualificationCohort
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationDeploymentError,
 )
-from cacheon.eval.b300_qualification_graph_store_io import (
-    B300QualificationGraphEvidenceHold,
-    B300QualificationGraphEvidenceStoreError,
-)
 from cacheon.eval.calibration import (
     CalibrationContext,
     CalibrationEvidenceSet,
@@ -47,12 +43,8 @@ from cacheon.eval.calibration import (
 from cacheon.eval.crossover_runtime import ResidentArmPlan, ResidentSpeedPolicy
 from cacheon.eval.engine_launch import TrustedLaunchBinding
 from cacheon.eval.oci_backend import expected_runtime_preflight
-from cacheon.eval.qualification import GraphVariantRequirement, ReferenceManifest
-from cacheon.eval.qualification_intake import (
-    GraphShapeObservation,
-    GraphVariantObservation,
-    QualificationReservation,
-)
+from cacheon.eval.qualification import ReferenceManifest
+from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.qualification_runner import SpeedStageDisposition
 from tests.support.b300 import (
     GLM53_REGISTERED_TARGET_IDS,
@@ -177,57 +169,6 @@ def _cohort(candidate: ArenaCandidateBinding, policy_digest: str) -> B300Qualifi
         ),
         "primary",
     )
-
-
-def _graph_facts_for_members(
-    members: tuple[str, ...],
-) -> registered.B300FocusedGraphFacts:
-    requirements = []
-    observations = []
-    for member_id in members:
-        descriptors = tuple(
-            sorted(_h(f"{member_id}-shape-{index}") for index in range(3))
-        )
-        requirements.append(
-            GraphVariantRequirement(
-                member_id,
-                "default",
-                descriptors,
-                True,
-                descriptors,
-            )
-        )
-        observations.append(
-            GraphVariantObservation(
-                member_id,
-                "default",
-                True,
-                True,
-                tuple(
-                    GraphShapeObservation(
-                        descriptor,
-                        True,
-                        True,
-                        True,
-                        3,
-                        True,
-                    )
-                    for descriptor in descriptors
-                ),
-            )
-        )
-    return registered.B300FocusedGraphFacts(
-        3, tuple(requirements), tuple(observations)
-    )
-
-
-def _focused_graph_facts(
-    candidate: ArenaCandidateBinding,
-    _prepared,
-    model_profile_key: str,
-) -> registered.B300FocusedGraphFacts:
-    assert model_profile_key in {"GLM-5.3-NVFP4", "MiniMax-M3"}
-    return _graph_facts_for_members(candidate.reservation.target_members)
 
 
 @dataclass
@@ -386,8 +327,6 @@ def _harness(
         source_resolver=_EmptyResolver(),
         candidate_binding_builder_digest=_h("candidate-binding-builder"),
         candidate_binding_builder=bind_candidate,
-        graph_facts_builder_digest=_h("ordinary-focused-graph-builder"),
-        graph_facts_builder=_focused_graph_facts,
         evidence_root=evidence_root,
         reference_manifest=reference,
         calibration_threshold_policy=threshold,
@@ -446,8 +385,7 @@ def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identi
     # when the cross-arena catalog does.
     expected = (
         "activation.silu_and_mul", "collective.all_reduce",
-        "collective.ar_residual_rmsnorm", "moe.fused_experts",
-        "moe.fused_experts_reduce", "norm.rmsnorm",
+        "moe.fused_experts", "norm.rmsnorm",
     )
     snapshot_ids = tuple(
         row["target_id"]
@@ -455,7 +393,7 @@ def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identi
     )
     assert M3_REGISTERED_TARGET_IDS == expected
     assert set(M3_REGISTERED_TARGET_IDS) <= set(snapshot_ids)
-    assert len(M3_REGISTERED_TARGET_IDS) == 6
+    assert len(M3_REGISTERED_TARGET_IDS) == 4
     projection = registered.registered_b300_member_contract_projection(
         harness.inputs.catalog, M3_REGISTERED_TARGET_IDS
     )
@@ -508,9 +446,6 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     second = harness.factory.plan_builder(harness.cohort, secret)
 
     authority = first.candidates[0]
-    graph = authority.graph_requirement
-    contract = harness.inputs.catalog.require(TARGET).contract_ref
-    assert contract is not None
     assert first == second
     assert first.prepared.candidates[0].arm.transition.target_id == TARGET
     assert (
@@ -537,15 +472,11 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
         & set(first.resident_speed_plan.candidate.binding.physical_hardware.physical_gpu_ids)
     )
     assert first.audit_policies[0].expected_slots == (TARGET,)
-    assert graph.binding.target_id == TARGET
-    assert graph.binding.target_spec_digest == (
+    assert first.prepared.candidates[0].arm.transition.target_spec_digest == (
         harness.inputs.catalog.target_spec_digest(TARGET)
     )
-    assert graph.binding.members[0].contract_digest == (
-        harness.inputs.catalog.contract_digest(TARGET)
-    )
-    assert graph.binding.members[0].verification_profile_id == (
-        contract.verification_profile_id
+    assert authority.selected_delta_digest == (
+        harness.candidate.reservation.selected_delta_digest
     )
     assert authority.profile.reference is harness.inputs.reference_manifest
     assert authority.profile.calibration_digest == harness.inputs.calibration_manifest.digest
@@ -695,121 +626,6 @@ def test_registry_rejects_unknown_or_stale_authority(
                 reversed(harness.policy.target_contract_projection)
             ),
         )
-
-def test_graph_facts_cannot_relabel_another_registered_target(
-    tmp_path: Path,
-) -> None:
-    harness = _harness(tmp_path)
-
-    def wrong_target(_candidate, _prepared, _model_profile_key):
-        descriptor = _h("wrong-target-shape")
-        requirement = GraphVariantRequirement(
-            "moe.fused_experts",
-            "default",
-            (descriptor,),
-            True,
-            (descriptor,),
-        )
-        observation = GraphVariantObservation(
-            "moe.fused_experts",
-            "default",
-            True,
-            True,
-            (
-                GraphShapeObservation(
-                    descriptor,
-                    True,
-                    True,
-                    True,
-                    2,
-                    True,
-                ),
-            ),
-        )
-        return registered.B300FocusedGraphFacts(
-            2,
-            (requirement,),
-            (observation,),
-        )
-
-    inputs = replace(
-        harness.inputs,
-        graph_facts_builder_digest=_h("wrong-target-graph-builder"),
-        graph_facts_builder=wrong_target,
-    )
-    factory = registered.build_b300_registered_qualification_factory(inputs)
-    with pytest.raises(
-        B300QualificationDeploymentError,
-        match="registered profile authority failed",
-    ) as caught:
-        factory.plan_builder(harness.cohort, b"x" * 32)
-    assert isinstance(caught.value.__cause__, registered.B300RegisteredQualificationError)
-    assert "another or incomplete member" in str(caught.value.__cause__)
-
-
-def test_graph_facts_reject_duplicate_or_reordered_variants() -> None:
-    members = (
-        "collective.all_reduce",
-        "collective.ar_residual_rmsnorm",
-    )
-    facts = _graph_facts_for_members(members)
-    with pytest.raises(
-        registered.B300RegisteredQualificationError,
-        match="canonical requirement/observation coverage",
-    ):
-        registered.B300FocusedGraphFacts(
-            facts.expected_graph_replays,
-            (facts.variants[0], facts.variants[0], *facts.variants[1:]),
-            (facts.observations[0], facts.observations[0], *facts.observations[1:]),
-        )
-    with pytest.raises(
-        registered.B300RegisteredQualificationError,
-        match="canonical requirement/observation coverage",
-    ):
-        registered.B300FocusedGraphFacts(
-            facts.expected_graph_replays,
-            tuple(reversed(facts.variants)),
-            tuple(reversed(facts.observations)),
-        )
-
-
-def test_graph_evidence_hold_survives_registered_profile_resolution(
-    tmp_path: Path,
-) -> None:
-    harness = _harness(tmp_path)
-    hold = B300QualificationGraphEvidenceHold("graph attempt is still armed")
-
-    def unavailable(_candidate, _prepared, _model_profile_key):
-        raise hold
-
-    inputs = replace(
-        harness.inputs,
-        graph_facts_builder_digest=_h("held-graph-builder"),
-        graph_facts_builder=unavailable,
-    )
-    factory = registered.build_b300_registered_qualification_factory(inputs)
-    with pytest.raises(B300QualificationGraphEvidenceHold) as caught:
-        factory.plan_builder(harness.cohort, b"h" * 32)
-    assert caught.value is hold
-
-
-def test_corrupt_graph_store_state_becomes_typed_hold(
-    tmp_path: Path,
-) -> None:
-    harness = _harness(tmp_path)
-
-    def corrupt(_candidate, _prepared, _model_profile_key):
-        raise B300QualificationGraphEvidenceStoreError("corrupt graph bytes")
-
-    inputs = replace(
-        harness.inputs,
-        graph_facts_builder_digest=_h("corrupt-graph-builder"),
-        graph_facts_builder=corrupt,
-    )
-    factory = registered.build_b300_registered_qualification_factory(inputs)
-    with pytest.raises(B300QualificationGraphEvidenceHold, match="unauthenticated"):
-        factory.plan_builder(harness.cohort, b"h" * 32)
-
 
 def test_inputs_are_built_only_by_the_commissioner(tmp_path: Path) -> None:
     harness = _harness(tmp_path)

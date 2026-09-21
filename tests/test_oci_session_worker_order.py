@@ -41,7 +41,6 @@ from cacheon.eval.reference_protocol import (
     decode_reference_evidence,
     encode_reference_request,
 )
-from cacheon.seams import seam_binding_environment
 
 
 def _digest(character: str) -> str:
@@ -259,14 +258,12 @@ def test_importing_worker_loads_no_torch_sglang_or_candidate(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
+def test_session_worker_arms_the_seam_by_role_and_never_for_the_reference(
     monkeypatch, tmp_path
 ):
-    config = replace(_config(), seam_bindings=("collective",))
-    gate_names = tuple(seam_binding_environment(()))
+    config = _config()
     observed = []
-    bootstrap_gates = []
-    manifest_gates = []
+    bootstraps = []
 
     class Engine:
         def __init__(self, **_kwargs):
@@ -274,7 +271,6 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
             observed.append(
                 {
                     "active": os.environ.get("CACHEON_ACTIVE"),
-                    "gates": {name: os.environ.get(name) for name in gate_names},
                     "plugins": os.environ.get("SGLANG_PLUGINS"),
                 }
             )
@@ -285,8 +281,6 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
     monkeypatch.setitem(sys.modules, "sglang", SimpleNamespace(Engine=Engine))
     monkeypatch.setenv("CACHEON_EXTERNAL_NO_EGRESS", "1")
     monkeypatch.setenv("CACHEON_ENGINE_WORKER", "1")
-    for name in gate_names:
-        monkeypatch.setenv(name, "1")
     for name in (
         "_loopback_is_up",
         "_network_namespace_is_loopback_only",
@@ -295,11 +289,7 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
     ):
         monkeypatch.setattr(engine_policy, name, lambda: True)
     monkeypatch.setattr(
-        worker,
-        "_prepare_descendant_bootstrap",
-        lambda: bootstrap_gates.append(
-            {name: os.environ.get(name) for name in gate_names}
-        ),
+        worker, "_prepare_descendant_bootstrap", lambda: bootstraps.append(True)
     )
 
     from cacheon import manifest as manifest_module
@@ -309,18 +299,13 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
     monkeypatch.setattr(
         receipts,
         "require",
-        lambda *_args, **_kwargs: [
-            {"pid": 1, "slots": ["collective.all_reduce"]}
-        ],
+        lambda *_args, **_kwargs: [{"pid": 1, "slots": ["model.layers.*.mlp"]}],
     )
-
-    def load_manifest(_root):
-        manifest_gates.append(
-            {name: os.environ.get(name) for name in gate_names}
-        )
-        return SimpleNamespace(ops=(SimpleNamespace(setup=None),))
-
-    monkeypatch.setattr(manifest_module, "load_manifest", load_manifest)
+    monkeypatch.setattr(
+        manifest_module,
+        "load_manifest",
+        lambda _root: SimpleNamespace(ops=(SimpleNamespace(setup=None),)),
+    )
 
     baseline = SimpleNamespace(root=tmp_path / "baseline", runtime_manifest=None)
     candidate = SimpleNamespace(
@@ -332,21 +317,17 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
     with worker._engine_session(config, candidate):
         pass
     monkeypatch.setenv("CACHEON_SESSION_PROTOCOL", "reference")
-    with pytest.raises(worker.SessionWorkerError, match="reference.*seam bindings"):
-        with worker._engine_session(config, baseline):
-            pass
-    with worker._engine_session(replace(config, seam_bindings=()), baseline):
+    with worker._engine_session(config, baseline):
         pass
 
-    selected = seam_binding_environment(("collective",))
-    cleared = seam_binding_environment(())
+    # The pristine reference loads no plugin and never prepares the bootstrap its
+    # descendants would inherit, so no candidate code can reach it.
     assert observed == [
-        {"active": "0", "gates": selected, "plugins": "cacheon"},
-        {"active": "1", "gates": selected, "plugins": "cacheon"},
-        {"active": "0", "gates": cleared, "plugins": ""},
+        {"active": "0", "plugins": "cacheon"},
+        {"active": "1", "plugins": "cacheon"},
+        {"active": "0", "plugins": ""},
     ]
-    assert bootstrap_gates == [selected, selected]
-    assert manifest_gates == [selected]
+    assert bootstraps == [True, True]
 
 
 def test_preflight_frame_is_published_before_engine_candidate_or_native_entry(
@@ -564,7 +545,7 @@ def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
     config = _config()
     session, launch = "6" * 32, _digest("a")
     policy = SlotAuditPolicy(
-        "c" * 32, 250_000, 32, ("moe.fused_experts_reduce",), config.tp_size
+        "c" * 32, 250_000, 32, ("moe.fused_experts",), config.tp_size
     )
     _bind_init(monkeypatch, config, launch)
     request_row = batch_request(
@@ -632,9 +613,10 @@ def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
             engine_policy._complete_candidate_execution(
                 "receipts",
                 active_receipts=[],
-                expected_slots=["moe.fused_experts_reduce"],
+                expected_slots=["moe.fused_experts"],
                 expected_member_count=config.tp_size,
                 audit_policy=policy,
+                graphs=False,
             )
 
         yield SimpleNamespace(
@@ -688,9 +670,10 @@ def test_candidate_coverage_failure_remains_hard_error_outside_audit(monkeypatch
         engine_policy._complete_candidate_execution(
             "receipts",
             active_receipts=[],
-            expected_slots=["moe.fused_experts_reduce"],
+            expected_slots=["moe.fused_experts"],
             expected_member_count=4,
             audit_policy=None,
+            graphs=True,
         )
 
 

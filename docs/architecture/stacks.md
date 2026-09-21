@@ -211,7 +211,7 @@ After the accepted qualification evidence reopens, settlement:
 3. write the transition and settlement evidence transactionally;
 4. expose the new evaluation stack as the current incumbent.
 
-If validation, persistence, or readback fails, the old stack remains authoritative. Rollback is itself a planned, content-addressed transition rather than an in-place edit. See [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py) and [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py).
+If validation, persistence, or readback fails, the old stack remains authoritative. See [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py) and [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py).
 
 ### Failure behavior
 
@@ -235,7 +235,7 @@ There is no supported arrow from a mutable miner URL, chain record, evaluation b
 ## Source map
 
 - [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — strict manifest and contribution-reference types
-- [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) — marginal arms, cohorts, transitions, and rollback
+- [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) — marginal arms, cohorts, and transitions
 - [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic source materialization
 - [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — singleton, atomic, displacement, and conflict policy
 - [`eval/reference_quality.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_quality.py) — pristine reference quality products

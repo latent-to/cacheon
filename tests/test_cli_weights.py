@@ -124,8 +124,8 @@ class _Subtensor:
         return SCOPE.genesis_hash
 
     def get_hyperparameter(self, param_name, netuid=None, block=None):
-        assert param_name == "WeightsVersionKey"
-        return 29
+        assert param_name in {"WeightsVersionKey", "WeightsSetRateLimit"}
+        return {"WeightsVersionKey": 29, "WeightsSetRateLimit": 0}[param_name]
 
 
 def _install_chain_readback(monkeypatch, fresh_block: int = 11) -> None:

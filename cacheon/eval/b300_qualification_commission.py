@@ -50,8 +50,6 @@ from cacheon.eval.crossover_runtime import ResidentArmPlan, ResidentSpeedPolicy
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
-    LogicalHardwareSpec,
-    PhysicalHardwareBinding,
     TrustedLaunchBinding,
 )
 from cacheon.eval.marginal_runtime import MaterializedArmBinding
@@ -78,41 +76,28 @@ def _pristine_reference_authority(
     pristine_tree,
     pristine_native,
 ) -> tuple[EngineLaunchSpec, SessionExecutionPlan]:
-    """Derive pristine T without the candidate/stock seam selection.
+    """Derive pristine T on the empty stock tree.
 
     Pristine T stays anchored to the empty stock tree even when the incumbent
     carries crowned entries, so the quality/audit reference never moves with
-    the speed baseline; at genesis the two trees coincide and every replaced
-    field below is a no-op.
+    the speed baseline; at genesis the two trees coincide and T is the baseline
+    launch. Candidate code reaches an engine only through its tree, so the empty
+    tree is what keeps T stock.
     """
 
-    pristine_config = replace(
-        baseline_session_plan.engine_config,
-        seam_bindings=(),
-    )
     pristine_launch = replace(
         incumbent_launch,
         stack_digest=pristine_tree.stack_digest,
         tree_digest=pristine_tree.tree_digest,
         native_build_spec_digest=pristine_native.digest,
-        engine_config_digest=pristine_config.digest,
     )
     pristine_session_plan = replace(
         baseline_session_plan,
         launch_digest=pristine_launch.digest,
-        expected_engine_config_digest=pristine_config.digest,
-        engine_config=pristine_config,
         expected_preflight=expected_runtime_preflight(
             pristine_launch, runtime_preflight
         ),
     )
-    if (
-        pristine_config.seam_bindings
-        or pristine_launch.digest == incumbent_launch.digest
-    ):
-        raise B300QualificationCommissionError(
-            "pristine T did not remove the incumbent seam selection"
-        )
     return pristine_launch, pristine_session_plan
 
 
@@ -262,11 +247,7 @@ def compose_commissioned_qualifications(
         raise B300QualificationCommissionError(
             "hidden judge capability differs from the sealed prompt identity"
         )
-    if (
-        capabilities.source_resolver_digest != block["source_resolver_digest"]
-        or capabilities.graph_facts_builder_digest
-        != block["graph_facts_builder_digest"]
-    ):
+    if capabilities.source_resolver_digest != block["source_resolver_digest"]:
         raise B300QualificationCommissionError(
             "capability identities differ from the sealed commission block"
         )
@@ -308,14 +289,14 @@ def compose_commissioned_qualifications(
         inputs.preflight,
         lane_a_policy,
         executor_id=QUALIFICATION_EXECUTOR_ID,
-        runtime_seed_root=inputs.runtime_seed_root,
+        runtime_seed_root=inputs.runtime_seed_root, resources=inputs.authority.get("resources"),
     )
     lane_b_executor = screen_deployment._build_executor(
         inputs.root / "qualification-lane-b",
         inputs.preflight,
         lane_b_policy,
         executor_id=QUALIFICATION_EXECUTOR_ID,
-        runtime_seed_root=inputs.runtime_seed_root,
+        runtime_seed_root=inputs.runtime_seed_root, resources=inputs.authority.get("resources"),
     )
     executors = (lane_a_executor, lane_b_executor)
     try:
@@ -436,43 +417,22 @@ def _compose_locked(
     )
     engine_config = screen_deployment._engine_config(
         inputs.engine_template,
-        target_members,
         inputs.workload.cells,
         disable_cuda_graph=False,
     )
     dp_size = screen_deployment._data_parallel_size(engine_config)
-    baseline_hardware = LogicalHardwareSpec(
-        visible_gpu_count=screen_deployment.GPU_COUNT,
-        architecture=screen_deployment.ARCHITECTURE,
-        topology_class=inputs.runtime.topology_class,
-        topology_digest=inputs.topology_digest,
-        tp_size=screen_deployment.TP_SIZE,
-        ep_size=1,
-        dp_size=dp_size,
-        device_policy_digest=candidate_executor.device_policy.policy_sha256,
-    )
-    baseline_physical = PhysicalHardwareBinding(
-        physical_gpu_ids=tuple(
-            str(gpu.physical_id)
-            for gpu in candidate_executor.device_policy.expected_gpus
-        ),
-        architecture=screen_deployment.ARCHITECTURE,
-        topology_class=inputs.runtime.topology_class,
-        topology_digest=inputs.topology_digest,
-        tp_size=screen_deployment.TP_SIZE,
-        ep_size=1,
-        dp_size=dp_size,
-        device_policy_digest=candidate_executor.device_policy.policy_sha256,
+    baseline_hardware, baseline_physical = screen_deployment._hardware_bindings(
+        inputs.runtime, candidate_executor.device_policy, dp_size=dp_size,
     )
     incumbent_native = screen_deployment._native_build(
         incumbent_tree.tree_digest,
         inputs.preflight,
-        candidate_executor.config.prebuild.policy,
+        candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
     )
     pristine_native = screen_deployment._native_build(
         stock_tree.tree_digest,
         inputs.preflight,
-        candidate_executor.config.prebuild.policy,
+        candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
     )
     incumbent_launch = EngineLaunchSpec(
         runtime_digest=inputs.runtime.runtime_digest,
@@ -506,12 +466,9 @@ def _compose_locked(
         physical_hardware=baseline_physical,
     )
     incumbent_binding = MaterializedArmBinding(incumbent_tree, trusted_baseline)
-    trusted_pristine = TrustedLaunchBinding(
-        materialized_tree_root=stock_tree.root,
-        controller_distribution_digest=inputs.controller_distribution_digest,
+    trusted_pristine = replace(
+        trusted_baseline, materialized_tree_root=stock_tree.root,
         native_build_spec=pristine_native,
-        runtime_preflight_receipt=inputs.preflight,
-        physical_hardware=baseline_physical,
     )
     pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
     quality_cell = screen_deployment._scored_cell(inputs.workload)
@@ -598,22 +555,13 @@ def _compose_locked(
         evidence_root,
         calibration_evidence,
     )
-    resident_hardware = replace(
-        baseline_hardware,
-        device_policy_digest=baseline_executor.device_policy.policy_sha256,
-    )
-    resident_physical = replace(
-        baseline_physical,
-        physical_gpu_ids=tuple(
-            str(gpu.physical_id)
-            for gpu in baseline_executor.device_policy.expected_gpus
-        ),
-        device_policy_digest=baseline_executor.device_policy.policy_sha256,
+    resident_hardware, resident_physical = screen_deployment._hardware_bindings(
+        inputs.runtime, baseline_executor.device_policy, dp_size=dp_size,
     )
     resident_native = screen_deployment._native_build(
         incumbent_tree.tree_digest,
         inputs.preflight,
-        baseline_executor.config.prebuild.policy,
+        baseline_executor.config.prebuild.policy, inputs.runtime.target_architecture,
     )
     resident_launch = replace(
         incumbent_launch,
@@ -679,7 +627,7 @@ def _compose_locked(
         candidate_native = screen_deployment._native_build(
             candidate_tree.tree_digest,
             inputs.preflight,
-            candidate_executor.config.prebuild.policy,
+            candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
         )
         return TrustedLaunchBinding(
             materialized_tree_root=candidate_tree.root,
@@ -706,8 +654,6 @@ def _compose_locked(
                 "candidate_binding_builder_digest"
             ],
             candidate_binding_builder=bind_candidate,
-            graph_facts_builder_digest=capabilities.graph_facts_builder_digest,
-            graph_facts_builder=capabilities.graph_facts_builder,
             evidence_root=evidence_root,
             reference_manifest=reference,
             calibration_threshold_policy=threshold,
@@ -801,10 +747,11 @@ def build_commissioned_b300_qualification_service(
     registration: dict[str, object],
     ready_receipt: dict[str, object],
     capabilities: B300QualificationCapabilities,
+    *, commissioned_root: Path | None = None,
 ) -> CommissionedB300QualificationService:
     inputs, composition, readiness = (
         screen_deployment.replay_commissioned_screen_composition(
-            registration, ready_receipt
+            registration, ready_receipt, commissioned_root=commissioned_root
         )
     )
     executors: tuple[OCIEngineExecutor, ...] = ()

@@ -420,13 +420,13 @@ def _audit_witness() -> tuple[str, object]:
             "norm.rmsnorm", 32, 0, 0, 0, 1.0, 0.995, "allclose", 900, 0, 1
         ),
     )
-    passed, detail = gate(
+    graded, detail = gate(
         [row.to_gate_dict() for row in receipts],
         min_calls=policy.minimum_calls,
         expected_slots=policy.expected_slots,
         expected_member_count=policy.expected_member_count,
     )
-    assert passed
+    assert graded == "PASS"
     witness = runner.AuditWitness(
         _d("delta-0"),
         _d("candidate-launch"),
@@ -574,6 +574,10 @@ class _MemoryContinuation:
         self.authority_digest = authority_digest or _d("qualification-authority")
         self.source_digest = source_digest or _d("source")
         self.records: dict[str, object] = {}
+        self.recovery_reference = None
+
+    def _load(self, stage):
+        return self.records.get(stage)
 
     def load_final(self):
         return self.records.get("final")
@@ -604,15 +608,8 @@ class _MemoryContinuation:
         assert self.records["audit_armed"] == (value.nonce, value.operation_digest)
         self.records["audit"] = value
 
-    def load_marginal_speed(self, prepared):
-        del prepared
-        return self.records.get("speed")
-
     def record_resident_speed(self, crossover):
         self.records["speed"] = crossover
-
-    def record_marginal_speed(self, lifecycle):
-        self.records["speed"] = lifecycle
 
     def record_quality(self, value):
         assert self.records["t_armed"] == (value.t_nonce, value.t_operation_digest)
@@ -679,7 +676,6 @@ def _resident_pass_harness(monkeypatch):
 
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
@@ -787,7 +783,6 @@ def test_resident_audit_completion_survives_a_crash_before_producer_return(
 ) -> None:
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
@@ -874,7 +869,6 @@ def test_continuation_identity_mismatch_holds_before_any_execution(
 def test_untyped_continuation_is_rejected_before_any_execution(monkeypatch) -> None:
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
@@ -895,7 +889,6 @@ def test_quality_record_without_speed_record_holds(
 ) -> None:
     resident_harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )

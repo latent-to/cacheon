@@ -42,6 +42,7 @@ from cacheon.eval.qualification_continuation import (
     AuditContinuation, QualificationContinuation, QualificationContinuationError,
     QualityContinuation,
 )
+from cacheon.eval.qualification_timing import QualificationTimingWitness
 from cacheon.eval.qualification_continuation_runner import (
     QualificationContinuationRunnerSeams, run_continuation_quality_stage,
 )
@@ -51,13 +52,11 @@ from cacheon.eval.oci_session_protocol import (
     AuditReceiptFacts, EngineSessionConfig, RuntimePreflightFacts, SlotAuditPolicy,
 )
 from cacheon.eval.qualification import (
-    GraphVerificationEvidenceRef, GraphVerificationGrade, GraphVerificationRequirement,
     QualificationDecision, QualificationProfile, SelectionCommitment,
     SelectionEntropyReceipt, SelectionReceipt, _selected_prompt_texts, _trajectory_rows,
     candidate_lifecycle_digest, cohort_trajectory_digest, derived_hidden_task_plan_digest,
     qualification_identity_digest,
     declared_qualification_entropy_digest,
-    reopen_graph_verification,
     selected_trajectory_digest,
     selected_trajectory_projection_digest, validate_quality_binding,
 )
@@ -282,23 +281,12 @@ def hidden_judge_output_digest(prompt_digest: str, output_ids: tuple[int, ...]) 
 class CandidateQualificationAuthority:
     selected_delta_digest: str
     profile: QualificationProfile
-    graph_requirement: GraphVerificationRequirement
-    graph_artifact_ref: EvidenceArtifactRef
-    graph_evidence_ref: GraphVerificationEvidenceRef
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_delta_digest",
                            require_sha256_hex(self.selected_delta_digest, field="selected delta"))
-        if (
-            type(self.profile) is not QualificationProfile
-            or type(self.graph_requirement) is not GraphVerificationRequirement
-            or type(self.graph_artifact_ref) is not EvidenceArtifactRef
-            or type(self.graph_evidence_ref) is not GraphVerificationEvidenceRef
-            or self.profile.graph_requirement_digest != self.graph_requirement.digest
-            or self.graph_requirement.binding.selected_delta_digest
-            != self.selected_delta_digest
-        ):
-            raise QualificationRunnerError("candidate graph/profile authority is mismatched")
+        if type(self.profile) is not QualificationProfile:
+            raise QualificationRunnerError("candidate profile authority is not typed")
 
 
 CandidateAuthority = CandidateQualificationAuthority
@@ -440,7 +428,7 @@ class CausalQualificationInput:
                 reference.model_content_digest,
                 reference.logical_hardware_digest,
                 reference.workload_digest,
-                candidate_authority.graph_requirement.binding.verification_policy_digest,
+                self.calibration_context.verification_policy_digest,
             )
             if (
                 resident.selected_delta_digest
@@ -545,11 +533,6 @@ class CausalQualificationInput:
 def _profile(authority: CandidateAuthority) -> QualificationProfile:
     return authority.profile
 
-
-def _requirement(authority: CandidateAuthority) -> GraphVerificationRequirement:
-    if type(authority) is CandidateQualificationAuthority:
-        return authority.graph_requirement
-    raise QualificationRunnerError("candidate authority has an unsupported type")
 
 def _decision(value: str | QualificationDecision) -> QualificationDecision:
     try:
@@ -864,6 +847,21 @@ class ResidentSpeedWitness:
         )  # type: ignore[arg-type]
 
 
+# FAIL says the kernel's compared calls are wrong; NO_DECISION says the audit
+# role compared too little to say anything about the kernel.
+_AUDIT_REASONS = {
+    QualificationDecision.FAIL: "slot_audit_failed",
+    QualificationDecision.NO_DECISION: "audit_not_covered",
+}
+
+
+def _grade_audit(receipts, policy) -> tuple[QualificationDecision, str]:
+    from cacheon.audit_gate import grade
+
+    decision, detail = grade(receipts, policy)
+    return QualificationDecision(decision), detail
+
+
 @dataclass(frozen=True)
 class AuditWitness:
     """Raw untimed eager slot-audit facts regraded only by the trusted host."""
@@ -901,10 +899,7 @@ class AuditWitness:
             raise QualificationRunnerError("audit witness receipts are not typed")
         object.__setattr__(self, "receipts", receipts)
         object.__setattr__(self, "decision", _decision(self.decision))
-        passed, detail = self.regrade()
-        expected = (
-            QualificationDecision.PASS if passed else QualificationDecision.FAIL
-        )
+        expected, detail = self.regrade()
         if (
             self.decision is not expected
             or not isinstance(self.detail, str)
@@ -914,15 +909,8 @@ class AuditWitness:
                 "audit witness verdict was not independently host-regraded"
             )
 
-    def regrade(self) -> tuple[bool, str]:
-        from cacheon.audit_gate import gate
-
-        return gate(
-            [row.to_gate_dict() for row in self.receipts],
-            min_calls=self.policy.minimum_calls,
-            expected_slots=self.policy.expected_slots,
-            expected_member_count=self.policy.expected_member_count,
-        )
+    def regrade(self) -> tuple[QualificationDecision, str]:
+        return _grade_audit(self.receipts, self.policy)
 
     @classmethod
     def from_execution(
@@ -961,14 +949,7 @@ class AuditWitness:
                 "receipts": [_record_dict(row) for row in session.audit_receipts],
             },
         )
-        from cacheon.audit_gate import gate
-
-        passed, detail = gate(
-            [row.to_gate_dict() for row in session.audit_receipts],
-            min_calls=policy.minimum_calls,
-            expected_slots=policy.expected_slots,
-            expected_member_count=policy.expected_member_count,
-        )
+        decision, detail = _grade_audit(session.audit_receipts, policy)
         return cls(
             selected_delta_digest,
             execution.launch_digest,
@@ -977,7 +958,7 @@ class AuditWitness:
             execution.resource_policy_digest,
             policy,
             session.audit_receipts,
-            QualificationDecision.PASS if passed else QualificationDecision.FAIL,
+            decision,
             detail,
         )
 
@@ -1075,7 +1056,7 @@ class QualificationStageExit:
                 SPEED_FAIL_REASONS | {"speed_regression"}
             ),
             ("speed", QualificationDecision.NO_DECISION): {"speed_noise"},
-            ("audit", QualificationDecision.FAIL): {"slot_audit_failed"},
+            **{("audit", row): {reason} for row, reason in _AUDIT_REASONS.items()},
         }.get((self.stage, self.decision), {None})
         if self.reason not in allowed_reasons:
             raise QualificationRunnerError("qualification stage-exit reason differs")
@@ -1185,104 +1166,6 @@ class QualificationStageExit:
         return canonical_digest(STAGE_EXIT_SCHEMA, self.to_dict())
 
 
-@dataclass(frozen=True)
-class QualificationTimingWitness:
-    """Bounded speed/audit/T wall times for the production resident path."""
-
-    policy_digest: str
-    speed_evidence_digest: str
-    audit_evidence_digest: str
-    reference_session_digest: str
-    max_qualification_seconds: int
-    speed_started_monotonic_s: float
-    speed_completed_monotonic_s: float
-    audit_started_monotonic_s: float
-    audit_completed_monotonic_s: float
-    t_started_monotonic_s: float
-    t_completed_monotonic_s: float
-    qualification_completed_monotonic_s: float
-
-    def __post_init__(self) -> None:
-        for name in (
-            "policy_digest",
-            "speed_evidence_digest",
-            "audit_evidence_digest",
-            "reference_session_digest",
-        ):
-            object.__setattr__(
-                self, name, require_sha256_hex(getattr(self, name), field=name)
-            )
-        if (
-            type(self.max_qualification_seconds) is not int
-            or not 60 <= self.max_qualification_seconds <= 14_400
-        ):
-            raise QualificationRunnerError(
-                "qualification timing wall budget is malformed"
-            )
-        timestamps = tuple(
-            getattr(self, name)
-            for name in self.__dataclass_fields__
-            if name.endswith("_monotonic_s")
-        )
-        if (
-            any(type(row) is not float or not math.isfinite(row) for row in timestamps)
-            or not (
-                self.speed_started_monotonic_s
-                < self.speed_completed_monotonic_s
-                <= self.audit_started_monotonic_s
-                < self.audit_completed_monotonic_s
-                <= self.t_started_monotonic_s
-                < self.t_completed_monotonic_s
-                <= self.qualification_completed_monotonic_s
-            )
-            or self.qualification_completed_monotonic_s
-            - self.speed_started_monotonic_s
-            > self.max_qualification_seconds
-        ):
-            raise QualificationRunnerError(
-                "qualification timing order or total wall time is invalid"
-            )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            name: (
-                format(value, ".17g")
-                if name.endswith("_monotonic_s")
-                else value
-            )
-            for name, value in (
-                (field, getattr(self, field))
-                for field in self.__dataclass_fields__
-            )
-        }
-
-    @classmethod
-    def from_dict(cls, value: object) -> "QualificationTimingWitness":
-        # dict(...) copy: _strict returns the caller's mapping, and the float
-        # decode below must never mutate a reopened payload in place — the
-        # publish/reopen self-check compares to_dict() against that payload.
-        raw = dict(_strict(value, set(cls.__dataclass_fields__), "qualification timing"))
-        for name in cls.__dataclass_fields__:
-            if name.endswith("_monotonic_s"):
-                encoded = raw[name]
-                try:
-                    decoded = float(encoded)
-                except (TypeError, ValueError) as exc:
-                    raise QualificationRunnerError(
-                        f"qualification timing {name} is malformed"
-                    ) from exc
-                if not math.isfinite(decoded) or format(decoded, ".17g") != encoded:
-                    raise QualificationRunnerError(
-                        f"qualification timing {name} is noncanonical"
-                    )
-                raw[name] = decoded
-        return cls(**raw)  # type: ignore[arg-type]
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest(
-            "cacheon.qualification.operational-timing.v1", self.to_dict()
-        )
 
 
 def _candidate_runtime_resource_policy_digest(value: object) -> str:
@@ -1293,15 +1176,15 @@ def _candidate_runtime_resource_policy_digest(value: object) -> str:
 
 @dataclass(frozen=True)
 class CandidateQualificationReport:
-    _domain: ClassVar[str] = "cacheon.qualification.candidate-report.v2"
+    # v3 dropped v2's graph_grade_digest and graph_decision with the offline graph
+    # stage; a retained v2 report carries both and does not parse as this type.
+    _domain: ClassVar[str] = "cacheon.qualification.candidate-report.v3"
     selected_delta_digest: str
     marginal_arm_digest: str
     candidate_launch_digest: str
     target_id: str
     profile_digest: str
     calibration_digest: str
-    graph_grade_digest: str
-    graph_decision: QualificationDecision
     speed_evidence_digest: str
     speed_decision: QualificationDecision
     speedup: str
@@ -1322,15 +1205,12 @@ class CandidateQualificationReport:
     def __post_init__(self) -> None:
         for field in (
             "selected_delta_digest", "marginal_arm_digest", "candidate_launch_digest",
-            "profile_digest", "calibration_digest", "graph_grade_digest",
+            "profile_digest", "calibration_digest",
             "speed_evidence_digest", "quality_evidence_digest", "t_request_sha256",
             "audit_evidence_digest",
         ):
             object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
-        for field in (
-            "graph_decision", "speed_decision", "quality_decision",
-            "audit_decision", "decision",
-        ):
+        for field in ("speed_decision", "quality_decision", "audit_decision", "decision"):
             object.__setattr__(self, field, _decision(getattr(self, field)))
         if (
             type(self.raw_quality_artifact) is not EvidenceArtifactRef
@@ -1340,7 +1220,7 @@ class CandidateQualificationReport:
         ):
             raise QualificationRunnerError("candidate evidence witness is not typed")
         expected = _aggregate_decision(
-            self.graph_decision, self.speed_decision, self.quality_decision, self.audit_decision,
+            self.speed_decision, self.quality_decision, self.audit_decision,
         )
         if (
             self.audit_witness.digest != self.audit_evidence_digest
@@ -1531,6 +1411,7 @@ class CohortQualificationAttempt:
     teardown_after_t: OCIQuiescenceReceipt
     reports: tuple[CandidateQualificationReport, ...]
     operational_timing: QualificationTimingWitness
+    audit_recovery: EvidenceArtifactRef | None = None
 
     def __post_init__(self) -> None:
         for field in (
@@ -1547,6 +1428,8 @@ class CohortQualificationAttempt:
             or type(self.entropy_observed_monotonic_s) is not float
             or not math.isfinite(self.entropy_observed_monotonic_s)
             or type(self.operational_timing) is not QualificationTimingWitness
+            or (self.audit_recovery is not None
+                and type(self.audit_recovery) is not EvidenceArtifactRef)
         ):
             raise QualificationRunnerError("cohort attempt authority is not typed")
         reports = tuple(self.reports)
@@ -1588,17 +1471,23 @@ class CohortQualificationAttempt:
             raise QualificationRunnerError("cohort causal ordering or executor identity differs")
 
     def to_dict(self) -> dict[str, object]:
-        return _record_dict(self)
+        result = _record_dict(self)
+        if self.audit_recovery is None:
+            result.pop("audit_recovery")
+        return result
 
     @classmethod
     def from_dict(cls, value: object) -> "CohortQualificationAttempt":
         if type(value) is not dict:
             raise QualificationRunnerError("cohort attempt is not an object")
         raw = _strict(
-            value, set(cls.__dataclass_fields__) - {"_domain"}, "cohort attempt"
+            {"audit_recovery": None, **value},
+            set(cls.__dataclass_fields__) - {"_domain"}, "cohort attempt"
         )
         return cls(**{
             **raw,
+            "audit_recovery": (None if raw["audit_recovery"] is None else
+                               EvidenceArtifactRef.from_dict(raw["audit_recovery"])),
             "commitment": SelectionCommitment.from_dict(raw["commitment"]),
             "entropy": SelectionEntropyReceipt.from_dict(raw["entropy"]),
             "entropy_observed_monotonic_s": float(raw["entropy_observed_monotonic_s"]),
@@ -1631,9 +1520,7 @@ def _planned_prompt_digests(prepared: PreparedMarginalRuntime) -> tuple[str, ...
     return tuple(sorted(planned_prompt_texts(prepared.baseline_session_plan)))
 
 
-def _validate_pre_execution(
-    value: CausalQualificationInput,
-) -> tuple[CalibrationManifest, dict[str, GraphVerificationGrade]]:
+def _validate_pre_execution(value: CausalQualificationInput) -> CalibrationManifest:
     if type(value) is not CausalQualificationInput:
         raise QualificationRunnerError("qualification input has the wrong type")
     reference = value.candidates[0].profile.reference
@@ -1664,8 +1551,7 @@ def _validate_pre_execution(
         expected_manifest=value.calibration_manifest,
         expected_context=value.calibration_context,
     )
-    grades: dict[str, GraphVerificationGrade] = {}
-    for prepared, authority in zip(
+    for _prepared, authority in zip(
         value.prepared.candidates, value.candidates, strict=True
     ):
         profile = authority.profile
@@ -1684,13 +1570,7 @@ def _validate_pre_execution(
             raise QualificationRunnerError("candidate qualification profile differs from cohort")
         if type(authority) is not CandidateQualificationAuthority:
             raise QualificationRunnerError("pre-execution authority has an unsupported type")
-        grades[authority.selected_delta_digest] = reopen_graph_verification(
-            value.evidence_root,
-            authority.graph_artifact_ref,
-            authority.graph_requirement,
-            authority.graph_evidence_ref,
-        )
-    return calibration, grades
+    return calibration
 
 def _selected_frames(
     lifecycle: ResidentMarginalLifecycleEvidence,
@@ -1880,7 +1760,6 @@ def _raw_artifact(
     )
     identity = qualification_identity_digest(
         profile,
-        graph_requirement=_requirement(authority),
         selection=selection,
         calibration=calibration,
         candidate_lifecycle=lifecycle_digest,
@@ -2012,17 +1891,14 @@ def _lifecycle_causal_completion(lifecycle: object) -> float:
         ) from exc
 
 def _report_reason(
-    graph: GraphVerificationGrade,
     speed: QualificationDecision,
     quality: ReferenceQualityVerdict,
     audit: AuditWitness,
     *,
     speed_reason: str | None = None,
 ) -> str:
-    if graph.decision is not QualificationDecision.PASS:
-        return graph.reason
     if audit.decision is not QualificationDecision.PASS:
-        return "slot_audit_failed"
+        return _AUDIT_REASONS[audit.decision]
     if speed is QualificationDecision.NO_DECISION:
         return "speed_noise"
     if speed is QualificationDecision.FAIL:
@@ -2063,9 +1939,6 @@ def qualification_authority_digest(value: CausalQualificationInput) -> str:
                         value.calibration_context.digest, value.calibration_artifact_ref.to_dict()],
         "candidates": [{
             "arm": prepared.arm.digest, "delta": authority.selected_delta_digest,
-            "graph_artifact": authority.graph_artifact_ref.to_dict(),
-            "graph_evidence_ref": authority.graph_evidence_ref.digest,
-            "graph_requirement": authority.graph_requirement.digest,
             "launch": prepared.launch.digest, "profile": authority.profile.digest,
             "native": prepared.binding.launch_binding.native_build_spec.digest,
             "preflight": prepared.binding.launch_binding.runtime_preflight_receipt.sha256,
@@ -2307,6 +2180,14 @@ def reopen_causal_qualification(
         attempt = CohortQualificationAttempt.from_dict(payload)
         if attempt.to_dict() != payload:
             raise QualificationRunnerError("qualification artifact is not semantically canonical")
+        corrected_audit = None
+        if attempt.audit_recovery is not None:
+            from cacheon.eval.qualification_recovery import reopen_audit_recovery
+            correction, corrected_audit, _ = reopen_audit_recovery(
+                root, attempt.audit_recovery, expected=expected,
+            )
+            if correction["speed"] != attempt.reports[0].speed_evidence_digest:
+                raise QualificationRunnerError("audit recovery changed retained speed")
         if attempt.authority_digest != qualification_authority_digest(expected):
             raise QualificationRunnerError("qualification authority digest differs")
         if _attempt_speed_policy(attempt.reports) != expected.speed_evidence_policy:
@@ -2400,18 +2281,15 @@ def reopen_causal_qualification(
                 expected_policy=expected.speed_evidence_policy,
             )
             audit_witness = report.audit_witness
-            audit_passed, audit_detail = audit_witness.regrade()
-            audit_grade = (
-                QualificationDecision.PASS
-                if audit_passed
-                else QualificationDecision.FAIL
-            )
+            audit_grade, audit_detail = audit_witness.regrade()
             if (
-                audit_witness.policy != audit_policy
+                audit_witness.policy != (corrected_audit.policy if corrected_audit else audit_policy)
+                or (corrected_audit is not None and audit_witness != corrected_audit)
                 or audit_witness.selected_delta_digest
                 != authority.selected_delta_digest
                 or audit_witness.candidate_launch_digest
-                != expected.resident_audit_plan.launch.digest
+                != (corrected_audit.candidate_launch_digest if corrected_audit else
+                    expected.resident_audit_plan.launch.digest)
                 or audit_witness.runtime_resource_policy_digest
                 != expected.expected_runtime_resource_policy_digest
                 or audit_witness.session_id in {row.session_id for row in rates}
@@ -2438,27 +2316,14 @@ def reopen_causal_qualification(
                     raise QualificationRunnerError(
                         "registered qualification report type differs"
                     )
-                graph = reopen_graph_verification(
-                    root,
-                    authority.graph_artifact_ref,
-                    authority.graph_requirement,
-                    authority.graph_evidence_ref,
-                )
                 identity = canonical_digest(
-                    "cacheon.qualification.candidate-identity",
-                    {
-                        **identity_common,
-                        "graph_requirement_digest": authority.graph_requirement.digest,
-                    },
+                    "cacheon.qualification.candidate-identity", identity_common
                 )
-                decision = _aggregate_decision(
-                    graph.decision, speed_grade, quality_grade, audit_grade
-                )
+                decision = _aggregate_decision(speed_grade, quality_grade, audit_grade)
                 headline = (
                     report.marginal_arm_digest, report.candidate_launch_digest,
                     report.target_id, report.profile_digest,
-                    report.calibration_digest, report.graph_grade_digest,
-                    report.graph_decision, report.speed_evidence_digest,
+                    report.calibration_digest, report.speed_evidence_digest,
                     report.speed_decision, report.speedup,
                     report.quality_evidence_digest, report.quality_decision,
                     report.candidate_mean_teacher_nll,
@@ -2469,14 +2334,14 @@ def reopen_causal_qualification(
                 expected_headline = (
                     prepared.arm.digest, prepared.launch.digest,
                     prepared.arm.transition.target_id, authority.profile.digest,
-                    calibration.digest, graph.digest, graph.decision,
+                    calibration.digest,
                     report.speed_witness.evidence_digest, speed_grade, speedup,
                     quality.evidence_digest, quality_grade,
                     candidate_mean_teacher_nll,
                     audit_witness.digest, audit_grade, decision,
                     _retained_reason(
                         _report_reason(
-                            graph, speed_grade, quality, audit_witness,
+                            speed_grade, quality, audit_witness,
                             speed_reason=speed_reason,
                         ),
                         report.reason,
@@ -2591,8 +2456,10 @@ def run_causal_qualification(
         raise QualificationRunnerError(
             "resident qualification has no wall-clock budget"
         )
-    calibration, graph_grades = _validate_pre_execution(value)
+    calibration = _validate_pre_execution(value)
     if continuation is not None:
+        from cacheon.eval.qualification_recovery import resolve_audit_recovery
+        continuation = resolve_audit_recovery(value, continuation)
         durable_final = continuation.load_final()
         if durable_final is not None:
             if durable_final.domain == STAGE_EXIT_DOMAIN:
@@ -2766,7 +2633,6 @@ def run_causal_qualification(
             entropy=entropy,
             selection=selection,
             calibration=calibration,
-            graph_requirement=_requirement(authority),
             reference_execution=reference_execution,
             reference_request_sha256=exchange.request_sha256,
         )
@@ -2810,10 +2676,8 @@ def run_causal_qualification(
         )
         audit_witness = audit_witnesses[authority.selected_delta_digest]
         if type(authority) is CandidateQualificationAuthority:
-            graph = graph_grades[authority.selected_delta_digest]
             decision = _aggregate_decision(
-                graph.decision, speed_grade, quality_grade,
-                audit_witness.decision,
+                speed_grade, quality_grade, audit_witness.decision,
             )
             reports.append(CandidateQualificationReport(
                 authority.selected_delta_digest,
@@ -2822,8 +2686,6 @@ def run_causal_qualification(
                 candidate.arm.transition.target_id,
                 authority.profile.digest,
                 calibration.digest,
-                graph.digest,
-                graph.decision,
                 speed_evidence_digest,
                 speed_grade,
                 speedup,
@@ -2839,7 +2701,7 @@ def run_causal_qualification(
                 audit_witness,
                 decision,
                 _report_reason(
-                    graph, speed_grade, quality, audit_witness,
+                    speed_grade, quality, audit_witness,
                     speed_reason=speed_reason,
                 ),
                 decision is QualificationDecision.NO_DECISION,
@@ -2880,7 +2742,10 @@ def run_causal_qualification(
             t_post.completed_monotonic_s,
             teardown_after.observed_monotonic_s,
         )
-        attempt = CohortQualificationAttempt(*attempt_args, timing)
+        attempt = CohortQualificationAttempt(
+            *attempt_args, timing,
+            None if continuation is None else continuation.recovery_reference,
+        )
     else:
         attempt = CohortQualificationAttempt(*attempt_args)
     reference = publish_causal_qualification(value.evidence_root, attempt)

@@ -52,9 +52,6 @@ from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorkerError,
     B300RemoteQualificationRun,
 )
-from cacheon.eval.b300_qualification_graph_gate import (
-    B300QualificationGraphGateHold,
-)
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.oci_backend import (
     OCIBackendConfig,
@@ -66,6 +63,7 @@ from cacheon.eval.qualification_continuation import QualificationContinuationSto
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
+    QualificationIntakeError,
     QualificationIntakeOutcome,
     QualificationPlanFactory,
     QualificationReservation,
@@ -502,36 +500,27 @@ def test_remote_screen_runs_all_real_provider_stages_and_seals_result(
     assert resident.closed == 1
 
 
-def _fake_gate_fail(monkeypatch, batch_for):
-    """Route the remote path through a graph-gate FAIL carrying ``batch_for(factory)``.
+def _fake_remote_intake(monkeypatch, batch_for):
+    """Route the remote path through an intake that returns ``batch_for(factory)``.
 
-    The worker binds gate result types by module global, so a test-local FAIL
-    shape reaches the same ``_validate_batch`` / disposition lines production
-    takes after a real graph-only FAIL, without a real graph exit artifact.
+    The prebuilt plan is a sentinel, so the worker's ``_validate_batch`` and
+    disposition lines run on a chosen batch without a real engine session.
     """
 
-    @dataclasses.dataclass(frozen=True)
-    class FakeGateFail:
-        plan: object
-        factory: object
-        batch: QualificationIntakeBatch
-        supporting_evidence_refs: tuple = ()
-
     sentinel_plan = object()
-    gate_calls = []
+    intake_calls = []
 
-    def fake_gate(factory, plan, *, evidence_root, candidates, authenticated_request_digest):
-        assert plan is sentinel_plan
-        gate_calls.append(factory)
-        return FakeGateFail(plan, factory, batch_for(factory))
+    def fake_intake(factory, **kwargs):
+        assert kwargs["prebuilt_plan"] is sentinel_plan
+        intake_calls.append(factory)
+        return batch_for(factory)
 
     monkeypatch.setattr(QualificationPlanFactory, "build", lambda self: sentinel_plan)
-    monkeypatch.setattr(worker_module, "B300QualificationGraphGateFail", FakeGateFail)
-    monkeypatch.setattr(worker_module, "run_b300_qualification_graph_gate", fake_gate)
-    return gate_calls
+    monkeypatch.setattr(worker_module, "run_qualification_intake", fake_intake)
+    return intake_calls
 
 
-def test_remote_qualification_releases_systemic_gate_fail_batch(
+def test_remote_qualification_releases_systemic_batch(
     tmp_path: Path,
     executor_factory,
     monkeypatch,
@@ -540,15 +529,8 @@ def test_remote_qualification_releases_systemic_gate_fail_batch(
     manifest = _manifest(authorities)
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
-    gate_calls = _fake_gate_fail(monkeypatch, _systemic_batch)
-    intake_calls = []
-    monkeypatch.setattr(
-        worker_module,
-        "run_qualification_intake",
-        lambda *args, **kwargs: intake_calls.append((args, kwargs)),
-    )
+    intake_calls = _fake_remote_intake(monkeypatch, _systemic_batch)
     worker = B300MainnetWorker(manifest, authorities, readiness)
-    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
     try:
         result = worker.run_remote_qualification(
             claim.lease,
@@ -566,51 +548,13 @@ def test_remote_qualification_releases_systemic_gate_fail_batch(
         assert tuple(
             row.reservation_digest for row in result.run.payload.outcomes
         ) == claim.lease.reservation_ids
-        assert result.authority_manifest is gate_calls[0].manifest
-        assert len(gate_calls) == 1 and intake_calls == []
+        assert result.authority_manifest is intake_calls[0].manifest
+        assert len(intake_calls) == 1
         assert builder.calls[0][1] is None
         assert resident.created == 0
         result.run.envelope.verify(
             claim.lease, readiness, worker.service, result.run.payload
         )
-    finally:
-        worker.close()
-
-
-def test_remote_qualification_without_graph_root_returns_authenticated_hold(
-    tmp_path: Path,
-    executor_factory,
-    monkeypatch,
-) -> None:
-    authorities, resident, builder = _authorities(tmp_path, executor_factory)
-    manifest = _manifest(authorities)
-    readiness = _readiness(manifest, authorities)
-    claim = _qualification_claim(tmp_path / "cohort", manifest)
-    calls = []
-
-    def run(factory, **kwargs):
-        calls.append((factory, kwargs))
-        return _systemic_batch(factory)
-
-    monkeypatch.setattr(worker_module, "run_qualification_intake", run)
-    worker = B300MainnetWorker(manifest, authorities, readiness)
-    continuation = QualificationContinuationStore(tmp_path / "continuation")
-    request_digest = _h("remote-request")
-    try:
-        result = worker.run_remote_qualification(
-            claim.lease,
-            claim.candidates,
-            claim.screen_receipts,
-            screen_lane="primary",
-            continuation_store=continuation,
-            request_digest=request_digest,
-        )
-
-        assert type(result) is B300QualificationGraphGateHold
-        assert result.reason is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
-        assert builder.calls[0][1] is None
-        assert calls == []
-        assert resident.created == 0
     finally:
         worker.close()
 
@@ -670,6 +614,7 @@ def test_resident_hold_preserves_the_root_exception_chain() -> None:
         hold = worker_module._resident_evidence_hold(
             _h("request"), _h("authority"), _h("source"), failure
         )
+    assert hold.reason is RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE
     assert hold.failure_type == "ValueError"
     assert "stock restoration failed" in hold.failure_message
     assert "CUDA out of memory" in hold.failure_message
@@ -701,12 +646,7 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
     continuation = QualificationContinuationStore(tmp_path / "continuation")
     request_digest = _h("remote-request")
 
-    intake_calls = []
-    monkeypatch.setattr(
-        worker_module,
-        "run_qualification_intake",
-        lambda *args, **kwargs: intake_calls.append((args, kwargs)),
-    )
+    intake_calls = _fake_remote_intake(monkeypatch, _systemic_batch)
     worker = B300MainnetWorker(manifest, reproduction, readiness)
     try:
         assert worker._remote_qualification_lane == "reproduction"
@@ -727,14 +667,14 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
             continuation_store=continuation,
             request_digest=request_digest,
         )
-        assert type(result) is B300QualificationGraphGateHold
-        assert result.reason is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
-        assert intake_calls == []
+        assert type(result) is B300RemoteQualificationRun
+        assert result.screen_lane == "reproduction"
+        assert len(intake_calls) == 1
     finally:
         worker.close()
 
 
-def test_remote_qualification_holds_when_plan_build_capture_is_busy(
+def test_remote_qualification_refuses_a_plan_it_cannot_reopen(
     tmp_path: Path,
     executor_factory,
     monkeypatch,
@@ -743,38 +683,26 @@ def test_remote_qualification_holds_when_plan_build_capture_is_busy(
     manifest = _manifest(authorities)
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
-    continuation = QualificationContinuationStore(tmp_path / "continuation")
-    request_digest = _h("remote-request")
 
-    build_calls: list[object] = []
+    def substituted(self):
+        raise QualificationIntakeError("qualification plan was substituted")
 
-    def busy_build(self):
-        build_calls.append(self)
-        raise worker_module.B300QualificationGraphEvidenceHold(
-            "capture devices busy"
-        )
-
-    monkeypatch.setattr(QualificationPlanFactory, "build", busy_build)
+    monkeypatch.setattr(QualificationPlanFactory, "build", substituted)
     worker = B300MainnetWorker(manifest, authorities, readiness)
-    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
     try:
-        result = worker.run_remote_qualification(
-            claim.lease,
-            claim.candidates,
-            claim.screen_receipts,
-            screen_lane="primary",
-            continuation_store=continuation,
-            request_digest=request_digest,
-        )
-
-        assert type(result) is B300QualificationGraphGateHold
-        assert (
-            result.reason
-            is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
-        )
-        assert len(build_calls) == 1
-        assert result.failure_type == "B300QualificationGraphEvidenceHold"
-        assert result.failure_message.endswith("capture devices busy")
+        with pytest.raises(
+            B300MainnetWorkerError, match="could not reopen the prebuilt"
+        ):
+            worker.run_remote_qualification(
+                claim.lease,
+                claim.candidates,
+                claim.screen_receipts,
+                screen_lane="primary",
+                continuation_store=QualificationContinuationStore(
+                    tmp_path / "continuation"
+                ),
+                request_digest=_h("remote-request"),
+            )
     finally:
         worker.close()
 
@@ -805,9 +733,8 @@ def test_qualification_refuses_result_that_reorders_leased_cohort(
             ),
         )
 
-    _fake_gate_fail(monkeypatch, reordered)
+    _fake_remote_intake(monkeypatch, reordered)
     worker = B300MainnetWorker(manifest, authorities, readiness)
-    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
     try:
         with pytest.raises(B300MainnetWorkerError, match="exact leased cohort"):
             worker.run_remote_qualification(

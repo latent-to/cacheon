@@ -16,7 +16,7 @@ from cacheon.manifest import (
 
 _TARGET_PROFILES = (
     "activation.silu_and_mul",
-    "collective.ar_residual_rmsnorm",
+    "collective.all_reduce",
 )
 
 

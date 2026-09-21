@@ -75,8 +75,8 @@ class Chain:
         return "0x" + f"{block:064x}"
 
     def get_hyperparameter(self, param_name, netuid=None, block=None):
-        assert param_name == "WeightsVersionKey"
-        return 29
+        assert param_name in {"WeightsVersionKey", "WeightsSetRateLimit"}
+        return {"WeightsVersionKey": 29, "WeightsSetRateLimit": getattr(self, "rate_limit", 0)}[param_name]
 
     def set_weights(self, **kwargs):
         self.submit_calls += 1
@@ -177,7 +177,7 @@ class SameHeightHashChangingChain(Chain):
 
 
 def _projection(
-    *, crowns=1, weights=(("alice", 1_000_000),), marker="a", block=100
+    *, crowns=1, weights=(("alice", 1_000_000),), marker="a", block=100, netuid=1
 ):
     metagraph_digest = canonical_digest(
         "cacheon.economics.metagraph-membership",
@@ -192,7 +192,7 @@ def _projection(
         },
     )
     return WeightProjection(
-        _d("1"), 1, "validator", _d("2"), _d(marker), _d("4"),
+        _d("1"), netuid, "validator", _d("2"), _d(marker), _d("4"),
         metagraph_digest, (_d("6"),), 3, block, crowns,
         ((_d("5"),) if crowns else ()), tuple(weights),
     )

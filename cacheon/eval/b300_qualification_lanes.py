@@ -1,7 +1,7 @@
-"""Physical two-lane qualification authority for the B300/TP4 deployment.
+"""Physical two-lane qualification authority for a commissioned arena.
 
-One sealed lane pair carves the commissioned eight-B300 pod into two disjoint
-physical TP4 lanes.  Lane A always carries the primary candidate and lane B the
+One sealed lane pair binds two disjoint, equally sized allocations.
+Lane A always carries the primary candidate and lane B the
 primary resident baseline; reproduction exchanges exactly those physical roles.
 ``b300_arena_provider`` composes and re-exports these names, so import paths
 are unchanged.
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from cacheon.arena_service import ArenaRuntimeIdentity
 from cacheon._strict import require_digest
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.stack_identity import canonical_digest
@@ -19,7 +20,6 @@ from cacheon.stack_identity import canonical_digest
 QUALIFICATION_LANE_SCHEMA = "cacheon.eval.b300-qualification-lane.v1"
 QUALIFICATION_LANE_PAIR_SCHEMA = "cacheon.eval.b300-qualification-lane-pair.v1"
 QUALIFICATION_ROLE_SWAP_SCHEMA = "cacheon.eval.b300-qualification-role-swap.v1"
-B300_GPU_COUNT = 4
 
 
 class B300ArenaProviderError(RuntimeError):
@@ -32,7 +32,7 @@ def _digest(value: object, field: str) -> str:
 
 @dataclass(frozen=True)
 class B300QualificationLanePolicy:
-    """One exact physical TP4 lane, independent of its execution role."""
+    """One physical allocation, independent of its execution role."""
 
     lane_id: str
     physical_gpu_ids: tuple[int, ...]
@@ -47,12 +47,12 @@ class B300QualificationLanePolicy:
         uuids = self.gpu_uuids
         if (
             type(physical_ids) is not tuple
-            or len(physical_ids) != B300_GPU_COUNT
+            or not physical_ids
             or any(type(row) is not int or row < 0 for row in physical_ids)
             or physical_ids != tuple(sorted(set(physical_ids)))
             or type(uuids) is not tuple
-            or len(uuids) != B300_GPU_COUNT
-            or len(set(uuids)) != B300_GPU_COUNT
+            or len(uuids) != len(physical_ids)
+            or len(set(uuids)) != len(physical_ids)
             or any(
                 not isinstance(row, str)
                 or not row
@@ -63,7 +63,7 @@ class B300QualificationLanePolicy:
             )
         ):
             raise B300ArenaProviderError(
-                "qualification lane must bind one canonical physical TP4"
+                "qualification lane must bind one canonical physical allocation"
             )
         for field in ("device_configuration_digest", "device_policy_digest"):
             object.__setattr__(self, field, _digest(getattr(self, field), field))
@@ -77,12 +77,6 @@ class B300QualificationLanePolicy:
         if type(policy) is not DeviceStatePolicy:
             raise B300ArenaProviderError("qualification lane policy is not exact")
         gpus = policy.expected_gpus
-        if len(gpus) != B300_GPU_COUNT or any(
-            "B300" not in gpu.name.upper() for gpu in gpus
-        ):
-            raise B300ArenaProviderError(
-                "qualification lane does not bind exactly four B300 devices"
-            )
         return cls(
             lane_id,
             tuple(gpu.physical_id for gpu in gpus),
@@ -143,9 +137,10 @@ class B300QualificationLanePair:
             or type(self.lane_b) is not B300QualificationLanePolicy
             or self.lane_a.lane_id != "A"
             or self.lane_b.lane_id != "B"
+            or len(self.lane_a.physical_gpu_ids) != len(self.lane_b.physical_gpu_ids)
         ):
             raise B300ArenaProviderError(
-                "qualification lane pair must contain canonical lanes A and B"
+                "qualification lane pair must contain equally sized canonical lanes A and B"
             )
         if (
             set(self.lane_a.physical_gpu_ids).intersection(
@@ -158,6 +153,17 @@ class B300QualificationLanePair:
         ):
             raise B300ArenaProviderError(
                 "qualification lane pair is overlapping or not physically distinct"
+            )
+
+    def validate_runtime(self, runtime: ArenaRuntimeIdentity) -> None:
+        """Bind both allocations to the serving geometry before any execution."""
+        if (
+            type(runtime) is not ArenaRuntimeIdentity
+            or runtime.gpu_count != len(self.lane_a.physical_gpu_ids)
+            or runtime.tensor_parallel_size != runtime.gpu_count
+        ):
+            raise B300ArenaProviderError(
+                "qualification lanes differ from the commissioned TP runtime"
             )
 
     def orientation(self, stage: str) -> B300QualificationLaneOrientation:

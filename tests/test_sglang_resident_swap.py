@@ -1,4 +1,4 @@
-"""Resident swaps release candidate memory and acknowledge recapture outcomes."""
+"""Resident swaps reuse the same candidate and acknowledge recapture outcomes."""
 
 from __future__ import annotations
 
@@ -42,7 +42,6 @@ def _runtime(monkeypatch, tmp_path, *, rank=0, recapture_error=None,
 
         def init_decode_cuda_graph(self):
             events.append("recapture")
-            assert not hasattr(layer, "_cacheon_moe_prepared_by_impl")
             assert self.decode_cuda_graph_runner is None
             if recapture_hook is not None:
                 recapture_hook()
@@ -88,6 +87,7 @@ def _runtime(monkeypatch, tmp_path, *, rank=0, recapture_error=None,
         "swap_resident_bundle",
         lambda bundle: {"bundle": bundle or "", "slots": []},
     )
+    monkeypatch.setattr(seam, "_resident_bundle", None)
     (tmp_path / "command.json").write_text(
         json.dumps({"bundle": None, "generation": 1})
     )
@@ -98,6 +98,7 @@ def _runtime(monkeypatch, tmp_path, *, rank=0, recapture_error=None,
 @pytest.mark.parametrize("rank", range(4))
 def test_swap_evicts_prepared_weights_before_success_ack(monkeypatch, tmp_path, rank):
     scheduler, layer, events = _runtime(monkeypatch, tmp_path, rank=rank)
+    (tmp_path / "command.json").write_text(json.dumps({"bundle": "new", "generation": 1}))
     assert scheduler.flush_cache() is True
     ack = json.loads((tmp_path / f"ack.rank{rank}.json").read_text())
     assert not (tmp_path / "ack.rankunknown.json").exists()

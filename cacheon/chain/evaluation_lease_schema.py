@@ -33,12 +33,23 @@ def configure_evaluation_lease_connection(
 
 
 def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
-    """Create or verify the additive version-1 evaluation lease authority."""
+    """Create or verify the arena-scoped version-2 evaluation lease authority."""
 
+    schema = db.execute(
+        "SELECT value FROM metadata WHERE key='evaluation_lease_schema'"
+    ).fetchone()
+    if schema is not None and schema["value"] not in {"1", "2"}:
+        raise EvaluationLeaseStoreError("evaluation lease schema is unsupported")
     try:
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(evaluation_leases)")}
+        if columns and "competition_arena" not in columns:
+            db.execute("ALTER TABLE evaluation_leases ADD COLUMN competition_arena TEXT NOT NULL DEFAULT ''")
+        if schema is not None and schema["value"] == "1":
+            db.execute("DROP INDEX IF EXISTS evaluation_leases_one_active_qualification")
         db.executescript(
             """
             CREATE TABLE IF NOT EXISTS evaluation_leases (
+                competition_arena TEXT NOT NULL DEFAULT '',
                 lease_id TEXT PRIMARY KEY,
                 generation INTEGER NOT NULL CHECK(generation>0),
                 stage TEXT NOT NULL CHECK(stage IN ('screen','qualification')),
@@ -56,7 +67,7 @@ def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS evaluation_leases_active_expiry
                 ON evaluation_leases(state, expires_block, lease_id);
             CREATE UNIQUE INDEX IF NOT EXISTS evaluation_leases_one_active_qualification
-                ON evaluation_leases(stage) WHERE state='active' AND stage='qualification';
+                ON evaluation_leases(competition_arena) WHERE state='active' AND stage='qualification';
             CREATE TABLE IF NOT EXISTS evaluation_lease_members (
                 lease_id TEXT NOT NULL REFERENCES evaluation_leases(lease_id),
                 position INTEGER NOT NULL CHECK(position>=0),
@@ -149,15 +160,12 @@ def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
     }.issubset(triggers):
         raise EvaluationLeaseStoreError("evaluation lease schema triggers are incomplete")
 
-    schema = db.execute(
-        "SELECT value FROM metadata WHERE key='evaluation_lease_schema'"
-    ).fetchone()
     if schema is None:
         db.execute(
-            "INSERT INTO metadata(key,value) VALUES('evaluation_lease_schema','1')"
+            "INSERT INTO metadata(key,value) VALUES('evaluation_lease_schema','2')"
         )
-    elif schema["value"] != "1":
-        raise EvaluationLeaseStoreError("evaluation lease schema is unsupported")
+    elif schema["value"] == "1":
+        db.execute("UPDATE metadata SET value='2' WHERE key='evaluation_lease_schema'")
 
 
 __all__ = [

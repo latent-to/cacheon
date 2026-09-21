@@ -4,6 +4,14 @@ The production loop is a non-emitting, restart-safe intake and qualification
 controller. It does **not** accept a shell evaluator, keep a JSON scoring ledger, or
 submit weights after each pass.
 
+Encrypted submissions use the private key named by
+`CACHEON_BUNDLE_DECRYPTION_KEY`: a validator-owned mode-0600 file containing a
+32-byte X25519 key encoded as 64 hexadecimal characters. Configure the same key
+for intake and the dashboard before advertising its public key. Back it up
+privately; changing or losing it while encrypted submissions are pending prevents
+their decryption. Missing key provisioning is a transport retry, not a miner
+failure. Plaintext submissions from older clients remain readable.
+
 ## One pass
 
 `run_pass(...)` performs these operations in order:
@@ -15,7 +23,8 @@ submit weights after each pass.
 3. **Reserve before transport.** Persist every arrival in chain order before any fetch.
    Slow hosting therefore cannot rewrite priority.
 4. **Fetch privately.** Accept HTTPS only, validate DNS and every redirect, enforce
-   archive limits, extract regular files safely, and rederive the committed hash.
+   archive limits, decrypt recipient-encrypted archives, extract regular files
+   safely, and rederive the committed hash.
 5. **Classify and fingerprint.** Parse the target-scoped proposal; a bundle the
    component parser rejects is refused. Copy identity covers the submitted delta,
    never the validator's incumbent stack.
@@ -306,10 +315,9 @@ evaluation authority. `chain/remote_worker_registration.py` binds one worker
 epoch — endpoint, pinned host keys, commissioned READY receipt, worker
 readiness, physical lane, interpreter, and shared credential — under one
 semantic digest. The immutable worker carrier places the validator's
-`.cacheon-native-artifact.json` receipt beside the miner's committed source;
-`bundle_hash.committed_content_hash` is the one canonical rehash of a
-receipt-bearing carrier back to the chain-committed identity, excluding
-exactly that top-level receipt and nothing else. `chain/remote_worker_spool.py` owns the sealed
+`.cacheon-native-artifact.json` receipt beside the miner's committed source.
+`chain/publication.py` reopens and hashes the publication's source inventory
+against the chain commitment. `chain/remote_worker_spool.py` owns the sealed
 request/result carriers and their verification;
 `chain/ssh_worker_transport.py` shuttles them over host-key-pinned SSH and
 implements the authenticated transport the remote evaluation dispatcher uses
@@ -352,6 +360,15 @@ stack. Restarting an unchanged service retains the existing recovery path.
 
 ## Standing CPU supervisor
 
+A bounded qualification-result wait can expire while the published request is
+still pending. With a healthy lease heartbeat and the same retained carrier,
+the supervisor reports `qualification` / `waiting` and continues its existing
+no-progress backoff. It resumes that request without publishing another job,
+consuming another attempt, or assigning a miner verdict. Restart preserves the
+same request too. Missing carriers, failed lease renewal, invalid results and
+unclassified transport errors retain their existing HOLD/error behavior; a
+timeout is not permission to repeat GPU work on a replacement machine.
+
 `python -m cacheon.chain.standing_cpu_supervisor --config <path>` is the
 standing CPU daemon over those pieces. Its sealed, closed, owner-controlled
 config names the screen-dispatcher config (`chain/mainnet_screen_dispatcher.py`
@@ -391,6 +408,86 @@ the builder's crownless refusal as a stage error when it is empty. The stage
 never signs; the serve-weights lane owns readback and the follow-weights
 signer decides what reaches the chain. Naming `weights_stage_config` while
 `enable_weights` is false is refused, as is the reverse.
+
+### Static allocation configuration
+
+Use weights config schema `cacheon-standing-weights-config-v2` with the existing
+fields above plus `confirmation_journal` (absolute, owner-only signer journal
+path). The optional `arena_allocation_path` points to an owner-controlled JSON
+file, reloaded on every projection. The standalone offer service consumes the
+same stage. Keep one producer and the existing signer; this adds no publisher.
+
+An illustrative allocation file is:
+
+```json
+{
+  "activation_block": 200,
+  "burn_hotkey": "REGISTERED_BURN_HOTKEY",
+  "sources": {
+    "primary": "/config/primary-screen.json",
+    "secondary": "/config/secondary-screen.json",
+    "third": "/config/third-screen.json"
+  },
+  "history": [
+    {"from_block": 0, "weights_ppm": {"primary": 1000000, "secondary": 0, "third": 0}},
+    {"from_block": 200, "weights_ppm": {"primary": 600000, "secondary": 400000, "third": 0}, "stall_bonus_ppm": 250000}
+  ]
+}
+```
+
+Each source names an existing sealed screen-dispatcher config, which supplies
+its intake database, scope and intake policy. Paths must be absolute and
+databases distinct, with exactly one matching the producer's primary store.
+Every history row names every source. Names may describe any commissioned
+arenas; no model identities are hardcoded. The example assigns a quarter-strength
+waiting bonus to submissions arriving at block 200 or later. The block number
+is illustrative; select a future deployment boundary rather than copying it.
+
+Register the file with a successful projection before `activation_block` and
+before intake has reached that block. The block-zero row preserves the primary
+store at 100% and other sources at zero. Before activation the primary's existing
+projection is preserved. After activation, all sources must be present, share
+the chain scope, and have consistent finalized cursors within `refresh_blocks`
+of the metagraph. Missing or corrupt evidence prevents an offer. A busy source
+uses the service's existing skipped-pass behavior.
+
+To change percentages or waiting-bonus strength, atomically replace the file with the complete history
+plus a new row whose `from_block` is later than both current intake and projection
+blocks. Existing rows cannot change or disappear. The accepted history survives
+restart in primary intake metadata. Removing an activated config cannot restore
+the single-store producer. Activation, source config identities and burn recipient
+remain fixed for this configured deployment; adding a new source requires a
+separately reviewed transition. Preconfigure additional sources with zero weight
+when they should become eligible through a later settings row.
+
+For an already registered full-strength schedule, append a future row with the
+existing complete `weights_ppm` and `stall_bonus_ppm: 250000`; do not edit an
+accepted row. Retain `half_life_blocks` and the other emissions-policy settings.
+Confirm that the producer accepts the appended history before its boundary.
+Strength is selected by finalized arrival, so earlier queued submissions retain
+their old bonus even if evaluation finishes after the boundary. Omitting the
+bonus field means full strength, not inheritance: repeat `250000` in subsequent
+percentage updates to keep the reduced rule for those new submissions.
+
+Reopen an allocation report after an affected PASS earns and check its
+`submission_stall_bonus_ppm` entry is `250000`, while earlier claims remain
+`1000000`. Reports without any reduced-bonus claims retain their old encoding.
+The change must leave the logarithmic improvement factor and decay settings
+unchanged, and waiting bonuses must remain internal to each arena. Reverting
+future strength also requires a new future row; it cannot undo terms already
+assigned. Publication continues through the same existing producer and signer.
+
+Allocation reports live under `weight-allocation-evidence` beside the primary
+database. Back them up with the existing retained evidence. The source databases
+are locked together while projecting; individual SQLite commits remain separate.
+A failed refresh sends no offer and is retried through the existing service.
+Read [the accounting rules](../reference/emissions-policy.md#static-arena-percentages)
+before selecting transition settings; new earning submissions can dilute older
+payouts without changing their terms. Stall bonuses split rewards inside a source
+and do not price that source's emission pool.
+Duplicate admitted ownership is rejected. A missing-payment rejection before
+publication carries no reward ownership, so two chain listeners retaining that
+arrival does not block the source that actually admitted it; both histories stay.
 
 ## Durable reservation states
 

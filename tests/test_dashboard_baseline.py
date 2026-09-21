@@ -10,7 +10,7 @@ pytest.importorskip("fastapi")
 from dashboard.app import submission_baseline  # noqa: E402
 
 
-TARGET = "moe.fused_experts_reduce"
+TARGET = "moe.fused_experts"
 
 
 def _db() -> sqlite3.Connection:

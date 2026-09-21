@@ -29,7 +29,7 @@ from cacheon.copy_fingerprint import (
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
-from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
+from cacheon._strict import members_overlap
 from cacheon.chain.eval_cost_credit import EVAL_COST_CREDITS_DDL
 
 if TYPE_CHECKING:
@@ -261,6 +261,7 @@ class IntakeReservation:
     screen_attempts: int
     decision: str
     reason: str
+    competition_arena: str = ""
 
     def __post_init__(self) -> None:
         require_sha256_hex(self.reservation_id, field="reservation_id")
@@ -401,7 +402,10 @@ class SettlementLease:
         object.__setattr__(self, "candidates", candidates)
 
 
-class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
+from cacheon.chain.arena_state import ArenaStateMixin
+
+
+class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
     """Single SQLite authority for arrival order, admission, and qualification state."""
 
     def __init__(
@@ -621,27 +625,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 qualifications_json TEXT NOT NULL,
                 PRIMARY KEY(reservation_id, sequence)
             ) STRICT;
-            CREATE TABLE IF NOT EXISTS target_lineage_tips (
-                target_id TEXT PRIMARY KEY,
-                artifact_digest TEXT NOT NULL,
-                parent_artifact_digest TEXT NOT NULL,
-                winner_speedup TEXT NOT NULL,
-                arena_id TEXT NOT NULL,
-                stack_digest TEXT NOT NULL,
-                transition_event_id TEXT NOT NULL,
-                crowned_block INTEGER NOT NULL CHECK(crowned_block>=0)
-            ) STRICT;
-            CREATE TABLE IF NOT EXISTS target_lineage_nodes (
-                target_id TEXT NOT NULL,
-                artifact_digest TEXT NOT NULL,
-                parent_artifact_digest TEXT NOT NULL,
-                winner_speedup TEXT NOT NULL,
-                arena_id TEXT NOT NULL,
-                stack_digest TEXT NOT NULL,
-                transition_event_id TEXT NOT NULL UNIQUE,
-                crowned_block INTEGER NOT NULL CHECK(crowned_block>=0),
-                PRIMARY KEY(target_id, artifact_digest)
-            ) STRICT;
             CREATE TABLE IF NOT EXISTS target_lineage_pretransition_reservations (
                 transition_event_id TEXT NOT NULL,
                 reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
@@ -728,6 +711,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         }
         additions = {
             "arena_service_digest": "TEXT NOT NULL DEFAULT ''",
+            "competition_arena": "TEXT NOT NULL DEFAULT ''",
             "screen_lane": "TEXT NOT NULL DEFAULT ''",
             "screen_status": "TEXT NOT NULL DEFAULT ''",
             "screen_stage_count": "INTEGER NOT NULL DEFAULT 0",
@@ -763,21 +747,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 "ALTER TABLE settlement_candidates ADD COLUMN "
                 "reproduction_evidence_root TEXT NOT NULL DEFAULT ''"
             )
-        lineage_columns = {
-            row["name"] for row in self._db.execute(
-                "PRAGMA table_info(target_lineage_tips)"
-            )
-        }
-        if "parent_artifact_digest" not in lineage_columns:
-            self._db.execute(
-                "ALTER TABLE target_lineage_tips ADD COLUMN "
-                "parent_artifact_digest TEXT NOT NULL DEFAULT ''"
-            )
-        if "winner_speedup" not in lineage_columns:
-            self._db.execute(
-                "ALTER TABLE target_lineage_tips ADD COLUMN "
-                "winner_speedup TEXT NOT NULL DEFAULT ''"
-            )
+        self._ensure_arena_schema()
+        if "competition_arena" not in {row["name"] for row in self._db.execute("PRAGMA table_info(evaluation_stacks)")}:
+            self._db.execute("ALTER TABLE evaluation_stacks ADD COLUMN competition_arena TEXT NOT NULL DEFAULT ''")
         try:
             ensure_evaluation_lease_schema(self._db)
         except EvaluationLeaseStoreError as exc:
@@ -1111,7 +1083,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             row["qualification_authority_digest"], row["qualification_evidence_digest"],
             row["arena_service_digest"], row["screen_lane"], row["screen_status"],
             row["screen_stage_count"], row["screen_attempts"],
-            row["decision"], row["reason"],
+            row["decision"], row["reason"], row["competition_arena"],
         )
 
     def get(self, reservation_id: str) -> IntakeReservation:
@@ -1216,7 +1188,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         with self._transaction():
             self._require_evaluation_mutation_authority(reservation_id)
             row = self.get(reservation_id)
-            if row.status != "fetching":
+            if row.status not in {"fetching", "published"} or row.screen_attempts:
                 raise IntakeError(
                     f"closed-target disposal from {row.status!r} is forbidden"
                 )
@@ -1336,9 +1308,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         delta_fingerprint: SubmittedDeltaFingerprint,
         publication_digest: str,
         publication_root: str | Path,
+        competition_arena: str = "",
     ) -> IntakeReservation:
         if type(delta_fingerprint) is not SubmittedDeltaFingerprint:
             raise IntakeError("publication requires a typed submitted-delta fingerprint")
+        competition_arena = self.publication_arena(competition_arena)
         target_id = delta_fingerprint.target_id
         members = delta_fingerprint.members
         require_sha256_hex(publication_digest, field="publication_digest")
@@ -1347,117 +1321,24 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             if row.status != "fetching":
                 raise IntakeError("publication requires an active transport")
             count = self._db.execute(
-                "SELECT COUNT(*) AS n FROM reservations WHERE admission_epoch=? AND target_id=?",
-                (row.admission_epoch, target_id),
+                "SELECT COUNT(*) AS n FROM reservations WHERE admission_epoch=? "
+                "AND target_id=? AND competition_arena=?",
+                (row.admission_epoch, target_id, competition_arena),
             ).fetchone()["n"]
             status, decision, reason = "published", "", ""
             if count >= self.policy.max_per_target_epoch:
                 status, reason = "failed", "target_epoch_admission_limit"
             self._db.execute(
                 "UPDATE reservations SET status=?,target_id=?,target_members_json=?,delta_fingerprint_json=?,"
-                "publication_digest=?,publication_root=?,decision=?,reason=? WHERE reservation_id=?",
+                "publication_digest=?,publication_root=?,decision=?,reason=?,competition_arena=? WHERE reservation_id=?",
                 (
                     status, target_id, json.dumps(members, separators=(",", ":")),
                     json.dumps(delta_fingerprint.to_dict(), separators=(",", ":"), sort_keys=True),
-                    publication_digest, str(publication_root), decision, reason,
+                    publication_digest, str(publication_root), decision, reason, competition_arena,
                     reservation_id,
                 ),
             )
         return self.get(reservation_id)
-
-    def screenable(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
-        """Return validator-selected work awaiting a fresh non-crown screen."""
-
-        bound = self.policy.max_cohort if limit is None else limit
-        if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
-            raise IntakeError("screen cohort limit is invalid")
-        rows = self._db.execute(
-            "SELECT r.* FROM reservations AS r WHERE status IN "
-            "('published','reproduction_pending') AND NOT EXISTS ("
-            "SELECT 1 FROM evaluation_lease_members AS em WHERE "
-            "em.reservation_id=r.reservation_id AND em.active=1) ORDER BY "
-            "CASE status WHEN 'reproduction_pending' THEN 0 ELSE 1 END,"
-            "block,event_index,event_subindex,hotkey,content_hash LIMIT ?",
-            (bound,),
-        )
-        return tuple(self._row(row) for row in rows)
-
-    def retire_duplicate_screenables(
-        self, *, service_digest: str, limit: int | None = None
-    ) -> tuple[tuple[str, str], ...]:
-        """Fail screenable rows whose exact bytes already lost under this arena.
-
-        Wiring only; the rule lives in :mod:`cacheon.chain.duplicate_replay`,
-        which documents why identical bytes under an identical arena may inherit
-        a FAIL and why a PASS may not.
-
-        Runs before work is claimed, so a duplicate costs neither a screen nor a
-        qualification. ``screenable`` already excludes rows under an active
-        lease, and ``decide_replay`` refuses the reproduction lane outright.
-        """
-
-        require_sha256_hex(service_digest, field="arena service digest")
-        priors = tuple(
-            PriorVerdict(
-                reservation_id=row["reservation_id"],
-                content_hash=row["content_hash"],
-                arena_service_digest=row["arena_service_digest"],
-                decision=row["decision"],
-                reason=row["reason"],
-            )
-            for row in self._db.execute(
-                "SELECT reservation_id,content_hash,arena_service_digest,decision,"
-                "reason FROM reservations WHERE decision IN ('PASS','FAIL') "
-                "AND arena_service_digest=?",
-                (service_digest,),
-            )
-        )
-        if not priors:
-            return ()
-        retired: list[tuple[str, str]] = []
-        for row in self.screenable(limit=limit):
-            decision = decide_replay(
-                content_hash=row.arrival.content_hash,
-                arena_service_digest=service_digest,
-                screen_lane=row.screen_lane,
-                priors=priors,
-            )
-            if not decision.replay:
-                continue
-            self.mark_failed(row.reservation_id, decision.reason)
-            retired.append((row.reservation_id, decision.reason))
-        return tuple(retired)
-
-    def arena_queue_snapshot(self, *, current_block: int):
-        from cacheon.arena_service import ArenaQueueSnapshot
-
-        if type(current_block) is not int or current_block < 0:
-            raise IntakeError("arena queue block is malformed")
-        queued = self._db.execute(
-            "SELECT COUNT(*) AS n,MIN(block) AS oldest FROM reservations AS r WHERE "
-            "status IN ('published','reproduction_pending','promoted') AND NOT EXISTS ("
-            "SELECT 1 FROM evaluation_lease_members AS em WHERE "
-            "em.reservation_id=r.reservation_id AND em.active=1)"
-        ).fetchone()
-        active_screens = self._db.execute(
-            "SELECT (SELECT COUNT(*) FROM reservations WHERE status='screening') + "
-            "(SELECT COUNT(*) FROM evaluation_lease_members AS em JOIN "
-            "evaluation_leases AS el USING(lease_id) WHERE em.active=1 "
-            "AND el.stage='screen') AS n"
-        ).fetchone()["n"]
-        active_qualifications = self._db.execute(
-            "SELECT (SELECT COUNT(*) FROM reservations WHERE status='qualifying') + "
-            "(SELECT COUNT(*) FROM evaluation_lease_members AS em JOIN "
-            "evaluation_leases AS el USING(lease_id) WHERE em.active=1 "
-            "AND el.stage='qualification') AS n"
-        ).fetchone()["n"]
-        oldest = queued["oldest"]
-        return ArenaQueueSnapshot(
-            queued["n"],
-            0 if oldest is None else max(0, current_block - oldest),
-            active_screens,
-            active_qualifications,
-        )
 
     def begin_screen(
         self, reservation_id: str, *, service_digest: str
@@ -1466,6 +1347,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         with self._transaction():
             self._require_evaluation_mutation_authority(reservation_id)
             row = self.get(reservation_id)
+            if row.competition_arena != self._competition_arena:
+                raise IntakeError("screen reservation belongs to another competition arena")
             if row.status not in {"published", "reproduction_pending"}:
                 raise IntakeError("only screenable intake may begin arena screening")
             stack = self._unambiguous_evaluation_stack(service_digest)
@@ -1633,9 +1516,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         for row in self.all():
             if row.arrival.arrival_key >= candidate.arrival.arrival_key:
                 break
-            if row.status in _TERMINAL:
+            if row.status in _TERMINAL or row.competition_arena != candidate.competition_arena:
                 continue
-            if not row.target_members or set(row.target_members) & set(candidate.target_members):
+            if not row.target_members or members_overlap(row.target_members, candidate.target_members):
                 blockers.append(row)
         return tuple(blockers)
 
@@ -1990,9 +1873,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         if existing is None:
             self._db.execute(
                 "INSERT INTO evaluation_stacks(arena_id,generation,stack_digest,"
-                "tree_digest,stack_json,transition_event_id) VALUES(?,0,?,?,?,?)",
-                (arena, manifest.digest, tree_digest, encoded, genesis),
+                "tree_digest,stack_json,transition_event_id,competition_arena) VALUES(?,0,?,?,?,?,?)",
+                (arena, manifest.digest, tree_digest, encoded, genesis, self._competition_arena),
             )
+        elif existing["competition_arena"] != self._competition_arena:
+            raise IntakeError("commission belongs to another competition arena")
         elif existing["generation"] == 0 and (
             existing["stack_digest"] != manifest.digest
             or existing["tree_digest"] != tree_digest
@@ -2042,7 +1927,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
         if arena_or_service_digest:
             return None
-        rows = tuple(self._db.execute("SELECT * FROM evaluation_stacks ORDER BY arena_id"))
+        rows = tuple(self._db.execute("SELECT * FROM evaluation_stacks WHERE competition_arena=? ORDER BY arena_id", (self._competition_arena,)))
         if len(rows) != 1:
             return None
         return self._evaluation_stack_state_from_row(
@@ -2095,216 +1980,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("evaluation stack is already initialized differently")
         return state
-
-    def target_lineage_tips(self) -> Mapping[str, object]:
-        """Reopen each target's contiguous active root-to-tip lineage."""
-
-        from cacheon.settlement import TargetLineage, TargetLineageNode
-
-        try:
-            lineages: dict[str, TargetLineage] = {}
-            for tip in self._db.execute(
-                "SELECT target_id,artifact_digest FROM target_lineage_tips "
-                "ORDER BY target_id"
-            ):
-                nodes: list[TargetLineageNode] = []
-                artifact = tip["artifact_digest"]
-                seen: set[str] = set()
-                while artifact:
-                    if artifact in seen:
-                        raise IntakeError("target lineage contains a cycle")
-                    seen.add(artifact)
-                    row = self._db.execute(
-                        "SELECT * FROM target_lineage_nodes "
-                        "WHERE target_id=? AND artifact_digest=?",
-                        (tip["target_id"], artifact),
-                    ).fetchone()
-                    if row is None:
-                        if nodes:
-                            break
-                        raise IntakeError(
-                            "target lineage tips require a successful backfill"
-                        )
-                    nodes.append(
-                        TargetLineageNode(
-                            row["artifact_digest"],
-                            row["parent_artifact_digest"],
-                            row["winner_speedup"],
-                            row["transition_event_id"],
-                        )
-                    )
-                    artifact = row["parent_artifact_digest"]
-                lineages[tip["target_id"]] = TargetLineage(
-                    tuple(reversed(nodes))
-                )
-            return MappingProxyType(lineages)
-        except (TypeError, ValueError, IntakeError) as exc:
-            raise IntakeError(
-                f"target lineage tips require a successful backfill: {exc}"
-            ) from None
-
-    def _pretransition_reservations(
-        self,
-        candidates: Iterable[SettlementCandidate],
-        lineages: Mapping[str, object],
-    ) -> frozenset[str]:
-        eligible: set[str] = set()
-        for candidate in candidates:
-            lineage = lineages.get(candidate.target_id)
-            if lineage is None:
-                continue
-            incumbent = candidate.incumbent_manifest.entries.get(
-                candidate.target_id
-            )
-            artifact = "" if incumbent is None else incumbent.artifact_digest
-            try:
-                threshold = lineage.threshold_from(artifact)
-            except (TypeError, ValueError):
-                continue
-            if threshold is None:
-                continue
-            if self._db.execute(
-                "SELECT 1 FROM target_lineage_pretransition_reservations "
-                "WHERE transition_event_id=? AND reservation_id=?",
-                (threshold[1], candidate.reservation_digest),
-            ).fetchone() is not None:
-                eligible.add(candidate.reservation_digest)
-        return frozenset(eligible)
-
-    def backfill_target_lineage_tips(self) -> Mapping[str, object]:
-        """Seed the lineage ledger from the latest CROWN recorded per target.
-
-        Stores that settled before the ledger existed carry crowned history but
-        no tips, which would leave the fork guard inert.  Replaying the newest
-        CROWN per target reconstructs the artifact each target's lineage rests
-        on.  Idempotent: it recomputes the same rows from the same journal.
-        """
-
-        from cacheon.settlement import TargetLineageNode
-
-        with self._transaction():
-            self._db.execute("DELETE FROM target_lineage_tips")
-            self._db.execute("DELETE FROM target_lineage_nodes")
-            self._db.execute(
-                "DELETE FROM target_lineage_pretransition_reservations"
-            )
-            for row in self._db.execute(
-                "SELECT se.target_id,se.reservation_id,se.event_id,se.arena_id,"
-                "se.sequence FROM settlement_events se "
-                "WHERE se.event_type='CROWN' "
-                "ORDER BY se.sequence"
-            ).fetchall():
-                candidate_row = self._db.execute(
-                    "SELECT candidate_json,candidate_digest FROM settlement_candidates "
-                    "WHERE reservation_id=?",
-                    (row["reservation_id"],),
-                ).fetchone()
-                if candidate_row is None:
-                    raise IntakeError("crowned target has no settlement candidate")
-                candidate = self._settlement_candidate(candidate_row)
-                if candidate.candidate_manifest is None:
-                    raise IntakeError("crowned candidate lacks its stack manifest")
-                contribution = candidate.candidate_manifest.entries.get(row["target_id"])
-                if contribution is None:
-                    raise IntakeError("crowned candidate does not name its target")
-                incumbent = candidate.incumbent_manifest.entries.get(row["target_id"])
-                parent_artifact = (
-                    "" if incumbent is None else incumbent.artifact_digest
-                )
-                node = TargetLineageNode(
-                    contribution.artifact_digest,
-                    parent_artifact,
-                    candidate.speedup,
-                    row["event_id"],
-                )
-                self._db.execute(
-                    "INSERT INTO target_lineage_nodes(target_id,artifact_digest,"
-                    "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
-                    "transition_event_id,crowned_block) VALUES(?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(target_id,artifact_digest) DO UPDATE SET "
-                    "parent_artifact_digest=excluded.parent_artifact_digest,"
-                    "winner_speedup=excluded.winner_speedup,"
-                    "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
-                    "transition_event_id=excluded.transition_event_id,"
-                    "crowned_block=excluded.crowned_block",
-                    (
-                        row["target_id"],
-                        node.artifact_digest,
-                        node.parent_artifact_digest,
-                        node.winner_speedup,
-                        candidate.arena_digest,
-                        candidate.candidate_stack_digest,
-                        node.transition_event_id,
-                        candidate.finalized_block,
-                    ),
-                )
-                self._db.execute(
-                    "INSERT INTO target_lineage_tips(target_id,artifact_digest,"
-                    "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
-                    "transition_event_id,crowned_block) VALUES(?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(target_id) DO UPDATE SET "
-                    "artifact_digest=excluded.artifact_digest,"
-                    "parent_artifact_digest=excluded.parent_artifact_digest,"
-                    "winner_speedup=excluded.winner_speedup,"
-                    "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
-                    "transition_event_id=excluded.transition_event_id,"
-                    "crowned_block=excluded.crowned_block",
-                    (
-                        row["target_id"],
-                        node.artifact_digest,
-                        node.parent_artifact_digest,
-                        node.winner_speedup,
-                        candidate.arena_digest,
-                        candidate.candidate_stack_digest,
-                        node.transition_event_id,
-                        candidate.finalized_block,
-                    ),
-                )
-                # Historical journals did not retain the transition-time
-                # reservation snapshot. A crown cannot precede its last
-                # retained qualification product, so reservations from an
-                # earlier block than that product are provably pre-transition.
-                # Same-block arrivals remain excluded because retained_block
-                # has no event index. Legacy zero timestamps fall back to the
-                # winner's exact arrival order.
-                retained = self._db.execute(
-                    "SELECT MAX(retained_block) AS block "
-                    "FROM settlement_qualifications WHERE reservation_id=?",
-                    (candidate.reservation_digest,),
-                ).fetchone()
-                proof_block = 0 if retained is None else int(retained["block"])
-                if proof_block > 0:
-                    self._db.execute(
-                        "INSERT OR IGNORE INTO "
-                        "target_lineage_pretransition_reservations("
-                        "transition_event_id,reservation_id) "
-                        "SELECT ?,reservation_id FROM reservations "
-                        "WHERE block<? OR reservation_id=?",
-                        (
-                            node.transition_event_id,
-                            proof_block,
-                            candidate.reservation_digest,
-                        ),
-                    )
-                else:
-                    self._db.execute(
-                        "INSERT OR IGNORE INTO "
-                        "target_lineage_pretransition_reservations("
-                        "transition_event_id,reservation_id) "
-                        "SELECT ?,reservation_id FROM reservations WHERE "
-                        "block<? OR (block=? AND event_index<?) OR "
-                        "(block=? AND event_index=? AND event_subindex<=?)",
-                        (
-                            node.transition_event_id,
-                            candidate.finalized_block,
-                            candidate.finalized_block,
-                            candidate.event_index,
-                            candidate.finalized_block,
-                            candidate.event_index,
-                            candidate.event_subindex,
-                        ),
-                    )
-        return self.target_lineage_tips()
 
     def evaluation_stack(self, arena_digest: str) -> EvaluationStackState:
         require_sha256_hex(arena_digest, field="arena_digest")
@@ -2378,18 +2053,17 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         cohort_ids: frozenset[str],
     ) -> tuple[str, ...]:
         blockers: list[str] = []
+        candidate_row = self.get(candidate.reservation_digest)
         for row in self.all():
-            if row.arrival.arrival_key >= self.get(
-                candidate.reservation_digest
-            ).arrival.arrival_key:
+            if row.competition_arena != candidate_row.competition_arena:
+                continue
+            if row.arrival.arrival_key >= candidate_row.arrival.arrival_key:
                 break
             if row.reservation_id in cohort_ids:
                 continue
             if row.status in {"failed", "expired"}:
                 continue
-            if row.target_members and not (
-                set(row.target_members) & set(candidate.members)
-            ):
+            if row.target_members and not members_overlap(row.target_members, candidate.members):
                 continue
             if row.status == "qualified":
                 economic = self._db.execute(
@@ -2407,18 +2081,12 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         return tuple(blockers)
 
     def has_pending_settlement(self) -> bool:
-        """Return whether retained settlement work may currently be leased."""
-
-        if (
-            self._db.execute(
-                "SELECT 1 FROM evaluation_leases WHERE state='active' "
-                "AND stage='qualification' LIMIT 1"
-            ).fetchone() is not None
-        ):
-            return False
-
+        """Report global settlement work outside its own arena's qualification."""
         return self._db.execute(
-            "SELECT 1 FROM settlement_candidates WHERE status='pending' LIMIT 1"
+            "SELECT 1 FROM settlement_candidates AS sc JOIN reservations AS r USING(reservation_id) "
+            "WHERE sc.status='pending' AND NOT EXISTS (SELECT 1 FROM evaluation_leases AS el "
+            "WHERE el.state='active' AND el.stage='qualification' "
+            "AND el.competition_arena=r.competition_arena) LIMIT 1",
         ).fetchone() is not None
 
     def lease_settlement_cohort(
@@ -2437,15 +2105,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("settlement lease bounds are malformed")
         with self._transaction():
-            # Do not lease settlement work while a qualification
-            # evaluation lease is active.
-            if (
-                self._db.execute(
-                    "SELECT 1 FROM evaluation_leases WHERE state='active' "
-                    "AND stage='qualification' LIMIT 1"
-                ).fetchone() is not None
-            ):
-                return None
             # A stale unresolved predecessor must not retain economic priority
             # after the finalized-block SLA.  Do this atomically with leasing so
             # no caller can forget the liveness transition.
@@ -2467,9 +2126,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 self._db.execute(
                     "SELECT sc.*,r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash "
                     "FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
-                    "WHERE sc.status='pending' AND r.status='qualified' "
+                    "WHERE sc.status='pending' AND r.status='qualified' AND NOT EXISTS ("
+                    "SELECT 1 FROM evaluation_leases AS el WHERE el.state='active' "
+                    "AND el.stage='qualification' AND el.competition_arena=r.competition_arena) "
                     "ORDER BY r.block,r.event_index,"
-                    "r.event_subindex,r.hotkey,r.content_hash"
+                    "r.event_subindex,r.hotkey,r.content_hash",
                 )
             )
             chosen: tuple[sqlite3.Row, ...] | None = None
@@ -2516,7 +2177,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             if cursor.rowcount != len(ids):
                 raise IntakeError("settlement cohort changed while leasing")
             sequence, previous = self._event_head()
-            tips = self.target_lineage_tips()
+            tips = self.target_lineage_tips(self.get(candidates[0].reservation_digest).competition_arena)
             pretransition = self._pretransition_reservations(
                 candidates, tips
             )
@@ -2578,13 +2239,14 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         by_digest = {row.digest: row for row in lease.candidates}
         evidence_by_candidate = {row.candidate_digest: row for row in receipts}
         with self._transaction():
-            if self._db.execute(
-                "SELECT 1 FROM evaluation_leases WHERE state='active' "
-                "AND stage='qualification' LIMIT 1"
-            ).fetchone() is not None:
+            arena = self.get(lease.candidates[0].reservation_digest).competition_arena
+            if self._active_qualification_rows(arena):
                 raise IntakeError(
                     "settlement commit is fenced by active qualification"
                 )
+            if any(self.get(row.reservation_digest).competition_arena != arena
+                   for row in lease.candidates):
+                raise IntakeError("settlement belongs to another competition arena")
             # Re-evaluate the same finalized-block SLA at commit time.  Opening
             # retained evidence may cross the boundary after the lease was made.
             self._expire_stale_rows(current_block)
@@ -2593,7 +2255,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 lease.initial_event_sequence, lease.previous_event_digest
             ):
                 raise IntakeError("settlement incumbent or journal advanced")
-            if dict(self.target_lineage_tips()) != dict(lease.lineage_tips):
+            if dict(self.target_lineage_tips(arena)) != dict(lease.lineage_tips):
                 raise IntakeError("target lineage advanced while evidence was open")
             current_pretransition = self._pretransition_reservations(
                 lease.candidates, lease.lineage_tips
@@ -2704,48 +2366,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             event.digest,
                         ),
                     )
-                    self._db.execute(
-                        "INSERT INTO target_lineage_nodes(target_id,artifact_digest,"
-                        "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
-                        "transition_event_id,crowned_block) VALUES(?,?,?,?,?,?,?,?) "
-                        "ON CONFLICT(target_id,artifact_digest) DO UPDATE SET "
-                        "parent_artifact_digest=excluded.parent_artifact_digest,"
-                        "winner_speedup=excluded.winner_speedup,"
-                        "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
-                        "transition_event_id=excluded.transition_event_id,"
-                        "crowned_block=excluded.crowned_block",
-                        (
-                            candidate.target_id,
-                            contribution.artifact_digest,
-                            parent_artifact,
-                            candidate.speedup,
-                            candidate.arena_digest,
-                            candidate.candidate_stack_digest,
-                            event.digest,
-                            current_block,
-                        ),
-                    )
-                    self._db.execute(
-                        "INSERT INTO target_lineage_tips(target_id,artifact_digest,"
-                        "parent_artifact_digest,winner_speedup,arena_id,stack_digest,"
-                        "transition_event_id,crowned_block) "
-                        "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(target_id) DO UPDATE SET "
-                        "artifact_digest=excluded.artifact_digest,"
-                        "parent_artifact_digest=excluded.parent_artifact_digest,"
-                        "winner_speedup=excluded.winner_speedup,"
-                        "arena_id=excluded.arena_id,stack_digest=excluded.stack_digest,"
-                        "transition_event_id=excluded.transition_event_id,"
-                        "crowned_block=excluded.crowned_block",
-                        (
-                            candidate.target_id,
-                            contribution.artifact_digest,
-                            parent_artifact,
-                            candidate.speedup,
-                            candidate.arena_digest,
-                            candidate.candidate_stack_digest,
-                            event.digest,
-                            current_block,
-                        ),
+                    self._write_lineage(
+                        candidate, contribution.artifact_digest, parent_artifact,
+                        event.digest, current_block,
                     )
                     # This exact snapshot is the temporal authority for stale
                     # sibling exceptions. A reservation inserted after this
@@ -2754,8 +2377,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         "INSERT OR IGNORE INTO "
                         "target_lineage_pretransition_reservations("
                         "transition_event_id,reservation_id) "
-                        "SELECT ?,reservation_id FROM reservations",
-                        (event.digest,),
+                        "SELECT ?,reservation_id FROM reservations WHERE competition_arena=?",
+                        (event.digest, self.get(candidate.reservation_digest).competition_arena),
                     )
                     arrival = self._db.execute(
                         "SELECT block,block_hash,event_index,event_subindex,hotkey "
@@ -2895,87 +2518,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     "emissions policy differs from the bound validator consensus state"
                 )
 
-    def build_weight_projection(
-        self,
-        *,
-        policy,
-        context,
-        netuid: int,
-    ) -> WeightProjection:
-        """Pool all retained earning claims under each crown's sealed catalog."""
+    def build_weight_projection(self, *, policy, context, netuid: int) -> WeightProjection:
+        """Build the durable producer's projection from original PASS evidence."""
+        from cacheon.chain.qualification_settlement import build_weight_projection
 
-        from cacheon.chain.weights import WeightProjection
-        from cacheon.economics import (
-            ArenaRewardAuthority,
-            EmissionsPolicyManifest,
-            GlobalRewardProjectionContext,
-            project_global_rewards,
-        )
-
-        if (
-            type(policy) is not EmissionsPolicyManifest
-            or type(context) is not GlobalRewardProjectionContext
-            or type(netuid) is not int
-            or netuid < 0
-        ):
-            raise IntakeError("weight projection authority is malformed")
-        standing, discovery = self.active_reward_claims()
-        earning = self.passed_reward_claims()
-        by_arena: dict[str, list[object]] = {}
-        for claim in standing:
-            by_arena.setdefault(claim.arena_digest, []).append(claim)
-        states = self.evaluation_stacks()
-        state_ids = {row.arena_digest for row in states}
-        active_states = tuple(row for row in states if row.generation > 0)
-        active_ids = {row.arena_digest for row in active_states}
-        if set(by_arena) - state_ids:
-            raise IntakeError("active reward claim belongs to an absent evaluation arena")
-        if set(by_arena) - active_ids:
-            raise IntakeError("active reward claim belongs to an uncrowned evaluation arena")
-        for claim in standing:
-            self._reopen_claim_evidence(claim.retained_evidence_digest, "crowned")
-        for claim in discovery:
-            self._reopen_claim_evidence(
-                claim.retained_evidence_digest, "discovery_bounty"
-            )
-        authorities = []
-        for state in active_states:
-            authorities.append(
-                ArenaRewardAuthority(
-                    state.manifest,
-                    state.generation,
-                    tuple(by_arena.get(state.arena_digest, ())),
-                )
-            )
-        projection = project_global_rewards(
-            policy, context, tuple(authorities), earning, discovery
-        )
-        self._bind_emissions_policy(policy)
-        evidence = tuple(
-            sorted(
-                {
-                    claim.retained_evidence_digest
-                    for claim in (*standing, *earning, *discovery)
-                }
-            )
-        )
-        return WeightProjection(
-            context.chain_scope_digest,
-            netuid,
-            context.validator_hotkey,
-            policy.digest,
-            self.settlement_state_digest(),
-            projection.digest,
-            context.metagraph_digest,
-            projection.arena_authority_digests,
-            max((row.generation for row in active_states), default=0),
-            context.current_block,
-            len(standing),
-            evidence,
-            tuple(
-                (row.hotkey, row.weight_ppm) for row in projection.weights
-            ),
-        )
+        return build_weight_projection(self, policy=policy, context=context, netuid=netuid)
 
     def build_burn_weight_projection(
         self,
@@ -3959,6 +3506,12 @@ class SQLiteWeightPublicationJournal:
                 "INSERT INTO metadata(key,value) VALUES('weight_publication_head',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (encoded,),
+            )
+            from cacheon.chain.qualification_settlement import confirm_reward_decay
+            from cacheon.chain.weights import WeightProjection
+
+            confirm_reward_decay(
+                self.store, WeightProjection.from_dict(json.loads(projection_json)), replacement,
             )
 
     def retained_projection(self, projection_digest: str) -> WeightProjection:

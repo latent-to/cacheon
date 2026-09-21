@@ -8,7 +8,6 @@ is necessary for later qualification, never sufficient.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -16,26 +15,14 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from typing import ClassVar
 
-from cacheon.stack_identity import (
-    StackIdentityError,
-    canonical_digest,
-    canonical_json_bytes,
-)
+from cacheon.stack_identity import canonical_digest
 from cacheon._strict import require_digest, require_exact_fields, require_int
 
-GRAPH_QUALIFICATION_SCHEMA_VERSION = 1
-GRAPH_QUALIFICATION_POLICY_VERSION = "graph-verification-veto.v1"
-GRAPH_EVIDENCE_DOMAIN = "qualification.graph-verification"
-GRAPH_EVIDENCE_MEDIA_TYPE = "application/vnd.cacheon.graph-verification+json"
-GRAPH_EVIDENCE_SCHEMA = "cacheon.qualification.graph-raw-evidence.v1"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}\Z")
-_FAILURES = frozenset(
-    {"none", "not_applicable", "eager", "capture", "replay", "graph_not_required"}
-)
 
 
 class QualificationError(ValueError):
-    """Graph-verification policy or evidence is malformed."""
+    """Qualification policy or evidence is malformed."""
 
 
 class QualificationDecision(str, Enum):
@@ -106,15 +93,6 @@ def _ordered(rows: tuple[object, ...], keys: tuple[object, ...], label: str) -> 
         raise QualificationError(f"{label} must be canonically ordered")
 
 
-def _version(policy: object, schema: object, label: str) -> None:
-    if (
-        policy != GRAPH_QUALIFICATION_POLICY_VERSION
-        or type(schema) is not int
-        or schema != GRAPH_QUALIFICATION_SCHEMA_VERSION
-    ):
-        raise QualificationError(f"unsupported {label} policy/schema")
-
-
 class _Canonical:
     _domain: ClassVar[str]
 
@@ -126,495 +104,6 @@ class _Canonical:
     @property
     def digest(self) -> str:
         return canonical_digest(self._domain, self.to_dict())
-
-
-@dataclass(frozen=True)
-class GraphVerificationMemberBinding(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-member-binding"
-    slot_id: str
-    target_spec_digest: str
-    contract_digest: str
-    verification_profile_id: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "slot_id", _id(self.slot_id, "member slot_id"))
-        for field in ("target_spec_digest", "contract_digest"):
-            object.__setattr__(self, field, _digest(getattr(self, field), f"member {field}"))
-        object.__setattr__(
-            self, "verification_profile_id", _id(self.verification_profile_id, "profile ID")
-        )
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphVerificationMemberBinding":
-        return _load(cls, value, "graph member binding")
-
-
-@dataclass(frozen=True)
-class GraphVerificationBinding(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-binding"
-    marginal_arm_digest: str
-    candidate_launch_digest: str
-    contribution_ref_digest: str
-    selected_delta_digest: str
-    target_id: str
-    target_spec_digest: str
-    catalog_digest: str
-    members: tuple[GraphVerificationMemberBinding, ...]
-    verification_policy_digest: str
-
-    def __post_init__(self) -> None:
-        for field in (
-            "marginal_arm_digest",
-            "candidate_launch_digest",
-            "contribution_ref_digest",
-            "selected_delta_digest",
-            "target_spec_digest",
-            "catalog_digest",
-            "verification_policy_digest",
-        ):
-            object.__setattr__(self, field, _digest(getattr(self, field), field))
-        object.__setattr__(self, "target_id", _id(self.target_id, "target_id"))
-        members = tuple(self.members)
-        if not all(type(row) is GraphVerificationMemberBinding for row in members):
-            raise QualificationError("graph members must be typed bindings")
-        _ordered(members, tuple(row.slot_id for row in members), "graph members")
-        object.__setattr__(self, "members", members)
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphVerificationBinding":
-        return _load(
-            cls,
-            value,
-            "graph verification binding",
-            members=lambda rows: tuple(
-                GraphVerificationMemberBinding.from_dict(row)
-                for row in _array(rows, "graph members")
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class GraphVariantRequirement(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-variant-requirement"
-    slot_id: str
-    variant_id: str
-    shape_descriptor_digests: tuple[str, ...]
-    context_applicable: bool
-    applicable_shape_descriptor_digests: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "slot_id", _id(self.slot_id, "variant slot_id"))
-        object.__setattr__(self, "variant_id", _id(self.variant_id, "variant_id"))
-        shapes = tuple(
-            _digest(value, "shape descriptor digest")
-            for value in self.shape_descriptor_digests
-        )
-        _ordered(shapes, shapes, "variant shape requirements")
-        object.__setattr__(self, "shape_descriptor_digests", shapes)
-        object.__setattr__(
-            self, "context_applicable", _boolean(self.context_applicable, "context applicability")
-        )
-        applicable = tuple(
-            _digest(value, "applicable shape digest")
-            for value in self.applicable_shape_descriptor_digests
-        )
-        if applicable:
-            _ordered(applicable, applicable, "applicable shape requirements")
-        if not set(applicable) <= set(shapes) or bool(applicable) != self.context_applicable:
-            raise QualificationError("required graph applicability is inconsistent")
-        object.__setattr__(self, "applicable_shape_descriptor_digests", applicable)
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphVariantRequirement":
-        return _load(
-            cls,
-            value,
-            "graph variant requirement",
-            shape_descriptor_digests=lambda rows: tuple(_array(rows, "shape requirements")),
-            applicable_shape_descriptor_digests=lambda rows: tuple(
-                _array(rows, "applicable shape requirements")
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class GraphVerificationRequirement(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-requirement"
-    binding: GraphVerificationBinding
-    variants: tuple[GraphVariantRequirement, ...]
-    expected_graph_replays: int
-    policy_version: str = GRAPH_QUALIFICATION_POLICY_VERSION
-    schema_version: int = GRAPH_QUALIFICATION_SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        if type(self.binding) is not GraphVerificationBinding:
-            raise QualificationError("graph requirement binding is not typed")
-        _version(self.policy_version, self.schema_version, "graph requirement")
-        object.__setattr__(
-            self, "expected_graph_replays", _integer(self.expected_graph_replays, "replays", 2)
-        )
-        variants = tuple(self.variants)
-        if not all(type(row) is GraphVariantRequirement for row in variants):
-            raise QualificationError("graph variants must be typed requirements")
-        _ordered(
-            variants,
-            tuple((row.slot_id, row.variant_id) for row in variants),
-            "graph variants",
-        )
-        if {row.slot_id for row in variants} != {row.slot_id for row in self.binding.members}:
-            raise QualificationError("graph variants must cover every bound member exactly")
-        object.__setattr__(self, "variants", variants)
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphVerificationRequirement":
-        return _load(
-            cls,
-            value,
-            "graph verification requirement",
-            binding=GraphVerificationBinding.from_dict,
-            variants=lambda rows: tuple(
-                GraphVariantRequirement.from_dict(row) for row in _array(rows, "graph variants")
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class GraphShapeEvidence(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-shape-evidence"
-    descriptor_digest: str
-    applicable: bool
-    eager_passed: bool
-    graph_required: bool
-    graph_replays: int
-    graph_passed: bool
-    failure_kind: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "descriptor_digest",
-            _digest(self.descriptor_digest, "shape digest"),
-        )
-        for field in ("applicable", "eager_passed", "graph_required", "graph_passed"):
-            object.__setattr__(self, field, _boolean(getattr(self, field), field))
-        object.__setattr__(self, "graph_replays", _integer(self.graph_replays, "replays"))
-        if self.failure_kind not in _FAILURES:
-            raise QualificationError("shape failure_kind is unsupported")
-        state = (self.applicable, self.eager_passed, self.graph_required, self.graph_passed)
-        allowed = {
-            "not_applicable": (False, False, False, False),
-            "eager": (True, False, True, False),
-            "capture": (True, True, True, False),
-            "replay": (True, True, True, False),
-            "graph_not_required": (True, True, False, False),
-        }
-        if self.failure_kind == "none":
-            valid = state == (True, True, True, True) and self.graph_replays >= 1
-        else:
-            valid = state == allowed[self.failure_kind] and (
-                self.failure_kind == "replay" or self.graph_replays == 0
-            )
-        if not valid:
-            raise QualificationError("graph shape evidence is internally inconsistent")
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphShapeEvidence":
-        return _load(cls, value, "graph shape evidence")
-
-
-@dataclass(frozen=True)
-class GraphVariantEvidence(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-variant-evidence"
-    slot_id: str
-    variant_id: str
-    context_applicable: bool
-    domain_coverage_complete: bool
-    shapes: tuple[GraphShapeEvidence, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "slot_id", _id(self.slot_id, "evidence slot_id"))
-        object.__setattr__(self, "variant_id", _id(self.variant_id, "evidence variant_id"))
-        for field in ("context_applicable", "domain_coverage_complete"):
-            object.__setattr__(self, field, _boolean(getattr(self, field), field))
-        shapes = tuple(self.shapes)
-        if not all(type(row) is GraphShapeEvidence for row in shapes):
-            raise QualificationError("variant shapes must be typed evidence")
-        _ordered(shapes, tuple(row.descriptor_digest for row in shapes), "variant shapes")
-        if not self.context_applicable and any(
-            row.failure_kind != "not_applicable" for row in shapes
-        ):
-            raise QualificationError("context-inapplicable variant has executable evidence")
-        object.__setattr__(self, "shapes", shapes)
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphVariantEvidence":
-        return _load(
-            cls,
-            value,
-            "graph variant evidence",
-            shapes=lambda rows: tuple(
-                GraphShapeEvidence.from_dict(row) for row in _array(rows, "variant shapes")
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class GraphMemberEvidence(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-member-evidence"
-    slot_id: str
-    variants: tuple[GraphVariantEvidence, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "slot_id", _id(self.slot_id, "member evidence slot_id"))
-        variants = tuple(self.variants)
-        if not all(
-            type(row) is GraphVariantEvidence and row.slot_id == self.slot_id
-            for row in variants
-        ):
-            raise QualificationError("member variants are invalid or name another slot")
-        _ordered(variants, tuple(row.variant_id for row in variants), "member variants")
-        object.__setattr__(self, "variants", variants)
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphMemberEvidence":
-        return _load(
-            cls,
-            value,
-            "graph member evidence",
-            variants=lambda rows: tuple(
-                GraphVariantEvidence.from_dict(row) for row in _array(rows, "member variants")
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class GraphVerificationRawEvidence(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-raw-evidence"
-    requirement_digest: str
-    members: tuple[GraphMemberEvidence, ...]
-    policy_version: str = GRAPH_QUALIFICATION_POLICY_VERSION
-    schema_version: int = GRAPH_QUALIFICATION_SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "requirement_digest",
-            _digest(self.requirement_digest, "requirement"),
-        )
-        _version(self.policy_version, self.schema_version, "raw graph evidence")
-        members = tuple(self.members)
-        if not all(type(row) is GraphMemberEvidence for row in members):
-            raise QualificationError("raw members must be typed evidence")
-        _ordered(members, tuple(row.slot_id for row in members), "raw members")
-        object.__setattr__(self, "members", members)
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphVerificationRawEvidence":
-        return _load(
-            cls,
-            value,
-            "raw graph evidence",
-            members=lambda rows: tuple(
-                GraphMemberEvidence.from_dict(row) for row in _array(rows, "raw members")
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class GraphVerificationEvidenceRef(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-evidence-ref"
-    binding: GraphVerificationBinding
-    requirement_digest: str
-    raw_evidence_digest: str
-    policy_version: str = GRAPH_QUALIFICATION_POLICY_VERSION
-    schema_version: int = GRAPH_QUALIFICATION_SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        if type(self.binding) is not GraphVerificationBinding:
-            raise QualificationError("graph evidence reference binding is not typed")
-        for field in ("requirement_digest", "raw_evidence_digest"):
-            object.__setattr__(self, field, _digest(getattr(self, field), field))
-        _version(self.policy_version, self.schema_version, "graph evidence reference")
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphVerificationEvidenceRef":
-        return _load(
-            cls,
-            value,
-            "graph evidence reference",
-            binding=GraphVerificationBinding.from_dict,
-        )
-
-
-@dataclass(frozen=True)
-class GraphVerificationGrade(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-grade"
-    decision: QualificationDecision
-    reason: str
-    requirement_digest: str
-    evidence_ref_digest: str | None
-    raw_evidence_digest: str | None
-
-    def __post_init__(self) -> None:
-        if type(self.decision) is not QualificationDecision:
-            raise QualificationError("graph grade decision is not typed")
-        object.__setattr__(self, "reason", _id(self.reason, "grade reason"))
-        object.__setattr__(
-            self,
-            "requirement_digest",
-            _digest(self.requirement_digest, "requirement"),
-        )
-        for field in ("evidence_ref_digest", "raw_evidence_digest"):
-            value = getattr(self, field)
-            if value is not None:
-                object.__setattr__(self, field, _digest(value, field))
-
-    @classmethod
-    def from_dict(cls, value: object) -> "GraphVerificationGrade":
-        def decision(item: object) -> QualificationDecision:
-            try:
-                return QualificationDecision(item)
-            except (TypeError, ValueError) as exc:
-                raise QualificationError("graph grade decision is unsupported") from exc
-
-        return _load(cls, value, "graph grade", decision=decision)
-
-
-def _grade(
-    decision: QualificationDecision,
-    reason: str,
-    requirement: GraphVerificationRequirement,
-    reference: GraphVerificationEvidenceRef | None,
-    raw: GraphVerificationRawEvidence | None,
-) -> GraphVerificationGrade:
-    return GraphVerificationGrade(
-        decision,
-        reason,
-        requirement.digest,
-        None if reference is None else reference.digest,
-        None if raw is None else raw.digest,
-    )
-
-
-def regrade_graph_verification(
-    requirement: GraphVerificationRequirement,
-    evidence_ref: GraphVerificationEvidenceRef | None,
-    raw_evidence: GraphVerificationRawEvidence | None,
-) -> GraphVerificationGrade:
-    """Recompute the mandatory graph veto without trusting an aggregate boolean."""
-
-    if type(requirement) is not GraphVerificationRequirement:
-        raise QualificationError("graph requirement is not typed")
-    def result(decision: QualificationDecision, reason: str) -> GraphVerificationGrade:
-        return _grade(decision, reason, requirement, evidence_ref, raw_evidence)
-    if evidence_ref is None or raw_evidence is None:
-        return result(QualificationDecision.NO_DECISION, "graph_evidence_missing")
-    if type(evidence_ref) is not GraphVerificationEvidenceRef or type(
-        raw_evidence
-    ) is not GraphVerificationRawEvidence:
-        raise QualificationError("graph evidence is not typed")
-    if (
-        evidence_ref.binding != requirement.binding
-        or evidence_ref.requirement_digest != requirement.digest
-        or raw_evidence.requirement_digest != requirement.digest
-    ):
-        return result(QualificationDecision.NO_DECISION, "graph_identity_mismatch")
-    if evidence_ref.raw_evidence_digest != raw_evidence.digest:
-        return result(QualificationDecision.NO_DECISION, "graph_evidence_tampered")
-
-    expected: dict[str, tuple[GraphVariantRequirement, ...]] = {}
-    for variant in requirement.variants:
-        expected[variant.slot_id] = expected.get(variant.slot_id, ()) + (variant,)
-    observed = {member.slot_id: member for member in raw_evidence.members}
-    member_ids = tuple(member.slot_id for member in requirement.binding.members)
-    if tuple(observed) != member_ids:
-        return result(QualificationDecision.NO_DECISION, "graph_member_coverage_incomplete")
-
-    for slot_id in member_ids:
-        required_variants, actual_variants = expected[slot_id], observed[slot_id].variants
-        if tuple(row.variant_id for row in actual_variants) != tuple(
-            row.variant_id for row in required_variants
-        ):
-            return result(QualificationDecision.NO_DECISION, "graph_variant_coverage_incomplete")
-        applicable = 0
-        for required, actual in zip(required_variants, actual_variants):
-            if actual.slot_id != required.slot_id or tuple(
-                row.descriptor_digest for row in actual.shapes
-            ) != required.shape_descriptor_digests:
-                return result(QualificationDecision.NO_DECISION, "graph_shape_coverage_incomplete")
-            actual_applicable = tuple(
-                shape.descriptor_digest for shape in actual.shapes if shape.applicable
-            )
-            if (
-                actual.context_applicable != required.context_applicable
-                or actual_applicable != required.applicable_shape_descriptor_digests
-            ):
-                return result(QualificationDecision.FAIL, "graph_applicability_failed")
-            if actual.context_applicable and not actual.domain_coverage_complete:
-                return result(QualificationDecision.FAIL, "graph_domain_coverage_failed")
-            for shape in actual.shapes:
-                if not shape.applicable:
-                    continue
-                applicable += 1
-                if shape.failure_kind != "none":
-                    return result(QualificationDecision.FAIL, f"graph_{shape.failure_kind}_failed")
-                if shape.graph_replays != requirement.expected_graph_replays:
-                    return result(QualificationDecision.NO_DECISION, "graph_replay_count_mismatch")
-        if applicable == 0:
-            return result(QualificationDecision.FAIL, "graph_member_not_applicable")
-    return result(QualificationDecision.PASS, "graph_verification_pass")
-
-
-def reopen_graph_verification(
-    root: object,
-    artifact_ref: object,
-    requirement: GraphVerificationRequirement,
-    evidence_ref: GraphVerificationEvidenceRef,
-) -> GraphVerificationGrade:
-    """Reopen controller-owned raw bytes and recompute the graph veto."""
-
-    from cacheon.eval.evidence_store import (
-        EvidenceArtifactRef,
-        EvidenceStoreError,
-        reopen_evidence,
-    )
-
-    if type(artifact_ref) is not EvidenceArtifactRef or (
-        artifact_ref.domain != GRAPH_EVIDENCE_DOMAIN
-        or artifact_ref.media_type != GRAPH_EVIDENCE_MEDIA_TYPE
-        or artifact_ref.schema != GRAPH_EVIDENCE_SCHEMA
-    ):
-        raise QualificationError("graph evidence artifact reference is invalid")
-    try:
-        payload = reopen_evidence(root, artifact_ref)
-    except EvidenceStoreError as exc:
-        raise QualificationError(f"graph evidence artifact failed to reopen: {exc}") from None
-
-    def strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise QualificationError(f"graph evidence JSON repeats key {key!r}")
-            result[key] = value
-        return result
-
-    def reject_constant(value: str) -> object:
-        raise QualificationError(f"graph evidence JSON contains {value}")
-
-    try:
-        decoded = json.loads(
-            payload.decode("utf-8"),
-            object_pairs_hook=strict_object,
-            parse_constant=reject_constant,
-        )
-        if canonical_json_bytes(decoded) != payload:
-            raise QualificationError("graph evidence JSON encoding is not canonical")
-    except QualificationError:
-        raise
-    except (UnicodeDecodeError, json.JSONDecodeError, StackIdentityError) as exc:
-        raise QualificationError(f"graph evidence JSON is invalid: {exc}") from None
-    raw = GraphVerificationRawEvidence.from_dict(decoded)
-    return regrade_graph_verification(requirement, evidence_ref, raw)
 
 
 @dataclass(frozen=True)
@@ -745,7 +234,6 @@ class QualificationProfile(_Canonical):
     reference: ReferenceManifest
     calibration_context_digest: str
     calibration_digest: str
-    graph_requirement_digest: str
     required_quality_metrics: tuple[str, ...]
     nll_tail_threshold: str
     tokens_per_prompt: int
@@ -756,7 +244,9 @@ class QualificationProfile(_Canonical):
     runtime_resource_policy_digest: str
     hidden_tasks_required: bool
     minimum_prompt_count: int
-    policy_version: str = "qualification.v1"
+    # v2 dropped v1's graph_requirement_digest: the graph proof is the timed run's
+    # captured completion, not a separately published requirement.
+    policy_version: str = "qualification.v2"
     schema_version: int = 1
 
     def __post_init__(self) -> None:
@@ -765,7 +255,6 @@ class QualificationProfile(_Canonical):
         for field in (
             "calibration_context_digest",
             "calibration_digest",
-            "graph_requirement_digest",
             "support_policy_digest",
             "hidden_task_policy_digest",
             "runtime_resource_policy_digest",
@@ -808,7 +297,7 @@ class QualificationProfile(_Canonical):
             self, "minimum_prompt_count", _integer(self.minimum_prompt_count, "prompts", 2)
         )
         if (
-            self.policy_version != "qualification.v1"
+            self.policy_version != "qualification.v2"
             or type(self.schema_version) is not int
             or self.schema_version != 1
         ):
@@ -1185,7 +674,6 @@ def candidate_lifecycle_digest(
 def qualification_identity_digest(
     profile: QualificationProfile,
     *,
-    graph_requirement: GraphVerificationRequirement,
     selection: SelectionReceipt,
     calibration: object,
     candidate_lifecycle: str,
@@ -1200,24 +688,22 @@ def qualification_identity_digest(
 
     if (
         type(profile) is not QualificationProfile
-        or type(graph_requirement) is not GraphVerificationRequirement
         or type(selection) is not SelectionReceipt
         or type(calibration) is not CalibrationManifest
         or type(t_session) is not ReferenceSessionEvidence
     ):
         raise QualificationError("qualification identity inputs are not typed")
-    common = {
-        "calibration_digest": calibration.digest,
-        "candidate_lifecycle_digest": _digest(candidate_lifecycle, "candidate lifecycle"),
-        "profile_digest": profile.digest,
-        "selected_delta_digest": _digest(selected_delta_digest, "selected delta"),
-        "selection_digest": selection.digest,
-        "t_session_digest": t_session.digest,
-        "t_request_sha256": _digest(t_request_sha256, "T request SHA-256"),
-    }
     return canonical_digest(
         "cacheon.qualification.candidate-identity",
-        {**common, "graph_requirement_digest": graph_requirement.digest},
+        {
+            "calibration_digest": calibration.digest,
+            "candidate_lifecycle_digest": _digest(candidate_lifecycle, "candidate lifecycle"),
+            "profile_digest": profile.digest,
+            "selected_delta_digest": _digest(selected_delta_digest, "selected delta"),
+            "selection_digest": selection.digest,
+            "t_session_digest": t_session.digest,
+            "t_request_sha256": _digest(t_request_sha256, "T request SHA-256"),
+        },
     )
 
 
@@ -1436,7 +922,6 @@ def validate_quality_binding(
     entropy: SelectionEntropyReceipt,
     selection: SelectionReceipt,
     calibration: object,
-    graph_requirement: GraphVerificationRequirement,
     reference_execution: object,
     reference_request_sha256: str,
 ):
@@ -1451,7 +936,6 @@ def validate_quality_binding(
 
     if (
         type(profile) is not QualificationProfile
-        or type(graph_requirement) is not GraphVerificationRequirement
         or type(raw_artifact) is not ReferenceQualityRawArtifact
         or type(calibration) is not CalibrationManifest
         or type(reference_execution) is not PristineReferenceExecutionEvidence
@@ -1468,25 +952,8 @@ def validate_quality_binding(
     )
     if len(candidates) != 1:
         raise QualificationError("quality candidate lifecycle is absent or ambiguous")
-    candidate = candidates[0]
-    arm = candidate.arm
-    expected_requirement_binding = (
-        arm.digest, candidate.candidate.launch.digest,
-        arm.transition.replacement.digest, arm.selected_delta_digest,
-        arm.transition.target_id, arm.transition.target_spec_digest,
-        arm.candidate.catalog_digest,
-    )
-    actual_requirement_binding = (
-        graph_requirement.binding.marginal_arm_digest,
-        graph_requirement.binding.candidate_launch_digest,
-        graph_requirement.binding.contribution_ref_digest,
-        graph_requirement.binding.selected_delta_digest,
-        graph_requirement.binding.target_id,
-        graph_requirement.binding.target_spec_digest,
-        graph_requirement.binding.catalog_digest,
-    )
-    calibration_policy = graph_requirement.binding.verification_policy_digest
-    profile_requirement_digest = profile.graph_requirement_digest
+    # The verification policy is bound through profile.calibration_context_digest,
+    # checked below; the other nine fields are re-derived from the reference.
     expected_calibration_context = CalibrationContext(
         profile.reference.measured_digest,
         profile.reference.arena_digest,
@@ -1497,14 +964,13 @@ def validate_quality_binding(
         profile.reference.model_content_digest,
         profile.reference.logical_hardware_digest,
         profile.reference.workload_digest,
-        calibration_policy,
+        calibration.context.verification_policy_digest,
     )
     lifecycle_digest = candidate_lifecycle_digest(
         lifecycle, selected_delta_digest=selected_delta_digest
     )
     identity_digest = qualification_identity_digest(
         profile,
-        graph_requirement=graph_requirement,
         selection=selection,
         calibration=calibration,
         candidate_lifecycle=lifecycle_digest,
@@ -1552,8 +1018,6 @@ def validate_quality_binding(
         or calibration.context.digest != profile.calibration_context_digest
         or tuple(row.name for row in calibration.quality_metrics)
         != profile.required_quality_metrics
-        or graph_requirement.digest != profile_requirement_digest
-        or actual_requirement_binding != expected_requirement_binding
         or binding.selection_digest != selection.digest
         or binding.tokens_per_prompt > profile.tokens_per_prompt
         or (binding.topk_width, binding.hidden_tasks_per_prompt)
@@ -1576,21 +1040,6 @@ def validate_quality_binding(
 
 
 __all__ = [
-    "GRAPH_EVIDENCE_DOMAIN",
-    "GRAPH_EVIDENCE_MEDIA_TYPE",
-    "GRAPH_EVIDENCE_SCHEMA",
-    "GRAPH_QUALIFICATION_POLICY_VERSION",
-    "GRAPH_QUALIFICATION_SCHEMA_VERSION",
-    "GraphMemberEvidence",
-    "GraphShapeEvidence",
-    "GraphVariantEvidence",
-    "GraphVariantRequirement",
-    "GraphVerificationBinding",
-    "GraphVerificationEvidenceRef",
-    "GraphVerificationGrade",
-    "GraphVerificationMemberBinding",
-    "GraphVerificationRawEvidence",
-    "GraphVerificationRequirement",
     "QualificationProfile",
     "QualificationDecision",
     "QualificationError",
@@ -1603,8 +1052,6 @@ __all__ = [
     "derived_hidden_task_plan_digest",
     "lifecycle_prompt_digests",
     "qualification_identity_digest",
-    "reopen_graph_verification",
-    "regrade_graph_verification",
     "selected_trajectory_digest",
     "selected_trajectory_projection_digest",
     "validate_quality_binding",

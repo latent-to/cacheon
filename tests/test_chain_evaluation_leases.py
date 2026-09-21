@@ -168,7 +168,7 @@ def test_additive_schema_migrates_a_legacy_database(tmp_path):
     with _store(tmp_path) as migrated:
         assert migrated._db.execute(
             "SELECT value FROM metadata WHERE key='evaluation_lease_schema'"
-        ).fetchone()["value"] == "1"
+        ).fetchone()["value"] == "2"
         assert migrated.active_evaluation_leases() == ()
 
 
@@ -366,7 +366,7 @@ def test_legacy_mutation_is_fenced_but_exact_accept_context_is_authorized(tmp_pa
         assert store.get(unrelated.reservation_id).status == "published"
 
 
-def test_one_active_qualification_globally_fences_claim_and_settlement(tmp_path):
+def test_one_active_qualification_fences_its_arena_claim_and_settlement(tmp_path):
     with _store(tmp_path, max_cohort=3) as store:
         rows = _published_rows(store, 3)
         for row in rows[:2]:

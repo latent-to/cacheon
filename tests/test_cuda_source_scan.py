@@ -38,8 +38,8 @@ from cacheon.copy_fingerprint import (
 from cacheon.sandbox import scan_tree
 
 CUDA_BODY = """\
-// a silu-and-mul epilogue
-extern "C" __global__ void silu_and_mul(const float* x, float* out, int n) {
+// identity copy used only as scanner input
+extern "C" __global__ void copy_values(const float* x, float* out, int n) {
     /* block */
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) { out[i] = x[i]; }
@@ -49,7 +49,7 @@ extern "C" __global__ void silu_and_mul(const float* x, float* out, int n) {
 # Same logic, reflowed: different comments/whitespace -> same normalized fingerprint,
 # different exact bytes.
 CUDA_BODY_REFORMATTED = """\
-extern "C" __global__ void silu_and_mul(const float* x, float* out, int n)
+extern "C" __global__ void copy_values(const float* x, float* out, int n)
 {
     // totally different comment
     int i = blockIdx.x * blockDim.x + threadIdx.x;

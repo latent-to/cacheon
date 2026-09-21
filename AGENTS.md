@@ -30,12 +30,11 @@ or treated as production authority.
 
 ## Owner directive: exact paths, no unsolicited rigor or fallback
 
-This section records a repeated agent failure. Agents have repeatedly added
-“graceful” fallback, trust/strictness machinery, parallel harnesses, and
-ceremony that Shiv did not request. July's silent stock fallbacks then cost a
-week of diagnosis. On 2026-08-25, an agent again fabricated off-chain wrapper
-inputs instead of using identities the production intake already derives.
-Shiv is explicitly sick of this behavior.
+These rules exist because unrequested “graceful” fallback, trust/strictness
+machinery, parallel harnesses, and ceremony have cost real time here: silent
+stock fallbacks took a week to diagnose, and fabricated off-chain wrapper
+inputs once replaced identities the production intake already derives. The
+incident record is linked at the end of this section.
 
 - Do not add trustlessness, rigor, strictness, policy machinery, abstraction,
   or fallback behavior unless Shiv explicitly orders that exact change.
@@ -66,8 +65,10 @@ Shiv is explicitly sick of this behavior.
   through the declared ABI; it may not mutate or reconfigure unrelated SGLang
   or model-serving behavior (for example speculative decoding, batching,
   engine flags, or unrelated chokepoints) to manufacture throughput.
-- Before mainnet, verify the actual live processes through `/proc/<pid>/environ`
-  and require source, image, READY receipt, registration, service identity,
+- Before mainnet, verify the actual live processes one field at a time
+  (`readlink /proc/<pid>/cwd`, the launcher's `SOURCE_ROOT=` line, the
+  supervisor's script path; never a whole-environment or config dump) and
+  require source, image, READY receipt, registration, service identity,
   worker epoch, watchdog epoch/source, dispatcher, supervisor, and intake to
   agree. Stale tmux argv and broad `pgrep` matches have repeatedly lied.
 
@@ -90,17 +91,16 @@ AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
   B/C/B′ qualification; historical PASS pairs retain their existing identities and credit.
 - The resident hot-swap screen is routing-only. Its measurements cannot crown,
   settle, or authorize rewards.
-- Production version-3 qualification binds two physical TP lanes. Current
-  speed policy is the two-process B/C/B′ schedule for every candidate (v10, or
-  v11 for a mixed-cell workload); it warms every workload cell and retains a
-  separate eager/untimed audit role when registered and pristine T. The pair-native v7 schedule was deleted on 2026-09-06.
+- Production version-3 qualification binds two physical TP lanes. Speed
+  policy is the two-process B/C/B′ schedule for every candidate (v10, or v11
+  for a mixed-cell workload); it warms every workload cell and retains a
+  separate eager/untimed audit role when registered and pristine T.
 - Evaluation-stack settlement, incentive activation, weight publication,
   integration review, release signing, and serving are distinct authorities.
 - Legacy V1 weights are a fenced state machine. The V2 finite-debt economics
-  were extracted from the tree on 2026-08-09 and their reserved durable
-  schema was retired on 2026-09-05; reintroduction requires a new reviewed
-  change. Do not infer registered discovery promotion from implemented
-  arithmetic.
+  and their reserved durable schema are not in the tree; reintroducing either
+  requires a new reviewed change. Do not infer registered discovery promotion
+  from implemented arithmetic.
 
 If a change weakens one of these statements, it requires an explicit design and
 security review—not a local implementation shortcut.
@@ -136,13 +136,16 @@ suite.
 
 ### Execution control gates
 
-- Keep at most three non-root agents active across the entire descendant tree,
-  not merely three direct children. A child may not spawn a descendant unless
-  the user explicitly authorizes descendant delegation. Check the live agent
-  tree immediately before and after every launch. Give each agent one bounded
-  outcome, exact file ownership, explicit forbidden actions, applicable
-  product invariants, and exact acceptance tests. Review its output or diff
-  before accepting it; delegation is not approval.
+- Keep at most three long-lived writing agents active across the entire
+  descendant tree, not merely three direct children: respawnable,
+  compaction-surviving subagents have raced each other on live infrastructure.
+  Bounded read-only fan-outs that return a result and exit are not counted.
+  A child may not spawn a descendant unless the user explicitly authorizes
+  descendant delegation. Check the live agent tree immediately before and
+  after every launch. Give each agent one bounded outcome, exact file
+  ownership, explicit forbidden actions, applicable product invariants, and
+  exact acceptance tests. Review its output or diff before accepting it;
+  delegation is not approval.
 - No change merges without naming its consumer and its casualty. The consumer
   is the real entrypoint that exercises the new code in the same diff. The
   casualty is the implementation or operator action it supersedes, which must
@@ -204,7 +207,7 @@ CPU setup and baseline validation:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[cpu,dev,release]"
+python -m pip install -e ".[cpu,dev]"
 python -m pytest -q tests
 ```
 
@@ -228,9 +231,9 @@ module entry point preserves the required guard.
   `import cacheon.bootstrap` in a `.pth` file.
 - `cacheon/seams.py` is the only adapter registry. Bootstrap, activation, binding
   vocabulary, and compatibility checks derive from it.
-- Adding a slot starts in `cacheon/slots.py`. A new SGLang chokepoint adds one
-  adapter implementation and one `SeamAdapter` row; do not create a parallel
-  registry.
+- A module of the served model is a node address (`model.layers.*.mlp`, `model`), served at
+  every width by `cacheon/integrations/sglang_nodes.py` against stock in the running engine.
+  Only a span no module names starts in `cacheon/slots.py` with its own adapter. No parallel registry.
 - Block and collective contributions must satisfy graph capture/replay and
   declare the required graph metadata.
 - Collective verification binds each process to its CUDA device before process
@@ -326,6 +329,10 @@ contributor and subagent:
 - Target files under roughly 600 physical lines. The 1,000-line cap is a
   ceiling, not a budget; packing files to just under it is a design smell.
   Never split tests into `_partN` files — split by behavior with named scopes.
+- Scratch checks and verification scripts stay outside the tree. Commit a
+  test only where the task asks for one or the tree already keeps tests for
+  that kind of change, sized like the neighbouring test files; a scratch check
+  does not become a permanent test file.
 - State net line impact in every pull request and handoff summary. Prefer
   diffs that delete. A single reviewable unit above roughly +1,500 net
   production lines must be split or explicitly justified.
@@ -352,8 +359,8 @@ contributor and subagent:
 
 ## Docstrings and comments
 
-Adopted 2026-09-05 from the PyTorch and Kubernetes contributor conventions,
-trimmed to this tree's prose-only house style.
+Follows the PyTorch and Kubernetes contributor conventions, trimmed to this
+tree's prose-only house style.
 
 - Docstring every module, class, and public function; private helpers only
   when they are non-trivial.

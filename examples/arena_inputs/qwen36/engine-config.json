@@ -1,0 +1,22 @@
+{
+  "cuda_graph_bs_decode": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    24,
+    32,
+    40,
+    48
+  ],
+  "disable_radix_cache": true,
+  "dtype": "bfloat16",
+  "kv_cache_dtype": "fp8_e4m3",
+  "log_level": "error",
+  "mamba_ssm_dtype": "float32",
+  "max_mamba_cache_size": 48,
+  "mem_fraction_static": 0.93,
+  "moe_runner_backend": "triton",
+  "tp_size": 1
+}

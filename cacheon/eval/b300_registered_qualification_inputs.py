@@ -12,7 +12,6 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from cacheon._strict import require_digest
-from cacheon.arena_service import ArenaCandidateBinding
 from cacheon.engine_tree import (
     MaterializedEngineTree,
     inspect_contribution,
@@ -39,26 +38,15 @@ from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.marginal_runtime import (
     MaterializedArmBinding,
-    PreparedCandidateRuntime,
     prepare_marginal_runtime,
 )
 from cacheon.eval.oci_backend import TrustedArenaModelMountReceipt
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.eval.qualification import (
-    GraphVariantRequirement,
-    GraphVerificationBinding,
-    GraphVerificationMemberBinding,
-    GraphVerificationRequirement,
     QualificationProfile,
     ReferenceManifest,
     SelectionCommitment,
-)
-from cacheon.eval.qualification_intake import (
-    GraphMemberObservation,
-    GraphVariantObservation,
-    GraphVerificationObservation,
-    publish_graph_observation,
 )
 from cacheon.eval.reference_quality import retained_support_policy_digest
 from cacheon.eval.qualification_runner import (
@@ -523,63 +511,7 @@ class B300RegisteredQualificationPolicy:
         return canonical_digest(POLICY_SCHEMA, self.to_dict())
 
 
-@dataclass(frozen=True)
-class B300FocusedGraphFacts:
-    """Raw, target-local graph facts before candidate/catalog identity is added."""
-
-    expected_graph_replays: int
-    variants: tuple[GraphVariantRequirement, ...]
-    observations: tuple[GraphVariantObservation, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "expected_graph_replays",
-            _positive(self.expected_graph_replays, "expected graph replays", minimum=2),
-        )
-        variants = tuple(self.variants)
-        observations = tuple(self.observations)
-        if (
-            not variants
-            or any(type(row) is not GraphVariantRequirement for row in variants)
-            or any(type(row) is not GraphVariantObservation for row in observations)
-        ):
-            raise B300RegisteredQualificationError(
-                "focused graph facts lack canonical requirement/observation coverage"
-            )
-        variant_keys = tuple((row.slot_id, row.variant_id) for row in variants)
-        observation_keys = tuple(
-            (row.slot_id, row.variant_id) for row in observations
-        )
-        if (
-            variant_keys != observation_keys
-            or variant_keys != tuple(sorted(variant_keys))
-            or len(set(variant_keys)) != len(variant_keys)
-        ):
-            raise B300RegisteredQualificationError(
-                "focused graph facts lack canonical requirement/observation coverage"
-            )
-        for required, observed in zip(variants, observations, strict=True):
-            descriptors = tuple(row.descriptor_digest for row in observed.shapes)
-            applicable = tuple(
-                row.descriptor_digest for row in observed.shapes if row.applicable
-            )
-            if (
-                descriptors != required.shape_descriptor_digests
-                or applicable != required.applicable_shape_descriptor_digests
-                or observed.context_applicable != required.context_applicable
-            ):
-                raise B300RegisteredQualificationError(
-                    "focused graph observations differ from the declared shape domain"
-                )
-        object.__setattr__(self, "variants", variants)
-        object.__setattr__(self, "observations", observations)
-
-
 CandidateBindingBuilder = Callable[[MaterializedEngineTree], TrustedLaunchBinding]
-GraphFactsBuilder = Callable[
-    [ArenaCandidateBinding, PreparedCandidateRuntime, str], B300FocusedGraphFacts
-]
 
 
 # Construction token: only the commissioner (and its tests) may build the
@@ -609,8 +541,6 @@ class B300RegisteredQualificationInputs:
     source_resolver: object
     candidate_binding_builder_digest: str
     candidate_binding_builder: CandidateBindingBuilder
-    graph_facts_builder_digest: str
-    graph_facts_builder: GraphFactsBuilder
     evidence_root: Path
     reference_manifest: ReferenceManifest
     calibration_threshold_policy: CalibrationThresholdPolicy
@@ -739,7 +669,6 @@ class B300RegisteredQualificationInputs:
             {
                 "binding_builder_digest": self.candidate_binding_builder_digest,
                 "calibration_digest": self.calibration_manifest.digest,
-                "graph_facts_builder_digest": self.graph_facts_builder_digest,
                 "policy_digest": self.policy.digest,
                 "reference_manifest_digest": self.reference_manifest.digest,
                 "source_resolver_digest": self.source_resolver_digest,

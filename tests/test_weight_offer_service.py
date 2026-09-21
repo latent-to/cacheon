@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import types
+import json
 from pathlib import Path
 
 import pytest
@@ -65,7 +66,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
                 "push_credentials": str(cred_path),
                 "push_url": "http://127.0.0.1:8080",
                 "refresh_blocks": 600,
-                "schema": WEIGHTS_CONFIG_SCHEMA,
+                "schema": "cacheon-standing-weights-config-v1",
             }
         )
         + b"\n",
@@ -90,14 +91,23 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     return config_path, row
 
 
-def test_offer_service_config_reopens_exactly(tmp_path: Path) -> None:
+@pytest.mark.parametrize("schema", ["cacheon-standing-weights-config-v1", WEIGHTS_CONFIG_SCHEMA])
+def test_offer_service_config_reopens_exactly(tmp_path: Path, schema) -> None:
     config_path, raw = _setup(tmp_path)
+    journal = None
+    if schema == WEIGHTS_CONFIG_SCHEMA:
+        journal = config_path.parent / "signer.sqlite3"
+        _private_file(journal, b"")
+        weights_path = Path(raw["weights_stage_config"])
+        weights = json.loads(weights_path.read_text())
+        _rewrite(weights_path, {**weights, "schema": schema, "confirmation_journal": str(journal)})
     config = load_offer_service_config(config_path)
     assert config.raw == raw
     assert config.poll_s == 60.0
     assert config.max_consecutive_failures == 10
     assert config.weights_stage.refresh_blocks == 600
     assert config.weights_stage.half_life_blocks == 7200
+    assert config.weights_stage.confirmation_journal == journal
 
 
 def test_unsupported_schema_fails_closed(tmp_path: Path) -> None:
@@ -293,3 +303,26 @@ def test_idle_and_pushed_passes_are_reported_distinctly() -> None:
 
 def test_main_returns_2_on_missing_config(tmp_path: Path) -> None:
     assert main(["--config", str(tmp_path / "missing.json")]) == 2
+
+
+@pytest.mark.parametrize("reason,last_update,confirmed,valid", [
+    ("block_inclusion", 0, 104, True),
+    ("block_inclusion", 0, 99, False),
+    ("block_inclusion", 105, 104, False),
+    ("post_submit_authoritative_readback", 0, 104, False),
+    ("post_submit_authoritative_readback", 102, 104, True),
+])
+def test_reopen_included_weight_record_before_active_readback(reason, last_update, confirmed, valid):
+    from cacheon.chain.weights import WeightPublicationError, WeightPublicationRecord
+    from cacheon.stack_identity import canonical_digest
+
+    wire = dict(projection_digest="a" * 64, status="confirmed", prior_record_digest=None,
+                submit_block=100, retry_after_block=700, reveal_round=23,
+                confirmed_block=confirmed, confirmed_last_update=last_update, reason=reason)
+    if not valid:
+        with pytest.raises(WeightPublicationError, match="chronology"):
+            WeightPublicationRecord.from_dict(wire)
+        return
+    record = WeightPublicationRecord.from_dict(wire)
+    assert record.to_dict() == wire
+    assert record.digest == canonical_digest("cacheon.chain.weight-publication", wire)
