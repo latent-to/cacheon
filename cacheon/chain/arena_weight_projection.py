@@ -117,13 +117,13 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
                 raise IntakeError("reward store snapshot is absent, stale, ahead, or inconsistent")
             # A second chain listener can reject the same arrival before admission;
             # that payment failure carries no publication or evaluation ownership.
-            ids = {row[0] for row in store._db.execute("""
-                SELECT reservation_id FROM reservations WHERE NOT (
-                    status='failed' AND reason='missing_eval_cost_payment' AND target_id=''
-                    AND publication_digest='' AND arena_service_digest='' AND screen_status=''
-                    AND decision='')""")}
+            # Every arena's listener also admits every paid reveal and leaves the
+            # other arena's rows unevaluated (2026-09-21: four of the six Qwen rows
+            # were also in the GLM store). Only a PASS can earn, so only a PASS owns.
+            ids = {row[0] for row in store._db.execute(
+                "SELECT reservation_id FROM reservations WHERE decision='PASS'")}
             if seen_reservations.intersection(ids):
-                raise IntakeError("reservation identity occurs in multiple reward stores")
+                raise IntakeError("reservation passed in multiple reward stores")
             seen_reservations.update(ids)
             reconcile_follower_reward_decay(store, confirmation_journal,
                                            validator_hotkey=context.validator_hotkey)
