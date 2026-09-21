@@ -86,6 +86,14 @@ DEFAULT_HEARTBEAT_SECONDS = 10
 DEFAULT_MAX_HEARTBEAT_AGE = 45
 
 
+class RemoteQualificationWaitTimeout(RemoteEvaluationDispatcherError):
+    """The CPU wait elapsed without a result; no GPU outcome is implied."""
+
+    def __init__(self, request_id: str):
+        self.request_id = request_id
+        super().__init__("remote qualification response exceeded the transport deadline")
+
+
 @dataclass(frozen=True)
 class RemotePodSite:
     """Closed pod-side installation coordinates used by the CPU shuttle."""
@@ -649,6 +657,8 @@ class DurableSpoolAuthenticatedWorkerTransport:
                 )
             self._require_dispatcher_liveness()
             time.sleep(self.poll_seconds)
+        if stage == "qualification":
+            raise RemoteQualificationWaitTimeout(request_id)
         raise RemoteEvaluationDispatcherError(
             f"remote {stage} response exceeded the transport deadline"
         )

@@ -329,8 +329,10 @@ def confirm_reward_decay(store: FinalizedIntakeStore, projection, record) -> Non
     if not pending:
         return
     recipients = dict(projection.weights_ppm)
+    earning_evidence = (projection.evidence_digests if projection.rewarded_evidence_digests is None
+                        else projection.rewarded_evidence_digests)
     for claim in passed_reward_claims(store):
-        if (claim.digest in pending and claim.retained_evidence_digest in projection.evidence_digests
+        if (claim.digest in pending and claim.retained_evidence_digest in earning_evidence
                 and recipients.get(claim.hotkey, 0) > 0):
             record_reward_decay_start(
                 store, claim_digest=claim.digest, start_block=record.confirmed_block,
@@ -387,32 +389,15 @@ def reconcile_follower_reward_decay(store: FinalizedIntakeStore, journal_path, *
         )
 
 
-def build_weight_projection(
-    store,
-    *,
-    policy,
-    context,
-    netuid: int,
-) -> WeightProjection:
-    """Pool all retained earning claims under each crown's sealed catalog."""
+def _reward_projection_inputs(store, *, include_uncrowned: bool = False) -> dict:
+    """Reopen one store's reward evidence and publication clocks for its producer.
 
+    Retained claims, stack checks and publication clocks stay together so a
+    combined producer can reuse the existing evidence authority.
+    """
     from cacheon.chain.intake import IntakeError
-    from cacheon.stack_identity import canonical_digest
-    from cacheon.chain.weights import WeightProjection
-    from cacheon.economics import (
-        ArenaRewardAuthority,
-        EmissionsPolicyManifest,
-        GlobalRewardProjectionContext,
-        project_global_rewards,
-    )
+    from cacheon.economics import ArenaRewardAuthority
 
-    if (
-        type(policy) is not EmissionsPolicyManifest
-        or type(context) is not GlobalRewardProjectionContext
-        or type(netuid) is not int
-        or netuid < 0
-    ):
-        raise IntakeError("weight projection authority is malformed")
     standing, discovery = store.active_reward_claims()
     earning, contributions = passed_reward_evidence(store)
     _hold_unpublished_claims(store, earning)
@@ -437,7 +422,7 @@ def build_weight_projection(
             claim.retained_evidence_digest, "discovery_bounty"
         )
     authorities = []
-    for state in active_states:
+    for state in (states if include_uncrowned else active_states):
         authorities.append(
             ArenaRewardAuthority(
                 state.manifest,
@@ -445,9 +430,49 @@ def build_weight_projection(
                 tuple(by_arena.get(state.arena_digest, ())),
             )
         )
+    return {
+        "arenas": tuple(authorities), "earning_claims": earning,
+        "discovery_claims": discovery, "earned_contributions": contributions,
+        "decay_start_blocks": starts, "adjustments": adjustments,
+        "standing_claims": standing, "states": states,
+    }
+
+
+def build_weight_projection(
+    store,
+    *,
+    policy,
+    context,
+    netuid: int,
+) -> WeightProjection:
+    """Pool all retained earning claims under each crown's sealed catalog."""
+
+    from cacheon.chain.intake import IntakeError
+    from cacheon.stack_identity import canonical_digest
+    from cacheon.chain.weights import WeightProjection
+    from cacheon.economics import (
+        EmissionsPolicyManifest,
+        GlobalRewardProjectionContext,
+        project_global_rewards,
+    )
+
+    if (
+        type(policy) is not EmissionsPolicyManifest
+        or type(context) is not GlobalRewardProjectionContext
+        or type(netuid) is not int
+        or netuid < 0
+    ):
+        raise IntakeError("weight projection authority is malformed")
+    from cacheon.chain.arena_weight_projection import require_legacy_projection
+
+    require_legacy_projection(store, context.current_block)
+    inputs = _reward_projection_inputs(store)
+    standing = inputs.pop("standing_claims")
+    adjustments = inputs.pop("adjustments")
+    active_states = tuple(row for row in inputs.pop("states") if row.generation > 0)
+    earning, discovery = inputs["earning_claims"], inputs["discovery_claims"]
     projection = project_global_rewards(
-        policy, context, tuple(authorities), earning, discovery,
-        earned_contributions=contributions, decay_start_blocks=starts,
+        policy, context, **inputs,
     )
     store._bind_emissions_policy(policy)
     evidence = tuple(

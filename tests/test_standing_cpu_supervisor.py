@@ -287,7 +287,7 @@ def test_run_forever_prints_exact_stage_error(capsys) -> None:
     )
 
 
-@pytest.mark.parametrize("disposition", ["hold", "requeue"])
+@pytest.mark.parametrize("disposition", ["hold", "requeue", "waiting"])
 def test_run_forever_backs_off_typed_no_progress_after_screening(
     disposition: str,
 ) -> None:
@@ -300,6 +300,7 @@ def test_run_forever_backs_off_typed_no_progress_after_screening(
     calls = {"qualification": 0, "screen": 0}
     waits: list[float] = []
     products = {
+        "waiting": SupervisorStageResult(stage="qualification", progressed=False, disposition="waiting"),
         "hold": RecoverableQualificationHold(
             recovery_id=_d("held-recovery"),
             phase=RecoveryPhase.HELD,

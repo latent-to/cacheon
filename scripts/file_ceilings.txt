@@ -7,13 +7,12 @@ cacheon/chain/evaluation_coordinator.py 1038
 cacheon/chain/evaluation_lease_store.py 911
 cacheon/chain/evaluation_recovery_store.py 1227
 cacheon/chain/intake.py 3834
-cacheon/chain/recoverable_qualification_dispatcher.py 1048
+cacheon/chain/recoverable_qualification_dispatcher.py 937
 cacheon/chain/remote_evaluation_dispatcher.py 1072
 cacheon/chain/remote_worker_pod_service.py 1106
 cacheon/chain/remote_worker_request_plan.py 940
 cacheon/chain/remote_worker_spool.py 998
 cacheon/chain/weight_share.py 1528
-cacheon/chain/weights.py 968
 cacheon/cli.py 3218
 cacheon/engine_tree.py 1607
 cacheon/eval/b300_qualification_deployment.py 982
@@ -37,7 +36,7 @@ cacheon/settlement.py 1075
 cacheon/target_catalog.py 999
 cacheon/verify.py 988
 cacheon/verify_collective.py 1057
-dashboard/app.py 1287
+dashboard/app.py 994
 tests/test_b300_remote_worker_adapter.py 1123
 tests/test_chain_intake.py 2073
 tests/test_crossover_runtime.py 918

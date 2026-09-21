@@ -561,6 +561,8 @@ def project_global_rewards(
     *,
     earned_contributions: Iterable[ProposalContributionRef] = (),
     decay_start_blocks: Mapping[str, int | None] | None = None,
+    allocation_terms: Mapping[str, tuple[str, int]] | None = None,
+    allocation_burn_hotkey: str = "",
 ) -> GlobalRewardProjection:
     """Pool the store-selected earning claims before one indivisible vector."""
 
@@ -597,6 +599,10 @@ def project_global_rewards(
         stack = authority.stack
         sealed_specs = stack.sealed_target_spec_digests
         active_targets = _active_reward_targets(stack)
+        if allocation_terms is not None and authority.stack_generation == 0:
+            if authority.standing_claims:
+                raise EconomicsError("uncrowned arena has standing claims")
+            continue
         if not active_targets:
             raise EconomicsError("every registered arena requires an active crown")
         by_target = {row.target_id: row for row in authority.standing_claims}
@@ -685,7 +691,7 @@ def project_global_rewards(
         standing_by_hotkey[recipient] = (
             standing_by_hotkey.get(recipient, 0) + credit
         )
-    if not any(standing_by_hotkey.values()):
+    if allocation_terms is None and not any(standing_by_hotkey.values()):
         raise EconomicsError("all PASS credit has decayed to zero")
 
     discoveries = tuple(discovery_claims)
@@ -720,7 +726,17 @@ def project_global_rewards(
     if live and discovery_pool == 0:
         raise EconomicsError("live discovery claims exist while bounties are disabled")
     standing_pool = WEIGHT_PPM - discovery_pool
-    combined = _allocate_pool(standing_by_hotkey, standing_pool)
+    if allocation_terms is None:
+        combined = _allocate_pool(standing_by_hotkey, standing_pool)
+    else:
+        from cacheon.arena_allocation import allocate_submission_weights, arena_base_credits
+
+        if live:
+            raise EconomicsError("live discovery claims have no submission allocation")
+        combined = allocate_submission_weights(
+            family_credits, allocation_terms, context, allocation_burn_hotkey,
+            base_credits=arena_base_credits(earning, policy, context, starts),
+        )[0]
     if live:
         for hotkey, value in _allocate_pool(discovery_by_hotkey, discovery_pool).items():
             combined[hotkey] = combined.get(hotkey, 0) + value

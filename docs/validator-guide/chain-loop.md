@@ -360,6 +360,15 @@ stack. Restarting an unchanged service retains the existing recovery path.
 
 ## Standing CPU supervisor
 
+A bounded qualification-result wait can expire while the published request is
+still pending. With a healthy lease heartbeat and the same retained carrier,
+the supervisor reports `qualification` / `waiting` and continues its existing
+no-progress backoff. It resumes that request without publishing another job,
+consuming another attempt, or assigning a miner verdict. Restart preserves the
+same request too. Missing carriers, failed lease renewal, invalid results and
+unclassified transport errors retain their existing HOLD/error behavior; a
+timeout is not permission to repeat GPU work on a replacement machine.
+
 `python -m cacheon.chain.standing_cpu_supervisor --config <path>` is the
 standing CPU daemon over those pieces. Its sealed, closed, owner-controlled
 config names the screen-dispatcher config (`chain/mainnet_screen_dispatcher.py`
@@ -399,6 +408,67 @@ the builder's crownless refusal as a stage error when it is empty. The stage
 never signs; the serve-weights lane owns readback and the follow-weights
 signer decides what reaches the chain. Naming `weights_stage_config` while
 `enable_weights` is false is refused, as is the reverse.
+
+### Static allocation configuration
+
+Use weights config schema `cacheon-standing-weights-config-v2` with the existing
+fields above plus `confirmation_journal` (absolute, owner-only signer journal
+path). The optional `arena_allocation_path` points to an owner-controlled JSON
+file, reloaded on every projection. The standalone offer service consumes the
+same stage. Keep one producer and the existing signer; this adds no publisher.
+
+An illustrative allocation file is:
+
+```json
+{
+  "activation_block": 200,
+  "burn_hotkey": "REGISTERED_BURN_HOTKEY",
+  "sources": {
+    "primary": "/config/primary-screen.json",
+    "secondary": "/config/secondary-screen.json",
+    "third": "/config/third-screen.json"
+  },
+  "history": [
+    {"from_block": 0, "weights_ppm": {"primary": 1000000, "secondary": 0, "third": 0}},
+    {"from_block": 200, "weights_ppm": {"primary": 600000, "secondary": 400000, "third": 0}}
+  ]
+}
+```
+
+Each source names an existing sealed screen-dispatcher config, which supplies
+its intake database, scope and intake policy. Paths must be absolute and
+databases distinct, with exactly one matching the producer's primary store.
+Every history row names every source. Names may describe any commissioned
+arenas; no model identities are hardcoded.
+
+Register the file with a successful projection before `activation_block` and
+before intake has reached that block. The block-zero row preserves the primary
+store at 100% and other sources at zero. Before activation the primary's existing
+projection is preserved. After activation, all sources must be present, share
+the chain scope, and have consistent finalized cursors within `refresh_blocks`
+of the metagraph. Missing or corrupt evidence prevents an offer. A busy source
+uses the service's existing skipped-pass behavior.
+
+To change percentages, atomically replace the file with the complete history
+plus a new row whose `from_block` is later than both current intake and projection
+blocks. Existing rows cannot change or disappear. The accepted history survives
+restart in primary intake metadata. Removing an activated config cannot restore
+the single-store producer. Activation, source config identities and burn recipient
+remain fixed for this configured deployment; adding a new source requires a
+separately reviewed transition. Preconfigure additional sources with zero weight
+when they should become eligible through a later settings row.
+
+Allocation reports live under `weight-allocation-evidence` beside the primary
+database. Back them up with the existing retained evidence. The source databases
+are locked together while projecting; individual SQLite commits remain separate.
+A failed refresh sends no offer and is retried through the existing service.
+Read [the accounting rules](../reference/emissions-policy.md#static-arena-percentages)
+before selecting transition settings; new earning submissions can dilute older
+payouts without changing their terms. Stall bonuses split rewards inside a source
+and do not price that source's emission pool.
+Duplicate admitted ownership is rejected. A missing-payment rejection before
+publication carries no reward ownership, so two chain listeners retaining that
+arrival does not block the source that actually admitted it; both histories stay.
 
 ## Durable reservation states
 

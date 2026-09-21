@@ -35,8 +35,7 @@ to run the dashboard and its API tests.
 
 ## Design notes
 
-- **Never writes the intake DB.** Opens it `mode=ro` (falls back to
-  `immutable=1`). Safe to run alongside intake/supervisor.
+- **Never writes the intake DB.** Opens it `mode=ro` with WAL visibility. Safe to run alongside intake/supervisor.
 - Chain enrichment (block timestamps, payment coldkey signers, metagraph
   emissions) runs on a background thread against
   `wss://archive.sub.latent.to` and caches results in
@@ -166,11 +165,11 @@ renders the served symbol and never a local one. Only the eval-cost fee is
 in TAO.
 
 Reward shares come from the served weight offer, not from settlement status:
-reproduced PASS pairs earn under the retained-pair policy with time decay, and
-a crown is not required. `/api/winners` and `/api/miners` carry `weight_share`
+one complete audited PASS can earn with time decay, and a crown is not required.
+Historical retained pairs keep their identities. `/api/winners` and `/api/miners` carry `weight_share`
 (the hotkey's fraction of the served vector, null when the offer file is
 unavailable) plus an `offer` summary (projection digest, effective block,
-crown count). `/api/weights` returns that vector with UIDs and on-chain
+standing-claim count, named `crown_count` on the wire). `/api/weights` returns that vector with UIDs and on-chain
 incentive beside the follower journal rows, so the lag between the served
 offer and chain consensus is visible rather than mistaken for a wrong number.
 
@@ -179,3 +178,74 @@ candidate and baseline throughput. `baseline_kind` identifies stock, incumbent,
 or unknown; missing retained measurements stay null. The former `sglang_*` and
 `cumulative_*_over_sglang` estimates are removed: weighted prefill credits and
 different competition epochs cannot reconstruct a measured stock throughput.
+
+## Multiple arenas
+
+Set `CACHEON_DASH_SOURCES` to an absolute JSON config path. It has `default`
+(the selected source key) and a `sources` array. Every source explicitly names:
+
+```json
+{
+  "key": "secondary",
+  "label": "Secondary arena",
+  "model": "Commissioned model name",
+  "paths": {
+    "db": "/arena/secondary/state/intake.sqlite3",
+    "mission": "/arena/secondary",
+    "audit": "/arena/secondary/state/chain-audit.jsonl",
+    "spool": "/arena/secondary/remote-worker/spool",
+    "heartbeat": "/arena/secondary/remote-worker/spool/state/heartbeat.json",
+    "registration": "/arena/secondary/registration.json",
+    "logs": "/arena/secondary/logs",
+    "evidence_state": "/arena/secondary/remote-worker/state",
+    "stage": "/arena/secondary/stage"
+  },
+  "cache": "/arena/dashboard-cache/secondary.sqlite3",
+  "evidence_roots": ["/arena/secondary/qualification-evidence"],
+  "cutoff_reservation": "",
+  "weights_included": false,
+  "checkpoint": null,
+  "processes": {
+    "intake": ["chain-validate", "--intake-only", "/arena/secondary/state/intake.sqlite3"],
+    "supervisor": ["cacheon.chain.standing_cpu_supervisor", "/arena/secondary/supervisor.json"],
+    "relay": ["cpu-serve", "/arena/secondary/remote-worker/spool"]
+  }
+}
+```
+
+Paths are absolute; private bundles remain under `mission/private`. Each source
+needs distinct intake, enrichment cache and private roots. Caches must never
+point to an intake DB. Configure separate spool, log and evidence roots too.
+The dashboard reads current WAL contents and reports an unreadable DB; it does
+not substitute an immutable snapshot. Config changes take effect after restart.
+
+The page's arena selector scopes every data tab, detail link, and delayed
+bundle/log download. API clients pass `?arena=<key>`; omission selects `default`.
+Unknown keys return 404, unavailable selected databases 503, and duplicate
+reservation ownership across available sources 409. A missing-payment rejection
+before publication is an observation, not ownership; both listeners' source-scoped
+histories remain visible when only one admitted the submission. `/api/arenas` reports each
+source's health independently. `/api/arena-events` combines events by retained
+block, using source and local sequence only for ties, and names unavailable
+sources. The Timeline offers an all-arena toggle.
+
+Process health matches command arguments plus a configured source path, rather
+than global module substrings. A missing heartbeat is unknown, one older than
+120 seconds is stale, and an epoch mismatch is explicit. A fresh relay heartbeat
+alone is not a GPU acceptance proof. Public health omits operator paths.
+
+`model` supplies the source's display label; leave it empty to retain historical
+legacy labels. Optional `checkpoint` maps each retained engine digest to its
+`repo`, `revision`, `content_digest`, and `url`. Only an exact engine match is shown,
+so older checkpoints can remain visible alongside the current one.
+Configured sources never search another source's checkpoint cache or legacy
+operations roots. Labels and commercial presentation do not change service,
+settlement or weight identities.
+
+`/api/weights` and its journal remain global, ignoring the arena selector.
+`weights_included=false` displays “weights off / not yet in served vector” and
+null source-row shares, including when a miner earns elsewhere. Set it true only
+after the source is included in the real producer. Displayed miner shares are
+still global hotkey shares, not an inferred per-arena split. Future breakdowns
+must consume retained producer allocation evidence. Sponsorship revenue,
+evaluation fees/operator credits, and miner alpha rewards remain separate.
