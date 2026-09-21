@@ -29,7 +29,7 @@ class ArenaAllocation:
     activation_block: int
     burn_hotkey: str
     sources: tuple[tuple[str, str], ...]
-    history: tuple[tuple[int, tuple[tuple[str, int], ...]], ...]
+    history: tuple[tuple[int, tuple[tuple[str, int], ...], int], ...]
 
     @classmethod
     def from_dict(cls, value: object) -> "ArenaAllocation":
@@ -54,15 +54,19 @@ class ArenaAllocation:
             raise ValueError("allocation history is empty")
         rows = []
         for row in history:
-            if type(row) is not dict or set(row) != {"from_block", "weights_ppm"}:
+            if (type(row) is not dict or set(row) not in (
+                    {"from_block", "weights_ppm"}, {"from_block", "weights_ppm", "stall_bonus_ppm"})):
                 raise ValueError("allocation history fields do not match")
             block, weights = row["from_block"], row["weights_ppm"]
             if (type(block) is not int or block < 0 or type(weights) is not dict
                     or set(weights) != set(sources)):
                 raise ValueError("allocation version must name every source")
             normalize_weights(weights)
-            rows.append((block, tuple(sorted(weights.items()))))
-        blocks = [block for block, _ in rows]
+            bonus = row.get("stall_bonus_ppm", PPM)
+            if type(bonus) is not int or not 0 <= bonus <= PPM or (block < activation and bonus != PPM):
+                raise ValueError("stall bonus must be integer ppm, with full strength before activation")
+            rows.append((block, tuple(sorted(weights.items())), bonus))
+        blocks = [block for block, _, _ in rows]
         if blocks != sorted(set(blocks)) or blocks[0] != 0 or activation not in blocks:
             raise ValueError("allocation history needs baseline zero and ordered activation")
         return cls(activation, burn, tuple(sorted(sources.items())), tuple(rows))
@@ -71,15 +75,22 @@ class ArenaAllocation:
         """Preserve raw settings; their normalized terms are derived deterministically."""
         return {"activation_block": self.activation_block, "burn_hotkey": self.burn_hotkey,
                 "sources": dict(self.sources), "history": [
-                    {"from_block": block, "weights_ppm": dict(weights)}
-                    for block, weights in self.history]}
+                    {"from_block": block, "weights_ppm": dict(weights),
+                     **({"stall_bonus_ppm": bonus} if bonus != PPM else {})}
+                    for block, weights, bonus in self.history]}
 
     def terms_at(self, submission_block: int) -> dict[str, int]:
         """Use finalized arrival, never qualification time or the current settings."""
+        return normalize_weights(dict(self._version_at(submission_block)[1]))
+
+    def stall_bonus_at(self, submission_block: int) -> int:
+        """Freeze the waiting-bonus strength at the same finalized arrival boundary."""
+        return self._version_at(submission_block)[2]
+
+    def _version_at(self, submission_block):
         if type(submission_block) is not int or submission_block < 0:
             raise ValueError("submission block is malformed")
-        return normalize_weights(dict(next(
-            weights for block, weights in reversed(self.history) if block <= submission_block)))
+        return next(row for row in reversed(self.history) if row[0] <= submission_block)
 
     @property
     def digest(self) -> str:

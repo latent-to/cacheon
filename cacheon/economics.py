@@ -221,6 +221,7 @@ class StandingRewardClaim:
         *,
         predecessor_block: int | None = None,
         decay_start_block: int | None = None,
+        stall_bonus_ppm: int = WEIGHT_PPM,
     ) -> int:
         predecessor = self.crowned_block if predecessor_block is None else predecessor_block
         _integer(block, "credit block", minimum=self.crowned_block)
@@ -231,10 +232,14 @@ class StandingRewardClaim:
         _integer(start, "decay_start_block", minimum=self.crowned_block)
         if start > block:
             raise EconomicsError("reward decay start is in the future")
+        _integer(stall_bonus_ppm, "stall bonus", minimum=0)
+        if stall_bonus_ppm > WEIGHT_PPM:
+            raise EconomicsError("stall bonus exceeds full strength")
         with localcontext(_MATH_CONTEXT):
             credit = (
                 (Decimal(self.speedup_ppm) / WEIGHT_PPM).ln()
-                * (Decimal(1) + (Decimal(self.crowned_block - predecessor) / STALL_SCALE_BLOCKS).sqrt())
+                * (Decimal(1) + Decimal(stall_bonus_ppm) / WEIGHT_PPM
+                   * (Decimal(self.crowned_block - predecessor) / STALL_SCALE_BLOCKS).sqrt())
                 * Decimal(2) ** (-Decimal(block - start) / policy.half_life_blocks)
                 * CREDIT_SCALE
             )
@@ -563,6 +568,7 @@ def project_global_rewards(
     decay_start_blocks: Mapping[str, int | None] | None = None,
     allocation_terms: Mapping[str, tuple[str, int]] | None = None,
     allocation_burn_hotkey: str = "",
+    stall_bonus_terms: Mapping[str, int] | None = None,
 ) -> GlobalRewardProjection:
     """Pool the store-selected earning claims before one indivisible vector."""
 
@@ -581,6 +587,9 @@ def project_global_rewards(
         raise EconomicsError("PASS reward claims are not exactly typed")
     if len({row.digest for row in earning}) != len(earning):
         raise EconomicsError("PASS reward claims are duplicated")
+    if stall_bonus_terms is not None and (
+            allocation_terms is None or set(stall_bonus_terms) != {row.digest for row in earning}):
+        raise EconomicsError("submission stall bonuses require complete static allocation terms")
     contributions = tuple(earned_contributions)
     if any(type(row) is not ProposalContributionRef for row in contributions):
         raise EconomicsError("earned contributions are not exactly typed")
@@ -671,6 +680,7 @@ def project_global_rewards(
                 context.current_block if claim.digest in starts and starts[claim.digest] is None
                 else starts.get(claim.digest)
             ),
+            stall_bonus_ppm=(WEIGHT_PPM if stall_bonus_terms is None else stall_bonus_terms[claim.digest]),
         )
         previous[claim.arena_digest] = claim.crowned_block
         family_credits.append(

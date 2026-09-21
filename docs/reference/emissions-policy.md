@@ -37,6 +37,10 @@ block `p` in the same arena (or `b` for the first), current block `n`, decay sta
 credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - d) / h) × 10^12)
 ```
 
+This is the retained full-strength rule. Static allocation can assign a reduced
+waiting bonus to future submissions as described below; changing code alone
+does not rescore earlier claims.
+
 Submission time controls stall credit. New PASS claims hold their decay factor
 at one until a matching weight vector containing their evidence and a positive
 share for their hotkey is confirmed. The first qualifying confirmation fixes
@@ -90,6 +94,29 @@ Each submission receives the normalized terms effective at its finalized
 arrival block. Qualification time does not change those terms. Appending a
 new settings version cannot reprice older submissions.
 
+Each settings row can also specify `stall_bonus_ppm`: an integer from zero to
+1000000 controlling only the additional waiting bonus. The quarter-strength
+rule uses `250000` and gives each affected submission this credit:
+
+```text
+credit = floor(ln(s) × (1 + 0.25 × sqrt((b - p) / 1800)) × 2^(-(n - d) / h) × 10^12)
+```
+
+The base multiplier remains one; this does not divide the entire reward by four.
+A gap of 1800 blocks changes the multiplier from 2 to 1.25; a gap of 7200 blocks
+changes it from 3 to 1.5. The logarithmic speedup factor, decay half-life and
+publication-triggered decay start remain unchanged.
+
+Bonus strength is frozen at finalized submission block `b`, just like the arena
+percentage. A submission before the new boundary retains its full bonus even
+if it qualifies afterward. Appending a future rule alone does not change current
+payouts. New winners can still dilute older payouts. Rows without
+`stall_bonus_ppm` mean full strength (`1000000`), preserving existing configuration
+bytes and digests; they do not inherit a preceding row's bonus. Include `250000`
+explicitly in every later settings row that should continue the reduced rule.
+Preactivation rows must retain full strength. Bonus strength is not normalized
+with arena percentages.
+
 The time-without-improvement (stall) bonus is internal to each source. For its
 pool, average the submissions' frozen percentages using their speed/decay credit
 with the stall multiplier set to one. Split that pool among its submissions in
@@ -120,6 +147,11 @@ adds `allocation_evidence` and `rewarded_evidence_digests` only for this path;
 legacy projection bytes remain unchanged. Confirmed publication starts decay
 only for rewarded claims, including when one hotkey also owns a zero-offer claim.
 Discovery bounties without source allocation are refused by this path.
+
+When a retained submission uses a reduced bonus, the allocation report also
+records `submission_stall_bonus_ppm` for every earning claim. Its immutable
+allocation history binds those strengths into the offer's policy identity.
+Unmodified full-strength configurations keep the previous report encoding.
 
 See [Static allocation configuration](../validator-guide/chain-loop.md#static-allocation-configuration)
 for activation and updates through the single existing producer.

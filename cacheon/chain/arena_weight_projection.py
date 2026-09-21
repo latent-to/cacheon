@@ -47,7 +47,7 @@ def _bind_schedule(store, allocation, source_digests, block):
                 or source_digests != previous["source_digests"]):
             raise IntakeError("accepted allocation history or source authority changed")
         boundary = max(block, previous["seen_through"])
-        if any(start <= boundary for start, _ in allocation.history[len(old.history):]):
+        if any(row[0] <= boundary for row in allocation.history[len(old.history):]):
             raise IntakeError("allocation updates must precede their future submission boundary")
     else:
         if block >= allocation.activation_block:
@@ -107,6 +107,7 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
         combined = {key: [] for key in ("arenas", "earning_claims", "discovery_claims", "earned_contributions")}
         combined["decay_start_blocks"] = {}
         terms, snapshots, adjustments, seen_reservations = {}, {}, {}, set()
+        bonuses = {}
         evidence, standing_count, generation = set(), 0, 0
         cursor_hashes = {context.current_block: context.current_block_hash}
         for key, store in sorted(stores.items()):
@@ -136,6 +137,7 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
                 if claim.digest in terms or claim.crowned_block > cursor[0]:
                     raise IntakeError("reward claim is duplicated or ahead of its source")
                 terms[claim.digest] = (key, allocation.terms_at(claim.crowned_block)[key])
+                bonuses[claim.digest] = allocation.stall_bonus_at(claim.crowned_block)
             for claim in (*standing, *inputs["earning_claims"], *inputs["discovery_claims"]):
                 evidence.add(claim.retained_evidence_digest)
             for name, values in inputs.items():
@@ -148,7 +150,7 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
                               "settlement_state_digest": store.settlement_state_digest()}
         projection = project_global_rewards(
             policy, context, **combined, allocation_terms=terms,
-            allocation_burn_hotkey=allocation.burn_hotkey)
+            allocation_burn_hotkey=allocation.burn_hotkey, stall_bonus_terms=bonuses)
         _, shares, paid, burned = allocate_submission_weights(
             projection.standing, terms, context, allocation.burn_hotkey,
             base_credits=arena_base_credits(combined["earning_claims"], policy, context,
@@ -160,6 +162,8 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
                   "arena_weights_ppm": {key: shares.get(key, 0) for key in configs}, "burned_ppm": burned,
                   "weights_ppm": projection.weights_by_hotkey,
                   "decay_digest": canonical_digest("cacheon.static-arena-decay.v1", adjustments)}
+        if any(value != 1_000_000 for value in bonuses.values()):
+            report["submission_stall_bonus_ppm"] = dict(sorted(bonuses.items()))
         root = prepare_evidence_root(primary.path.parent / "weight-allocation-evidence")
         ref = publish_canonical_json_evidence(root, report, domain="weights.arena-allocation",
                                               schema=report["schema"])

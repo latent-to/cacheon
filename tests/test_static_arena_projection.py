@@ -110,6 +110,46 @@ def test_combined_projection_retains_terms_report_and_restart_history(tmp_path, 
             _project(primary, schedule, journal)
 
 
+def test_quarter_bonus_uses_arrival_even_when_old_pass_qualifies_later(tmp_path, monkeypatch):
+    from cacheon.economics import project_global_rewards
+
+    schedule, journal, _ = _fixture(tmp_path, monkeypatch)
+    raw = schedule.to_dict()
+    raw["history"][1]["stall_bonus_ppm"] = 250_000
+    schedule = ArenaAllocation.from_dict(raw)
+    _register(tmp_path, schedule, journal)
+    with intake._store(tmp_path / "a") as primary:
+        for marker, index, arrival in (("c", 2, 19), ("d", 3, 7219)):
+            intake._qualified_settlement_candidate(primary, marker=marker, arena_marker="a",
+                index=index, initialize_stack=False, submission_block=arrival, retained_block=7220)
+    _advance(tmp_path, 7220)
+    with intake._store(tmp_path / "a") as primary:
+        result = _project(primary, schedule, journal, 7220)
+        report = json.loads(reopen_evidence(primary.path.parent / "weight-allocation-evidence",
+                                           result.allocation_evidence))
+        data = rewards._reward_projection_inputs(primary, include_uncrowned=True)
+        claims = {claim.hotkey: claim for claim in data["earning_claims"]}
+        assert report["submission_stall_bonus_ppm"][claims["minerc"].digest] == 1_000_000
+        assert report["submission_stall_bonus_ppm"][claims["minerd"].digest] == 250_000
+        for key in ("standing_claims", "states", "adjustments"):
+            data.pop(key)
+        context = replace(intake._context("validator", "minera", "minerb", "minerc", "minerd"),
+                          current_block=7220, current_block_hash=intake._bh(7220))
+        full = project_global_rewards(intake.POLICY, context, **data,
+            allocation_terms={c.digest: ("a", schedule.terms_at(c.crowned_block)["a"])
+                              for c in data["earning_claims"]}, allocation_burn_hotkey="validator")
+        assert dict(result.weights_ppm)["minerd"] < full.weights_by_hotkey["minerd"]
+        assert dict(result.weights_ppm).get("validator", 0) == full.weights_by_hotkey.get("validator", 0)
+    with intake._store(tmp_path / "a") as primary:
+        assert _project(primary, schedule, journal, 7220) == result
+        raw["history"].append({"from_block": 8000, "weights_ppm": raw["history"][1]["weights_ppm"]})
+        future = _project(primary, ArenaAllocation.from_dict(raw), journal, 7220)
+        assert future.weights_ppm == result.weights_ppm
+        raw["history"][1]["stall_bonus_ppm"] = 500_000
+        with pytest.raises(IntakeError, match="history or source authority changed"):
+            _project(primary, ArenaAllocation.from_dict(raw), journal, 7220)
+
+
 @pytest.mark.parametrize("failure", ["stale", "ahead", "hash", "missing", "duplicate", "evidence"])
 def test_bad_secondary_prevents_offer_and_rolls_back_primary(tmp_path, monkeypatch, failure):
     schedule, journal, configs = _fixture(tmp_path, monkeypatch)

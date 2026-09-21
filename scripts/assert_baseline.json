@@ -1,5 +1,5 @@
 {
-"tests/test_arena_allocation.py": 23,
+"tests/test_arena_allocation.py": 38,
 "tests/test_arena_service.py": 46,
 "tests/test_b300_arena_provider.py": 73,
 "tests/test_b300_commissioned_owner_lifecycle.py": 82,
@@ -165,7 +165,7 @@
 "tests/test_standing_cpu_supervisor.py": 67,
 "tests/test_standing_supervisor_config.py": 36,
 "tests/test_static.py": 17,
-"tests/test_static_arena_projection.py": 35,
+"tests/test_static_arena_projection.py": 42,
 "tests/test_strict.py": 30,
 "tests/test_submit_dry_run.py": 22,
 "tests/test_subnet_owner_burn.py": 20,

@@ -430,7 +430,7 @@ An illustrative allocation file is:
   },
   "history": [
     {"from_block": 0, "weights_ppm": {"primary": 1000000, "secondary": 0, "third": 0}},
-    {"from_block": 200, "weights_ppm": {"primary": 600000, "secondary": 400000, "third": 0}}
+    {"from_block": 200, "weights_ppm": {"primary": 600000, "secondary": 400000, "third": 0}, "stall_bonus_ppm": 250000}
   ]
 }
 ```
@@ -439,7 +439,9 @@ Each source names an existing sealed screen-dispatcher config, which supplies
 its intake database, scope and intake policy. Paths must be absolute and
 databases distinct, with exactly one matching the producer's primary store.
 Every history row names every source. Names may describe any commissioned
-arenas; no model identities are hardcoded.
+arenas; no model identities are hardcoded. The example assigns a quarter-strength
+waiting bonus to submissions arriving at block 200 or later. The block number
+is illustrative; select a future deployment boundary rather than copying it.
 
 Register the file with a successful projection before `activation_block` and
 before intake has reached that block. The block-zero row preserves the primary
@@ -449,7 +451,7 @@ the chain scope, and have consistent finalized cursors within `refresh_blocks`
 of the metagraph. Missing or corrupt evidence prevents an offer. A busy source
 uses the service's existing skipped-pass behavior.
 
-To change percentages, atomically replace the file with the complete history
+To change percentages or waiting-bonus strength, atomically replace the file with the complete history
 plus a new row whose `from_block` is later than both current intake and projection
 blocks. Existing rows cannot change or disappear. The accepted history survives
 restart in primary intake metadata. Removing an activated config cannot restore
@@ -457,6 +459,23 @@ the single-store producer. Activation, source config identities and burn recipie
 remain fixed for this configured deployment; adding a new source requires a
 separately reviewed transition. Preconfigure additional sources with zero weight
 when they should become eligible through a later settings row.
+
+For an already registered full-strength schedule, append a future row with the
+existing complete `weights_ppm` and `stall_bonus_ppm: 250000`; do not edit an
+accepted row. Retain `half_life_blocks` and the other emissions-policy settings.
+Confirm that the producer accepts the appended history before its boundary.
+Strength is selected by finalized arrival, so earlier queued submissions retain
+their old bonus even if evaluation finishes after the boundary. Omitting the
+bonus field means full strength, not inheritance: repeat `250000` in subsequent
+percentage updates to keep the reduced rule for those new submissions.
+
+Reopen an allocation report after an affected PASS earns and check its
+`submission_stall_bonus_ppm` entry is `250000`, while earlier claims remain
+`1000000`. Reports without any reduced-bonus claims retain their old encoding.
+The change must leave the logarithmic improvement factor and decay settings
+unchanged, and waiting bonuses must remain internal to each arena. Reverting
+future strength also requires a new future row; it cannot undo terms already
+assigned. Publication continues through the same existing producer and signer.
 
 Allocation reports live under `weight-allocation-evidence` beside the primary
 database. Back them up with the existing retained evidence. The source databases

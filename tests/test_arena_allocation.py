@@ -47,6 +47,63 @@ def test_versions_preserve_old_terms_and_submission_boundary():
     assert new.terms_at(300) == {"a": 200_000, "b": 300_000, "c": 0}
 
 
+def test_waiting_bonus_versions_keep_legacy_bytes_and_freeze_at_arrival():
+    old = _schedule((100, (600_000, 400_000, 0)))
+    raw = old.to_dict()
+    assert "stall_bonus_ppm" not in raw["history"][1]
+    assert ArenaAllocation.from_dict(raw).digest == old.digest
+    raw["history"].append({"from_block": 200, "weights_ppm": raw["history"][1]["weights_ppm"],
+                           "stall_bonus_ppm": 250_000})
+    new = ArenaAllocation.from_dict(raw)
+    assert new.to_dict() == raw
+    assert new.terms_at(200) == old.terms_at(200)
+    assert new.stall_bonus_at(199) == old.stall_bonus_at(200) == 1_000_000
+    assert new.stall_bonus_at(200) == new.stall_bonus_at(900) == 250_000
+
+
+@pytest.mark.parametrize("bonus", [-1, 1_000_001, True, 0.25])
+def test_waiting_bonus_rejects_invalid_strength(bonus):
+    raw = _schedule((100, (600_000, 400_000, 0))).to_dict()
+    raw["history"][1]["stall_bonus_ppm"] = bonus
+    with pytest.raises(ValueError, match="stall bonus"):
+        ArenaAllocation.from_dict(raw)
+
+
+def test_waiting_bonus_cannot_rewrite_preactivation_baseline():
+    raw = _schedule((100, (600_000, 400_000, 0))).to_dict()
+    raw["history"][0]["stall_bonus_ppm"] = 250_000
+    with pytest.raises(ValueError, match="before activation"):
+        ArenaAllocation.from_dict(raw)
+
+
+def test_quarter_waiting_bonus_preserves_speed_decay_and_arena_pool():
+    stack = _stack(_catalog())
+    first = _claim(stack, "slot.a", "alice", 1_100_000, crowned_block=100)
+    later = _claim(stack, "slot.b", "bob", 1_100_000, crowned_block=7300, evidence="5")
+    full = later.credit_at(7300, _policy(), predecessor_block=100)
+    quarter = later.credit_at(7300, _policy(), predecessor_block=100, stall_bonus_ppm=250_000)
+    assert abs(full - 2 * quarter) <= 1  # One day: multiplier 3 becomes 1.5.
+    assert abs(quarter - 2 * later.credit_at(7400, _policy(), predecessor_block=100,
+                                          stall_bonus_ppm=250_000)) <= 1
+    assert later.credit_at(7300, _policy(), stall_bonus_ppm=250_000) == later.credit_at(7300, _policy())
+    terms = {c.digest: ("a", 600_000) for c in (first, later)}
+    kwargs = dict(decay_start_blocks={c.digest: None for c in (first, later)},
+                  allocation_terms=terms, allocation_burn_hotkey="validator")
+    full = project_global_rewards(_policy(), _global_context(7300),
+                                  (ArenaRewardAuthority(stack, 1, (first, later)),), (first, later), **kwargs)
+    bonuses = {first.digest: 1_000_000, later.digest: 250_000}
+    quarter = project_global_rewards(_policy(), _global_context(7300),
+        (ArenaRewardAuthority(stack, 1, (first, later)),), (first, later), stall_bonus_terms=bonuses, **kwargs)
+    assert quarter.weights_by_hotkey == {"alice": 240_000, "bob": 360_000, "validator": 400_000}
+    assert full.weights_by_hotkey == {"alice": 150_000, "bob": 450_000, "validator": 400_000}
+    assert next(c.credit for c in full.standing if c.claim_digest == first.digest) == next(
+        c.credit for c in quarter.standing if c.claim_digest == first.digest)
+    with pytest.raises(ValueError, match="complete static allocation"):
+        project_global_rewards(_policy(), _global_context(7300),
+            (ArenaRewardAuthority(stack, 1, (first, later)),), (first, later),
+            stall_bonus_terms={later.digest: 250_000}, **kwargs)
+
+
 def _project(schedule, submissions):
     authorities, claims, terms = [], [], {}
     for index, (source, hotkey, speedup, submitted) in enumerate(submissions):
