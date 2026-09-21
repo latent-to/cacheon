@@ -149,9 +149,11 @@ footer { max-width: 1280px; margin: 0 auto; padding: 10px 20px 30px; color: var(
       <small>submissions · netuid 14</small>
     </div>
   </div>
+  <label>Arena <select id="arena-select" aria-label="Arena"></select></label>
   <nav id="tabs"></nav>
   <div id="meta"></div>
 </div></header>
+<aside id="arena-status" class="hwrap small"></aside>
 <main id="view"></main>
 <div id="drawer"></div>
 <footer>
@@ -171,6 +173,9 @@ const TABS = [
 ];
 let tab = location.hash.replace("#", "") || "overview";
 if (!TABS.some(([id]) => id === tab)) tab = "overview";
+let arena = new URL(location.href).searchParams.get("arena") || "";
+let arenas = [];
+let allArenaEvents = false;
 let detailRequest = 0;
 let subFilters = { q: "", status: "", offset: 0 };
 let timer = null;
@@ -258,7 +263,10 @@ function recoveryLink(recovery) {
 }
 
 async function api(path) {
-  const res = await fetch(path);
+  const url = new URL(path, location.origin);
+  if (arena && !["/api/weights", "/api/arenas", "/api/arena-events", "/api/bundle-encryption-key"].includes(url.pathname))
+    url.searchParams.set("arena", arena);
+  const res = await fetch(url);
   if (!res.ok) throw new Error(path + " → " + res.status);
   return res.json();
 }
@@ -376,7 +384,7 @@ async function viewQueue() {
       ${card(q.gpu_requests.length, "GPU requests in spool")}
       ${card(esc(sup.phase || "—"), "supervisor phase")}
       ${card(hb.age_s != null ? dur(hb.age_s) : "—", "Worker connection checked",
-             hb.age_s > 120 ? "warn" : "ok")}
+             hb.age_s == null || hb.age_s > 120 ? "warn" : "ok")}
     </div>
     <h2>Running evaluations (wall clock)</h2>
     ${table(["Stage","Reservation","Target","Hotkey","Started","Lease left","State"], active,
@@ -512,7 +520,7 @@ function offerLine(o) {
   if (!o) return `<div class="muted small">Served weight offer unavailable.</div>`;
   return `<div class="muted small">Served offer: projection <code>${esc(short(o.projection_digest, 12))}</code>
     · effective block ${Number(o.effective_block).toLocaleString()} (${fmtTime(o.effective)})
-    · ${o.crown_count} crowned arena${o.crown_count === 1 ? "" : "s"} · lane ${esc(o.lane)}</div>`;
+    · ${o.crown_count} standing claim${o.crown_count === 1 ? "" : "s"} · lane ${esc(o.lane)}</div>`;
 }
 
 async function viewMiners() {
@@ -539,15 +547,15 @@ async function viewMiners() {
 }
 
 async function viewTimeline() {
-  const [ev, w] = await Promise.all([api("/api/events?limit=200"), api("/api/weights?limit=20")]);
+  const [ev, w] = await Promise.all([api(allArenaEvents && arenas.length ? "/api/arena-events" : "/api/events?limit=200"), api("/api/weights?limit=20")]);
   const tone = { CROWN: "crown", ADOPTION: "ok", HOLD: "warn", STACK_TRANSITION: "info" };
   const rows = ev.items.map((e) => `<tr>
-    <td class="muted">#${e.sequence}</td>
+    <td>${esc(e.source || arena || "current")}</td><td class="muted">#${e.sequence}</td>
     <td><span class="pill ${tone[e.event_type] || "mute"}">${esc(e.event_type)}</span></td>
     <td>${e.when ? fmtTime(e.when) : '<span class="muted">—</span>'}</td>
     <td>${esc(e.target_id)}<div class="muted small">${esc(e.target_summary)}</div></td>
     <td class="small muted">${esc(e.reason || "—")}</td>
-    <td class="clickable" onclick="openDetail('${e.reservation_id}')"><code>${esc(short(e.reservation_id, 12))}</code></td>
+    <td class="clickable" onclick="openArenaDetail('${e.source || arena}','${e.reservation_id}')"><code>${esc(short(e.reservation_id, 12))}</code></td>
   </tr>`);
   const vRows = (w.vector || []).map((v) => `<tr>
     <td>${key(v.hotkey, v.hotkey_links)}</td>
@@ -562,7 +570,9 @@ async function viewTimeline() {
     <td class="small muted">${esc(short(x.reason, 60))}</td></tr>`);
   return `
     <h2>Settlement events</h2>
-    ${table(["Seq","Event","When","Target","Reason","Reservation"], rows, "No settlement events yet.")}
+    <label><input type="checkbox" ${allArenaEvents ? "checked" : ""} onchange="allArenaEvents=this.checked;refresh()"> Show all arenas</label>
+    ${(ev.unavailable_sources || []).length ? `<p class="pill warn">Unavailable: ${esc(ev.unavailable_sources.join(", "))}</p>` : ""}
+    ${table(["Arena","Seq","Event","When","Target","Reason","Reservation"], rows, "No settlement events yet.")}
     <h2>Served weight offer</h2>
     ${offerLine(w.offer)}
     ${table(["Hotkey","Registered","Weight share","On-chain incentive"], vRows, "No served offer.")}
@@ -584,7 +594,7 @@ async function viewSystem() {
       ${card(h.chain.tip.block ? Number(h.chain.tip.block).toLocaleString() : "—", "finalized tip")}
       ${card(h.intake_lag_blocks ?? "—", "intake lag (blocks)",
         h.intake_lag_blocks > 40 ? "warn" : "ok")}
-      ${card(hb.age_s != null ? dur(hb.age_s) : "—", "GPU heartbeat", hb.age_s > 120 ? "warn" : "ok")}
+      ${card(hb.age_s != null ? dur(hb.age_s) : "—", "GPU heartbeat", hb.age_s == null || hb.age_s > 120 ? "warn" : "ok")}
       ${card(h.chain.metagraph_age_s != null ? dur(h.chain.metagraph_age_s) : "—", "metagraph age")}
     </div>
     <div class="grid2">
@@ -663,6 +673,7 @@ function performanceMetrics(attempt) {
 
 function submissionURL(rid) {
   const url = new URL(location.href);
+  if (arena) url.searchParams.set("arena", arena);
   if (rid) url.searchParams.set("submission", rid);
   else url.searchParams.delete("submission");
   return url;
@@ -699,6 +710,15 @@ window.copySubmissionLink = async (button) => {
   }, 1800);
 };
 
+window.openArenaDetail = async (key, rid) => {
+  if (key && key !== arena) {
+    arena = key;
+    closeDetail();
+    await loadArenas();
+    refresh();
+  }
+  openDetail(rid);
+};
 window.openDetail = async (rid) => {
   const request = ++detailRequest;
   const el = $("#drawer");
@@ -851,20 +871,50 @@ const VIEWS = { overview: viewOverview, queue: viewQueue, submissions: viewSubmi
   timeline: viewTimeline, system: viewSystem };
 
 async function refresh() {
+  const requestedArena = arena, requestedTab = tab;
   clearTimeout(timer);
   updateMeta();
   const view = $("#view");
   try {
-    view.innerHTML = await VIEWS[tab]();
+    await loadArenas();
+    const content = await VIEWS[tab]();
+    if (requestedArena === arena && requestedTab === tab) view.innerHTML = content;
   } catch (err) {
     view.innerHTML = `<div class="empty">Failed to load: ${esc(err.message)}</div>`;
   }
   timer = setTimeout(refresh, 15000);
 }
-renderTabs();
-refresh();
-const linkedSubmission = new URL(location.href).searchParams.get("submission");
+async function loadArenas() {
+  const data = await api("/api/arenas");
+  arenas = data.items;
+  if (!arena) arena = data.default || "";
+  $("#arena-select").innerHTML = arenas.length ? arenas.map(s =>
+    `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}</option>`).join("") : '<option>Current arena</option>';
+  $("#arena-status").innerHTML = arenas.map(s => {
+    const h = s.health, fresh = h.gpu_heartbeat.age_s != null && h.gpu_heartbeat.age_s <= 120;
+    return `<span class="pill ${h.db.ok && fresh ? "ok" : "warn"}">${esc(s.label)}: ${h.db.ok ? (fresh ? esc(h.gpu_heartbeat.state) : "GPU update stale") : "database unavailable"}</span>`;
+  }).join(" ") + (arenas.length ? '<span> Reward offer is global. Sponsorship revenue, evaluation fees/credits, and miner alpha rewards are separate.</span>' : "");
+  const current = arenas.find(s => s.key === arena);
+  if (current) $("#arena-status").innerHTML += `<strong> ${esc(current.label)}: ${esc(current.weights_status)}</strong>`;
+}
+$("#arena-select").onchange = async e => {
+  arena = e.target.value;
+  closeDetail();
+  subFilters.offset = 0;
+  const url = new URL(location.href);
+  url.searchParams.set("arena", arena);
+  history.replaceState(null, "", url);
+  await loadArenas();
+  refresh();
+};
+async function start() {
+  await loadArenas();
+  renderTabs();
+  refresh();
+  const linkedSubmission = new URL(location.href).searchParams.get("submission");
 if (linkedSubmission) openDetail(linkedSubmission);
+}
+start().catch(err => { $("#view").textContent = "Failed to load arenas: " + err.message; });
 </script>
 </body>
 </html>

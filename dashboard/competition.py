@@ -7,12 +7,17 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from dashboard.sources import selected
+
 # First GLM-5.3 submission, verified from the retained glm53 mock release URL.
 GLM53_FIRST_BLOCK = 9009654
 
 
 def competition_label(block: int, arena: str = "") -> str:
     """Keep the historical model label across the recorded competition cutover."""
+    source = selected.get()
+    if source is not None and source.model:
+        return source.model
     return arena or ("GLM-5.3" if int(block) >= GLM53_FIRST_BLOCK else "MiniMax-M3")
 
 
@@ -25,8 +30,16 @@ _CHECKPOINTS = {
 }
 
 
-@lru_cache(maxsize=128)
 def checkpoint_for_engine(engine: str) -> dict | None:
+    """Use only the selected source's declared checkpoint for its exact engine."""
+    source = selected.get()
+    if source is not None:
+        return (source.checkpoint or {}).get(engine)
+    return _legacy_checkpoint_for_engine(engine)
+
+
+@lru_cache(maxsize=128)
+def _legacy_checkpoint_for_engine(engine: str) -> dict | None:
     """Match the submission's engine to retained runtime model content, not its date."""
     if not engine:
         return None
@@ -188,3 +201,28 @@ def submission_baseline(
     result["relationship"] = "ancestor"
     result["threshold_speedup"] = float(threshold)
     return result
+
+
+# Short human descriptions of the optimization targets ("which op they improved").
+TARGET_SUMMARIES = {
+    "activation.silu_and_mul": "SiLU-and-multiply activation kernel (SwiGLU MLP gate)",
+    "norm.rmsnorm": "RMSNorm normalization kernel",
+    "attention.decode": "Attention decode kernel (token generation path)",
+    "attention.sdpa": "Scaled dot-product attention (radix/prefill path)",
+    "attention.msa_block_score": "MSA block-sparse attention decode scoring kernel",
+    "attention.msa_prefill_block_score": "MSA block-sparse attention prefill scoring kernel",
+    "collective.all_reduce": "All-reduce collective (multi-GPU tensor sum)",
+    "collective.ar_residual_rmsnorm": "Fused all-reduce + residual-add + RMSNorm collective",
+    "collective.moe_finalize_ar_rmsnorm": "Fused MoE finalize + all-reduce + RMSNorm collective epilogue",
+    "collective.moe_epilogue.v1": "Atomic MoE epilogue (AR-residual-RMSNorm + MoE finalize pair)",
+    "moe.fused_experts": "Fused MoE expert GEMM dispatch kernel",
+    "moe.fused_experts_reduce": "Fused MoE expert GEMM with built-in reduction collective",
+}
+
+
+def target_summary(target_id: str) -> str:
+    if target_id in TARGET_SUMMARIES:
+        return TARGET_SUMMARIES[target_id]
+    if not target_id:
+        return ""
+    return target_id.replace("_", " ").replace(".", " › ")
