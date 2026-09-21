@@ -293,16 +293,9 @@ def record_reward_decay_start(
         )
 
 
-def preserve_existing_reward_clocks(store: FinalizedIntakeStore) -> None:
-    """Migrate an existing deployment once; new stores need no legacy exemption."""
-    with store._transaction():
-        store._db.execute(
-            "INSERT OR IGNORE INTO metadata(key,value) VALUES('reward_decay_legacy_claims',?)",
-            (json.dumps(sorted(row.digest for row in passed_reward_claims(store))),),
-        )
-
-
 def _hold_unpublished_claims(store, claims):
+    # 'reward_decay_legacy_claims' was written once, when this producer took over the GLM store on
+    # 2026-09-20: those PASSes keep their crown-block clock. A new store never has the key.
     row = store._db.execute(
         "SELECT value FROM metadata WHERE key='reward_decay_legacy_claims'"
     ).fetchone()
