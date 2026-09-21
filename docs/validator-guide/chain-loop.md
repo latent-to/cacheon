@@ -485,9 +485,9 @@ Read [the accounting rules](../reference/emissions-policy.md#static-arena-percen
 before selecting transition settings; new earning submissions can dilute older
 payouts without changing their terms. Stall bonuses split rewards inside a source
 and do not price that source's emission pool.
-Duplicate admitted ownership is rejected. A missing-payment rejection before
-publication carries no reward ownership, so two chain listeners retaining that
-arrival does not block the source that actually admitted it; both histories stay.
+Every arena's chain listener admits every paid reveal, so one arrival can sit in
+several source databases. Only the source holding its PASS owns the reward; the
+same reservation passing in two sources is rejected. Both histories stay.
 
 ## Durable reservation states
 

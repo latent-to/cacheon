@@ -163,9 +163,12 @@ def test_bad_secondary_prevents_offer_and_rolls_back_primary(tmp_path, monkeypat
         elif failure == "duplicate":
             with intake._store(tmp_path / "a") as primary:
                 reservation = primary._db.execute("SELECT reservation_id FROM reservations").fetchone()[0]
-            # A duplicate finalized arrival across sources is rejected even if not qualified.
+            # Every listener admits every paid reveal; only the same reservation
+            # passing in two stores is a duplicate reward owner.
             intake._reserve(secondary, (intake._arrival(0, hotkey="minera", block=10),), block=20)
             assert secondary.get(reservation) is not None
+            secondary._db.execute("UPDATE reservations SET decision='PASS' WHERE reservation_id=?",
+                                  (reservation,))
         elif failure == "evidence":
             for path in (secondary.path.parent / "evidence").rglob("*"):
                 if path.is_file():
@@ -232,17 +235,17 @@ def test_busy_secondary_uses_existing_service_skip(tmp_path, monkeypatch):
             _project(primary, schedule, journal)
 
 
-def test_duplicate_pre_admission_rejection_does_not_claim_reward_ownership(tmp_path, monkeypatch):
+@pytest.mark.parametrize("invalid_reason", ["missing_eval_cost_payment", ""])
+def test_duplicate_arrival_without_a_pass_does_not_claim_reward_ownership(tmp_path, monkeypatch, invalid_reason):
     schedule, journal, _ = _fixture(tmp_path, monkeypatch)
     _register(tmp_path, schedule, journal)
     _advance(tmp_path)
     with intake._store(tmp_path / "a") as primary:
         before = _project(primary, schedule, journal)
     with intake._store(tmp_path / "b") as secondary:
-        arrival = replace(intake._arrival(0, hotkey="minera", block=10),
-                          invalid_reason="missing_eval_cost_payment")
+        arrival = replace(intake._arrival(0, hotkey="minera", block=10), invalid_reason=invalid_reason)
         observed = intake._reserve(secondary, (arrival,), block=20)[0]
-        assert observed.status == "failed" and observed.target_id == ""
+        assert (observed.status == "failed") == bool(invalid_reason) and observed.decision != "PASS"
     with intake._store(tmp_path / "a") as primary:
         after = _project(primary, schedule, journal)
         assert after.weights_ppm == before.weights_ppm
