@@ -30,7 +30,7 @@ from dashboard.forensics import (
     submission_qualifications,
 )
 from dashboard.enrichment import Enrichment
-from dashboard.sources import selected, value, install_sources, process_matches
+from dashboard.sources import selected, value, install_sources, process_matches, scope_reservations
 from dashboard.disclosure import disclose_bundle, install_disclosure_routes
 from dashboard.competition import competition_label, submission_baseline, target_summary
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
@@ -110,7 +110,7 @@ def intake_conn() -> sqlite3.Connection:
     """Open the selected live intake DB read-only with current WAL contents."""
     con = sqlite3.connect(value("DB_PATH", DB_PATH).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
     con.row_factory = sqlite3.Row
-    return con
+    return scope_reservations(con)
 
 
 def rows(con: sqlite3.Connection, sql: str, args: tuple = ()) -> list[dict[str, Any]]:

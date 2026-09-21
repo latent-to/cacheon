@@ -221,10 +221,11 @@ not substitute an immutable snapshot. Config changes take effect after restart.
 
 The page's arena selector scopes every data tab, detail link, and delayed
 bundle/log download. API clients pass `?arena=<key>`; omission selects `default`.
-Unknown keys return 404, unavailable selected databases 503, and duplicate
-reservation ownership across available sources 409. Payment and manifest rejections
-before publication are observations, not ownership; both listeners' source-scoped
-histories remain visible when only one admitted the submission. `/api/arenas` reports each
+Unknown keys return 404 and unavailable selected databases 503. Each source uses
+its registered arena namespace; empty-namespace history remains visible through
+the database's legacy arena alias. Replicated chain arrivals, including published
+bundles, are displayed only in their selected arena. Queries and downloads share
+this scope without changing the intake database. `/api/arenas` reports each
 source's health independently. `/api/arena-events` combines events by retained
 block, using source and local sequence only for ties, and names unavailable
 sources. The Timeline offers an all-arena toggle.

@@ -1,6 +1,5 @@
 """Request-scoped dashboard sources; presentation never changes reward authority."""
 
-from contextlib import closing
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
@@ -10,7 +9,6 @@ import re
 import sqlite3
 from urllib.parse import urlencode
 
-from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 selected = ContextVar("dashboard_source", default=None)
@@ -119,23 +117,28 @@ def process_matches(role, default=(), *, proc_root=Path("/proc")):
     return False
 
 
-def check_ownership(source, sources):
-    """Refuse ambiguous reservation ownership without hiding unavailable peers."""
-    # Both chain listeners retain arrivals, including payment and manifest
-    # rejections. Only publication admits a submission into an arena.
-    ownership = """SELECT reservation_id FROM reservations
-        WHERE publication_digest <> ''"""
-    with closing(sqlite3.connect(source.values["DB_PATH"].as_uri() + "?mode=ro", uri=True)) as con:
-        owned = {row[0] for row in con.execute(ownership)}
-    for other in sources.values():
-        if other is source:
-            continue
-        try:
-            with closing(sqlite3.connect(other.values["DB_PATH"].as_uri() + "?mode=ro", uri=True)) as con:
-                if any(row[0] in owned for row in con.execute(ownership)):
-                    raise HTTPException(409, "Reservation ownership conflicts across arenas")
-        except sqlite3.Error:
-            continue
+def scope_reservations(connection):
+    """Select one arena without changing the shared chain observations on disk."""
+    source = selected.get()
+    if source is None:
+        return connection
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(reservations)")}
+    if "competition_arena" not in columns:
+        return connection
+    try:
+        registration = json.loads(source.values["REGISTRATION_PATH"].read_text())
+        arena = registration["worker_readiness"]["arena_id"]
+    except (OSError, ValueError, KeyError) as exc:
+        raise sqlite3.OperationalError("Arena registration unavailable") from exc
+    connection.create_function("dashboard_arena", 0, lambda: arena, deterministic=True)
+    # Both listeners can publish the same arrival. All existing submission and
+    # disclosure queries must use the selected namespace, not DB-wide presence.
+    connection.execute("""CREATE TEMP VIEW reservations AS
+        SELECT * FROM main.reservations WHERE competition_arena=dashboard_arena()
+        OR (competition_arena='' AND EXISTS (
+            SELECT 1 FROM main.metadata
+            WHERE key='legacy_arena_id' AND value=dashboard_arena()))""")
+    return connection
 
 
 def qualify_response(payload, source):
@@ -183,7 +186,6 @@ def install_sources(app, api):
         for source in app.state.dashboard_sources.values():
             token = selected.set(source)
             try:
-                check_ownership(source, app.state.dashboard_sources)
                 items.extend({**row, "source": source.key} for row in api["events"](limit=200)["items"])
             except sqlite3.Error:
                 unavailable.append(source.key)
@@ -206,13 +208,6 @@ def install_sources(app, api):
         source = sources[key]
         token = selected.set(source)
         try:
-            if request.url.path != "/api/health":
-                try:
-                    check_ownership(source, sources)
-                except HTTPException as exc:
-                    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
-                except sqlite3.Error:
-                    return JSONResponse({"detail": "Arena database unavailable", "source": key}, status_code=503)
             response = await call_next(request)
             if response.headers.get("content-type", "").startswith("application/json"):
                 payload = json.loads(b"".join([chunk async for chunk in response.body_iterator]))

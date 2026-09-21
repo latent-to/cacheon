@@ -1,29 +1,41 @@
 """Parallel chain listeners retain distinct, source-qualified submission histories."""
 
+from contextlib import closing
+import json
 import sqlite3
 
 import pytest
 
 pytest.importorskip("fastapi")
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from dashboard.sources import DashboardSource, install_sources, selected
+from dashboard import app as dashboard
+from dashboard.disclosure import bundle_visibility
 
 
 @pytest.fixture
 def planes(tmp_path, monkeypatch):
     monkeypatch.delenv("CACHEON_DASH_SOURCES", raising=False)
     app = FastAPI()
+    app.add_exception_handler(sqlite3.Error, dashboard._sqlite_error)
+
+    @app.get("/api/queue")
+    def queue():
+        with closing(dashboard.intake_conn()) as con:
+            return {"items": [dict(row) for row in con.execute("SELECT * FROM reservations")]}
 
     @app.get("/api/submissions/{reservation_id}")
     def detail(reservation_id):
-        source = selected.get()
-        with sqlite3.connect(source.values["DB_PATH"]) as con:
-            status, reason = con.execute(
+        with closing(dashboard.intake_conn()) as con:
+            row = con.execute(
                 "SELECT status,reason FROM reservations WHERE reservation_id=?",
                 (reservation_id,),
             ).fetchone()
+        if row is None:
+            raise HTTPException(404, "reservation not found")
+        status, reason = row
         return {"reservation_id": reservation_id, "status": status, "reason": reason,
                 "log_url": f"/api/submissions/{reservation_id}/logs"}
 
@@ -38,11 +50,19 @@ def planes(tmp_path, monkeypatch):
             con.execute("""CREATE TABLE reservations (
                 reservation_id, status, reason, publication_digest,
                 target_id DEFAULT '', arena_service_digest DEFAULT '',
-                screen_status DEFAULT '', decision DEFAULT '')""")
+                screen_status DEFAULT '', decision DEFAULT '', competition_arena DEFAULT '')""")
+            con.execute("CREATE TABLE metadata (key, value)")
+            if key == "glm":
+                con.execute("INSERT INTO metadata VALUES ('legacy_arena_id', 'glm-arena')")
             con.execute("INSERT INTO reservations (reservation_id,status,reason,publication_digest) "
                         "VALUES ('shared', ?, ?, ?)",
                         (status, reason, publication))
-        sources[key] = DashboardSource(key, key, key, {"DB_PATH": path}, {}, False, None)
+            if key == "qwen":
+                con.execute("UPDATE reservations SET competition_arena='qwen-arena'")
+        registration = tmp_path / f"{key}-registration.json"
+        registration.write_text(json.dumps({"worker_readiness": {"arena_id": f"{key}-arena"}}))
+        sources[key] = DashboardSource(key, key, key,
+                                      {"DB_PATH": path, "REGISTRATION_PATH": registration}, {}, False, None)
     app.state.dashboard_sources = sources
     app.state.dashboard_default = "glm"
     return TestClient(app), sources
@@ -63,12 +83,35 @@ def test_prepublication_rejections_do_not_claim_the_other_arenas_submission(plan
     assert client.get("/api/submissions/shared").json()["reason"] == reason
 
 
-def test_two_published_owners_still_report_a_conflict(planes):
+def test_replicated_publication_is_scoped_by_arena_not_database(planes):
+    client, sources = planes
+    for key, source in sources.items():
+        with sqlite3.connect(source.values["DB_PATH"]) as con:
+            con.execute("INSERT INTO reservations "
+                        "(reservation_id,status,publication_digest,competition_arena) "
+                        "VALUES ('replicated',?,'same-publication','qwen-arena')",
+                        ("published" if key == "glm" else "failed",))
+    assert client.get("/api/submissions/replicated?arena=glm").status_code == 404
+    row = client.get("/api/submissions/replicated?arena=qwen").json()
+    assert (row["source"], row["status"]) == ("qwen", "failed")
+    assert row["log_url"].endswith("?arena=qwen")
+    glm = client.get("/api/queue?arena=glm").json()["items"]
+    assert [row["reservation_id"] for row in glm] == ["shared"]
+    assert len(client.get("/api/queue?arena=qwen").json()["items"]) == 2
+    token = selected.set(sources["glm"])
+    try:
+        with closing(dashboard.intake_conn()) as con, pytest.raises(HTTPException) as error:
+            bundle_visibility(con, "replicated", lambda _: {})
+        assert error.value.status_code == 404
+    finally:
+        selected.reset(token)
+
+
+def test_legacy_history_follows_its_recorded_arena_alias(planes):
     client, sources = planes
     with sqlite3.connect(sources["glm"].values["DB_PATH"]) as con:
-        con.execute("UPDATE reservations SET publication_digest='also-published'")
-    for key in sources:
-        assert client.get(f"/api/submissions/shared?arena={key}").status_code == 409
+        con.execute("UPDATE metadata SET value='another-arena'")
+    assert client.get("/api/submissions/shared?arena=glm").status_code == 404
 
 
 def test_unavailable_peer_does_not_hide_selected_history(planes):
@@ -77,4 +120,4 @@ def test_unavailable_peer_does_not_hide_selected_history(planes):
     assert client.get("/api/submissions/shared?arena=qwen").status_code == 200
     response = client.get("/api/submissions/shared?arena=glm")
     assert response.status_code == 503
-    assert response.json()["source"] == "glm"
+    assert response.json()["arena"]["key"] == "glm"
