@@ -39,7 +39,7 @@ def planes(tmp_path, monkeypatch):
         return {"reservation_id": reservation_id, "status": status, "reason": reason,
                 "log_url": f"/api/submissions/{reservation_id}/logs"}
 
-    install_sources(app, {})
+    install_sources(app, {"health": lambda: {"intake_finalized": {"block": 100}}})
     sources = {}
     for key, status, reason, publication in (
         ("glm", "failed", "manifest: unknown arena", ""),
@@ -121,3 +121,46 @@ def test_unavailable_peer_does_not_hide_selected_history(planes):
     response = client.get("/api/submissions/shared?arena=glm")
     assert response.status_code == 503
     assert response.json()["arena"]["key"] == "glm"
+
+
+@pytest.fixture
+def target_settings(planes, tmp_path):
+    client, sources = planes
+    dispatcher, stage, producer = (tmp_path / name for name in ("dispatcher.json", "stage.json", "producer.json"))
+    dispatcher.write_text(json.dumps({"intake_db": str(sources["glm"].values["DB_PATH"])}))
+    stage.write_text("{}")
+    producer.write_text(json.dumps({"weights_stage_config": str(stage), "screen_dispatcher_config": str(dispatcher)}))
+    client.app.state.dashboard_weight_producer_config = producer
+    return client, stage
+
+
+def test_arena_targets_use_producer_settings_without_an_offer(target_settings):
+    client, stage = target_settings
+    rows = client.get("/api/arenas").json()["items"]
+    assert {r["key"]: r["target_weight_ppm"] for r in rows} == {"glm": 1_000_000, "qwen": 0}
+    # A target is independent of whether this source currently earns rewards.
+    assert all(r["weights_status"].startswith("weights off") for r in rows)
+    stage.unlink()
+    assert all(r["target_weight_ppm"] is None for r in client.get("/api/arenas").json()["items"])
+
+
+@pytest.mark.parametrize("weights,expected", [
+    ({"glm": 600_000, "qwen": 400_000}, {"glm": 600_000, "qwen": 400_000}),
+    ({"glm": 800_000, "qwen": 800_000}, {"glm": 500_000, "qwen": 500_000}),
+    ({"glm": 200_000, "qwen": 300_000}, {"glm": 200_000, "qwen": 300_000}),
+])
+def test_arena_targets_refresh_current_schedule_not_future_or_actual_shares(target_settings, weights, expected):
+    client, stage = target_settings
+    allocation = stage.parent / "allocation.json"
+    stage.write_text(json.dumps({"arena_allocation_path": str(allocation)}))
+    history = [{"from_block": 0, "weights_ppm": {"glm": 1_000_000, "qwen": 0}},
+               {"from_block": 100, "weights_ppm": weights},
+               {"from_block": 500, "weights_ppm": {"glm": 0, "qwen": 1_000_000}}]
+    allocation.write_text(json.dumps({"history": history}))
+    rows = client.get("/api/arenas").json()["items"]
+    assert {r["key"]: r["target_weight_ppm"] for r in rows} == expected
+    history[1]["weights_ppm"] = {"glm": 100_000, "qwen": 900_000}
+    allocation.write_text(json.dumps({"history": history}))
+    assert {r["key"]: r["target_weight_ppm"] for r in client.get("/api/arenas").json()["items"]} == {"glm": 100_000, "qwen": 900_000}
+    allocation.write_text("broken")
+    assert all(r["target_weight_ppm"] is None for r in client.get("/api/arenas").json()["items"])

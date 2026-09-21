@@ -924,7 +924,9 @@ async function loadArenas() {
     const h = s.health, fresh = h.gpu_heartbeat.age_s != null && h.gpu_heartbeat.age_s <= 120;
     const weightsOff = s.weights_status === "weights off / not yet in served vector";
     const status = weightsOff ? "weights off" : h.db.ok ? (fresh ? h.gpu_heartbeat.state : "GPU update stale") : "database unavailable";
-    return `<span class="pill ${!weightsOff && h.db.ok && fresh ? "ok" : "warn"}">${esc(s.label)}: ${esc(status)}</span>`;
+    const weight = Number.isInteger(s.target_weight_ppm) ? `${(s.target_weight_ppm / 10000).toLocaleString(undefined, {maximumFractionDigits: 4})}% target` : "target unavailable";
+    const basis = "Current configured arena target, not the actual reward split.";
+    return `<span class="pill ${!weightsOff && h.db.ok && fresh ? "ok" : "warn"}">${esc(s.label)}: ${esc(status)} <span title="${esc(basis)}">· ${esc(weight)}</span></span>`;
   }).join(" ") + (arenas.length ? '<span> Reward offer is global. Sponsorship revenue, evaluation fees/credits, and miner alpha rewards are separate.</span>' : "");
   const current = arenas.find(s => s.key === arena);
   if (current) $("#arena-status").innerHTML += `<strong> ${esc(current.label)}: ${esc(current.weights_status)}</strong>`;
