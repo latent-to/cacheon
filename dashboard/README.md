@@ -248,5 +248,27 @@ settlement or weight identities.
 null source-row shares, including when a miner earns elsewhere. Set it true only
 after the source is included in the real producer. Displayed miner shares are
 still global hotkey shares, not an inferred per-arena split. Future breakdowns
-must consume retained producer allocation evidence. Sponsorship revenue,
+must consume retained producer allocation evidence. The status pills separately
+show **target weights**, not actual reward shares. Set the optional top-level
+`weight_producer_config` in the dashboard sources JSON to the absolute path of
+the active weight-offer service configuration. The dashboard follows its
+`weights_stage_config` and `arena_allocation_path` on every refresh, selecting
+the latest settings row effective at the observed finalized intake block.
+Source keys must match the allocation's keys. Overcommitted targets normalize
+to 100% using the existing allocator; totals below 100% stay unchanged. Future
+rows do not display early, and earnings or historical submission terms do not
+alter the displayed target. A single-source producer without an allocation
+schedule shows 100% for its configured intake database and 0% for other sources.
+Missing configuration or unreadable settings display “target unavailable”.
+`/api/arenas` exposes the result as `target_weight_ppm`; this does not enable
+weights for an arena marked weights-off. For live process tracking, set
+`weight_producer_pidfile` to the active service manager's absolute PID-file path.
+On every refresh the dashboard resolves that PID's current `--config` argument;
+this takes precedence over the fixed `weight_producer_config` path and follows
+producer restarts or configuration relocations without a dashboard restart.
+A stopped producer or unreadable PID/command displays “target unavailable”;
+it never falls back to a stale fixed configuration. If the service is deleted
+and recreated with a different PID-file path, update the dashboard setting.
+The header shows its last successful target check and the 15-second refresh
+interval. The dashboard never changes producer settings. Sponsorship revenue,
 evaluation fees/operator credits, and miner alpha rewards remain separate.

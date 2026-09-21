@@ -29,6 +29,17 @@ header::before { content: ""; display: block; height: 2px;
   background: linear-gradient(90deg, var(--accent), rgba(45,212,191,.25) 45%, transparent 75%); }
 .hwrap { max-width: 1280px; margin: 0 auto; padding: 10px 20px;
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.header-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr);
+  gap: 10px 24px; padding-top: 16px; padding-bottom: 16px; }
+.brand-area { grid-row: 1 / 3; display: grid; gap: 12px; }
+.arena-picker { display: flex; align-items: center; gap: 10px;
+  color: var(--muted); font-size: 12px; }
+.arena-picker select { flex: 1; min-width: 0; min-height: 36px; cursor: pointer;
+  appearance: none; padding-right: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m2 4 4 4 4-4' fill='none' stroke='%23fff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center; background-size: 12px; }
+.arena-picker select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.header-layout nav { align-self: end; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand img { display: block; width: 26px; height: 26px; border-radius: 7px; }
 h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: -.2px; color: var(--fg); }
@@ -43,7 +54,21 @@ nav button { background: none; border: 0; color: var(--muted); padding: 7px 10px
 nav button:hover { color: var(--fg); background: var(--panel2); }
 nav button.on { color: var(--accent); background: rgba(45,212,191,.08); font-weight: 500; }
 #meta { margin-left: auto; color: var(--muted); font-size: 11.5px;
-  display: flex; gap: 12px; align-items: center; }
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.header-layout #meta { align-self: start; justify-self: end; }
+#arena-status { gap: 8px 16px; padding-top: 12px; padding-bottom: 12px; }
+@media (max-width: 1000px) {
+  .header-layout { grid-template-columns: minmax(220px, 1fr) auto; gap: 16px 24px; }
+  .brand-area { grid-row: 1; width: 220px; }
+  .header-layout #meta { grid-column: 2; grid-row: 1; align-self: center; }
+  .header-layout nav { grid-column: 1 / -1; grid-row: 2; }
+}
+@media (max-width: 600px) {
+  .header-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .header-layout #meta { grid-column: 1; grid-row: 2; justify-self: start; margin-left: 0; }
+  .header-layout nav { grid-row: 3; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .header-layout nav button { flex-shrink: 0; }
+}
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
 main { max-width: 1280px; margin: 0 auto; padding: 20px; }
 h2 { font-size: 13px; font-weight: 650; margin: 26px 0 10px; color: var(--fg);
@@ -76,6 +101,7 @@ tr.clickable { cursor: pointer; }
 .muted { color: var(--muted); }
 .small { font-size: 11.5px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.queue-details { margin-top: 22px; }
 @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
 .toolbar { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; align-items: center; }
 input[type=text], select { background: var(--panel); color: var(--fg);
@@ -141,15 +167,19 @@ footer { max-width: 1280px; margin: 0 auto; padding: 10px 20px 30px; color: var(
 </style>
 </head>
 <body>
-<header><div class="hwrap">
-  <div class="brand">
-    <img src="/icon-192.png" alt="Cacheon"/>
-    <div>
-      <h1>Cacheon</h1>
-      <small>submissions · netuid 14</small>
+<header><div class="hwrap header-layout">
+  <div class="brand-area">
+    <div class="brand">
+      <img src="/icon-192.png" alt="Cacheon"/>
+      <div>
+        <h1>Cacheon</h1>
+        <small>submissions · netuid 14</small>
+      </div>
     </div>
+    <label class="arena-picker" for="arena-select">Arena
+      <select id="arena-select" aria-label="Arena"></select>
+    </label>
   </div>
-  <label>Arena <select id="arena-select" aria-label="Arena"></select></label>
   <nav id="tabs"></nav>
   <div id="meta"></div>
 </div></header>
@@ -392,7 +422,7 @@ async function viewQueue() {
     <h2>Pending submissions (queue order)</h2>
     ${table(["#","Reservation","Status","Target","Hotkey","Submitted","Fee","Screen","Reason"], pending,
       "Queue is empty — no active-pipeline submissions.")}
-    <div class="grid2">
+    <div class="grid2 queue-details">
       <div><h2>GPU spool requests</h2>${table(["Request","Queued","Deadline","Kind"], gpu, "Spool outbox empty.")}</div>
       <div><h2>Recently finished leases</h2>${table(["Stage","State","Claimed","Reason"], recent, "None.")}</div>
     </div>
@@ -892,10 +922,15 @@ async function loadArenas() {
     `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}</option>`).join("") : '<option>Current arena</option>';
   $("#arena-status").innerHTML = arenas.map(s => {
     const h = s.health, fresh = h.gpu_heartbeat.age_s != null && h.gpu_heartbeat.age_s <= 120;
-    return `<span class="pill ${h.db.ok && fresh ? "ok" : "warn"}">${esc(s.label)}: ${h.db.ok ? (fresh ? esc(h.gpu_heartbeat.state) : "GPU update stale") : "database unavailable"}</span>`;
+    const weightsOff = s.weights_status === "weights off / not yet in served vector";
+    const status = weightsOff ? "weights off" : h.db.ok ? (fresh ? h.gpu_heartbeat.state : "GPU update stale") : "database unavailable";
+    const weight = Number.isInteger(s.target_weight_ppm) ? `${(s.target_weight_ppm / 10000).toLocaleString(undefined, {maximumFractionDigits: 4})}% target` : "target unavailable";
+    const basis = "Current configured arena target, not the actual reward split.";
+    return `<span class="pill ${!weightsOff && h.db.ok && fresh ? "ok" : "warn"}">${esc(s.label)}: ${esc(status)} <span title="${esc(basis)}">· ${esc(weight)}</span></span>`;
   }).join(" ") + (arenas.length ? '<span> Reward offer is global. Sponsorship revenue, evaluation fees/credits, and miner alpha rewards are separate.</span>' : "");
   const current = arenas.find(s => s.key === arena);
   if (current) $("#arena-status").innerHTML += `<strong> ${esc(current.label)}: ${esc(current.weights_status)}</strong>`;
+  if (arenas.length) $("#arena-status").innerHTML += `<span class="muted" title="Target settings refresh with the dashboard every 15 seconds.">Targets checked ${esc(new Date().toLocaleTimeString())} · refreshes every 15s</span>`;
 }
 $("#arena-select").onchange = async e => {
   arena = e.target.value;

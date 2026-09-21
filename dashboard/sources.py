@@ -47,8 +47,13 @@ def load_sources(path, network, netuid, enrich):
     from dashboard.enrichment import Enrichment
 
     raw = json.loads(Path(path).read_text())
-    if type(raw) is not dict or set(raw) != {"default", "sources"} or not raw["sources"]:
+    optional = {"weight_producer_config", "weight_producer_pidfile"}
+    if (type(raw) is not dict or not {"default", "sources"} <= set(raw)
+            or set(raw) - {"default", "sources"} - optional or not raw["sources"]):
         raise ValueError("dashboard sources require default and sources")
+    for key in optional & set(raw):
+        if not Path(raw[key]).is_absolute():
+            raise ValueError("weight producer paths must be absolute")
     intake_paths = {Path(row["paths"]["db"]).resolve() for row in raw["sources"]}
     if any(Path(row["cache"]).resolve() in intake_paths for row in raw["sources"]):
         raise ValueError("enrichment cache cannot be an intake database")
@@ -162,12 +167,64 @@ def qualify_response(payload, source):
     return result
 
 
+def _producer_config(config_path, pidfile, *, proc_root=Path("/proc")):
+    """Follow the running producer across restarts instead of retaining an old config."""
+    if pidfile is None:
+        return config_path
+    try:
+        pid = Path(pidfile).read_text().strip()
+        if not pid.isascii() or not pid.isdigit() or int(pid) <= 0:
+            return None
+        args = (proc_root / pid / "cmdline").read_bytes().decode().split("\0")
+        if args.count("--config") != 1:
+            return None
+        path = Path(args[args.index("--config") + 1])
+        return path if path.is_absolute() else None
+    except (OSError, UnicodeError, IndexError):
+        return None
+
+
+def _arena_targets(producer_path, sources, block):
+    """Read the current target settings, independent of offers and earned rewards."""
+    from cacheon.economics import _allocate_pool
+
+    if producer_path is None:
+        return {}
+    try:
+        producer = json.loads(Path(producer_path).read_text())
+        stage = json.loads(Path(producer["weights_stage_config"]).read_text())
+        if "arena_allocation_path" not in stage:
+            dispatcher = json.loads(Path(producer["screen_dispatcher_config"]).read_text())
+            primary = [key for key, source in sources.items()
+                       if source.values["DB_PATH"].resolve() == Path(dispatcher["intake_db"]).resolve()]
+            return {key: 1_000_000 if key == primary[0] else 0 for key in sources} if len(primary) == 1 else {}
+        allocation = json.loads(Path(stage["arena_allocation_path"]).read_text())
+        history = allocation["history"]
+        if type(block) is not int or type(history) is not list or not history:
+            return {}
+        starts = [row["from_block"] for row in history]
+        if (any(type(start) is not int or start < 0 for start in starts)
+                or starts != sorted(set(starts)) or starts[0] != 0):
+            return {}
+        weights = next(row["weights_ppm"] for row in reversed(history) if row["from_block"] <= block)
+        if (type(weights) is not dict or set(weights) != set(sources)
+                or any(type(v) is not int or v < 0 for v in weights.values())):
+            return {}
+        normalized = _allocate_pool(weights, 1_000_000) if sum(weights.values()) > 1_000_000 else weights
+        return {key: normalized.get(key, 0) for key in sources}
+    except (OSError, ValueError, TypeError, KeyError, StopIteration):
+        return {}
+
+
 def install_sources(app, api):
     """Bind existing routes to per-request sources and expose all-plane health."""
     path = os.environ.get("CACHEON_DASH_SOURCES")
     default, sources = load_sources(path, api["NETWORK"], api["NETUID"], api["ENRICH"]) if path else (None, {})
     app.state.dashboard_sources = sources
     app.state.dashboard_default = default
+    settings = json.loads(Path(path).read_text()) if path else {}
+    app.state.dashboard_weight_producer_config = settings.get("weight_producer_config")
+    app.state.dashboard_weight_producer_pidfile = settings.get("weight_producer_pidfile")
 
     @app.get("/api/arenas")
     def arenas():
@@ -178,6 +235,12 @@ def install_sources(app, api):
                 items.append({**source.public(), "health": api["health"]()})
             finally:
                 selected.reset(token)
+        blocks = [row["health"].get("intake_finalized", {}).get("block") for row in items]
+        block = max((n for n in blocks if type(n) is int), default=None)
+        producer = _producer_config(app.state.dashboard_weight_producer_config, app.state.dashboard_weight_producer_pidfile)
+        targets = _arena_targets(producer, app.state.dashboard_sources, block)
+        for row in items:
+            row["target_weight_ppm"] = targets.get(row["key"])
         return {"default": app.state.dashboard_default, "items": items}
 
     @app.get("/api/arena-events")
