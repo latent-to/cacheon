@@ -55,8 +55,9 @@ def test_rebuilt_payload_keeps_original_pass_across_arenas(changed):
     assert earned.to_dict() == before
 
 
+@pytest.mark.parametrize("reason", ["", "block_inclusion"])
 @pytest.mark.parametrize("channel", ["direct", "follower"])
-def test_decay_waits_for_fresh_confirmation_and_survives_restart(tmp_path, channel):
+def test_decay_waits_for_fresh_confirmation_and_survives_restart(tmp_path, channel, reason):
     with intake._store(tmp_path) as store, intake._store(tmp_path / "signer") as signer:
         candidate = intake._qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
@@ -73,9 +74,10 @@ def test_decay_waits_for_fresh_confirmation_and_survives_restart(tmp_path, chann
             journal = SQLiteFollowerWeightPublicationJournal(signer, CurrentWeightOffer.from_legacy_projection(projection))
         previous = None
         for status, update, expected in [("pending", 0, None), ("confirmed", 11, None), ("confirmed", 20, 20), ("confirmed", 30, 20)]:
+            included = reason and status == "confirmed"  # the live signer: confirmed_block set, last_update 0
             record = WeightPublicationRecord(
-                projection.digest, status, prior_record_digest=previous,
-                submit_block=10, retry_after_block=10, confirmed_block=update, confirmed_last_update=update,
+                projection.digest, status, prior_record_digest=previous, submit_block=10, retry_after_block=10,
+                confirmed_block=update, confirmed_last_update=0 if included else update, reason=reason if included else "",
             )
             journal.compare_and_swap(previous, record)
             previous = record.digest

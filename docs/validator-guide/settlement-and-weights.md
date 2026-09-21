@@ -357,10 +357,10 @@ stateDiagram-v2
 only observes it. At or after the deadline, absent matching readback becomes `held` rather
 than blindly resubmitting.
 
-Journal readers also accept the follower's `block_inclusion` confirmations. Their
-`confirmed_block` cannot precede submission; `confirmed_last_update=0` means active
-weights have not been recorded by that confirmation. Inclusion and effective chain
-weights remain separate observations, and the offer producer can reopen either form.
+Journal readers also accept the follower's `block_inclusion` confirmations: `confirmed_block`
+cannot precede submission, and `confirmed_last_update=0` means active weights were not read
+back. The offer producer reopens either form. An inclusion starts a pending reward clock at
+its `confirmed_block`; a readback only when `confirmed_last_update` is not older than the projection.
 
 On every non-dry invocation, `set-weights` and `follow-weights` resume any retained
 `intent` or `pending` projection before adopting a new one. Chain scope, netuid

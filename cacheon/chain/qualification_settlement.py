@@ -322,7 +322,10 @@ def confirm_reward_decay(store: FinalizedIntakeStore, projection, record) -> Non
 
     if record.projection_digest != projection.digest:
         raise IntakeError("decay confirmation differs from its retained projection")
-    if record.status != "confirmed" or record.confirmed_last_update < projection.effective_block:
+    # The signer confirms at inclusion with confirmed_last_update=0: until 2026-09-21 no clock had
+    # started since block 9097653 and two unclocked PASSes held 52% of the vector.
+    published = record.confirmed_block if record.reason == "block_inclusion" else record.confirmed_last_update
+    if record.status != "confirmed" or published < projection.effective_block:
         return  # an older identical vector does not publish a newly accepted PASS
     starts = {row["claim_digest"]: row["start_block"] for row in reward_decay_adjustments(store)}
     pending = {digest for digest, start in starts.items() if start is None}
