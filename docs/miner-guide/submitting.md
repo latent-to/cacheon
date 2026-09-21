@@ -168,8 +168,9 @@ Then skip to [Inspect public chain state](#7-inspect-public-chain-state).
 ### 6. Submit — eval-cost gate on
 
 If the operator requires a TAO admission transfer, quote, dry-run `--pay`, then
-pay and commit. The published quote is 0.5 TAO (500,000,000 rao), paid to the
-current subnet owner coldkey.
+pay the current subnet owner coldkey and commit. The default quote is 0.5 TAO
+(500,000,000 rao). The Qwen arena `qwen36-35b-h100-bf16-tp1` charges 0.2 TAO:
+add `--eval-cost-tao-rao 200000000` to `chain-eval-cost` and every `chain-submit`.
 
 ```bash
 python -m cacheon.cli chain-eval-cost --netuid "$NETUID" --network "$NET"

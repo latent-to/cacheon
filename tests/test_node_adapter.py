@@ -351,6 +351,23 @@ def test_the_tolerance_is_the_noise_the_native_twin_shows_on_the_same_call(audit
     assert runner.model.wide.op._forward_method == runner.model.wide.op.forward_fast
 
 
+@pytest.mark.parametrize("scale, violations", [(1.08, 0), (1.5, 1)])
+def test_current_reference_noise_survives_quiet_decode_history(audited, monkeypatch, scale, violations):
+    runner, _ = _served_model()
+    runner.model.wide = _Wide()
+    monkeypatch.setattr(
+        _Fused, "forward_native",
+        lambda self, x: x * 2.0 * (1.05 if x.shape[0] == 4096 else 1.0),
+    )
+    nodes.bind(runner, _registry(
+        "wide", lambda module, x: module.forward(x) * (scale if x.shape[0] == 4096 else 1.0),
+    ))
+    for _ in range(64):
+        runner.model.wide(torch.ones(1, 8))
+    runner.model.wide(torch.ones(4096, 8))
+    assert audited["wide"]["violations"] == violations
+
+
 @pytest.mark.parametrize("attr", ["forward_native", "_forward_method"])
 def test_a_candidate_cannot_widen_its_tolerance_by_making_the_twin_noisy(
     audited, monkeypatch, attr

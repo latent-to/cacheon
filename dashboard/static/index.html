@@ -924,7 +924,7 @@ async function loadArenas() {
     const weightsOff = s.weights_status === "weights off / not yet in served vector";
     const status = weightsOff ? "weights off" : h.db.ok ? (fresh ? h.gpu_heartbeat.state : "GPU update stale") : "database unavailable";
     return `<span class="pill ${!weightsOff && h.db.ok && fresh ? "ok" : "warn"}">${esc(s.label)}: ${esc(status)}</span>`;
-  }).join(" ") + (arenas.length ? '<span> Reward offer is global. Evaluation fees/credits and miner alpha rewards are separate.</span>' : "");
+  }).join(" ") + (arenas.length ? '<span> Reward offer is global. Sponsorship revenue, evaluation fees/credits, and miner alpha rewards are separate.</span>' : "");
   const current = arenas.find(s => s.key === arena);
   if (current) $("#arena-status").innerHTML += `<strong> ${esc(current.label)}: ${esc(current.weights_status)}</strong>`;
 }
