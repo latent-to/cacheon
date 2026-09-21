@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from dashboard.sources import DashboardSource, install_sources, selected
 from dashboard import app as dashboard
+from dashboard import sources as source_module
 from dashboard.disclosure import bundle_visibility
 
 
@@ -163,4 +164,27 @@ def test_arena_targets_refresh_current_schedule_not_future_or_actual_shares(targ
     allocation.write_text(json.dumps({"history": history}))
     assert {r["key"]: r["target_weight_ppm"] for r in client.get("/api/arenas").json()["items"]} == {"glm": 100_000, "qwen": 900_000}
     allocation.write_text("broken")
+    assert all(r["target_weight_ppm"] is None for r in client.get("/api/arenas").json()["items"])
+
+
+def test_live_targets_follow_producer_restart_without_stale_config_fallback(target_settings, tmp_path, monkeypatch):
+    client, stage = target_settings
+    original = client.app.state.dashboard_weight_producer_config
+    allocation, new_stage, new_producer = (tmp_path / name for name in ("targets.json", "new-stage.json", "new-producer.json"))
+    allocation.write_text(json.dumps({"history": [{"from_block": 0, "weights_ppm": {"glm": 700_000, "qwen": 300_000}}]}))
+    new_stage.write_text(json.dumps({"arena_allocation_path": str(allocation)}))
+    new_producer.write_text(json.dumps({"weights_stage_config": str(new_stage)}))
+    proc = tmp_path / "proc"
+    for pid, config in (("11", original), ("12", new_producer)):
+        (proc / pid).mkdir(parents=True)
+        (proc / pid / "cmdline").write_bytes(f"python\0producer.py\0--config\0{config}\0".encode())
+    pidfile = tmp_path / "producer.pid"
+    client.app.state.dashboard_weight_producer_pidfile = pidfile
+    resolve = source_module._producer_config
+    monkeypatch.setattr(source_module, "_producer_config", lambda config, pid: resolve(config, pid, proc_root=proc))
+    for pid, expected in (("11", 0), ("12", 300_000), ("99", None), ("0", None)):
+        pidfile.write_text(pid)
+        rows = client.get("/api/arenas").json()["items"]
+        assert next(r["target_weight_ppm"] for r in rows if r["key"] == "qwen") == expected
+    pidfile.unlink()
     assert all(r["target_weight_ppm"] is None for r in client.get("/api/arenas").json()["items"])

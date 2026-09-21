@@ -261,6 +261,14 @@ alter the displayed target. A single-source producer without an allocation
 schedule shows 100% for its configured intake database and 0% for other sources.
 Missing configuration or unreadable settings display “target unavailable”.
 `/api/arenas` exposes the result as `target_weight_ppm`; this does not enable
-weights for an arena marked weights-off. Keep the producer path aligned when
-moving the service; the dashboard never changes producer settings. Sponsorship revenue,
+weights for an arena marked weights-off. For live process tracking, set
+`weight_producer_pidfile` to the active service manager's absolute PID-file path.
+On every refresh the dashboard resolves that PID's current `--config` argument;
+this takes precedence over the fixed `weight_producer_config` path and follows
+producer restarts or configuration relocations without a dashboard restart.
+A stopped producer or unreadable PID/command displays “target unavailable”;
+it never falls back to a stale fixed configuration. If the service is deleted
+and recreated with a different PID-file path, update the dashboard setting.
+The header shows its last successful target check and the 15-second refresh
+interval. The dashboard never changes producer settings. Sponsorship revenue,
 evaluation fees/operator credits, and miner alpha rewards remain separate.

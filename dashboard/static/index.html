@@ -930,6 +930,7 @@ async function loadArenas() {
   }).join(" ") + (arenas.length ? '<span> Reward offer is global. Sponsorship revenue, evaluation fees/credits, and miner alpha rewards are separate.</span>' : "");
   const current = arenas.find(s => s.key === arena);
   if (current) $("#arena-status").innerHTML += `<strong> ${esc(current.label)}: ${esc(current.weights_status)}</strong>`;
+  if (arenas.length) $("#arena-status").innerHTML += `<span class="muted" title="Target settings refresh with the dashboard every 15 seconds.">Targets checked ${esc(new Date().toLocaleTimeString())} · refreshes every 15s</span>`;
 }
 $("#arena-select").onchange = async e => {
   arena = e.target.value;
