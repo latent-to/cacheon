@@ -101,6 +101,7 @@ tr.clickable { cursor: pointer; }
 .muted { color: var(--muted); }
 .small { font-size: 11.5px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.queue-details { margin-top: 22px; }
 @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
 .toolbar { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; align-items: center; }
 input[type=text], select { background: var(--panel); color: var(--fg);
@@ -421,7 +422,7 @@ async function viewQueue() {
     <h2>Pending submissions (queue order)</h2>
     ${table(["#","Reservation","Status","Target","Hotkey","Submitted","Fee","Screen","Reason"], pending,
       "Queue is empty — no active-pipeline submissions.")}
-    <div class="grid2">
+    <div class="grid2 queue-details">
       <div><h2>GPU spool requests</h2>${table(["Request","Queued","Deadline","Kind"], gpu, "Spool outbox empty.")}</div>
       <div><h2>Recently finished leases</h2>${table(["Stage","State","Claimed","Reason"], recent, "None.")}</div>
     </div>
