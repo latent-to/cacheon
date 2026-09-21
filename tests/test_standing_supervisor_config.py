@@ -405,6 +405,13 @@ def test_weights_stage_chooses_burn_or_real_projection_from_store_state(
 
     built: list[str] = []
 
+    # This test isolates builder selection; durable allocation history is tested
+    # against real stores in test_static_arena_projection.
+    monkeypatch.setattr(
+        "cacheon.chain.arena_weight_projection.require_legacy_projection",
+        lambda store, block: None,
+    )
+
     class _Store:
         def __enter__(self):
             return self

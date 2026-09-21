@@ -15,8 +15,8 @@ paying again. See [Submitting](submitting.md#step-by-step-commands).
     arena. The validator compares it with that arena's exact evaluation incumbent
     on the registered workload and checks that it remains within the required
     behavior and quality limits. If the same optimization passes one complete audited
-    qualification attempt, settlement may name it the new **crown** for that
-    target and record the corresponding reward claim in the same transaction.
+    qualification attempt, its retained contribution earns V1 credit. Settlement
+    may also name it the new **crown** for that target.
 
     The active policy determines how that claim contributes to validator weights.
     A separate publisher later combines all eligible claims into a weight vector and
@@ -155,7 +155,7 @@ cadence.
 
 | Policy | Plain-English model | Current status |
 |---|---|---|
-| **Legacy V1 standing rewards** | The current crown for each active target receives standing credit based on its accepted improvement. That credit decays with age and is normalized relative to all other live claims. | Implemented and exercised end to end on testnet; this does not establish mainnet economics. Check the operator announcement for the deployment you intend to join. |
+| **Legacy V1 standing rewards** | Each distinct retained audited PASS earns credit based on its accepted improvement. Credit decays after confirmed publication and is allocated alongside other eligible claims. A crown is not required for each earning contribution. | Implemented and exercised end to end on testnet; this does not establish mainnet economics. Check the operator announcement for the deployment you intend to join. |
 | **V2 finite debt** | An eligible post-activation crown receives a bounded claim that is paid down over later confirmed epochs. A later crown does not erase the unpaid balance, but the old crown receives no perpetual royalty. | Design retained; the implementation was extracted from the tree on 2026-08-09 and would return as a new reviewed change. It creates no claim and pays nothing today. |
 
 Only legacy V1 can publish weights. Do not estimate a current reward with the
@@ -166,16 +166,34 @@ V2 creates no claim and pays no principal.
 
 V1 is relative rather than fixed:
 
-1. A settled crown creates one active standing claim for its registered target.
+1. A distinct contribution with a complete audited PASS becomes eligible for V1 credit.
 2. The claim's starting credit comes from the conservative improvement above the
    previous incumbent, not from total code size or effort.
-3. Credit decays with claim age. Age starts at the proposal's finalized
-   submission block, so qualification or settlement delay does not restart the
-   clock.
+3. New credit starts decaying after its first qualifying confirmed weight
+   publication. Finalized submission time determines the waiting bonus and
+   applicable arena terms. Retained historical decay clocks stay unchanged.
 4. The projector reopens every live claim, aggregates credit by miner hotkey,
    and normalizes all eligible credit into one 1,000,000-part weight vector.
 5. A separate signer journals, submits, reads back, and confirms that vector.
-6. A later crown for the same target retires the previous standing claim.
+6. A later crown can retire the previous standing claim, but the earlier retained
+   PASS continues earning decaying credit.
+
+### Arena percentages and the reduced waiting bonus
+
+When static arena allocation is enabled, the operator announces arena percentages
+and a future submission cutoff for each settings change. Old submissions retain
+their recorded terms. New winners can still change everyone's actual payout share.
+
+The waiting bonus rewards a win after a gap without improvement in its arena.
+The quarter-strength rule reduces the **extra bonus**, while keeping improvement
+scoring and decay unchanged. For a 7200-block gap, the starting-score multiplier
+is 1.5 instead of 3. This gap is one day only if blocks take 12 seconds.
+The bonus affects how rewards are divided inside the arena, not its emission pool.
+
+Submissions before the announced cutoff keep their older bonus even if they
+qualify later. Check the operator's active allocation history: an omitted
+`stall_bonus_ppm` means the full older bonus, and `250000` selects quarter
+strength. Repository support does not mean this rule is already activated.
 
 If live legacy discovery claims exist, they share a separately configured,
 bounded discovery pool; otherwise that capacity remains with standing claims.
@@ -195,7 +213,7 @@ standing-credit calculation. It does **not** mean the miner receives 3.4% of
 tokens or alpha. The final Cacheon weight share depends on that claim's age,
 every other live standing claim, any live discovery pool, claimant eligibility,
 and successful publication. If a later accepted contribution replaces this
-crown, its V1 standing credit ends.
+crown, its retained PASS credit continues to decay.
 
 The exact integer formula, flooring order, failure rules, and operator commands
 are in [Legacy V1 emissions policy](../reference/emissions-policy.md#legacy-v1).
@@ -205,12 +223,12 @@ are in [Legacy V1 emissions policy](../reference/emissions-policy.md#legacy-v1).
 At minimum:
 
 - the exact policy and parameters announced for the deployment;
-- the lower speedup from the two accepted qualification attempts;
-- whether settlement crowns or holds the proposal, and whether its target
-  displaces an overlapping incumbent family;
-- the proposal's finalized block and, under V1, its age;
+- the conservative speedup from complete accepted qualification (historical
+  paired qualifications retain their lower accepted speedup);
+- whether a distinct complete audited PASS has been retained;
+- the proposal's finalized block, frozen arena percentage and waiting-bonus rule;
+- its confirmed decay-start block and retained decay adjustments;
 - other live standing and discovery claims;
-- whether a newer crown replaces the contribution;
 - whether the claimant hotkey remains eligible in the bound metagraph, or that
   tick's allocated share is burned to the validator;
 - whether the validator publishes and confirms the calculated vector; and

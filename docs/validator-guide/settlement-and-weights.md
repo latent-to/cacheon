@@ -178,6 +178,13 @@ exponential half-life decay as defined in
 publication uses a separate confirmed decay-start clock without rewriting that
 submission block. Duplicate packaging earns once.
 
+For static arena allocation, the waiting-bonus strength is also selected at that
+finalized submission block. A future `stall_bonus_ppm: 250000` settings row reduces
+the additional bonus to one quarter without changing earlier claims, speedup
+scoring or decay. It only changes the split inside each arena. See
+[Static allocation configuration](chain-loop.md#static-allocation-configuration)
+for registration, evidence inspection and future updates.
+
 ## Legacy V1 discovery bounties
 
 Discovery does not install an evaluation stack entry. A qualifying discovery may create

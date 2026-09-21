@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from cacheon import chain
+from cacheon.chain.weight_projection import WeightProjection as WeightProjection
 from cacheon.chain.weight_publication_record import (
     PUBLICATION_STATUSES as PUBLICATION_STATUSES,
     WeightPublicationError,
@@ -24,7 +25,6 @@ WEIGHT_PARTS = 1_000_000
 # These values are signed/persisted protocol identities. Keep the established
 # Cacheon domains across the Cacheon product/package rename.
 SUBNET_OWNER_BURN_AUTHORITY = "cacheon.chain.subnet-owner-burn-weight-authority"
-_WEIGHT_PROJECTION_DOMAIN = "cacheon.chain.weight-projection"
 _METAGRAPH_MEMBERSHIP_DOMAIN = "cacheon.economics.metagraph-membership"
 
 
@@ -32,132 +32,6 @@ class StaleWeightProjectionError(WeightPublicationError):
     """A shared projection is valid but too old to begin following safely."""
 
     retryable = True
-
-
-@dataclass(frozen=True)
-class WeightProjection:
-    """Exact settlement output accepted by the single control-plane signer."""
-
-    chain_scope_digest: str
-    netuid: int
-    validator_hotkey: str
-    policy_digest: str
-    settlement_state_digest: str
-    evaluation_state_digest: str
-    metagraph_digest: str
-    arena_state_digests: tuple[str, ...]
-    stack_generation: int
-    effective_block: int
-    crown_count: int
-    evidence_digests: tuple[str, ...]
-    weights_ppm: tuple[tuple[str, int], ...]
-
-    def __post_init__(self) -> None:
-        for field in (
-            "chain_scope_digest",
-            "policy_digest",
-            "settlement_state_digest",
-            "evaluation_state_digest",
-            "metagraph_digest",
-        ):
-            object.__setattr__(
-                self, field, require_sha256_hex(getattr(self, field), field=field)
-            )
-        if (
-            type(self.netuid) is not int
-            or self.netuid < 0
-            or not isinstance(self.validator_hotkey, str)
-            or not self.validator_hotkey
-            or self.validator_hotkey.strip() != self.validator_hotkey
-            or len(self.validator_hotkey) > 256
-        ):
-            raise WeightPublicationError("projection chain/signer identity is malformed")
-        for field in ("stack_generation", "effective_block", "crown_count"):
-            value = getattr(self, field)
-            if type(value) is not int or value < 0:
-                raise WeightPublicationError(f"projection {field} is malformed")
-        evidence = tuple(self.evidence_digests)
-        arenas = tuple(self.arena_state_digests)
-        if (
-            evidence != tuple(sorted(set(evidence)))
-            or any(require_sha256_hex(value, field="evidence_digest") != value for value in evidence)
-            or self.crown_count > len(evidence)
-            or not arenas
-            or arenas != tuple(sorted(set(arenas)))
-            or any(require_sha256_hex(value, field="arena_state_digest") != value for value in arenas)
-        ):
-            raise WeightPublicationError("projection evidence inventory is malformed")
-        object.__setattr__(self, "evidence_digests", evidence)
-        object.__setattr__(self, "arena_state_digests", arenas)
-        raw_rows = tuple(self.weights_ppm)
-        if any(type(row) is not tuple or len(row) != 2 for row in raw_rows):
-            raise WeightPublicationError("projection weights are not canonical ppm")
-        rows = tuple((row[0], row[1]) for row in raw_rows)
-        if (
-            not rows
-            or tuple(hotkey for hotkey, _ppm in rows)
-            != tuple(sorted({hotkey for hotkey, _ppm in rows}))
-            or any(
-                not isinstance(hotkey, str)
-                or not hotkey
-                or hotkey.strip() != hotkey
-                or len(hotkey) > 256
-                or type(ppm) is not int
-                or ppm <= 0
-                for hotkey, ppm in rows
-            )
-            or sum(ppm for _hotkey, ppm in rows) != WEIGHT_PARTS
-        ):
-            raise WeightPublicationError("projection weights are not canonical ppm")
-        object.__setattr__(self, "weights_ppm", rows)
-
-    @property
-    def weights(self) -> dict[str, float]:
-        return {hotkey: ppm / WEIGHT_PARTS for hotkey, ppm in self.weights_ppm}
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "chain_scope_digest": self.chain_scope_digest,
-            "arena_state_digests": list(self.arena_state_digests),
-            "crown_count": self.crown_count,
-            "effective_block": self.effective_block,
-            "evaluation_state_digest": self.evaluation_state_digest,
-            "evidence_digests": list(self.evidence_digests),
-            "netuid": self.netuid,
-            "metagraph_digest": self.metagraph_digest,
-            "policy_digest": self.policy_digest,
-            "settlement_state_digest": self.settlement_state_digest,
-            "stack_generation": self.stack_generation,
-            "validator_hotkey": self.validator_hotkey,
-            "weights_ppm": [list(row) for row in self.weights_ppm],
-        }
-
-    @classmethod
-    def from_dict(cls, value: object) -> "WeightProjection":
-        fields = set(cls.__dataclass_fields__)
-        if type(value) is not dict or set(value) != fields:
-            raise WeightPublicationError("weight projection fields do not match")
-        if (
-            type(value["evidence_digests"]) is not list
-            or type(value["arena_state_digests"]) is not list
-            or type(value["weights_ppm"]) is not list
-        ):
-            raise WeightPublicationError("weight projection arrays are malformed")
-        rows = value["weights_ppm"]
-        if any(type(row) is not list or len(row) != 2 for row in rows):
-            raise WeightPublicationError("weight projection rows are malformed")
-        return cls(
-            **{
-                **value,
-                "evidence_digests": tuple(value["evidence_digests"]),
-                "arena_state_digests": tuple(value["arena_state_digests"]),
-                "weights_ppm": tuple(tuple(row) for row in rows),
-            }
-        )  # type: ignore[arg-type]
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest(_WEIGHT_PROJECTION_DOMAIN, self.to_dict())
 
 
 class WeightPublicationJournal(Protocol):

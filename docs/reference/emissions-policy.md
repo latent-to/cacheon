@@ -37,6 +37,10 @@ block `p` in the same arena (or `b` for the first), current block `n`, decay sta
 credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - d) / h) × 10^12)
 ```
 
+This is the retained full-strength rule. Static allocation can assign a reduced
+waiting bonus to future submissions as described below; changing code alone
+does not rescore earlier claims.
+
 Submission time controls stall credit. New PASS claims hold their decay factor
 at one until a matching weight vector containing their evidence and a positive
 share for their hotkey is confirmed. The first qualifying confirmation fixes
@@ -74,6 +78,83 @@ packaging, promotion, integration, or release cannot renew that claim.
 The projector reopens every earning accepted PASS, active stack, standing claim, and
 discovery claim, binds finalized chain scope and membership, aggregates by hotkey,
 and normalizes one positive integer-ppm vector totaling 1,000,000.
+
+### Static arena percentages
+
+The existing offer producer can combine any configured number of arena control
+planes into one V1 vector. Operators set percentages manually; there is no
+auction, demand adjustment, or automatic change to those settings. A named
+source groups the historical evaluation generations in one intake database.
+
+Settings use integer parts per million (ppm): `600000` means 60%. Normalize
+the complete configured set **only if its sum exceeds 1000000**. Thus
+40/40/40 becomes approximately 33⅓/33⅓/33⅓, while 20/30 stays 20/30.
+Largest remainders, with source names breaking ties, resolve integer rounding.
+Each submission receives the normalized terms effective at its finalized
+arrival block. Qualification time does not change those terms. Appending a
+new settings version cannot reprice older submissions.
+
+Each settings row can also specify `stall_bonus_ppm`: an integer from zero to
+1000000 controlling only the additional waiting bonus. The quarter-strength
+rule uses `250000` and gives each affected submission this credit:
+
+```text
+credit = floor(ln(s) × (1 + 0.25 × sqrt((b - p) / 1800)) × 2^(-(n - d) / h) × 10^12)
+```
+
+The base multiplier remains one; this does not divide the entire reward by four.
+A gap of 1800 blocks changes the multiplier from 2 to 1.25; a gap of 7200 blocks
+changes it from 3 to 1.5. The logarithmic speedup factor, decay half-life and
+publication-triggered decay start remain unchanged.
+
+Bonus strength is frozen at finalized submission block `b`, just like the arena
+percentage. A submission before the new boundary retains its full bonus even
+if it qualifies afterward. Appending a future rule alone does not change current
+payouts. New winners can still dilute older payouts. Rows without
+`stall_bonus_ppm` mean full strength (`1000000`), preserving existing configuration
+bytes and digests; they do not inherit a preceding row's bonus. Include `250000`
+explicitly in every later settings row that should continue the reduced rule.
+Preactivation rows must retain full strength. Bonus strength is not normalized
+with arena percentages.
+
+The time-without-improvement (stall) bonus is internal to each source. For its
+pool, average the submissions' frozen percentages using their speed/decay credit
+with the stall multiplier set to one. Split that pool among its submissions in
+proportion to frozen percentage times full credit, including the stall bonus.
+Changing only the stall bonus can redistribute that source's pool but cannot
+increase its share relative to another source. When every submission in a source
+has the same terms, its pool is exactly that percentage regardless of total credit.
+Zero-percentage submissions neither earn nor dilute positive-percentage submissions.
+Missing positive base credit and unassigned capacity go to the configured burn
+hotkey. A PASS can earn before its source has a crown; retained qualification
+evidence remains mandatory.
+
+Frozen terms are percentages used in accounting, not guaranteed token amounts.
+Settings alone cannot change existing rewards. New earning submissions can dilute
+older payouts across sources while preserving their recorded terms. When historical
+pools together exceed 100%, the existing shared weight-vector allocation divides
+the available emission among them; it does not rewrite the accepted settings.
+For example, old primary terms of 100% plus new secondary terms of 40% produce
+approximately 71.43% / 28.57% payouts. With both sources on uniform 60% / 40%
+terms, they receive 60% / 40% even if one source has more credit or a larger stall
+bonus. Underallocated requests retain their remainder as burn. Dynamic pricing
+based on an arena's time without improvement is not enabled.
+
+The producer combines recipients across sources before integer rounding and
+retains an allocation report containing source snapshots, submission terms,
+actual source shares, burn, and final weights. The existing `WeightProjection`
+adds `allocation_evidence` and `rewarded_evidence_digests` only for this path;
+legacy projection bytes remain unchanged. Confirmed publication starts decay
+only for rewarded claims, including when one hotkey also owns a zero-offer claim.
+Discovery bounties without source allocation are refused by this path.
+
+When a retained submission uses a reduced bonus, the allocation report also
+records `submission_stall_bonus_ppm` for every earning claim. Its immutable
+allocation history binds those strengths into the offer's policy identity.
+Unmodified full-strength configurations keep the previous report encoding.
+
+See [Static allocation configuration](../validator-guide/chain-loop.md#static-allocation-configuration)
+for activation and updates through the single existing producer.
 
 ### All-uncrowned bootstrap
 
