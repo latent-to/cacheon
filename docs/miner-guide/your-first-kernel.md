@@ -70,6 +70,9 @@ Inside the published image, mount the model and public arena inputs read-only,
 with writable cache and result directories. Expose the full arena GPU topology.
 The [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
 provide a bounded eight-request batch for its published B300 configuration.
+The [Qwen King inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/qwen36)
+provide a short and a long-context set, the H100 image recipe and the
+`[competition]` lines for arena `qwen36-35b-h100-bf16-tp1`.
 Use the input set for your arena; its model and topology must match. Then run:
 
 ```bash
