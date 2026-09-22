@@ -300,6 +300,13 @@ packed layout raises instead of being interpreted as homogeneous FP8. The first
 failed window of each bound node is logged with its concrete name and tensor
 position, including when the contribution claims a wildcard address.
 
+Under GDN ReplaySSM speculative verification, a target-verify call also writes
+replay rings, keyed by the batch's request slots, and per-draft conv windows,
+keyed by verify scratch row. Both are preserved, restored and graded; the conv
+windows through the pool's physical buffers. A BF16 ring's residual
+(`rawv`/`rawk`) is graded summed with its high part (`d`/`k`), the one number
+the pair holds. Any other ReplaySSM state layout raises.
+
 A row passes within the larger of 2% and three times the twin's
 90th-percentile row error on that node, taking the larger of the current call
 and the recent-call estimate. Quiet decode history therefore cannot suppress
