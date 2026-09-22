@@ -6,7 +6,6 @@ commission's faithful/broken runtime controls establish behavioral acceptance.
 
 from __future__ import annotations
 
-import dataclasses
 import inspect
 from dataclasses import dataclass
 from typing import Optional
@@ -100,7 +99,7 @@ def run_checks(expected_sglang_version: str = PINNED_SGLANG) -> list[Check]:
     try:
         from sglang.srt.server_args import ServerArgs
 
-        fields = {f.name for f in dataclasses.fields(ServerArgs)}
+        fields = set(inspect.signature(ServerArgs).parameters)
         need = {
             "model_path", "dtype", "attention_backend", "disable_cuda_graph",
             "mem_fraction_static", "enable_deterministic_inference", "random_seed", "log_level",
