@@ -9,6 +9,8 @@ from dashboard.winners import (
     live_offer_shares,
     measured_baseline,
     prefill_summary,
+    settlement_hold_notice,
+    settlement_label,
 )
 
 
@@ -114,3 +116,33 @@ def test_winners_and_miners_render_the_served_weight_share() -> None:
     assert "Served weight offer" in html
     assert "follower journal" in html
     assert "Weight publications (latest)" not in html
+
+
+
+def test_a_stale_hold_reads_as_a_paid_pass() -> None:
+    """2026-09-22: two paid Qwen passes showed "held" and the owner read that as unpaid."""
+
+    class _Connection:
+        def __init__(self, reason):
+            self.reason = reason
+
+        def execute(self, _query, _params):
+            reason = self.reason
+
+            class _Cursor:
+                @staticmethod
+                def fetchone():
+                    return {"event_type": "HOLD", "event_json": json.dumps({"reason": reason}),
+                            "sequence": 4}
+            return _Cursor()
+
+    # The candidates table only says "held"; the typed reason is in the journal.
+    assert settlement_label(_Connection("stale_incumbent"), "a" * 64, "held", "held") == "paid pass"
+    assert settlement_label(_Connection("conflict_lost"), "a" * 64, "held", "held") == "held"
+    assert settlement_label(_Connection("stale_incumbent"), "a" * 64, "crowned", "crowned") == "crowned"
+
+    notice = settlement_hold_notice(_Connection("stale_incumbent"), "a" * 64, {"status": "held", "reason": "held"})
+    assert notice["title"] == "Paid pass — not the champion"
+    assert "paid like every other pass" in notice["message"]
+    assert notice["reason"] == "stale_incumbent" and notice["event_sequence"] == 4
+    assert settlement_hold_notice(_Connection("stale_incumbent"), "a" * 64, {"status": "crowned"}) is None

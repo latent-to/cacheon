@@ -40,7 +40,7 @@ from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     measured_baseline,
     prefill_summary,
-    settlement_hold_notice,
+    settlement_hold_notice, settlement_label,
     reward_exclusion_notice,
     live_offer_shares,
 )
@@ -205,7 +205,6 @@ def finalized_tip_from_audit() -> dict[str, Any]:
         if row.get("finalized_block") is not None:
             return {"block": int(row["finalized_block"]), "audit_mtime_unix": mtime}
     return {"audit_mtime_unix": mtime}
-
 
 
 def supervisor_status(epoch: str) -> dict[str, Any]:
@@ -771,6 +770,7 @@ def winners() -> dict[str, Any]:
                 continue
             speeds_by_reservation.setdefault(
                 disposition["reservation_id"], []).append(speed)
+    labels = {row["reservation_id"]: settlement_label(con, row["reservation_id"], row["status"], row["reason"]) for row in passed}
     con.close()
     offer, shares = current_offer()
 
@@ -813,7 +813,7 @@ def winners() -> dict[str, Any]:
             "reward_claim_status": (
                 "earning" if shares.get(hotkey) else "not_earning"
             ) if offer is not None else "offer_unavailable",
-            "settlement_status": row["status"],
+            "settlement_status": labels[row["reservation_id"]],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
                 "uid": hk.get("uid"),
