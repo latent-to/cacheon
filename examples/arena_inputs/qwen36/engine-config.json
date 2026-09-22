@@ -18,5 +18,9 @@
   "max_mamba_cache_size": 48,
   "mem_fraction_static": 0.93,
   "moe_runner_backend": "triton",
+  "speculative_algorithm": "EAGLE",
+  "speculative_eagle_topk": 1,
+  "speculative_num_draft_tokens": 4,
+  "speculative_num_steps": 3,
   "tp_size": 1
 }

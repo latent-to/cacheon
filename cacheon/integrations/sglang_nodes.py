@@ -557,7 +557,9 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
 
     def load_model(self, *args, **kwargs):
         result = load(self, *args, **kwargs)
-        bind(self, registry)
+        # Node addresses belong to the target model, not its speculative drafter.
+        if not self.is_draft_worker:
+            bind(self, registry)
         return result
 
     setattr(runner, _STOCK_LOAD, load)

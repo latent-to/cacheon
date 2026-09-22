@@ -70,6 +70,35 @@ def _registry(slot, entry, *, prepare=None):
     return registry
 
 
+def test_load_hook_keeps_draft_nodes_stock(monkeypatch):
+    class Runner:
+        def __init__(self, draft):
+            self.is_draft_worker = draft
+
+        def load_model(self):
+            self.model = nn.Module()
+            self.model.leaf = nn.Identity()
+            return "loaded"
+
+    module = ModuleType(nodes._RUNNER)
+    module.ModelRunner = Runner
+    monkeypatch.setitem(sys.modules, nodes._RUNNER, module)
+    monkeypatch.setattr(audit, "sampled", lambda: False)
+    registry = _registry("leaf", lambda module, x: x + 1)
+    original = Runner.load_model
+    nodes.install(registry)
+    nodes.install(registry)
+    try:
+        for draft in (False, True):
+            runner = Runner(draft)
+            assert runner.load_model() == "loaded"
+            x = torch.zeros(2, 4)
+            assert torch.equal(runner.model.leaf(x), x if draft else x + 1)
+    finally:
+        nodes.uninstall()
+    assert Runner.load_model is original
+
+
 @pytest.fixture(params=["one piece", "row by row"])
 def audited(monkeypatch, request):
     # Row by row, engine state is copied aside, compared and put back in pieces: the

@@ -52,22 +52,20 @@ _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 
 # Only reviewed runtime options cross this boundary; arbitrary Engine kwargs do not.
 _ENGINE_KWARG_KINDS: Mapping[str, str] = {
-    "chunked_prefill_size": "positive_int",
-    "context_length": "positive_int",
-    "cuda_graph_backend_prefill": "token",
-    "cuda_graph_bs": "int_list",
-    "cuda_graph_bs_decode": "int_list",
-    "disable_radix_cache": "bool",
-    "dp_size": "positive_int",
-    "enable_dp_attention": "bool",
-    "enable_flashinfer_allreduce_fusion": "bool",
-    "kv_cache_dtype": "token",
-    "max_mamba_cache_size": "positive_int",
-    "mamba_ssm_dtype": "token",
-    "max_prefill_tokens": "positive_int",
-    "page_size": "positive_int",
-    "quantization": "token",
-    "trust_remote_code": "bool",
+    **dict.fromkeys("""
+        chunked_prefill_size context_length dp_size max_mamba_cache_size
+        max_prefill_tokens page_size speculative_num_steps speculative_eagle_topk
+        speculative_num_draft_tokens
+    """.split(), "positive_int"),
+    **dict.fromkeys("""
+        cuda_graph_backend_prefill kv_cache_dtype mamba_ssm_dtype quantization
+        speculative_algorithm
+    """.split(), "token"),
+    **dict.fromkeys("""
+        disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
+        trust_remote_code
+    """.split(), "bool"),
+    **dict.fromkeys(("cuda_graph_bs", "cuda_graph_bs_decode"), "int_list"),
     # Resident sessions recapture CUDA graphs on a LIVE scheduler loop; the
     # default 300s watchdog kills the rank mid-capture (measured 2026-07-20).
     "watchdog_timeout": "positive_int",
