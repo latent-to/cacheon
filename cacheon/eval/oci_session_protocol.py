@@ -63,7 +63,7 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     """.split(), "token"),
     **dict.fromkeys("""
         disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
-        trust_remote_code
+        enable_linear_replayssm_spec trust_remote_code
     """.split(), "bool"),
     **dict.fromkeys(("cuda_graph_bs", "cuda_graph_bs_decode"), "int_list"),
     # Resident sessions recapture CUDA graphs on a LIVE scheduler loop; the

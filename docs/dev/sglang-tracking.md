@@ -13,6 +13,8 @@ Native MTP uses the existing `EngineSessionConfig.engine_kwargs`: set
 `speculative_algorithm`, `speculative_num_steps`, `speculative_eagle_topk` and
 `speculative_num_draft_tokens` in the validator-owned engine configuration.
 These options are bound into its existing digest and forwarded to SGLang.
+For GDN models, `enable_linear_replayssm_spec` enables SGLang's native ring-based
+MTP verifier, avoiding a full recurrent-state snapshot for every draft token.
 Target node addresses bind only to the target ModelRunner; the speculative
 drafter retains stock execution. Miners keep the same node interface, including
 the target-verification modes and shapes passed to it. Requalify the exact

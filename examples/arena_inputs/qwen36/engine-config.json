@@ -12,6 +12,7 @@
   ],
   "disable_radix_cache": true,
   "dtype": "bfloat16",
+  "enable_linear_replayssm_spec": true,
   "kv_cache_dtype": "fp8_e4m3",
   "log_level": "error",
   "mamba_ssm_dtype": "float32",

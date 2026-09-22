@@ -135,6 +135,7 @@ def test_engine_config_is_exact_immutable_and_digest_stable(steps, tokens) -> No
         "speculative_num_steps": steps,
         "speculative_eagle_topk": 1,
         "speculative_num_draft_tokens": tokens,
+        "enable_linear_replayssm_spec": steps == 3,
     }
     config = _config(engine_kwargs=source)
     source["page_size"] = 128
@@ -167,6 +168,7 @@ def test_engine_config_is_exact_immutable_and_digest_stable(steps, tokens) -> No
         ({"engine_kwargs": {"speculative_eagle_topk": True}}, "speculative_eagle_topk"),
         ({"engine_kwargs": {"speculative_num_draft_tokens": -1}}, "speculative_num_draft_tokens"),
         ({"engine_kwargs": {"speculative_algorithm": "bad value"}}, "speculative_algorithm"),
+        ({"engine_kwargs": {"enable_linear_replayssm_spec": 1}}, "enable_linear_replayssm_spec"),
     ],
 )
 def test_engine_config_rejects_invalid_and_unreviewed_fields(
