@@ -380,6 +380,11 @@ forward pass; the runs are in
 
 Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; source or dependency patching uses validator-shipped, policy-constrained patchers. Successful work should be resolved into a core slot, an atomic target, or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
+With MTP enabled, contributions still optimize the registered target computation.
+The validator owns the draft model, speculative schedule, sampling and acceptance
+rules, and request batching. A contribution may not change those controls or
+manipulate draft proposals or acceptance decisions to manufacture throughput.
+
 This keeps experimentation possible without widening every ordinary submission's authority.
 
 ## Failure behavior by phase
