@@ -20,7 +20,7 @@ def _version_check(monkeypatch, version: str, expected=PINNED_SGLANG):
     )
 
 
-@pytest.mark.parametrize("expected", (PINNED_SGLANG, "0.5.19", "0.5.20"))
+@pytest.mark.parametrize("expected", (PINNED_SGLANG, "0.5.18", "0.5.19"))
 def test_compat_accepts_the_exact_arena_pin(monkeypatch, expected) -> None:
     row = _version_check(monkeypatch, expected, expected)
 

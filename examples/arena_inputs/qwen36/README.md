@@ -12,7 +12,8 @@ Native MTP is enabled with `EAGLE`, three speculative steps, top-k one and
 four draft tokens, using the MTP weights in the target checkpoint. No separate
 draft download is required. `enable_linear_replayssm_spec` uses the upstream
 ReplaySSM verifier to avoid per-draft state snapshots, which exceed H100 memory
-at 48 requests with this BF16 model. FP32 recurrent state is retained.
+at 48 requests with this BF16 model. FP32 recurrent state is retained; the
+static memory fraction is 0.96 to leave cache capacity for the 64k prompt.
 Target-layer bundles retain the same node interface
 and must handle `TARGET_VERIFY` as well as prefill and ordinary decode. The
 draft worker is outside that contribution boundary. This runtime change needs

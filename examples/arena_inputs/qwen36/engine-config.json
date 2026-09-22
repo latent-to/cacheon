@@ -17,7 +17,7 @@
   "log_level": "error",
   "mamba_ssm_dtype": "float32",
   "max_mamba_cache_size": 48,
-  "mem_fraction_static": 0.93,
+  "mem_fraction_static": 0.96,
   "moe_runner_backend": "triton",
   "speculative_algorithm": "EAGLE",
   "speculative_eagle_topk": 1,

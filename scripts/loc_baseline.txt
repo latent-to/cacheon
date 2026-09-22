@@ -3,11 +3,11 @@
 # that needs it; lowering one locks in a deletion. check_loc_ratchet.py
 (root) 1155
 .github 345
-bundles 2983
+bundles 2981
 cacheon 102311
 cacheon_kernels 1045
 dashboard 3443
 docs 12993
-examples 1190
+examples 1224
 scripts 2288
 tests 74851

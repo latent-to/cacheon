@@ -2,12 +2,12 @@
 
 Cacheon competes against and integrates with an exact SGLang runtime. The pin is
 part of evaluation and release identity, not a loose minimum version. The
-default compatibility pin is `0.5.18` in
+default compatibility pin is `0.5.20` in
 [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py). Different arenas may commission different exact runtimes.
-Run `python -m cacheon.cli compat --sglang-version 0.5.20` inside a Qwen image
+Run `python -m cacheon.cli compat --sglang-version 0.5.20` inside a Qwen or GLM image
 commissioned for that version. The runtime preflight independently compares the
 installed version with its sealed `expected_sglang_version`. This does not
-change GLM's runtime pin or authorize mixing measurements across versions.
+change an existing arena's authority or permit mixing measurements across versions.
 
 Native MTP uses the existing `EngineSessionConfig.engine_kwargs`: set
 `speculative_algorithm`, `speculative_num_steps`, `speculative_eagle_topk` and

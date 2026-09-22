@@ -12,7 +12,7 @@ from typing import Optional
 
 # Default compatibility target for existing GLM deployments. Another arena
 # supplies its own exact pin; its RuntimePreflightConfig enforces the same value.
-PINNED_SGLANG = "0.5.18"
+PINNED_SGLANG = "0.5.20"
 
 
 @dataclass
