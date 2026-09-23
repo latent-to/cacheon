@@ -309,7 +309,8 @@ class B300RegisteredQualificationPolicy:
     hidden_task_policy_digest: str
     hidden_tasks_required: bool
     select_count: int
-    audit_sample_rate_ppm: int = 1_000_000
+    # Grading every node call kept GLM's audit at 65 minutes (B300, 2026-09-23).
+    audit_sample_rate_ppm: int = 100_000
     audit_minimum_calls: int = 32
     audit_max_new_tokens: int = 2
     audit_toplogprobs_num: int = 1
@@ -423,7 +424,7 @@ class B300RegisteredQualificationPolicy:
         hidden_task_policy_digest: str,
         hidden_tasks_required: bool,
         select_count: int,
-        audit_sample_rate_ppm: int = 1_000_000,
+        audit_sample_rate_ppm: int = 100_000,
         audit_minimum_calls: int = 32,
         audit_max_new_tokens: int = 2,
         audit_toplogprobs_num: int = 1,
