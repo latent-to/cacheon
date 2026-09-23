@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.chain.evaluation_order import finalize_reward_prefix
 from cacheon.settlement import SettlementCandidate, SettlementQualification
 
 if TYPE_CHECKING:
@@ -192,11 +193,13 @@ def passed_reward_evidence(store: FinalizedIntakeStore) -> tuple[tuple, tuple]:
     claims = []
     contributions = []
     seen: set[tuple[str, str, str]] = set()
+    finalize_reward_prefix(store)
     rows = store._db.execute(
         "SELECT sc.* FROM settlement_candidates sc "
         "JOIN reservations r USING(reservation_id) "
         "WHERE r.status='qualified' AND r.decision='PASS' "
         "AND sc.status!='duplicate_proposal' "
+        "AND sc.reward_eligible=1 "
         "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
     )
     for row in rows:

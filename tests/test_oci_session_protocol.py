@@ -126,10 +126,16 @@ def _evidence() -> BatchEvidence:
     )
 
 
-def test_engine_config_is_exact_immutable_and_digest_stable() -> None:
+@pytest.mark.parametrize("steps,tokens", [(1, 2), (3, 4)])
+def test_engine_config_is_exact_immutable_and_digest_stable(steps, tokens) -> None:
     source = {
         "page_size": 64,
         "enable_flashinfer_allreduce_fusion": True,
+        "speculative_algorithm": "EAGLE",
+        "speculative_num_steps": steps,
+        "speculative_eagle_topk": 1,
+        "speculative_num_draft_tokens": tokens,
+        "enable_linear_replayssm_spec": steps == 3,
     }
     config = _config(engine_kwargs=source)
     source["page_size"] = 128
@@ -140,6 +146,7 @@ def test_engine_config_is_exact_immutable_and_digest_stable() -> None:
         config.engine_kwargs["page_size"] = 128  # type: ignore[index]
     assert config.digest == EngineSessionConfig.from_dict(config.to_dict()).digest
     assert len(config.digest) == 64
+    assert config.digest != _config().digest
 
 
 @pytest.mark.parametrize(
@@ -157,6 +164,11 @@ def test_engine_config_is_exact_immutable_and_digest_stable() -> None:
         ({"moe_runner_backend": "x\n"}, "moe_runner_backend"),
         ({"engine_kwargs": {"arbitrary": True}}, "unsupported keys"),
         ({"engine_kwargs": {"page_size": False}}, "page_size"),
+        ({"engine_kwargs": {"speculative_num_steps": 0}}, "speculative_num_steps"),
+        ({"engine_kwargs": {"speculative_eagle_topk": True}}, "speculative_eagle_topk"),
+        ({"engine_kwargs": {"speculative_num_draft_tokens": -1}}, "speculative_num_draft_tokens"),
+        ({"engine_kwargs": {"speculative_algorithm": "bad value"}}, "speculative_algorithm"),
+        ({"engine_kwargs": {"enable_linear_replayssm_spec": 1}}, "enable_linear_replayssm_spec"),
     ],
 )
 def test_engine_config_rejects_invalid_and_unreviewed_fields(

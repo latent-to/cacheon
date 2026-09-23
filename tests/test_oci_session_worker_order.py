@@ -258,15 +258,20 @@ def test_importing_worker_loads_no_torch_sglang_or_candidate(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("mtp", [{}, {
+    "speculative_algorithm": "EAGLE", "speculative_num_steps": 3,
+    "speculative_eagle_topk": 1, "speculative_num_draft_tokens": 4,
+}])
 def test_session_worker_arms_the_seam_by_role_and_never_for_the_reference(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, mtp
 ):
-    config = _config()
+    config = replace(_config(), engine_kwargs=mtp)
     observed = []
     bootstraps = []
 
     class Engine:
         def __init__(self, **_kwargs):
+            assert all(_kwargs[key] == value for key, value in mtp.items())
             self.tokenizer_manager = SimpleNamespace(signal_handler_class=object)
             observed.append(
                 {

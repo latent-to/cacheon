@@ -40,16 +40,27 @@ def _index_values(raw: torch.Tensor, *, page: int, head: int) -> torch.Tensor:
     return keys.reshape(raw.shape[0], page, head) * scales.unsqueeze(-1)
 
 
-def dsa_state_rows(pool, locations: torch.Tensor) -> list[tuple] | None:
-    """Return raw DSA rows and their numerical formats, or None for ordinary pools."""
+def dsa_state_rows(pool, locations: torch.Tensor, layer: int | None = None) -> list[tuple] | None:
+    """Return raw DSA rows and their numerical formats, or None for ordinary pools.
+
+    ``layer`` keeps only that decoder layer's two caches. Grading every layer's rows on
+    every layer call cost 156 buffers a call and 78 calls a forward: the GLM audit took
+    65 minutes against 14 before it (B300, 2026-09-23).
+    """
     index_buffers = getattr(pool, "index_k_with_scale_buffer", None)
     if index_buffers is None:
         return None
     if torch.version.hip or pool.page_size != 64 or pool.index_head_dim != 128:
         raise RuntimeError("DSA audit requires the commissioned CUDA cache layout")
+    kv_buffers = pool.kv_buffer
+    if layer is not None:
+        local = layer - pool.start_layer
+        if not (0 <= local < len(kv_buffers) and local < len(index_buffers)):
+            raise RuntimeError(f"layer {layer} has no DSA cache in this pool")
+        kv_buffers, index_buffers = [kv_buffers[local]], [index_buffers[local]]
     index = locations.long()
     rows = []
-    for buffer in pool.kv_buffer:
+    for buffer in kv_buffers:
         if getattr(pool, "dsa_kv_cache_store_fp8", False):
             held = partial(_mla_values, latent=pool.kv_lora_rank, rope=pool.qk_rope_head_dim)
         else:

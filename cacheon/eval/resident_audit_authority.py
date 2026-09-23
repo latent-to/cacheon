@@ -55,14 +55,17 @@ def _same_except(left: object, right: object, allowed: frozenset[str]) -> bool:
     )
 
 
-def _audit_batch_indices(
-    charged: SessionExecutionPlan, minimum_calls: int,
-) -> tuple[int, ...]:
+def _audit_batch_indices(charged: SessionExecutionPlan) -> tuple[int, ...]:
     # Singleton audits missed UID215's DP collective: idle ranks selected a
     # different padding path. Keep every charged batch's real concurrency.
-    batches = charged.prompt_batches
-    checked = max(minimum_calls, len(batches))
-    return (0,) + tuple(i % len(batches) for i in range(checked))
+    # One batch of each shape covers every concurrency and length the speed stage
+    # charges; replaying all eight GLM batches (4 x 128 x 8k and 4 x 24 x 64k
+    # prompts, eager) took 65 minutes a qualification (B300, 2026-09-23).
+    first: dict[tuple, int] = {}
+    for index, batch in enumerate(charged.prompt_batches):
+        first.setdefault((len(batch), charged.request_geometry(index)), index)
+    shapes = tuple(first.values())
+    return (shapes[0],) + shapes
 
 
 def resident_audit_allocation_digest(
@@ -227,16 +230,12 @@ class ResidentAuditExecutionAuthority:
             or eager.warmup_count != 1
             or eager.conditioning_count != 1
             or eager.prompt_batches != tuple(
-                charged.prompt_batches[i] for i in _audit_batch_indices(
-                    charged, eager.audit_policy.minimum_calls
-                )
+                charged.prompt_batches[i] for i in _audit_batch_indices(charged)
             )
             or any(
                 eager.request_geometry(j)
                 != (eager.max_new_tokens, charged.request_geometry(i)[1])
-                for j, i in enumerate(_audit_batch_indices(
-                    charged, eager.audit_policy.minimum_calls
-                ))
+                for j, i in enumerate(_audit_batch_indices(charged))
             )
         ):
             raise ResidentAuditAuthorityError(
@@ -311,7 +310,7 @@ class ResidentAuditExecutionAuthority:
             launch_digest=eager_launch.digest,
             engine_config_digest=eager_config.digest,
         )
-        indices = _audit_batch_indices(charged_plan, audit_policy.minimum_calls)
+        indices = _audit_batch_indices(charged_plan)
         eager_plan = replace(
             charged_plan,
             launch_digest=eager_launch.digest,

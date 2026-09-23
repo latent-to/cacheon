@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from cacheon.chain import remote_worker_spool as spool
+from cacheon.chain.standing_cpu_supervisor import StandingCpuSupervisorError
 from cacheon.chain.standing_weights_stage import (
     WEIGHTS_CONFIG_SCHEMA,
     WeightsStageConfig,
@@ -51,6 +52,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         PushCredentialSet((mint_push_credential(credential_id="test"),)),
     )
 
+    _private_file(private / "signer.sqlite3", b"")
     weights_path = private / "weights-stage.json"
     _private_file(
         weights_path,
@@ -58,6 +60,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
             {
                 "attribution_hotkey": "validator",
                 "burn_hotkey": "",
+                "confirmation_journal": str(private / "signer.sqlite3"),
                 "discovery_lifetime_blocks": 2160,
                 "discovery_pool_ppm": 100_000,
                 "fallback_endpoint": "",
@@ -66,7 +69,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
                 "push_credentials": str(cred_path),
                 "push_url": "http://127.0.0.1:8080",
                 "refresh_blocks": 600,
-                "schema": "cacheon-standing-weights-config-v1",
+                "schema": WEIGHTS_CONFIG_SCHEMA,
             }
         )
         + b"\n",
@@ -91,23 +94,24 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     return config_path, row
 
 
-@pytest.mark.parametrize("schema", ["cacheon-standing-weights-config-v1", WEIGHTS_CONFIG_SCHEMA])
-def test_offer_service_config_reopens_exactly(tmp_path: Path, schema) -> None:
+def test_offer_service_config_reopens_exactly(tmp_path: Path) -> None:
     config_path, raw = _setup(tmp_path)
-    journal = None
-    if schema == WEIGHTS_CONFIG_SCHEMA:
-        journal = config_path.parent / "signer.sqlite3"
-        _private_file(journal, b"")
-        weights_path = Path(raw["weights_stage_config"])
-        weights = json.loads(weights_path.read_text())
-        _rewrite(weights_path, {**weights, "schema": schema, "confirmation_journal": str(journal)})
     config = load_offer_service_config(config_path)
     assert config.raw == raw
     assert config.poll_s == 60.0
     assert config.max_consecutive_failures == 10
     assert config.weights_stage.refresh_blocks == 600
     assert config.weights_stage.half_life_blocks == 7200
-    assert config.weights_stage.confirmation_journal == journal
+    assert config.weights_stage.confirmation_journal == config_path.parent / "signer.sqlite3"
+
+
+def test_the_retired_v1_weights_config_is_refused(tmp_path: Path) -> None:
+    config_path, raw = _setup(tmp_path)
+    weights_path = Path(raw["weights_stage_config"])
+    weights = json.loads(weights_path.read_text())
+    _rewrite(weights_path, {**weights, "schema": "cacheon-standing-weights-config-v1"})
+    with pytest.raises(StandingCpuSupervisorError, match="schema is unsupported"):
+        load_offer_service_config(config_path)
 
 
 def test_unsupported_schema_fails_closed(tmp_path: Path) -> None:

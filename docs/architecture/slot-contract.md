@@ -300,6 +300,13 @@ packed layout raises instead of being interpreted as homogeneous FP8. The first
 failed window of each bound node is logged with its concrete name and tensor
 position, including when the contribution claims a wildcard address.
 
+Under GDN ReplaySSM speculative verification, a target-verify call also writes
+replay rings, keyed by the batch's request slots, and per-draft conv windows,
+keyed by verify scratch row. Both are preserved, restored and graded; the conv
+windows through the pool's physical buffers. A BF16 ring's residual
+(`rawv`/`rawk`) is graded summed with its high part (`d`/`k`), the one number
+the pair holds. Any other ReplaySSM state layout raises.
+
 A row passes within the larger of 2% and three times the twin's
 90th-percentile row error on that node, taking the larger of the current call
 and the recent-call estimate. Quiet decode history therefore cannot suppress
@@ -379,6 +386,11 @@ forward pass; the runs are in
 ## Escape hatches
 
 Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; source or dependency patching uses validator-shipped, policy-constrained patchers. Successful work should be resolved into a core slot, an atomic target, or reviewed product source without relabeling changed selected payload bytes under old evidence.
+
+With MTP enabled, contributions still optimize the registered target computation.
+The validator owns the draft model, speculative schedule, sampling and acceptance
+rules, and request batching. A contribution may not change those controls or
+manipulate draft proposals or acceptance decisions to manufacture throughput.
 
 This keeps experimentation possible without widening every ordinary submission's authority.
 

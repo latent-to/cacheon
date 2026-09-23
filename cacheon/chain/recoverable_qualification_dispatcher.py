@@ -315,7 +315,7 @@ class RecoverableQualificationDispatcher:
     ) -> tuple[RecoverableFinalizedIntakeStore, tuple[int, str], EvaluationRecovery]:
         store, point = self._open_store()
         try:
-            current = store.pending_qualification_recovery()
+            current = store.pending_qualification_recovery(owner=self.coordinator.owner)
             if current is None or current.recovery_id != recovery_id:
                 raise RecoverableQualificationDispatcherError(
                     "active recovery identity changed"
@@ -347,12 +347,10 @@ class RecoverableQualificationDispatcher:
             ) from exc
         return None if boundary is None else QualificationCommissionRequired(*boundary)
 
-    def _claim_or_reopen(
-        self,
-    ) -> _RecoveryClaim | QualificationCommissionRequired | None:
+    def _claim_or_reopen(self) -> _RecoveryClaim | QualificationCommissionRequired | None:
         store, point = self._open_store()
         try:
-            recovery = store.pending_qualification_recovery()
+            recovery = store.pending_qualification_recovery(owner=self.coordinator.owner)
             if recovery is None or recovery.phase is RecoveryPhase.CLAIMED:
                 boundary = self._bind_commissioned_incumbent(store)
                 if boundary is not None:
@@ -363,6 +361,7 @@ class RecoverableQualificationDispatcher:
                     current_block=point[0],
                     lease_blocks=self.coordinator.lease_blocks,
                     max_members=self.coordinator.qualification_max_members,
+                    max_active=self.coordinator.service.manifest.capacity.max_active_qualifications,
                 )
             if recovery is None:
                 return None

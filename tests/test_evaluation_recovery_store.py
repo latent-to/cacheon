@@ -124,7 +124,7 @@ def _promoted(store: RecoverableFinalizedIntakeStore, profile: _Profile, index: 
     )
     service = _h(f"{profile.label}:service")
     active = store.begin_screen(published.reservation_id, service_digest=service)
-    candidate = _h(f"{profile.label}:candidate:{active.screen_attempts}")
+    candidate = _h(f"{profile.label}:candidate:{index}:{active.screen_attempts}")
     receipt = ArenaScreenReceipt(
         service,
         candidate,

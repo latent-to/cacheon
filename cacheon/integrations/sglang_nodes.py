@@ -40,7 +40,7 @@ import re
 import sys
 from collections import deque
 from contextlib import contextmanager
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import torch
 
@@ -76,7 +76,10 @@ _WINDOW = 256
 # keeps 63 MB of recurrent state per request: at 48 requests one copy is 2.8 GiB,
 # and holding the before, stock, twin and candidate copies at once ran an 80 GiB
 # H100 out of memory with 5 GiB spare (Qwen cell-width audit, 2026-09-20).
-_PIECE = 64 << 20
+# At MTP width 48, retaining the 2.8 GiB temporal answer plus ReplaySSM rings
+# left only 117 MiB for a 240 MiB comparison (H100, 2026-09-22). Answers now
+# wait on the host too; a piece is at most this budget or one indivisible row.
+_PIECE = 4 << 20
 # The wire vocabulary (oci_session_protocol.AuditReceiptFacts) is closed: a share of
 # rows within tolerance against a bar is its matched_ratio.
 _MODE = "matched_ratio"
@@ -118,7 +121,9 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     return found
 
 
-def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]]:
+def _state_rows(
+    runner, call: tuple, layer: int | None = None,
+) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat | _Low]]:
     """Engine-state rows this call may write, as ``(buffer, dim, index, graded dtype)``.
 
     Only a call that carries the engine's batch can reach the cache pools: cache
@@ -151,7 +156,7 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
             raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
         held = getattr(pool, "dtype", None)
         fp8 = held is not None and held.is_floating_point and held.itemsize == 1
-        dsa = dsa_state_rows(pool, batch.out_cache_loc)
+        dsa = dsa_state_rows(pool, batch.out_cache_loc, layer)
         rows.extend(dsa if dsa is not None else [
             (
                 buffer,
@@ -169,14 +174,68 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
         rows.extend(
             (buffer, 1, index, buffer.dtype) for buffer in (*cache.conv, cache.temporal)
         )
+        if cache.replayssm_g is not None:
+            rows.extend(_replay_rows(runner, recurrent, batch))
     return rows
 
 
+class _Low(NamedTuple):
+    """A BF16 ring's rounding residual, graded with its high part as the one number they hold."""
+
+    high: torch.Tensor
+
+
+def _replay_rows(runner, pool, batch) -> list[tuple]:
+    """What a speculative-verify call writes besides ``conv`` and ``temporal`` under GDN ReplaySSM.
+
+    Verify leaves ``temporal`` alone and appends this step's drafts to rings keyed by
+    request slot (``req_pool_indices``, not the batch's Mamba slots); the i-th request's
+    per-draft conv windows go to verify scratch row i. Acceptance, outside the node,
+    advances the ring cursors and scatters the accepted window into ``conv``; the
+    21,400-call Qwen MTP audit restored and graded none of these writes (2026-09-22).
+
+    ``rawv``/``rawk`` hold what BF16 rounding dropped from ``d``/``k``. Honest
+    rounding moves the residual by its whole size, so each is graded summed with its
+    high part. The windows are restored through the pool's physical buffers, because
+    the per-draft view overlaps itself.
+    """
+    if pool.replayssm_cache_base is None:
+        raise RuntimeError("only the speculative-verify GDN ReplaySSM state layout is recognized")
+    if not batch.forward_mode.is_target_verify():
+        return []
+    cache = pool.mamba_cache
+    slots = batch.req_pool_indices.long()
+    scratch = runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices
+    scratch = scratch[: slots.numel()].long()
+    rows = [(ring, 1, slots, ring.dtype)
+            for ring in (cache.replayssm_d, cache.replayssm_k, cache.replayssm_g)]
+    rows.extend((low, 1, slots, _Low(high)) for low, high in (
+        (cache.replayssm_rawv, cache.replayssm_d), (cache.replayssm_rawk, cache.replayssm_k),
+    ) if low is not None)
+    rows.extend((window, 1, scratch, window.dtype) for window in pool._intermediate_conv_window_phys)
+    return rows
+
+
+def _values(buffer: torch.Tensor, dim: int, index: torch.Tensor, held) -> torch.Tensor:
+    """The numbers a state row holds at ``index``."""
+
+    raw = buffer.index_select(dim, index)
+    if isinstance(held, _Low):
+        return held.high.index_select(dim, index).float() + raw.float()
+    return state_values(raw, held)
+
+
 def _pieces(buffer: torch.Tensor, dim: int, index: torch.Tensor) -> list[tuple[int, torch.Tensor]]:
-    """Split a row index into ``(start, rows)`` runs of at most ``_PIECE`` elements."""
+    """Split selected rows into budgeted runs, keeping an individual row intact."""
 
     step = max(1, _PIECE // max(1, buffer.numel() // max(1, buffer.shape[dim])))
     return [(start, index[start : start + step]) for start in range(0, index.numel(), step)]
+
+
+def _host_piece(tensor: torch.Tensor) -> torch.Tensor:
+    """Keep a separate pinned copy so restoring it never slices a large host tensor."""
+    return torch.empty(tensor.shape, dtype=tensor.dtype, device="cpu",
+                       pin_memory=tensor.is_cuda).copy_(tensor)
 
 
 def _dsa_choice_position(module, count: int) -> int | None:
@@ -202,19 +261,22 @@ def _errors(outputs: list, rows: list, expected: list, *, module=None) -> list[t
     unordered = _dsa_choice_position(module, len(outputs))
     found = [_row_errors(a, e, dim, unordered=position == unordered)
              for position, ((a, dim), (e, _)) in enumerate(zip(outputs, expected))]
-    for (buffer, dim, index, held), (e, _) in zip(rows, expected[len(outputs):]):
+    for (buffer, dim, index, held), (saved, _) in zip(rows, expected[len(outputs):]):
+        pieces = _pieces(buffer, dim, index)
+        if len(pieces) != len(saved):
+            raise ValueError("the engine state does not have stock's row structure")
         parts = [
             _row_errors(
-                state_values(buffer.index_select(dim, piece), held),
-                e.narrow(dim, start, piece.numel()), dim,
+                _values(buffer, dim, piece, held), e.to(buffer.device), dim,
             )
-            for start, piece in _pieces(buffer, dim, index)
+            for (_, piece), e in zip(pieces, saved)
         ]
         found.append(torch.cat(parts) if parts else torch.empty(0))
     return found
 
 
-def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs: dict):
+def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs: dict,
+                layer: int | None = None):
     """Stock's ``(tensor, row dim)`` answer and the honest twin's row errors against it.
 
     Both run on the live call, and the call is put back after each. What stock leaves
@@ -224,13 +286,13 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     normed intermediates in its dead input (H100 Qwen runs, 2026-09-19). Values reach
     the caller through the result and the engine state; both are graded.
 
-    Only stock's state rows stay on the device. The copy the call is put back from
-    waits on the host when it is more than one piece, and the twin's and the
-    candidate's rows are compared a piece at a time.
+    Stock's state answers wait on the host in separate pinned pieces. The copy
+    the call is put back from also waits there when it is more than one piece;
+    the twin's and the candidate's rows are compared a piece at a time.
     """
 
     handed = _tensors((args, kwargs), [])
-    rows = _state_rows(runner, (*args, *kwargs.values()))
+    rows = _state_rows(runner, (*args, *kwargs.values()), layer)
     before = [t.clone() for t in handed]
     state = []
     for buffer, dim, index, _ in rows:
@@ -240,7 +302,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
         # step (H100, 2026-09-20).
         state.append([
             part if len(pieces) < 2
-            else torch.empty(part.shape, dtype=part.dtype, pin_memory=part.is_cuda).copy_(part)
+            else _host_piece(part)
             for part in (buffer.index_select(dim, piece) for _, piece in pieces)
         ])
 
@@ -260,7 +322,9 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
         return kept
 
     expected = run(lambda outputs: outputs + [
-        (state_values(buffer.index_select(dim, index), held), dim) for buffer, dim, index, held in rows
+        ([_host_piece(_values(buffer, dim, piece, held))
+          for _, piece in _pieces(buffer, dim, index)], dim)
+        for buffer, dim, index, held in rows
     ])
     with _native(module):
         twin = run(lambda outputs: expected and _errors(outputs, rows, expected, module=module))
@@ -451,6 +515,10 @@ def make_node_dispatcher(
 
     prepared: dict[int, object] = {}
     reported = False
+    # Read before any candidate code runs. A decoder layer's stock writes only its own
+    # layer's cache; a node without one (the whole model) keeps every layer's rows.
+    layer = getattr(module, "layer_id", None)
+    layer = layer if type(layer) is int else None
 
     def dispatched(*args, **kwargs):
         nonlocal reported
@@ -472,7 +540,7 @@ def make_node_dispatcher(
                 )
                 _receipts.failed(slot, failure, phase="entry")
                 raise failure
-            expected, twin = _references(slot, module, stock, runner, args, kwargs)
+            expected, twin = _references(slot, module, stock, runner, args, kwargs, layer)
         descriptor = _descriptor(module, args, kwargs, in_graph)
         impl = registry.select(slot, descriptor).impl if descriptor is not None else None
         if impl is None:
@@ -490,7 +558,7 @@ def make_node_dispatcher(
             try:
                 actual = _errors(
                     [(t, 0) for t in _tensors(result, [], fields=True)],
-                    _state_rows(runner, (*args, *kwargs.values())), expected, module=module,
+                    _state_rows(runner, (*args, *kwargs.values()), layer), expected, module=module,
                 )
                 grade = _grade(slot, id(module), actual, twin)
                 if grade is not None and grade[0] < _ROW_BAR and not reported:
@@ -557,7 +625,9 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
 
     def load_model(self, *args, **kwargs):
         result = load(self, *args, **kwargs)
-        bind(self, registry)
+        # Node addresses belong to the target model, not its speculative drafter.
+        if not self.is_draft_worker:
+            bind(self, registry)
         return result
 
     setattr(runner, _STOCK_LOAD, load)

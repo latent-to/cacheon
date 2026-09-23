@@ -331,3 +331,22 @@ def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path,
     assert "failure_message" not in hold
     assert hold["failure_type"] == ("PreparedGraphProbeIncompleteError" if detailed else "")
     assert "qualification" not in detail["forensics"][0]
+
+
+def test_winners_api_labels_a_stale_hold_as_a_paid_pass(tmp_path, client):
+    """2026-09-22: the label needs the settlement journal, and the view had already closed its connection."""
+    db = tmp_path / "intake.sqlite3"
+    _dashboard_db(db, "", tmp_path, "norm.fused_add_rmsnorm")
+    with sqlite3.connect(db) as con:
+        con.execute("ALTER TABLE settlement_events ADD COLUMN event_json TEXT")
+        for column in ("competition_arena", "screen_lane", "publication_root"):
+            con.execute(f"ALTER TABLE reservations ADD COLUMN {column}")
+        con.execute("UPDATE reservations SET status='qualified', decision='PASS', reason='qualified'")
+        con.execute("INSERT INTO settlement_candidates VALUES('example','held','held',?)",
+                    (json.dumps({"primary": {"target_id": "norm.fused_add_rmsnorm", "speedup": "1.05"}}),))
+        con.execute("INSERT INTO settlement_qualifications VALUES('example',0,'{}',?,9009800)", (str(tmp_path),))
+        con.execute("INSERT INTO settlement_events VALUES(4,'HOLD','example','norm.fused_add_rmsnorm',?)",
+                    (json.dumps({"reason": "stale_incumbent"}),))
+    winners = client.get("/api/winners").json()["items"]
+    assert [w["settlement_status"] for w in winners] == ["paid pass"]
+    assert winners[0]["reward_claim_status"] == "offer_unavailable"

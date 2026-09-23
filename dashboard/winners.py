@@ -1,10 +1,28 @@
-"""Pure winner-speed calculations used by the read-only dashboard."""
+"""Eligible winner queries and speed calculations for the read-only dashboard."""
 
 from __future__ import annotations
 
 import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+from cacheon.chain.evaluation_order import reward_visibility_sql
+
+
+def qualified_winners(con) -> list[dict[str, Any]]:
+    """Expose retained PASSes only after their arrival prefix becomes eligible."""
+    return [dict(row) for row in con.execute("""
+        SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
+               r.*, r.block AS submission_block,
+               max(q.retained_block) AS passed_block
+        FROM settlement_candidates sc
+        JOIN reservations r ON r.reservation_id = sc.reservation_id
+        JOIN settlement_qualifications q ON q.reservation_id = sc.reservation_id
+        WHERE r.status='qualified' AND r.decision='PASS'
+          AND sc.status!='duplicate_proposal' AND
+    """ + reward_visibility_sql(con) + """
+        GROUP BY sc.reservation_id
+    """)]
 
 
 def _lane_tokens_per_second(speed: object, role: str) -> Decimal | None:
@@ -58,11 +76,6 @@ def prefill_summary(speed_reads: list[object]) -> dict[str, float | None]:
     return {"prefill_speedup": min(ratios) if ratios else None}
 
 
-__all__ = [
-    "conservative_candidate_tokens_per_second",
-]
-
-
 def live_offer_shares(path: object) -> tuple[dict[str, Any] | None, dict[str, Decimal]]:
     """Read the validator's served weight offer as ``(summary, {hotkey: share})``.
 
@@ -94,27 +107,36 @@ def live_offer_shares(path: object) -> tuple[dict[str, Any] | None, dict[str, De
     return summary, shares
 
 
+def latest_hold(connection: Any, reservation_id: str, fallback: str) -> tuple[str, int | None]:
+    """Reason and sequence of the newest HOLD event: the candidates table only says ``held``."""
+    row = connection.execute(
+        "SELECT event_type,event_json,sequence FROM settlement_events "
+        "WHERE reservation_id=? ORDER BY sequence DESC LIMIT 1", (reservation_id,)
+    ).fetchone()
+    if row is not None and row["event_type"] == "HOLD":
+        return json.loads(row["event_json"]).get("reason") or fallback, row["sequence"]
+    return fallback, None
+
+
+def settlement_label(connection: Any, reservation_id: str, status: object, reason: object) -> str:
+    """A stale hold is a paid pass, not a fault: 2026-09-22 two paid Qwen passes read as unpaid under "held"."""
+    if status != "held":
+        return str(status or "")
+    held_reason, _ = latest_hold(connection, reservation_id, str(reason or "held"))
+    return "paid pass" if held_reason == "stale_incumbent" else "held"
+
+
 def settlement_hold_notice(connection: Any, reservation_id: str,
                            settlement: dict[str, Any]) -> dict[str, Any] | None:
     """Explain a currently held candidate using its latest retained settlement event."""
     if settlement.get("status") != "held":
         return None
-    row = connection.execute(
-        "SELECT event_type,event_json,sequence FROM settlement_events "
-        "WHERE reservation_id=? ORDER BY sequence DESC LIMIT 1", (reservation_id,)
-    ).fetchone()
-    reason = settlement.get("reason") or "held"
-    sequence = None
-    if row is not None and row["event_type"] == "HOLD":
-        event = json.loads(row["event_json"])
-        reason = event.get("reason") or reason
-        sequence = row["sequence"]
+    reason, sequence = latest_hold(connection, reservation_id, settlement.get("reason") or "held")
     if reason == "stale_incumbent":
-        title = "Adoption held — baseline changed"
-        message = ("This submission passed evaluation against an earlier baseline. "
-                   "A newer incumbent was adopted before settlement, so this result "
-                   "was held instead of being adopted into the current stack. "
-                   "This adoption hold does not by itself stop rewards.")
+        title = "Paid pass — not the champion"
+        message = ("This submission passed evaluation and is paid like every other pass. "
+                   "It was timed against an earlier baseline than the current champion, "
+                   "so it was not adopted as the champion itself.")
     else:
         title = "Submission held"
         message = ("Settlement is holding this submission. "

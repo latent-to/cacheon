@@ -1,4 +1,4 @@
-FROM lmsysorg/sglang@sha256:37bbbd3444732a464bbc68dee4fb0164e0ce9e18e2f027f3fc967f1152d3c262
+FROM lmsysorg/sglang@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
 LABEL org.opencontainers.image.source="https://github.com/latent-to/cacheon"       org.opencontainers.image.title="Cacheon Qwen3.6-35B H100 qualification worker"
 # The reference scoring request needs 1.89 GiB per 2,048-position logits chunk and the lane has 1.23 GiB free
 # (2026-09-20); the launcher passes no engine environment, so the chunk size rides in the image for every arm.

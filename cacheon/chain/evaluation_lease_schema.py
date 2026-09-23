@@ -33,18 +33,18 @@ def configure_evaluation_lease_connection(
 
 
 def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
-    """Create or verify the arena-scoped version-2 evaluation lease authority."""
+    """Migrate the arena singleton to version-3 worker-scoped ownership."""
 
     schema = db.execute(
         "SELECT value FROM metadata WHERE key='evaluation_lease_schema'"
     ).fetchone()
-    if schema is not None and schema["value"] not in {"1", "2"}:
+    if schema is not None and schema["value"] not in {"1", "2", "3"}:
         raise EvaluationLeaseStoreError("evaluation lease schema is unsupported")
     try:
         columns = {row["name"] for row in db.execute("PRAGMA table_info(evaluation_leases)")}
         if columns and "competition_arena" not in columns:
             db.execute("ALTER TABLE evaluation_leases ADD COLUMN competition_arena TEXT NOT NULL DEFAULT ''")
-        if schema is not None and schema["value"] == "1":
+        if schema is not None and schema["value"] in {"1", "2"}:
             db.execute("DROP INDEX IF EXISTS evaluation_leases_one_active_qualification")
         db.executescript(
             """
@@ -67,7 +67,7 @@ def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS evaluation_leases_active_expiry
                 ON evaluation_leases(state, expires_block, lease_id);
             CREATE UNIQUE INDEX IF NOT EXISTS evaluation_leases_one_active_qualification
-                ON evaluation_leases(competition_arena) WHERE state='active' AND stage='qualification';
+                ON evaluation_leases(competition_arena,owner) WHERE state='active' AND stage='qualification';
             CREATE TABLE IF NOT EXISTS evaluation_lease_members (
                 lease_id TEXT NOT NULL REFERENCES evaluation_leases(lease_id),
                 position INTEGER NOT NULL CHECK(position>=0),
@@ -162,10 +162,10 @@ def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
 
     if schema is None:
         db.execute(
-            "INSERT INTO metadata(key,value) VALUES('evaluation_lease_schema','2')"
+            "INSERT INTO metadata(key,value) VALUES('evaluation_lease_schema','3')"
         )
-    elif schema["value"] == "1":
-        db.execute("UPDATE metadata SET value='2' WHERE key='evaluation_lease_schema'")
+    elif schema["value"] != "3":
+        db.execute("UPDATE metadata SET value='3' WHERE key='evaluation_lease_schema'")
 
 
 __all__ = [

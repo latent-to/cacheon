@@ -320,6 +320,8 @@ def test_run_forever_backs_off_typed_no_progress_after_screening(
 
     def qualification():
         calls["qualification"] += 1
+        if stop.is_set() and disposition == "waiting":
+            return products["hold"]
         return products[disposition]
 
     def screen():
@@ -349,10 +351,45 @@ def test_run_forever_backs_off_typed_no_progress_after_screening(
         restart_max_backoff_s=8.0,
     )
 
-    assert calls == {"qualification": 2, "screen": 2}
+    assert calls == {"qualification": 3 if disposition == "waiting" else 2, "screen": 2}
     assert waits == [2.0, 4.0]
     assert supervisor.status().last_progress_unix == initial_progress
-    assert supervisor.status().last_disposition == disposition
+    assert supervisor.status().last_disposition == ("hold" if disposition == "waiting" else disposition)
+
+
+@pytest.mark.parametrize("terminal", ["completed", "hold", "requeue"])
+def test_stop_drains_same_request_without_claiming_more(terminal: str) -> None:
+    stop = threading.Event()
+    calls = []
+    request = _d("draining-request")
+
+    def qualification():
+        calls.append(request)
+        stop.set()
+        return SupervisorStageResult(
+            stage="qualification", request_id=request,
+            disposition="waiting" if len(calls) < 3 else terminal,
+            progressed=len(calls) == 3 and terminal == "completed",
+        )
+
+    supervisor = StandingCpuSupervisor(
+        screen_once=lambda: pytest.fail("draining worker claimed a new screen"),
+        qualification_once=qualification,
+        weights_once=lambda: pytest.fail("draining worker started another stage"),
+    )
+    run_forever(supervisor, stop, wait=lambda _: True)
+    assert calls == [request] * 3
+    assert supervisor.status().last_disposition == terminal
+
+
+def test_stop_between_idle_stages_prevents_new_claim() -> None:
+    stop = threading.Event()
+    supervisor = StandingCpuSupervisor(
+        qualification_once=stop.set,
+        screen_once=lambda: pytest.fail("stopped worker claimed a screen"),
+    )
+    run_forever(supervisor, stop)
+    assert supervisor.status().phase is SupervisorPhase.IDLE
 
 
 def test_held_qualification_does_not_starve_screen_progress() -> None:

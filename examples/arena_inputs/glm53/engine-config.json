@@ -14,5 +14,9 @@
   "max_prefill_tokens": 16384,
   "page_size": 64,
   "quantization": "modelopt_fp4",
-  "trust_remote_code": true
+  "trust_remote_code": true,
+  "speculative_algorithm": "EAGLE",
+  "speculative_num_steps": 1,
+  "speculative_eagle_topk": 1,
+  "speculative_num_draft_tokens": 2
 }

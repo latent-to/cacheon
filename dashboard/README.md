@@ -166,6 +166,9 @@ in TAO.
 
 Reward shares come from the served weight offer, not from settlement status:
 one complete audited PASS can earn with time decay, and a crown is not required.
+A pass that settlement held as `stale_incumbent` (timed against an earlier
+baseline than the champion) is shown as `paid pass` in `settlement_status`,
+since it earns like any other pass and only the champion adoption was withheld.
 Historical retained pairs keep their identities. `/api/winners` and `/api/miners` carry `weight_share`
 (the hotkey's fraction of the served vector, null when the offer file is
 unavailable) plus an `offer` summary (projection digest, effective block,

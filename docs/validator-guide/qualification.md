@@ -332,8 +332,8 @@ completion marker; a session timeout alone does not establish prepare failure.
 
 The eager audit preserves the charged workload's prompt batches, concurrency,
 and per-batch input-token expectations, including mixed-length workloads.
-It runs one warmup batch, then every charged batch in order, cycling that sequence
-when needed to reach the required minimum number of checked batches. Generation
+It runs one warmup batch, then the first charged batch of each distinct concurrency
+and request shape, in charged order. Generation
 length remains bounded by the audit policy. Reducing these batches to single
 prompts can select a different DP padding or dispatch path and leave a serving
 collective completely unaudited. The host verifies the exact derivation; missing

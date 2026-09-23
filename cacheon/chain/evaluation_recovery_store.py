@@ -25,7 +25,7 @@ from cacheon.chain.evaluation_recovery import (
     evaluation_recovery_event_id,
     evaluation_recovery_id,
     stale_incumbent_release_reason,
-    valid_evaluation_recovery_event_transition,
+    valid_evaluation_recovery_event_transition as _valid_recovery_event_transition,
 )
 from cacheon.chain.evaluation_recovery_plan import (
     EvaluationRecoveryPlanError,
@@ -55,18 +55,18 @@ def configure_evaluation_recovery_connection(
 
 
 def ensure_evaluation_recovery_schema(db: sqlite3.Connection) -> None:
-    """Create or verify arena-scoped recovery schema version 2 and its backstops."""
+    """Create or verify worker-scoped recovery schema version 3 and its backstops."""
 
     schema = db.execute(
         "SELECT value FROM metadata WHERE key='evaluation_recovery_schema'"
     ).fetchone()
-    if schema is not None and schema["value"] not in {"1", "2"}:
+    if schema is not None and schema["value"] not in {"1", "2", "3"}:
         raise EvaluationRecoveryStoreError("evaluation recovery schema is unsupported")
     try:
         columns = {row["name"] for row in db.execute("PRAGMA table_info(evaluation_recoveries)")}
         if columns and "competition_arena" not in columns:
             db.execute("ALTER TABLE evaluation_recoveries ADD COLUMN competition_arena TEXT NOT NULL DEFAULT ''")
-        if schema is not None and schema["value"] == "1":
+        if schema is not None and schema["value"] in {"1", "2"}:
             db.execute("DROP INDEX IF EXISTS evaluation_recoveries_one_unresolved")
         db.executescript(
             """
@@ -100,7 +100,7 @@ def ensure_evaluation_recovery_schema(db: sqlite3.Connection) -> None:
                 )
             ) STRICT;
             CREATE UNIQUE INDEX IF NOT EXISTS evaluation_recoveries_one_unresolved
-                ON evaluation_recoveries(competition_arena) WHERE resolution='';
+                ON evaluation_recoveries(lease_id) WHERE resolution='';
             CREATE TABLE IF NOT EXISTS evaluation_recovery_events (
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id TEXT NOT NULL UNIQUE,
@@ -258,10 +258,10 @@ def ensure_evaluation_recovery_schema(db: sqlite3.Connection) -> None:
         )
     if schema is None:
         db.execute(
-            "INSERT INTO metadata(key,value) VALUES('evaluation_recovery_schema','2')"
+            "INSERT INTO metadata(key,value) VALUES('evaluation_recovery_schema','3')"
         )
-    elif schema["value"] == "1":
-        db.execute("UPDATE metadata SET value='2' WHERE key='evaluation_recovery_schema'")
+    elif schema["value"] in {"1", "2"}:
+        db.execute("UPDATE metadata SET value='3' WHERE key='evaluation_recovery_schema'")
 
 
 def _intake_error(message: str) -> RuntimeError:
@@ -277,12 +277,6 @@ _PHASE_EVENTS = {
     RecoveryPhase.RESULT_READY: RecoveryEventType.RESULT_READY,
     RecoveryPhase.EVIDENCE_IMPORTED: RecoveryEventType.EVIDENCE_IMPORTED,
 }
-
-
-def _valid_recovery_event_transition(
-    previous: EvaluationRecoveryEvent, event: EvaluationRecoveryEvent
-) -> bool:
-    return valid_evaluation_recovery_event_transition(previous, event)
 
 
 class EvaluationRecoveryStoreMixin:
@@ -485,6 +479,7 @@ class EvaluationRecoveryStoreMixin:
         current_block: int,
         lease_blocks: int = 30,
         max_members: int | None = None,
+        max_active: int = 1,
     ) -> EvaluationRecovery | None:
         """Atomically claim the next cohort and retain its recovery intent."""
         lease = self.claim_evaluation_lease(
@@ -492,14 +487,14 @@ class EvaluationRecoveryStoreMixin:
             owner=owner,
             current_block=current_block,
             lease_blocks=lease_blocks,
-            max_members=max_members,
+            max_members=max_members, max_active=max_active,
         )
         if lease is None:
             return None
         return self._active_qualification_recovery(lease)
 
-    def pending_qualification_recovery(self) -> EvaluationRecovery | None:
-        rows = self._active_qualification_rows()
+    def pending_qualification_recovery(self, *, owner: str | None = None) -> EvaluationRecovery | None:
+        rows = self._active_qualification_rows(owner=owner)
         if not rows:
             return None
         if len(rows) != 1:
