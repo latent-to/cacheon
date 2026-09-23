@@ -164,6 +164,25 @@ The sealed service's `max_active_screens` and `max_active_qualifications` bound
 transactional claims. One worker can hold only one active job, and one reservation
 can belong to only one active lease. Recovery reopens by worker owner.
 
+To free an allocation, stop its supervisor with SIGTERM or SIGINT. It stops
+claiming new work, continues renewing and importing any active qualification,
+then exits. A bounded result-wait timeout does not end this drain. Keep the relay
+and pod service running until import finishes; then stop the relay and interrupt
+the idle pod service with SIGINT so its adapter closes any resident screen engine.
+Confirm the commissioned devices are idle before using them elsewhere. An idle
+worker releases immediately; an active job must finish first.
+
+The process manager must preserve an intentional stop, allow the drain to finish
+without a kill timeout, and restart the same worker configuration on resume.
+For systemd, use `KillMode=process`, `TimeoutStopSec=infinity`, and
+`Restart=on-failure`; `systemctl --no-block stop UNIT` requests a drain and
+`systemctl start UNIT` resumes. Disable the unit as well to keep it off across a
+host reboot. Its stop hook must refuse GPU teardown while its owner still holds
+an active lease. Resume starts the pod service and relay before the supervisor.
+These controls act on the complete commissioned allocation: a TP1 pair has two
+GPUs, while a TP4 pair has eight. Capacity is a ceiling, so stopping a worker does
+not require changing the arena manifest or affect other workers.
+
 Completed jobs release their pair immediately. An authenticated terminal
 infrastructure HOLD also releases its pair while retaining the unresolved
 submission; it is not a candidate FAIL. Later jobs continue, but their final

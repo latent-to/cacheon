@@ -373,7 +373,7 @@ class StandingCpuSupervisor:
             ) from None
         return self._normalize(stage, raw)
 
-    def tick(self) -> SupervisorStatus:
+    def tick(self, *, stop: threading.Event | None = None) -> SupervisorStatus:
         """Advance one unit, settling before a new qualification may claim."""
 
         deferred: SupervisorStageResult | None = None
@@ -383,6 +383,10 @@ class StandingCpuSupervisor:
             ("screen", self.screen_once),
             ("weights", self.weights_once),
         ):
+            if stop is not None and stop.is_set() and (
+                stage != "qualification" or self._status.last_disposition != "waiting"
+            ):
+                continue
             if callback is None:
                 continue
             result = self._run_stage(stage, callback)
@@ -484,7 +488,7 @@ def run_forever(
     restart_initial_backoff_s: float = 1.0,
     restart_max_backoff_s: float = 60.0,
 ) -> None:
-    """Run until stopped; a stage exception exits before another paid dispatch."""
+    """Drain an active request on stop; stage errors retain their recovery state."""
 
     if type(supervisor) is not StandingCpuSupervisor or not isinstance(
         stop, threading.Event
@@ -499,9 +503,9 @@ def run_forever(
         raise StandingCpuSupervisorError("idle poll duration is malformed")
     waiter = stop.wait if wait is None else wait
     backoff = float(restart_initial_backoff_s)
-    while not stop.is_set():
+    while not stop.is_set() or supervisor.status().last_disposition == "waiting":
         try:
-            status = supervisor.tick()
+            status = supervisor.tick(stop=stop)
         except StandingCpuSupervisorError as exc:
             print(
                 f"STANDING-CPU-SUPERVISOR-STAGE-ERROR: {exc}",
@@ -513,12 +517,19 @@ def run_forever(
             raise
         if on_status is not None:
             on_status(status)
+        if stop.is_set():
+            if status.last_disposition != "waiting":
+                break
+            # A bounded CPU wait can expire while the GPU request still runs.
+            # Keep renewing/importing that request before releasing its devices.
+            (wait or time.sleep)(backoff)
+            continue
         if status.phase is SupervisorPhase.IDLE:
             backoff = float(restart_initial_backoff_s)
             if waiter(float(idle_poll_s)):
                 break
         elif not supervisor._last_tick_progressed:
-            if waiter(backoff):
+            if waiter(backoff) and status.last_disposition != "waiting":
                 break
             backoff = min(float(restart_max_backoff_s), backoff * 2.0)
         else:

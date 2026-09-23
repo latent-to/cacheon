@@ -1,14 +1,19 @@
-"""Fence each qualification carrier without replacing its lease or experiment."""
+"""Additive SQLite authority for restart-safe qualification ownership.
+
+The recovery store fences an exact qualification lease while a durable carrier
+is being orchestrated.  It does not interpret resident execution evidence and
+never creates a replacement request, lease generation, or experiment.
+"""
 
 from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import MutableSet
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator
 
 from cacheon.chain.evaluation_leases import EvaluationLease
-from cacheon.chain.evaluation_recovery_hold import CompletedQualificationHoldMixin
 from cacheon.chain.evaluation_recovery import (
     EvaluationRecovery,
     EvaluationRecoveryError,
@@ -33,11 +38,230 @@ if TYPE_CHECKING:
     from cacheon.chain.remote_worker_request_plan import QualificationRequestPlan
 
 
-from cacheon.chain.evaluation_recovery_schema import (
-    EvaluationRecoveryStoreError,
-    configure_evaluation_recovery_connection,
-    ensure_evaluation_recovery_schema,
-)
+class EvaluationRecoveryStoreError(RuntimeError):
+    """The additive recovery schema or a retained authority cannot be opened."""
+
+
+def configure_evaluation_recovery_connection(
+    db: sqlite3.Connection, mutation_authority: MutableSet[str]
+) -> None:
+    """Install the connection-local capability used by recovery SQL triggers."""
+
+    db.create_function(
+        "cacheon_evaluation_recovery_mutation_authorized",
+        1,
+        lambda lease_id: int(lease_id in mutation_authority),
+    )
+
+
+def ensure_evaluation_recovery_schema(db: sqlite3.Connection) -> None:
+    """Create or verify worker-scoped recovery schema version 3 and its backstops."""
+
+    schema = db.execute(
+        "SELECT value FROM metadata WHERE key='evaluation_recovery_schema'"
+    ).fetchone()
+    if schema is not None and schema["value"] not in {"1", "2", "3"}:
+        raise EvaluationRecoveryStoreError("evaluation recovery schema is unsupported")
+    try:
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(evaluation_recoveries)")}
+        if columns and "competition_arena" not in columns:
+            db.execute("ALTER TABLE evaluation_recoveries ADD COLUMN competition_arena TEXT NOT NULL DEFAULT ''")
+        if schema is not None and schema["value"] in {"1", "2"}:
+            db.execute("DROP INDEX IF EXISTS evaluation_recoveries_one_unresolved")
+        db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS evaluation_recoveries (
+                competition_arena TEXT NOT NULL DEFAULT '',
+                recovery_id TEXT PRIMARY KEY,
+                lease_id TEXT NOT NULL UNIQUE REFERENCES evaluation_leases(lease_id),
+                revision INTEGER NOT NULL CHECK(revision>=0),
+                phase TEXT NOT NULL CHECK(phase IN (
+                    'claimed','prepared','publication_committed','request_ready',
+                    'result_ready','evidence_imported','held'
+                )),
+                resolution TEXT NOT NULL CHECK(resolution IN (
+                    '','pre_resident_released','committed'
+                )),
+                created_block INTEGER NOT NULL CHECK(created_block>=0),
+                updated_block INTEGER NOT NULL CHECK(updated_block>=created_block),
+                request_plan BLOB NOT NULL DEFAULT X'',
+                plan_digest TEXT NOT NULL DEFAULT '',
+                request_id TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                CHECK((phase='held' OR resolution='pre_resident_released')=(reason!='')),
+                CHECK(NOT (phase='held' AND resolution!='')),
+                CHECK(
+                    (length(request_plan)=0 AND plan_digest='' AND request_id=''
+                     AND phase IN ('claimed','held'))
+                    OR
+                    (typeof(request_plan)='blob' AND length(request_plan)>0
+                     AND length(request_plan)<=4194304
+                     AND length(plan_digest)=64 AND length(request_id)=64)
+                )
+            ) STRICT;
+            CREATE UNIQUE INDEX IF NOT EXISTS evaluation_recoveries_one_unresolved
+                ON evaluation_recoveries(lease_id) WHERE resolution='';
+            CREATE TABLE IF NOT EXISTS evaluation_recovery_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                recovery_id TEXT NOT NULL REFERENCES evaluation_recoveries(recovery_id),
+                lease_id TEXT NOT NULL REFERENCES evaluation_leases(lease_id),
+                revision INTEGER NOT NULL CHECK(revision>=0),
+                event_type TEXT NOT NULL CHECK(event_type IN (
+                    'claimed','prepared','publication_committed','request_ready',
+                    'result_ready','evidence_imported','renewed','held',
+                    'pre_resident_released','committed'
+                )),
+                phase TEXT NOT NULL CHECK(phase IN (
+                    'claimed','prepared','publication_committed','request_ready',
+                    'result_ready','evidence_imported','held'
+                )),
+                resolution TEXT NOT NULL CHECK(resolution IN (
+                    '','pre_resident_released','committed'
+                )),
+                finalized_block INTEGER NOT NULL CHECK(finalized_block>=0),
+                expires_block INTEGER NOT NULL CHECK(expires_block>0),
+                plan_digest TEXT NOT NULL DEFAULT '',
+                request_id TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                CHECK(
+                    (plan_digest='' AND request_id='' AND phase IN ('claimed','held'))
+                    OR (length(plan_digest)=64 AND length(request_id)=64)
+                ),
+                UNIQUE(recovery_id, revision)
+            ) STRICT;
+            CREATE TRIGGER IF NOT EXISTS evaluation_recovery_events_reject_update
+                BEFORE UPDATE ON evaluation_recovery_events
+                BEGIN SELECT RAISE(ABORT,'evaluation recovery events are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS evaluation_recovery_events_reject_delete
+                BEFORE DELETE ON evaluation_recovery_events
+                BEGIN SELECT RAISE(ABORT,'evaluation recovery events are immutable'); END;
+
+            DROP TRIGGER IF EXISTS evaluation_recoveries_require_insert_authority;
+            CREATE TRIGGER evaluation_recoveries_require_insert_authority
+                BEFORE INSERT ON evaluation_recoveries
+                WHEN cacheon_evaluation_recovery_mutation_authorized(NEW.lease_id)=0
+                BEGIN SELECT RAISE(ABORT,'evaluation recovery mutation is unauthorized'); END;
+            DROP TRIGGER IF EXISTS evaluation_recoveries_require_update_authority;
+            CREATE TRIGGER evaluation_recoveries_require_update_authority
+                BEFORE UPDATE ON evaluation_recoveries
+                WHEN cacheon_evaluation_recovery_mutation_authorized(OLD.lease_id)=0
+                BEGIN SELECT RAISE(ABORT,'evaluation recovery mutation is unauthorized'); END;
+            DROP TRIGGER IF EXISTS evaluation_recoveries_reject_delete;
+            CREATE TRIGGER evaluation_recoveries_reject_delete
+                BEFORE DELETE ON evaluation_recoveries
+                BEGIN SELECT RAISE(ABORT,'evaluation recoveries are immutable'); END;
+            DROP TRIGGER IF EXISTS evaluation_recovery_events_require_insert_authority;
+            CREATE TRIGGER evaluation_recovery_events_require_insert_authority
+                BEFORE INSERT ON evaluation_recovery_events
+                WHEN cacheon_evaluation_recovery_mutation_authorized(NEW.lease_id)=0
+                BEGIN SELECT RAISE(ABORT,'evaluation recovery event is unauthorized'); END;
+
+            -- A qualification lease is always recovery-owned once this schema
+            -- creates it.  Existing active rows without a recovery record are
+            -- treated as ambiguous HOLD state and receive the same backstop.
+            DROP TRIGGER IF EXISTS evaluation_qualification_lease_insert_guard;
+            CREATE TRIGGER evaluation_qualification_lease_insert_guard
+                BEFORE INSERT ON evaluation_leases
+                WHEN NEW.stage='qualification'
+                 AND cacheon_evaluation_recovery_mutation_authorized(NEW.lease_id)=0
+                BEGIN SELECT RAISE(ABORT,'qualification lease requires recovery authority'); END;
+            DROP TRIGGER IF EXISTS evaluation_qualification_lease_update_guard;
+            CREATE TRIGGER evaluation_qualification_lease_update_guard
+                BEFORE UPDATE ON evaluation_leases
+                WHEN OLD.stage='qualification' AND OLD.state='active'
+                 AND cacheon_evaluation_recovery_mutation_authorized(OLD.lease_id)=0
+                BEGIN SELECT RAISE(ABORT,'protected qualification lease mutation'); END;
+            DROP TRIGGER IF EXISTS evaluation_qualification_lease_delete_guard;
+            CREATE TRIGGER evaluation_qualification_lease_delete_guard
+                BEFORE DELETE ON evaluation_leases
+                WHEN OLD.stage='qualification' AND OLD.state='active'
+                BEGIN SELECT RAISE(ABORT,'protected qualification lease deletion'); END;
+            DROP TRIGGER IF EXISTS evaluation_qualification_member_update_guard;
+            CREATE TRIGGER evaluation_qualification_member_update_guard
+                BEFORE UPDATE ON evaluation_lease_members
+                WHEN OLD.active=1
+                 AND EXISTS (
+                    SELECT 1 FROM evaluation_leases AS el
+                    WHERE el.lease_id=OLD.lease_id AND el.stage='qualification'
+                         AND el.state='active'
+                 )
+                 AND cacheon_evaluation_recovery_mutation_authorized(OLD.lease_id)=0
+                BEGIN SELECT RAISE(ABORT,'protected qualification member mutation'); END;
+            DROP TRIGGER IF EXISTS evaluation_qualification_member_delete_guard;
+            CREATE TRIGGER evaluation_qualification_member_delete_guard
+                BEFORE DELETE ON evaluation_lease_members
+                WHEN OLD.active=1
+                 AND EXISTS (
+                    SELECT 1 FROM evaluation_leases AS el
+                    WHERE el.lease_id=OLD.lease_id AND el.stage='qualification'
+                         AND el.state='active'
+                )
+                BEGIN SELECT RAISE(ABORT,'protected qualification member deletion'); END;
+            DROP TRIGGER IF EXISTS evaluation_qualification_member_insert_guard;
+            CREATE TRIGGER evaluation_qualification_member_insert_guard
+                BEFORE INSERT ON evaluation_lease_members
+                WHEN EXISTS (
+                    SELECT 1 FROM evaluation_leases AS el
+                    WHERE el.lease_id=NEW.lease_id AND el.stage='qualification'
+                         AND el.state='active'
+                )
+                 AND cacheon_evaluation_recovery_mutation_authorized(NEW.lease_id)=0
+                BEGIN SELECT RAISE(ABORT,'protected qualification member insertion'); END;
+            """
+        )
+    except sqlite3.Error as exc:
+        raise EvaluationRecoveryStoreError(
+            f"evaluation recovery schema creation failed: {exc}"
+        ) from None
+
+    required = {
+        "evaluation_recoveries": {
+            "recovery_id", "lease_id", "revision", "phase", "resolution",
+            "created_block", "updated_block", "request_plan", "plan_digest",
+            "request_id", "reason",
+        },
+        "evaluation_recovery_events": {
+            "sequence", "event_id", "recovery_id", "lease_id", "revision",
+            "event_type", "phase", "resolution", "finalized_block",
+            "expires_block", "plan_digest", "request_id", "reason",
+        },
+    }
+    if any(
+        not columns.issubset(
+            {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+        )
+        for table, columns in required.items()
+    ):
+        raise EvaluationRecoveryStoreError("evaluation recovery schema is incomplete")
+    required_triggers = {
+        "evaluation_recovery_events_reject_update",
+        "evaluation_recovery_events_reject_delete",
+        "evaluation_recoveries_require_insert_authority",
+        "evaluation_recoveries_require_update_authority",
+        "evaluation_recoveries_reject_delete",
+        "evaluation_recovery_events_require_insert_authority",
+        "evaluation_qualification_lease_insert_guard",
+        "evaluation_qualification_lease_update_guard",
+        "evaluation_qualification_lease_delete_guard",
+        "evaluation_qualification_member_update_guard",
+        "evaluation_qualification_member_delete_guard",
+        "evaluation_qualification_member_insert_guard",
+    }
+    retained_triggers = {
+        row["name"]
+        for row in db.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
+    }
+    if not required_triggers.issubset(retained_triggers):
+        raise EvaluationRecoveryStoreError(
+            "evaluation recovery schema triggers are incomplete"
+        )
+    if schema is None:
+        db.execute(
+            "INSERT INTO metadata(key,value) VALUES('evaluation_recovery_schema','3')"
+        )
+    elif schema["value"] in {"1", "2"}:
+        db.execute("UPDATE metadata SET value='3' WHERE key='evaluation_recovery_schema'")
 
 
 def _intake_error(message: str) -> RuntimeError:
@@ -55,7 +279,7 @@ _PHASE_EVENTS = {
 }
 
 
-class EvaluationRecoveryStoreMixin(CompletedQualificationHoldMixin):
+class EvaluationRecoveryStoreMixin:
     @contextmanager
     def _evaluation_recovery_mutation(self, lease_id: str) -> Iterator[None]:
         if self._evaluation_recovery_mutation_authority:
@@ -263,15 +487,13 @@ class EvaluationRecoveryStoreMixin(CompletedQualificationHoldMixin):
             owner=owner,
             current_block=current_block,
             lease_blocks=lease_blocks,
-            max_members=max_members,
-            max_active=max_active,
+            max_members=max_members, max_active=max_active,
         )
         if lease is None:
             return None
         return self._active_qualification_recovery(lease)
 
     def pending_qualification_recovery(self, *, owner: str | None = None) -> EvaluationRecovery | None:
-        """Reopen one worker's exact request, retaining the unambiguous legacy reader."""
         rows = self._active_qualification_rows(owner=owner)
         if not rows:
             return None
@@ -609,6 +831,155 @@ class EvaluationRecoveryStoreMixin(CompletedQualificationHoldMixin):
                     current_block=current_block,
                     reason=reason,
                 )
+
+    def commit_remote_qualification_hold(
+        self,
+        recovery: EvaluationRecovery,
+        *,
+        current_block: int,
+        result_digest: str,
+        reason: str,
+        reservation_ids: tuple[str, ...],
+        lease_blocks: int = 30,
+    ) -> EvaluationLease:
+        """Terminalize one authenticated remote HOLD without blocking FIFO.
+
+        The worker has returned a closed, request-bound HOLD product.  This is
+        neither a candidate failure nor retry authority: retain it as a blank-
+        decision reservation HOLD, complete its exact lease/recovery, and make
+        the next promoted cohort claimable.  ``HELD`` input migrates products
+        retained by the former campaign-halting behavior.
+        """
+
+        require_sha256_hex(result_digest, field="remote qualification HOLD digest")
+        if (
+            type(recovery) is not EvaluationRecovery
+            or recovery.resolution is not RecoveryResolution.UNRESOLVED
+            or recovery.phase not in {RecoveryPhase.RESULT_READY, RecoveryPhase.HELD}
+            or not isinstance(reason, str)
+            or not reason.startswith("remote_qualification_hold:")
+            or reason.strip() != reason
+            or len(reason) > 2_048
+            or type(reservation_ids) is not tuple
+            or reservation_ids != recovery.lease.reservation_ids
+            or type(lease_blocks) is not int
+            or lease_blocks <= 0
+            or lease_blocks > self.policy.expiry_blocks
+        ):
+            raise _intake_error("remote qualification HOLD completion is malformed")
+        self._require_evaluation_clock(current_block)
+        with self._transaction():
+            current = self._active_qualification_recovery(recovery.lease)
+            if current != recovery or (
+                current.phase is RecoveryPhase.HELD
+                and current.reason
+                not in {reason, "post_publication_no_decision"}
+            ):
+                raise _intake_error("remote qualification HOLD recovery changed")
+            reservations = tuple(
+                self.get(member.reservation_id) for member in current.lease.members
+            )
+            if any(
+                row.status != member.prior_status
+                for row, member in zip(
+                    reservations, current.lease.members, strict=True
+                )
+            ):
+                raise _intake_error("remote qualification HOLD changed its cohort")
+            with self._evaluation_recovery_mutation(current.lease.lease_id):
+                if current.phase is RecoveryPhase.HELD:
+                    current = self._transition_evaluation_recovery_locked(
+                        current,
+                        phase=RecoveryPhase.RESULT_READY,
+                        resolution=RecoveryResolution.UNRESOLVED,
+                        event_type=RecoveryEventType.RESULT_READY,
+                        current_block=current_block,
+                    )
+                if current_block >= current.lease.expires_block:
+                    expires = current_block + lease_blocks
+                    renewed_lease = EvaluationLease(
+                        current.lease.lease_id,
+                        current.lease.generation,
+                        current.lease.stage,
+                        current.lease.owner,
+                        current.lease.members,
+                        current.lease.claimed_block,
+                        current.lease.initial_expires_block,
+                        expires,
+                    )
+                    previous_expiry = current.lease.expires_block
+                    current = self._transition_evaluation_recovery_locked(
+                        current,
+                        phase=current.phase,
+                        resolution=RecoveryResolution.UNRESOLVED,
+                        event_type=RecoveryEventType.RENEWED,
+                        current_block=current_block,
+                        lease=renewed_lease,
+                    )
+                    cursor = self._db.execute(
+                        "UPDATE evaluation_leases SET expires_block=? WHERE lease_id=? "
+                        "AND state='active' AND expires_block=?",
+                        (expires, current.lease.lease_id, previous_expiry),
+                    )
+                    if cursor.rowcount != 1:
+                        raise _intake_error(
+                            "remote qualification HOLD lease changed during renewal"
+                        )
+                if self._evaluation_mutation_authority:
+                    raise _intake_error("nested evaluation mutation authority is forbidden")
+                authorized = set(current.lease.reservation_ids)
+                self._evaluation_mutation_authority.update(authorized)
+                try:
+                    for member in current.lease.members:
+                        cursor = self._db.execute(
+                            "UPDATE reservations SET status='held',decision='',reason=?,"
+                            "qualification_evidence_digest=?,retry_group_digest='',"
+                            "retry_position=0,qualification_authority_digest='',"
+                            "qualification_authority_json='' WHERE reservation_id=? "
+                            "AND status=?",
+                            (
+                                reason,
+                                result_digest,
+                                member.reservation_id,
+                                member.prior_status,
+                            ),
+                        )
+                        if cursor.rowcount != 1:
+                            raise _intake_error(
+                                "remote qualification HOLD disposition changed"
+                            )
+                finally:
+                    self._evaluation_mutation_authority.difference_update(authorized)
+                cursor = self._db.execute(
+                    "UPDATE evaluation_leases SET state='completed',completed_block=?,"
+                    "result_digest=?,reason='' WHERE lease_id=? AND state='active' "
+                    "AND expires_block=?",
+                    (
+                        current_block,
+                        result_digest,
+                        current.lease.lease_id,
+                        current.lease.expires_block,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise _intake_error("remote qualification HOLD lease changed")
+                members = self._db.execute(
+                    "UPDATE evaluation_lease_members SET active=0 WHERE lease_id=? "
+                    "AND active=1",
+                    (current.lease.lease_id,),
+                )
+                if members.rowcount != len(current.lease.members):
+                    raise _intake_error("remote qualification HOLD members changed")
+                self._append_evaluation_lease_event(
+                    current.lease,
+                    "completed",
+                    finalized_block=current_block,
+                    result_digest=result_digest,
+                )
+                self._complete_evaluation_recovery_locked(
+                    current, current_block=current_block
+                )
+        return current.lease
 
     def release_worker_pre_resident_recovery(
         self,
