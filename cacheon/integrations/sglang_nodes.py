@@ -76,7 +76,10 @@ _WINDOW = 256
 # keeps 63 MB of recurrent state per request: at 48 requests one copy is 2.8 GiB,
 # and holding the before, stock, twin and candidate copies at once ran an 80 GiB
 # H100 out of memory with 5 GiB spare (Qwen cell-width audit, 2026-09-20).
-_PIECE = 64 << 20
+# At MTP width 48, retaining the 2.8 GiB temporal answer plus ReplaySSM rings
+# left only 117 MiB for a 240 MiB comparison (H100, 2026-09-22). Answers now
+# wait on the host too; a piece is at most this budget or one indivisible row.
+_PIECE = 4 << 20
 # The wire vocabulary (oci_session_protocol.AuditReceiptFacts) is closed: a share of
 # rows within tolerance against a bar is its matched_ratio.
 _MODE = "matched_ratio"
@@ -221,10 +224,16 @@ def _values(buffer: torch.Tensor, dim: int, index: torch.Tensor, held) -> torch.
 
 
 def _pieces(buffer: torch.Tensor, dim: int, index: torch.Tensor) -> list[tuple[int, torch.Tensor]]:
-    """Split a row index into ``(start, rows)`` runs of at most ``_PIECE`` elements."""
+    """Split selected rows into budgeted runs, keeping an individual row intact."""
 
     step = max(1, _PIECE // max(1, buffer.numel() // max(1, buffer.shape[dim])))
     return [(start, index[start : start + step]) for start in range(0, index.numel(), step)]
+
+
+def _host_piece(tensor: torch.Tensor) -> torch.Tensor:
+    """Keep a separate pinned copy so restoring it never slices a large host tensor."""
+    return torch.empty(tensor.shape, dtype=tensor.dtype, device="cpu",
+                       pin_memory=tensor.is_cuda).copy_(tensor)
 
 
 def _dsa_choice_position(module, count: int) -> int | None:
@@ -250,12 +259,15 @@ def _errors(outputs: list, rows: list, expected: list, *, module=None) -> list[t
     unordered = _dsa_choice_position(module, len(outputs))
     found = [_row_errors(a, e, dim, unordered=position == unordered)
              for position, ((a, dim), (e, _)) in enumerate(zip(outputs, expected))]
-    for (buffer, dim, index, held), (e, _) in zip(rows, expected[len(outputs):]):
+    for (buffer, dim, index, held), (saved, _) in zip(rows, expected[len(outputs):]):
+        pieces = _pieces(buffer, dim, index)
+        if len(pieces) != len(saved):
+            raise ValueError("the engine state does not have stock's row structure")
         parts = [
             _row_errors(
-                _values(buffer, dim, piece, held), e.narrow(dim, start, piece.numel()), dim,
+                _values(buffer, dim, piece, held), e.to(buffer.device), dim,
             )
-            for start, piece in _pieces(buffer, dim, index)
+            for (_, piece), e in zip(pieces, saved)
         ]
         found.append(torch.cat(parts) if parts else torch.empty(0))
     return found
@@ -271,9 +283,9 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     normed intermediates in its dead input (H100 Qwen runs, 2026-09-19). Values reach
     the caller through the result and the engine state; both are graded.
 
-    Only stock's state rows stay on the device. The copy the call is put back from
-    waits on the host when it is more than one piece, and the twin's and the
-    candidate's rows are compared a piece at a time.
+    Stock's state answers wait on the host in separate pinned pieces. The copy
+    the call is put back from also waits there when it is more than one piece;
+    the twin's and the candidate's rows are compared a piece at a time.
     """
 
     handed = _tensors((args, kwargs), [])
@@ -287,7 +299,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
         # step (H100, 2026-09-20).
         state.append([
             part if len(pieces) < 2
-            else torch.empty(part.shape, dtype=part.dtype, pin_memory=part.is_cuda).copy_(part)
+            else _host_piece(part)
             for part in (buffer.index_select(dim, piece) for _, piece in pieces)
         ])
 
@@ -307,7 +319,9 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
         return kept
 
     expected = run(lambda outputs: outputs + [
-        (_values(buffer, dim, index, held), dim) for buffer, dim, index, held in rows
+        ([_host_piece(_values(buffer, dim, piece, held))
+          for _, piece in _pieces(buffer, dim, index)], dim)
+        for buffer, dim, index, held in rows
     ])
     with _native(module):
         twin = run(lambda outputs: expected and _errors(outputs, rows, expected, module=module))

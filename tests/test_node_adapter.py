@@ -551,6 +551,44 @@ def test_replay_rings_and_conv_windows_are_put_back_before_the_candidate(audited
     assert windows.sum(dim=(0, 2, 3)).tolist() == [30, 30, 0, 0, 0]
 
 
+def test_replay_reference_answers_are_collected_in_bounded_pieces(audited, monkeypatch):
+    runner, batch = _replay_model()
+    monkeypatch.setattr(nodes, "_PIECE", 1)
+    values, observed = nodes._values, []
+
+    def bounded(buffer, dim, index, held):
+        observed.append(index.numel())
+        # One recurrent row can span every layer; gathering the entire batch
+        # before chunking kept a 2.8 GiB answer resident at production width.
+        assert index.numel() == 1
+        return values(buffer, dim, index, held)
+
+    monkeypatch.setattr(nodes, "_values", bounded)
+    nodes.bind(runner, _registry("verify", _do_nothing))
+    runner.model.verify(torch.ones(2, 4), batch)
+    assert observed and audited["verify"]["violations"] == 0
+
+
+@pytest.mark.parametrize("dim", [0, 1])
+def test_state_comparison_pieces_preserve_dense_row_errors(monkeypatch, dim):
+    expected = torch.arange(120, dtype=torch.float32).reshape(6, 4, 5) / 17
+    expected[2, 1, 3] = float("nan")
+    actual = expected.clone()
+    actual[5] *= 1.125
+    if dim:
+        expected, actual = expected.movedim(0, 1), actual.movedim(0, 1)
+    index = torch.tensor([5, 2, 0])
+    monkeypatch.setattr(nodes, "_PIECE", 1)
+    saved = [expected.index_select(dim, i.reshape(1)) for i in index]
+    result = nodes._errors([], [(actual, dim, index, actual.dtype)], [(saved, dim)])[0]
+    a = actual.index_select(dim, index).movedim(dim, 0).flatten(1).double()
+    e = expected.index_select(dim, index).movedim(dim, 0).flatten(1).double()
+    oracle = ((a - e).square().sum(1).sqrt() / e.square().sum(1).sqrt().clamp_min(1e-12))
+    torch.testing.assert_close(result.double(), oracle[torch.isfinite(e).all(1)])
+    with pytest.raises(ValueError, match="row structure"):
+        nodes._errors([], [(actual, dim, index, actual.dtype)], [(saved[:-1], dim)])
+
+
 @pytest.mark.parametrize(("fault", "violations"), [
     ("rounds D and K up a step and keeps the residual", 0),
     ("skips the ring", 1),

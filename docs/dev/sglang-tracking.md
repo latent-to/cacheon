@@ -21,6 +21,10 @@ the target-verification modes and shapes passed to it. Requalify the exact
 model, runtime and workloads before activating this configuration; enabling
 MTP does not carry forward a non-speculative speedup or change the scoring policy.
 
+The node audit retains expected recurrent and ReplaySSM state in separate pinned
+host pieces and streams comparisons on the GPU. It still restores and grades all
+selected state rows; this storage choice does not change audit thresholds.
+
 A green static seam canary establishes import and chokepoint compatibility only. A
 runtime pin is eligible for evaluation or release authority only after end-to-end GPU
 controls reject a deliberately broken bundle, accept a faithful bundle, and rebaseline
