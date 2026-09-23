@@ -153,6 +153,17 @@ def test_dsa_records_grade_dequantized_values_and_keep_rotary_bf16():
     assert torch.equal(state_values(buffer.index_select(dim, pages), held), torch.full((2, 64, 128), 3.0))
 
 
+def test_dsa_layer_node_grades_only_its_own_layer_cache():
+    pool = _dsa_pool()
+    other = pool.kv_buffer[0].clone()
+    pool.kv_buffer, pool.start_layer = [pool.kv_buffer[0], other], 3
+    rows = dsa_state_rows(pool, torch.tensor([1, 64, 65]), 4)
+    assert [row[0] for row in rows] == [other]  # layer 4's index cache is a skip-topk placeholder
+    assert len(dsa_state_rows(pool, torch.tensor([1]), 3)) == 2
+    with pytest.raises(RuntimeError, match="no DSA cache"):
+        dsa_state_rows(pool, torch.tensor([1]), 2)
+
+
 @pytest.mark.parametrize("corrupt", [False, True])
 def test_dsa_sidecar_is_restored_before_candidate_and_wrong_state_fails(audited, corrupt):
     runner, batch = _served_model()

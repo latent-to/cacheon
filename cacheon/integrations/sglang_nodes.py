@@ -121,7 +121,9 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     return found
 
 
-def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat | _Low]]:
+def _state_rows(
+    runner, call: tuple, layer: int | None = None,
+) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat | _Low]]:
     """Engine-state rows this call may write, as ``(buffer, dim, index, graded dtype)``.
 
     Only a call that carries the engine's batch can reach the cache pools: cache
@@ -154,7 +156,7 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
             raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
         held = getattr(pool, "dtype", None)
         fp8 = held is not None and held.is_floating_point and held.itemsize == 1
-        dsa = dsa_state_rows(pool, batch.out_cache_loc)
+        dsa = dsa_state_rows(pool, batch.out_cache_loc, layer)
         rows.extend(dsa if dsa is not None else [
             (
                 buffer,
@@ -273,7 +275,8 @@ def _errors(outputs: list, rows: list, expected: list, *, module=None) -> list[t
     return found
 
 
-def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs: dict):
+def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs: dict,
+                layer: int | None = None):
     """Stock's ``(tensor, row dim)`` answer and the honest twin's row errors against it.
 
     Both run on the live call, and the call is put back after each. What stock leaves
@@ -289,7 +292,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     """
 
     handed = _tensors((args, kwargs), [])
-    rows = _state_rows(runner, (*args, *kwargs.values()))
+    rows = _state_rows(runner, (*args, *kwargs.values()), layer)
     before = [t.clone() for t in handed]
     state = []
     for buffer, dim, index, _ in rows:
@@ -512,6 +515,10 @@ def make_node_dispatcher(
 
     prepared: dict[int, object] = {}
     reported = False
+    # Read before any candidate code runs. A decoder layer's stock writes only its own
+    # layer's cache; a node without one (the whole model) keeps every layer's rows.
+    layer = getattr(module, "layer_id", None)
+    layer = layer if type(layer) is int else None
 
     def dispatched(*args, **kwargs):
         nonlocal reported
@@ -533,7 +540,7 @@ def make_node_dispatcher(
                 )
                 _receipts.failed(slot, failure, phase="entry")
                 raise failure
-            expected, twin = _references(slot, module, stock, runner, args, kwargs)
+            expected, twin = _references(slot, module, stock, runner, args, kwargs, layer)
         descriptor = _descriptor(module, args, kwargs, in_graph)
         impl = registry.select(slot, descriptor).impl if descriptor is not None else None
         if impl is None:
@@ -551,7 +558,7 @@ def make_node_dispatcher(
             try:
                 actual = _errors(
                     [(t, 0) for t in _tensors(result, [], fields=True)],
-                    _state_rows(runner, (*args, *kwargs.values())), expected, module=module,
+                    _state_rows(runner, (*args, *kwargs.values()), layer), expected, module=module,
                 )
                 grade = _grade(slot, id(module), actual, twin)
                 if grade is not None and grade[0] < _ROW_BAR and not reported:
