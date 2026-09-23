@@ -37,7 +37,7 @@ class _Block(nn.Module):
 
 
 def _served_model():
-    cache = SimpleNamespace(conv=[torch.zeros(1, 4, 3)], temporal=torch.zeros(1, 4, 3))
+    cache = SimpleNamespace(conv=[torch.zeros(1, 4, 3)], temporal=torch.zeros(1, 4, 3), replayssm_g=None)
     runner = SimpleNamespace(
         token_to_kv_pool=SimpleNamespace(k_buffer=[torch.zeros(8, 2)], v_buffer=[torch.zeros(8, 2)]),
         req_to_token_pool=SimpleNamespace(
@@ -471,6 +471,129 @@ def test_skipping_a_state_write_is_a_violation_even_with_the_right_output(audite
     nodes.bind(runner, _registry("layers.0.mlp", stateless))
     runner.model.layers[0].mlp(torch.randn(2, 4), batch)
     assert audited["layers.0.mlp"]["violations"] == 1
+
+
+def _compact(value, *, up=False):
+    """A ReplaySSM BF16 ring pair: the rounded value and the residual rounding dropped."""
+    high = value.bfloat16()
+    if up:
+        high = (high.float() * (1 + 2 ** -7)).bfloat16()
+    return high, (value - high.float()).bfloat16()
+
+
+class _Verify(nn.Module):
+    """Stock GDN verify under ReplaySSM: reads ``temporal``, appends drafts to the rings
+    of the batch's request slots and writes each request's conv windows to its scratch row."""
+
+    def __init__(self, runner):
+        super().__init__()
+        self.runner = [runner]
+
+    def forward(self, x, batch, *, up=False):
+        pool = self.runner[0].req_to_token_pool.mamba_pool
+        cache, slots = pool.mamba_cache, batch.req_pool_indices
+        for (high, low), value in (
+            ((cache.replayssm_d, cache.replayssm_rawv), (x.mean() + 1) * torch.linspace(1, 2, 24).view(2, 4, 3)),
+            ((cache.replayssm_k, cache.replayssm_rawk), torch.linspace(-1, 1, 12).view(1, 4, 3) / 3),
+        ):
+            high[:, slots], low[:, slots] = _compact(value, up=up)
+        cache.replayssm_g[:, slots] += 1.0
+        pool._intermediate_conv_window_phys[0][:, torch.arange(slots.numel())] += 1.0
+        return x * 2.0 + cache.temporal.sum()
+
+
+def _replay_model():
+    """Request slots [3, 1], Mamba slots [4, 2] and scratch rows [0, 1] all differ."""
+    runner, _ = _served_model()
+    cache = SimpleNamespace(
+        conv=[torch.zeros(2, 6, 3, 2)], temporal=torch.randn(2, 6, 2, 2),
+        replayssm_d=torch.zeros(2, 5, 2, 4, 3, dtype=torch.bfloat16),
+        replayssm_k=torch.zeros(2, 5, 1, 4, 3, dtype=torch.bfloat16),
+        replayssm_g=torch.zeros(2, 5, 2, 4),
+        replayssm_rawv=torch.zeros(2, 5, 2, 4, 3, dtype=torch.bfloat16),
+        replayssm_rawk=torch.zeros(2, 5, 1, 4, 3, dtype=torch.bfloat16),
+    )
+    runner.req_to_token_pool = SimpleNamespace(
+        mamba_pool=SimpleNamespace(
+            mamba_cache=cache, replayssm_cache_base=torch.zeros(5, dtype=torch.int32),
+            _intermediate_conv_window_phys=[torch.zeros(2, 5, 3, 5)],
+        ),
+        get_mamba_indices=lambda index: index + 1,
+    )
+    runner.attn_backend = SimpleNamespace(linear_attn_backend=SimpleNamespace(
+        verify_intermediate_state_indices=torch.arange(5, dtype=torch.int32)))
+    runner.model.verify = _Verify(runner)
+    verify = SimpleNamespace(is_target_verify=lambda: True)
+    batch = SimpleNamespace(out_cache_loc=None, req_pool_indices=torch.tensor([3, 1]), forward_mode=verify)
+    return runner, batch
+
+
+def test_replay_rings_and_conv_windows_are_put_back_before_the_candidate(audited):
+    runner, batch = _replay_model()
+    pool = runner.req_to_token_pool.mamba_pool
+    cache, windows = pool.mamba_cache, pool._intermediate_conv_window_phys[0]
+
+    def state():
+        return [t.clone() for t in (cache.replayssm_d, cache.replayssm_rawk, cache.replayssm_g, windows)]
+
+    before, seen = state(), []
+
+    def candidate(module, x, batch):
+        seen.append(state())
+        return module.forward(x, batch)
+
+    nodes.bind(runner, _registry("verify", candidate))
+    runner.model.verify(torch.ones(2, 4), batch)
+    assert all(torch.equal(a, b) for a, b in zip(seen[0], before))
+    assert (audited["verify"]["n"], audited["verify"]["violations"]) == (1, 0)
+    # Stock, its twin and the candidate each wrote; one write remains.
+    assert cache.replayssm_g.sum(dim=(0, 2, 3)).tolist() == [0, 16, 0, 16, 0]
+    assert windows.sum(dim=(0, 2, 3)).tolist() == [30, 30, 0, 0, 0]
+
+
+@pytest.mark.parametrize(("fault", "violations"), [
+    ("rounds D and K up a step and keeps the residual", 0),
+    ("skips the ring", 1),
+    ("skips the conv windows", 1),
+    ("writes the conv windows at the Mamba slots", 1),
+    ("stores the high part as the residual", 1),
+])
+def test_a_verify_step_that_mishandles_replay_state_is_a_violation_with_the_right_output(
+    audited, fault, violations
+):
+    runner, batch = _replay_model()
+    pool = runner.req_to_token_pool.mamba_pool
+    cache, windows = pool.mamba_cache, pool._intermediate_conv_window_phys[0]
+
+    def candidate(module, x, batch):
+        ring = [t.clone() for t in (cache.replayssm_d, cache.replayssm_k, cache.replayssm_g)]
+        window = windows.clone()
+        result = module.forward(x, batch, up=fault.startswith("rounds"))
+        if fault == "skips the ring":
+            for live, kept in zip((cache.replayssm_d, cache.replayssm_k, cache.replayssm_g), ring):
+                live.copy_(kept)
+        elif fault.startswith("skips") or fault.startswith("writes"):
+            written = windows[:, :2].clone()
+            windows.copy_(window)
+            if fault.startswith("writes"):
+                windows[:, [4, 2]] = written
+        elif fault.startswith("stores"):
+            cache.replayssm_rawv.copy_(cache.replayssm_d)
+        return result
+
+    nodes.bind(runner, _registry("verify", candidate))
+    x = torch.ones(2, 4)
+    assert torch.equal(runner.model.verify(x, batch), x * 2.0 + cache.temporal.sum())
+    assert audited["verify"]["violations"] == violations
+
+
+def test_replay_state_is_verify_scratch_and_an_unrecognized_layout_raises():
+    runner, batch = _replay_model()
+    batch.forward_mode = SimpleNamespace(is_target_verify=lambda: False)
+    assert [row[0].shape[1] for row in nodes._state_rows(runner, (batch,))] == [6, 6]
+    runner.req_to_token_pool.mamba_pool.replayssm_cache_base = None
+    with pytest.raises(RuntimeError, match="GDN ReplaySSM state layout"):
+        nodes._state_rows(runner, (batch,))
 
 
 @pytest.mark.parametrize(("written", "violations"), [("negative zero", 0), ("doubled", 1)])

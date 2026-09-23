@@ -40,7 +40,7 @@ import re
 import sys
 from collections import deque
 from contextlib import contextmanager
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import torch
 
@@ -118,7 +118,7 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     return found
 
 
-def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]]:
+def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat | _Low]]:
     """Engine-state rows this call may write, as ``(buffer, dim, index, graded dtype)``.
 
     Only a call that carries the engine's batch can reach the cache pools: cache
@@ -169,7 +169,55 @@ def _state_rows(runner, call: tuple) -> list[tuple[torch.Tensor, int, torch.Tens
         rows.extend(
             (buffer, 1, index, buffer.dtype) for buffer in (*cache.conv, cache.temporal)
         )
+        if cache.replayssm_g is not None:
+            rows.extend(_replay_rows(runner, recurrent, batch))
     return rows
+
+
+class _Low(NamedTuple):
+    """A BF16 ring's rounding residual, graded with its high part as the one number they hold."""
+
+    high: torch.Tensor
+
+
+def _replay_rows(runner, pool, batch) -> list[tuple]:
+    """What a speculative-verify call writes besides ``conv`` and ``temporal`` under GDN ReplaySSM.
+
+    Verify leaves ``temporal`` alone and appends this step's drafts to rings keyed by
+    request slot (``req_pool_indices``, not the batch's Mamba slots); the i-th request's
+    per-draft conv windows go to verify scratch row i. Acceptance, outside the node,
+    advances the ring cursors and scatters the accepted window into ``conv``; the
+    21,400-call Qwen MTP audit restored and graded none of these writes (2026-09-22).
+
+    ``rawv``/``rawk`` hold what BF16 rounding dropped from ``d``/``k``. Honest
+    rounding moves the residual by its whole size, so each is graded summed with its
+    high part. The windows are restored through the pool's physical buffers, because
+    the per-draft view overlaps itself.
+    """
+    if pool.replayssm_cache_base is None:
+        raise RuntimeError("only the speculative-verify GDN ReplaySSM state layout is recognized")
+    if not batch.forward_mode.is_target_verify():
+        return []
+    cache = pool.mamba_cache
+    slots = batch.req_pool_indices.long()
+    scratch = runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices
+    scratch = scratch[: slots.numel()].long()
+    rows = [(ring, 1, slots, ring.dtype)
+            for ring in (cache.replayssm_d, cache.replayssm_k, cache.replayssm_g)]
+    rows.extend((low, 1, slots, _Low(high)) for low, high in (
+        (cache.replayssm_rawv, cache.replayssm_d), (cache.replayssm_rawk, cache.replayssm_k),
+    ) if low is not None)
+    rows.extend((window, 1, scratch, window.dtype) for window in pool._intermediate_conv_window_phys)
+    return rows
+
+
+def _values(buffer: torch.Tensor, dim: int, index: torch.Tensor, held) -> torch.Tensor:
+    """The numbers a state row holds at ``index``."""
+
+    raw = buffer.index_select(dim, index)
+    if isinstance(held, _Low):
+        return held.high.index_select(dim, index).float() + raw.float()
+    return state_values(raw, held)
 
 
 def _pieces(buffer: torch.Tensor, dim: int, index: torch.Tensor) -> list[tuple[int, torch.Tensor]]:
@@ -205,8 +253,7 @@ def _errors(outputs: list, rows: list, expected: list, *, module=None) -> list[t
     for (buffer, dim, index, held), (e, _) in zip(rows, expected[len(outputs):]):
         parts = [
             _row_errors(
-                state_values(buffer.index_select(dim, piece), held),
-                e.narrow(dim, start, piece.numel()), dim,
+                _values(buffer, dim, piece, held), e.narrow(dim, start, piece.numel()), dim,
             )
             for start, piece in _pieces(buffer, dim, index)
         ]
@@ -260,7 +307,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
         return kept
 
     expected = run(lambda outputs: outputs + [
-        (state_values(buffer.index_select(dim, index), held), dim) for buffer, dim, index, held in rows
+        (_values(buffer, dim, index, held), dim) for buffer, dim, index, held in rows
     ])
     with _native(module):
         twin = run(lambda outputs: expected and _errors(outputs, rows, expected, module=module))
