@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from cacheon.arena_service import ArenaRuntimeIdentity
 from cacheon._strict import require_digest
 from cacheon.eval.device_state import DeviceStatePolicy
+from cacheon.eval.device_policy_identity import logical_device_policy_digest
 from cacheon.stack_identity import canonical_digest
 
 
@@ -39,6 +40,7 @@ class B300QualificationLanePolicy:
     gpu_uuids: tuple[str, ...]
     device_configuration_digest: str
     device_policy_digest: str
+    logical_device_policy_digest: str
 
     def __post_init__(self) -> None:
         if self.lane_id not in {"A", "B"}:
@@ -65,7 +67,7 @@ class B300QualificationLanePolicy:
             raise B300ArenaProviderError(
                 "qualification lane must bind one canonical physical allocation"
             )
-        for field in ("device_configuration_digest", "device_policy_digest"):
+        for field in ("device_configuration_digest", "device_policy_digest", "logical_device_policy_digest"):
             object.__setattr__(self, field, _digest(getattr(self, field), field))
 
     @classmethod
@@ -83,12 +85,14 @@ class B300QualificationLanePolicy:
             tuple(gpu.uuid for gpu in gpus),
             policy.configuration_sha256,
             policy.policy_sha256,
+            logical_device_policy_digest(policy),
         )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "device_configuration_digest": self.device_configuration_digest,
             "device_policy_digest": self.device_policy_digest,
+            "logical_device_policy_digest": self.logical_device_policy_digest,
             "gpu_uuids": list(self.gpu_uuids),
             "lane_id": self.lane_id,
             "physical_gpu_ids": list(self.physical_gpu_ids),
@@ -197,6 +201,16 @@ class B300QualificationLanePair:
         return {
             "lane_a": self.lane_a.to_dict(),
             "lane_b": self.lane_b.to_dict(),
+            "role_swap_digest": self.role_swap_digest,
+        }
+
+    def service_policy(self) -> dict[str, object]:
+        """Bind the shared competition while each worker retains its physical pair."""
+        return {
+            "lanes": [{"lane_id": lane.lane_id,
+                       "gpu_count": len(lane.physical_gpu_ids),
+                       "device_policy_digest": lane.logical_device_policy_digest}
+                      for lane in (self.lane_a, self.lane_b)],
             "role_swap_digest": self.role_swap_digest,
         }
 

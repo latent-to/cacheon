@@ -248,6 +248,15 @@ def test_build_standing_supervisor_omits_weights(tmp_path: Path) -> None:
     assert callable(supervisor.qualification_once)
 
 
+def test_economics_supervisor_can_disable_both_evaluation_stages(tmp_path):
+    path, row = _setup(tmp_path)
+    row.update(enable_screen=False, enable_qualification=False)
+    _rewrite(path, row)
+    supervisor = build_standing_supervisor(load_standing_config(path))
+    assert supervisor.screen_once is None
+    assert supervisor.qualification_once is None
+
+
 def test_enabled_settlement_is_actually_wired_into_the_supervisor(
     tmp_path: Path, monkeypatch
 ) -> None:

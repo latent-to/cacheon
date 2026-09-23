@@ -740,18 +740,9 @@ def payments() -> dict[str, Any]:
 
 @app.get("/api/winners")
 def winners() -> dict[str, Any]:
+    from dashboard.winners import qualified_winners
     con = intake_conn()
-    passed = rows(con, """
-        SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
-               r.*, r.block AS submission_block,
-               max(q.retained_block) AS passed_block
-        FROM settlement_candidates sc
-        JOIN reservations r ON r.reservation_id = sc.reservation_id
-        JOIN settlement_qualifications q ON q.reservation_id = sc.reservation_id
-        WHERE r.status='qualified' AND r.decision='PASS'
-          AND sc.status!='duplicate_proposal'
-        GROUP BY sc.reservation_id
-    """)
+    passed = qualified_winners(con)
     evidence_roots = qualification_evidence_roots(
         value("QUAL_EVIDENCE_STATE", QUAL_EVIDENCE_STATE), value("QUAL_EVIDENCE_EXTRA", QUAL_EVIDENCE_EXTRA), con, stage_dir=value("STAGE_ROOT", LOG_ROOT.parent / "stage"))
     speeds_by_reservation: dict[str, list[object]] = {}

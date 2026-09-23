@@ -183,7 +183,7 @@ OptionalStage = Callable[[], Any]
 class StandingCpuSupervisor:
     """Compose screen + recoverable qualification (+ later stages) with status."""
 
-    screen_once: ScreenOnce
+    screen_once: ScreenOnce | None
     qualification_once: QualificationOnce | None
     settle_once: OptionalStage | None = None
     weights_once: OptionalStage | None = None
@@ -193,9 +193,7 @@ class StandingCpuSupervisor:
     _last_tick_progressed: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if not callable(self.screen_once):
-            raise StandingCpuSupervisorError("the screen stage is required")
-        for name in ("qualification_once", "settle_once", "weights_once"):
+        for name in ("screen_once", "qualification_once", "settle_once", "weights_once"):
             value = getattr(self, name)
             if value is not None and not callable(value):
                 raise StandingCpuSupervisorError(f"{name} is not callable")
@@ -589,6 +587,7 @@ class StandingSupervisorConfig:
     idle_poll_s: float
     restart_initial_backoff_s: float
     restart_max_backoff_s: float
+    enable_screen: bool = True
 
     @property
     def digest(self) -> str:
@@ -611,7 +610,8 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         raise StandingCpuSupervisorError(
             f"standing config cannot reopen: {exc}"
         ) from None
-    row = _closed_config(raw, _STANDING_CONFIG_FIELDS, "standing supervisor config")
+    fields = _STANDING_CONFIG_FIELDS | ({"enable_screen"} if type(raw) is dict and "enable_screen" in raw else set())
+    row = _closed_config(raw, fields, "standing supervisor config")
     if row["schema"] != CONFIG_SCHEMA:
         raise StandingCpuSupervisorError("standing supervisor config schema is unsupported")
 
@@ -709,6 +709,7 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         enable_weights=enable_weights,
         enable_settlement=enable_settlement,
         enable_qualification=enable_qualification,
+        enable_screen=_exact_bool(row.get("enable_screen", True), "enable_screen"),
         settlement_network=settlement_network,
         weights_stage=weights_stage,
         stall_timeout_s=stall_timeout_ms / 1000.0,
@@ -796,7 +797,7 @@ def build_standing_supervisor(
         )
 
     return StandingCpuSupervisor(
-        screen_once=screen_dispatcher.dispatch_screen_once,
+        screen_once=screen_dispatcher.dispatch_screen_once if config.enable_screen else None,
         qualification_once=qualification_once,
         settle_once=settle_once,
         weights_once=weights_once,

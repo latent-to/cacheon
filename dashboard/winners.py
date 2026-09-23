@@ -1,10 +1,28 @@
-"""Pure winner-speed calculations used by the read-only dashboard."""
+"""Eligible winner queries and speed calculations for the read-only dashboard."""
 
 from __future__ import annotations
 
 import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+from cacheon.chain.evaluation_order import reward_visibility_sql
+
+
+def qualified_winners(con) -> list[dict[str, Any]]:
+    """Expose retained PASSes only after their arrival prefix becomes eligible."""
+    return [dict(row) for row in con.execute("""
+        SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
+               r.*, r.block AS submission_block,
+               max(q.retained_block) AS passed_block
+        FROM settlement_candidates sc
+        JOIN reservations r ON r.reservation_id = sc.reservation_id
+        JOIN settlement_qualifications q ON q.reservation_id = sc.reservation_id
+        WHERE r.status='qualified' AND r.decision='PASS'
+          AND sc.status!='duplicate_proposal' AND
+    """ + reward_visibility_sql(con) + """
+        GROUP BY sc.reservation_id
+    """)]
 
 
 def _lane_tokens_per_second(speed: object, role: str) -> Decimal | None:

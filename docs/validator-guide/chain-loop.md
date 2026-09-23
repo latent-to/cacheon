@@ -391,6 +391,14 @@ boundary and never opens a wallet. A commission may stage a nonempty
 `settlement_network` while the flag remains false so arming is a reviewed
 one-field change; enabling settlement with an empty endpoint is refused.
 
+For a pool of independent GPU pairs, each evaluation supervisor has its own
+dispatcher `owner` and worker paths. Set the optional `enable_screen=false` and
+`enable_qualification=false` on the separate economics supervisor so it continues
+settlement and weight publication while all evaluation workers are occupied.
+Existing configurations omit `enable_screen` and keep screening enabled. See
+[same-arena worker pools](arena-service.md#registry-and-cli-boundary) for allocation,
+schema migration and ordered reward eligibility.
+
 `enable_weights` installs the eval-side weight-offer push stage
 (`chain/standing_weights_stage.py`) and requires `weights_stage_config`, an
 absolute path to a second sealed, closed, owner-controlled file with schema

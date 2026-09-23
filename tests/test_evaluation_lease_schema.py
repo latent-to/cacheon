@@ -22,10 +22,10 @@ def test_recovery_schema_is_additive_and_reopens(tmp_path):
         path = store.path
         assert store._db.execute(
             "SELECT value FROM metadata WHERE key='evaluation_lease_schema'"
-        ).fetchone()["value"] == "2"
+        ).fetchone()["value"] == "3"
         assert store._db.execute(
             "SELECT value FROM metadata WHERE key='evaluation_recovery_schema'"
-        ).fetchone()["value"] == "2"
+        ).fetchone()["value"] == "3"
 
     db = sqlite3.connect(path)
     try:
@@ -39,7 +39,7 @@ def test_recovery_schema_is_additive_and_reopens(tmp_path):
     with _store(tmp_path) as reopened:
         assert reopened._db.execute(
             "SELECT value FROM metadata WHERE key='evaluation_recovery_schema'"
-        ).fetchone()["value"] == "2"
+        ).fetchone()["value"] == "3"
         names = {
             row["name"]
             for row in reopened._db.execute(
