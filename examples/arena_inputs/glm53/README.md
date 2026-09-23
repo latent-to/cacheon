@@ -9,8 +9,13 @@ Native MTP uses the checkpoint's nextn layer with `EAGLE`, one speculative
 step, top-k one and two draft tokens. No separate draft model is required.
 The full arena retains concurrency 128 at 8,192 input/1,024 output tokens and
 concurrency 24 at 65,536 input/4,096 output tokens. Qualification of this
-configuration is pending; historical non-MTP results do not establish its
-throughput or the champion's benefit over stock.
+configuration must use its exact image and workload; historical non-MTP results
+do not establish its throughput or the champion's benefit over stock.
+
+The image applies a bounds fix to SGLang 0.5.20's `memcpy_triton`: EAGLE draft
+gather/scatter counts can exceed the local tensor rows. The copy is clamped to
+both tensors, matching `memcpy_cpu`. Remove the patch when the pinned upstream
+image includes this fix.
 
 Build the pinned image from the repository root with the selected revision:
 
