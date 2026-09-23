@@ -134,6 +134,12 @@ class Enrichment:
             except Exception as exc:  # noqa: BLE001 - worker must survive anything
                 self.chain_ok = False
                 self.chain_error = f"{type(exc).__name__}: {exc}"[:300]
+                if self._substrate is not None:
+                    try:
+                        # The client's method caches retain it until close clears them.
+                        self._substrate.close()
+                    except Exception as close_exc:  # noqa: BLE001
+                        self.chain_error += f"; close: {type(close_exc).__name__}: {close_exc}"[:300]
                 self._substrate = None
                 time.sleep(10)
             time.sleep(5)

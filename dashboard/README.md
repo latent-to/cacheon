@@ -42,6 +42,8 @@ to run the dashboard and its API tests.
   `dashboard/state/enrichment.sqlite3`. If the chain is unreachable the API
   still serves everything from the DB; times fall back to block-number
   estimates (dotted underline in the UI).
+  A failed enrichment connection is closed before reconnecting so its client
+  caches and websocket resources can be released.
 - Times are sent as unix seconds; the browser renders them in your locale.
 - Explorer links: tao.app `/block/{n}`, `/blocks/{n}/extrinsics/{i}`,
   `/portfolio/{ss58}` (plus taostats fallback for extrinsics).
