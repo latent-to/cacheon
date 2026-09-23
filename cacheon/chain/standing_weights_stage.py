@@ -87,12 +87,11 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
         raise StandingCpuSupervisorError(
             f"weights stage config cannot reopen: {exc}"
         ) from None
-    legacy = isinstance(raw, dict) and raw.get("schema") == "cacheon-standing-weights-config-v1"
-    fields = _WEIGHTS_CONFIG_FIELDS - {"confirmation_journal"} if legacy else _WEIGHTS_CONFIG_FIELDS
+    fields = _WEIGHTS_CONFIG_FIELDS
     if isinstance(raw, dict) and "arena_allocation_path" in raw:
         fields |= {"arena_allocation_path"}
     row = _closed_config(raw, fields, "weights stage config")
-    if not legacy and row["schema"] != WEIGHTS_CONFIG_SCHEMA:
+    if row["schema"] != WEIGHTS_CONFIG_SCHEMA:
         raise StandingCpuSupervisorError("weights stage config schema is unsupported")
 
     network = row["network"]
@@ -121,16 +120,12 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
         raise StandingCpuSupervisorError("weights burn_hotkey is malformed")
     credentials_path = _absolute_path(row["push_credentials"], "weights push_credentials")
     _authority_file(credentials_path, "weights push credentials", secret=True)
-    journal = None
-    if not legacy:
-        journal = _absolute_path(row["confirmation_journal"], "confirmation_journal")
-        _authority_file(journal, "weight confirmation journal", secret=True)
+    journal = _absolute_path(row["confirmation_journal"], "confirmation_journal")
+    _authority_file(journal, "weight confirmation journal", secret=True)
     allocation_path = None
     if "arena_allocation_path" in row:
         from cacheon.chain.arena_weight_projection import load_allocation
 
-        if journal is None:
-            raise StandingCpuSupervisorError("static allocation requires confirmation_journal")
         allocation_path = _absolute_path(row["arena_allocation_path"], "arena_allocation_path")
         load_allocation(allocation_path)
     return WeightsStageConfig(

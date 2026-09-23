@@ -519,7 +519,7 @@ def b300_arena_provider_digest(authorities: _AuthorityBundle) -> str:
                 "hidden_judge_binding_digest": (
                     qualification.hidden_judge_binding_digest
                 ),
-                "lane_pair": qualification.lane_pair.to_dict(),
+                "lane_pair": qualification.lane_pair.service_policy(),
                 "policy_digest": qualification.qualification_policy_digest,
                 "resident_baseline_executor_policy_digest": (
                     qualification.resident_baseline_executor_policy_digest

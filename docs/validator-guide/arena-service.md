@@ -133,8 +133,9 @@ recovery. CPU composition and compatibility checks do not establish GPU success.
 Run one finalized `chain-validate --intake-only` process with a shared store.
 Each arena runs the same dispatcher/supervisor with its own manifest, READY,
 registration, worker, spool and evidence paths. Exactly one supervisor enables
-settlement and weights. Settlement selects ready results across arenas, skipping
-only the arena currently qualifying; weights aggregate all arena claims.
+settlement and weights. Settlement follows each arena's completed arrival prefix;
+later active evaluations do not block an earlier completed result. Weights
+aggregate eligible arena claims.
 Additional supervisors set `enable_settlement` and `enable_weights` to `false`.
 
 New arenas require `competition.arena` in the hash-bound bundle. Every dispatcher
@@ -147,7 +148,57 @@ known at publication; fetch and pre-publication admission remain shared.
 Queues, baselines, target admission, lineage and qualification recovery are
 scoped to the logical arena. Service epochs retain that arena's lineage.
 Commissioning Qwen cannot retire GLM's baseline. Two arenas can qualify
-concurrently; a second pair within one arena does not increase its concurrency.
+concurrently. Within one arena, commission disjoint pairs with the same model,
+runtime, workload, incumbent and GPU execution policy. Physical GPU addresses
+belong to each worker's READY, registration and launch binding; equivalent pairs
+share the arena service identity. Calibration and complete B/C/B′, audit and T
+evidence remain specific to each job and physical pair.
+
+Run one supervisor and relay per pair with distinct `owner`, registration, spool,
+evidence and runtime paths. Each supervisor uses the existing screen and
+qualification entrypoints, with `enable_settlement=false` and
+`enable_weights=false`. A separate supervisor runs economics with
+`enable_screen=false` and `enable_qualification=false`, so long evaluations do
+not stop finalization. `enable_screen` is optional and defaults to `true`.
+The sealed service's `max_active_screens` and `max_active_qualifications` bound
+transactional claims. One worker can hold only one active job, and one reservation
+can belong to only one active lease. Recovery reopens by worker owner.
+
+To free an allocation, stop its supervisor with SIGTERM or SIGINT. It stops
+claiming new work, continues renewing and importing any active qualification,
+then exits. A bounded result-wait timeout does not end this drain. Keep the relay
+and pod service running until import finishes; then stop the relay and interrupt
+the idle pod service with SIGINT so its adapter closes any resident screen engine.
+Confirm the commissioned devices are idle before using them elsewhere. An idle
+worker releases immediately; an active job must finish first.
+
+The process manager must preserve an intentional stop, allow the drain to finish
+without a kill timeout, and restart the same worker configuration on resume.
+For systemd, use `KillMode=process`, `TimeoutStopSec=infinity`, and
+`Restart=on-failure`; `systemctl --no-block stop UNIT` requests a drain and
+`systemctl start UNIT` resumes. Disable the unit as well to keep it off across a
+host reboot. Its stop hook must refuse GPU teardown while its owner still holds
+an active lease. Resume starts the pod service and relay before the supervisor.
+These controls act on the complete commissioned allocation: a TP1 pair has two
+GPUs, while a TP4 pair has eight. Capacity is a ceiling, so stopping a worker does
+not require changing the arena manifest or affect other workers.
+
+Completed jobs release their pair immediately. An authenticated terminal
+infrastructure HOLD also releases its pair while retaining the unresolved
+submission; it is not a candidate FAIL. Later jobs continue, but their final
+ranking and reward eligibility wait for every preceding submission in that arena
+to finish or receive an existing terminal disposition. `settlement_candidates`
+retains `reward_eligible` once the completed prefix reaches a PASS, so reopening
+an older result cannot retract another miner's finalized credit. The dashboard
+and weight producer consume this same eligibility.
+
+Lease and recovery schemas migrate to version 3 without replacing retained
+requests or evidence. Stop old database consumers before opening with the new
+version, and restart every writer on the new source. Keep the database backup,
+all worker spools and evidence together for recovery. Start with two pairs and
+verify concurrent completion, ordered economics and restart without duplicate
+evaluation before commissioning the remaining pairs. Raising capacity alone does
+not commission GPU workers.
 
 Schema version 2 preserves existing signed lease, request and event bytes.
 Upgrade all CPU controllers at an idle boundary before enabling a second arena;

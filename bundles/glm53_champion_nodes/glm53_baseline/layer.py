@@ -104,7 +104,7 @@ def prepare(module):
     parallel = get_parallel()
     if (parallel.tp_size != 4 or parallel.attn_dp_size != 4
             or parallel.attn_tp_size != 1 or module.config.hidden_size != 6144
-            or module.dsa_enable_prefill_cp or module.mla_enable_prefill_cp):
+            or parallel.enable_prefill_cp):
         raise ValueError("this baseline requires the commissioned GLM TP4/DP4 topology")
     replica = _copy_with_norms(module, {})
     original_comm = module.layer_communicator

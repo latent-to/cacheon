@@ -241,6 +241,10 @@ if _HAS_TRITON:
         _st_v4_volatile(a1, z, z, z, z)
         _st_v4_volatile(a2, z, z, z, z)
         _st_v4_volatile(a3, z, z, z, z)
+        # Every warp must read this program's phase before any warp advances it. Without the barrier a
+        # fast warp published phase+1 first, a late sibling used the next slot, and all ranks spun
+        # forever (GLM baseline capture hang, 2026-09-23).
+        tl.debug_barrier()
         tl.store(phase_ptr + pid, phase + 1)
 
     @triton.jit

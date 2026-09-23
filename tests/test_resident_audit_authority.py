@@ -129,7 +129,6 @@ def test_audit_preserves_serving_batches_and_rejects_singleton_collapse(
     checked = authority.plan.prompt_batches[1:]
     assert all(batch in checked for batch in batches)
     assert all(batch in batches for batch in checked)
-    assert len(checked) >= authority.audit_policy.minimum_calls
     collapsed = tuple((batch[0],) for batch in authority.plan.prompt_batches)
     with pytest.raises(ResidentAuditAuthorityError, match="eager audit role"):
         replace(authority, plan=replace(authority.plan, prompt_batches=collapsed))
@@ -142,6 +141,21 @@ def test_audit_preserves_serving_batches_and_rejects_singleton_collapse(
         replace(authority, plan=replace(
             authority.plan, batch_max_new_tokens=(), batch_expected_prompt_tokens=(),
         ))
+
+
+def test_audit_replays_one_batch_of_each_charged_shape(tmp_path) -> None:
+    # The GLM speed session interleaves four 8k batches and four 64k batches.
+    widths = (4, 2, 4, 4, 2, 2, 2)
+    tokens = (8192, 65536, 8192, 8192, 65536, 65536, 65536)
+    batches = tuple(
+        tuple(f"batch-{index}-prompt-{row}" for row in range(width))
+        for index, width in enumerate(widths)
+    )
+    authority = _authority(tmp_path, batches=batches, input_tokens=tokens)
+    assert authority.plan.prompt_batches == (batches[0], batches[0], batches[1])
+    replayed = replace(authority.plan, prompt_batches=(batches[0], batches[0], batches[2]))
+    with pytest.raises(ResidentAuditAuthorityError, match="eager audit role"):
+        replace(authority, plan=replayed)
 
 
 def test_rejects_graph_on_or_identical_audit_launch(tmp_path) -> None:

@@ -375,17 +375,13 @@ class EvaluationLeaseStoreMixin:
         current_block: int,
         lease_blocks: int = 30,
         max_members: int | None = None,
+        max_active: int | None = None,
     ) -> EvaluationLease | None:
         """Atomically claim one oldest eligible screen or qualification cohort.
 
-        Selection is FIFO by finalized ``arrival_key`` within the requested
-        stage, except that the existing independent-reproduction contract is
-        retained: reproduction work is selected before primary work.  The
-        A screen lease is always a singleton.  Qualification preserves the
-        existing indivisible retry-group and reproduction semantics; otherwise
-        it claims up to ``max_members`` oldest primary rows.  Every member stays
-        in its exact prior status and is hidden from legacy queue readers until
-        completion, release, or finalized-block expiry.
+        Reproduction retains priority and retry groups remain indivisible.
+        Capacity and worker availability are checked inside the claim transaction;
+        each reservation stays hidden from other claimers until release or completion.
         """
 
         try:
@@ -410,7 +406,7 @@ class EvaluationLeaseStoreMixin:
         with self._transaction():
             self._expire_evaluation_leases(current_block)
             self._expire_stale_rows(current_block)
-            selected = self._select_evaluation_rows(stage, bound)
+            selected = self._select_evaluation_rows(stage, bound, owner=owner, max_active=max_active)
             reservations = tuple(self._row(row) for row in selected)
             members = tuple(
                 EvaluationLeaseMember(row.reservation_id, row.status)

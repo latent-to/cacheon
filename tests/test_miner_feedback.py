@@ -340,6 +340,30 @@ def test_a_kernel_that_never_ran_is_said_so_before_any_speed_number() -> None:
     assert verdict < faster, "the disqualifying sentence must precede the numbers"
 
 
+@pytest.mark.parametrize("entries", [{}, {"forward_pass": {"artifact_digest": "6c" * 32}}])
+def test_the_report_names_what_the_bundle_was_timed_against(entries) -> None:
+    """2026-09-21: the first bundle timed against the Qwen winner read "SGLang alone 1054 tokens/sec"."""
+
+    import base64
+
+    rates = [
+        {"role": role, "timed_seconds": seconds, "timed_tokens": 131072, "windows": []}
+        for role, seconds in (("B", 100.0), ("C", 100.3), ("B_prime", 100.0))
+    ]
+    stage = base64.b64encode(json.dumps({"speed_witness": {"rates": rates}}).encode()).decode()
+    text = "\n".join(explain({
+        "incumbent_stack": {"entries": entries},
+        "evidence": [{"reference": {"domain": "qualification.stage-exit"}, "payload_base64": stage}],
+    }))
+    if entries:
+        assert "SGLang with the crowned kernels for forward_pass" in text
+        assert "current baseline (before)" in text and "SLOWER than the current baseline" in text
+        assert "the current baseline measured 0.0% apart" in text and "SGLang alone" not in text
+    else:
+        assert "SGLang alone (before)" in text and "SLOWER than SGLang (" in text
+        assert "current baseline" not in text and "crowned" not in text
+
+
 def test_a_run_noisier_than_its_own_effect_is_called_out_as_no_evidence() -> None:
     rates = [
         {"role": role, "timed_seconds": seconds, "timed_tokens": 131072, "windows": []}

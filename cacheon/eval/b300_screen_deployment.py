@@ -31,6 +31,7 @@ from cacheon.engine_tree import (
     materialize_engine_tree,
     reopen_materialized_engine_tree,
 )
+from cacheon.eval.device_policy_identity import logical_device_policy_digest
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
     B300DeclaredQualificationAuthorities,
@@ -1140,8 +1141,7 @@ def _derive_inputs(
     policy_facts = {
         "catalog_digest": catalog.digest,
         "controller_distribution_digest": controller_distribution_digest,
-        "device_execution_sha256": authority_refs["device_execution"]["sha256"],
-        "device_policy_digest": device_policy.policy_sha256,
+        "device_policy_digest": logical_device_policy_digest(device_policy),
         "fmha_cache_identity": _project_fmha_identity(authority),
         "model_content_digest": runtime.model_content_digest,
         "model_profile_key": model_profile_key,
@@ -1154,7 +1154,7 @@ def _derive_inputs(
         "worker_distribution_digest": runtime.worker_distribution_digest,
     }
     plan_resolver_digest = canonical_digest(
-        "cacheon.eval.b300-screen-plan-resolver.v2", policy_facts
+        "cacheon.eval.b300-screen-plan-resolver.v3", policy_facts
     )
     evidence_policy_digest = canonical_digest(
         "cacheon.eval.b300-screen-evidence-policy.v1",

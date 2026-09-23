@@ -805,6 +805,7 @@ class EvaluationCoordinator:
                 owner=self.owner,
                 current_block=point[0],
                 lease_blocks=self.lease_blocks,
+                max_active=self.service.manifest.capacity.max_active_screens,
             )
             if lease is None:
                 return None
@@ -1022,7 +1023,6 @@ class EvaluationCoordinator:
             ) from exc
         finally:
             store.close()
-
 
 
 __all__ = [

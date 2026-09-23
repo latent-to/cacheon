@@ -52,6 +52,7 @@ from cacheon.engine_tree import (
     inspect_contribution,
 )
 from cacheon.eval.b300_arena_provider import B300ScreenStageHandler
+from cacheon.eval.device_policy_identity import logical_device_policy_digest
 from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     ResolvedEngineLaunch,
@@ -531,15 +532,12 @@ def _executor_policy_digest(executor: OCIEngineExecutor) -> str:
         for field in fields(config.native_limits)
     }
     return canonical_digest(
-        "cacheon.eval.b300-screen-executor-policy.v1",
+        "cacheon.eval.b300-screen-executor-policy.v2",
         {
             "dependency_policy_digest": (
                 config.prebuild.policy.dependency_policy_digest
             ),
-            "device_configuration_digest": (
-                executor.device_policy.configuration_sha256
-            ),
-            "device_policy_digest": executor.device_policy.policy_sha256,
+            "device_policy_digest": logical_device_policy_digest(executor.device_policy),
             "executor_id": config.prebuild.executor_id,
             "native_limits": limits,
             "prebuild_resource_policy_digest": (

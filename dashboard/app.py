@@ -40,7 +40,7 @@ from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     measured_baseline,
     prefill_summary,
-    settlement_hold_notice,
+    settlement_hold_notice, settlement_label,
     reward_exclusion_notice,
     live_offer_shares,
 )
@@ -205,7 +205,6 @@ def finalized_tip_from_audit() -> dict[str, Any]:
         if row.get("finalized_block") is not None:
             return {"block": int(row["finalized_block"]), "audit_mtime_unix": mtime}
     return {"audit_mtime_unix": mtime}
-
 
 
 def supervisor_status(epoch: str) -> dict[str, Any]:
@@ -741,18 +740,9 @@ def payments() -> dict[str, Any]:
 
 @app.get("/api/winners")
 def winners() -> dict[str, Any]:
+    from dashboard.winners import qualified_winners
     con = intake_conn()
-    passed = rows(con, """
-        SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
-               r.*, r.block AS submission_block,
-               max(q.retained_block) AS passed_block
-        FROM settlement_candidates sc
-        JOIN reservations r ON r.reservation_id = sc.reservation_id
-        JOIN settlement_qualifications q ON q.reservation_id = sc.reservation_id
-        WHERE r.status='qualified' AND r.decision='PASS'
-          AND sc.status!='duplicate_proposal'
-        GROUP BY sc.reservation_id
-    """)
+    passed = qualified_winners(con)
     evidence_roots = qualification_evidence_roots(
         value("QUAL_EVIDENCE_STATE", QUAL_EVIDENCE_STATE), value("QUAL_EVIDENCE_EXTRA", QUAL_EVIDENCE_EXTRA), con, stage_dir=value("STAGE_ROOT", LOG_ROOT.parent / "stage"))
     speeds_by_reservation: dict[str, list[object]] = {}
@@ -771,6 +761,7 @@ def winners() -> dict[str, Any]:
                 continue
             speeds_by_reservation.setdefault(
                 disposition["reservation_id"], []).append(speed)
+    labels = {row["reservation_id"]: settlement_label(con, row["reservation_id"], row["status"], row["reason"]) for row in passed}
     con.close()
     offer, shares = current_offer()
 
@@ -813,7 +804,7 @@ def winners() -> dict[str, Any]:
             "reward_claim_status": (
                 "earning" if shares.get(hotkey) else "not_earning"
             ) if offer is not None else "offer_unavailable",
-            "settlement_status": row["status"],
+            "settlement_status": labels[row["reservation_id"]],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
                 "uid": hk.get("uid"),

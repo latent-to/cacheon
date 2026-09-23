@@ -211,6 +211,19 @@ def release_weight_publication_hold(
     )
 
 
+def _attempt_absent_from_chain(subtensor, projection, held, pre, observed_block) -> bool:
+    """Whether finalized state proves an unconfirmed, expired attempt left nothing to wait for.
+
+    The validator's row must predate the attempt and none of its timelocked commits may be
+    outstanding: the operator proof behind the 2026-09-18 and 2026-09-21 manual releases.
+    """
+    if (held.confirmed_block or not held.submit_block or observed_block < held.retry_after_block
+            or pre.last_update_block >= held.submit_block):
+        return False
+    commits = subtensor.get_timelocked_weight_commits(projection.netuid, block=observed_block)
+    return all(row[0] != projection.validator_hotkey for row in commits)
+
+
 def resume_weight_projection(
     proposed: WeightProjection,
     journal: ReopenableWeightPublicationJournal,
@@ -483,6 +496,12 @@ def reconcile_weight_publication(
             observed_block,
         )
 
+    # 2026-09-19: the signer died between intent and the SDK result, held at the deadline and
+    # published nothing for 41 hours. A hold over an attempt the chain never saw releases itself.
+    if (current is not None and current.status == "held"
+            and _attempt_absent_from_chain(subtensor, projection, current, pre, observed_block)):
+        current = release_weight_publication_hold(
+            journal, reason="attempt_absent_from_finalized_chain")
     if current is not None and current.status in {"intent", "pending", "held"}:
         if current.projection_digest != projection.digest:
             current = _held(journal, current, "projection_changed_while_unresolved")

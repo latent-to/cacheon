@@ -72,6 +72,8 @@ class ArenaStateMixin:
         return "" if legacy is not None and arena_id == legacy["value"] else arena_id
 
     def _ensure_arena_schema(self) -> None:
+        from cacheon.chain.evaluation_order import ensure_reward_prefix
+        ensure_reward_prefix(self)
         # Preserve the pre-namespace journal and lineage, including old stores
         # whose tips predate parent/speedup columns. Copy transactionally.
         fields = ("target_id", "artifact_digest", "parent_artifact_digest",
@@ -312,19 +314,31 @@ class ArenaStateMixin:
         return self.target_lineage_tips()
 
 
-    def _active_qualification_rows(self, competition_arena: str | None = None):
+    def _active_qualification_rows(self, competition_arena: str | None = None, *, owner: str | None = None):
         scope = self._competition_arena if competition_arena is None else competition_arena
         return tuple(self._db.execute(
             "SELECT * FROM evaluation_leases WHERE stage='qualification' "
-            "AND state='active' AND competition_arena=?", (scope,),
+            "AND state='active' AND competition_arena=?"
+            + (" AND owner=?" if owner is not None else ""),
+            (scope, owner) if owner is not None else (scope,),
         ))
 
     def _select_evaluation_rows(
-        self, stage: str, bound: int
+        self, stage: str, bound: int, *, owner: str | None = None,
+        max_active: int | None = None,
     ) -> tuple[sqlite3.Row, ...]:
         """Shared, non-mutating ordered selector for preview and atomic claim."""
 
-        if stage == "qualification" and self._active_qualification_rows():
+        if max_active is not None and (type(max_active) is not int or max_active <= 0):
+            raise _error("evaluation capacity must be a positive integer")
+        active = tuple(self._db.execute(
+            "SELECT owner,stage FROM evaluation_leases WHERE state='active' "
+            "AND competition_arena=?", (self._competition_arena,),
+        ))
+        if owner is not None and any(row["owner"] == owner for row in active):
+            return ()
+        capacity = 1 if stage == "qualification" and max_active is None else max_active
+        if capacity is not None and sum(row["stage"] == stage for row in active) >= capacity:
             return ()
         if stage == "screen":
             predicate = "r.status IN ('published','reproduction_pending')"

@@ -22,13 +22,14 @@ slower or non-matching finalize falsifies it; the audit comparator decides corre
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import torch
 import triton
 import triton.language as tl
 
-_SGLANG_VERSION, _FLASHINFER_VERSION = "0.5.18", "0.6.17"
+_SGLANG_VERSION, _FLASHINFER_VERSION = "0.5.20", "0.6.18"
 _TAG, _GATE_UP = "nvfp4_layer", "gate_up"
 _INTERLEAVED, _TRTLLM = (
     "up_gate_interleaved_64+sf_swizzled_128x4", "trtllm_fp4_shuffled")
@@ -80,7 +81,7 @@ def _runtime():
         raise RuntimeError(f"requires SGLang {_SGLANG_VERSION}, got {sglang.__version__}")
 
     from flashinfer.jit.fused_moe import gen_trtllm_gen_fused_moe_sm100_module
-    from flashinfer.autotuner import AutoTuner, DynamicTensorSpec, TuningConfig
+    from flashinfer.autotuner import AutoTuner, DynamicTensorSpec
     from flashinfer.fused_moe.core import (ActivationType, Fp8QuantizationType,
         MoeRunnerInputs, RoutingInputMode, WeightLayout,
         deduce_trtllm_gen_tensor_dtype, get_trtllm_moe_sm100_module)
@@ -93,9 +94,9 @@ def _runtime():
 
     module = get_trtllm_moe_sm100_module()
     if not hasattr(module, "MoERunner"):
-        raise RuntimeError("FlashInfer 0.6.17 TRT-LLM module does not expose MoERunner")
+        raise RuntimeError("FlashInfer 0.6.18 TRT-LLM module does not expose MoERunner")
     return SimpleNamespace(
-        tuner=AutoTuner, spec=DynamicTensorSpec, config=TuningConfig,
+        tuner=AutoTuner, spec=DynamicTensorSpec,
         inputs=MoeRunnerInputs, routing=RoutingInputMode, layout=WeightLayout,
         activation=ActivationType, fp8=Fp8QuantizationType,
         deduce=deduce_trtllm_gen_tensor_dtype, runner=module.MoERunner,
@@ -250,11 +251,8 @@ def _tuning_config(prepared, runner, inputs):
     spec = base.dynamic_tensor_specs[0]
     exact = prepared["rt"].spec(
         input_idx=spec.input_idx, dim_idx=spec.dim_idx, gen_tuning_buckets=(_TOKENS,),
-        map_to_tuning_buckets=_exact_bucket,
-        tensor_initializers=spec.tensor_initializers)
-    return prepared["rt"].config(
-        dynamic_tensor_specs=(exact,), constraint_specs=base.constraint_specs,
-        use_cold_l2_cache=True, use_cuda_graph=True)
+        map_to_tuning_buckets=_exact_bucket)
+    return replace(base, dynamic_tensor_specs=(exact,))
 
 
 def _execute(runner, tactic, inputs, kwargs):
@@ -414,7 +412,7 @@ def prepare(tag, view, topk, routed_scaling):
     prepared["prepare_ab_speedup"] = speedup
     # Only weight/configuration arguments are retained, never live tensor addresses.
     prepared["native_weights"] = (
-        w13, w13_sf, None, None, None, None, w2, w2_sf, None,
+        w13, w13_sf, None, None, None, None, None, w2, w2_sf, None,
         prepared["g1_scale_c"], prepared["g1_alphas"], prepared["g2_alphas"], None,
         _EXPERTS, _TOP_K, 0, 1, 1, _INTERMEDIATE, 0, _EXPERTS,
         _ROUTED_SCALING, _ROUTING_DEEPSEEK_V3, True)
@@ -543,4 +541,4 @@ def fused_routed_experts(x, router_logits, correction_bias, prepared, out):
     prepared["rt"].native(
         prepared["routing_mode"], router_logits, ids, weights, correction_bias, fp4, scale,
         *prepared["native_weights"], bool(prepared["pdl"](tokens)), _ACT_SWIGLU,
-        out, tactic, True, None)
+        out, tactic, True, None, [], [], False)

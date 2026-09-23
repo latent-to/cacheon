@@ -2063,8 +2063,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 continue
             if row.status in {"failed", "expired"}:
                 continue
-            if row.target_members and not members_overlap(row.target_members, candidate.members):
-                continue
             if row.status == "qualified":
                 economic = self._db.execute(
                     "SELECT status FROM settlement_candidates WHERE reservation_id=?",
@@ -2081,12 +2079,11 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         return tuple(blockers)
 
     def has_pending_settlement(self) -> bool:
-        """Report global settlement work outside its own arena's qualification."""
+        """Report retained work in each arena's completed arrival prefix."""
+        from cacheon.chain.evaluation_order import COMPLETED_ARRIVAL_PREFIX
         return self._db.execute(
             "SELECT 1 FROM settlement_candidates AS sc JOIN reservations AS r USING(reservation_id) "
-            "WHERE sc.status='pending' AND NOT EXISTS (SELECT 1 FROM evaluation_leases AS el "
-            "WHERE el.state='active' AND el.stage='qualification' "
-            "AND el.competition_arena=r.competition_arena) LIMIT 1",
+            "WHERE sc.status='pending' AND " + COMPLETED_ARRIVAL_PREFIX + " LIMIT 1",
         ).fetchone() is not None
 
     def lease_settlement_cohort(
@@ -2096,6 +2093,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         lease_blocks: int = 30,
     ) -> SettlementLease | None:
         """Lease the oldest economically unblocked retained PASS cohort."""
+        from cacheon.chain.evaluation_order import COMPLETED_ARRIVAL_PREFIX
 
         if (
             type(current_block) is not int
@@ -2126,9 +2124,8 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 self._db.execute(
                     "SELECT sc.*,r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash "
                     "FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
-                    "WHERE sc.status='pending' AND r.status='qualified' AND NOT EXISTS ("
-                    "SELECT 1 FROM evaluation_leases AS el WHERE el.state='active' "
-                    "AND el.stage='qualification' AND el.competition_arena=r.competition_arena) "
+                    "WHERE sc.status='pending' AND r.status='qualified' AND "
+                    + COMPLETED_ARRIVAL_PREFIX +
                     "ORDER BY r.block,r.event_index,"
                     "r.event_subindex,r.hotkey,r.content_hash",
                 )
@@ -2240,10 +2237,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         evidence_by_candidate = {row.candidate_digest: row for row in receipts}
         with self._transaction():
             arena = self.get(lease.candidates[0].reservation_digest).competition_arena
-            if self._active_qualification_rows(arena):
-                raise IntakeError(
-                    "settlement commit is fenced by active qualification"
-                )
             if any(self.get(row.reservation_digest).competition_arena != arena
                    for row in lease.candidates):
                 raise IntakeError("settlement belongs to another competition arena")

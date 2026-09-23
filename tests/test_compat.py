@@ -20,7 +20,7 @@ def _version_check(monkeypatch, version: str, expected=PINNED_SGLANG):
     )
 
 
-@pytest.mark.parametrize("expected", (PINNED_SGLANG, "0.5.19"))
+@pytest.mark.parametrize("expected", (PINNED_SGLANG, "0.5.18", "0.5.19"))
 def test_compat_accepts_the_exact_arena_pin(monkeypatch, expected) -> None:
     row = _version_check(monkeypatch, expected, expected)
 
@@ -35,3 +35,21 @@ def test_compat_rejects_an_installed_sglang_version_outside_the_pin(monkeypatch)
 
     assert not row.ok
     assert row.detail == f"found {version}  <-- DIFFERS from pin"
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_server_args_checks_the_constructor_without_instantiating(monkeypatch, complete):
+    class Args:
+        def __init__(self, model_path, dtype, attention_backend, disable_cuda_graph,
+                     mem_fraction_static, enable_deterministic_inference, random_seed, log_level):
+            raise AssertionError("A compatibility check must not construct ServerArgs")
+
+    sglang = ModuleType("sglang")
+    sglang.__version__ = "0.5.20"
+    server_args = ModuleType("sglang.srt.server_args")
+    server_args.ServerArgs = Args if complete else object
+    monkeypatch.setitem(sys.modules, "sglang", sglang)
+    monkeypatch.setitem(sys.modules, "sglang.srt.server_args", server_args)
+    row = next(r for r in run_checks("0.5.20") if r.name == "ServerArgs accepts our kwargs")
+    assert row.ok is complete
+    assert row.detail == "missing: none" if complete else "model_path" in row.detail

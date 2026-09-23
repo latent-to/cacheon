@@ -9,7 +9,7 @@ shared-expert join.
 
 The supported runtime is the commissioned GLM-5.3 NVFP4 model on four B300 GPUs,
 with TP4, attention DP4 and attention TP1, BF16 activations and the pinned
-SGLang 0.5.18 DSA runtime. The wrapper rejects a different topology. It preserves
+SGLang 0.5.20 DSA runtime with FlashInfer 0.6.18. The wrapper rejects a different topology. It preserves
 each original implementation's shape and phase selection: the projection fusion
 covers 1–32 local decode rows, and routed MoE keeps its small-row finalizer and
 large-prefill tactic. Other shapes follow the original serving implementation.

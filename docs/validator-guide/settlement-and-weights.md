@@ -327,7 +327,7 @@ Real publication is fail-closed and journaled:
 | `pending` | Submission attempted, but authoritative chain confirmation is absent |
 | `confirmed` | The exact recipient set, normalized values within the fixed verifier tolerance, and a sufficiently new `last_update` were read back |
 | `held` | Authority changed, deadline expired, readback diverged, or post-submit state is unavailable |
-| `released` | Operator appended an audited release of a retained hold |
+| `released` | An audited release of a retained hold: appended by the operator, or by the reconciler for an attempt the chain never saw |
 
 The chain helper checks the SDK response's `success` field (or the older tuple form), so
 a call may return without raising and still report `submitted=False`. Even
@@ -349,13 +349,20 @@ stateDiagram-v2
     pending --> held: deadline, divergence, or unavailable readback
     confirmed --> confirmed: same vector inside refresh cadence
     confirmed --> held: confirmed vector later differs on chain
-    held --> released: audited operator release
+    held --> released: audited operator release, or proof the attempt never reached chain
     released --> intent: next fresh reconciliation submits if required
 ```
 
 `pending` is a valid unresolved result, not success. Before its retry block, another run
 only observes it. At or after the deadline, absent matching readback becomes `held` rather
 than blindly resubmitting.
+
+A hold releases itself, with reason `attempt_absent_from_finalized_chain`, only when its
+attempt was never confirmed, its deadline has passed, the validator's finalized `last_update`
+predates its `submit_block`, and none of the validator's timelocked commits is outstanding.
+Such an attempt left nothing to wait for (a signer that dies between `intent` and the SDK
+result is the usual cause), and the same pass submits the current projection. Every other
+hold, including a confirmed vector that later differs on chain, waits for the operator.
 
 Journal readers also accept the follower's `block_inclusion` confirmations: `confirmed_block`
 cannot precede submission, and `confirmed_last_update=0` means active weights were not read
