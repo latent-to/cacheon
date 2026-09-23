@@ -1,6 +1,9 @@
 """Failed enrichment connections release resources before the worker reconnects."""
 
 from unittest.mock import Mock
+import os
+import sys
+from types import ModuleType
 
 import pytest
 
@@ -9,6 +12,21 @@ from dashboard.enrichment import Enrichment
 
 class StopWorker(BaseException):
     """End the otherwise unbounded worker after a complete retry cycle."""
+
+
+@pytest.mark.parametrize("configured,expected", [(None, "2"), ("4", "4")])
+def test_runtime_cache_default_preserves_explicit_configuration(tmp_path, monkeypatch, configured, expected):
+    monkeypatch.delenv("SUBSTRATE_RUNTIME_CACHE_SIZE", raising=False)
+    if configured is not None:
+        monkeypatch.setenv("SUBSTRATE_RUNTIME_CACHE_SIZE", configured)
+    client = ModuleType("async_substrate_interface.sync_substrate")
+    client.SubstrateInterface = Mock(side_effect=lambda **kw: os.environ["SUBSTRATE_RUNTIME_CACHE_SIZE"])
+    monkeypatch.setitem(sys.modules, "async_substrate_interface", ModuleType("async_substrate_interface"))
+    monkeypatch.setitem(sys.modules, client.__name__, client)
+    worker = Enrichment(tmp_path / "cache.sqlite3", "test-chain", 7)
+    worker._connect()
+    assert worker._substrate == expected
+    client.SubstrateInterface.assert_called_once_with(url="test-chain")
 
 
 @pytest.mark.parametrize("stage", ["_refresh_tip", "_refresh_metagraph", "_drain_extrinsics", "_drain_blocks"])

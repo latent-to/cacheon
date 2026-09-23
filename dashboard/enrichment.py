@@ -1,6 +1,7 @@
 """Independent per-source caches for the existing chain enrichment worker."""
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -117,6 +118,8 @@ class Enrichment:
         threading.Thread(target=self._loop, name="enrich", daemon=True).start()
 
     def _connect(self) -> None:
+        # Historical runtime metadata is large; this setting is read at import time.
+        os.environ.setdefault("SUBSTRATE_RUNTIME_CACHE_SIZE", "2")
         from async_substrate_interface.sync_substrate import SubstrateInterface
         self._substrate = SubstrateInterface(url=self.network)
 
@@ -158,11 +161,8 @@ class Enrichment:
             con.commit()
             con.close()
 
-    def _block_timestamp(self, block_hash: str | None = None,
-                         block_number: int | None = None) -> int | None:
+    def _block_timestamp(self, block_hash: str) -> int | None:
         sub = self._substrate
-        if block_hash is None and block_number is not None:
-            block_hash = sub.get_block_hash(block_number)
         result = sub.query("Timestamp", "Now", block_hash=block_hash)
         value = getattr(result, "value", result)
         return int(value) // 1000 if value else None

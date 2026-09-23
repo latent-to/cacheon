@@ -44,6 +44,9 @@ to run the dashboard and its API tests.
   estimates (dotted underline in the UI).
   A failed enrichment connection is closed before reconnecting so its client
   caches and websocket resources can be released.
+  Before loading the chain client, enrichment defaults its runtime metadata cache
+  to two versions. Historical lookups reload evicted metadata; the SQLite results
+  remain cached. This trades additional archive requests for lower memory use.
 - Times are sent as unix seconds; the browser renders them in your locale.
 - Explorer links: tao.app `/block/{n}`, `/blocks/{n}/extrinsics/{i}`,
   `/portfolio/{ss58}` (plus taostats fallback for extrinsics).
@@ -58,6 +61,7 @@ to run the dashboard and its API tests.
 | `CACHEON_DASH_SPOOL` | `/root/cacheon-ops/remote-worker/spool` |
 | `CACHEON_DASH_NETWORK` | `wss://archive.sub.latent.to` |
 | `CACHEON_DASH_ENRICH` | `1` (set `0` to disable chain lookups) |
+| `SUBSTRATE_RUNTIME_CACHE_SIZE` | `2` for enrichment (explicit values override; set before starting Python because the chain client reads it at import time) |
 | `CACHEON_DASH_OFFER` | `/var/lib/cacheon/current_weights.json` (the file the weight-offer service serves) |
 | `CACHEON_DASH_FOLLOW_JOURNAL` | unset; the follower journal SQLite named by the follow-weights lane's `--journal-db`. When unset the Timeline says so instead of showing a stale journal. |
 
