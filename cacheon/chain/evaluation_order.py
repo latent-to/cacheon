@@ -70,9 +70,6 @@ def reward_winner_ids(db) -> set[str]:
     import json
     from decimal import Decimal
 
-    from cacheon.chain.intake import IntakeError
-    from cacheon.settlement import SettlementCandidate
-
     best = {}
     seen = set()
     winners = set()
@@ -84,28 +81,32 @@ def reward_winner_ids(db) -> set[str]:
         " ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
     ).fetchall()
     for row in rows:
-        candidate = SettlementCandidate.from_dict(json.loads(row["candidate_json"]))
-        if candidate.digest != row["candidate_digest"]:
-            raise IntakeError("reward candidate digest differs from stored bytes")
-        if candidate.candidate_manifest is None:
+        payload = json.loads(row["candidate_json"])
+        # Read economic fields without reinterpreting historical audit schemas.
+        # The producer separately reopens and validates every retained candidate.
+        primary = payload["primary"]
+        if primary["incumbent_manifest"]["runtime_digest"] in grandfathered:
+            winners.add(row["reservation_id"])
             continue
-        contribution = candidate.candidate_manifest.entries[candidate.target_id]
-        identity = (candidate.arena_digest, candidate.target_id, contribution.digest)
+        manifest = primary["candidate_manifest"]
+        if manifest is None:
+            continue
+        contribution = manifest["entries"][primary["target_id"]]
+        identity = (primary["arena_digest"], primary["target_id"],
+                    json.dumps(contribution, sort_keys=True, separators=(",", ":")))
         if identity in seen:
             continue
         seen.add(identity)
-        if candidate.incumbent_manifest.runtime_digest in grandfathered:
-            winners.add(candidate.reservation_digest)
-            continue
         # Scores describe the complete workload, including different target slots.
         # A newly commissioned baseline has a different denominator.
-        group = (candidate.arena_digest, candidate.incumbent_stack_digest)
-        score = Decimal(candidate.speedup)
+        group = (primary["arena_digest"], primary["incumbent_stack_digest"])
+        qualifications = tuple(payload[key] for key in ("primary", "reproduction") if key in payload)
+        score = min(Decimal(q["speedup"]) for q in qualifications)
         previous = best.get(group)
         best[group] = max(score, previous or score)
         if previous is None or (score > previous and
-                score >= previous * (1 + _reward_min_margin(db, candidate))):
-            winners.add(candidate.reservation_digest)
+                score >= previous * (1 + _reward_min_margin(db, qualifications))):
+            winners.add(row["reservation_id"])
     return winners
 
 
@@ -125,7 +126,7 @@ def reward_grandfathered_runtimes(db) -> list[str]:
     return values
 
 
-def _reward_min_margin(db, candidate):
+def _reward_min_margin(db, qualifications):
     """Read the configured margin from the same retained attempts as the score."""
     import json
     from decimal import Decimal
@@ -138,20 +139,20 @@ def _reward_min_margin(db, candidate):
     rows = db.execute(
         "SELECT attempt_ref_json,evidence_root FROM settlement_qualifications "
         "WHERE reservation_id=? ORDER BY reproduction_index",
-        (candidate.reservation_digest,),
+        (qualifications[0]["reservation_digest"],),
     ).fetchall()
-    if len(rows) != len(candidate.qualifications):
+    if len(rows) != len(qualifications):
         raise IntakeError("reward comparison lacks retained qualifications")
-    for row, qualification in zip(rows, candidate.qualifications, strict=True):
+    for row, qualification in zip(rows, qualifications, strict=True):
         reference = EvidenceArtifactRef.from_dict(json.loads(row["attempt_ref_json"]))
-        if reference.sha256 != qualification.qualification_attempt_digest:
+        if reference.sha256 != qualification["qualification_attempt_digest"]:
             raise IntakeError("reward comparison attempt differs from qualification")
         try:
             payload = json.loads(reopen_evidence(Path(row["evidence_root"]), reference))
             reports = payload.get("reports", [payload])
             if "reports" in payload:
                 reports = [report for report in reports
-                           if report["selected_delta_digest"] == candidate.selected_delta_digest]
+                           if report["selected_delta_digest"] == qualification["selected_delta_digest"]]
             if len(reports) != 1:
                 raise ValueError("reward comparison report is ambiguous")
             margin = Decimal(str(reports[0]["speed_witness"]["resident_policy"]["min_margin"]))

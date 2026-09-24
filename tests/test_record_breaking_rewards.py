@@ -81,3 +81,17 @@ def test_grandfathering_does_not_exempt_a_new_runtime(tmp_path, monkeypatch):
                                                  speedups=("1.02", "1.02"))
         assert {c.hotkey for c in store.passed_reward_claims()} == {old.hotkey, current.hotkey}
         assert slower.hotkey not in {r["hotkey"] for r in qualified_winners(store._db)}
+
+
+def test_dashboard_does_not_reinterpret_retained_audit_schemas(tmp_path):
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        assert len(store.passed_reward_claims()) == 1
+        payload = candidate.to_dict()
+        payload["primary"]["audit_policy"] = {"retained_schema": "another-runtime"}
+        store._db.execute("UPDATE settlement_candidates SET candidate_json=?",
+                          (json.dumps(payload),))
+        assert [r["hotkey"] for r in qualified_winners(store._db)] == [candidate.hotkey]
+        # The write-side evidence authority still rejects altered candidate bytes.
+        with pytest.raises((IntakeError, ValueError)):
+            store.passed_reward_claims()
