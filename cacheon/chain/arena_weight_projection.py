@@ -128,6 +128,7 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
             reconcile_follower_reward_decay(store, confirmation_journal,
                                            validator_hotkey=context.validator_hotkey)
             inputs = _reward_projection_inputs(store, include_uncrowned=True)
+            grandfathered = inputs.pop("grandfathered_runtimes")
             adjustments[key] = inputs.pop("adjustments")
             standing = inputs.pop("standing_claims")
             states = inputs.pop("states")
@@ -147,7 +148,8 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
                     combined[name].extend(values)
             store._bind_emissions_policy(policy)
             snapshots[key] = {"config_digest": configs[key].digest, "cursor": list(cursor),
-                              "settlement_state_digest": store.settlement_state_digest()}
+                              "settlement_state_digest": store.settlement_state_digest(),
+                              "grandfathered_runtimes": grandfathered}
         projection = project_global_rewards(
             policy, context, **combined, allocation_terms=terms,
             allocation_burn_hotkey=allocation.burn_hotkey, stall_bonus_terms=bonuses)
@@ -175,7 +177,9 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
             context.chain_scope_digest, netuid, context.validator_hotkey,
             canonical_digest("cacheon.static-arena-policy.v1", {
                 "base_policy": policy.digest, "allocation": allocation.digest,
-                "decay": report["decay_digest"]}),
+                "decay": report["decay_digest"],
+                "grandfathered_runtimes": {key: row["grandfathered_runtimes"]
+                                           for key, row in sorted(snapshots.items())}}),
             canonical_digest("cacheon.static-arena-sources.v1", snapshots), projection.digest,
             context.metagraph_digest, projection.arena_authority_digests,
             generation, context.current_block,

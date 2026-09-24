@@ -14,7 +14,7 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
 POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "cacheon.emissions.v1.5"
+POLICY_VERSION = "cacheon.emissions.v1.6"
 WEIGHT_PPM = 1_000_000
 CREDIT_SCALE = 1_000_000_000_000
 STALL_SCALE_BLOCKS = 1_800

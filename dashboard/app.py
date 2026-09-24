@@ -822,8 +822,8 @@ def winners() -> dict[str, Any]:
         "pass_total": len(items),
         "offer": offer,
         "note": (
-            "One complete audited PASS can earn with time "
-            "decay; a crown is not required. Weight share is this validator's "
+            "A complete audited PASS earns after clearing the previous best by the configured "
+            "margin; grandfathered runtimes retain prior eligibility. Weight share is this validator's "
             "currently served offer. The chain reflects it only after commit-reveal "
             "and stake-weighted consensus across validators, so on-chain emission lags."
             if offer is not None

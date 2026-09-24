@@ -188,8 +188,8 @@ def test_payment_recovery_links_actual_evaluation_without_rewriting_rejection(tm
 
 @pytest.mark.parametrize("target,phase", [
     ("norm.fused_add_rmsnorm", False), ("collective.dp_attention_exchange.v1", True)])
-def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, client, target, phase):
-
+def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, client, target, phase, monkeypatch):
+    monkeypatch.setattr("dashboard.winners.reward_winner_ids", lambda con: {"example"})
     evidence = tmp_path / "retained"
     ref = _publish(evidence, _reads(phase), target, reports=True)
     db = tmp_path / "intake.sqlite3"
@@ -333,8 +333,9 @@ def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path,
     assert "qualification" not in detail["forensics"][0]
 
 
-def test_winners_api_labels_a_stale_hold_as_a_paid_pass(tmp_path, client):
+def test_winners_api_labels_a_stale_hold_as_a_pass(tmp_path, client, monkeypatch):
     """2026-09-22: the label needs the settlement journal, and the view had already closed its connection."""
+    monkeypatch.setattr("dashboard.winners.reward_winner_ids", lambda con: {"example"})
     db = tmp_path / "intake.sqlite3"
     _dashboard_db(db, "", tmp_path, "norm.fused_add_rmsnorm")
     with sqlite3.connect(db) as con:
@@ -348,5 +349,5 @@ def test_winners_api_labels_a_stale_hold_as_a_paid_pass(tmp_path, client):
         con.execute("INSERT INTO settlement_events VALUES(4,'HOLD','example','norm.fused_add_rmsnorm',?)",
                     (json.dumps({"reason": "stale_incumbent"}),))
     winners = client.get("/api/winners").json()["items"]
-    assert [w["settlement_status"] for w in winners] == ["paid pass"]
+    assert [w["settlement_status"] for w in winners] == ["passed"]
     assert winners[0]["reward_claim_status"] == "offer_unavailable"

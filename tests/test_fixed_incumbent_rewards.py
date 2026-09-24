@@ -40,7 +40,7 @@ def test_missing_pass_evidence_stops_reward_projection(tmp_path):
             store.passed_reward_claims()
 
 
-@pytest.mark.parametrize("version", ["v1.1", "v1.3", "v1.4"])
+@pytest.mark.parametrize("version", ["v1.1", "v1.3", "v1.4", "v1.5"])
 def test_policy_upgrade_preserves_numeric_configuration(tmp_path, version):
     policy = EmissionsPolicyManifest(7200, 2160, 100000)
     predecessor = policy.to_dict() | {"policy_version": "cacheon.emissions." + version}

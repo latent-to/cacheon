@@ -310,8 +310,8 @@ def _qualified_settlement_candidate(
         )
     evidence_root = store.path.parent / "evidence"
     payloads = attempt_payloads or (
-        b"retained primary qualification attempt" + marker.encode(),
-        b"retained reproduction qualification attempt" + marker.encode(),
+        json.dumps({"marker": marker, "speed_witness": {"resident_policy": {"min_margin": "0.01"}}}).encode(),
+        json.dumps({"marker": marker + "repro", "speed_witness": {"resident_policy": {"min_margin": "0.01"}}}).encode(),
     )
     primary_attempt = publish_evidence(
         evidence_root,
@@ -404,7 +404,7 @@ def _stage_exit(reads: dict[str, float]) -> bytes:
         }
 
     rates = [rate(role, value) for role, value in reads.items()]
-    return json.dumps({"speed_witness": {"rates": rates}}, sort_keys=True).encode()
+    return json.dumps({"speed_witness": {"rates": rates, "resident_policy": {"min_margin": "0.01"}}}, sort_keys=True).encode()
 
 
 def test_reopen_for_remeasurement_returns_a_pass_pair_to_the_screen_queue(tmp_path):
@@ -443,7 +443,7 @@ def test_reopen_for_remeasurement_returns_a_pass_pair_to_the_screen_queue(tmp_pa
         assert isinstance(slow, SettlementCandidate)
         assert isinstance(peer, SettlementCandidate)
         roots = (store.path.parent / "evidence",)
-
+        store._db.execute("INSERT INTO metadata VALUES('reward_grandfathered_runtimes',?)", (json.dumps([slow.incumbent_manifest.runtime_digest]),))
         evidence = remeasurement_evidence(store, slow.reservation_digest, roots)
         assert evidence.out_of_band
         assert evidence.credited_index == 0

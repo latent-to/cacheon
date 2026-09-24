@@ -194,7 +194,11 @@ promotion, integration, or release cannot renew the same bounty.
 
 ## Legacy V1 global projection
 
-The reward builder reopens every retained accepted PASS contribution plus the active stacks
+The reward builder reopens retained PASS evidence and pays only records that beat
+the best earlier PASS against the same baseline by the configured minimum margin.
+Pre-policy runtime generations retain their existing eligibility. See
+[emissions policy](../reference/emissions-policy.md) for grandfathering and ordering.
+The builder also reopens the active stacks
 and standing claims, then binds:
 
 - chain genesis scope and netuid;

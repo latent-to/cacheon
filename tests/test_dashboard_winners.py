@@ -137,12 +137,12 @@ def test_a_stale_hold_reads_as_a_paid_pass() -> None:
             return _Cursor()
 
     # The candidates table only says "held"; the typed reason is in the journal.
-    assert settlement_label(_Connection("stale_incumbent"), "a" * 64, "held", "held") == "paid pass"
+    assert settlement_label(_Connection("stale_incumbent"), "a" * 64, "held", "held") == "passed"
     assert settlement_label(_Connection("conflict_lost"), "a" * 64, "held", "held") == "held"
     assert settlement_label(_Connection("stale_incumbent"), "a" * 64, "crowned", "crowned") == "crowned"
 
     notice = settlement_hold_notice(_Connection("stale_incumbent"), "a" * 64, {"status": "held", "reason": "held"})
-    assert notice["title"] == "Paid pass — not the champion"
-    assert "paid like every other pass" in notice["message"]
+    assert notice["title"] == "Passed evaluation — not the champion"
+    assert "configured margin" in notice["message"]
     assert notice["reason"] == "stale_incumbent" and notice["event_sequence"] == 4
     assert settlement_hold_notice(_Connection("stale_incumbent"), "a" * 64, {"status": "crowned"}) is None

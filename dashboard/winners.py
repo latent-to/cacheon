@@ -6,11 +6,12 @@ import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from cacheon.chain.evaluation_order import reward_visibility_sql
+from cacheon.chain.evaluation_order import reward_visibility_sql, reward_winner_ids
 
 
 def qualified_winners(con) -> list[dict[str, Any]]:
-    """Expose retained PASSes only after their arrival prefix becomes eligible."""
+    """Expose only threshold-clearing PASSes in the completed arrival prefix."""
+    winners = reward_winner_ids(con)
     return [dict(row) for row in con.execute("""
         SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
                r.*, r.block AS submission_block,
@@ -22,7 +23,7 @@ def qualified_winners(con) -> list[dict[str, Any]]:
           AND sc.status!='duplicate_proposal' AND
     """ + reward_visibility_sql(con) + """
         GROUP BY sc.reservation_id
-    """)]
+    """) if row["reservation_id"] in winners]
 
 
 def _lane_tokens_per_second(speed: object, role: str) -> Decimal | None:
@@ -119,11 +120,14 @@ def latest_hold(connection: Any, reservation_id: str, fallback: str) -> tuple[st
 
 
 def settlement_label(connection: Any, reservation_id: str, status: object, reason: object) -> str:
-    """A stale hold is a paid pass, not a fault: 2026-09-22 two paid Qwen passes read as unpaid under "held"."""
+    """A stale hold is a PASS, not a fault; reward records are checked separately.
+
+    On 2026-09-22 two earning Qwen passes read as unpaid under "held".
+    """
     if status != "held":
         return str(status or "")
     held_reason, _ = latest_hold(connection, reservation_id, str(reason or "held"))
-    return "paid pass" if held_reason == "stale_incumbent" else "held"
+    return "passed" if held_reason == "stale_incumbent" else "held"
 
 
 def settlement_hold_notice(connection: Any, reservation_id: str,
@@ -133,8 +137,9 @@ def settlement_hold_notice(connection: Any, reservation_id: str,
         return None
     reason, sequence = latest_hold(connection, reservation_id, settlement.get("reason") or "held")
     if reason == "stale_incumbent":
-        title = "Paid pass — not the champion"
-        message = ("This submission passed evaluation and is paid like every other pass. "
+        title = "Passed evaluation — not the champion"
+        message = ("This submission passed evaluation. Rewards require beating the best earlier "
+                   "PASS by the configured margin, except for grandfathered runtime generations. "
                    "It was timed against an earlier baseline than the current champion, "
                    "so it was not adopted as the champion itself.")
     else:

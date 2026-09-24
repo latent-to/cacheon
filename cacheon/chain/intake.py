@@ -2490,7 +2490,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         require_sha256_hex(policy_digest, field="policy_digest")
         predecessors = {
             canonical_digest("cacheon.economics.policy", policy.to_dict() | {"policy_version": version})
-            for version in ("cacheon.emissions.v1.1", "cacheon.emissions.v1.3", "cacheon.emissions.v1.4")
+            for version in ("cacheon.emissions.v1.1", "cacheon.emissions.v1.3", "cacheon.emissions.v1.4", "cacheon.emissions.v1.5")
         }
         with self._transaction():
             row = self._db.execute(

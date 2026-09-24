@@ -22,8 +22,32 @@ durable evidence remain reopenable from Git history and the reserved schema.
 
 ## Legacy V1
 
-Every distinct registered contribution with a complete audited PASS
-earns from its retained qualification, whether or not it becomes the crown.
+A distinct registered contribution with a complete audited PASS earns only when
+its conservative credited speedup is at least the best earlier distinct PASS
+speedup multiplied by `1 + min_margin`. The margin comes from its retained
+qualification's sealed resident speed policy; historical pairs use the larger
+margin. A tie or a smaller improvement earns nothing even though evaluation
+remains PASS. The first PASS against a commissioned baseline is eligible.
+
+Comparison follows finalized submission order (block, event index, subindex,
+hotkey, content hash), not evaluation completion time. All targets measured
+against the same arena and incumbent stack compete on the credited end-to-end
+score. Different baselines and runtime generations are not compared. Earlier
+PASSes below the reward threshold still contribute to the best preceding score.
+An unresolved earlier submission continues to block new reward eligibility.
+
+Before enabling this rule on an existing deployment, record the sorted unique
+pre-policy runtime digests in the intake `metadata` key
+`reward_grandfathered_runtimes` as a JSON list. Those generations retain all
+previous PASS eligibility and publication/decay clocks, including the pre-MTP
+history. The deployment must verify the list against commissioning records.
+New stores without this metadata apply the record rule to all generations.
+The list is included in projection evidence/identity and must be preserved by
+subsequent deployments. The dashboard uses the same filter as the weight producer.
+
+The rule applies to existing and future non-grandfathered PASSes; it does not
+rewrite qualification, settlement, or already published weights. A crown is
+not required for an eligible performance record.
 Qualification keeps using the manually commissioned incumbent when another
 contribution crowns. Changing that comparison baseline requires an explicit
 operator commission; a crown alone does not change it.
@@ -53,8 +77,8 @@ Publication starts and recovery adjustments are append-only intake metadata,
 bound into the projection's evidence and policy identity. They never rewrite
 submission blocks, retained PASS records, or claim identities.
 Logarithmic units make compounded gains path-independent. Policy version
-`cacheon.emissions.v1.5` projects every accepted qualification and replaces v1.4's
-CROWN-only restriction. Existing v1.1/v1.3/v1.4 bindings move forward only
+`cacheon.emissions.v1.6` replaces v1.5's all-PASS reward eligibility with the
+threshold record rule above. Existing v1.1/v1.3/v1.4/v1.5 bindings move forward only
 when all numeric policy fields match.
 
 The active standing claim validates its evaluation stack against that stack's

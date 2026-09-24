@@ -165,7 +165,10 @@ renders the served symbol and never a local one. Only the eval-cost fee is
 in TAO.
 
 Reward shares come from the served weight offer, not from settlement status:
-one complete audited PASS can earn with time decay, and a crown is not required.
+a complete audited PASS earns only when its credited speedup clears the best earlier
+PASS by the sealed minimum margin. Pre-policy runtime generations retain their
+existing eligibility; a crown is not required. The weight producer and Winners
+view share this arrival-ordered filter.
 A pass that settlement held as `stale_incumbent` (timed against an earlier
 baseline than the champion) is shown as `paid pass` in `settlement_status`,
 since it earns like any other pass and only the champion adoption was withheld.
