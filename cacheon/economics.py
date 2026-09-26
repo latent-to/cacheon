@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import ROUND_FLOOR, Context, Decimal, localcontext
 from itertools import combinations
 from typing import Iterable, Mapping
@@ -14,7 +14,7 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
 POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "cacheon.emissions.v1.6"
+POLICY_VERSION = "cacheon.emissions.v1.7"
 WEIGHT_PPM = 1_000_000
 CREDIT_SCALE = 1_000_000_000_000
 STALL_SCALE_BLOCKS = 1_800
@@ -569,8 +569,13 @@ def project_global_rewards(
     allocation_terms: Mapping[str, tuple[str, int]] | None = None,
     allocation_burn_hotkey: str = "",
     stall_bonus_terms: Mapping[str, int] | None = None,
+    score_speedups: Mapping[str, int] | None = None,
 ) -> GlobalRewardProjection:
-    """Pool the store-selected earning claims before one indivisible vector."""
+    """Pool earned claims, using queue-relative scoring ratios when supplied by intake.
+
+    Scoring ratios affect credit only; retained claim identities, standing-crown
+    validation, and publication decay clocks continue to bind the measured PASS.
+    """
 
     if type(policy) is not EmissionsPolicyManifest:
         raise EconomicsError("policy is not exactly typed")
@@ -587,6 +592,8 @@ def project_global_rewards(
         raise EconomicsError("PASS reward claims are not exactly typed")
     if len({row.digest for row in earning}) != len(earning):
         raise EconomicsError("PASS reward claims are duplicated")
+    if score_speedups is not None and set(score_speedups) != {row.digest for row in earning}:
+        raise EconomicsError("reward scoring requires a speedup for every earning PASS")
     if stall_bonus_terms is not None and (
             allocation_terms is None or set(stall_bonus_terms) != {row.digest for row in earning}):
         raise EconomicsError("submission stall bonuses require complete static allocation terms")
@@ -674,7 +681,8 @@ def project_global_rewards(
         earning, key=lambda row: (row.arena_digest, row.crowned_block, row.digest)
     ):
         predecessor = previous.get(claim.arena_digest, claim.crowned_block)
-        credit = claim.credit_at(
+        scored = claim if score_speedups is None else replace(claim, speedup_ppm=score_speedups[claim.digest])
+        credit = scored.credit_at(
             context.current_block, policy, predecessor_block=predecessor,
             decay_start_block=(
                 context.current_block if claim.digest in starts and starts[claim.digest] is None
@@ -745,7 +753,7 @@ def project_global_rewards(
             raise EconomicsError("live discovery claims have no submission allocation")
         combined = allocate_submission_weights(
             family_credits, allocation_terms, context, allocation_burn_hotkey,
-            base_credits=arena_base_credits(earning, policy, context, starts),
+            base_credits=arena_base_credits(earning, policy, context, starts, score_speedups),
         )[0]
     if live:
         for hotkey, value in _allocate_pool(discovery_by_hotkey, discovery_pool).items():

@@ -106,6 +106,7 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
 
         combined = {key: [] for key in ("arenas", "earning_claims", "discovery_claims", "earned_contributions")}
         combined["decay_start_blocks"] = {}
+        combined["score_speedups"] = {}
         terms, snapshots, adjustments, seen_reservations = {}, {}, {}, set()
         bonuses = {}
         evidence, standing_count, generation = set(), 0, 0
@@ -142,7 +143,7 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
             for claim in (*standing, *inputs["earning_claims"], *inputs["discovery_claims"]):
                 evidence.add(claim.retained_evidence_digest)
             for name, values in inputs.items():
-                if name == "decay_start_blocks":
+                if name in {"decay_start_blocks", "score_speedups"}:
                     combined[name].update(values)
                 else:
                     combined[name].extend(values)
@@ -156,11 +157,12 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
         _, shares, paid, burned = allocate_submission_weights(
             projection.standing, terms, context, allocation.burn_hotkey,
             base_credits=arena_base_credits(combined["earning_claims"], policy, context,
-                                          combined["decay_start_blocks"]))
+                                          combined["decay_start_blocks"], combined["score_speedups"]))
         report = {"schema": "cacheon.static-arena-allocation.v1",
                   "allocation_digest": allocation.digest, "effective_block": context.current_block,
                   "metagraph_digest": context.metagraph_digest, "sources": snapshots,
                   "submission_terms": {key: list(value) for key, value in sorted(terms.items())},
+                  "submission_score_speedups_ppm": dict(sorted(combined["score_speedups"].items())),
                   "arena_weights_ppm": {key: shares.get(key, 0) for key in configs}, "burned_ppm": burned,
                   "weights_ppm": projection.weights_by_hotkey,
                   "decay_digest": canonical_digest("cacheon.static-arena-decay.v1", adjustments)}

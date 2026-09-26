@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import sqlite3
+from decimal import Decimal
 import pytest
 
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
@@ -189,7 +190,10 @@ def test_payment_recovery_links_actual_evaluation_without_rewriting_rejection(tm
 @pytest.mark.parametrize("target,phase", [
     ("norm.fused_add_rmsnorm", False), ("collective.dp_attention_exchange.v1", True)])
 def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, client, target, phase, monkeypatch):
-    monkeypatch.setattr("dashboard.winners.reward_winner_ids", lambda con: {"example"})
+    monkeypatch.setattr("dashboard.winners.reward_comparisons", lambda con: {"example": {
+        "previous_best_reservation_id": "earlier", "previous_best_speedup": Decimal("1.01"),
+        "relative_speedup": Decimal("1.02"), "score_speedup": Decimal("1.02"),
+        "reward_eligible": True, "grandfathered": False}})
     evidence = tmp_path / "retained"
     ref = _publish(evidence, _reads(phase), target, reports=True)
     db = tmp_path / "intake.sqlite3"
@@ -216,6 +220,11 @@ def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, clie
     con.close()
     winner = client.get("/api/winners").json()["items"][0]
     assert winner["speedup"] == 1.03
+    assert winner["relative_improvement_pct"] == 2.0
+    assert winner["score_improvement_pct"] == 2.0
+    assert winner["previous_best_reservation_id"] == "earlier"
+    detail = client.get("/api/submissions/example").json()
+    assert detail["settlement"]["relative_improvement_pct"] == 2.0
     assert winner["baseline_tokens_per_second"] == 6.7
     assert winner["baseline_kind"] == "stock"
     assert winner["prefill_speedup"] == pytest.approx(160 / 159.04)
@@ -335,7 +344,10 @@ def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path,
 
 def test_winners_api_labels_a_stale_hold_as_a_pass(tmp_path, client, monkeypatch):
     """2026-09-22: the label needs the settlement journal, and the view had already closed its connection."""
-    monkeypatch.setattr("dashboard.winners.reward_winner_ids", lambda con: {"example"})
+    monkeypatch.setattr("dashboard.winners.reward_comparisons", lambda con: {"example": {
+        "previous_best_reservation_id": "earlier", "previous_best_speedup": Decimal("1.01"),
+        "relative_speedup": Decimal("1.02"), "score_speedup": Decimal("1.02"),
+        "reward_eligible": True, "grandfathered": False}})
     db = tmp_path / "intake.sqlite3"
     _dashboard_db(db, "", tmp_path, "norm.fused_add_rmsnorm")
     with sqlite3.connect(db) as con:

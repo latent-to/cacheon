@@ -19,7 +19,7 @@ def test_winners_view_separates_credit_from_measured_throughput() -> None:
         Path(__file__).parents[1] / "dashboard" / "static" / "index.html"
     ).read_text()
 
-    assert '"Credited vs incumbent","Measured baseline"' in html
+    assert '"Gain vs baseline","Gain vs previous best","Measured baseline"' in html
     assert "baseline_tokens_per_second" in html
     assert "baseline_kind" in html
     assert "tokens_per_second" in html

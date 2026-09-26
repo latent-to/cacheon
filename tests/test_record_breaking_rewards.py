@@ -53,6 +53,10 @@ def test_pre_policy_runtime_keeps_all_claims_and_clocks(tmp_path):
         assert {c.hotkey for c in store.passed_reward_claims()} == {first.hotkey, later.hotkey}
         assert {r["hotkey"] for r in qualified_winners(store._db)} == {first.hotkey, later.hotkey}
         assert {c.crowned_block for c in store.passed_reward_claims()} == {10}
+        from cacheon.chain.qualification_settlement import passed_reward_evidence
+        scores = {}
+        claims, _ = passed_reward_evidence(store, score_speedups=scores)
+        assert scores == {claim.digest: claim.speedup_ppm for claim in claims}
 
 
 def test_another_baseline_does_not_compete_and_missing_margin_is_an_error(tmp_path):
@@ -95,3 +99,74 @@ def test_dashboard_does_not_reinterpret_retained_audit_schemas(tmp_path):
         # The write-side evidence authority still rejects altered candidate bytes.
         with pytest.raises((IntakeError, ValueError)):
             store.passed_reward_claims()
+
+
+@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+def test_scoring_uses_queue_record_without_rewriting_claims_or_clocks(tmp_path, target):
+    from dataclasses import replace
+    from decimal import Decimal
+    from cacheon.chain.evaluation_order import reward_comparisons
+    from cacheon.chain.qualification_settlement import _reward_projection_inputs, record_reward_decay_start
+    from cacheon.economics import project_global_rewards
+    from tests.test_chain_intake import POLICY, SCOPE, _context, _settlement_plan
+
+    with _store(tmp_path) as store:
+        first = _qualified_settlement_candidate(store, target=target, speedups=("1.1", "1.1"), retained_block=12)
+        lease = store.lease_settlement_cohort(current_block=11)
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+        later = _qualified_settlement_candidate(
+            store, index=1, marker="later", target=target, initialize_stack=False,
+            speedups=("1.12", "1.12"), retained_block=11)
+        claims = store.passed_reward_claims()
+        for claim in claims:
+            record_reward_decay_start(store, claim_digest=claim.digest, start_block=11, reason="Published")
+        before = [dict(r) for r in store._db.execute("SELECT * FROM settlement_candidates")]
+        comparisons = reward_comparisons(store._db)
+        comparison = comparisons[later.reservation_digest]
+        assert comparison["previous_best_reservation_id"] == first.reservation_digest
+        assert comparison["relative_speedup"] == Decimal("1.12") / Decimal("1.1")
+        inputs = _reward_projection_inputs(store)
+        scores = inputs["score_speedups"]
+        by_key = {c.hotkey: c for c in claims}
+        assert scores[by_key[first.hotkey].digest] == 1_100_000
+        assert scores[by_key[later.hotkey].digest] == 1_018_181
+        context = _context("validator", first.hotkey, later.hotkey)
+        for key in ("states", "standing_claims", "adjustments", "grandfathered_runtimes"):
+            inputs.pop(key)
+        projection = project_global_rewards(POLICY, context, **inputs)
+        credits = {row.claim_digest: row.credit for row in projection.standing}
+        for claim in claims:
+            expected = replace(claim, speedup_ppm=scores[claim.digest]).credit_at(12, POLICY, decay_start_block=11)
+            assert credits[claim.digest] == expected
+        assert projection.weights_by_hotkey[first.hotkey] > projection.weights_by_hotkey[later.hotkey]
+        served = store.build_weight_projection(policy=POLICY, context=context, netuid=SCOPE.netuid)
+        assert dict(served.weights_ppm) == projection.weights_by_hotkey
+        assert store.passed_reward_claims() == claims
+        assert [dict(r) for r in store._db.execute("SELECT * FROM settlement_candidates")] == before
+        display = {r["reservation_id"]: r for r in qualified_winners(store._db)}[later.reservation_digest]
+        assert display["relative_improvement_pct"] == pytest.approx(100 * (1.12 / 1.10 - 1))
+        assert display["score_improvement_pct"] == 1.8181
+    with _store(tmp_path) as store:
+        assert store.passed_reward_claims() == claims
+        assert _reward_projection_inputs(store)["score_speedups"] == scores
+
+
+def test_scoring_compares_all_slots_and_subthreshold_records_but_not_later_rows(tmp_path):
+    from decimal import Decimal
+    from cacheon.chain.evaluation_order import reward_comparisons
+
+    with _store(tmp_path) as store:
+        candidates = [_qualified_settlement_candidate(
+            store, index=i, marker=str(i), target=target, speedups=(score, score),
+        ) for i, (target, score) in enumerate([
+            ("activation.silu_and_mul", "1.1"), ("norm.rmsnorm", "1.105"),
+            ("activation.silu_and_mul", "1.12"), ("norm.rmsnorm", "1.5")])]
+        store.passed_reward_claims()
+        comparisons = reward_comparisons(store._db)
+        second, third = (comparisons[c.reservation_digest] for c in candidates[1:3])
+        assert not second["reward_eligible"]
+        assert third["previous_best_reservation_id"] == candidates[1].reservation_digest
+        assert third["score_speedup"] == Decimal("1.12") / Decimal("1.105")
+        assert third["reward_eligible"]
+        assert comparisons[candidates[0].reservation_digest]["score_speedup"] == Decimal("1.1")

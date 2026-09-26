@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.chain.evaluation_order import (
-    finalize_reward_prefix, reward_grandfathered_runtimes, reward_winner_ids,
+    finalize_reward_prefix, reward_grandfathered_runtimes, reward_comparisons,
 )
 from cacheon.settlement import SettlementCandidate, SettlementQualification
 
@@ -185,8 +185,10 @@ def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[object, ...]:
     return passed_reward_evidence(store)[0]
 
 
-def passed_reward_evidence(store: FinalizedIntakeStore) -> tuple[tuple, tuple]:
-    """Reopen each distinct earned contribution without rewriting its retained evidence."""
+def passed_reward_evidence(
+    store: FinalizedIntakeStore, *, score_speedups: dict[str, int] | None = None,
+) -> tuple[tuple, tuple]:
+    """Reopen earned contributions; optionally fill scoring ratios keyed by unchanged claim IDs."""
     from decimal import Decimal, ROUND_FLOOR
     from cacheon.chain.intake import IntakeError
 
@@ -196,14 +198,14 @@ def passed_reward_evidence(store: FinalizedIntakeStore) -> tuple[tuple, tuple]:
     contributions = []
     seen: set[tuple[str, str, str]] = set()
     finalize_reward_prefix(store)
-    winners = reward_winner_ids(store._db)
+    comparisons = reward_comparisons(store._db)
     rows = store._db.execute(
         "SELECT sc.* FROM settlement_candidates sc "
         "JOIN reservations r USING(reservation_id) "
         "WHERE r.status='qualified' AND r.decision='PASS' "
         "AND sc.status!='duplicate_proposal' "
         "AND sc.reward_eligible=1 "
-        "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
+        "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
     )
     for row in rows:
         candidate = store._settlement_candidate(row)
@@ -218,7 +220,8 @@ def passed_reward_evidence(store: FinalizedIntakeStore) -> tuple[tuple, tuple]:
         if retained and retained != evidence.digest:
             raise IntakeError("PASS candidate differs from retained evidence")
         seen.add(key)
-        if candidate.reservation_digest not in winners:
+        comparison = comparisons.get(candidate.reservation_digest)
+        if comparison is None or not comparison["reward_eligible"]:
             continue
         claims.append(
             StandingRewardClaim(
@@ -237,6 +240,9 @@ def passed_reward_evidence(store: FinalizedIntakeStore) -> tuple[tuple, tuple]:
             )
         )
         contributions.append(contribution)
+        if score_speedups is not None:
+            score_speedups[claims[-1].digest] = int(
+                (comparison["score_speedup"] * WEIGHT_PPM).to_integral_value(rounding=ROUND_FLOOR))
     return tuple(claims), tuple(contributions)
 
 
@@ -403,7 +409,8 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False) -> dict
     from cacheon.economics import ArenaRewardAuthority
 
     standing, discovery = store.active_reward_claims()
-    earning, contributions = passed_reward_evidence(store)
+    score_speedups = {}
+    earning, contributions = passed_reward_evidence(store, score_speedups=score_speedups)
     _hold_unpublished_claims(store, earning)
     adjustments = reward_decay_adjustments(store)
     live = {claim.digest for claim in earning}
@@ -438,6 +445,7 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False) -> dict
         "arenas": tuple(authorities), "earning_claims": earning,
         "discovery_claims": discovery, "earned_contributions": contributions,
         "decay_start_blocks": starts, "adjustments": adjustments,
+        "score_speedups": score_speedups,
         "standing_claims": standing, "states": states,
         "grandfathered_runtimes": reward_grandfathered_runtimes(store._db),
     }

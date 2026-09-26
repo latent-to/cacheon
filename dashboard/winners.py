@@ -6,13 +6,14 @@ import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from cacheon.chain.evaluation_order import reward_visibility_sql, reward_winner_ids
+from cacheon.chain.evaluation_order import reward_visibility_sql, reward_comparisons
 
 
 def qualified_winners(con) -> list[dict[str, Any]]:
     """Expose only threshold-clearing PASSes in the completed arrival prefix."""
-    winners = reward_winner_ids(con)
-    return [dict(row) for row in con.execute("""
+    comparisons = reward_comparisons(con)
+    return [dict(row) | reward_comparison_summary(comparisons[row["reservation_id"]])
+            for row in con.execute("""
         SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
                r.*, r.block AS submission_block,
                max(q.retained_block) AS passed_block
@@ -23,7 +24,30 @@ def qualified_winners(con) -> list[dict[str, Any]]:
           AND sc.status!='duplicate_proposal' AND
     """ + reward_visibility_sql(con) + """
         GROUP BY sc.reservation_id
-    """) if row["reservation_id"] in winners]
+    """) if comparisons.get(row["reservation_id"], {}).get("reward_eligible")]
+
+
+def reward_comparison_summary(comparison: dict) -> dict:
+    """Expose the queue predecessor and scoring gain without changing baseline metrics."""
+    from decimal import ROUND_FLOOR
+    from cacheon.economics import WEIGHT_PPM
+
+    if not comparison:
+        return {}
+    score_ppm = int((comparison["score_speedup"] * WEIGHT_PPM).to_integral_value(rounding=ROUND_FLOOR))
+    return {
+        "previous_best_reservation_id": comparison["previous_best_reservation_id"],
+        "previous_best_speedup": float(comparison["previous_best_speedup"]),
+        "relative_improvement_pct": float((comparison["relative_speedup"] - 1) * 100),
+        "score_improvement_pct": (score_ppm - WEIGHT_PPM) / (WEIGHT_PPM / 100),
+        "reward_eligible": comparison["reward_eligible"],
+        "grandfathered": comparison["grandfathered"],
+    }
+
+
+def submission_reward_comparison(con, reservation_id: str) -> dict:
+    """Use the same ordered comparison as the weight producer for submission details."""
+    return reward_comparison_summary(reward_comparisons(con).get(reservation_id, {}))
 
 
 def _lane_tokens_per_second(speed: object, role: str) -> Decimal | None:

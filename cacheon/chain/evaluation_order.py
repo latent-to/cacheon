@@ -60,8 +60,8 @@ def reward_visibility_sql(db) -> str:
     return "sc.reward_eligible=1" if "reward_eligible" in columns else "1"
 
 
-def reward_winner_ids(db) -> set[str]:
-    """Select threshold-clearing records in arrival order within each measured baseline.
+def reward_comparisons(db) -> dict[str, dict]:
+    """Compare each PASS with the best preceding PASS on its measured baseline.
 
     Prefix eligibility only says earlier work finished. It does not establish a
     performance record. Recompute this filter for historical and new PASSes so
@@ -72,7 +72,7 @@ def reward_winner_ids(db) -> set[str]:
 
     best = {}
     seen = set()
-    winners = set()
+    comparisons = {}
     grandfathered = set(reward_grandfathered_runtimes(db))
     rows = db.execute(
         "SELECT sc.* FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
@@ -85,16 +85,14 @@ def reward_winner_ids(db) -> set[str]:
         # Read economic fields without reinterpreting historical audit schemas.
         # The producer separately reopens and validates every retained candidate.
         primary = payload["primary"]
-        if primary["incumbent_manifest"]["runtime_digest"] in grandfathered:
-            winners.add(row["reservation_id"])
-            continue
+        exempt = primary["incumbent_manifest"]["runtime_digest"] in grandfathered
         manifest = primary["candidate_manifest"]
         if manifest is None:
             continue
         contribution = manifest["entries"][primary["target_id"]]
         identity = (primary["arena_digest"], primary["target_id"],
                     json.dumps(contribution, sort_keys=True, separators=(",", ":")))
-        if identity in seen:
+        if identity in seen and not exempt:
             continue
         seen.add(identity)
         # Scores describe the complete workload, including different target slots.
@@ -102,12 +100,21 @@ def reward_winner_ids(db) -> set[str]:
         group = (primary["arena_digest"], primary["incumbent_stack_digest"])
         qualifications = tuple(payload[key] for key in ("primary", "reproduction") if key in payload)
         score = min(Decimal(q["speedup"]) for q in qualifications)
-        previous = best.get(group)
-        best[group] = max(score, previous or score)
-        if previous is None or (score > previous and
-                score >= previous * (1 + _reward_min_margin(db, qualifications))):
-            winners.add(row["reservation_id"])
-    return winners
+        previous, previous_id = best.get(group, (Decimal(1), None))
+        relative = score / previous
+        eligible = exempt or previous_id is None or (score > previous and
+            score >= previous * (1 + _reward_min_margin(db, qualifications)))
+        comparisons[row["reservation_id"]] = {
+            "previous_best_reservation_id": previous_id,
+            "previous_best_speedup": previous,
+            "relative_speedup": relative,
+            "score_speedup": score if exempt else relative,
+            "reward_eligible": eligible,
+            "grandfathered": exempt,
+        }
+        if score > previous:
+            best[group] = (score, row["reservation_id"])
+    return comparisons
 
 
 def reward_grandfathered_runtimes(db) -> list[str]:

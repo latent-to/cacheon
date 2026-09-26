@@ -1,7 +1,7 @@
 {
- "burn_projection": {"authority_digest":"81bcf386d5cfc8d0081be770526b30f135027995cbeecbb52e78fedcb02b2958","digest":"182d24e1b92433c25523a3e7c12a080a7ef3a19ed86b2519d155ecefeb85a4f1"},
+ "burn_projection": {"authority_digest":"11b8c79f4ff00dabb1bee249439b7da91d2aa9a1c59cdb94e24d65f6080227f0","digest":"037d341df62afcb30f1621b6ae1a5c71c7e7ca43aebf17c4ac2edfce288ea32a"},
  "empty_settlement_state_digest": "190c5308919b321a6d316e388104bd1e4997e644a079e3cf5c36bf5de1ebf07f",
- "owner_burn_projection": {"authority_digest":"6f3afc3e8bd697ab69aa14f255dd11ee640e60d2445db377e79ac38e3dda38f2","digest":"820db7a17a6e0dc7588caa3396d691c4470c107d4c9e14abec9912f390f7e3d3"},
+ "owner_burn_projection": {"authority_digest":"be081f46db8e0a88e2bc2a848bd38627a0c4e81d4280671a9f8b7abaa3df78e5","digest":"7c30b22c3d625762a66aa79dd2c0e7ad4e9fed5bfa052dabc826b3d76bc04ab3"},
  "slot_audit_control": "3da44779e7a0f44361d84ef3640ead6fb2ec2805e1d00bb045395d8b8393160f",
  "standing_reward_claim": "721a765a10f28f192054bd1bd2797bdb15f0a53767ecefaa85e24bef756b33b3"
 }
