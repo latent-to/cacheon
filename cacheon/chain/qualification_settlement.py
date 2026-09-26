@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cacheon.eval.evidence_store import EvidenceArtifactRef
-from cacheon.chain.evaluation_order import finalize_reward_prefix
+from cacheon.chain.evaluation_order import (
+    finalize_reward_prefix, reward_grandfathered_runtimes, reward_comparisons,
+)
 from cacheon.settlement import SettlementCandidate, SettlementQualification
 
 if TYPE_CHECKING:
@@ -183,8 +185,10 @@ def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[object, ...]:
     return passed_reward_evidence(store)[0]
 
 
-def passed_reward_evidence(store: FinalizedIntakeStore) -> tuple[tuple, tuple]:
-    """Reopen each distinct earned contribution without rewriting its retained evidence."""
+def passed_reward_evidence(
+    store: FinalizedIntakeStore, *, score_speedups: dict[str, int] | None = None,
+) -> tuple[tuple, tuple]:
+    """Reopen earned contributions; optionally fill scoring ratios keyed by unchanged claim IDs."""
     from decimal import Decimal, ROUND_FLOOR
     from cacheon.chain.intake import IntakeError
 
@@ -194,13 +198,14 @@ def passed_reward_evidence(store: FinalizedIntakeStore) -> tuple[tuple, tuple]:
     contributions = []
     seen: set[tuple[str, str, str]] = set()
     finalize_reward_prefix(store)
+    comparisons = reward_comparisons(store._db)
     rows = store._db.execute(
         "SELECT sc.* FROM settlement_candidates sc "
         "JOIN reservations r USING(reservation_id) "
         "WHERE r.status='qualified' AND r.decision='PASS' "
         "AND sc.status!='duplicate_proposal' "
         "AND sc.reward_eligible=1 "
-        "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
+        "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
     )
     for row in rows:
         candidate = store._settlement_candidate(row)
@@ -214,6 +219,10 @@ def passed_reward_evidence(store: FinalizedIntakeStore) -> tuple[tuple, tuple]:
         retained = row["settlement_evidence_digest"]
         if retained and retained != evidence.digest:
             raise IntakeError("PASS candidate differs from retained evidence")
+        seen.add(key)
+        comparison = comparisons.get(candidate.reservation_digest)
+        if comparison is None or not comparison["reward_eligible"]:
+            continue
         claims.append(
             StandingRewardClaim(
                 candidate.arena_digest,
@@ -230,8 +239,10 @@ def passed_reward_evidence(store: FinalizedIntakeStore) -> tuple[tuple, tuple]:
                 evidence.digest,
             )
         )
-        seen.add(key)
         contributions.append(contribution)
+        if score_speedups is not None:
+            score_speedups[claims[-1].digest] = int(
+                (comparison["score_speedup"] * WEIGHT_PPM).to_integral_value(rounding=ROUND_FLOOR))
     return tuple(claims), tuple(contributions)
 
 
@@ -398,7 +409,8 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False) -> dict
     from cacheon.economics import ArenaRewardAuthority
 
     standing, discovery = store.active_reward_claims()
-    earning, contributions = passed_reward_evidence(store)
+    score_speedups = {}
+    earning, contributions = passed_reward_evidence(store, score_speedups=score_speedups)
     _hold_unpublished_claims(store, earning)
     adjustments = reward_decay_adjustments(store)
     live = {claim.digest for claim in earning}
@@ -433,7 +445,9 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False) -> dict
         "arenas": tuple(authorities), "earning_claims": earning,
         "discovery_claims": discovery, "earned_contributions": contributions,
         "decay_start_blocks": starts, "adjustments": adjustments,
+        "score_speedups": score_speedups,
         "standing_claims": standing, "states": states,
+        "grandfathered_runtimes": reward_grandfathered_runtimes(store._db),
     }
 
 
@@ -468,6 +482,7 @@ def build_weight_projection(
     inputs = _reward_projection_inputs(store)
     standing = inputs.pop("standing_claims")
     adjustments = inputs.pop("adjustments")
+    grandfathered = inputs.pop("grandfathered_runtimes")
     active_states = tuple(row for row in inputs.pop("states") if row.generation > 0)
     earning, discovery = inputs["earning_claims"], inputs["discovery_claims"]
     projection = project_global_rewards(
@@ -483,11 +498,17 @@ def build_weight_projection(
         )
     )
     policy_digest = policy.digest
+    if grandfathered:
+        boundary_digest = canonical_digest("cacheon.operator.reward-grandfathering.v1", grandfathered)
+        evidence = tuple(sorted({*evidence, boundary_digest}))
+        policy_digest = canonical_digest("cacheon.operator.reward-record-policy.v1", {
+            "base_policy": policy_digest, "grandfathered_runtimes": grandfathered,
+        })
     if adjustments:
         adjustment_digest = canonical_digest("cacheon.operator.reward-decay.v1", adjustments)
         evidence = tuple(sorted({*evidence, adjustment_digest}))
         policy_digest = canonical_digest("cacheon.operator.reward-decay-policy.v1", {
-            "base_policy": policy.digest, "adjustment_digest": adjustment_digest,
+            "base_policy": policy_digest, "adjustment_digest": adjustment_digest,
         })
     return WeightProjection(
         context.chain_scope_digest,

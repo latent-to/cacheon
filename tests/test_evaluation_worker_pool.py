@@ -102,7 +102,7 @@ def test_out_of_order_import_releases_only_completed_arrival_prefix(tmp_path, mo
         with monkeypatch.context() as patch:
             patch.setattr(store, "apply_qualification_batch", lambda batch, **kwargs: pending.append((batch, kwargs)))
             candidates = [intake._qualified_settlement_candidate(
-                store, index=index, marker=str(index), target=target, check_single_pass=False,
+                store, index=index, marker=str(index), target=target, check_single_pass=False, speedups=(str(1.1 + index / 10), "1.01"),
             ) for index in range(4)]
         expected_prefixes = [[], [0], [0], [0, 1, 2, 3]]
         settled = []
@@ -131,7 +131,7 @@ def test_held_other_target_blocks_new_rewards_but_not_previous_earnings(tmp_path
         first = intake._qualified_settlement_candidate(store, marker="first", index=0)
         held = intake._reserve_one(store, index=1, hotkey="held")
         store.mark_held(held.reservation_id, "inspection")
-        later = intake._qualified_settlement_candidate(store, marker="later", index=2, target="norm.rmsnorm")
+        later = intake._qualified_settlement_candidate(store, marker="later", index=2, target="norm.rmsnorm", speedups=("1.1", "1.1"))
         assert [claim.hotkey for claim in store.passed_reward_claims()] == [first.hotkey]
         assert [row["hotkey"] for row in qualified_winners(store._db)] == [first.hotkey]
         lease = store.lease_settlement_cohort(current_block=11)

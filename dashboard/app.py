@@ -561,6 +561,8 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
             "lane": cj.get("lane"),
             "crowned": with_time(int(cj.get("finalized_block") or 0)),
         }
+        from dashboard.winners import submission_reward_comparison
+        detail["settlement"].update(submission_reward_comparison(con, rid))
     detail["reward_notice"] = reward_exclusion_notice(r["hotkey"], OFFER_PATH)
     detail["hold_notice"] = settlement_hold_notice(con, rid, detail.get("settlement", {}))
     detail["baseline"] = submission_baseline(con, rid, detail["target_id"])
@@ -771,10 +773,7 @@ def winners() -> dict[str, Any]:
         primary = cj.get("primary") or {}
         repro = cj.get("reproduction") or {}
         target = primary.get("target_id") or cj.get("target_id") or ""
-        speeds = tuple(filter(None, (
-            safe_float(primary.get("speedup")),
-            safe_float(repro.get("speedup")),
-        )))
+        speeds = tuple(filter(None, (safe_float(p.get("speedup")) for p in (primary, repro))))
         speedup = min(speeds) if speeds else None
         candidate_tps = conservative_candidate_tokens_per_second(
             speeds_by_reservation.get(row["reservation_id"], []))
@@ -789,11 +788,11 @@ def winners() -> dict[str, Any]:
             "target_summary": target_summary(target),
             "speedup": speedup,
             "improvement_pct": (speedup - 1) * 100 if speedup else None,
+            **{key: row[key] for key in ("previous_best_reservation_id", "previous_best_speedup",
+                "relative_improvement_pct", "score_improvement_pct", "reward_eligible", "grandfathered")},
             "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
-            "tokens_per_second": (
-                round(float(candidate_tps), 1)
-                if candidate_tps is not None else None),
+            "tokens_per_second": round(float(candidate_tps), 1) if candidate_tps is not None else None,
             "passed": with_time(passed_block),
             "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
@@ -822,8 +821,8 @@ def winners() -> dict[str, Any]:
         "pass_total": len(items),
         "offer": offer,
         "note": (
-            "One complete audited PASS can earn with time "
-            "decay; a crown is not required. Weight share is this validator's "
+            "A complete audited PASS earns after clearing the previous best by the configured "
+            "margin; grandfathered runtimes retain prior eligibility. Weight share is this validator's "
             "currently served offer. The chain reflects it only after commit-reveal "
             "and stake-weighted consensus across validators, so on-chain emission lags."
             if offer is not None

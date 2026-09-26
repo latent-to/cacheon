@@ -121,7 +121,8 @@ def test_quarter_bonus_uses_arrival_even_when_old_pass_qualifies_later(tmp_path,
     with intake._store(tmp_path / "a") as primary:
         for marker, index, arrival in (("c", 2, 19), ("d", 3, 7219)):
             intake._qualified_settlement_candidate(primary, marker=marker, arena_marker="a",
-                index=index, initialize_stack=False, submission_block=arrival, retained_block=7220)
+                index=index, initialize_stack=False, submission_block=arrival, retained_block=7220,
+                speedups=(str(1 + index / 10), str(1 + index / 10)))
     _advance(tmp_path, 7220)
     with intake._store(tmp_path / "a") as primary:
         result = _project(primary, schedule, journal, 7220)
@@ -131,7 +132,9 @@ def test_quarter_bonus_uses_arrival_even_when_old_pass_qualifies_later(tmp_path,
         claims = {claim.hotkey: claim for claim in data["earning_claims"]}
         assert report["submission_stall_bonus_ppm"][claims["minerc"].digest] == 1_000_000
         assert report["submission_stall_bonus_ppm"][claims["minerd"].digest] == 250_000
-        for key in ("standing_claims", "states", "adjustments"):
+        assert report["submission_score_speedups_ppm"][claims["minerc"].digest] == 1_142_857
+        assert report["submission_score_speedups_ppm"][claims["minerd"].digest] == 1_083_333
+        for key in ("standing_claims", "states", "adjustments", "grandfathered_runtimes"):
             data.pop(key)
         context = replace(intake._context("validator", "minera", "minerb", "minerc", "minerd"),
                           current_block=7220, current_block_hash=intake._bh(7220))

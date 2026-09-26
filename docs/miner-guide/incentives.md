@@ -166,9 +166,14 @@ V2 creates no claim and pays no principal.
 
 V1 is relative rather than fixed:
 
-1. A distinct contribution with a complete audited PASS becomes eligible for V1 credit.
-2. The claim's starting credit comes from the conservative improvement above the
-   previous incumbent, not from total code size or effort.
+1. A distinct contribution with a complete audited PASS earns V1 credit when it
+   beats the best earlier PASS on the same arena and commissioned baseline by
+   the sealed minimum margin. Finalized queue order determines precedence;
+   completion order does not. A subthreshold PASS still raises the comparison
+   high-water mark if it is faster.
+2. The claim's starting credit uses its conservative speedup divided by that
+   best preceding speedup. The first PASS uses a denominator of one. The frozen
+   evaluation baseline remains available for later submissions.
 3. New credit starts decaying after its first qualifying confirmed weight
    publication. Finalized submission time determines the waiting bonus and
    applicable arena terms. Retained historical decay clocks stay unchanged.
@@ -177,6 +182,16 @@ V1 is relative rather than fixed:
 5. A separate signer journals, submits, reads back, and confirms that vector.
 6. A later crown can retire the previous standing claim, but the earlier retained
    PASS continues earning decaying credit.
+
+For example, an earlier PASS at `1.10×` baseline and a later PASS at `1.12×`
+produce a scoring speedup of `1.12 / 1.10 = 1.018181…×`, or about **1.82%**
+improvement. Policy v1.7 uses this ratio in the logarithmic credit formula, floored to parts
+per million, rather than the later submission's full 12% baseline gain.
+Both the Winners table and submission details show the baseline comparison and
+queue-relative gain, with the earlier reservation identified. Qualification
+records, claim identities, and existing publication decay clocks remain intact.
+Explicitly grandfathered pre-policy runtime generations keep their original
+baseline-based scoring. Comparisons never cross arena or baseline identities.
 
 ### Arena percentages and the reduced waiting bonus
 

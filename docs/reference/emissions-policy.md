@@ -22,24 +22,57 @@ durable evidence remain reopenable from Git history and the reserved schema.
 
 ## Legacy V1
 
-Every distinct registered contribution with a complete audited PASS
-earns from its retained qualification, whether or not it becomes the crown.
+A distinct registered contribution with a complete audited PASS earns only when
+its conservative credited speedup is at least the best earlier distinct PASS
+speedup multiplied by `1 + min_margin`. The margin comes from its retained
+qualification's sealed resident speed policy; historical pairs use the larger
+margin. A tie or a smaller improvement earns nothing even though evaluation
+remains PASS. The first PASS against a commissioned baseline is eligible.
+
+Comparison follows finalized submission order (block, event index, subindex,
+hotkey, content hash), not evaluation completion time. All targets measured
+against the same arena and incumbent stack compete on the credited end-to-end
+score. Different baselines and runtime generations are not compared. Earlier
+PASSes below the reward threshold still contribute to the best preceding score.
+An unresolved earlier submission continues to block new reward eligibility.
+
+Before enabling this rule on an existing deployment, record the sorted unique
+pre-policy runtime digests in the intake `metadata` key
+`reward_grandfathered_runtimes` as a JSON list. Those generations retain all
+previous PASS eligibility, baseline-based scoring, and publication/decay clocks, including the pre-MTP
+history. The deployment must verify the list against commissioning records.
+New stores without this metadata apply the record rule to all generations.
+The list is included in projection evidence/identity and must be preserved by
+subsequent deployments. The dashboard uses the same filter as the weight producer.
+
+The rule applies to existing and future non-grandfathered PASSes; it does not
+rewrite qualification, settlement, or already published weights. A crown is
+not required for an eligible performance record.
 Qualification keeps using the manually commissioned incumbent when another
 contribution crowns. Changing that comparison baseline requires an explicit
 operator commission; a crown alone does not change it.
 Duplicate packaging of the same contribution earns once.
 
-For speedup `s > 1`, finalized submission block `b`, the preceding distinct PASS
-block `p` in the same arena (or `b` for the first), current block `n`, decay start
-`d`, half-life `h`, and fixed stall scale `1,800` blocks:
+Let `c` be the conservative candidate speedup over its measured baseline and `q`
+the highest conservative speedup among earlier distinct PASSes on that same arena
+and baseline. Use `q = 1` for the first PASS. The scoring ratio `s` is floored to
+parts per million before applying the credit formula. Grandfathered generations
+keep their original baseline scoring (`q = 1` for every claim).
+
+For finalized submission block `b`, preceding earning PASS block `p` in the same
+arena (or `b` for the first), current block `n`, decay start `d`, half-life `h`,
+and fixed stall scale `1,800` blocks:
 
 ```text
+s = floor((c / q) × 1000000) / 1000000
 credit = floor(ln(s) × (1 + sqrt((b - p) / 1800)) × 2^(-(n - d) / h) × 10^12)
 ```
 
 This is the retained full-strength rule. Static allocation can assign a reduced
-waiting bonus to future submissions as described below; changing code alone
-does not rescore earlier claims.
+waiting bonus to future submissions as described below; those terms remain tied
+to finalized submission time. The dashboard preserves `c - 1` as the baseline
+gain and also shows `c / q - 1` and the rounded scoring gain `s - 1`. For example,
+`c = 1.12` and `q = 1.10` give a 12% baseline gain and a 1.8181% scoring gain.
 
 Submission time controls stall credit. New PASS claims hold their decay factor
 at one until a matching weight vector containing their evidence and a positive
@@ -52,10 +85,12 @@ through the recorded legacy-claim set.
 Publication starts and recovery adjustments are append-only intake metadata,
 bound into the projection's evidence and policy identity. They never rewrite
 submission blocks, retained PASS records, or claim identities.
-Logarithmic units make compounded gains path-independent. Policy version
-`cacheon.emissions.v1.5` projects every accepted qualification and replaces v1.4's
-CROWN-only restriction. Existing v1.1/v1.3/v1.4 bindings move forward only
-when all numeric policy fields match.
+Policy `cacheon.emissions.v1.7` uses the queue-relative ratio in both ordinary
+and static-arena credit calculations, extending v1.6's threshold record rule.
+Existing v1.1/v1.3/v1.4/v1.5/v1.6 bindings move forward only when all numeric
+policy fields match. Scoring ratios are projection inputs keyed by unchanged
+claim digests; they do not replace retained baseline measurements or decay keys.
+Static allocation evidence includes `submission_score_speedups_ppm`.
 
 The active standing claim validates its evaluation stack against that stack's
 sealed catalog and target-spec bytes. Historical v1 composition and v2 exclusion

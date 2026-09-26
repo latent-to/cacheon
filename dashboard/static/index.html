@@ -521,6 +521,7 @@ async function viewWinners() {
     <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
         <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
         ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
+    <td>${rewardComparison(w)}</td>
     <td>${w.baseline_tokens_per_second != null ? `<b>${w.baseline_tokens_per_second.toFixed(1)}</b> tok/s` : '<span class="muted">Unavailable</span>'}
         <div class="muted small">${esc(w.baseline_kind)}</div></td>
     <td>${w.tokens_per_second != null ? `<b>${w.tokens_per_second.toFixed(1)}</b> tok/s` : '<span class="muted">Unavailable</span>'}
@@ -541,9 +542,19 @@ async function viewWinners() {
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
     ${offerLine(d.offer)}
     <h2>Retained PASS rewards</h2>
-    <p class="muted small">Credited gains follow arena scoring. Throughput and prefill columns show measured performance.</p>
-    <div class="metrics-table">${table(["Reservation","Improved op","Credited vs incumbent","Measured baseline","Candidate tok/s","Prefill gain","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
+    <p class="muted small">Scoring uses the gain over the best earlier PASS in queue order on the same baseline. The first PASS uses the baseline; grandfathered rewards keep their original scoring.</p>
+    <div class="metrics-table">${table(["Reservation","Improved op","Gain vs baseline","Gain vs previous best","Measured baseline","Candidate tok/s","Prefill gain","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
       rows, "No retained PASS rewards yet.")}</div>`;
+}
+
+function rewardComparison(w) {
+  if (w.relative_improvement_pct == null) return '<span class="muted">Awaiting queue comparison</span>';
+  const pct = w.relative_improvement_pct;
+  const reference = w.previous_best_reservation_id
+    ? `Previous best: <code title="${esc(w.previous_best_reservation_id)}">${esc(short(w.previous_best_reservation_id, 12))}</code>`
+    : "First PASS — baseline reference";
+  return `<b>${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%</b><div class="muted small">${reference}</div>
+    <div class="muted small">${w.reward_eligible ? `Scoring gain: ${w.score_improvement_pct.toFixed(4)}%${w.grandfathered ? " (grandfathered baseline gain)" : ""}` : "No reward — below winning threshold"}</div>`;
 }
 
 function offerLine(o) {
@@ -784,6 +795,7 @@ window.openDetail = async (rid) => {
       ${kv("Status", pill(d.settlement.status))}
       ${kv("Speedup (primary)", d.settlement.speedup_primary ? d.settlement.speedup_primary.toFixed(6) + "×" : "—")}
       ${kv("Speedup (repro)", d.settlement.speedup_reproduction ? d.settlement.speedup_reproduction.toFixed(6) + "×" : "—")}
+      ${kv("Gain vs previous best", rewardComparison(d.settlement))}
       ${kv("Crowned", fmtTime(d.settlement.crowned))}
       ${kv("Reason", esc(d.settlement.reason || "—"))}
     </dl>` : "";

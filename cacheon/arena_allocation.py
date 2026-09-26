@@ -97,9 +97,12 @@ class ArenaAllocation:
         return canonical_digest("cacheon.arena-allocation.v1", self.to_dict())
 
 
-def arena_base_credits(claims, policy, context, decay_start_blocks):
+def arena_base_credits(claims, policy, context, decay_start_blocks, score_speedups=None):
     """Keep speed and publication decay, excluding the arena's stall bonus."""
-    return {claim.digest: claim.credit_at(
+    from dataclasses import replace
+
+    return {claim.digest: (claim if score_speedups is None else replace(
+        claim, speedup_ppm=score_speedups[claim.digest])).credit_at(
         context.current_block, policy, predecessor_block=claim.crowned_block,
         decay_start_block=(context.current_block if decay_start_blocks.get(claim.digest, -1) is None
                            else decay_start_blocks.get(claim.digest)),

@@ -58,3 +58,114 @@ def reward_visibility_sql(db) -> str:
     """Read upgraded and historical arena databases without migrating a dashboard source."""
     columns = {row[1] for row in db.execute("PRAGMA table_info(settlement_candidates)")}
     return "sc.reward_eligible=1" if "reward_eligible" in columns else "1"
+
+
+def reward_comparisons(db) -> dict[str, dict]:
+    """Compare each PASS with the best preceding PASS on its measured baseline.
+
+    Prefix eligibility only says earlier work finished. It does not establish a
+    performance record. Recompute this filter for historical and new PASSes so
+    an old eligibility bit cannot preserve a non-winning reward claim.
+    """
+    import json
+    from decimal import Decimal
+
+    best = {}
+    seen = set()
+    comparisons = {}
+    grandfathered = set(reward_grandfathered_runtimes(db))
+    rows = db.execute(
+        "SELECT sc.* FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
+        "WHERE r.status='qualified' AND r.decision='PASS' "
+        "AND sc.status!='duplicate_proposal' AND " + reward_visibility_sql(db) +
+        " ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
+    ).fetchall()
+    for row in rows:
+        payload = json.loads(row["candidate_json"])
+        # Read economic fields without reinterpreting historical audit schemas.
+        # The producer separately reopens and validates every retained candidate.
+        primary = payload["primary"]
+        exempt = primary["incumbent_manifest"]["runtime_digest"] in grandfathered
+        manifest = primary["candidate_manifest"]
+        if manifest is None:
+            continue
+        contribution = manifest["entries"][primary["target_id"]]
+        identity = (primary["arena_digest"], primary["target_id"],
+                    json.dumps(contribution, sort_keys=True, separators=(",", ":")))
+        if identity in seen and not exempt:
+            continue
+        seen.add(identity)
+        # Scores describe the complete workload, including different target slots.
+        # A newly commissioned baseline has a different denominator.
+        group = (primary["arena_digest"], primary["incumbent_stack_digest"])
+        qualifications = tuple(payload[key] for key in ("primary", "reproduction") if key in payload)
+        score = min(Decimal(q["speedup"]) for q in qualifications)
+        previous, previous_id = best.get(group, (Decimal(1), None))
+        relative = score / previous
+        eligible = exempt or previous_id is None or (score > previous and
+            score >= previous * (1 + _reward_min_margin(db, qualifications)))
+        comparisons[row["reservation_id"]] = {
+            "previous_best_reservation_id": previous_id,
+            "previous_best_speedup": previous,
+            "relative_speedup": relative,
+            "score_speedup": score if exempt else relative,
+            "reward_eligible": eligible,
+            "grandfathered": exempt,
+        }
+        if score > previous:
+            best[group] = (score, row["reservation_id"])
+    return comparisons
+
+
+def reward_grandfathered_runtimes(db) -> list[str]:
+    """Read the operator's frozen pre-policy runtime generations."""
+    import json
+    from cacheon.stack_identity import require_sha256_hex
+
+    row = db.execute(
+        "SELECT value FROM metadata WHERE key='reward_grandfathered_runtimes'"
+    ).fetchone()
+    values = [] if row is None else json.loads(row[0])
+    if not isinstance(values, list) or values != sorted(set(values)):
+        raise ValueError("grandfathered reward runtimes must be a sorted unique list")
+    for value in values:
+        require_sha256_hex(value, field="grandfathered reward runtime")
+    return values
+
+
+def _reward_min_margin(db, qualifications):
+    """Read the configured margin from the same retained attempts as the score."""
+    import json
+    from decimal import Decimal
+    from pathlib import Path
+
+    from cacheon.chain.intake import IntakeError
+    from cacheon.eval.evidence_store import EvidenceArtifactRef, reopen_evidence
+
+    margins = []
+    rows = db.execute(
+        "SELECT attempt_ref_json,evidence_root FROM settlement_qualifications "
+        "WHERE reservation_id=? ORDER BY reproduction_index",
+        (qualifications[0]["reservation_digest"],),
+    ).fetchall()
+    if len(rows) != len(qualifications):
+        raise IntakeError("reward comparison lacks retained qualifications")
+    for row, qualification in zip(rows, qualifications, strict=True):
+        reference = EvidenceArtifactRef.from_dict(json.loads(row["attempt_ref_json"]))
+        if reference.sha256 != qualification["qualification_attempt_digest"]:
+            raise IntakeError("reward comparison attempt differs from qualification")
+        try:
+            payload = json.loads(reopen_evidence(Path(row["evidence_root"]), reference))
+            reports = payload.get("reports", [payload])
+            if "reports" in payload:
+                reports = [report for report in reports
+                           if report["selected_delta_digest"] == qualification["selected_delta_digest"]]
+            if len(reports) != 1:
+                raise ValueError("reward comparison report is ambiguous")
+            margin = Decimal(str(reports[0]["speed_witness"]["resident_policy"]["min_margin"]))
+            if not margin.is_finite() or not 0 < margin < 1:
+                raise ValueError("reward comparison margin is invalid")
+        except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+            raise IntakeError(f"reward comparison cannot read retained margin: {exc}") from None
+        margins.append(margin)
+    return max(margins)

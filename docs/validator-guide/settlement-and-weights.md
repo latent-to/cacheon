@@ -171,8 +171,9 @@ execution-authority mismatch, not a normal queue transition. The projector deriv
 crown history from retained settlement candidates and qualification evidence rather
 than a second reward table.
 
-Credit uses logarithmic speedup, a submission-time stall multiplier, and
-exponential half-life decay as defined in
+Credit uses the logarithm of the candidate speedup divided by the best earlier
+PASS speedup on the same arena and baseline, a submission-time stall multiplier,
+and exponential half-life decay as defined in
 [Legacy V1](../reference/emissions-policy.md#legacy-v1). The existing
 `crowned_block` wire field carries the finalized submission block for compatibility;
 publication uses a separate confirmed decay-start clock without rewriting that
@@ -194,7 +195,11 @@ promotion, integration, or release cannot renew the same bounty.
 
 ## Legacy V1 global projection
 
-The reward builder reopens every retained accepted PASS contribution plus the active stacks
+The reward builder reopens retained PASS evidence and pays only records that beat
+the best earlier PASS against the same baseline by the configured minimum margin.
+Pre-policy runtime generations retain their existing eligibility. See
+[emissions policy](../reference/emissions-policy.md) for grandfathering and ordering.
+The builder also reopens the active stacks
 and standing claims, then binds:
 
 - chain genesis scope and netuid;
@@ -226,11 +231,12 @@ projection. The active target relationships and exact sealed claim bindings rema
 required; retired admission or provider policy is not reconstructed. All earning
 claims enter one normalization, so a catalog change neither orphans old rewards
 nor creates an independently normalized pool for the new arena.
-The v1.1/v1.3/v1.4 bindings advance to v1.5 only with identical numeric policy
-fields; unrelated policy changes remain refused.
+The v1.1/v1.3/v1.4/v1.5/v1.6 bindings advance to v1.7 only with identical numeric
+policy fields; unrelated policy changes remain refused.
 
-A retained pair earns from the lower of its two settled speedups, and that ratio
-is only as good as the baseline lane behind it. When the retained stage-exit
+A retained pair's baseline speedup is the lower of its two settled speedups;
+that measurement feeds the queue-relative scoring ratio and depends on the
+baseline lane behind it. When the retained stage-exit
 artifacts show that the credited half read the baseline lane under the arena
 band (the median of every retained baseline-role read in the arena minus five
 percent, over at least six reads), the operator command
