@@ -89,6 +89,9 @@ def load_sources(path, network, netuid, enrich):
         private_roots.append(private)
     if raw["default"] not in result:
         raise ValueError("dashboard default source is absent")
+    for source in result.values():
+        source.values["PEER_DB_PATHS"] = tuple(
+            peer.values["DB_PATH"] for peer in result.values() if peer is not source)
     if enrich:
         for source in result.values():
             source.values["ENRICHER"].start()
@@ -136,13 +139,37 @@ def scope_reservations(connection):
     except (OSError, ValueError, KeyError) as exc:
         raise sqlite3.OperationalError("Arena registration unavailable") from exc
     connection.create_function("dashboard_arena", 0, lambda: arena, deterministic=True)
+    foreign = []
+    legacy = connection.execute(
+        "SELECT 1 FROM main.metadata WHERE key='legacy_arena_id' AND value=?", (arena,)
+    ).fetchone()
+    if legacy:
+        for index, path in enumerate(source.values.get("PEER_DB_PATHS", ())):
+            schema = f"dashboard_peer_{index}"
+            try:
+                connection.execute(f"ATTACH DATABASE ? AS {schema}",
+                                   (Path(path).resolve().as_uri() + "?mode=ro",))
+            except sqlite3.Error:
+                connection.close()
+                raise
+            foreign.append(f"""NOT EXISTS (
+                SELECT 1 FROM {schema}.reservations AS peer
+                WHERE peer.reservation_id=local.reservation_id
+                AND peer.publication_digest<>''
+                AND COALESCE(NULLIF(peer.competition_arena,''),
+                    (SELECT value FROM {schema}.metadata WHERE key='legacy_arena_id'))
+                    <>dashboard_arena())""")
+    # Payment failures precede bundle routing. An empty unpublished namespace
+    # must not claim a submission that another listener published for an arena.
+    unclaimed = " AND ".join(foreign) or "1"
     # Both listeners can publish the same arrival. All existing submission and
     # disclosure queries must use the selected namespace, not DB-wide presence.
-    connection.execute("""CREATE TEMP VIEW reservations AS
-        SELECT * FROM main.reservations WHERE competition_arena=dashboard_arena()
+    connection.execute(f"""CREATE TEMP VIEW reservations AS
+        SELECT * FROM main.reservations AS local WHERE competition_arena=dashboard_arena()
         OR (competition_arena='' AND EXISTS (
             SELECT 1 FROM main.metadata
-            WHERE key='legacy_arena_id' AND value=dashboard_arena()))""")
+            WHERE key='legacy_arena_id' AND value=dashboard_arena())
+            AND (publication_digest<>'' OR ({unclaimed})))""")
     return connection
 
 

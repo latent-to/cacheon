@@ -64,6 +64,9 @@ def planes(tmp_path, monkeypatch):
         registration.write_text(json.dumps({"worker_readiness": {"arena_id": f"{key}-arena"}}))
         sources[key] = DashboardSource(key, key, key,
                                       {"DB_PATH": path, "REGISTRATION_PATH": registration}, {}, False, None)
+    for source in sources.values():
+        source.values["PEER_DB_PATHS"] = tuple(
+            peer.values["DB_PATH"] for peer in sources.values() if peer is not source)
     app.state.dashboard_sources = sources
     app.state.dashboard_default = "glm"
     return TestClient(app), sources
@@ -75,13 +78,16 @@ def test_prepublication_rejections_do_not_claim_the_other_arenas_submission(plan
     with sqlite3.connect(sources["glm"].values["DB_PATH"]) as con:
         con.execute("UPDATE reservations SET reason=?, decision=?",
                     (reason, "FAIL" if reason.startswith("manifest:") else ""))
-    for key, status in (("glm", "failed"), ("qwen", "promoted")):
-        response = client.get(f"/api/submissions/shared?arena={key}")
-        assert response.status_code == 200
-        row = response.json()
-        assert (row["source"], row["status"]) == (key, status)
-        assert row["log_url"] == f"/api/submissions/shared/logs?arena={key}"
-    assert client.get("/api/submissions/shared").json()["reason"] == reason
+    response = client.get("/api/submissions/shared?arena=qwen")
+    assert response.status_code == 200
+    row = response.json()
+    assert (row["source"], row["status"]) == ("qwen", "promoted")
+    assert row["log_url"] == "/api/submissions/shared/logs?arena=qwen"
+    assert client.get("/api/submissions/shared?arena=glm").status_code == 404
+    assert client.get("/api/submissions/shared").status_code == 404
+    assert client.get("/api/queue?arena=glm").json()["items"] == []
+    with sqlite3.connect(sources["glm"].values["DB_PATH"]) as con:
+        assert con.execute("SELECT reason FROM reservations").fetchone()[0] == reason
 
 
 def test_replicated_publication_is_scoped_by_arena_not_database(planes):
@@ -97,7 +103,7 @@ def test_replicated_publication_is_scoped_by_arena_not_database(planes):
     assert (row["source"], row["status"]) == ("qwen", "failed")
     assert row["log_url"].endswith("?arena=qwen")
     glm = client.get("/api/queue?arena=glm").json()["items"]
-    assert [row["reservation_id"] for row in glm] == ["shared"]
+    assert glm == []
     assert len(client.get("/api/queue?arena=qwen").json()["items"]) == 2
     token = selected.set(sources["glm"])
     try:
@@ -119,6 +125,32 @@ def test_unavailable_peer_does_not_hide_selected_history(planes):
     client, sources = planes
     sources["glm"].values["DB_PATH"].unlink()
     assert client.get("/api/submissions/shared?arena=qwen").status_code == 200
+    response = client.get("/api/submissions/shared?arena=glm")
+    assert response.status_code == 503
+    assert response.json()["arena"]["key"] == "glm"
+
+
+@pytest.mark.parametrize("publication,arena", [("", "qwen-arena"), ("published", "glm-arena")])
+def test_only_a_foreign_published_row_displaces_legacy_observation(planes, publication, arena):
+    client, sources = planes
+    with sqlite3.connect(sources["qwen"].values["DB_PATH"]) as con:
+        con.execute("UPDATE reservations SET publication_digest=?,competition_arena=?", (publication, arena))
+    row = client.get("/api/submissions/shared?arena=glm").json()
+    assert (row["source"], row["status"]) == ("glm", "failed")
+    assert len(client.get("/api/queue?arena=glm").json()["items"]) == 1
+
+
+def test_local_publication_retains_its_legacy_history(planes):
+    client, sources = planes
+    with sqlite3.connect(sources["glm"].values["DB_PATH"]) as con:
+        con.execute("UPDATE reservations SET publication_digest='local-publication'")
+    assert client.get("/api/submissions/shared?arena=glm").status_code == 200
+    assert client.get("/api/submissions/shared?arena=qwen").status_code == 200
+
+
+def test_legacy_ownership_is_unavailable_when_peer_cannot_be_read(planes):
+    client, sources = planes
+    sources["qwen"].values["DB_PATH"].unlink()
     response = client.get("/api/submissions/shared?arena=glm")
     assert response.status_code == 503
     assert response.json()["arena"]["key"] == "glm"
