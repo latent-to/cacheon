@@ -9,22 +9,32 @@ from typing import Any
 from cacheon.chain.evaluation_order import reward_visibility_sql, reward_comparisons
 
 
-def qualified_winners(con) -> list[dict[str, Any]]:
-    """Expose only threshold-clearing PASSes in the completed arrival prefix."""
+def qualified_winners(con, *, include_waiting: bool = False) -> list[dict[str, Any]]:
+    """Read reward winners, optionally including PASSes awaiting queue resolution."""
     comparisons = reward_comparisons(con)
-    return [dict(row) | reward_comparison_summary(comparisons[row["reservation_id"]])
+    return [dict(row) | {"reward_eligible": False}
+            | reward_comparison_summary(comparisons.get(row["reservation_id"], {}))
             for row in con.execute("""
         SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
                r.*, r.block AS submission_block,
+               NOT (""" + reward_visibility_sql(con) + """) AS waiting_for_queue,
                max(q.retained_block) AS passed_block
         FROM settlement_candidates sc
         JOIN reservations r ON r.reservation_id = sc.reservation_id
         JOIN settlement_qualifications q ON q.reservation_id = sc.reservation_id
         WHERE r.status='qualified' AND r.decision='PASS'
-          AND sc.status!='duplicate_proposal' AND
-    """ + reward_visibility_sql(con) + """
+          AND sc.status!='duplicate_proposal'
         GROUP BY sc.reservation_id
-    """) if comparisons.get(row["reservation_id"], {}).get("reward_eligible")]
+    """) if (include_waiting and row["waiting_for_queue"])
+            or comparisons.get(row["reservation_id"], {}).get("reward_eligible")]
+
+
+def winner_lists(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep pending PASSes out of the finalized winner list and count."""
+    waiting = [item for item in items if item["waiting_for_queue"]]
+    finalized = [item for item in items if not item["waiting_for_queue"]]
+    return {"items": finalized, "pass_total": len(finalized),
+            "waiting_items": waiting, "waiting_total": len(waiting)}
 
 
 def reward_comparison_summary(comparison: dict) -> dict:

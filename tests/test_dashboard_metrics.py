@@ -363,3 +363,108 @@ def test_winners_api_labels_a_stale_hold_as_a_pass(tmp_path, client, monkeypatch
     winners = client.get("/api/winners").json()["items"]
     assert [w["settlement_status"] for w in winners] == ["passed"]
     assert winners[0]["reward_claim_status"] == "offer_unavailable"
+
+
+@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("score,earns", [("1.1", True), ("1.045", False)])
+def test_waiting_winners_keep_metrics_without_payouts_until_queue_resolves(
+    tmp_path, client, monkeypatch, target, score, earns,
+):
+    from dashboard import app
+    from tests.test_chain_intake import _qualified_settlement_candidate, _reserve_one, _store
+
+    with _store(tmp_path) as store:
+        monkeypatch.setattr(app, "DB_PATH", store.path)
+        first = _qualified_settlement_candidate(store, index=0, marker="first", speedups=("1.05", "1.05"))
+        blocker = _reserve_one(store, index=1, hotkey="held")
+        store.mark_held(blocker.reservation_id, "inspection")
+        later = _qualified_settlement_candidate(
+            store, index=2, marker="later", target=target, speedups=(score, score))
+        # An existing hotkey payout must not be attributed to the waiting result.
+        monkeypatch.setattr(app, "current_offer", lambda: ({}, {later.hotkey: Decimal("0.75")}))
+        assert [claim.hotkey for claim in store.passed_reward_claims()] == [first.hotkey]
+        changes = store._db.total_changes
+        payload = client.get("/api/winners").json()
+        assert [row["reservation_id"] for row in payload["items"]] == [first.reservation_digest]
+        assert payload["pass_total"] == payload["waiting_total"] == 1
+        waiting = payload["waiting_items"][0]
+        assert waiting["reservation_id"] == later.reservation_digest
+        assert waiting["waiting_for_queue"] and not waiting["reward_eligible"]
+        assert waiting["weight_share"] is None and waiting["reward_claim_status"] == "waiting_for_queue"
+        assert waiting["speedup"] == float(score)
+        assert waiting["improvement_pct"] == pytest.approx((float(score) - 1) * 100)
+        assert waiting["relative_improvement_pct"] is None
+        assert store._db.total_changes == changes
+        assert [claim.hotkey for claim in store.passed_reward_claims()] == [first.hotkey]
+
+        store.expire(blocker.reservation_id, current_block=500010, reason="operator_terminal_expiry")
+        assert len(store.passed_reward_claims()) == 1 + earns
+        resolved = client.get("/api/winners").json()
+        assert resolved["waiting_items"] == [] and resolved["waiting_total"] == 0
+        assert resolved["pass_total"] == 1 + earns
+        assert {row["reservation_id"] for row in resolved["items"]} == (
+            {first.reservation_digest, later.reservation_digest} if earns else {first.reservation_digest})
+        assert all(not row["waiting_for_queue"] for row in resolved["items"])
+        if earns:
+            winner = next(row for row in resolved["items"] if row["reservation_id"] == later.reservation_digest)
+            assert winner["weight_share"] == .75 and winner["reward_claim_status"] == "earning"
+            assert winner["improvement_pct"] == waiting["improvement_pct"]
+
+
+@pytest.mark.parametrize("target,other_target", [
+    ("activation.silu_and_mul", "norm.rmsnorm"),
+    ("norm.rmsnorm", "activation.silu_and_mul"),
+])
+def test_resolving_earlier_winner_rescores_potential_winners_in_queue_order(
+    tmp_path, client, monkeypatch, target, other_target,
+):
+    from decimal import ROUND_FLOOR
+    from cacheon.chain.qualification_settlement import _reward_projection_inputs
+    from dashboard import app
+    from tests.test_chain_intake import _qualified_settlement_candidate, _store
+
+    with _store(tmp_path) as store:
+        monkeypatch.setattr(app, "DB_PATH", store.path)
+        pending = []
+        apply = store.apply_qualification_batch
+        # Retain real qualification batches, then import them in reverse queue order.
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "apply_qualification_batch", lambda batch, **kw: pending.append((batch, kw)))
+            candidates = [_qualified_settlement_candidate(
+                store, index=i, marker=str(i), target=slot, speedups=(score, score),
+                check_single_pass=False, retained_block=20-i,
+            ) for i, (slot, score) in enumerate([
+                (target, "1.1"), (other_target, "1.105"), (target, "1.08"),
+                (other_target, "1.12"), (target, "1.5")])]
+        for batch, kwargs in reversed(pending[1:]):
+            apply(batch, **kwargs)
+        assert store.passed_reward_claims() == ()
+        before = client.get("/api/winners").json()
+        assert before["items"] == [] and before["waiting_total"] == 4
+        evidence = list(store._db.execute("SELECT * FROM settlement_qualifications ORDER BY reservation_id"))
+
+        batch, kwargs = pending[0]
+        apply(batch, **kwargs)
+        inputs = _reward_projection_inputs(store)
+        after = client.get("/api/winners").json()
+        winners = {row["reservation_id"]: row for row in after["items"]}
+        assert after["waiting_items"] == [] and after["waiting_total"] == 0
+        assert set(winners) == {candidates[i].reservation_digest for i in (0, 3, 4)}
+        # The best earlier PASS is index 1, even though it missed the reward margin.
+        # Neither the slower immediate predecessor nor the faster later PASS is the reference.
+        winner = winners[candidates[3].reservation_digest]
+        relative = Decimal("1.12") / Decimal("1.105")
+        score_ppm = int((relative * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
+        assert winner["previous_best_reservation_id"] == candidates[1].reservation_digest
+        assert winner["relative_improvement_pct"] == pytest.approx(float((relative - 1) * 100))
+        assert winner["score_improvement_pct"] == (score_ppm - 1_000_000) / 10_000
+        claims = {claim.hotkey: claim for claim in inputs["earning_claims"]}
+        assert set(claims) == {candidates[i].hotkey for i in (0, 3, 4)}
+        assert inputs["score_speedups"][claims[candidates[3].hotkey].digest] == score_ppm
+        assert claims[candidates[3].hotkey].speedup_ppm == 1_120_000
+        original = next(row for row in before["waiting_items"] if row["reservation_id"] == winner["reservation_id"])
+        assert winner["improvement_pct"] == original["improvement_pct"]
+        assert all(store.get(c.reservation_digest).decision == "PASS" for c in candidates)
+        assert evidence == list(store._db.execute(
+            "SELECT * FROM settlement_qualifications WHERE reservation_id!=? ORDER BY reservation_id",
+            (candidates[0].reservation_digest,)))

@@ -130,6 +130,7 @@ def submission_baseline(
         "assigned": assigned,
         "relationship": "no_active_tip",
         "artifact_digest": baseline_artifact,
+        "reservation_id": None,
         "stack_digest": raw.get("incumbent_stack_digest") or manifest.get("digest") or "",
         "tree_digest": raw.get("incumbent_tree_digest") or "",
         "arena_digest": raw.get("arena_digest") or manifest.get("arena_digest") or "",
@@ -157,6 +158,15 @@ def submission_baseline(
         reservation = con.execute("SELECT competition_arena FROM reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
         scope = (reservation["competition_arena"],)
         predicate = " AND competition_arena=?"
+    if baseline_artifact:
+        origin = con.execute(
+            "SELECT e.reservation_id FROM target_lineage_nodes n "
+            "JOIN settlement_events e ON e.event_id=n.transition_event_id "
+            "WHERE n.target_id=? AND n.artifact_digest=?" + predicate,
+            (target_id, baseline_artifact, *scope),
+        ).fetchone()
+        if origin is not None:
+            result["reservation_id"] = origin["reservation_id"]
     tip = con.execute(
         "SELECT artifact_digest FROM target_lineage_tips WHERE target_id=?" + predicate,
         (target_id, *scope),

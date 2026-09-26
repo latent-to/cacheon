@@ -42,18 +42,25 @@ def _db() -> sqlite3.Connection:
             target_id TEXT NOT NULL,
             artifact_digest TEXT NOT NULL,
             parent_artifact_digest TEXT NOT NULL,
-            winner_speedup TEXT NOT NULL
+            winner_speedup TEXT NOT NULL,
+            transition_event_id TEXT NOT NULL
+        );
+        CREATE TABLE settlement_events(
+            event_id TEXT PRIMARY KEY,
+            reservation_id TEXT NOT NULL
         );
         """
     )
     con.executemany(
-        "INSERT INTO target_lineage_nodes VALUES(?,?,?,?)",
+        "INSERT INTO target_lineage_nodes VALUES(?,?,?,?,?)",
         (
-            (TARGET, "B", "A", "1.1"),
-            (TARGET, "C", "B", "1.1"),
+            (TARGET, "B", "A", "1.1", "crown-b"),
+            (TARGET, "C", "B", "1.1", "crown-c"),
         ),
     )
     con.execute("INSERT INTO target_lineage_tips VALUES(?,?)", (TARGET, "C"))
+    con.executemany("INSERT INTO settlement_events VALUES(?,?)",
+                    (("crown-b", "submission-b"), ("crown-c", "submission-c")))
     return con
 
 
@@ -93,6 +100,35 @@ def test_submission_baseline_shows_composed_ancestor_threshold() -> None:
     assert baseline["threshold_speedup"] == pytest.approx(1.21)
     assert baseline["stack_digest"] == "stack"
     assert baseline["tree_digest"] == "tree"
+    assert baseline["reservation_id"] is None
+
+
+def test_baseline_link_uses_evaluated_artifact_not_current_tip() -> None:
+    con = _db()
+    _candidate(con, "candidate", "B")
+    assert submission_baseline(con, "candidate", TARGET)["reservation_id"] == "submission-b"
+    con.execute("DELETE FROM target_lineage_tips")
+    assert submission_baseline(con, "candidate", TARGET)["reservation_id"] == "submission-b"
+
+
+def test_baseline_link_stays_in_submission_arena() -> None:
+    con = _db()
+    con.executescript("""
+        ALTER TABLE target_lineage_tips ADD COLUMN competition_arena TEXT DEFAULT 'one';
+        ALTER TABLE target_lineage_nodes ADD COLUMN competition_arena TEXT DEFAULT 'one';
+        CREATE TABLE reservations(reservation_id TEXT, competition_arena TEXT);
+        INSERT INTO reservations VALUES('candidate', 'two');
+        INSERT INTO target_lineage_nodes VALUES('moe.fused_experts','B','A','1.1','crown-two','two');
+        INSERT INTO settlement_events VALUES('crown-two','submission-two');
+    """)
+    _candidate(con, "candidate", "B")
+    assert submission_baseline(con, "candidate", TARGET)["reservation_id"] == "submission-two"
+
+
+def test_base_engine_has_no_submission_link() -> None:
+    con = _db()
+    _candidate(con, "stock", "")
+    assert submission_baseline(con, "stock", TARGET)["reservation_id"] is None
 
 
 def test_submission_baseline_distinguishes_tip_side_branch_and_unmeasured() -> None:
