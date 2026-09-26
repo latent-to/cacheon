@@ -381,7 +381,8 @@ def test_waiting_winners_keep_metrics_without_payouts_until_queue_resolves(
         later = _qualified_settlement_candidate(
             store, index=2, marker="later", target=target, speedups=(score, score))
         # An existing hotkey payout must not be attributed to the waiting result.
-        monkeypatch.setattr(app, "current_offer", lambda: ({}, {later.hotkey: Decimal("0.75")}))
+        monkeypatch.setattr(app, "current_offer", lambda **kw: (
+            {"submission_shares_available": True}, {later.reservation_digest: Decimal("0.75")}))
         assert [claim.hotkey for claim in store.passed_reward_claims()] == [first.hotkey]
         changes = store._db.total_changes
         payload = client.get("/api/winners").json()
@@ -409,6 +410,43 @@ def test_waiting_winners_keep_metrics_without_payouts_until_queue_resolves(
             winner = next(row for row in resolved["items"] if row["reservation_id"] == later.reservation_digest)
             assert winner["weight_share"] == .75 and winner["reward_claim_status"] == "earning"
             assert winner["improvement_pct"] == waiting["improvement_pct"]
+
+
+def test_winners_split_same_hotkey_while_miners_keep_total(tmp_path, client, monkeypatch):
+    from dashboard import app
+    from tests import test_chain_intake as intake
+
+    reserve = intake._reserve_one
+    monkeypatch.setattr(intake, "_reserve_one", lambda store, **kw:
+                        reserve(store, **{**kw, "hotkey": "same-miner"}))
+    with intake._store(tmp_path) as store:
+        monkeypatch.setattr(app, "DB_PATH", store.path)
+        candidates = [intake._qualified_settlement_candidate(
+            store, index=i, marker=str(i), speedups=(speed, speed))
+            for i, speed in enumerate(("1.05", "1.15", "1.25"))]
+        store.passed_reward_claims()
+        offer = {"offer": {"lane": "legacy_v1", "projection_digest": "a" * 64,
+            "projection": {"effective_block": 10, "weights_ppm": [["same-miner", 750_000]]}}}
+        app.OFFER_PATH.write_text(json.dumps(offer))
+        miners_before = client.get("/api/miners").json()
+        unavailable = client.get("/api/winners").json()["items"]
+        assert all(row["weight_share"] is None and row["reward_claim_status"] == "attribution_unavailable"
+                   for row in unavailable)
+        weights = {candidates[0].reservation_digest: 200_000, candidates[1].reservation_digest: 550_000}
+        reference = publish_canonical_json_evidence(
+            prepare_evidence_root(store.path.parent / "weight-allocation-evidence"),
+            {"submission_weights_ppm": weights}, domain="weights.arena-allocation",
+            schema="cacheon.static-arena-allocation.v1")
+        offer["offer"]["projection"]["allocation_evidence"] = reference.to_dict()
+        app.OFFER_PATH.write_text(json.dumps(offer))
+        winners = client.get("/api/winners").json()["items"]
+        assert {row["reservation_id"]: row["weight_share"] for row in winners} == {
+            candidate.reservation_digest: weights.get(candidate.reservation_digest, 0) / 1_000_000
+            for candidate in candidates}
+        assert next(row for row in winners if row["weight_share"] == 0)["reward_claim_status"] == "not_earning"
+        miners_after = client.get("/api/miners").json()
+        assert miners_after == miners_before
+        assert miners_after["items"][0]["weight_share"] == .75
 
 
 @pytest.mark.parametrize("target,other_target", [

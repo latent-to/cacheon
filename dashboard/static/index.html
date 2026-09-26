@@ -539,7 +539,7 @@ async function viewWinners() {
            <div class="muted small">incentive ${hc.incentive != null ? (hc.incentive * 100).toFixed(2) + "%" : "—"}</div>`
         : '<span class="pill bad">deregistered</span>'}</td>
   </tr>`;};
-  const headers = ["Reservation","Improved op","Gain vs baseline","Gain vs previous best","Measured baseline","Candidate tok/s","Prefill gain","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"];
+  const headers = ["Reservation","Improved op","Gain vs baseline","Gain vs previous best","Measured baseline","Candidate tok/s","Prefill gain","Miner hotkey","PASS confirmed","Submission weight share (served offer)","On-chain now (emission)"];
   const waiting = d.waiting_items || [];
   return `
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
