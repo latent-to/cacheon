@@ -90,6 +90,7 @@ td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: to
 tr:last-child td { border-bottom: 0; }
 tbody tr:hover { background: var(--panel2); }
 tr.clickable { cursor: pointer; }
+tr.waiting-winner { opacity: .65; filter: grayscale(1); }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px;
   font-size: 11px; font-weight: 600; border: 1px solid transparent; white-space: nowrap; }
 .pill.ok { color: var(--ok); background: rgba(74,222,128,.1); border-color: rgba(74,222,128,.3); }
@@ -513,10 +514,10 @@ async function viewPayments() {
 
 async function viewWinners() {
   const d = await api("/api/winners");
-  const rows = d.items.map((w) => {
+  const winnerRow = (w) => {
     const hc = w.hotkey_chain || {};
-    return `<tr class="clickable" onclick="openDetail('${w.reservation_id}')">
-    <td><code title="${esc(w.reservation_id)}">${esc(short(w.reservation_id, 12))}</code></td>
+    return `<tr class="clickable${w.waiting_for_queue ? " waiting-winner" : ""}" onclick="openDetail('${w.reservation_id}')">
+    <td><code title="${esc(w.reservation_id)}">${esc(short(w.reservation_id, 12))}</code>${w.waiting_for_queue ? '<div><span class="pill mute">Potential winner</span></div>' : ""}</td>
     <td><b>${esc(w.target_id)}</b><div class="muted small">${esc(w.target_summary)}</div><span class="pill info">${esc(w.competition)}</span></td>
     <td>${w.improvement_pct != null ? `<b>+${w.improvement_pct.toFixed(2)}%</b>` : "—"}
         <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
@@ -529,25 +530,30 @@ async function viewWinners() {
     <td>${w.prefill_speedup != null ? metricGain(w.prefill_speedup) : '<span class="muted">Not measured</span>'}</td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
     <td>${fmtTime(w.passed)}<div class="muted small">block ${blockLink(w.passed, w.passed_links)}</div></td>
-    <td>${w.weight_share != null ? `<b>${(w.weight_share * 100).toFixed(2)}%</b>` : "—"}
+    <td>${w.waiting_for_queue ? "—" : `${w.weight_share != null ? `<b>${(w.weight_share * 100).toFixed(2)}%</b>` : "—"}
         <div class="small">${pill(w.reward_claim_status)}</div>
-        <div class="muted small">${pill(w.settlement_status)}</div></td>
-    <td>${hc.registered
+        <div class="muted small">${pill(w.settlement_status)}</div>`}</td>
+    <td>${w.waiting_for_queue ? '<span class="muted">Awaiting queue resolution</span>' : hc.registered
         ? `<span class="pill ok">uid ${hc.uid}</span>
            <div class="small">${hc.emission_alpha_per_day != null ? hc.emission_alpha_per_day.toFixed(4) + " " + esc(d.emission_symbol) + "/day" : "—"}</div>
            <div class="muted small">incentive ${hc.incentive != null ? (hc.incentive * 100).toFixed(2) + "%" : "—"}</div>`
         : '<span class="pill bad">deregistered</span>'}</td>
-  </tr>`;});
+  </tr>`;};
+  const headers = ["Reservation","Improved op","Gain vs baseline","Gain vs previous best","Measured baseline","Candidate tok/s","Prefill gain","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"];
+  const waiting = d.waiting_items || [];
   return `
     ${d.note ? `<div class="callout">${esc(d.note)}</div>` : ""}
     ${offerLine(d.offer)}
+    ${waiting.length ? `<h2>Potential winners (${waiting.length})</h2>
+    <p class="muted small">Evaluation complete. Gains vs baseline are retained; winner selection and payouts wait until earlier submissions in the queue are resolved.</p>
+    <div class="metrics-table">${table(headers, waiting.map(winnerRow))}</div>` : ""}
     <h2>Retained PASS rewards</h2>
     <p class="muted small">Scoring uses the gain over the best earlier PASS in queue order on the same baseline. The first PASS uses the baseline; grandfathered rewards keep their original scoring.</p>
-    <div class="metrics-table">${table(["Reservation","Improved op","Gain vs baseline","Gain vs previous best","Measured baseline","Candidate tok/s","Prefill gain","Miner hotkey","PASS confirmed","Weight share (served offer)","On-chain now (emission)"],
-      rows, "No retained PASS rewards yet.")}</div>`;
+    <div class="metrics-table">${table(headers, d.items.map(winnerRow), "No retained PASS rewards yet.")}</div>`;
 }
 
 function rewardComparison(w) {
+  if (w.waiting_for_queue) return '<span class="muted">Pending queue resolution</span>';
   if (w.relative_improvement_pct == null) return '<span class="muted">Awaiting queue comparison</span>';
   const pct = w.relative_improvement_pct;
   const reference = w.previous_best_reservation_id

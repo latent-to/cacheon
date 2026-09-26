@@ -742,9 +742,9 @@ def payments() -> dict[str, Any]:
 
 @app.get("/api/winners")
 def winners() -> dict[str, Any]:
-    from dashboard.winners import qualified_winners
+    from dashboard.winners import qualified_winners, winner_lists
     con = intake_conn()
-    passed = qualified_winners(con)
+    passed = qualified_winners(con, include_waiting=True)
     evidence_roots = qualification_evidence_roots(
         value("QUAL_EVIDENCE_STATE", QUAL_EVIDENCE_STATE), value("QUAL_EVIDENCE_EXTRA", QUAL_EVIDENCE_EXTRA), con, stage_dir=value("STAGE_ROOT", LOG_ROOT.parent / "stage"))
     speeds_by_reservation: dict[str, list[object]] = {}
@@ -788,8 +788,9 @@ def winners() -> dict[str, Any]:
             "target_summary": target_summary(target),
             "speedup": speedup,
             "improvement_pct": (speedup - 1) * 100 if speedup else None,
-            **{key: row[key] for key in ("previous_best_reservation_id", "previous_best_speedup",
+            **{key: row.get(key) for key in ("previous_best_reservation_id", "previous_best_speedup",
                 "relative_improvement_pct", "score_improvement_pct", "reward_eligible", "grandfathered")},
+            "waiting_for_queue": bool(row["waiting_for_queue"]),
             "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
             "tokens_per_second": round(float(candidate_tps), 1) if candidate_tps is not None else None,
@@ -799,10 +800,10 @@ def winners() -> dict[str, Any]:
             "competition": competition_label(row["submission_block"], row.get("competition_arena", "")),
             **measured_baseline(speeds_by_reservation.get(row["reservation_id"], []), primary),
             **prefill_summary(speeds_by_reservation.get(row["reservation_id"], [])),
-            "weight_share": share_value(shares, hotkey),
-            "reward_claim_status": (
+            "weight_share": None if row["waiting_for_queue"] else share_value(shares, hotkey),
+            "reward_claim_status": "waiting_for_queue" if row["waiting_for_queue"] else ((
                 "earning" if shares.get(hotkey) else "not_earning"
-            ) if offer is not None else "offer_unavailable",
+            ) if offer is not None else "offer_unavailable"),
             "settlement_status": labels[row["reservation_id"]],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
@@ -816,9 +817,8 @@ def winners() -> dict[str, Any]:
         })
     items.sort(key=lambda x: x["passed"]["block"] or 0, reverse=True)
     return {
-        "items": items,
+        **winner_lists(items),
         "emission_symbol": emission_symbol(),
-        "pass_total": len(items),
         "offer": offer,
         "note": (
             "A complete audited PASS earns after clearing the previous best by the configured "

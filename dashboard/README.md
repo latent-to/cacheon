@@ -33,6 +33,21 @@ to run the dashboard and its API tests.
 | Timeline | Settlement events (CROWN/ADOPTION/HOLD/…), the served weight offer's vector, and this validator's follower journal (intent/pending/held/confirmed) |
 | System | DB/chain/process/heartbeat health, intake lag |
 
+The Winners tab places completed PASSes still awaiting earlier queue entries in
+a separate, greyed-out **Potential winners** table above retained rewards. Their
+measured gains remain visible, but payouts and final winner selection are pending.
+Once queue eligibility is finalized, qualifying winners appear normally on the
+next refresh; PASSes below the winning threshold do not enter retained rewards.
+Resolution uses the shared reward comparison from the weight producer: scoring
+gain is relative to the best earlier PASS in queue order within the same arena
+and measured baseline, including an earlier PASS that missed the reward margin.
+Later submissions never change an earlier submission's reference. Retained
+baseline measurements and PASS evidence are unchanged.
+Already finalized rewards retain their existing eligibility if earlier work is reopened.
+`/api/winners` returns these pending results in `waiting_items` / `waiting_total`,
+separate from finalized `items` / `pass_total`. Waiting rows have
+`waiting_for_queue: true`, no weight share, and no finalized queue comparison.
+
 ## Design notes
 
 - **Never writes the intake DB.** Opens it `mode=ro` with WAL visibility. Safe to run alongside intake/supervisor.
