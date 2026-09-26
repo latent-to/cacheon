@@ -6,4 +6,5 @@ cd "$DASH_REPO_ROOT"
 PY="${CACHEON_DASH_PY:-/root/miniconda3/envs/prod/bin/python}"
 export CACHEON_DASH_HOST="${CACHEON_DASH_HOST:-127.0.0.1}"
 export CACHEON_DASH_PORT="${CACHEON_DASH_PORT:-8788}"
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 exec "$PY" -m dashboard.app
