@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Cacheon submissions API + dashboard (netuid 14).
 
-Read-only over the live intake SQLite. Never writes the intake DB; keeps its
-own enrichment cache (block timestamps, extrinsic signers, metagraph) in a
-separate SQLite file so chain lookups survive restarts.
+Reads the intake DB; persists chain enrichment in a separate SQLite cache.
 
-Run with:  /root/miniconda3/envs/prod/bin/python -m dashboard.app
-           (see run.sh / bin/cacheon-dashboard)
+Run with: python -m dashboard.app (see run.sh / bin/cacheon-dashboard)
 """
 from __future__ import annotations
 
@@ -35,6 +32,7 @@ from dashboard.disclosure import disclose_bundle, install_disclosure_routes
 from dashboard.competition import competition_label, submission_baseline, target_summary
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
 from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
+from cacheon.chain.miner_feedback import _guidance
 from dashboard.receipts import evaluation_recovery, screen_stages
 from dashboard.winners import (
     conservative_candidate_tokens_per_second,
@@ -270,6 +268,8 @@ def submission_row(r: dict[str, Any]) -> dict[str, Any]:
         "status": r["status"],
         "decision": r.get("decision") or "",
         "reason": r.get("reason") or "",
+        "admission_notice": (_guidance(r["reason"]) if r.get("reason") ==
+                             "baseline_closed_at_submission" and r.get("decision") == "NO_DECISION" else None),
         "invalid_reason": r.get("invalid_reason") or "",
         "hotkey": r["hotkey"],
         "hotkey_links": links_for_address(r["hotkey"]),

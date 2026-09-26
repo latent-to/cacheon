@@ -1176,28 +1176,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
 
         if type(target_id) is not str or not target_id:
             raise IntakeError("closed-target disposal requires the target id")
-        with self._transaction():
-            self._require_evaluation_mutation_authority(reservation_id)
-            row = self.get(reservation_id)
-            if row.status not in {"fetching", "published"} or row.screen_attempts:
-                raise IntakeError(
-                    f"closed-target disposal from {row.status!r} is forbidden"
-                )
-            self._db.execute(
-                "UPDATE reservations SET status='expired',"
-                "decision='NO_DECISION',reason=? WHERE reservation_id=?",
-                (f"target_unavailable:{target_id}", reservation_id),
-            )
-            self._db.execute(
-                "DELETE FROM eval_cost_payments WHERE reservation_id=?",
-                (reservation_id,),
-            )
-            self._db.execute(
-                "UPDATE eval_cost_credits SET reservation_id='',spent_block=0 "
-                "WHERE reservation_id=?",
-                (reservation_id,),
-            )
-        return self.get(reservation_id)
+        return self._expire_before_screen(reservation_id, f"target_unavailable:{target_id}")
 
     def release_manifest_compatibility_failure(
         self,

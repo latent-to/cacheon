@@ -105,6 +105,11 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "A FAIL verdict replays onto identical bytes. Change the kernel, not the "
         "packaging.",
     ),
+    "baseline_closed_at_submission": (
+        "This baseline closed before your submission.",
+        "Your submission credit has been preserved. Resubmit against the current "
+        "open baseline; any cited evaluation payment remains reusable.",
+    ),
     "target_unavailable": (
         "The commissioned arena workload cannot currently measure this "
         "registered target family, so the submission was parked before any "
@@ -367,7 +372,8 @@ def _submission(
         "decision": row["decision"] or None,
         "attribution": _attribution(row),
         "reason": reason,
-        "guidance": _guidance(reason.get("code")),
+        "guidance": (None if reason.get("code") == "baseline_closed_at_submission"
+                     and row["decision"] != "NO_DECISION" else _guidance(reason.get("code"))),
         "screens": _screen_dispositions(db, row["reservation_id"]),
         "qualification_dispositions": qualifications,
         "evaluation_leases": leases,
