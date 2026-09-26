@@ -117,6 +117,11 @@ After release, detail `url` names `/api/submissions/{id}/bundle.tar.gz`, which
 rechecks the retained bundle hash before download. Existing plaintext uploads
 remain readable by intake and cannot be made confidential retroactively.
 
+The evaluation baseline card links to the submission recorded by the evaluated
+artifact's lineage transition, preserving the selected arena. A base-engine
+baseline has no submission; missing historical links are labelled explicitly.
+The previous-best scoring comparison also links to that submission's details.
+
 The submission detail renders the signed evaluation records in full. Each
 screen attempt carries `stages` — every graded check from the signed receipt
 (stage, grade, reason, elapsed time), so a `screen_rejected` names the exact

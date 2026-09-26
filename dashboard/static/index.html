@@ -557,7 +557,7 @@ function rewardComparison(w) {
   if (w.relative_improvement_pct == null) return '<span class="muted">Awaiting queue comparison</span>';
   const pct = w.relative_improvement_pct;
   const reference = w.previous_best_reservation_id
-    ? `Previous best: <code title="${esc(w.previous_best_reservation_id)}">${esc(short(w.previous_best_reservation_id, 12))}</code>`
+    ? `Previous best: ${submissionLink(w.previous_best_reservation_id)}`
     : "First PASS — baseline reference";
   return `<b>${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%</b><div class="muted small">${reference}</div>
     <div class="muted small">${w.reward_eligible ? `Scoring gain: ${w.score_improvement_pct.toFixed(4)}%${w.grandfathered ? " (grandfathered baseline gain)" : ""}` : "No reward — below winning threshold"}</div>`;
@@ -725,6 +725,9 @@ function submissionURL(rid) {
   else url.searchParams.delete("submission");
   return url;
 }
+function submissionLink(rid) {
+  return `<a href="${esc(submissionURL(rid))}" onclick="event.stopPropagation()" title="${esc(rid)}"><code>${esc(short(rid, 12))}</code> ↗</a>`;
+}
 window.closeDetail = () => {
   detailRequest++;
   $("#drawer").classList.remove("open");
@@ -817,6 +820,10 @@ window.openDetail = async (rid) => {
           : '<span class="muted">No retained checkpoint mapping</span>')}
         ${checkpoint ? kv("Checkpoint revision", `<code class="small">${esc(checkpoint.revision)}</code>`) : ""}
         ${kv("Baseline tok/s", baselineTps != null ? `<b>${baselineTps.toFixed(1)}</b> tok/s · measured` : "Not measured")}
+        ${kv("Baseline submission", baseline.reservation_id ? submissionLink(baseline.reservation_id)
+          : baseline.evaluated || baseline.assigned
+            ? (baseline.artifact_digest ? "Submission not recorded" : "Base engine — no submission")
+            : "Not assigned yet")}
         ${kv("Relationship", baselineSummary(baseline))}
         ${kv(baseline.evaluated ? "Evaluated artifact" : "Assigned artifact",
           baseline.evaluated || baseline.assigned
