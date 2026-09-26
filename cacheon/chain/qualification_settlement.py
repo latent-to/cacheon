@@ -187,6 +187,7 @@ def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[object, ...]:
 
 def passed_reward_evidence(
     store: FinalizedIntakeStore, *, score_speedups: dict[str, int] | None = None,
+    reservation_ids: dict[str, str] | None = None,
 ) -> tuple[tuple, tuple]:
     """Reopen earned contributions; optionally fill scoring ratios keyed by unchanged claim IDs."""
     from decimal import Decimal, ROUND_FLOOR
@@ -240,6 +241,8 @@ def passed_reward_evidence(
             )
         )
         contributions.append(contribution)
+        if reservation_ids is not None:
+            reservation_ids[claims[-1].digest] = candidate.reservation_digest
         if score_speedups is not None:
             score_speedups[claims[-1].digest] = int(
                 (comparison["score_speedup"] * WEIGHT_PPM).to_integral_value(rounding=ROUND_FLOOR))
@@ -399,7 +402,7 @@ def reconcile_follower_reward_decay(store: FinalizedIntakeStore, journal_path, *
         )
 
 
-def _reward_projection_inputs(store, *, include_uncrowned: bool = False) -> dict:
+def _reward_projection_inputs(store, *, include_uncrowned: bool = False, reservation_ids=None) -> dict:
     """Reopen one store's reward evidence and publication clocks for its producer.
 
     Retained claims, stack checks and publication clocks stay together so a
@@ -410,7 +413,8 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False) -> dict
 
     standing, discovery = store.active_reward_claims()
     score_speedups = {}
-    earning, contributions = passed_reward_evidence(store, score_speedups=score_speedups)
+    earning, contributions = passed_reward_evidence(
+        store, score_speedups=score_speedups, reservation_ids=reservation_ids)
     _hold_unpublished_claims(store, earning)
     adjustments = reward_decay_adjustments(store)
     live = {claim.digest for claim in earning}

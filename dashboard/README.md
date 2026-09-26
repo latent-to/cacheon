@@ -199,12 +199,25 @@ view share this arrival-ordered filter.
 A pass that settlement held as `stale_incumbent` (timed against an earlier
 baseline than the champion) is shown as `paid pass` in `settlement_status`,
 since it earns like any other pass and only the champion adoption was withheld.
-Historical retained pairs keep their identities. `/api/winners` and `/api/miners` carry `weight_share`
-(the hotkey's fraction of the served vector, null when the offer file is
-unavailable) plus an `offer` summary (projection digest, effective block,
+Historical retained pairs keep their identities. `/api/winners` carries each
+reservation's `weight_share` from the served offer's allocation evidence
+(`submission_weights_ppm`), including the allocator's integer rounding. A
+submission absent from an available breakdown has zero share; pending rows and
+offers without a readable breakdown have null shares. Older offers without this
+field show `attribution_unavailable` until the producer publishes a new breakdown.
+`/api/miners` continues to carry the hotkey's total fraction of the served vector,
+null when the offer file is unavailable. Both include an `offer` summary (projection digest, effective block,
 standing-claim count, named `crown_count` on the wire). `/api/weights` returns that vector with UIDs and on-chain
 incentive beside the follower journal rows, so the lag between the served
 offer and chain consensus is visible rather than mistaken for a wrong number.
+
+For producers that redistribute weights after static allocation, set
+`CACHEON_DASH_SUBMISSION_SHARES` to their final submission-breakdown JSON file.
+It must contain `projection_digest` matching the served offer and
+`submission_weights_ppm` keyed by reservation ID after redistribution. This
+explicitly selects that report instead of pre-redistribution allocation evidence;
+a missing or mismatched snapshot shows unavailable attribution. Miners always
+uses the served hotkey vector.
 
 `/api/winners` keeps settlement credit (`improvement_pct`) separate from measured
 candidate and baseline throughput. `baseline_kind` identifies stock, incumbent,

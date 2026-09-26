@@ -90,7 +90,10 @@ and static-arena credit calculations, extending v1.6's threshold record rule.
 Existing v1.1/v1.3/v1.4/v1.5/v1.6 bindings move forward only when all numeric
 policy fields match. Scoring ratios are projection inputs keyed by unchanged
 claim digests; they do not replace retained baseline measurements or decay keys.
-Static allocation evidence includes `submission_score_speedups_ppm`.
+Static allocation evidence includes `submission_score_speedups_ppm` and
+`submission_weights_ppm`, the latter keyed by reservation ID with each
+submission's rounded share of the served vector. Winners displays these
+submission shares; Miners continues to display the combined hotkey shares.
 
 The active standing claim validates its evaluation stack against that stack's
 sealed catalog and target-spec bytes. Historical v1 composition and v2 exclusion

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
 
 from cacheon.chain.evaluation_order import reward_visibility_sql, reward_comparisons
@@ -112,8 +113,8 @@ def prefill_summary(speed_reads: list[object]) -> dict[str, float | None]:
     return {"prefill_speedup": min(ratios) if ratios else None}
 
 
-def live_offer_shares(path: object) -> tuple[dict[str, Any] | None, dict[str, Decimal]]:
-    """Read the validator's served weight offer as ``(summary, {hotkey: share})``.
+def live_offer_shares(path: object, *, submission_roots=None, submission_path=None) -> tuple[dict[str, Any] | None, dict[str, Decimal]]:
+    """Read served shares keyed by hotkey, or reservation when evidence roots are supplied.
 
     The offer file is what the weight-offer service serves to every follower,
     so its vector is the reward split this validator currently stands behind.
@@ -140,7 +141,42 @@ def live_offer_shares(path: object) -> tuple[dict[str, Any] | None, dict[str, De
         }
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None, {}
+    if submission_roots is not None or submission_path is not None:
+        from cacheon.eval.evidence_store import EvidenceArtifactRef, reopen_evidence
+
+        shares = {}
+        summary["submission_shares_available"] = False
+        for root in (None,) if submission_path is not None else submission_roots:
+            try:
+                if submission_path is not None:
+                    report = json.loads(Path(submission_path).read_text())
+                    if report["projection_digest"] != summary["projection_digest"]:
+                        break
+                else:
+                    ref = EvidenceArtifactRef.from_dict(projection["allocation_evidence"])
+                    report = json.loads(reopen_evidence(root, ref))
+                shares = {rid: Decimal(ppm) / Decimal(1_000_000)
+                          for rid, ppm in report["submission_weights_ppm"].items()}
+            except (OSError, KeyError, TypeError, ValueError):
+                continue
+            summary["submission_shares_available"] = True
+            break
     return summary, shares
+
+
+def winner_reward(row, offer, shares) -> dict[str, Any]:
+    """Attribute only this reservation's share; pending or unavailable amounts stay unknown."""
+    share = None
+    if row["waiting_for_queue"]:
+        status = "waiting_for_queue"
+    elif offer is None:
+        status = "offer_unavailable"
+    elif not offer.get("submission_shares_available"):
+        status = "attribution_unavailable"
+    else:
+        share = float(shares.get(row["reservation_id"], Decimal(0)))
+        status = "earning" if share else "not_earning"
+    return {"weight_share": share, "reward_claim_status": status}
 
 
 def latest_hold(connection: Any, reservation_id: str, fallback: str) -> tuple[str, int | None]:

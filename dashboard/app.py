@@ -42,7 +42,7 @@ from dashboard.winners import (
     prefill_summary,
     settlement_hold_notice, settlement_label,
     reward_exclusion_notice,
-    live_offer_shares,
+    live_offer_shares, winner_reward,
 )
 
 MISSION = Path(os.environ.get(
@@ -148,10 +148,12 @@ def emission_symbol() -> str:
     return str((value("ENRICHER", ENRICHER).metagraph or {}).get("emission_symbol") or "")
 
 
-def current_offer() -> tuple[dict[str, Any] | None, dict[str, Decimal]]:
+def current_offer(*, submissions=False) -> tuple[dict[str, Any] | None, dict[str, Decimal]]:
     """The served weight offer with a clock, or ``(None, {})`` when absent."""
-
-    summary, shares = live_offer_shares(OFFER_PATH)
+    roots = [path.parent / "weight-allocation-evidence" for path in (
+        DB_PATH, value("DB_PATH", DB_PATH), *value("PEER_DB_PATHS", ()))] if submissions else None
+    summary, shares = live_offer_shares(OFFER_PATH, submission_roots=roots,
+        submission_path=os.environ.get("CACHEON_DASH_SUBMISSION_SHARES") if submissions else None)
     if summary is None:
         return None, {}
     try:
@@ -765,7 +767,7 @@ def winners() -> dict[str, Any]:
                 disposition["reservation_id"], []).append(speed)
     labels = {row["reservation_id"]: settlement_label(con, row["reservation_id"], row["status"], row["reason"]) for row in passed}
     con.close()
-    offer, shares = current_offer()
+    offer, shares = current_offer(submissions=True)
 
     items = []
     for row in passed:
@@ -800,10 +802,7 @@ def winners() -> dict[str, Any]:
             "competition": competition_label(row["submission_block"], row.get("competition_arena", "")),
             **measured_baseline(speeds_by_reservation.get(row["reservation_id"], []), primary),
             **prefill_summary(speeds_by_reservation.get(row["reservation_id"], [])),
-            "weight_share": None if row["waiting_for_queue"] else share_value(shares, hotkey),
-            "reward_claim_status": "waiting_for_queue" if row["waiting_for_queue"] else ((
-                "earning" if shares.get(hotkey) else "not_earning"
-            ) if offer is not None else "offer_unavailable"),
+            **winner_reward(row, offer, shares),
             "settlement_status": labels[row["reservation_id"]],
             "hotkey_chain": {
                 "registered": hk.get("registered", False),
@@ -822,8 +821,8 @@ def winners() -> dict[str, Any]:
         "offer": offer,
         "note": (
             "A complete audited PASS earns after clearing the previous best by the configured "
-            "margin; grandfathered runtimes retain prior eligibility. Weight share is this validator's "
-            "currently served offer. The chain reflects it only after commit-reveal "
+            "margin; grandfathered runtimes retain prior eligibility. Weight share is this submission's "
+            "portion of the currently served offer; unavailable breakdowns show a dash. The chain reflects it only after commit-reveal "
             "and stake-weighted consensus across validators, so on-chain emission lags."
             if offer is not None
             else "The served weight offer is unavailable; weight shares cannot be shown."
