@@ -149,7 +149,9 @@ def test_pre_namespace_lineage_migrates_without_changing_retained_evidence(tmp_p
 @pytest.mark.parametrize(("arena", "target"), (
     ("glm", "activation.silu_and_mul"), ("qwen", "norm.rmsnorm"),
 ))
-def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, target):
+@pytest.mark.parametrize("payment_kind", ("credit", "payment"))
+def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, target, payment_kind):
+    from cacheon.chain.eval_cost_credit import grant_eval_cost_credit, list_eval_cost_credits
     from tests.test_chain_intake import _arrival, _bh, _fingerprint, _publish
 
     with _store(tmp_path) as store:
@@ -160,11 +162,18 @@ def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, tar
         store.commit_settlement(lease, plan, evidence, current_block=11)
         # Neither commitment was in the transition's reservation snapshot.
         # Their chain blocks, not fetch/completion order, decide admission.
+        late_arrival = _arrival(2, hotkey="late", block=12)
+        if payment_kind == "credit":
+            grant_eval_cost_credit(store.path, hotkey="late", amount_tao_rao=25)
+        else:
+            late_arrival = replace(late_arrival, payment_block=8, payment_extrinsic_index=4)
         early, late = store.reserve_finalized(
-            (_arrival(1, hotkey="early", block=11),
-             _arrival(2, hotkey="late", block=12)),
-            finalized_block=12, finalized_block_hash=_bh(12),
+            (replace(_arrival(1, hotkey="early", block=11),
+                     payment_block=8, payment_extrinsic_index=3), late_arrival),
+            finalized_block=12, finalized_block_hash=_bh(12), eval_cost_amount_tao_rao=25,
         )
+        if payment_kind == "credit":
+            assert list_eval_cost_credits(store.path, hotkey="late")[0].reservation_id == late.reservation_id
         for row, marker in ((early, "a"), (late, "b")):
             _publish(store, row.reservation_id, _fingerprint(target, target, marker),
                      digest=marker * 64, root=tmp_path / marker)
@@ -172,8 +181,15 @@ def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, tar
         assert rejected == ((late.reservation_id, "baseline_closed_at_submission"),)
         assert store.get(early.reservation_id).status == "published"
         rejected_row = store.get(late.reservation_id)
-        assert rejected_row.status == "failed" and rejected_row.screen_attempts == 0
+        assert rejected_row.status == "expired" and rejected_row.screen_attempts == 0
+        assert rejected_row.decision == "NO_DECISION"
         assert not store.active_evaluation_leases()
+        if payment_kind == "credit":
+            credit = list_eval_cost_credits(store.path, hotkey="late")[0]
+            assert (credit.reservation_id, credit.spent_block) == ("", 0)
+        else:
+            assert store._db.execute("SELECT reservation_id FROM eval_cost_payments "
+                                     "WHERE payment_extrinsic_index=4").fetchone() is None
         assert store.prepare_screen_queue(service_digest=winner.arena_digest) == ()
         assert store.get(winner.reservation_digest).decision == "PASS"
 
@@ -183,11 +199,14 @@ def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, tar
         assert store.prepare_screen_queue(service_digest=winner.arena_digest) == ()
         assert store.get(early.reservation_id).status == "published"
         fresh = store.reserve_finalized(
-            (_arrival(3, hotkey="fresh", block=13),),
-            finalized_block=13, finalized_block_hash=_bh(13),
+            (replace(late_arrival, block=13, block_hash=_bh(13)),),
+            finalized_block=13, finalized_block_hash=_bh(13), eval_cost_amount_tao_rao=25,
         )[0]
-        _publish(store, fresh.reservation_id, _fingerprint(target, target, "c"),
-                 digest="c" * 64, root=tmp_path / "fresh")
+        assert fresh.status == "reserved" and fresh.reason == ""
+        if payment_kind == "credit":
+            assert list_eval_cost_credits(store.path, hotkey="late")[0].reservation_id == fresh.reservation_id
+        _publish(store, fresh.reservation_id, _fingerprint(target, target, "b"),
+                 digest="b" * 64, root=tmp_path / "fresh")
         # A new commissioned service has its own open admission window.
         assert store.prepare_screen_queue(service_digest=fixture._h("new-commission")) == ()
         assert store.get(fresh.reservation_id).status == "published"

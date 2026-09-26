@@ -381,6 +381,31 @@ class ArenaStateMixin:
             (*segment_parameters, bound),
         ))
 
+    def _expire_before_screen(self, reservation_id: str, reason: str) -> IntakeReservation:
+        """Reject unmeasured work and release its payment or credit atomically."""
+        with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
+            row = self.get(reservation_id)
+            if row.status not in {"fetching", "published"} or row.screen_attempts:
+                raise _error(
+                    f"pre-screen disposal from {row.status!r} is forbidden"
+                )
+            self._db.execute(
+                "UPDATE reservations SET status='expired',"
+                "decision='NO_DECISION',reason=? WHERE reservation_id=?",
+                (reason, reservation_id),
+            )
+            self._db.execute(
+                "DELETE FROM eval_cost_payments WHERE reservation_id=?",
+                (reservation_id,),
+            )
+            self._db.execute(
+                "UPDATE eval_cost_credits SET reservation_id='',spent_block=0 "
+                "WHERE reservation_id=?",
+                (reservation_id,),
+            )
+        return self.get(reservation_id)
+
     def prepare_screen_queue(
         self, *, service_digest: str, closed_targets: tuple[str, ...] = (), limit: int | None = None
     ) -> tuple[tuple[str, str], ...]:
@@ -423,7 +448,7 @@ class ArenaStateMixin:
             for row in self.screenable(limit=limit):
                 if (row.status == "published" and not row.screen_attempts
                         and cutoff is not None and row.arrival.block > cutoff):
-                    rejected = self.mark_failed(row.reservation_id, "baseline_closed_at_submission")
+                    rejected = self._expire_before_screen(row.reservation_id, "baseline_closed_at_submission")
                     retired.append((row.reservation_id, rejected.reason))
                     continue
                 if row.target_id in closed_targets and row.status == "published" and not row.screen_attempts:

@@ -895,6 +895,7 @@ window.openDetail = async (rid) => {
     <dl class="kv">
       ${kv("Status", pill(d.status) + (d.decision ? " " + pill(d.decision) : ""))}
       ${kv("Reason", esc(d.reason || d.invalid_reason || "—") + recoveryLink(d.evaluation_recovery))}
+      ${d.admission_notice ? kv("Admission", esc(d.admission_notice.cause + " " + d.admission_notice.next_step)) : ""}
       ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
       ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}
       ${kv("Target", esc(d.target_id || "—") + `<div class="muted small">${esc(d.target_summary)}</div>`)}

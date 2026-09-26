@@ -340,7 +340,11 @@ Do not include wallet secrets, private URLs, or validator filesystem paths.
 
 `baseline_closed_at_submission` means the finalized commitment was later than the
 first champion win on the commissioned baseline. It is rejected at routed admission,
-before screening or qualification. Earlier commitments keep their assigned baseline
+before screening or qualification with `NO_DECISION`, not a failed evaluation.
+Your submission credit is preserved, and a cited evaluation payment remains reusable.
+The message says: “This baseline closed before your submission. Your submission
+credit has been preserved.” Resubmit against the current open baseline.
+Earlier commitments keep their assigned baseline
 and may finish after the champion changes; settlement does not repeat the cutoff.
 A newly commissioned baseline opens its own admission window.
 

@@ -501,3 +501,20 @@ def test_lost_potential_notice_waits_for_finalized_reward_comparison(eligible):
         notice = settlement_hold_notice(con, "candidate", {"status": "held"})
         assert notice["reason"] == "lost_potential" and notice["event_sequence"] == 1
         assert "current champion" in notice["message"]
+
+
+@pytest.mark.parametrize("decision", ("NO_DECISION", "FAIL"))
+def test_baseline_cutoff_notice_confirms_credit_only_for_no_charge_disposal(decision):
+    from dashboard.app import submission_row
+    from cacheon.chain.miner_feedback import _guidance
+
+    row = submission_row(dict(reservation_id="late", status="expired", decision=decision,
+        reason="baseline_closed_at_submission", hotkey="miner", content_hash="bundle",
+        block=9009700, event_index=0, admission_epoch=1))
+    notice = row["admission_notice"]
+    if decision == "NO_DECISION":
+        assert notice == _guidance("baseline_closed_at_submission")
+        assert notice["cause"] == "This baseline closed before your submission."
+        assert "Your submission credit has been preserved." in notice["next_step"]
+    else:
+        assert notice is None
