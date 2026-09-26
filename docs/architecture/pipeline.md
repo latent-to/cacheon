@@ -274,15 +274,24 @@ verdict. The references may live under the same content-addressed store root. It
 
 - the report is a complete audited `PASS`;
 - the retained authority, attempt, report, and selection identities match the candidate;
-- the incumbent and target transition are still current;
+- the measured baseline belongs to the active target lineage and an ancestor-based
+  result beats the composed improvement to the current tip;
 - target displacement, conflicts, and requirements remain valid;
 - the requested stack update matches the measured candidate.
 
+The submission cutoff is enforced during routed admission before the first screen:
+commitments after the first crown on that commissioned baseline are rejected as
+`baseline_closed_at_submission`. Commitments in the finalized crown block or earlier
+can drain, including delayed fetches. A new commission has its own admission window.
+Settlement never repeats this arrival-time check.
+
 The planner leases one cohort whose rows share qualification authority and incumbent
-state. Stale rows are held, and exactly one current registered winner is selected across
+state. Incomparable or insufficient ancestor results are held, and one registered winner is selected across
 the remaining rows, including rows whose targets do not overlap. Other current pairs are
-held as `conflict_lost` or `incumbent_advanced`; a stale pair is held as
-`stale_incumbent`.
+held as `conflict_lost` or `incumbent_advanced`. An ancestor result that does not
+beat the champion receives `lost_potential`; an incomparable baseline retains
+`stale_incumbent`. The dashboard also reports `lost_potential` for finalized
+reward comparisons that do not clear the margin, preserving the original PASS.
 
 For the selected winner, the conservative settled speedup is the lower accepted speedup
 from the accepted qualification. The stack transition and settlement evidence are committed

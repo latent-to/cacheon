@@ -76,37 +76,36 @@ a recovery mechanism.
 
 ## Deterministic plan
 
-Candidates naming an older incumbent are held as `stale_incumbent`. Discovery candidates
-produce bounty events without changing the stack. Among current registered candidates,
-the planner chooses the highest conservative speedup and uses finalized order as a stable
-tie-break.
+Admission owns the baseline cutoff. The first crown on a commissioned baseline closes
+that baseline to later finalized commitments in the same competition. The routed
+admission step rejects them as `baseline_closed_at_submission` before any screen lease
+or candidate execution. A commitment in the finalized crown block or earlier remains
+admissible even if its bundle is fetched later. A new commissioned service has its own
+admission window. Screening retries and completed evaluations are not readmitted.
 
-Staleness is judged per target lineage, not only against the planning arena's own stack.
-`arena_digest` is derived per commissioned baseline, so a challenger graded against a
-superseded incumbent is commissioned into a *different* arena whose own stack is that old
-baseline. The per-arena `incumbent == before` test alone therefore passes and crowns it a
-second time for one target. `target_lineage_tips` records the artifact holding each
-target's active root-to-tip lineage, each parent artifact, and each conservative winning
-speedup. A candidate measured against any ancestor remains eligible when its reservation
-was already present when the active lineage first left that ancestor and its conservative
-speedup is strictly greater than the product of every winning edge from that ancestor to
-the current tip. For example, with `A -> B -> C`, a candidate `D` measured on A must beat
-`(B/A) * (C/B)`. Equality does not pass. If D wins, the active lineage becomes `A -> D`;
-D is the next baseline and the old `B -> C` branch remains auditable history.
+Settlement does not repeat the commitment-time check. An admitted candidate retains its
+measured baseline. Among eligible registered candidates, the planner chooses the highest
+conservative speedup and uses finalized order as a stable tie-break.
 
-A later reservation against an old ancestor, a candidate based on an artifact outside the
-active lineage, or a score at/below the composed threshold is held `stale_incumbent`.
-Retained qualification evidence is not deleted or recomputed merely because the active
-tip advanced.
+`target_lineage_tips` records each target's active root-to-tip lineage, parent artifacts,
+and conservative winning speedups. An ancestor-baseline candidate must strictly beat the
+product of winning edges from its measured ancestor to the current tip. With `A -> B -> C`,
+a candidate D measured on A must beat `(B/A) * (C/B)`. Equality does not pass. If D wins,
+the active lineage becomes `A -> D`, with crown reason `qualified_ancestor_win`; the old
+branch remains auditable history. Qualification keeps the operator's commissioned
+baseline until an explicit recommission.
 
-Each CROWN snapshots the reservation IDs present in intake; this is the temporal authority
-for the exception and avoids ambiguous same-block comparisons. Stores that settled before
-this ledger existed are seeded once with `cacheon chain-backfill-lineage`, which rebuilds
-the ledger from the newest recorded crown per target and is idempotent. Historical journals
-did not retain a transition-time snapshot, so the backfill conservatively marks only
-reservations no later than the winning submission itself as provably pre-transition. The
-lease's tips and eligible reservation set are rebound to durable state inside the commit
-transaction because the expected plan is recomputed from the lease's own authority.
+A candidate at/below the composed performance threshold receives `lost_potential`.
+The dashboard also uses `lost_potential` when a finalized queue comparison does not
+clear the reward margin. This preserves the PASS and measurements. A baseline outside
+the active lineage remains `stale_incumbent`; arrival time and membership in a
+transition-time reservation snapshot no longer cause this settlement hold. Retained qualification
+evidence is not deleted or recomputed when the tip advances.
+
+Crown reservation snapshots remain for historical baseline-segment reconstruction.
+`cacheon chain-backfill-lineage` reconstructs the retained lineage; these snapshots are
+not settlement eligibility authority. The lease's lineage tips are rebound to durable
+state inside the commit transaction to detect a concurrent crown change.
 
 The hash-chained event journal can contain:
 
@@ -135,7 +134,8 @@ The event journal is append-only and digest chained. Event types have distinct j
 - `ADOPTION` and `STACK_TRANSITION` record the exact new evaluation manifest/tree and
   advance its generation together.
 - `HOLD` records stale rows and every current registered non-winner without mutating the
-  stack: stale-incumbent rows use `stale_incumbent`, overlapping losers use
+  stack: insufficient ancestor results use `lost_potential`, incomparable baselines
+  use `stale_incumbent`, overlapping losers use
   `conflict_lost`, and non-overlapping current losers use `incumbent_advanced` because the
   winning transition advanced the shared incumbent.
 - `DISCOVERY_BOUNTY` creates only the bounded discovery claim; it has no stack transition.
@@ -150,7 +150,7 @@ do not make it an earning claim. Only the settlement `CROWN` earns. When that
 transition advances the incumbent, existing reservations keep their durable queue
 baseline. Qualification drains the contiguous old-baseline segment in finalized
 arrival order under the still-resident commission. Settlement may use the
-pre-transition ancestor rule above, but it never erases a completed evaluation just
+ancestor performance comparison above, but it never erases a completed evaluation just
 because the tip changed.
 
 The evaluator requests recommission only when the oldest active queue segment is
@@ -581,7 +581,7 @@ retained design intent and the reserved durable schema are described in
 | Weighted recipient UID changes before or after signing | Submission aborts or retained publication is held | Reopen exact finalized metagraph authority; never confirm against reassigned UIDs |
 | Held reservation has no disposition | It remains durable and may block later work until explicit disposition or eligible finalized-block SLA expiry | Preserve and monitor it; use audited `release_hold` or minimum-age `expire` when operator action is required, never silent deletion |
 | Arena must be retired as an authority domain | No generic transition is available | Define and implement a reviewed typed arena-retirement policy before changing economic authority |
-| Candidate from another arena names an ancestor of the current tip | Eligible only if already present when lineage left that ancestor and strictly faster than the composed ancestor-to-tip threshold | Seed lineage history; otherwise the candidate is held `stale_incumbent` with its original evidence retained |
+| Candidate from another arena names an ancestor of the current tip | An admitted result is eligible if strictly faster than the composed ancestor-to-tip threshold | Seed lineage history; otherwise the candidate is held `stale_incumbent` with its original evidence retained |
 
 The journal and settlement tables are evidence. Back them up with SQLite-aware tooling,
 monitor WAL/disk health, and test restoration with evidence roots present. Never repair an

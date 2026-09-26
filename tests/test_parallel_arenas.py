@@ -144,3 +144,60 @@ def test_pre_namespace_lineage_migrates_without_changing_retained_evidence(tmp_p
         assert store.evaluation_stack(winner.arena_digest).generation == 1
         store.select_arena("qwen", accept_legacy_bundles=False)
         assert store.target_lineage_tips() == {}
+
+
+@pytest.mark.parametrize(("arena", "target"), (
+    ("glm", "activation.silu_and_mul"), ("qwen", "norm.rmsnorm"),
+))
+def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, target):
+    from tests.test_chain_intake import _arrival, _bh, _fingerprint, _publish
+
+    with _store(tmp_path) as store:
+        store.select_arena(arena, accept_legacy_bundles=False)
+        winner = _qualified_settlement_candidate(store, marker="winner")
+        lease = store.lease_settlement_cohort(current_block=11)
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+        # Neither commitment was in the transition's reservation snapshot.
+        # Their chain blocks, not fetch/completion order, decide admission.
+        early, late = store.reserve_finalized(
+            (_arrival(1, hotkey="early", block=11),
+             _arrival(2, hotkey="late", block=12)),
+            finalized_block=12, finalized_block_hash=_bh(12),
+        )
+        for row, marker in ((early, "a"), (late, "b")):
+            _publish(store, row.reservation_id, _fingerprint(target, target, marker),
+                     digest=marker * 64, root=tmp_path / marker)
+        rejected = store.prepare_screen_queue(service_digest=winner.arena_digest)
+        assert rejected == ((late.reservation_id, "baseline_closed_at_submission"),)
+        assert store.get(early.reservation_id).status == "published"
+        rejected_row = store.get(late.reservation_id)
+        assert rejected_row.status == "failed" and rejected_row.screen_attempts == 0
+        assert not store.active_evaluation_leases()
+        assert store.prepare_screen_queue(service_digest=winner.arena_digest) == ()
+        assert store.get(winner.reservation_digest).decision == "PASS"
+
+    # Reopening does not turn an earlier accepted commitment into a late one.
+    with _store(tmp_path) as store:
+        store.select_arena(arena, accept_legacy_bundles=False)
+        assert store.prepare_screen_queue(service_digest=winner.arena_digest) == ()
+        assert store.get(early.reservation_id).status == "published"
+        fresh = store.reserve_finalized(
+            (_arrival(3, hotkey="fresh", block=13),),
+            finalized_block=13, finalized_block_hash=_bh(13),
+        )[0]
+        _publish(store, fresh.reservation_id, _fingerprint(target, target, "c"),
+                 digest="c" * 64, root=tmp_path / "fresh")
+        # A new commissioned service has its own open admission window.
+        assert store.prepare_screen_queue(service_digest=fixture._h("new-commission")) == ()
+        assert store.get(fresh.reservation_id).status == "published"
+        # Another competition does not inherit this arena's crown cutoff.
+        store.select_arena("other", accept_legacy_bundles=False)
+        other = store.reserve_finalized(
+            (_arrival(4, hotkey="other", block=14),),
+            finalized_block=14, finalized_block_hash=_bh(14),
+        )[0]
+        _publish(store, other.reservation_id, _fingerprint(target, target, "d"),
+                 digest="d" * 64, root=tmp_path / "other")
+        assert store.prepare_screen_queue(service_digest=winner.arena_digest) == ()
+        assert store.get(other.reservation_id).status == "published"

@@ -468,3 +468,36 @@ def test_resolving_earlier_winner_rescores_potential_winners_in_queue_order(
         assert evidence == list(store._db.execute(
             "SELECT * FROM settlement_qualifications WHERE reservation_id!=? ORDER BY reservation_id",
             (candidates[0].reservation_digest,)))
+
+
+@pytest.mark.parametrize("eligible", (None, False, True))
+def test_lost_potential_notice_waits_for_finalized_reward_comparison(eligible):
+    from dashboard.winners import reward_comparison_summary, settlement_hold_notice
+
+    with sqlite3.connect(":memory:") as con:
+        con.row_factory = sqlite3.Row
+        con.execute("CREATE TABLE settlement_events "
+                    "(reservation_id TEXT, event_type TEXT, event_json TEXT, sequence INTEGER)")
+        con.execute("INSERT INTO settlement_events VALUES('candidate','HOLD',?,1)",
+                    (json.dumps({"reason": "stale_incumbent"}),))
+        comparison = {} if eligible is None else {
+            "previous_best_reservation_id": "earlier", "previous_best_speedup": Decimal("1.05"),
+            "relative_speedup": Decimal("1.009"), "score_speedup": Decimal("1.009"),
+            "reward_eligible": eligible, "grandfathered": False,
+        }
+        summary = reward_comparison_summary(comparison)
+        notice = settlement_hold_notice(con, "candidate", {"status": "held", **summary})
+        if eligible is False:
+            assert summary["reward_reason"] == notice["reason"] == "lost_potential"
+            assert "reward margin" in notice["message"] and "PASS" in notice["message"]
+            assert notice["event_sequence"] is None
+        else:
+            assert summary.get("reward_reason") is None
+            assert notice["reason"] == "stale_incumbent"
+        assert json.loads(con.execute("SELECT event_json FROM settlement_events").fetchone()[0]) == {
+            "reason": "stale_incumbent"}
+        con.execute("UPDATE settlement_events SET event_json=?",
+                    (json.dumps({"reason": "lost_potential"}),))
+        notice = settlement_hold_notice(con, "candidate", {"status": "held"})
+        assert notice["reason"] == "lost_potential" and notice["event_sequence"] == 1
+        assert "current champion" in notice["message"]

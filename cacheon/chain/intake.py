@@ -354,7 +354,6 @@ class SettlementLease:
     initial_event_sequence: int
     previous_event_digest: str
     lineage_tips: Mapping[str, object] = dc_field(default_factory=dict)
-    pretransition_reservations: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         from cacheon.settlement import (
@@ -369,14 +368,6 @@ class SettlementLease:
         if any(type(tip) is not TargetLineage for tip in tips.values()):
             raise IntakeError("settlement lease lineage is not exactly typed")
         object.__setattr__(self, "lineage_tips", MappingProxyType(tips))
-        reservations = frozenset(self.pretransition_reservations)
-        for reservation_digest in reservations:
-            require_sha256_hex(
-                reservation_digest, field="pretransition reservation"
-            )
-        object.__setattr__(
-            self, "pretransition_reservations", reservations
-        )
         if (
             type(self.generation) is not int
             or self.generation <= 0
@@ -2175,9 +2166,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 raise IntakeError("settlement cohort changed while leasing")
             sequence, previous = self._event_head()
             tips = self.target_lineage_tips(self.get(candidates[0].reservation_digest).competition_arena)
-            pretransition = self._pretransition_reservations(
-                candidates, tips
-            )
         return SettlementLease(
             lease_id,
             chosen[0]["authority_digest"],
@@ -2188,7 +2176,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             sequence,
             previous,
             tips,
-            pretransition,
         )
 
     def commit_settlement(
@@ -2229,7 +2216,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             initial_event_sequence=lease.initial_event_sequence,
             previous_event_digest=lease.previous_event_digest,
             lineage_tips=lease.lineage_tips,
-            pretransition_reservations=lease.pretransition_reservations,
         )
         if expected.to_dict() != plan.to_dict():
             raise IntakeError("settlement plan differs from its leased authority")
@@ -2250,13 +2236,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 raise IntakeError("settlement incumbent or journal advanced")
             if dict(self.target_lineage_tips(arena)) != dict(lease.lineage_tips):
                 raise IntakeError("target lineage advanced while evidence was open")
-            current_pretransition = self._pretransition_reservations(
-                lease.candidates, lease.lineage_tips
-            )
-            if current_pretransition != lease.pretransition_reservations:
-                raise IntakeError(
-                    "pretransition reservation authority changed while evidence was open"
-                )
             ids = tuple(row.reservation_digest for row in lease.candidates)
             cohort_ids = frozenset(ids)
             if any(

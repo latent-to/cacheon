@@ -920,28 +920,25 @@ class _Journal:
         self.sequence += 1
 
 
-def _lineage_admits_candidate(
+def _lineage_hold_reason(
     candidate: SettlementCandidate,
     lineages: Mapping[str, TargetLineage],
-    pretransition_reservations: frozenset[str],
-) -> bool:
-    """Admit the tip, or a superior ancestor fork known before divergence."""
+) -> str:
+    """Explain why an admitted result cannot beat the current target tip."""
 
     lineage = lineages.get(candidate.target_id)
     if lineage is None:
-        return True
+        return ""
     incumbent = candidate.incumbent_manifest.entries.get(candidate.target_id)
     incumbent_artifact = "" if incumbent is None else incumbent.artifact_digest
     if incumbent_artifact == lineage.artifact_digest:
-        return True
+        return ""
     try:
         threshold = lineage.threshold_from(incumbent_artifact)
     except SettlementError:
-        return False
+        return "stale_incumbent"
     assert threshold is not None
-    return candidate.reservation_digest in pretransition_reservations and (
-        Decimal(candidate.speedup) > threshold[0]
-    )
+    return "" if Decimal(candidate.speedup) > threshold[0] else "lost_potential"
 
 
 def plan_settlement(
@@ -952,15 +949,13 @@ def plan_settlement(
     initial_event_sequence: int = 0,
     previous_event_digest: str = "",
     lineage_tips: Mapping[str, TargetLineage] | None = None,
-    pretransition_reservations: frozenset[str] = frozenset(),
 ) -> SettlementPlan:
     """Select one registered winner over one incumbent and emit a hash-chained plan.
 
-    A candidate against the current target tip is eligible normally. A stale
-    candidate remains eligible when its incumbent is an ancestor of the tip,
-    its reservation existed before the lineage first left that ancestor, and
-    its conservative speedup is strictly greater than the product of all
-    winning speedups from that ancestor to the current tip.
+    Admission owns the submission cutoff. An accepted candidate keeps its
+    measured baseline when the crown advances. An ancestor-baseline candidate
+    must beat the product of the winning speedups from that ancestor to the
+    current tip; settlement does not recheck when the submission arrived.
     """
 
     if type(current_manifest) is not EvaluationStackManifest:
@@ -970,10 +965,6 @@ def plan_settlement(
         _identifier(target, "lineage tip target")
         if type(lineage) is not TargetLineage:
             raise SettlementError("target lineage is not exactly typed")
-    if type(pretransition_reservations) is not frozenset:
-        raise SettlementError("pretransition reservations must be a frozenset")
-    for reservation_digest in pretransition_reservations:
-        _digest(reservation_digest, "pretransition reservation")
     before = StackArmIdentity(current_manifest.digest, current_tree_digest)
     rows = tuple(candidates)
     if any(type(row) is not SettlementCandidate for row in rows):
@@ -984,20 +975,18 @@ def plan_settlement(
         raise SettlementError("settlement candidates contain duplicates")
     journal = _Journal(initial_event_sequence, previous_event_digest)
 
-    def is_stale(row: SettlementCandidate) -> bool:
-        if row.target_id not in tips:
-            return row.incumbent != before
-        return not _lineage_admits_candidate(
-            row, tips, pretransition_reservations
-        )
-
-    current = tuple(row for row in rows if not is_stale(row))
-    stale = sorted((row for row in rows if is_stale(row)), key=lambda row: row.finalized_order)
+    reasons = {
+        row.digest: (_lineage_hold_reason(row, tips) if row.target_id in tips
+                     else "stale_incumbent" if row.incumbent != before else "")
+        for row in rows
+    }
+    current = tuple(row for row in rows if not reasons[row.digest])
+    stale = sorted((row for row in rows if reasons[row.digest]), key=lambda row: row.finalized_order)
     for row in stale:
         journal.add(
             SettlementEventType.HOLD, row, subject_digest=row.selected_delta_digest,
             target_id=row.target_id, before=before, after=before,
-            reason="stale_incumbent",
+            reason=reasons[row.digest],
         )
 
     registered = tuple(row for row in current if row.lane == "registered")
@@ -1027,15 +1016,15 @@ def plan_settlement(
     lineage = tips.get(winner.target_id)
     incumbent = winner.incumbent_manifest.entries.get(winner.target_id)
     incumbent_artifact = "" if incumbent is None else incumbent.artifact_digest
-    pretransition_stale_win = (
+    ancestor_win = (
         lineage is not None and incumbent_artifact != lineage.artifact_digest
     )
     journal.add(
         SettlementEventType.CROWN, winner, subject_digest=replacement.digest,
         target_id=winner.target_id, before=before, after=before,
         reason=(
-            "qualified_pretransition_ancestor_win"
-            if pretransition_stale_win
+            "qualified_ancestor_win"
+            if ancestor_win
             else "qualified_win"
         ),
     )
