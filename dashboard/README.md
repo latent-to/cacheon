@@ -226,8 +226,12 @@ The page's arena selector scopes every data tab, detail link, and delayed
 bundle/log download. API clients pass `?arena=<key>`; omission selects `default`.
 Unknown keys return 404 and unavailable selected databases 503. Each source uses
 its registered arena namespace; empty-namespace history remains visible through
-the database's legacy arena alias. Replicated chain arrivals, including published
-bundles, are displayed only in their selected arena. Queries and downloads share
+the database's legacy arena alias. An unpublished legacy observation is hidden
+when another configured database published that reservation for a different arena.
+Its original rejection remains in the database; a local publication retains its
+own history. Legacy ownership checks read peer databases in read-only mode and
+return 503 if a required peer cannot be read. Replicated published bundles are
+displayed only in their selected arena. Queries and downloads share
 this scope without changing the intake database. `/api/arenas` reports each
 source's health independently. `/api/arena-events` combines events by retained
 block, using source and local sequence only for ties, and names unavailable
