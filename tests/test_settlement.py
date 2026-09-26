@@ -686,7 +686,7 @@ def _lineage(*candidates: SettlementCandidate) -> TargetLineage:
     return TargetLineage(tuple(nodes))
 
 
-def test_pretransition_stale_sibling_above_last_winner_can_crown() -> None:
+def test_admitted_sibling_above_last_winner_can_crown_without_arrival_snapshot() -> None:
     catalog = default_target_catalog()
     parent = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "parent")})
     last_winner = _candidate(
@@ -701,16 +701,13 @@ def test_pretransition_stale_sibling_above_last_winner_can_crown() -> None:
         current_manifest=parent,
         current_tree_digest=_h("incumbent-tree"),
         lineage_tips={ROUTED: _tip(last_winner)},
-        pretransition_reservations=frozenset(
-            {better_sibling.reservation_digest}
-        ),
     )
     assert planned.winner_candidate_digest == better_sibling.digest
     crown = next(
         event for event in planned.events
         if event.event_type is SettlementEventType.CROWN
     )
-    assert crown.reason == "qualified_pretransition_ancestor_win"
+    assert crown.reason == "qualified_ancestor_win"
 
 
 def test_faster_stale_sibling_becomes_the_next_baseline_and_threshold() -> None:
@@ -729,7 +726,6 @@ def test_faster_stale_sibling_becomes_the_next_baseline_and_threshold() -> None:
         current_manifest=parent,
         current_tree_digest=_h("incumbent-tree"),
         lineage_tips={ROUTED: _tip(first)},
-        pretransition_reservations=frozenset({faster.reservation_digest}),
     )
     assert accepted.winner_candidate_digest == faster.digest
     assert accepted.after == faster.challenger
@@ -746,12 +742,9 @@ def test_faster_stale_sibling_becomes_the_next_baseline_and_threshold() -> None:
         current_manifest=parent,
         current_tree_digest=_h("incumbent-tree"),
         lineage_tips={ROUTED: _tip(faster)},
-        pretransition_reservations=frozenset(
-            {middle_sibling.reservation_digest}
-        ),
     )
     assert rejected.winner_candidate_digest == ""
-    assert rejected.events[0].reason == "stale_incumbent"
+    assert rejected.events[0].reason == "lost_potential"
 
     # A fresh challenger measured against the faster sibling is current and
     # uses ordinary marginal settlement, not the stale-sibling exception.
@@ -772,7 +765,7 @@ def test_faster_stale_sibling_becomes_the_next_baseline_and_threshold() -> None:
     assert current.winner_candidate_digest == current_challenger.digest
 
 
-def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> None:
+def test_admitted_uncle_must_beat_composed_tip_score_from_ancestor() -> None:
     catalog = default_target_catalog()
     a = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "A")})
     b = _candidate(
@@ -802,7 +795,6 @@ def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> Non
         current_manifest=c.candidate_manifest,
         current_tree_digest=c.candidate_tree_digest,
         lineage_tips={ROUTED: active},
-        pretransition_reservations=frozenset({equal_d.reservation_digest}),
     )
     assert equal_plan.winner_candidate_digest == ""
 
@@ -815,21 +807,13 @@ def test_pretransition_uncle_must_beat_composed_tip_score_from_ancestor() -> Non
         current_manifest=c.candidate_manifest,
         current_tree_digest=c.candidate_tree_digest,
         lineage_tips={ROUTED: active},
-        pretransition_reservations=frozenset(
-            {faster_d.reservation_digest}
-        ),
     )
     assert faster_plan.winner_candidate_digest == faster_d.digest
     assert faster_plan.after == faster_d.challenger
 
 
-@pytest.mark.parametrize(
-    ("speedup", "pretransition"),
-    (("1.05", True), ("1.04", True), ("1.09", False)),
-)
-def test_stale_sibling_must_be_strictly_better_and_pretransition(
-    speedup: str, pretransition: bool,
-) -> None:
+@pytest.mark.parametrize("speedup", ("1.05", "1.04"))
+def test_admitted_sibling_must_still_be_strictly_better(speedup: str) -> None:
     catalog = default_target_catalog()
     parent = _stack(catalog, {ROUTED: _ref(catalog, ROUTED, "parent")})
     last_winner = _candidate(
@@ -837,25 +821,20 @@ def test_stale_sibling_must_be_strictly_better_and_pretransition(
         speedup="1.05",
     )
     stale = _candidate(
-        parent, _ref(catalog, ROUTED, f"stale:{speedup}:{pretransition}"),
-        catalog, label=f"stale:{speedup}:{pretransition}", speedup=speedup,
+        parent, _ref(catalog, ROUTED, f"stale:{speedup}"),
+        catalog, label=f"stale:{speedup}", speedup=speedup,
     )
     planned = plan_settlement(
         (stale,),
         current_manifest=parent,
         current_tree_digest=_h("incumbent-tree"),
         lineage_tips={ROUTED: _tip(last_winner)},
-        pretransition_reservations=(
-            frozenset({stale.reservation_digest})
-            if pretransition
-            else frozenset()
-        ),
     )
     assert planned.winner_candidate_digest == ""
     assert [event.event_type for event in planned.events] == [
         SettlementEventType.HOLD
     ]
-    assert planned.events[0].reason == "stale_incumbent"
+    assert planned.events[0].reason == "lost_potential"
 
 
 def test_lineage_tip_naming_the_incumbent_still_crowns() -> None:

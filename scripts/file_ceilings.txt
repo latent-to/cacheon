@@ -6,7 +6,7 @@ cacheon/chain/archive.py 1349
 cacheon/chain/evaluation_coordinator.py 1038
 cacheon/chain/evaluation_lease_store.py 907
 cacheon/chain/evaluation_recovery_store.py 1222
-cacheon/chain/intake.py 3827
+cacheon/chain/intake.py 3806
 cacheon/chain/recoverable_qualification_dispatcher.py 935
 cacheon/chain/remote_evaluation_dispatcher.py 1072
 cacheon/chain/remote_worker_pod_service.py 1106
@@ -33,13 +33,13 @@ cacheon/eval/qualification_runner.py 2769
 cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1205
 cacheon/receipts.py 906
-cacheon/settlement.py 1075
+cacheon/settlement.py 1064
 cacheon/target_catalog.py 999
 cacheon/verify.py 988
 cacheon/verify_collective.py 1057
 dashboard/app.py 984
 tests/test_b300_remote_worker_adapter.py 1123
-tests/test_chain_intake.py 2073
+tests/test_chain_intake.py 2068
 tests/test_crossover_runtime.py 918
 tests/test_device_state.py 1001
 tests/test_engine_tree.py 1175
@@ -51,5 +51,5 @@ tests/test_qualification.py 1000
 tests/test_qualification_continuation.py 915
 tests/test_qualification_runner.py 2028
 tests/test_recoverable_qualification_dispatcher.py 1063
-tests/test_settlement.py 922
+tests/test_settlement.py 901
 tests/test_weight_publication.py 982

@@ -170,7 +170,6 @@ def _settlement_plan(store, lease):
         initial_event_sequence=lease.initial_event_sequence,
         previous_event_digest=lease.previous_event_digest,
         lineage_tips=lease.lineage_tips,
-        pretransition_reservations=lease.pretransition_reservations,
     )
     evidence = tuple(
         store.reopen_settlement_evidence(row) for row in lease.candidates
@@ -1424,7 +1423,6 @@ def test_crown_records_the_target_lineage_tip_and_fences_a_stale_lease(tmp_path)
         forged = replace(
             lease,
             lineage_tips={"activation.silu_and_mul": forged_tip},
-            pretransition_reservations=frozenset(),
         )
         forged_plan = plan_settlement(
             forged.candidates,
@@ -1433,9 +1431,8 @@ def test_crown_records_the_target_lineage_tip_and_fences_a_stale_lease(tmp_path)
             initial_event_sequence=forged.initial_event_sequence,
             previous_event_digest=forged.previous_event_digest,
             lineage_tips=forged.lineage_tips,
-            pretransition_reservations=forged.pretransition_reservations,
         )
-        assert forged_plan.winner_candidate_digest == ""
+        assert forged_plan.winner_candidate_digest == winner.digest
         with pytest.raises(IntakeError, match="target lineage advanced"):
             store.commit_settlement(forged, forged_plan, evidence, current_block=11)
 
@@ -1511,9 +1508,6 @@ def test_faster_pretransition_sibling_replaces_cross_arena_lineage_tip(tmp_path)
         sibling_lease = store.lease_settlement_cohort(current_block=12)
         assert sibling_lease is not None
         assert sibling_lease.candidates == (faster,)
-        assert sibling_lease.pretransition_reservations == frozenset(
-            {faster.reservation_digest}
-        )
         sibling_plan, sibling_evidence = _settlement_plan(
             store, sibling_lease
         )
@@ -1522,7 +1516,7 @@ def test_faster_pretransition_sibling_replaces_cross_arena_lineage_tip(tmp_path)
             event for event in sibling_plan.events
             if event.event_type is SettlementEventType.CROWN
         )
-        assert crown.reason == "qualified_pretransition_ancestor_win"
+        assert crown.reason == "qualified_ancestor_win"
         resulting_stack = store.commit_settlement(
             sibling_lease,
             sibling_plan,
@@ -1587,7 +1581,7 @@ def test_backfill_proves_reservation_before_winner_qualification_completed(
         ).fetchone() is not None
 
 
-def test_faster_stale_sibling_submitted_after_transition_is_held(tmp_path):
+def test_admitted_faster_sibling_is_not_rejected_again_at_settlement(tmp_path):
     with _store(tmp_path) as store:
         first = _qualified_settlement_candidate(
             store,
@@ -1604,20 +1598,21 @@ def test_faster_stale_sibling_submitted_after_transition_is_held(tmp_path):
             first_lease, first_plan, first_evidence, current_block=11
         )
 
+        # Delayed intake observed a pre-crown commitment after the snapshot.
         late = _qualified_settlement_candidate(
             store,
             index=1,
             marker="late",
+            submission_block=10, retained_block=12,
             arena_marker="late",
             speedups=("1.1", "1.09"),
         )
         assert isinstance(late, SettlementCandidate)
         late_lease = store.lease_settlement_cohort(current_block=12)
         assert late_lease is not None
-        assert late_lease.pretransition_reservations == frozenset()
         late_plan, late_evidence = _settlement_plan(store, late_lease)
-        assert late_plan.winner_candidate_digest == ""
-        assert late_plan.events[0].reason == "stale_incumbent"
+        assert late_plan.winner_candidate_digest == late.digest
+        assert late_plan.events[0].reason == "qualified_ancestor_win"
         store.commit_settlement(
             late_lease, late_plan, late_evidence, current_block=12
         )
@@ -1625,10 +1620,10 @@ def test_faster_stale_sibling_submitted_after_transition_is_held(tmp_path):
             "SELECT status FROM settlement_candidates WHERE reservation_id=?",
             (late.reservation_digest,),
         ).fetchone()["status"]
-        assert status == "held"
+        assert status == "crowned"
 
 
-def test_recommission_preserves_later_stale_incumbent_hold(tmp_path):
+def test_recommission_preserves_lost_potential_evidence(tmp_path):
     with _store(tmp_path) as store:
         winner = _qualified_settlement_candidate(store, marker="winner")
         assert isinstance(winner, SettlementCandidate)
@@ -1649,7 +1644,7 @@ def test_recommission_preserves_later_stale_incumbent_hold(tmp_path):
         assert stale_lease is not None
         stale_plan, stale_evidence = _settlement_plan(store, stale_lease)
         assert stale_plan.transition is None
-        assert stale_plan.events[-1].reason == "stale_incumbent"
+        assert stale_plan.events[-1].reason == "lost_potential"
         store.commit_settlement(
             stale_lease, stale_plan, stale_evidence, current_block=12
         )

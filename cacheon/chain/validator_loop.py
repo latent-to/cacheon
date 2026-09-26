@@ -332,7 +332,9 @@ def _screen_pending(
     *,
     current_block: int,
 ) -> dict[str, str]:
-    decisions: dict[str, str] = {}
+    decisions = dict(store.prepare_screen_queue(
+        service_digest=service.identity, closed_targets=service.manifest.closed_targets
+    ))
     for row in store.screenable(limit=store.policy.max_cohort):
         admission = service.admit(
             store.arena_queue_snapshot(current_block=current_block)
@@ -411,7 +413,6 @@ def _settle_pending(
             initial_event_sequence=lease.initial_event_sequence,
             previous_event_digest=lease.previous_event_digest,
             lineage_tips=lease.lineage_tips,
-            pretransition_reservations=lease.pretransition_reservations,
         )
         evidence = tuple(
             store.reopen_settlement_evidence(candidate)

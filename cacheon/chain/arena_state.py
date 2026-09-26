@@ -8,13 +8,12 @@ commissions within that competition. No signed historical identity is rewritten.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from cacheon.chain.intake import IntakeReservation
-    from cacheon.settlement import SettlementCandidate
 
 
 def _error(message: str) -> RuntimeError:
@@ -205,35 +204,6 @@ class ArenaStateMixin:
             ) from None
 
 
-    def _pretransition_reservations(
-        self,
-        candidates: Iterable[SettlementCandidate],
-        lineages: Mapping[str, object],
-    ) -> frozenset[str]:
-        eligible: set[str] = set()
-        for candidate in candidates:
-            lineage = lineages.get(candidate.target_id)
-            if lineage is None:
-                continue
-            incumbent = candidate.incumbent_manifest.entries.get(
-                candidate.target_id
-            )
-            artifact = "" if incumbent is None else incumbent.artifact_digest
-            try:
-                threshold = lineage.threshold_from(artifact)
-            except (TypeError, ValueError):
-                continue
-            if threshold is None:
-                continue
-            if self._db.execute(
-                "SELECT 1 FROM target_lineage_pretransition_reservations "
-                "WHERE transition_event_id=? AND reservation_id=?",
-                (threshold[1], candidate.reservation_digest),
-            ).fetchone() is not None:
-                eligible.add(candidate.reservation_digest)
-        return frozenset(eligible)
-
-
     def backfill_target_lineage_tips(self) -> Mapping[str, object]:
         """Seed the lineage ledger from the latest CROWN recorded per target.
 
@@ -414,16 +384,24 @@ class ArenaStateMixin:
     def prepare_screen_queue(
         self, *, service_digest: str, closed_targets: tuple[str, ...] = (), limit: int | None = None
     ) -> tuple[tuple[str, str], ...]:
-        """Retire unmeasured closed targets and exact prior losers before dispatch.
+        """Admit routed submissions before their first screen and replay prior losers.
 
         Duplicate FAIL replay follows duplicate_replay; a PASS and the
         reproduction lane are never replayed. Closed targets release payment
         through the existing no-decision transaction, before acquiring a lease.
+        The first crown on this commissioned baseline closes new commitments.
+        Earlier finalized commitments may drain even when fetched after the crown;
+        work already screened is never subjected to a second admission cutoff.
         """
         from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
         from cacheon.stack_identity import require_sha256_hex
 
         require_sha256_hex(service_digest, field="arena service digest")
+        cutoff = self._db.execute(
+            "SELECT MIN(crowned_block) AS block FROM target_lineage_nodes "
+            "WHERE competition_arena=? AND arena_id=?",
+            (self._competition_arena, service_digest),
+        ).fetchone()["block"]
         priors = tuple(
             PriorVerdict(
                 reservation_id=row["reservation_id"],
@@ -443,6 +421,11 @@ class ArenaStateMixin:
         while True:
             before = len(retired)
             for row in self.screenable(limit=limit):
+                if (row.status == "published" and not row.screen_attempts
+                        and cutoff is not None and row.arrival.block > cutoff):
+                    rejected = self.mark_failed(row.reservation_id, "baseline_closed_at_submission")
+                    retired.append((row.reservation_id, rejected.reason))
+                    continue
                 if row.target_id in closed_targets and row.status == "published" and not row.screen_attempts:
                     parked = self.mark_target_unavailable(row.reservation_id, target_id=row.target_id)
                     retired.append((row.reservation_id, parked.reason))

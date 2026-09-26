@@ -27,7 +27,7 @@
 "tests/test_chain_canary.py": 20,
 "tests/test_chain_evaluation_leases.py": 88,
 "tests/test_chain_fetch.py": 33,
-"tests/test_chain_intake.py": 322,
+"tests/test_chain_intake.py": 320,
 "tests/test_chain_operator_status.py": 47,
 "tests/test_chain_payload.py": 19,
 "tests/test_chain_publication.py": 32,

@@ -51,6 +51,7 @@ def reward_comparison_summary(comparison: dict) -> dict:
         "relative_improvement_pct": float((comparison["relative_speedup"] - 1) * 100),
         "score_improvement_pct": (score_ppm - WEIGHT_PPM) / (WEIGHT_PPM / 100),
         "reward_eligible": comparison["reward_eligible"],
+        "reward_reason": None if comparison["reward_eligible"] else "lost_potential",
         "grandfathered": comparison["grandfathered"],
     }
 
@@ -166,11 +167,20 @@ def settlement_label(connection: Any, reservation_id: str, status: object, reaso
 
 def settlement_hold_notice(connection: Any, reservation_id: str,
                            settlement: dict[str, Any]) -> dict[str, Any] | None:
-    """Explain a currently held candidate using its latest retained settlement event."""
-    if settlement.get("status") != "held":
+    """Explain a finalized reward loss or the latest retained settlement hold."""
+    lost = settlement.get("reward_eligible") is False
+    if settlement.get("status") != "held" and not lost:
         return None
     reason, sequence = latest_hold(connection, reservation_id, settlement.get("reason") or "held")
-    if reason == "stale_incumbent":
+    if lost or reason == "lost_potential":
+        title = "Potential winner lost comparison"
+        comparison = ("the best earlier PASS by the reward margin" if lost
+                      else "the current champion on the measured baseline")
+        message = ("This submission passed evaluation, but did not beat " + comparison
+                   + ". Its PASS and measurements are retained.")
+        sequence = sequence if reason == "lost_potential" else None
+        reason = "lost_potential"
+    elif reason == "stale_incumbent":
         title = "Passed evaluation — not the champion"
         message = ("This submission passed evaluation. Rewards require beating the best earlier "
                    "PASS by the configured margin, except for grandfathered runtime generations. "

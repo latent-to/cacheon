@@ -335,3 +335,16 @@ signing, and release construction happen later under release authority.
 When reporting a problem, include the content hash, target ID, arena/evaluation
 stack digest, last durable status, decision/reason, and evidence/receipt digest.
 Do not include wallet secrets, private URLs, or validator filesystem paths.
+
+### Baseline admission closed
+
+`baseline_closed_at_submission` means the finalized commitment was later than the
+first champion win on the commissioned baseline. It is rejected at routed admission,
+before screening or qualification. Earlier commitments keep their assigned baseline
+and may finish after the champion changes; settlement does not repeat the cutoff.
+A newly commissioned baseline opens its own admission window.
+
+`lost_potential` means evaluation passed, but the completed comparison did not clear
+the required winner threshold. The detail notice distinguishes a reward comparison
+against earlier results from a champion comparison. The PASS and measured throughput
+remain visible; this is not an execution or correctness failure.
