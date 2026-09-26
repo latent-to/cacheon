@@ -368,6 +368,9 @@ consuming another attempt, or assigning a miner verdict. Restart preserves the
 same request too. Missing carriers, failed lease renewal, invalid results and
 unclassified transport errors retain their existing HOLD/error behavior; a
 timeout is not permission to repeat GPU work on a replacement machine.
+When a result wait ends, stopping its recovery heartbeat cancels outstanding
+database-ownership retries before the waiter continues. Cancellation preserves
+the retained request and lease; actual renewal errors still propagate.
 
 `python -m cacheon.chain.standing_cpu_supervisor --config <path>` is the
 standing CPU daemon over those pieces. Its sealed, closed, owner-controlled

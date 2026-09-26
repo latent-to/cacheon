@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from cacheon.chain.recoverable_qualification_dispatcher import RecoverableQualificationDispatcher
 
 from cacheon.chain.evaluation_recovery import EvaluationRecovery, RecoveryPhase
+from cacheon.chain.evaluation_coordinator import _HeartbeatCancelled
 from cacheon.chain.execution_disposition import (
     AuthenticatedPreResidentRefusal, ExecutionDisposition, ExecutionOutcome,
     resolve_infrastructure_result,
@@ -67,7 +68,9 @@ class _RecoveryHeartbeat:
             with self._lock:
                 recovery = self._recovery
             try:
-                renewed = self._dispatcher._renew_if_due(recovery)
+                renewed = self._dispatcher._renew_if_due(recovery, self._stop)
+            except _HeartbeatCancelled:
+                return
             except BaseException as exc:
                 with self._lock:
                     self._error = exc
