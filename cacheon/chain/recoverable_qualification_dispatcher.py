@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import Event
 from typing import Protocol
 
 from cacheon.arena_service import ArenaCandidateBinding
@@ -16,6 +17,7 @@ from cacheon.chain.evaluation_coordinator import (
     EvaluationCoordinator,
     EvaluationResultEnvelope,
     EvaluationRun,
+    _HeartbeatCancelled,
     _qualification_reservations,
 )
 from cacheon.chain.evaluation_leases import EvaluationLease
@@ -299,10 +301,8 @@ class RecoverableQualificationDispatcher:
                 "recoverable transport identity drifted"
             )
 
-    def _open_store(
-        self,
-    ) -> tuple[RecoverableFinalizedIntakeStore, tuple[int, str]]:
-        store, point = self.coordinator._open_at_durable_cursor()
+    def _open_store(self, cancel: Event | None = None) -> tuple[RecoverableFinalizedIntakeStore, tuple[int, str]]:
+        store, point = self.coordinator._open_at_durable_cursor(cancel)
         if type(store) is not RecoverableFinalizedIntakeStore:
             store.close()
             raise RecoverableQualificationDispatcherError(
@@ -311,9 +311,9 @@ class RecoverableQualificationDispatcher:
         return store, point
 
     def _current_recovery(
-        self, recovery_id: str
+        self, recovery_id: str, cancel: Event | None = None,
     ) -> tuple[RecoverableFinalizedIntakeStore, tuple[int, str], EvaluationRecovery]:
-        store, point = self._open_store()
+        store, point = self._open_store(cancel)
         try:
             current = store.pending_qualification_recovery(owner=self.coordinator.owner)
             if current is None or current.recovery_id != recovery_id:
@@ -587,10 +587,11 @@ class RecoverableQualificationDispatcher:
             recovery.recovery_id, refusal.request_id, outcome
         )
 
-
-    def _renew_if_due(self, recovery: EvaluationRecovery) -> EvaluationRecovery:
-        store, point, current = self._current_recovery(recovery.recovery_id)
+    def _renew_if_due(self, recovery: EvaluationRecovery, cancel: Event | None = None) -> EvaluationRecovery:
+        store, point, current = self._current_recovery(recovery.recovery_id, cancel)
         try:
+            if cancel is not None and cancel.is_set():
+                raise _HeartbeatCancelled()
             if point[0] + self.coordinator.lease_blocks <= current.lease.expires_block:
                 return current
             renewed, _lease = store.renew_recovery_lease(
@@ -602,9 +603,7 @@ class RecoverableQualificationDispatcher:
         finally:
             store.close()
 
-    def _renew_before_transition(
-        self, recovery: EvaluationRecovery
-    ) -> EvaluationRecovery:
+    def _renew_before_transition(self, recovery: EvaluationRecovery) -> EvaluationRecovery:
         store, point, current = self._current_recovery(recovery.recovery_id)
         store.close()
         if current.phase is RecoveryPhase.CLAIMED:
