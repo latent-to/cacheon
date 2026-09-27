@@ -212,7 +212,7 @@ def test_seed_enforces_cache_budget(tmp_path):
 
 
 def test_prebuild_config_validates_seed_root(tmp_path):
-    from cacheon.eval.b300_screen_deployment import _prebuild_policy
+    from cacheon.eval.b300_deployment import _prebuild_policy
     from cacheon.eval.oci_backend import OCIRuntimeResourcePolicy
     from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildError
 

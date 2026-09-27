@@ -4,26 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
-import stat
 import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-import cacheon.eval.b300_screen_deployment as deployment
-from cacheon.arena_service import ArenaCandidateBinding, WorkloadCell
-from cacheon.bundle_hash import content_hash
-from cacheon.chain.publication import publish_worker_bundle
-from cacheon.engine_tree import inspect_contribution
-from cacheon.eval.b300_arena_provider import B300ResidentScreenLifetime
-from cacheon.eval.b300_screen_stages import B300ScreenExecutionPlan
+import cacheon.eval.b300_arena_definition as definition
+import cacheon.eval.b300_deployment as deployment
+from cacheon.arena_service import ArenaCapacityPolicy, WorkloadCell
+from cacheon.eval.b300_arena_provider import B300DeclaredAuthorities
 from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.oci_backend import runtime_identity_from_preflight
-from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
-from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import (
     GLM53_REGISTERED_TARGET_IDS,
     M3_REGISTERED_TARGET_IDS,
@@ -274,7 +267,7 @@ def test_materialize_and_replay_exact_service_identity(
         assert selected == allocated
         return tuple(gpus[index] for index in selected)
 
-    result = deployment.materialize_b300_screen_identities(
+    result = deployment.materialize_b300_identities(
         **paths,
         gpu_provisioner=provision,
     )
@@ -286,6 +279,7 @@ def test_materialize_and_replay_exact_service_identity(
     from cacheon.chain.evaluation_coordinator import WorkerReadiness
 
     readiness = WorkerReadiness(**readiness_row)
+    assert result["schema"] == deployment.MATERIALIZATION_SCHEMA
     assert result["service_digest"] == manifest.digest
     assert result["worker_readiness_digest"] == readiness.digest
     assert manifest.runtime.gpu_count == len(lane)
@@ -308,21 +302,18 @@ def test_materialize_and_replay_exact_service_identity(
         "worker_readiness": readiness.to_dict(),
         "worker_readiness_digest": readiness.digest,
     }
-    worker = deployment.build_commissioned_b300_screen_worker(
+    _inputs, composition, replayed = deployment.replay_commissioned_composition(
         registration, ready, commissioned_root=output
     )
-    try:
-        assert worker.service.manifest == manifest
-        assert worker.readiness == readiness
-    finally:
-        worker.close()
+    assert composition.manifest == manifest
+    assert replayed == readiness
 
     registration["service_identity"] = manifest.digest
     with pytest.raises(
-        deployment.B300ScreenDeploymentError,
+        deployment.B300DeploymentError,
         match="registration differs",
     ):
-        deployment.build_commissioned_b300_screen_worker(registration, ready, commissioned_root=output)
+        deployment.replay_commissioned_composition(registration, ready, commissioned_root=output)
 
 
 def test_calibration_authority_does_not_create_service_identity_cycle(
@@ -346,11 +337,11 @@ def test_calibration_authority_does_not_create_service_identity_cycle(
     authority_b.chmod(0o600)
     _write(authority_b, authority_value)
 
-    result_a = deployment.materialize_b300_screen_identities(
+    result_a = deployment.materialize_b300_identities(
         **paths_a,
         gpu_provisioner=lambda selected, *, deadline: gpus_a,
     )
-    result_b = deployment.materialize_b300_screen_identities(
+    result_b = deployment.materialize_b300_identities(
         **paths_b,
         gpu_provisioner=lambda selected, *, deadline: gpus_b,
     )
@@ -362,7 +353,12 @@ def test_calibration_authority_does_not_create_service_identity_cycle(
     deployment_b = json.loads(
         (paths_b["output_root"] / deployment.DEPLOYMENT_FILE).read_text()
     )
-    assert deployment_a["plan_resolver_digest"] == deployment_b["plan_resolver_digest"]
+    # The provider identity names the declared qualification; calibration names
+    # the arena manifest, so it may only ride in the deployment's refs.
+    assert (
+        deployment_a["declared_qualification"]
+        == deployment_b["declared_qualification"]
+    )
     assert (
         deployment_a["authorities"]["calibration_package"]["sha256"]
         != deployment_b["authorities"]["calibration_package"]["sha256"]
@@ -376,10 +372,10 @@ def test_materializer_rejects_mutated_sealed_prompt(tmp_path: Path) -> None:
     prompt.write_text(prompt.read_text() + " ")
     prompt.chmod(0o400)
     with pytest.raises(
-        deployment.B300ScreenDeploymentError,
+        deployment.B300DeploymentError,
         match="explicit sealed authority paths or SHA-256",
     ):
-        deployment.materialize_b300_screen_identities(
+        deployment.materialize_b300_identities(
             **paths,
             gpu_provisioner=lambda selected, *, deadline: gpus,
         )
@@ -390,20 +386,17 @@ def test_materializer_refuses_single_tp4_as_declared_qualification_pair(
 ) -> None:
     paths, gpus, _ready = _case(tmp_path)
     with pytest.raises(
-        deployment.B300ScreenDeploymentError,
+        deployment.B300DeploymentError,
         match="provisioned GPU set differs from the commissioned lane pair",
     ):
-        deployment.materialize_b300_screen_identities(
+        deployment.materialize_b300_identities(
             **paths,
             gpu_provisioner=lambda selected, *, deadline: gpus[:4],
         )
 
 
-@pytest.mark.parametrize("gpu_model,count,bundle", (
-    ("b300", 4, "miner_moe_fused_experts_torch"),
-    ("h100", 1, "miner_silu_torch"),
-))
-def test_concrete_resolver_binds_the_commissioned_model_and_hardware(tmp_path, gpu_model, count, bundle):
+@pytest.mark.parametrize("gpu_model,count", (("b300", 4), ("h100", 1)))
+def test_commissioning_seals_only_declared_authority(tmp_path, gpu_model, count):
     paths, gpus, _ready = _case(tmp_path, gpu_model=gpu_model, host_size=count * 2, lane=tuple(range(count)))
     inputs = deployment._authority_inputs(
         **paths,
@@ -411,64 +404,16 @@ def test_concrete_resolver_binds_the_commissioned_model_and_hardware(tmp_path, g
         provisioned_gpus=gpus,
     )
     composition = deployment._compose(inputs)
-    try:
-        source = tmp_path / "candidate-source"
-        shutil.copytree(
-            Path(__file__).parents[1]
-            / "examples"
-            / bundle,
-            source,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
-        for child in sorted(source.rglob("*")):
-            child.chmod(0o700 if child.is_dir() else 0o600)
-        source.chmod(0o700)
-        catalog = default_target_catalog()
-        inspected = inspect_contribution(source, catalog=catalog)
-        publication = publish_worker_bundle(
-            source,
-            tmp_path / "candidate-publications",
-            content_hash(source),
-        )
-        target = catalog.require(inspected.target_id)
-        candidate = ArenaCandidateBinding(
-            QualificationReservation(
-                _h("reservation"),
-                publication.digest,
-                inspected.target_id,
-                inspected.selected_delta_digest,
-                0,
-                "miner",
-                100,
-                0,
-                0,
-                target.members,
-            ),
-            publication,
-            1,
-        )
-        static_result = composition.authorities.screen_handlers[0].run_screen(
-            composition.manifest,
-            composition.manifest.screens.stages[0],
-            candidate,
-        )
-        assert static_result.grade.value == ("fail" if gpu_model == "b300" else "pass")
-        plan = composition.pipeline._plan_resolver(  # noqa: SLF001 - exact deployment seam
-            composition.manifest, candidate
-        )
-        assert type(plan) is B300ScreenExecutionPlan
-        assert plan.service_digest == composition.manifest.digest
-        assert plan.graph_launch.arena_digest == composition.manifest.digest
-        assert plan.model_mount.arena_digest == composition.manifest.digest
-        assert plan.binding.physical_hardware.physical_gpu_ids == tuple(map(str, range(count)))
-        assert plan.graph_launch.hardware.tp_size == count
-        assert plan.binding.native_build_spec.target_architecture == inputs.runtime.target_architecture
-        assert plan.graph_launch.tree_digest == plan.binding.native_build_spec.tree_digest
-        composition.pipeline._validate_plan(  # noqa: SLF001 - regression gate
-            composition.manifest, candidate, plan
-        )
-    finally:
-        composition.close()
+
+    # The qualification worker builds its executors and trees after replay;
+    # commissioning seals identities and starts nothing.
+    assert type(composition.authorities) is B300DeclaredAuthorities
+    assert composition.authorities.qualification == inputs.declared_qualification
+    assert composition.manifest.runtime.tensor_parallel_size == count
+    assert composition.manifest.capacity == ArenaCapacityPolicy(32, 64, 4, 4)
+    assert "screens" not in composition.manifest.to_dict()
+    assert not (inputs.root / "oci").exists()
+    assert not (inputs.root / "engine-trees").exists()
 
 
 def test_graph_engine_config_derives_from_the_declared_cell() -> None:
@@ -476,8 +421,8 @@ def test_graph_engine_config_derives_from_the_declared_cell() -> None:
     template = deployment._engine_template(
         {"engine_config": _m3_engine_config()}
     )
-    eager = deployment._engine_config(template, cell, disable_cuda_graph=True)
-    graph = deployment._engine_config(template, cell, disable_cuda_graph=False)
+    eager = definition.engine_config(template, cell, disable_cuda_graph=True)
+    graph = definition.engine_config(template, cell, disable_cuda_graph=False)
     runtime = deployment._runtime_policy(_preflight())
     assert "watchdog_timeout" not in eager.engine_kwargs
     assert (runtime.init_timeout_seconds, runtime.batch_timeout_seconds) == (1800, 1800)
@@ -505,16 +450,16 @@ def test_glm_engine_profile_is_data_not_an_evaluator_branch() -> None:
     )
     template = deployment._engine_template({"engine_config": glm})
     cell = WorkloadCell("l65", 65536, 4096, 24, 3)
-    config = deployment._engine_config(template, cell, disable_cuda_graph=False)
+    config = definition.engine_config(template, cell, disable_cuda_graph=False)
 
     assert config.engine_kwargs["enable_dp_attention"] is True
     assert config.engine_kwargs["dp_size"] == 4
     assert config.engine_kwargs["chunked_prefill_size"] == 16384
     assert config.engine_kwargs["context_length"] == 65536 + 4096 + 128
     assert config.moe_runner_backend is None
-    assert deployment._data_parallel_size(config) == 4
+    assert definition.data_parallel_size(config) == 4
 
-    mixed = deployment._engine_config(
+    mixed = definition.engine_config(
         template,
         (
             WorkloadCell("s8", 8192, 1024, 128, 2),
@@ -539,13 +484,13 @@ def test_workload_parser_seals_cell_against_batches() -> None:
     }
     batches = (("a", "b"), ("c", "d"), ("e", "f"))
     workload = deployment._workload(prompt, batches, _h("corpus"))
-    assert deployment._scored_cell(workload).concurrency == 2
+    assert definition.scored_cell(workload).concurrency == 2
     assert workload.prompt_corpus_digest == _h("corpus")
 
-    with pytest.raises(deployment.B300ScreenDeploymentError, match="concurrency"):
+    with pytest.raises(deployment.B300DeploymentError, match="concurrency"):
         deployment._workload(prompt, (("a",), ("b", "c"), ("d", "e")), _h("corpus"))
     widened = dict(prompt, workload_cell=dict(prompt["workload_cell"], extra=1))
-    with pytest.raises(deployment.B300ScreenDeploymentError, match="closed"):
+    with pytest.raises(deployment.B300DeploymentError, match="closed"):
         deployment._workload(widened, batches, _h("corpus"))
 
     mixed_prompt = {
@@ -598,68 +543,16 @@ def test_registered_targets_are_sealed_arena_data() -> None:
         row["target_id"] for row in catalog.snapshot()["targets"]
     )
     with pytest.raises(
-        deployment.B300ScreenDeploymentError, match="not registered"
+        deployment.B300DeploymentError, match="not registered"
     ):
         deployment._target_partition(
             {"registered_targets": ["made.up_target"]}, catalog
         )
     # An authority that omits the field fails commissioning closed.
     with pytest.raises(
-        deployment.B300ScreenDeploymentError, match="list of strings"
+        deployment.B300DeploymentError, match="list of strings"
     ):
         deployment._target_partition({}, catalog)
-
-
-def test_resident_intake_is_traversable_by_non_owner(tmp_path: Path) -> None:
-    paths, gpus, _ready = _case(tmp_path)
-    inputs = deployment._authority_inputs(
-        **paths,
-        provisioner=None,
-        provisioned_gpus=gpus,
-    )
-    composition = deployment._compose(inputs)
-    lifetime = None
-    try:
-        lifetime = composition.authorities.resident_screen_factory.create()
-        intake = inputs.root / "resident-intake"
-        assert intake.is_dir()
-        assert stat.S_IMODE(intake.stat().st_mode) == 0o711
-        # exist_ok must not leave a prior private root in place
-        intake.chmod(0o700)
-        lifetime.close()
-        lifetime = composition.authorities.resident_screen_factory.create()
-        assert stat.S_IMODE(intake.stat().st_mode) == 0o711
-    finally:
-        if lifetime is not None:
-            lifetime.close()
-        composition.close()
-
-
-def test_commissioned_resident_factory_builds_real_stock_lifetime(
-    tmp_path: Path,
-) -> None:
-    paths, gpus, _ready = _case(tmp_path)
-    inputs = deployment._authority_inputs(
-        **paths,
-        provisioner=None,
-        provisioned_gpus=gpus,
-    )
-    composition = deployment._compose(inputs)
-    lifetime = None
-    try:
-        lifetime = composition.authorities.resident_screen_factory.create()
-        assert type(lifetime) is B300ResidentScreenLifetime
-        assert composition.build_executor is not composition.resident_executor
-        assert (
-            composition.build_executor.manager
-            is not composition.resident_executor.manager
-        )
-        stock_roots = tuple((inputs.root / "engine-trees").glob("resident-stock-*"))
-        assert len(stock_roots) == 1
-    finally:
-        if lifetime is not None:
-            lifetime.close()
-        composition.close()
 
 
 def test_ready_gpu_ids_require_a_counted_canonical_device_set(
@@ -670,47 +563,47 @@ def test_ready_gpu_ids_require_a_counted_canonical_device_set(
     short = json.loads(json.dumps(ready))
     short["gpu"]["count"] = 7
     with pytest.raises(
-        deployment.B300ScreenDeploymentError,
+        deployment.B300DeploymentError,
         match="count differs from its inventory",
     ):
-        deployment._ready_gpu_ids(short)
+        definition.ready_gpu_ids(short)
 
     duplicated = json.loads(json.dumps(ready))
     duplicated["gpu"]["inventory"][7]["index"] = 6
     with pytest.raises(
-        deployment.B300ScreenDeploymentError,
+        deployment.B300DeploymentError,
         match="ordered unique GPU indices",
     ):
-        deployment._ready_gpu_ids(duplicated)
+        definition.ready_gpu_ids(duplicated)
 
     unordered = json.loads(json.dumps(ready))
     unordered["gpu"]["inventory"][0]["index"] = 1
     unordered["gpu"]["inventory"][1]["index"] = 0
     with pytest.raises(
-        deployment.B300ScreenDeploymentError,
+        deployment.B300DeploymentError,
         match="ordered unique GPU indices",
     ):
-        deployment._ready_gpu_ids(unordered)
+        definition.ready_gpu_ids(unordered)
 
 
 def test_materializer_refuses_id_and_gpu_model_drift(tmp_path: Path) -> None:
     paths, gpus, _ready = _case(tmp_path)
     drifted = gpus[:7] + (_gpu(9),)
     with pytest.raises(
-        deployment.B300ScreenDeploymentError,
+        deployment.B300DeploymentError,
         match="provisioned GPU set differs from the commissioned lane pair",
     ):
-        deployment.materialize_b300_screen_identities(
+        deployment.materialize_b300_identities(
             **paths,
             gpu_provisioner=lambda selected, *, deadline: drifted,
         )
 
     renamed = gpus[:7] + (replace(gpus[7], name="NVIDIA H100 SXM5"),)
     with pytest.raises(
-        deployment.B300ScreenDeploymentError,
+        deployment.B300DeploymentError,
         match="GPU configuration differs from READY inventory",
     ):
-        deployment.materialize_b300_screen_identities(
+        deployment.materialize_b300_identities(
             **paths,
             gpu_provisioner=lambda selected, *, deadline: renamed,
         )
@@ -726,10 +619,10 @@ def test_materializer_refuses_lane_absent_from_eight_device_pair(
     ready_path.chmod(0o600)
     _write(ready_path, mutated)
     with pytest.raises(
-        deployment.B300ScreenDeploymentError,
+        deployment.B300DeploymentError,
         match="equal disjoint lanes within its inventory",
     ):
-        deployment.materialize_b300_screen_identities(
+        deployment.materialize_b300_identities(
             **paths,
             gpu_provisioner=lambda selected, *, deadline: gpus,
         )

@@ -14,13 +14,8 @@ import cacheon.eval.b300_registered_qualification as registered
 import cacheon.eval.b300_registered_qualification_inputs as inputs_module
 import cacheon.eval.b300_qualification_deployment as qualification_deployment
 from cacheon.arena_service import (
-    SCREEN_STAGES,
     ArenaCandidateBinding,
     ArenaQualificationRequest,
-    ArenaScreenReceipt,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStageResult,
 )
 from cacheon.eval.reference_quality import retained_support_policy_digest
 from cacheon.stack_identity import canonical_digest
@@ -149,23 +144,11 @@ def _candidate(
 
 
 def _cohort(candidate: ArenaCandidateBinding, policy_digest: str) -> B300QualificationCohort:
-    service = _h("ordinary-b300-service")
-    receipt = ArenaScreenReceipt(
-        service,
-        candidate.digest,
-        candidate.screen_attempt,
-        tuple(
-            ScreenStageResult(stage, ScreenGrade.PASS, _h(stage), 1)
-            for stage in SCREEN_STAGES
-        ),
-        PromotionDecision.PROMOTE,
-    )
     return B300QualificationCohort(
         ArenaQualificationRequest(
-            service,
+            _h("ordinary-b300-service"),
             policy_digest,
             (candidate,),
-            (receipt,),
         ),
         "primary",
     )
@@ -550,14 +533,12 @@ def test_a_prefill_commission_needs_a_mixed_cell_workload(tmp_path: Path, versio
 def test_native_candidate_is_planned_on_the_two_process_schedule(
     tmp_path: Path,
 ) -> None:
-    """A bundle that cannot be hot-swapped gets the always-bookend schedule.
+    """A native bundle gets the always-bookend schedule.
 
     A CUDA kernel has to be compiled and linked into the engine that runs it,
-    so it cannot be swapped into a live resident lane -- it is measured by the
-    two-process crossover, whose schedule reads B-prime unconditionally so the
-    quality gate has a stock-drift control to harvest. The sealed commission
-    version serves everything swappable; this routing is what a native bundle
-    needs in order to receive a speed verdict at all.
+    so it is measured by the two-process crossover, whose schedule reads
+    B-prime unconditionally so the quality gate has a stock-drift control to
+    harvest.
     """
 
     native = _candidate_source(tmp_path / "native-source")

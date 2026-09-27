@@ -11,30 +11,21 @@ import pytest
 import cacheon.eval.b300_qualification_deployment as deployment
 import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
-    SCREEN_STAGES,
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
     ArenaQualificationRequest,
     ArenaRuntimeIdentity,
-    ArenaScreenReceipt,
     ArenaServiceManifest,
-    NonCrownScreenPolicy,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStagePolicy,
-    ScreenStageResult,
     Workload,
     WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
 from cacheon.eval.b300_arena_provider import (
+    B300DeclaredAuthorities,
     B300DeclaredQualificationAuthorities,
     B300QualificationLanePair,
     B300QualificationLanePolicy,
-    B300ResidentScreenFactory,
-    B300ScreenDeploymentAuthorities,
-    B300ScreenStageHandler,
     b300_arena_provider_digest,
     b300_executor_role_policy_digest,
 )
@@ -223,21 +214,6 @@ def test_pristine_reference_stays_empty_after_incumbent_advances(
         replace(advanced, pristine_stack=incumbent)
 
 
-def _handlers() -> tuple[B300ScreenStageHandler, ...]:
-    def run(_manifest, stage, _candidate):
-        return ScreenStageResult(stage.stage, ScreenGrade.PASS, _h(stage.stage), 1)
-
-    return tuple(
-        B300ScreenStageHandler(
-            stage,
-            _h(f"{stage}-handler"),
-            () if stage == "static" else (f"{stage}-resource",),
-            run,
-        )
-        for stage in SCREEN_STAGES[:-1]
-    )
-
-
 def _lane_pair(
     lane_a_executor: OCIEngineExecutor,
     lane_b_executor: OCIEngineExecutor,
@@ -252,12 +228,12 @@ def _lane_pair(
     )
 
 
-def _screen_authorities(
+def _declared_authorities(
     construction: deployment.B300QualificationConstructionAuthority,
     candidate_executor: OCIEngineExecutor,
     baseline_executor: OCIEngineExecutor,
     lane_pair: B300QualificationLanePair,
-) -> B300ScreenDeploymentAuthorities:
+) -> B300DeclaredAuthorities:
     declared = B300DeclaredQualificationAuthorities(
         qualification_policy_digest=construction.qualification_policy_digest,
         qualification_builder_digest=construction.qualification_builder_digest,
@@ -274,21 +250,10 @@ def _screen_authorities(
         hidden_judge_binding_digest=construction.hidden_judge.binding.digest,
         deadline_policy_digest=construction.deadline_policy_digest,
     )
-    return B300ScreenDeploymentAuthorities(
-        runtime_identity=_runtime(),
-        screen_handlers=_handlers(),
-        resident_screen_factory=B300ResidentScreenFactory(
-            _h("resident-screen-factory"),
-            ("resident-screen-resource",),
-            lambda: (_ for _ in ()).throw(
-                AssertionError("composition must not open a screen lifetime")
-            ),
-        ),
-        qualification=declared,
-    )
+    return B300DeclaredAuthorities(runtime_identity=_runtime(), qualification=declared)
 
 
-def _manifest(authorities: B300ScreenDeploymentAuthorities) -> ArenaServiceManifest:
+def _manifest(authorities: B300DeclaredAuthorities) -> ArenaServiceManifest:
     return ArenaServiceManifest(
         runtime=authorities.runtime_identity,
         workload=Workload(
@@ -296,10 +261,7 @@ def _manifest(authorities: B300ScreenDeploymentAuthorities) -> ArenaServiceManif
             "sealed-prompt-seeds-v1",
             (WorkloadCell("s8", 8192, 1024, 64, 8),),
         ),
-        capacity=ArenaCapacityPolicy(32, 64, 1, 4, 4, 2, 2, 3),
-        screens=NonCrownScreenPolicy(
-            tuple(ScreenStagePolicy(stage, 30_000) for stage in SCREEN_STAGES)
-        ),
+        capacity=ArenaCapacityPolicy(32, 64, 4, 4),
         qualification_policy_digest=(
             authorities.qualification.qualification_policy_digest
         ),
@@ -355,19 +317,6 @@ def _bundle(tmp_path: Path, index: int) -> ArenaCandidateBinding:
     return ArenaCandidateBinding(reservation, publication, 1)
 
 
-def _receipt(service_digest: str, candidate: ArenaCandidateBinding):
-    return ArenaScreenReceipt(
-        service_digest,
-        candidate.digest,
-        candidate.screen_attempt,
-        tuple(
-            ScreenStageResult(stage, ScreenGrade.PASS, _h(f"{stage}-pass"), 1)
-            for stage in SCREEN_STAGES
-        ),
-        PromotionDecision.PROMOTE,
-    )
-
-
 @pytest.mark.parametrize(
     ("stage", "candidate_lane", "baseline_lane"),
     (("primary", "A", "B"), ("reproduction", "B", "A")),
@@ -383,13 +332,13 @@ def test_composition_preserves_one_service_across_exact_role_swap(
     primary_candidate = executor_factory("candidate", "A")
     primary_baseline = executor_factory("resident-baseline", "B")
     lane_pair = _lane_pair(primary_candidate, primary_baseline)
-    screen = _screen_authorities(
+    declared = _declared_authorities(
         construction,
         primary_candidate,
         primary_baseline,
         lane_pair,
     )
-    manifest = _manifest(screen)
+    manifest = _manifest(declared)
     construction = _bind_construction_to_manifest(construction, manifest)
     candidate = (
         primary_candidate
@@ -404,7 +353,7 @@ def test_composition_preserves_one_service_across_exact_role_swap(
 
     result = deployment.compose_b300_qualification_deployment(
         manifest=manifest,
-        screen_authorities=screen,
+        declared=declared,
         construction=construction,
         candidate_executor=candidate,
         resident_baseline_executor=baseline,
@@ -413,7 +362,7 @@ def test_composition_preserves_one_service_across_exact_role_swap(
 
     assert result.manifest is manifest
     assert result.screen_lane == stage
-    assert result.authorities.qualification == screen.qualification
+    assert result.authorities.qualification == declared.qualification
     assert result.authorities.qualification_stage == stage
     assert (
         result.authorities.qualification_orientation.candidate.lane_id
@@ -434,13 +383,13 @@ def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
     candidate_a = executor_factory("candidate", "A")
     baseline_b = executor_factory("resident-baseline", "B")
     lane_pair = _lane_pair(candidate_a, baseline_b)
-    screen = _screen_authorities(
+    declared = _declared_authorities(
         construction,
         candidate_a,
         baseline_b,
         lane_pair,
     )
-    manifest = _manifest(screen)
+    manifest = _manifest(declared)
     construction = _bind_construction_to_manifest(construction, manifest)
 
     with pytest.raises(
@@ -449,7 +398,7 @@ def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
     ):
         deployment.compose_b300_qualification_deployment(
             manifest=manifest,
-            screen_authorities=screen,
+            declared=declared,
             construction=construction,
             candidate_executor=executor_factory("candidate", "B"),
             resident_baseline_executor=baseline_b,
@@ -463,7 +412,7 @@ def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
     ):
         deployment.compose_b300_qualification_deployment(
             manifest=drifted,
-            screen_authorities=screen,
+            declared=declared,
             construction=construction,
             candidate_executor=candidate_a,
             resident_baseline_executor=baseline_b,
@@ -485,7 +434,6 @@ def test_path_free_cohort_is_one_candidate_and_rejects_control_state(
         service,
         construction.qualification_policy_digest,
         (first,),
-        (_receipt(service, first),),
     )
     cohort = deployment.B300QualificationCohort(request, "primary")
 
@@ -500,7 +448,6 @@ def test_path_free_cohort_is_one_candidate_and_rejects_control_state(
                 service,
                 construction.qualification_policy_digest,
                 (first, second),
-                (_receipt(service, first), _receipt(service, second)),
             ),
             "primary",
         )
@@ -781,15 +728,10 @@ def test_factory_reuses_its_first_sealed_plan_without_reconstruction(
         _executor_mirror(resident.baseline),
         screen_lane="primary",
     )
-    receipt = replace(
-        harness.cohort.receipt,
-        service_digest=construction.incumbent_stack.arena_digest,
-    )
     request = ArenaQualificationRequest(
         construction.incumbent_stack.arena_digest,
         construction.qualification_policy_digest,
         (harness.cohort.candidate,),
-        (receipt,),
     )
     factory = builder(request, None)
     assert calls == 1

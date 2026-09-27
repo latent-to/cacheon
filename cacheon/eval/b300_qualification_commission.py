@@ -10,6 +10,13 @@ from typing import Callable
 
 import cacheon.eval.b300_deployment as b300_deployment
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
+from cacheon.eval.b300_arena_definition import (
+    data_parallel_size as _data_parallel_size,
+    device_policy as _device_policy,
+    engine_config as _engine_config,
+    hardware_bindings as _hardware_bindings,
+    scored_cell as _scored_cell,
+)
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
@@ -202,7 +209,7 @@ def _lane_policies(
             raise B300QualificationCommissionError(
                 "sealed qualification lane is absent from READY inventory"
             ) from None
-        policy = b300_deployment._device_policy(gpus)
+        policy = _device_policy(gpus)
         if (
             policy.policy_sha256 != lane.device_policy_digest
             or policy.configuration_sha256 != lane.device_configuration_digest
@@ -423,7 +430,7 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
     construction and must die here, not forty minutes into a measured run.
     """
 
-    quality_cell = b300_deployment._scored_cell(inputs.workload)
+    quality_cell = _scored_cell(inputs.workload)
     batch_cells = getattr(
         inputs,
         "prompt_batch_cells",
@@ -497,13 +504,13 @@ def _compose_locked(
             resolver=capabilities.source_resolver,
         )
     )
-    engine_config = b300_deployment._engine_config(
+    engine_config = _engine_config(
         inputs.engine_template,
         inputs.workload.cells,
         disable_cuda_graph=False,
     )
-    dp_size = b300_deployment._data_parallel_size(engine_config)
-    baseline_hardware, baseline_physical = b300_deployment._hardware_bindings(
+    dp_size = _data_parallel_size(engine_config)
+    baseline_hardware, baseline_physical = _hardware_bindings(
         inputs.runtime, candidate_executor.device_policy, dp_size=dp_size,
     )
     incumbent_native = b300_deployment._native_build(
@@ -553,7 +560,7 @@ def _compose_locked(
         native_build_spec=pristine_native,
     )
     pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
-    quality_cell = b300_deployment._scored_cell(inputs.workload)
+    quality_cell = _scored_cell(inputs.workload)
     cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
     batch_cells = inputs.prompt_batch_cells
     mixed_cells = len(inputs.workload.cells) > 1
@@ -637,7 +644,7 @@ def _compose_locked(
         evidence_root,
         calibration_evidence,
     )
-    resident_hardware, resident_physical = b300_deployment._hardware_bindings(
+    resident_hardware, resident_physical = _hardware_bindings(
         inputs.runtime, baseline_executor.device_policy, dp_size=dp_size,
     )
     resident_native = b300_deployment._native_build(

@@ -470,7 +470,6 @@ def run_with_runtime(
         ) from exc
     append_run_event(journal, request_id, f"adapter.{stage}", "completed")
     append_run_event(journal, request_id, "adapter.response", "completed")
-    return stage
 
 
 def _decode_command(raw: bytes) -> dict[str, object]:
