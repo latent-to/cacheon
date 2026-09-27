@@ -457,10 +457,12 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_r
     """Execute the sealed windows of one load, flushing cache before each window's read.
 
     ``before_read`` synchronizes paired lanes after their cache flushes and
-    before releasing either client's first request of that window. Single-lane
+    before releasing either client's first request of that window, and returns
+    whether the sealed sequential rule still wants that window. Single-lane
     execution uses the identical read and retained evidence path without a
     peer barrier. Every window is a fresh read of the same fixed work; the
-    scorer averages the paired ratios, so a sealed window count buys margin.
+    scorer averages the paired ratios, so the sealed window count is the
+    budget that buys margin.
     """
     if tokenizer is None:
         from transformers import AutoTokenizer
@@ -469,8 +471,8 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_r
     (load,) = plan.loads
     for window in range(1, plan.windows + 1):
         await flush_cache(session)
-        if before_read is not None:
-            await before_read(load, window)
+        if before_read is not None and not await before_read(load, window):
+            break
         read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")
         read = await _run_load_read(session, read_plan, tokenizer=tokenizer)
         session.replay_reads.append(read)
