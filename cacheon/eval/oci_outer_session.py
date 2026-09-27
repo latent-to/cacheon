@@ -347,8 +347,7 @@ class SessionExecutionPlan:
             batches = tuple(tuple(batch) for batch in self.prompt_batches)
         except TypeError:
             raise OuterSessionInfrastructureError("each prompt batch must be a sequence") from None
-        maximum_warmups = len(batches) - (self.replay is None)
-        if not batches or type(self.warmup_count) is not int or not 1 <= self.warmup_count <= maximum_warmups:
+        if not batches or type(self.warmup_count) is not int or not 1 <= self.warmup_count <= len(batches) - (self.replay is None):
             raise OuterSessionInfrastructureError("session requires warmup and measured work")
         if type(self.conditioning_count) is not int or not 1 <= self.conditioning_count <= self.warmup_count:
             raise OuterSessionInfrastructureError("conditioning_count must be in 1..warmup_count")
@@ -427,7 +426,7 @@ class SessionExecutionPlan:
     @property
     def quality_tokens_per_prompt(self) -> int:
         """Maximum teacher work per selected prompt, derived from sealed geometry."""
-        return max(self.batch_max_new_tokens or (self.max_new_tokens,))
+        return self.max_new_tokens if self.replay is not None else max(self.batch_max_new_tokens or (self.max_new_tokens,))
 
 
 @dataclass(frozen=True)
@@ -441,6 +440,7 @@ class BatchExecutionEvidence:
     evidence: BatchEvidence
     audit_receipts: tuple[AuditReceiptFacts, ...] = ()
     prompt_latencies: tuple[tuple[float, float], ...] = field(default=(), metadata={"wire_optional": True})
+    input_ids_sha256: tuple[str, ...] = field(default=(), metadata={"wire_optional": True})
 
     @property
     def elapsed_seconds(self) -> float:

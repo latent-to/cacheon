@@ -16,6 +16,7 @@ construction authority; any drift fails closed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from cacheon.eval.b300_qualification_deployment import (
@@ -348,7 +349,7 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     _commission_int(policy.get("audit_minimum_calls"), "audit_minimum_calls", minimum=1)
     session = value.get("session")
     if (type(session) is not dict
-        or set(session) - {"measure_phase_latency"} != _COMMISSION_SESSION_FIELDS
+        or set(session) - {"measure_phase_latency", "replay"} != _COMMISSION_SESSION_FIELDS
         or ("measure_phase_latency" in session and session["measure_phase_latency"] is not True)):
         raise B300RegisteredQualificationError(
             "sealed qualification session block is not closed"
@@ -359,10 +360,28 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     _commission_int(session.get("conditioning_count"), "conditioning_count", minimum=0)
     _commission_decimal(session.get("temperature"), "temperature")
     speed = value.get("resident_speed")
-    if type(speed) is not dict or set(speed) - {"prefill_lane"} != _COMMISSION_SPEED_FIELDS:
+    if type(speed) is not dict or set(speed) - {"prefill_lane", "goodput"} != _COMMISSION_SPEED_FIELDS:
         raise B300RegisteredQualificationError(
             "sealed qualification resident-speed block is not closed"
         )
+    if ("replay" in session) != ("goodput" in speed):
+        raise B300RegisteredQualificationError("replay workload and goodput policy must be sealed together")
+    if "goodput" in speed:
+        from cacheon.eval.goodput_runtime import GoodputPolicy
+        replay = session["replay"]
+        if (type(replay) is not dict or set(replay) != {
+            "manifest_path", "slice_digest", "load", "aiperf_binary", "tokenizer_path",
+        } or "prefill_lane" in speed):
+            raise B300RegisteredQualificationError("sealed replay fields differ or overlap the prefill lane")
+        _digest(replay["slice_digest"], "replay slice")
+        _commission_int(replay["load"], "replay load", minimum=1)
+        if any(type(replay[key]) is not str or not Path(replay[key]).is_absolute()
+               for key in ("manifest_path", "aiperf_binary", "tokenizer_path")):
+            raise B300RegisteredQualificationError("sealed replay paths must be absolute")
+        try:
+            GoodputPolicy.from_dict(speed["goodput"])
+        except (TypeError, ValueError) as exc:
+            raise B300RegisteredQualificationError(f"sealed goodput policy is invalid: {exc}") from exc
     if "prefill_lane" in speed:
         lane = speed["prefill_lane"]
         if type(lane) is not dict or set(lane) != _COMMISSION_PREFILL_LANE_FIELDS:

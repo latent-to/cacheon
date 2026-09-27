@@ -13,7 +13,6 @@ from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.eval.b300_arena_definition import (
     data_parallel_size as _data_parallel_size,
     device_policy as _device_policy,
-    engine_config as _engine_config,
     hardware_bindings as _hardware_bindings,
     scored_cell as _scored_cell,
 )
@@ -43,6 +42,7 @@ from cacheon.eval.b300_sealed_qualification_commission import (
     sealed_qualification_profile_rows,
 )
 from cacheon.eval.b300_qualification_declaration import QUALIFICATION_EXECUTOR_ID
+from cacheon.eval.b300_qualification_lanes import commissioned_incumbent_arm as commissioned_incumbent_arm
 from cacheon.eval.b300_remote_worker_adapter import B300RemoteQualificationCommission
 from cacheon.eval.calibration import (
     CalibrationContext,
@@ -430,6 +430,10 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
     construction and must die here, not forty minutes into a measured run.
     """
 
+    if "replay" in session_block:
+        if policy.topk_width != 0 or float(session_block["temperature"]) != 0:
+            raise B300QualificationCommissionError("goodput replay requires greedy decoding and teacher-NLL quality")
+        return
     quality_cell = _scored_cell(inputs.workload)
     batch_cells = getattr(
         inputs,
@@ -458,126 +462,6 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
         raise B300QualificationCommissionError(
             "sealed session does not conform to the declared workload cell"
         )
-
-
-def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver, replay=None):
-    """Bind the commissioned incumbent to one executor without grading it.
-
-    Qualification and a single-lane development replay share this construction.
-    Calibration remains mandatory in the qualification consumer, after its
-    reference context exists; constructing an engine never fabricates it.
-    """
-    catalog = default_target_catalog()
-    snapshot = catalog.snapshot()
-    policy_block = inputs.qualification_commission["policy"]
-    session_block = inputs.qualification_commission["session"]
-    # The measured baseline is the durable incumbent the capabilities declare;
-    # at genesis the declared entries are empty and this reopens the exact
-    # stock tree above, so both arms of the branchless pair coincide.
-    _, _, incumbent, incumbent_tree = (
-        b300_deployment._commissioned_stock_authority(
-            inputs,
-            manifest,
-            catalog,
-            snapshot,
-            error=B300QualificationCommissionError,
-            label="qualification",
-            entries=entries,
-            resolver=resolver,
-        )
-    )
-    engine_config = (
-        replace(inputs.engine_template, disable_cuda_graph=False)
-        if replay is not None else _engine_config(
-            inputs.engine_template, inputs.workload.cells, disable_cuda_graph=False,
-        )
-    )
-    dp_size = _data_parallel_size(engine_config)
-    baseline_hardware, baseline_physical = _hardware_bindings(
-        inputs.runtime, executor.device_policy, dp_size=dp_size,
-    )
-    incumbent_native = b300_deployment._native_build(
-        incumbent_tree.tree_digest,
-        inputs.preflight,
-        executor.config.prebuild.policy, inputs.runtime.target_architecture,
-    )
-    incumbent_launch = EngineLaunchSpec(
-        runtime_digest=inputs.runtime.runtime_digest,
-        base_engine_digest=inputs.runtime.base_engine_digest,
-        arena_digest=manifest.digest,
-        stack_digest=incumbent_tree.stack_digest,
-        tree_digest=incumbent_tree.tree_digest,
-        image_digest=inputs.preflight.image_digest,
-        platform_digest=inputs.preflight.platform_digest,
-        controller_distribution_digest=inputs.controller_distribution_digest,
-        worker_distribution_digest=inputs.preflight.worker_distribution_digest,
-        model_revision_digest=inputs.runtime.model_revision_digest,
-        model_manifest_digest=inputs.runtime.model_manifest_digest,
-        model_content_digest=inputs.runtime.model_content_digest,
-        validator_overlay_digest=inputs.runtime.validator_overlay_digest,
-        engine_config_digest=engine_config.digest,
-        seccomp_policy_digest=b300_deployment._file_sha256(
-            executor.config.prebuild.seccomp_profile
-        ),
-        resource_policy_digest=(
-            executor.config.prebuild.policy.resource_policy_digest
-        ),
-        native_build_spec_digest=incumbent_native.digest,
-        hardware=baseline_hardware,
-    )
-    trusted_baseline = TrustedLaunchBinding(
-        materialized_tree_root=incumbent_tree.root,
-        controller_distribution_digest=inputs.controller_distribution_digest,
-        native_build_spec=incumbent_native,
-        runtime_preflight_receipt=inputs.preflight,
-        physical_hardware=baseline_physical,
-    )
-    incumbent_binding = MaterializedArmBinding(incumbent_tree, trusted_baseline)
-    quality_cell = _scored_cell(inputs.workload)
-    cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
-    batch_cells = inputs.prompt_batch_cells
-    mixed_cells = len(inputs.workload.cells) > 1
-    prompts = inputs.prompt_batches
-    tokens = policy_block["tokens_per_prompt"]
-    if replay is not None:
-        # The old128/24-request conditioning cost229k decode tokens before a
-        # two-session replay. Warm the engine at its declared replay load.
-        prompts = tuple(batch[:max(replay.loads)] for batch in prompts[:session_block["warmup_count"]])
-        batch_cells = batch_cells[:len(prompts)]
-        tokens = 16
-    baseline_session_plan = SessionExecutionPlan(
-        launch_digest=incumbent_launch.digest,
-        expected_engine_config_digest=engine_config.digest,
-        engine_config=engine_config,
-        expected_preflight=expected_runtime_preflight(
-            incumbent_launch, inputs.preflight
-        ),
-        prompt_batches=prompts,
-        warmup_count=session_block["warmup_count"],
-        conditioning_count=session_block["conditioning_count"],
-        max_new_tokens=tokens,
-        top_logprobs_num=policy_block["topk_width"],
-        temperature=float(session_block["temperature"]),
-        expected_prompt_tokens=quality_cell.input_tokens,
-        measure_phase_latency=session_block.get("measure_phase_latency", False),
-        replay=replay,
-        batch_max_new_tokens=(
-            tuple(tokens if replay is not None else cells_by_id[cell_id].output_tokens
-                  for cell_id in batch_cells)
-            if mixed_cells
-            else ()
-        ),
-        batch_expected_prompt_tokens=(
-            tuple(cells_by_id[cell_id].input_tokens for cell_id in batch_cells)
-            if mixed_cells
-            else ()
-        ),
-    )
-    return incumbent, incumbent_binding, ResidentArmPlan(
-        incumbent_launch, trusted_baseline, baseline_session_plan,
-        executor.manager.namespace_digest, executor.config.runtime.digest,
-        executor.device_policy.configuration_sha256,
-    )
 
 
 def _compose_locked(
@@ -609,9 +493,32 @@ def _compose_locked(
             label="pristine reference",
         )
     )
+    replay = None
+    goodput = None
+    if "replay" in session_block:
+        from cacheon.eval.agent_replay import AgentReplayPlan
+        from cacheon.eval.goodput_runtime import GoodputPolicy
+        settings = session_block["replay"]
+        goodput = GoodputPolicy.from_dict(speed_block["goodput"])
+        replay = AgentReplayPlan(
+            Path(settings["manifest_path"]), (settings["load"],),
+            Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
+            inputs.root / "qualification-replays" / screen_lane,
+            goodput.contract, "incumbent", 1, screen_lane,
+        )
+        if replay.slice.digest != settings["slice_digest"]:
+            raise B300QualificationCommissionError("replay slice differs from its sealed authority")
+        from cacheon.eval.qualification_trajectories import prompt_pool
+        from cacheon.eval.reference_protocol import MAX_TOKENS
+        maximum = max(prompt_pool(replay).values())
+        if policy.tokens_per_prompt != maximum or maximum > MAX_TOKENS:
+            raise B300QualificationCommissionError(
+                "reference token maximum must match the replay slice and fit the reference protocol"
+            )
     incumbent, incumbent_binding, incumbent_arm = commissioned_incumbent_arm(
         inputs, manifest, candidate_executor,
         entries=capabilities.incumbent_entries, resolver=capabilities.source_resolver,
+        replay=replay,
     )
     incumbent_tree = incumbent_binding.tree
     incumbent_launch = incumbent_arm.launch
@@ -740,7 +647,7 @@ def _compose_locked(
         # New commissions seal one bounded borderline repeat: v13 single-cell,
         # v14 mixed-cell, or v15 with the prefill pass. Existing evidence keeps
         # its original version and arithmetic.
-        version=15 if prefill_lane is not None else 14 if mixed_cells else 13,
+        version=16 if goodput is not None else 15 if prefill_lane is not None else 14 if mixed_cells else 13,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),
@@ -750,6 +657,7 @@ def _compose_locked(
         prefill_credit_weight=(
             float(prefill_lane["credit_weight"]) if prefill_lane is not None else 0.0
         ),
+        goodput=goodput,
     )
 
     def bind_candidate(candidate_tree) -> TrustedLaunchBinding:

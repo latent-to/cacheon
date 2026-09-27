@@ -696,3 +696,30 @@ without the AgentX scenario. The AgentX trajectory warmup is designed for
 recorded timestamps; stripping those timestamps can omit intended turns.
 Omit `--warmup-request-count` for no client warmup; version 0.13.0 rejects an
 explicit zero. The engine still receives its ordinary conditioning requests.
+
+Replay qualification is commissioned with `session.replay`: absolute `manifest_path`,
+`aiperf_binary` and `tokenizer_path`, the manifest's computed `slice_digest`, and a
+single operating `load`. `resident_speed.goodput` seals the service `contract`
+(`decode_floor_tps`, `ttft_bound_s`, `attainment`), `required` ratio, paired
+`null_noise`, fixed `attainment_tolerance`, and its calibrated one-sided
+`attainment_margin`. These values use canonical decimal strings. The existing
+window-scatter, conditioning-slowdown and minimum-window fields are zero for this
+policy. The required ratio must equal `1 + max(min_margin, noise_multiplier *
+null_noise)` under the frozen calibration. Greedy sampling and zero rollout top-k
+width are required; the reference token maximum equals the largest output budget
+in the selected slice, while conditioning still generates 16 tokens.
+
+This selects speed policy v16. Both OCI engines finish conditioning and cache
+flush before their concurrent fixed-work reads. Both reads finish before either
+engine is removed. The service scorer supplies the verdict from retained turn
+records; its `grade` entrypoint and the quality producer must be available before
+an engine launches. There is one paired window, with no timed B′ or automatic
+repeat. Earlier policy versions retain their sealed arithmetic.
+
+On a speed PASS, the candidate engine closes and the existing entropy provider
+selects source occurrences from the completed B/C trajectories. The still-loaded
+incumbent generates only those selected controls. Canonical input digests bind
+all three rollouts, and the speed continuation retains the controls before the
+separate eager audit and pristine T run. Reopening selection after the audit must
+return the same retained entropy. Source identities use trace/outer/inner indices,
+so parallel child arrival order does not change which turn T evaluates.

@@ -54,7 +54,7 @@ class SpeedStageDecision(str, Enum):
     NO_DECISION = "NO_DECISION"
 
 
-SPEED_FAIL_REASONS = frozenset({"candidate_slower", "speed_threshold_not_met"})
+SPEED_FAIL_REASONS = frozenset({"candidate_slower", "speed_threshold_not_met", "service_contract_not_met"})
 
 
 def fail_reason(verdict: SpeedupVerdict, *, conditioning_failed: bool = False) -> str:

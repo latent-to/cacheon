@@ -22,9 +22,13 @@ reference quality consumes its stock-drift control.
 from __future__ import annotations
 
 import math
-import statistics
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field as dataclass_field
 
+from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
+from cacheon.eval.goodput_runtime import GoodputPolicy as GoodputPolicy, GoodputReadSet
+from cacheon.eval.reference_protocol import ReferencePromptInput
+from cacheon.eval.qualification import SelectionEntropyReceipt
 from cacheon.eval.resident_measurement import (
     CrossoverRuntimeError, ResidentReadRate, TimedWindow as TimedWindow, _timed_windows,
 )
@@ -53,309 +57,6 @@ from cacheon.eval.speed_verdict import (
     SpeedStageDecision,
 )
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
-
-
-@dataclass(frozen=True)
-class ResidentSpeedPolicy:
-    """Authority for precommitted reads and the speed-stage wall-clock SLA."""
-
-    max_stage_seconds: int
-    min_margin: float
-    noise_multiplier: float
-    max_noise: float
-    calibration_digest: str
-    calibration_context_digest: str
-    version: int
-    max_qualification_seconds: int = 7_200
-    min_windows: int = 0
-    max_window_scatter: float = 0.0
-    max_conditioning_slowdown: float = 0.0
-    prefill_min_margin: float = 0.0
-    prefill_credit_weight: float = 0.0
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.version) is not int
-            or self.version not in (8, 9, 10, 11, 12, 13, 14, 15)
-            or type(self.max_stage_seconds) is not int
-            or not 60 <= self.max_stage_seconds <= 7_200
-            or type(self.max_qualification_seconds) is not int
-            or not self.max_stage_seconds
-            <= self.max_qualification_seconds
-            <= 14_400
-            or type(self.min_windows) is not int
-            or any(
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(float(value))
-                for value in (
-                    self.min_margin,
-                    self.noise_multiplier,
-                    self.max_noise,
-                    self.max_window_scatter,
-                    self.max_conditioning_slowdown,
-                    self.prefill_min_margin,
-                    self.prefill_credit_weight,
-                )
-            )
-            or not 0 < self.min_margin < 1
-            or self.noise_multiplier <= 0
-            or not 0 <= self.max_noise < 1
-        ):
-            raise CrossoverRuntimeError("resident speed policy is unsupported")
-        if self.max_noise > 0.02:
-            # Version 2 scores timed windows, where the hardened stack has
-            # demonstrated <=0.8% honest spread; a looser ceiling would let a
-            # broken measurement convict or crown instead of NO_DECISION.
-            raise CrossoverRuntimeError(
-                "resident speed policy requires max_noise <= 0.02"
-            )
-        if not 3 <= self.min_windows <= 512:
-            raise CrossoverRuntimeError("resident speed policy requires 3..512 timed windows")
-        if not 0 < self.max_window_scatter <= 0.25:
-            raise CrossoverRuntimeError("resident speed policy requires window scatter in (0, 0.25]")
-        # Conditioning is outside scored windows. The historical v3 bound
-        # catches gross startup regressions; each timed full request includes prefill.
-        if not 1.0 < self.max_conditioning_slowdown <= 2.0:
-            raise CrossoverRuntimeError(
-                "resident speed policy requires a conditioning slowdown bound in (1, 2]"
-            )
-        if self.version in (12, 15):
-            # The prefill lane admits at a sealed margin and settles at a
-            # sealed fraction of the prefill gain; neither is derived from a
-            # read, so a noisy box cannot widen its own admission.
-            if (
-                not 0 < self.prefill_min_margin < 1
-                or not 0 < self.prefill_credit_weight <= 1
-            ):
-                raise CrossoverRuntimeError(
-                    "resident speed policy v12 requires a prefill margin in"
-                    " (0, 1) and a credit weight in (0, 1]"
-                )
-        elif self.prefill_min_margin != 0.0 or self.prefill_credit_weight != 0.0:
-            raise CrossoverRuntimeError(
-                "prefill lane thresholds require resident speed policy v12"
-            )
-        for field in ("calibration_digest", "calibration_context_digest"):
-            try:
-                require_sha256_hex(getattr(self, field), field=field)
-            except ValueError as exc:
-                raise CrossoverRuntimeError(str(exc)) from None
-
-    def conditioning_regression(
-        self, baseline_row: object, candidate_row: object
-    ) -> bool:
-        """Whether the candidate's conditioning span regressed past the bound.
-
-        Conditioning spans carry warm/cold session structure (measured 50%
-        cold-vs-warm on 2026-07-25), so callers must pair reads of the same
-        warmth position: C against B (both first reads, cold) and C-prime
-        against B-prime (both continuations, warm). Never mix positions."""
-
-        baseline_tokens = baseline_row.conditioning_tokens  # type: ignore[attr-defined]
-        candidate_tokens = candidate_row.conditioning_tokens  # type: ignore[attr-defined]
-        if baseline_tokens != candidate_tokens:
-            raise CrossoverRuntimeError(
-                "conditioning spans are not workload-comparable"
-            )
-        return (
-            candidate_row.conditioning_seconds  # type: ignore[attr-defined]
-            > self.max_conditioning_slowdown
-            * baseline_row.conditioning_seconds  # type: ignore[attr-defined]
-        )
-
-    def read_window_scatter(self, row: object) -> float:
-        """Relative MAD-about-the-median of one read's per-window rates.
-
-        Robust by construction: the same tail events (completion churn,
-        admission hiccups) that motivate the median statistic must not be
-        allowed to inflate its own fitness gate."""
-
-        windows = getattr(row, "windows", ())
-        if len(windows) < max(self.min_windows, 3):
-            raise CrossoverRuntimeError(
-                "resident read lacks its required timed windows"
-            )
-        rates = [window.tokens / window.seconds for window in windows]
-        median = statistics.median(rates)
-        if not math.isfinite(median) or median <= 0:
-            raise CrossoverRuntimeError("resident read window rates are invalid")
-        return statistics.median([abs(rate - median) for rate in rates]) / median
-
-    def scored_tokens_per_second(self, row: object) -> float:
-        """Rate the complete mixed workload, or the single-cell window median.
-
-        The retired charged-rate rule double-counted cold start against the
-        first arm. Every supported policy scores timed work and retains scatter.
-        """
-
-        self.read_window_scatter(row)
-        if self.version in (9, 11, 12, 14, 15):
-            # Mixed-cell qualification deliberately contains heterogeneous
-            # batch widths and output budgets. A median of per-batch rates
-            # would erase the minority cell; total timed tokens over the
-            # host-observed makespan gives the sealed mixture one rate.
-            return row.timed_tokens / row.timed_seconds  # type: ignore[attr-defined]
-        return statistics.median(window.tokens / window.seconds for window in row.windows)
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest(
-            "cacheon.qualification.resident-speed-policy",
-            {
-                **self.to_dict(),
-                # The sealed identity states the schedule it was measured under.
-                # Version 8 reads the bookend unconditionally, so it must not
-                # claim the conditional read order that versions 6 and 7 seal.
-                "borderline_band": ("valid_threshold_crossing_one_repeat"
-                                    if self.version >= 13 else "invariant_over_reads_taken"),
-                "read_order": (
-                    list(schedule_roles(self.version, repeat=self.version >= 13))
-                ),
-                "timing": "serialized_resident_host_time",
-                **({"repeat_aggregation": "equal_log_weight_faster_bracket",
-                    "repeat_limit": 1, "repeat_exhausted": "speed_threshold_not_met"}
-                   if self.version >= 13 else {}),
-            },
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        row: dict[str, object] = {
-            "calibration_context_digest": self.calibration_context_digest,
-            "calibration_digest": self.calibration_digest,
-            "max_noise": format(self.max_noise, ".17g"),
-            "max_qualification_seconds": self.max_qualification_seconds,
-            "max_stage_seconds": self.max_stage_seconds,
-            "min_margin": format(self.min_margin, ".17g"),
-            "noise_multiplier": format(self.noise_multiplier, ".17g"),
-            "version": self.version,
-            "max_conditioning_slowdown": format(self.max_conditioning_slowdown, ".17g"),
-            "max_window_scatter": format(self.max_window_scatter, ".17g"),
-            "min_windows": self.min_windows,
-        }
-        if self.version in (12, 15):
-            row["prefill_credit_weight"] = format(self.prefill_credit_weight, ".17g")
-            row["prefill_min_margin"] = format(self.prefill_min_margin, ".17g")
-        return row
-
-    @classmethod
-    def from_dict(cls, value: object) -> "ResidentSpeedPolicy":
-        fields = {
-            "calibration_context_digest",
-            "calibration_digest",
-            "max_noise",
-            "max_qualification_seconds",
-            "max_stage_seconds",
-            "min_margin",
-            "noise_multiplier",
-            "version",
-            "max_conditioning_slowdown",
-            "max_window_scatter",
-            "min_windows",
-        }
-        if (
-            type(value) is not dict
-            or type(value.get("version")) is not int
-        ):
-            raise CrossoverRuntimeError("resident speed policy fields differ")
-        if value["version"] in (12, 15):
-            fields |= {"prefill_credit_weight", "prefill_min_margin"}
-        if set(value) != fields:
-            raise CrossoverRuntimeError("resident speed policy fields differ")
-        try:
-            prefill = {name: float(value[name]) for name in (
-                "prefill_min_margin", "prefill_credit_weight") if name in value}
-            result = cls(
-                max_stage_seconds=value["max_stage_seconds"],  # type: ignore[arg-type]
-                min_margin=float(value["min_margin"]),
-                noise_multiplier=float(value["noise_multiplier"]),
-                max_noise=float(value["max_noise"]),
-                calibration_digest=value["calibration_digest"],  # type: ignore[arg-type]
-                calibration_context_digest=value["calibration_context_digest"],  # type: ignore[arg-type]
-                version=value["version"],  # type: ignore[arg-type]
-                max_qualification_seconds=value["max_qualification_seconds"],  # type: ignore[arg-type]
-                min_windows=value["min_windows"],
-                max_window_scatter=float(value["max_window_scatter"]),
-                max_conditioning_slowdown=float(value["max_conditioning_slowdown"]),
-                **prefill,
-            )
-            if result.to_dict() != value:
-                raise CrossoverRuntimeError("resident speed policy is noncanonical")
-            return result
-        except (TypeError, ValueError) as exc:
-            raise CrossoverRuntimeError("resident speed policy is malformed") from exc
-
-    @classmethod
-    def from_calibration(
-        cls,
-        *,
-        max_stage_seconds: int,
-        max_qualification_seconds: int = 7_200,
-        calibration: object,
-        context: object,
-        version: int,
-        min_windows: int = 0,
-        max_window_scatter: float = 0.0,
-        max_conditioning_slowdown: float = 0.0,
-        prefill_min_margin: float = 0.0,
-        prefill_credit_weight: float = 0.0,
-    ) -> "ResidentSpeedPolicy":
-        from cacheon.eval.calibration import (
-            CalibrationContext,
-            CalibrationManifest,
-            decimal_value,
-        )
-
-        if (
-            type(calibration) is not CalibrationManifest
-            or type(context) is not CalibrationContext
-            or not calibration.thresholds_frozen
-        ):
-            raise CrossoverRuntimeError("resident speed calibration is not frozen")
-        try:
-            calibration.require_context(context)
-        except ValueError as exc:
-            raise CrossoverRuntimeError(str(exc)) from None
-        return cls(
-            max_stage_seconds=max_stage_seconds,
-            min_margin=float(decimal_value(calibration.speed.min_margin)),
-            noise_multiplier=float(decimal_value(calibration.speed.noise_multiplier)),
-            max_noise=float(decimal_value(calibration.speed.max_noise)),
-            calibration_digest=calibration.digest,
-            calibration_context_digest=context.digest,
-            version=version,
-            max_qualification_seconds=max_qualification_seconds,
-            min_windows=min_windows,
-            max_window_scatter=max_window_scatter,
-            max_conditioning_slowdown=max_conditioning_slowdown,
-            prefill_min_margin=prefill_min_margin,
-            prefill_credit_weight=prefill_credit_weight,
-        )
-
-    @classmethod
-    def rebound(
-        cls, policy: "ResidentSpeedPolicy", *, calibration: object, context: object
-    ) -> "ResidentSpeedPolicy":
-        """Rebuild ``policy`` from its calibration so sealed evidence regrades
-        under the arithmetic that produced it. Every threshold the calibration
-        does not own is copied from the policy itself; the caller's equality
-        check then refuses any cross-version splice."""
-
-        if type(policy) is not cls:
-            raise CrossoverRuntimeError("resident speed policy is not exact")
-        return cls.from_calibration(
-            max_stage_seconds=policy.max_stage_seconds,
-            max_qualification_seconds=policy.max_qualification_seconds,
-            calibration=calibration,
-            context=context,
-            version=policy.version,
-            min_windows=policy.min_windows,
-            max_window_scatter=policy.max_window_scatter,
-            max_conditioning_slowdown=policy.max_conditioning_slowdown,
-            prefill_min_margin=policy.prefill_min_margin,
-            prefill_credit_weight=policy.prefill_credit_weight,
-        )
-
 
 
 @dataclass(frozen=True)
@@ -404,6 +105,7 @@ def _workload(plan: SessionExecutionPlan) -> tuple[object, ...]:
         plan.batch_max_new_tokens,
         plan.batch_expected_prompt_tokens,
         plan.measure_phase_latency,
+        None if plan.replay is None else plan.replay.workload_identity(),
     )
 
 
@@ -430,6 +132,11 @@ class ResidentCrossoverPlan:
             != _workload(self.candidate.session_plan)
         ):
             raise CrossoverRuntimeError("resident crossover plan is inconsistent")
+        replay = self.baseline.session_plan.replay
+        if bool(replay) != bool(self.policy.goodput) or (replay is not None and (
+            len(replay.loads) != 1 or replay.contract != self.policy.goodput.contract
+        )):
+            raise CrossoverRuntimeError("goodput plan requires one sealed load and its service contract")
         allowed_differences = {
             "stack_digest",
             "tree_digest",
@@ -556,7 +263,7 @@ def _execution_digest(value: EngineExecutionEvidence) -> str:
                     row.token_numerator,
                 ] + ([[format(first, ".17g"), format(last, ".17g")]
                       for first, last in row.prompt_latencies]
-                     if row.prompt_latencies else [])
+                     if row.prompt_latencies else []) + ([list(row.input_ids_sha256)] if row.input_ids_sha256 else [])
                 for row in value.session.batches
             ],
             "devices": [
@@ -572,14 +279,9 @@ def _execution_digest(value: EngineExecutionEvidence) -> str:
     )
 
 
-def _validate_resident_execution(
-    execution: EngineExecutionEvidence,
-    arm: ResidentArmPlan,
-    *,
-    roles: tuple[str, ...],
-) -> None:
-    plan = planned_schedule(arm.session_plan, roles)
-    session = execution.session
+def _validate_execution_binding(execution: EngineExecutionEvidence, arm: ResidentArmPlan) -> None:
+    """Bind either measurement schedule to the same launched engine and physical lane."""
+    session, plan = execution.session, arm.session_plan
     if (
         execution.schema != "cacheon.oci-resident-engine-execution.v1"
         or execution.launch_digest != arm.launch.digest
@@ -589,8 +291,34 @@ def _validate_resident_execution(
         or session.preflight != plan.expected_preflight
         or session.warmup_count != plan.warmup_count
         or session.conditioning_count != plan.conditioning_count
-        or len(session.batches) != len(plan.prompt_batches)
     ):
+        raise CrossoverRuntimeError("resident execution differs from its sealed arm")
+    receipts = execution.device_receipts
+    physical = arm.binding.physical_hardware.physical_gpu_ids
+    if type(receipts) is not tuple or len(receipts) != 3:
+        raise CrossoverRuntimeError("resident execution lacks device receipt coverage")
+    if all(value.isdecimal() for value in physical) and any(
+        tuple(row.selected_physical_gpu_ids) != tuple(map(int, physical))
+        for row in receipts
+    ):
+        raise CrossoverRuntimeError("resident execution ran on another physical lane")
+    if any(
+        getattr(row, "policy_sha256", arm.launch.hardware.device_policy_digest)
+        != arm.launch.hardware.device_policy_digest
+        or getattr(row, "configuration_sha256", arm.device_configuration_digest)
+        != arm.device_configuration_digest
+        for row in receipts
+    ):
+        raise CrossoverRuntimeError("resident execution changed device authority")
+
+
+def _validate_resident_execution(
+    execution: EngineExecutionEvidence, arm: ResidentArmPlan, *, roles: tuple[str, ...],
+) -> None:
+    _validate_execution_binding(execution, arm)
+    plan = planned_schedule(arm.session_plan, roles)
+    session = execution.session
+    if len(session.batches) != len(plan.prompt_batches):
         raise CrossoverRuntimeError("resident execution differs from its sealed arm")
     previous = session.ready_completed_at
     request_ids: set[str] = set()
@@ -626,23 +354,6 @@ def _validate_resident_execution(
         previous = row.response_completed_at
     if session.session_completed_at < previous:
         raise CrossoverRuntimeError("resident execution cleanup predates its last batch")
-    receipts = execution.device_receipts
-    physical = arm.binding.physical_hardware.physical_gpu_ids
-    if type(receipts) is not tuple or len(receipts) != 3:
-        raise CrossoverRuntimeError("resident execution lacks device receipt coverage")
-    if all(value.isdecimal() for value in physical) and any(
-        tuple(row.selected_physical_gpu_ids) != tuple(map(int, physical))
-        for row in receipts
-    ):
-        raise CrossoverRuntimeError("resident execution ran on another physical lane")
-    if any(
-        getattr(row, "policy_sha256", arm.launch.hardware.device_policy_digest)
-        != arm.launch.hardware.device_policy_digest
-        or getattr(row, "configuration_sha256", arm.device_configuration_digest)
-        != arm.device_configuration_digest
-        for row in receipts
-    ):
-        raise CrossoverRuntimeError("resident execution changed device authority")
 
 
 def _recomputed_rate(
@@ -682,6 +393,10 @@ class ResidentCrossoverEvidence:
     exit_reason: str
     started_monotonic_s: float
     completed_monotonic_s: float
+    goodput: GoodputReadSet | None = dataclass_field(default=None, metadata={"wire_optional": True})
+    prompt_pairs: tuple[tuple[str, int, int], ...] = dataclass_field(default=(), metadata={"wire_optional": True})
+    reference_inputs: tuple[ReferencePromptInput, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
+    quality_entropy: SelectionEntropyReceipt | None = dataclass_field(default=None, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         version = (
@@ -693,9 +408,13 @@ class ResidentCrossoverEvidence:
             raise CrossoverRuntimeError(
                 "resident crossover evidence below version 8 is sealed history"
             )
+        if version != 16 and (self.prompt_pairs or self.reference_inputs or self.quality_entropy is not None):
+            raise CrossoverRuntimeError("replay quality control requires a replay speed policy")
         # Only the new policy versions may retain one complete repeated round.
-        roles = resident_speed_roles(version, len(self.rates))
-        schedule_valid = self.escalated is (version >= 13 and len(self.rates) > len(schedule_roles(version)))
+        roles = () if version == 16 else resident_speed_roles(version, len(self.rates))
+        schedule_valid = (not self.escalated and type(self.goodput) is GoodputReadSet) if version == 16 else (
+            self.goodput is None and self.escalated is (version >= 13 and len(self.rates) > len(schedule_roles(version)))
+        )
         for field in (
             "plan_digest",
             "selected_delta_digest",
@@ -768,6 +487,13 @@ class ResidentCrossoverEvidence:
             )
         ):
             raise CrossoverRuntimeError("resident evidence names another sealed plan")
+        if self.goodput is not None:
+            from cacheon.eval.goodput_runtime import regrade_goodput_execution
+            grade = regrade_goodput_execution(self, plan)
+            if (self.initial_verdict != grade.verdict or self.final_verdict != grade.verdict
+                or self.decision is not grade.decision):
+                raise CrossoverRuntimeError("goodput headline does not regrade")
+            return grade.verdict
         # __post_init__ has already pinned the exact role tuple for this policy
         # version, so the read counts follow from the roles themselves and do
         # not need a second per-version table to fall out of step with.
@@ -819,6 +545,14 @@ class ResidentCrossoverEvidence:
                 "policy": self.policy.digest,
                 "plan": self.plan_digest,
                 "rates": [row.to_dict() for row in self.rates],
+                **({"goodput": self.goodput.to_dict()} if self.goodput is not None else {}),
+                **({"prompt_pairs": self.prompt_pairs,
+                    "reference_inputs": [{"prompt": row.prompt_digest,
+                                          "input": hashlib.sha256(row.input_bytes).hexdigest(),
+                                          "roles": [[role.output_ids, role.supports] for role in row.roles]}
+                                         for row in self.reference_inputs],
+                    "quality_entropy": None if self.quality_entropy is None else self.quality_entropy.digest}
+                   if self.goodput is not None else {}),
                 "selected_delta": self.selected_delta_digest,
                 "started": format(self.started_monotonic_s, ".17g"),
                 "workload": self.workload_digest,

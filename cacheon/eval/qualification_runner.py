@@ -44,6 +44,7 @@ from cacheon.eval.qualification_continuation import (
 )
 from cacheon.eval.qualification_timing import QualificationTimingWitness
 from cacheon.eval.qualification_continuation_runner import run_continuation_quality_stage
+from cacheon.eval.goodput_runtime import GoodputReadSet
 from cacheon.eval.continuation_codec import ContinuationCodec, ContinuationCodecError
 from cacheon.eval.oci_reference_session import ReferenceSessionPlan
 from cacheon.eval.oci_session_protocol import (
@@ -585,6 +586,7 @@ def _resident_speed_projection_digest(
     rates: tuple[ResidentReadRate, ...],
     started_monotonic_s: float,
     completed_monotonic_s: float,
+    goodput: GoodputReadSet | None = None,
 ) -> str:
     return canonical_digest(
         "cacheon.qualification.resident-speed-witness.v1",
@@ -599,6 +601,7 @@ def _resident_speed_projection_digest(
             "plan": plan_digest,
             "policy": resident_policy.digest,
             "rates": [row.to_dict() for row in rates],
+            **({"goodput": goodput.to_dict()} if goodput is not None else {}),
             "raw_crossover": raw_crossover_digest,
             "baseline_runtime_resource_policy": (
                 baseline_runtime_resource_policy_digest
@@ -634,12 +637,14 @@ class ResidentSpeedWitness:
     started_monotonic_s: float
     completed_monotonic_s: float
     evidence_digest: str
+    goodput: GoodputReadSet | None = field(default=None, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         for field in self.__dataclass_fields__:
             if field not in {
                 "resident_policy",
                 "rates",
+                "goodput",
                 "started_monotonic_s",
                 "completed_monotonic_s",
             }:
@@ -668,9 +673,13 @@ class ResidentSpeedWitness:
         ):
             raise QualificationRunnerError("resident speed wall time is invalid")
         rates = tuple(self.rates)
-        if tuple(row.role for row in rates) != resident_speed_roles(
-            self.resident_policy.version, len(rates)
-        ):
+        if self.resident_policy.goodput is not None:
+            valid_reads = not rates and type(self.goodput) is GoodputReadSet
+        else:
+            valid_reads = self.goodput is None and tuple(row.role for row in rates) == resident_speed_roles(
+                self.resident_policy.version, len(rates)
+            )
+        if not valid_reads:
             raise QualificationRunnerError("resident speed witness read order differs")
         if any(
             bool(row.windows) != (self.resident_policy.version >= 3)
@@ -680,29 +689,9 @@ class ResidentSpeedWitness:
                 "resident read window retention differs from the policy version"
             )
         object.__setattr__(self, "rates", rates)
-        expected = _resident_speed_projection_digest(
-            selected_delta_digest=self.selected_delta_digest,
-            candidate_launch_digest=self.candidate_launch_digest,
-            calibration_digest=self.calibration_digest,
-            calibration_context_digest=self.calibration_context_digest,
-            workload_digest=self.workload_digest,
-            baseline_runtime_resource_policy_digest=(
-                self.baseline_runtime_resource_policy_digest
-            ),
-            candidate_runtime_resource_policy_digest=(
-                self.candidate_runtime_resource_policy_digest
-            ),
-            plan_digest=self.plan_digest,
-            baseline_lane_digest=self.baseline_lane_digest,
-            candidate_lane_digest=self.candidate_lane_digest,
-            baseline_quiescence_digest=self.baseline_quiescence_digest,
-            candidate_quiescence_digest=self.candidate_quiescence_digest,
-            raw_crossover_digest=self.raw_crossover_digest,
-            resident_policy=self.resident_policy,
-            rates=rates,
-            started_monotonic_s=self.started_monotonic_s,
-            completed_monotonic_s=self.completed_monotonic_s,
-        )
+        expected = _resident_speed_projection_digest(**{
+            name: getattr(self, name) for name in self.__dataclass_fields__ if name != "evidence_digest"
+        })
         if expected != self.evidence_digest:
             raise QualificationRunnerError("resident speed witness digest does not recompute")
 
@@ -741,6 +730,7 @@ class ResidentSpeedWitness:
             "raw_crossover_digest": value.digest,
             "resident_policy": value.policy,
             "rates": value.rates,
+            "goodput": value.goodput,
             "started_monotonic_s": value.started_monotonic_s,
             "completed_monotonic_s": value.completed_monotonic_s,
         }
@@ -765,10 +755,13 @@ class ResidentSpeedWitness:
         """
 
         try:
-            result = grade_schedule(self.resident_policy, self.rates)
+            result = (self.goodput.grade(self.resident_policy.goodput) if self.goodput is not None
+                      else grade_schedule(self.resident_policy, self.rates))
         except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
             raise QualificationRunnerError(str(exc)) from None
         grade = QualificationDecision(result.decision.value)
+        if self.goodput is not None and grade is QualificationDecision.FAIL and result.verdict.speedup >= result.verdict.required:
+            return grade, result.settled_speedup, "service_contract_not_met"
         return grade, result.settled_speedup, _speed_reason(
             grade, result.verdict, conditioning_failed=result.conditioning_failed
         )
@@ -819,15 +812,19 @@ class ResidentSpeedWitness:
                     else getattr(self, field)
                 )
                 for field in self.__dataclass_fields__
-                if field not in {"resident_policy", "rates"}
+                if field not in {"resident_policy", "rates", "goodput"}
             },
             "rates": [row.to_dict() for row in self.rates],
             "resident_policy": self.resident_policy.to_dict(),
+            **({"goodput": self.goodput.to_dict()} if self.goodput is not None else {}),
         }
 
     @classmethod
     def from_dict(cls, value: object) -> "ResidentSpeedWitness":
-        raw = _strict(value, set(cls.__dataclass_fields__), "resident speed witness")
+        expected = set(cls.__dataclass_fields__) - {"goodput"}
+        if type(value) is dict and "goodput" in value:
+            expected.add("goodput")
+        raw = _strict(value, expected, "resident speed witness")
         if type(raw["rates"]) is not list:
             raise QualificationRunnerError("resident speed witness rates are malformed")
         return cls(
@@ -841,6 +838,7 @@ class ResidentSpeedWitness:
                 ),
                 "started_monotonic_s": float(raw["started_monotonic_s"]),
                 "completed_monotonic_s": float(raw["completed_monotonic_s"]),
+                "goodput": GoodputReadSet.from_dict(raw["goodput"]) if "goodput" in raw else None,
             }
         )  # type: ignore[arg-type]
 
@@ -1515,6 +1513,9 @@ QualificationAttempt = CohortQualificationAttempt
 def _planned_prompt_digests(prepared: PreparedMarginalRuntime) -> tuple[str, ...]:
     from cacheon.eval.scoring import planned_prompt_texts
 
+    if prepared.baseline_session_plan.replay is not None:
+        from cacheon.eval.qualification_trajectories import prompt_pool
+        return tuple(sorted(prompt_pool(prepared.baseline_session_plan.replay)))
     return tuple(sorted(planned_prompt_texts(prepared.baseline_session_plan)))
 
 
@@ -1578,10 +1579,8 @@ def _selected_frames(
     from cacheon.eval.qualification import _resident_lifecycle
 
     lifecycle = _resident_lifecycle(lifecycle)
-    candidates = tuple(row.arm.selected_delta_digest for row in lifecycle.candidates)
-    if candidates.count(selected_delta_digest) != 1:
+    if lifecycle.plan.selected_delta_digest != selected_delta_digest:
         raise QualificationRunnerError("selected candidate is absent or ambiguous")
-    candidate_index = candidates.index(selected_delta_digest) + 1
     by_prompt = dict(_trajectory_rows(lifecycle)[1])
     texts = _selected_prompt_texts(lifecycle)
     result = []
@@ -1589,7 +1588,7 @@ def _selected_frames(
         if prompt not in by_prompt or prompt not in texts:
             raise QualificationRunnerError("selected prompt is absent from the lifecycle")
         frames = by_prompt[prompt]
-        result.append((prompt, texts[prompt], tuple(frames[index] for index in (0, candidate_index, -1))))
+        result.append((prompt, texts[prompt], tuple(frames[index] for index in (0, 1, -1))))
     return tuple(result)
 
 def _reference_request(
@@ -1609,14 +1608,14 @@ def _reference_request(
         authority.selected_delta_digest,
         selection.selected_prompt_digests,
     ):
-        roles = []
-        for frame in frames:
-            supports = tuple(
-                tuple(sorted(row[1] for row in position))
-                for position in frame["top_logprobs"]
-            )
-            roles.append(ReferenceRoleInput(tuple(frame["output_ids"]), supports))
-        prompts.append(ReferencePromptInput(prompt_digest, prompt_text, tuple(roles)))
+        roles = tuple(ReferenceRoleInput(
+            tuple(frame["output_ids"]),
+            tuple(tuple(sorted(row[1] for row in position)) for position in frame["top_logprobs"]),
+        ) for frame in frames)
+        prompts.append(ReferencePromptInput(
+            prompt_digest, prompt_text if isinstance(prompt_text, str) else "", tuple(roles),
+            () if isinstance(prompt_text, str) else prompt_text,
+        ))
     return ReferenceRequest(
         session_id,
         authority.profile.reference.pristine_launch_digest,
@@ -2499,12 +2498,17 @@ def run_causal_qualification(
     durable_speed = crossover is not None
     try:
         if crossover is None:
+            from cacheon.eval.qualification_trajectories import create_controls
             crossover = run_resident_crossover_speed(
                 value.resident_speed_plan,
                 baseline_executor=resident_baseline_executor,
                 candidate_executor=executor,
                 model_mount=value.model_mount,
                 deadline=float(deadline),
+                **({"quality_control": lambda controller, candidate, baseline_dir, candidate_dir, quiescence:
+                    create_controls(value, controller, candidate, baseline_dir, candidate_dir,
+                                    quiescence, entropy_provider)}
+                   if value.resident_speed_plan.policy.goodput is not None else {}),
             )
             if continuation is not None:
                 continuation.record_resident_speed(crossover)
@@ -2634,10 +2638,6 @@ def run_causal_qualification(
         )
         raw_binding = raw.binding
         t_request_sha256 = exchange.request_sha256
-        if resident_speed_witness is None:
-            raise QualificationRunnerError(
-                "resident qualification produced no speed witness"
-            )
         speed_witness: ResidentSpeedWitness = resident_speed_witness
         speed_grade, speedup, speed_reason = resident_speed_witness.regrade(
             calibration,

@@ -449,7 +449,7 @@ class B300RegisteredQualificationFactory:
             speed_policy = replace(speed_policy, version=11 if mixed_cells else 10)
         elif speed_policy.version in (13, 14):
             speed_policy = replace(speed_policy, version=14 if mixed_cells else 13)
-        elif not mixed_cells:
+        elif speed_policy.version in (12, 15) and not mixed_cells:
             raise B300RegisteredQualificationError(
                 "the prefill lane requires a mixed-cell workload"
             )

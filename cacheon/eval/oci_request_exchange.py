@@ -8,6 +8,7 @@ without changing the token evidence format or trusting worker timestamps.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import struct
 from collections.abc import Callable, Mapping
@@ -231,6 +232,8 @@ class RequestExchange:
                     request.batch_index, request.request_id, request.nonce, item.started, completed,
                     evidence.observed_tokens, evidence, receipts,
                     item.tokens.finish(evidence, completed) if request.measure_phase_latency else (),
+                    tuple(hashlib.sha256(struct.pack(f">{len(ids)}I", *ids)).hexdigest()
+                          for ids in request.input_ids),
                 )
                 del self.requests[request.request_id]
                 del self.pending[request.request_id]

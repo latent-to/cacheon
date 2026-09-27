@@ -276,6 +276,7 @@ def run_resident_crossover_speed(
     model_mount: TrustedArenaModelMountReceipt,
     deadline: float,
     clock: Callable[[], float] = time.monotonic,
+    quality_control=None,
 ) -> ResidentCrossoverEvidence:
     """Run the exact production/testnet speed scheduler for one candidate."""
 
@@ -289,6 +290,12 @@ def run_resident_crossover_speed(
         or type(model_mount) is not TrustedArenaModelMountReceipt
     ):
         raise CrossoverRuntimeError("resident crossover authorities are not exact")
+    if plan.policy.goodput is not None:
+        from cacheon.eval.goodput_runtime import run_goodput_pair
+        return run_goodput_pair(
+            plan, baseline_executor=baseline_executor, candidate_executor=candidate_executor,
+            model_mount=model_mount, deadline=deadline, clock=clock, quality_control=quality_control,
+        )
     started = float(clock())
     thresholds = (deadline, started)
     if any(
