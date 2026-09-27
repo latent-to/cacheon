@@ -8,13 +8,14 @@ include serving, scheduling and transport overhead; neither is a GPU timer.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from cacheon.eval.oci_session_protocol import (
     MAX_CONTROL_BYTES,
     SESSION_SCHEMA,
     BatchEvidence,
     BatchRequest,
+    PromptEvidence,
     SessionProtocolError,
     frame_message,
 )
@@ -42,15 +43,17 @@ def token_boundary(
     )
 
 
-def generate_outputs(
-    engine: object, request: BatchRequest, emit: Callable[[bytes], None] | None
+async def generate_outputs(
+    engine: object, request: BatchRequest, emit: Callable[[bytes], Awaitable[None]] | None
 ) -> object:
     """Run one generation, preserving final outputs in the original prompt order."""
-    generate = getattr(engine, "generate", None)
+    generate = getattr(engine, "async_generate", None)
     if not callable(generate):
-        raise SessionProtocolError("engine does not expose generate()")
+        raise SessionProtocolError("engine does not expose async_generate()")
     kwargs = {
-        "prompt": list(request.prompts),
+        **({"input_ids": [list(row) for row in request.input_ids]}
+           if request.input_ids else {"prompt": list(request.prompts)}),
+        **({"routed_dp_rank": request.routed_dp_rank} if request.routed_dp_rank is not None else {}),
         "sampling_params": {
             "temperature": request.temperature,
             "max_new_tokens": request.max_new_tokens,
@@ -63,18 +66,18 @@ def generate_outputs(
         "top_logprobs_num": request.top_logprobs_num,
     }
     if not request.measure_phase_latency:
-        return generate(**kwargs)
+        return await generate(**kwargs)
     if emit is None:
         raise SessionProtocolError("phase measurement lacks its output transport")
     first: dict[int, int] = {}
     final: dict[int, dict] = {}
-    for row in generate(**kwargs, stream=True):
+    async for row in await generate(**kwargs, stream=True):
         if type(row) is not dict:
             raise SessionProtocolError("stream output is not an object")
         index, meta = row.get("index"), row.get("meta_info")
         if (
             type(index) is not int
-            or not 0 <= index < len(request.prompts)
+            or not 0 <= index < request.prompt_count
             or type(meta) is not dict
         ):
             raise SessionProtocolError(
@@ -97,7 +100,7 @@ def generate_outputs(
             raise SessionProtocolError("stream repeated a completed prompt")
         if index not in first:
             first[index] = ids[0]
-            emit(token_boundary(request, index, "first", ids[0]))
+            await emit(token_boundary(request, index, "first", ids[0]))
         elif ids[0] != first[index]:
             raise SessionProtocolError("stream changed its first token")
         if meta.get("finish_reason") is not None:
@@ -106,10 +109,64 @@ def generate_outputs(
                     "stream completed before its exact token budget"
                 )
             final[index] = row
-            emit(token_boundary(request, index, "last", ids[-1]))
-    if len(final) != len(request.prompts):
+            await emit(token_boundary(request, index, "last", ids[-1]))
+    if len(final) != request.prompt_count:
         raise SessionProtocolError("stream ended without every prompt's final output")
-    return [final[index] for index in range(len(request.prompts))]
+    return [final[index] for index in range(request.prompt_count)]
+
+
+def engine_outputs(outputs: object, *, request: BatchRequest) -> BatchEvidence:
+    """Project engine output onto the existing token-only evidence contract."""
+    if isinstance(outputs, dict):
+        rows = [outputs]
+    elif isinstance(outputs, list):
+        rows = outputs
+    else:
+        raise SessionProtocolError("engine output must be an object or array")
+    if len(rows) != request.prompt_count:
+        raise SessionProtocolError("engine output prompt count is invalid")
+    prompts: list[PromptEvidence] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SessionProtocolError("engine output item is not an object")
+        metadata = row.get("meta_info")
+        if not isinstance(metadata, dict):
+            raise SessionProtocolError("engine output metadata is missing")
+        # The engine's own prompt token count is the only input-length
+        # authority; a missing count is an infrastructure fault, never a
+        # candidate verdict.
+        prompt_tokens = metadata.get("prompt_tokens")
+        if type(prompt_tokens) is not int or prompt_tokens < 1:
+            raise SessionProtocolError("engine output lacks its prompt token count")
+        raw_ids = row.get("output_ids") or metadata.get("output_ids")
+        raw_topk = metadata.get("output_top_logprobs")
+        if (
+            raw_topk is None
+            and request.top_logprobs_num == 0
+            and isinstance(raw_ids, (list, tuple))
+        ):
+            # A pure-generation read runs the engine with the logprob path
+            # disabled; the evidence still carries exact empty positions.
+            raw_topk = [()] * len(raw_ids)
+        if not isinstance(raw_ids, (list, tuple)) or not isinstance(
+            raw_topk, (list, tuple)
+        ):
+            raise SessionProtocolError("engine output lacks token/top-k evidence")
+        # The binary evidence encoder already validates token IDs, exact lengths,
+        # logprob values and probability mass. Strip detokenized text here; do not
+        # maintain a second numerical validator ahead of that same boundary.
+        if any(
+            not isinstance(position, (list, tuple))
+            or any(not isinstance(entry, (list, tuple)) or len(entry) < 2 for entry in position)
+            for position in raw_topk
+        ):
+            raise SessionProtocolError("engine output top-k entry is malformed")
+        prompts.append(PromptEvidence(
+            tuple(raw_ids),
+            tuple(tuple((entry[0], entry[1]) for entry in position) for position in raw_topk),
+            prompt_tokens,
+        ))
+    return BatchEvidence(tuple(prompts))
 
 
 class HostTokenClock:
@@ -144,7 +201,7 @@ class HostTokenClock:
         index, boundary = message["prompt_index"], message["boundary"]
         if (
             type(index) is not int
-            or not 0 <= index < len(self.request.prompts)
+            or not 0 <= index < self.request.prompt_count
             or boundary not in ("first", "last")
             or type(message["token_id"]) is not int
         ):
@@ -171,7 +228,9 @@ class HostTokenClock:
                 raise SessionProtocolError(
                     "token boundaries disagree with final evidence"
                 )
-            if not 0 < first < last <= completed - self.started:
+            if not 0 < first <= last <= completed - self.started or (
+                first == last and len(prompt.output_ids) > 1
+            ):
                 raise SessionProtocolError(
                     "phase measurement lacks positive host timing spans"
                 )
@@ -183,6 +242,12 @@ def parse_batch_request(message: object, *, fields: frozenset[str]) -> BatchRequ
     """Extend the existing closed request shape only for explicit phase measurement."""
     from cacheon.eval.oci_session_protocol import _exact_object
 
+    if isinstance(message, dict):
+        fields = fields | (message.keys() & {"input_ids", "routed_dp_rank"})
+        if "input_ids" in message and not message["input_ids"]:
+            raise SessionProtocolError("empty input_ids must be omitted")
+        if "routed_dp_rank" in message and message["routed_dp_rank"] is None:
+            raise SessionProtocolError("null routed_dp_rank must be omitted")
     if isinstance(message, dict) and "measure_phase_latency" in message:
         fields = fields | {"measure_phase_latency"}
         if message["measure_phase_latency"] is not True:
@@ -193,19 +258,10 @@ def parse_batch_request(message: object, *, fields: frozenset[str]) -> BatchRequ
     prompts = row["prompts"]
     if not isinstance(prompts, list):
         raise SessionProtocolError("batch request prompts must be an array")
-    return BatchRequest(
-        row["session_id"],
-        row["launch_digest"],
-        row["request_id"],
-        row["nonce"],
-        row["batch_index"],
-        tuple(prompts),
-        row["max_new_tokens"],
-        row["top_logprobs_num"],
-        row["temperature"],
-        row["expected_prompt_tokens"],
-        row.get("measure_phase_latency", False),
-    )  # type: ignore[arg-type]
+    return BatchRequest(**{
+        key: value for key, value in row.items() if key not in {"schema", "type"}
+    })
+
 
 
 __all__ = [

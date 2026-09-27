@@ -25,7 +25,7 @@ from cacheon.eval.resident_measurement import TimedWindow
 from cacheon.eval.resident_schedule import (
     PREFILL_READ_BUDGET,
     credited_speedup,
-    expanded_schedule,
+    planned_schedule,
     grade_schedule,
     prefill_policy,
 )
@@ -204,15 +204,15 @@ def test_v12_seals_its_prefill_thresholds_and_earlier_versions_forbid_them():
     assert credited_speedup(policy, SimpleNamespace(speedup=1.25)) == 1.125
 
 
-def test_expanded_schedule_appends_one_token_prefill_reads(tmp_path: Path):
+def test_planned_schedule_preserves_decode_and_prefill_geometry(tmp_path: Path):
     plan = _case(tmp_path).plan
     count = len(plan.prompt_batches)
-    decode_only = expanded_schedule(plan, 2)
+    decode_only = planned_schedule(plan, ("B", "B_prime"))
     assert decode_only.prompt_batches == plan.prompt_batches * 2
     assert decode_only.batch_max_new_tokens == ()
     assert decode_only.batch_expected_prompt_tokens == ()
 
-    expanded = expanded_schedule(plan, 2, prefill_reads=2)
+    expanded = planned_schedule(plan, ("B", "B_prime", "B_prefill", "B_prime_prefill"))
     assert expanded.prompt_batches == plan.prompt_batches * 4
     assert expanded.batch_max_new_tokens == (
         (plan.max_new_tokens,) * (2 * count) + (PREFILL_READ_BUDGET,) * (2 * count)
@@ -226,7 +226,7 @@ def test_expanded_schedule_appends_one_token_prefill_reads(tmp_path: Path):
         batch_max_new_tokens=tuple(range(2, 2 + count)),
         batch_expected_prompt_tokens=(7,) * count,
     )
-    lane = expanded_schedule(mixed, 1, prefill_reads=1)
+    lane = planned_schedule(mixed, ("C", "C_prefill"))
     assert lane.batch_max_new_tokens == tuple(range(2, 2 + count)) + (1,) * count
     assert lane.batch_expected_prompt_tokens == (7,) * (2 * count)
 

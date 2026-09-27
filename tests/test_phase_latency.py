@@ -1,11 +1,16 @@
 """Phase delivery measurements survive interleaving, framing and retained regrade."""
 
 import copy
+import asyncio
 import os
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+
+from tests.support.pipes import engine_loop as engine_loop
+
+pytestmark = pytest.mark.usefixtures("engine_loop")
 
 from cacheon.eval.continuation_codec import ContinuationCodec, ContinuationCodecError
 from cacheon.eval.crossover_runtime import TimedWindow
@@ -23,7 +28,7 @@ from cacheon.eval.oci_session_protocol import (
     validate_batch_request,
 )
 from cacheon.eval.oci_session_worker import _generate
-from cacheon.eval.phase_latency import HostTokenClock, token_boundary
+from cacheon.eval.phase_latency import HostTokenClock, engine_outputs, generate_outputs, token_boundary
 from cacheon.eval.resident_measurement import (
     CrossoverRuntimeError,
     _timed_windows,
@@ -66,11 +71,16 @@ def _chunk(index, count, *, complete=False, prompt_tokens=5):
 
 
 def _engine(chunks, calls):
-    def generate(**kwargs):
+    async def generate(**kwargs):
         calls.append(kwargs)
-        return iter(chunks)
 
-    return SimpleNamespace(generate=generate)
+        async def stream():
+            for chunk in chunks:
+                yield chunk
+
+        return stream()
+
+    return SimpleNamespace(async_generate=generate, loop=asyncio.get_event_loop())
 
 
 def _message(request, index, boundary, token):
@@ -133,6 +143,34 @@ def test_stream_exhaustion_and_repeated_completion_fail_loudly():
     ):
         with pytest.raises(SessionProtocolError, match=match):
             _generate(_engine(chunks, []), _request(), lambda _: None)
+
+
+def test_one_token_turn_retains_ttft_without_inventing_a_decode_interval():
+    request = _request(prompts=("alpha",), max_new_tokens=1)
+    clock = _Clock(2.0)
+    observed = HostTokenClock(request, clock, 1.0)
+    evidence = _generate(
+        _engine([_chunk(0, 1, complete=True)], []), request,
+        lambda frame: observed.observe(parse_frame_bytes(frame, max_bytes=MAX_CONTROL_BYTES)),
+    )
+    assert validate_batch_request(request.to_dict()) == request
+    assert observed.finish(evidence, 3.0) == ((1.0, 1.0),)
+    assert evidence.prompts[0].output_ids == (0,)
+
+
+def test_tokenized_chat_inputs_and_sticky_rank_reach_the_same_generation_path():
+    token_ids = [[7, 8, 9]]
+    request = _request(prompts=(), input_ids=token_ids, routed_dp_rank=2, expected_prompt_tokens=3)
+    token_ids[0].append(10)
+    calls = []
+    evidence = _generate(
+        _engine([_chunk(0, 1, prompt_tokens=3), _chunk(0, 4, complete=True, prompt_tokens=3)], calls),
+        request, lambda _frame: None,
+    )
+    assert validate_batch_request(request.to_dict()) == request
+    assert calls[0]["input_ids"] == [[7, 8, 9]] and "prompt" not in calls[0]
+    assert calls[0]["routed_dp_rank"] == 2 and request.prompt_count == 1
+    assert evidence.prompts[0].prompt_tokens == 3
 
 
 def test_real_frame_reader_uses_host_delivery_clock_and_checks_final_token_ids():
@@ -216,12 +254,14 @@ def test_outer_session_retains_each_prompt_boundary_in_mixed_workload_windows():
     clock = _Clock()
 
     class StreamingTransport(_FakeTransport):
-        def read_evidence(self, request, *, deadline, on_progress=None):
-            def emit(frame):
+        async def aread_response(self, requests, *, deadline, on_progress=None):
+            request = self.requests[-1]
+
+            async def emit(frame):
                 self.clock.advance(0.5)
                 on_progress(parse_frame_bytes(frame, max_bytes=MAX_CONTROL_BYTES))
 
-            return _generate(
+            outputs = await generate_outputs(
                 _engine(
                     [
                         _chunk(1, 1),
@@ -234,6 +274,7 @@ def test_outer_session_retains_each_prompt_boundary_in_mixed_workload_windows():
                 request,
                 emit,
             )
+            return request, engine_outputs(outputs, request=request)
 
     plan = _plan(
         measure_phase_latency=True,

@@ -596,86 +596,9 @@ class RuntimePreflightFacts:
         return cls(**values)  # type: ignore[arg-type]
 
 
-@dataclass(frozen=True)
-class BatchRequest:
-    """One host-disclosed prompt batch and its exact evidence shape."""
-
-    session_id: str
-    launch_digest: str
-    request_id: str
-    nonce: str
-    batch_index: int
-    prompts: tuple[str, ...]
-    max_new_tokens: int
-    top_logprobs_num: int
-    temperature: float
-    expected_prompt_tokens: int | None = None
-    measure_phase_latency: bool = False
-
-    def __post_init__(self) -> None:
-        for name in ("session_id", "request_id", "nonce"):
-            object.__setattr__(self, name, _binding_id(getattr(self, name), field_name=name))
-        if len({self.session_id, self.request_id, self.nonce}) != 3:
-            raise SessionProtocolError("session_id, request_id, and nonce must be distinct")
-        object.__setattr__(self, "launch_digest", _digest(
-            self.launch_digest, field_name="launch_digest"
-        ))
-        object.__setattr__(self, "batch_index", _bounded_int(
-            self.batch_index, field_name="batch_index", minimum=0,
-            maximum=2_147_483_647,
-        ))
-        if (
-            isinstance(self.prompts, (str, bytes))
-            or not isinstance(self.prompts, Sequence)
-            or not 1 <= len(self.prompts) <= MAX_PROMPTS_PER_BATCH
-        ):
-            raise SessionProtocolError("batch prompts count is invalid")
-        clean: list[str] = []
-        total_chars = 0
-        for prompt in self.prompts:
-            if not isinstance(prompt, str) or len(prompt) > MAX_PROMPT_CHARS:
-                raise SessionProtocolError("batch contains an invalid/oversized prompt")
-            total_chars += len(prompt)
-            if total_chars > MAX_TOTAL_PROMPT_CHARS:
-                raise SessionProtocolError("batch exceeds its total prompt-character bound")
-            clean.append(prompt)
-        object.__setattr__(self, "prompts", tuple(clean))
-        object.__setattr__(self, "max_new_tokens", _bounded_int(
-            self.max_new_tokens, field_name="max_new_tokens", minimum=1,
-            maximum=MAX_NEW_TOKENS,
-        ))
-        # Width zero is the pure-generation read: no logprob collection rides
-        # the clock and the evidence carries exact empty top-k positions.
-        object.__setattr__(self, "top_logprobs_num", _bounded_int(
-            self.top_logprobs_num, field_name="top_logprobs_num", minimum=0,
-            maximum=MAX_TOP_LOGPROBS,
-        ))
-        object.__setattr__(self, "temperature", _bounded_float(
-            self.temperature, field_name="temperature", minimum=0.0, maximum=100.0
-        ))
-        if self.expected_prompt_tokens is not None:
-            object.__setattr__(self, "expected_prompt_tokens", _bounded_int(
-                self.expected_prompt_tokens, field_name="expected_prompt_tokens",
-                minimum=1, maximum=MAX_PROMPT_TOKENS,
-            ))
-        if type(self.measure_phase_latency) is not bool or (
-            self.measure_phase_latency and self.max_new_tokens < 2
-        ):
-            raise SessionProtocolError("phase measurement requires at least two output tokens")
-        expected_evidence_payload_bytes(self)
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            **({"measure_phase_latency": True} if self.measure_phase_latency else {}),
-            "schema": SESSION_SCHEMA, "type": "batch_request",
-            "session_id": self.session_id, "launch_digest": self.launch_digest,
-            "request_id": self.request_id, "nonce": self.nonce,
-            "batch_index": self.batch_index, "prompts": list(self.prompts),
-            "max_new_tokens": self.max_new_tokens,
-            "top_logprobs_num": self.top_logprobs_num,
-            "temperature": self.temperature,
-            "expected_prompt_tokens": self.expected_prompt_tokens,
-        }
+# Keep the established public type identity for retained/third-party consumers.
+from cacheon.eval.oci_request_input import BatchRequest
+BatchRequest.__module__ = __name__
 
 
 @dataclass(frozen=True)
@@ -1305,7 +1228,7 @@ _TOPK_ENTRY = struct.Struct(">fI")
 def expected_evidence_payload_bytes(request: BatchRequest) -> int:
     if not isinstance(request, BatchRequest):
         raise SessionProtocolError("evidence request is not typed")
-    prompt_count = len(request.prompts)
+    prompt_count = request.prompt_count
     per_position = _TOKEN_ID.size + request.top_logprobs_num * _TOPK_ENTRY.size
     # Each prompt record leads with its engine-observed prompt token count.
     total = _EVIDENCE_BINDING.size + prompt_count * (
@@ -1317,7 +1240,7 @@ def expected_evidence_payload_bytes(request: BatchRequest) -> int:
 
 
 def _validated_evidence(evidence: BatchEvidence, *, request: BatchRequest) -> BatchEvidence:
-    if not isinstance(evidence, BatchEvidence) or len(evidence.prompts) != len(request.prompts):
+    if not isinstance(evidence, BatchEvidence) or len(evidence.prompts) != request.prompt_count:
         raise SessionProtocolError("binary evidence prompt count is invalid")
     clean_prompts: list[PromptEvidence] = []
     for prompt in evidence.prompts:
@@ -1376,7 +1299,7 @@ def evidence_frame(evidence: BatchEvidence, *, request: BatchRequest) -> bytes:
     payload = bytearray(_EVIDENCE_BINDING.pack(
         bytes.fromhex(request.session_id), bytes.fromhex(request.launch_digest),
         bytes.fromhex(request.request_id), bytes.fromhex(request.nonce),
-        request.batch_index, len(request.prompts), request.max_new_tokens,
+        request.batch_index, request.prompt_count, request.max_new_tokens,
         request.top_logprobs_num,
     ))
     for prompt in clean.prompts:
@@ -1406,7 +1329,7 @@ def decode_evidence_payload(payload: bytes, *, request: BatchRequest) -> BatchEv
         or request_id.hex() != request.request_id
         or nonce.hex() != request.nonce
         or batch_index != request.batch_index
-        or prompt_count != len(request.prompts)
+        or prompt_count != request.prompt_count
         or token_count != request.max_new_tokens
         or topk_width != request.top_logprobs_num
     ):

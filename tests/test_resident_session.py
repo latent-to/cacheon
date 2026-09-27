@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 from pathlib import Path
 
 import pytest
+
+from tests.support.pipes import engine_loop as engine_loop
+
+pytestmark = pytest.mark.usefixtures("engine_loop")
 
 from cacheon.eval.oci_session_protocol import (
     SessionProtocolError,
@@ -422,6 +427,8 @@ class TestServeResidentLoop:
         control.mkdir()
 
         class Engine:
+            loop = asyncio.get_event_loop()
+
             def flush_cache(self_inner) -> bool:
                 for rank in range(2):
                     (control / f"ack.rank{rank}.json").write_text(
@@ -431,7 +438,7 @@ class TestServeResidentLoop:
                     )
                 return True
 
-            def generate(self_inner, **kwargs):
+            async def async_generate(self_inner, **kwargs):
                 prompts = kwargs["prompt"]
                 tokens = kwargs["sampling_params"]["max_new_tokens"]
                 width = kwargs["top_logprobs_num"]

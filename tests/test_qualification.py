@@ -150,7 +150,7 @@ def _lifecycle(tmp_path: Path, *, top_logprobs_num: int = 1):
         ResidentMarginalLifecycleEvidence,
         _expected_lane_digest,
     )
-    from cacheon.eval.resident_schedule import expanded_schedule, read_rate
+    from cacheon.eval.resident_schedule import planned_schedule, read_rate
     from cacheon.eval.oci_process import OCIQuiescenceReceipt
     from cacheon.eval.scoring import marginal_workload_digest
     from cacheon.eval.speed_verdict import speed_grade
@@ -201,10 +201,10 @@ def _lifecycle(tmp_path: Path, *, top_logprobs_num: int = 1):
     baseline_lane_digest = _expected_lane_digest(baseline_arm)
     candidate_lane_digest = _expected_lane_digest(candidate_arm)
     baseline_lane = _FixtureLane(
-        expanded_schedule(baseline_arm.session_plan, 2), "b" * 32, 1.0
+        planned_schedule(baseline_arm.session_plan, ("B", "B_prime")), "b" * 32, 1.0
     )
     candidate_lane = _FixtureLane(
-        expanded_schedule(candidate_arm.session_plan, 1), "c" * 32, 0.75
+        planned_schedule(candidate_arm.session_plan, ("C",)), "c" * 32, 0.75
     )
     rate_b = read_rate(
         "B",

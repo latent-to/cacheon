@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import asyncio
 import os
 import struct
 from types import SimpleNamespace
 
 import pytest
+
+from tests.support.pipes import engine_loop as engine_loop
+
+pytestmark = pytest.mark.usefixtures("engine_loop")
 
 from cacheon.eval import oci_session_worker as worker
 from cacheon.eval.oci_session_protocol import (
@@ -109,7 +114,7 @@ def test_run_session_emits_preflight_then_the_exact_ready_envelope(
 
     @contextlib.contextmanager
     def engine_session(_config, _tree):
-        yield SimpleNamespace(engine=object(), require_completion=lambda: None)
+        yield SimpleNamespace(engine=SimpleNamespace(loop=asyncio.get_event_loop()), require_completion=lambda: None)
 
     monkeypatch.setattr(worker, "_engine_session", engine_session)
     try:
@@ -138,7 +143,9 @@ def test_pure_generation_request_disables_engine_logprob_work() -> None:
     calls: list[dict] = []
 
     class _Engine:
-        def generate(self, **kwargs):
+        loop = asyncio.get_event_loop()
+
+        async def async_generate(self, **kwargs):
             calls.append(kwargs)
             # A logprob-free engine response: token IDs only, no top-k
             # structure anywhere in meta_info.

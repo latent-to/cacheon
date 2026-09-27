@@ -2,9 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
+import pytest
+
 from cacheon.eval.oci_process import OCIAttachedDiagnostic
+
+
+@pytest.fixture
+def engine_loop():
+    """Give fake engines the persistent loop owned by a real SGLang Engine."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        yield loop
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 class PipeClient:

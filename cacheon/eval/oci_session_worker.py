@@ -18,7 +18,6 @@ import secrets
 import stat
 import struct
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -26,7 +25,6 @@ from types import SimpleNamespace
 from typing import Any, Iterator
 
 from cacheon.eval.engine_worker import (
-    CandidateExecutionCoverageError,
     _path_mount_is_read_only as _path_is_read_only,
 )
 from cacheon.eval.oci_session_protocol import (
@@ -40,13 +38,10 @@ from cacheon.eval.oci_session_protocol import (
     BatchEvidence,
     BatchRequest,
     EngineSessionConfig,
-    PromptEvidence,
     RuntimePreflightFacts,
     SessionProtocolError,
-    AuditReceiptFacts,
     SlotAuditPolicy,
     SwapRequest,
-    audit_evidence_message,
     audit_policy_from_init,
     decode_message,
     error_message,
@@ -60,6 +55,8 @@ from cacheon.eval.oci_session_protocol import (
     validate_preflight_accept,
     validate_swap_request,
 )
+from cacheon.eval.phase_latency import engine_outputs as _engine_outputs
+from cacheon.eval.oci_request_loop import RequestFailure, serve_requests
 from cacheon.eval.resident_execution_evidence import (
     ResidentExecutionEvidence,
     summarize_rank_acks,
@@ -605,74 +602,19 @@ def _engine_session(
         )
 
 
-def _engine_outputs(outputs: object, *, request: BatchRequest) -> BatchEvidence:
-    if isinstance(outputs, dict):
-        rows = [outputs]
-    elif isinstance(outputs, list):
-        rows = outputs
-    else:
-        raise SessionProtocolError("engine output must be an object or array")
-    if len(rows) != len(request.prompts):
-        raise SessionProtocolError("engine output prompt count is invalid")
-    prompts: list[PromptEvidence] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            raise SessionProtocolError("engine output item is not an object")
-        metadata = row.get("meta_info")
-        if not isinstance(metadata, dict):
-            raise SessionProtocolError("engine output metadata is missing")
-        # The engine's own prompt token count is the only input-length
-        # authority; a missing count is an infrastructure fault, never a
-        # candidate verdict.
-        prompt_tokens = metadata.get("prompt_tokens")
-        if type(prompt_tokens) is not int or prompt_tokens < 1:
-            raise SessionProtocolError("engine output lacks its prompt token count")
-        raw_ids = row.get("output_ids") or metadata.get("output_ids")
-        raw_topk = metadata.get("output_top_logprobs")
-        if (
-            raw_topk is None
-            and request.top_logprobs_num == 0
-            and isinstance(raw_ids, (list, tuple))
-        ):
-            # A pure-generation read runs the engine with the logprob path
-            # disabled; the evidence still carries exact empty positions.
-            raw_topk = [()] * len(raw_ids)
-        if not isinstance(raw_ids, (list, tuple)) or not isinstance(
-            raw_topk, (list, tuple)
-        ):
-            raise SessionProtocolError("engine output lacks token/top-k evidence")
-        output_ids: list[int] = []
-        for token in raw_ids:
-            if type(token) is not int:
-                raise SessionProtocolError("engine output token ID is not an integer")
-            output_ids.append(token)
-        positions: list[tuple[tuple[float, int], ...]] = []
-        for raw_position in raw_topk:
-            if not isinstance(raw_position, (list, tuple)):
-                raise SessionProtocolError("engine output top-k position is not an array")
-            position: list[tuple[float, int]] = []
-            for entry in raw_position:
-                if not isinstance(entry, (tuple, list)) or len(entry) < 2:
-                    raise SessionProtocolError("engine output top-k entry is malformed")
-                logprob, token_id = entry[0], entry[1]
-                if (
-                    isinstance(logprob, bool)
-                    or not isinstance(logprob, (int, float))
-                    or not math.isfinite(float(logprob))
-                    or type(token_id) is not int
-                ):
-                    raise SessionProtocolError("engine output top-k value is invalid")
-                position.append((float(logprob), token_id))
-            positions.append(tuple(position))
-        prompts.append(
-            PromptEvidence(tuple(output_ids), tuple(positions), prompt_tokens)
-        )
-    return BatchEvidence(tuple(prompts))
-
-
 def _generate(engine: object, request: BatchRequest, emit=None) -> BatchEvidence:
+    """Keep the serial resident-screen adapter on the shared async generation path."""
     from cacheon.eval.phase_latency import generate_outputs
-    return _engine_outputs(generate_outputs(engine, request, emit), request=request)
+
+    async def send(frame):
+        emit(frame)
+
+    return _engine_outputs(
+        engine.loop.run_until_complete(
+            generate_outputs(engine, request, send if emit is not None else None)
+        ),
+        request=request,
+    )
 
 
 RESIDENT_SWAP_TIMEOUT_SECONDS = 1800.0
@@ -1269,73 +1211,17 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                     tp_size=config.tp_size,
                 )
                 raise AssertionError("resident session loop returned")
-            expected_index = 0
-            seen_request_ids: set[str] = set()
-            seen_nonces: set[str] = set()
-            while True:
-                stage = "batch"
-                request = validate_batch_request(
-                    _read_control_frame(
-                        control_fd, max_bytes=MAX_BATCH_REQUEST_BYTES
-                    )
-                )
-                if (
-                    request.session_id != session_id
-                    or request.launch_digest != launch_digest
-                    or request.batch_index != expected_index
-                    or request.request_id in seen_request_ids
-                    or request.nonce in seen_nonces
-                ):
-                    raise SessionProtocolError(
-                        "batch ordering, session, launch, or replay binding failed"
-                    )
-                seen_request_ids.add(request.request_id)
-                seen_nonces.add(request.nonce)
-                evidence = _generate(
-                    handle.engine, request, lambda frame: _write_all(protocol_fd, frame)
-                )
-                collector = getattr(handle, "collect_audit_receipts", None)
-                if audit_policy is not None and not callable(collector):
-                    raise SessionProtocolError(
-                        "audited engine lacks its raw audit receipt collector"
-                    )
-                try:
-                    handle.require_completion()
-                except CandidateExecutionCoverageError as exc:
-                    if audit_policy is None:
-                        raise
-                    # The audit gate grades an empty policy-bound receipt set
-                    # NO_DECISION. Preserve the exact execution cause in captured
-                    # stderr while the typed witness crosses the worker boundary,
-                    # so the host grades it instead of a transport failure.
-                    print(
-                        f"CACHEON-AUDIT-NOT-COVERED: {exc}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    audit_receipts = ()
-                else:
-                    audit_receipts = tuple(
-                        AuditReceiptFacts.from_receipt_dict(row)
-                        for row in (collector() if callable(collector) else ())
-                    )
-                _write_all(
-                    protocol_fd, evidence_frame(evidence, request=request)
-                )
-                if audit_policy is not None:
-                    _write_all(
-                        protocol_fd,
-                        frame_message(
-                            audit_evidence_message(
-                                request=request,
-                                policy=audit_policy,
-                                receipts=audit_receipts,
-                            ),
-                            max_bytes=MAX_CONTROL_BYTES,
-                        ),
-                    )
-                expected_index += 1
-                request = None
+            stage = "batch"
+            try:
+                handle.engine.loop.run_until_complete(serve_requests(
+                    handle, control_fd, protocol_fd,
+                    session_id=session_id,
+                    launch_digest=launch_digest,
+                    audit_policy=audit_policy,
+                ))
+            except RequestFailure as failure:
+                request = failure.request
+                raise failure.cause
     except BaseException as exc:  # noqa: BLE001 - bounded untrusted diagnostic
         reported = False
         # A candidate that raised inside a scheduler rank takes the rank down,

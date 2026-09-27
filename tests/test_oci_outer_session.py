@@ -220,6 +220,18 @@ class _FakeTransport:
         self._advance(self.batch_read_s, deadline, "batch-read")
         return _batch_evidence(request)
 
+    async def awrite_frame(self, frame, *, deadline):
+        self.write_frame(frame, deadline=deadline)
+
+    async def aread_control(self, *, max_bytes, deadline):
+        return self.read_control(max_bytes=max_bytes, deadline=deadline)
+
+    async def aread_response(self, requests, *, deadline, on_progress=None):
+        request = self.requests[-1]
+        assert requests[request.request_id] == request
+        progress = {"on_progress": on_progress} if request.measure_phase_latency else {}
+        return request, self.read_evidence(request, deadline=deadline, **progress)
+
     def finalize(self) -> None:
         self.finalized = True
         self.clock.advance(0.25)

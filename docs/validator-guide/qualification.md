@@ -141,6 +141,16 @@ retains the relative host times in each timed window's `prompt_latencies`.
 Worker-supplied timestamps are never accepted. Missing, duplicate, stale or
 inconsistent boundaries are measurement failures, not candidate speed failures.
 
+The isolated worker uses SGLang's persistent async engine loop for generation.
+It can accept another disclosed request while an earlier request awaits output;
+complete binary evidence and streaming boundaries retain their original request
+IDs and nonces. Frames remain intact even when responses complete out of order.
+The existing batch controller still submits one batch at a time. Eager audit
+requests also remain serial so their rank receipts retain one request boundary;
+resident screening uses the same generation implementation through a serial
+adapter. This transport change alone does not activate an agent replay workload
+or change the qualification score.
+
 The dashboard derives its `cells` table from those retained windows, grouped by
 input tokens, output tokens and request concurrency; derived summaries are not stored again:
 
@@ -628,3 +638,12 @@ Next: [Settlement and weights](settlement-and-weights.md).
 - [Finalized-intake projection](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py)
 - [Pristine reference session](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_reference_session.py)
 - [Qualification tests](https://github.com/latent-to/cacheon/blob/main/tests/test_qualification_runner.py)
+
+The isolated worker and controller share one request-addressed pipe exchange.
+Ordinary generation requests may overlap and finish out of order; eager audits
+remain serial. A request can carry either text prompts or canonical token IDs
+from the validator's chat template, plus an explicit attention-DP rank for
+session affinity. Token IDs avoid re-tokenizing rendered chat text with an extra
+BOS token. First/final token events are timed by the controller and checked
+against the existing final binary evidence; one-token requests still have TTFT.
+No HTTP listener or candidate network access is added inside the container.

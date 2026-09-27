@@ -56,42 +56,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 PREFILL_READ_BUDGET = 1
 
 
-def expanded_schedule(
-    plan: SessionExecutionPlan, reads: int, *, prefill_reads: int = 0
-) -> SessionExecutionPlan:
-    """Repeat the complete read ``reads`` times, then ``prefill_reads`` more
-    times with every request budgeted to one token.
-
-    Each repeat includes its validator-owned warmup: the model stays loaded and
-    only the cheap workload conditioning repeats between arms. A prefill read
-    keeps the exact prompts and prompt geometry of the decode read, so the
-    sealed prompt identity is shared and only the output budget differs."""
-
-    count = len(plan.prompt_batches)
-    if prefill_reads <= 0:
-        return replace(
-            plan,
-            prompt_batches=plan.prompt_batches * reads,
-            batch_max_new_tokens=plan.batch_max_new_tokens * reads,
-            batch_expected_prompt_tokens=plan.batch_expected_prompt_tokens * reads,
-        )
-    budgets = plan.batch_max_new_tokens or (plan.max_new_tokens,) * count
-    prompts = plan.batch_expected_prompt_tokens or (
-        (plan.expected_prompt_tokens,) * count
-    )
-    return replace(
-        plan,
-        prompt_batches=plan.prompt_batches * (reads + prefill_reads),
-        batch_max_new_tokens=budgets * reads
-        + (PREFILL_READ_BUDGET,) * (count * prefill_reads),
-        batch_expected_prompt_tokens=prompts * (reads + prefill_reads),
-    )
-
-
 def planned_schedule(plan: SessionExecutionPlan, roles: tuple[str, ...]) -> SessionExecutionPlan:
     """Expand the exact per-arm role order, retaining conditioning in every read."""
     if not any("prefill" in role for role in roles):
-        return expanded_schedule(plan, len(roles))
+        return replace(
+            plan,
+            prompt_batches=plan.prompt_batches * len(roles),
+            batch_max_new_tokens=plan.batch_max_new_tokens * len(roles),
+            batch_expected_prompt_tokens=plan.batch_expected_prompt_tokens * len(roles),
+        )
     count = len(plan.prompt_batches)
     budgets = plan.batch_max_new_tokens or (plan.max_new_tokens,) * count
     prompts = plan.batch_expected_prompt_tokens or (plan.expected_prompt_tokens,) * count
@@ -455,7 +428,6 @@ __all__ = [
     "ReadSchedule",
     "ScheduleGrade",
     "credited_speedup",
-    "expanded_schedule",
     "planned_schedule",
     "repeat_required",
     "grade_schedule",
