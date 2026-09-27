@@ -656,7 +656,9 @@ and supply a separate AIPerf 0.13.0 executable, the local model tokenizer, a
 sealed slice manifest, load, output directory and service contract. The existing
 engine conditioning runs first. AIPerf then starts exactly the declared number
 of root sessions and drains their turns and children; there is no duration cut
-or request-count truncation. The loopback chat adapter passes canonical input
+or request-count truncation. `--ignore-trace-delays` removes recorded user and
+tool waiting; each session continues as soon as its preceding work completes.
+Turn order and child joins remain intact. The loopback chat adapter passes canonical input
 IDs and sticky DP ranks through the same isolated-worker pipes.
 
 The slice loader verifies the named files in sealed order. A per-load directory
@@ -678,6 +680,8 @@ their sealed workload until recommissioned.
 AIPerf's concurrency ramp increases the live-session limit from one to the
 target. It does not enforce a fixed interval between root starts: a completed
 tree releases its slot early. The ramp duration is part of workload identity.
-Omit `--warmup-request-count` for no user-requested warmup; version 0.13.0 rejects
-an explicit zero. Agentic snapshot warmup records, if any, are excluded from
-service scoring.
+The driver uses ordinary closed-loop concurrency with `--no-fixed-schedule`,
+without the AgentX scenario. The AgentX trajectory warmup is designed for
+recorded timestamps; stripping those timestamps can omit intended turns.
+Omit `--warmup-request-count` for no client warmup; version 0.13.0 rejects an
+explicit zero. The engine still receives its ordinary conditioning requests.

@@ -371,6 +371,117 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
         )
 
 
+def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver, replay=None):
+    """Bind the commissioned incumbent to one executor without grading it.
+
+    Qualification and a single-lane development replay share this construction.
+    Calibration remains mandatory in the qualification consumer, after its
+    reference context exists; constructing an engine never fabricates it.
+    """
+    catalog = default_target_catalog()
+    snapshot = catalog.snapshot()
+    policy_block = inputs.qualification_commission["policy"]
+    session_block = inputs.qualification_commission["session"]
+    # The measured baseline is the durable incumbent the capabilities declare;
+    # at genesis the declared entries are empty and this reopens the exact
+    # stock tree above, so both arms of the branchless pair coincide.
+    _, _, incumbent, incumbent_tree = (
+        screen_deployment._commissioned_stock_authority(
+            inputs,
+            manifest,
+            catalog,
+            snapshot,
+            error=B300QualificationCommissionError,
+            label="qualification",
+            entries=entries,
+            resolver=resolver,
+        )
+    )
+    engine_config = (
+        replace(inputs.engine_template, disable_cuda_graph=False)
+        if replay is not None else screen_deployment._engine_config(
+            inputs.engine_template, inputs.workload.cells, disable_cuda_graph=False,
+        )
+    )
+    dp_size = screen_deployment._data_parallel_size(engine_config)
+    baseline_hardware, baseline_physical = screen_deployment._hardware_bindings(
+        inputs.runtime, executor.device_policy, dp_size=dp_size,
+    )
+    incumbent_native = screen_deployment._native_build(
+        incumbent_tree.tree_digest,
+        inputs.preflight,
+        executor.config.prebuild.policy, inputs.runtime.target_architecture,
+    )
+    incumbent_launch = EngineLaunchSpec(
+        runtime_digest=inputs.runtime.runtime_digest,
+        base_engine_digest=inputs.runtime.base_engine_digest,
+        arena_digest=manifest.digest,
+        stack_digest=incumbent_tree.stack_digest,
+        tree_digest=incumbent_tree.tree_digest,
+        image_digest=inputs.preflight.image_digest,
+        platform_digest=inputs.preflight.platform_digest,
+        controller_distribution_digest=inputs.controller_distribution_digest,
+        worker_distribution_digest=inputs.preflight.worker_distribution_digest,
+        model_revision_digest=inputs.runtime.model_revision_digest,
+        model_manifest_digest=inputs.runtime.model_manifest_digest,
+        model_content_digest=inputs.runtime.model_content_digest,
+        validator_overlay_digest=inputs.runtime.validator_overlay_digest,
+        engine_config_digest=engine_config.digest,
+        seccomp_policy_digest=screen_deployment._file_sha256(
+            executor.config.prebuild.seccomp_profile
+        ),
+        resource_policy_digest=(
+            executor.config.prebuild.policy.resource_policy_digest
+        ),
+        native_build_spec_digest=incumbent_native.digest,
+        hardware=baseline_hardware,
+    )
+    trusted_baseline = TrustedLaunchBinding(
+        materialized_tree_root=incumbent_tree.root,
+        controller_distribution_digest=inputs.controller_distribution_digest,
+        native_build_spec=incumbent_native,
+        runtime_preflight_receipt=inputs.preflight,
+        physical_hardware=baseline_physical,
+    )
+    incumbent_binding = MaterializedArmBinding(incumbent_tree, trusted_baseline)
+    quality_cell = screen_deployment._scored_cell(inputs.workload)
+    cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
+    batch_cells = inputs.prompt_batch_cells
+    mixed_cells = len(inputs.workload.cells) > 1
+    baseline_session_plan = SessionExecutionPlan(
+        launch_digest=incumbent_launch.digest,
+        expected_engine_config_digest=engine_config.digest,
+        engine_config=engine_config,
+        expected_preflight=expected_runtime_preflight(
+            incumbent_launch, inputs.preflight
+        ),
+        prompt_batches=inputs.prompt_batches,
+        warmup_count=session_block["warmup_count"],
+        conditioning_count=session_block["conditioning_count"],
+        max_new_tokens=policy_block["tokens_per_prompt"],
+        top_logprobs_num=policy_block["topk_width"],
+        temperature=float(session_block["temperature"]),
+        expected_prompt_tokens=quality_cell.input_tokens,
+        measure_phase_latency=session_block.get("measure_phase_latency", False),
+        replay=replay,
+        batch_max_new_tokens=(
+            tuple(cells_by_id[cell_id].output_tokens for cell_id in batch_cells)
+            if mixed_cells
+            else ()
+        ),
+        batch_expected_prompt_tokens=(
+            tuple(cells_by_id[cell_id].input_tokens for cell_id in batch_cells)
+            if mixed_cells
+            else ()
+        ),
+    )
+    return incumbent, incumbent_binding, ResidentArmPlan(
+        incumbent_launch, trusted_baseline, baseline_session_plan,
+        executor.manager.namespace_digest, executor.config.runtime.digest,
+        executor.device_policy.configuration_sha256,
+    )
+
+
 def _compose_locked(
     inputs,
     manifest,
@@ -400,107 +511,27 @@ def _compose_locked(
             label="pristine reference",
         )
     )
-    # The measured baseline is the durable incumbent the capabilities declare;
-    # at genesis the declared entries are empty and this reopens the exact
-    # stock tree above, so both arms of the branchless pair coincide.
-    _, _, incumbent, incumbent_tree = (
-        screen_deployment._commissioned_stock_authority(
-            inputs,
-            manifest,
-            catalog,
-            snapshot,
-            error=B300QualificationCommissionError,
-            label="qualification",
-            entries=capabilities.incumbent_entries,
-            resolver=capabilities.source_resolver,
-        )
+    incumbent, incumbent_binding, incumbent_arm = commissioned_incumbent_arm(
+        inputs, manifest, candidate_executor,
+        entries=capabilities.incumbent_entries, resolver=capabilities.source_resolver,
     )
-    engine_config = screen_deployment._engine_config(
-        inputs.engine_template,
-        inputs.workload.cells,
-        disable_cuda_graph=False,
-    )
+    incumbent_tree = incumbent_binding.tree
+    incumbent_launch = incumbent_arm.launch
+    baseline_session_plan = incumbent_arm.session_plan
+    engine_config = baseline_session_plan.engine_config
     dp_size = screen_deployment._data_parallel_size(engine_config)
-    baseline_hardware, baseline_physical = screen_deployment._hardware_bindings(
-        inputs.runtime, candidate_executor.device_policy, dp_size=dp_size,
-    )
-    incumbent_native = screen_deployment._native_build(
-        incumbent_tree.tree_digest,
-        inputs.preflight,
-        candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
-    )
+    baseline_physical = incumbent_arm.binding.physical_hardware
+    mixed_cells = len(inputs.workload.cells) > 1
     pristine_native = screen_deployment._native_build(
         stock_tree.tree_digest,
         inputs.preflight,
         candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
     )
-    incumbent_launch = EngineLaunchSpec(
-        runtime_digest=inputs.runtime.runtime_digest,
-        base_engine_digest=inputs.runtime.base_engine_digest,
-        arena_digest=manifest.digest,
-        stack_digest=incumbent_tree.stack_digest,
-        tree_digest=incumbent_tree.tree_digest,
-        image_digest=inputs.preflight.image_digest,
-        platform_digest=inputs.preflight.platform_digest,
-        controller_distribution_digest=inputs.controller_distribution_digest,
-        worker_distribution_digest=inputs.preflight.worker_distribution_digest,
-        model_revision_digest=inputs.runtime.model_revision_digest,
-        model_manifest_digest=inputs.runtime.model_manifest_digest,
-        model_content_digest=inputs.runtime.model_content_digest,
-        validator_overlay_digest=inputs.runtime.validator_overlay_digest,
-        engine_config_digest=engine_config.digest,
-        seccomp_policy_digest=screen_deployment._file_sha256(
-            candidate_executor.config.prebuild.seccomp_profile
-        ),
-        resource_policy_digest=(
-            candidate_executor.config.prebuild.policy.resource_policy_digest
-        ),
-        native_build_spec_digest=incumbent_native.digest,
-        hardware=baseline_hardware,
-    )
-    trusted_baseline = TrustedLaunchBinding(
-        materialized_tree_root=incumbent_tree.root,
-        controller_distribution_digest=inputs.controller_distribution_digest,
-        native_build_spec=incumbent_native,
-        runtime_preflight_receipt=inputs.preflight,
-        physical_hardware=baseline_physical,
-    )
-    incumbent_binding = MaterializedArmBinding(incumbent_tree, trusted_baseline)
     trusted_pristine = replace(
-        trusted_baseline, materialized_tree_root=stock_tree.root,
+        incumbent_arm.binding, materialized_tree_root=stock_tree.root,
         native_build_spec=pristine_native,
     )
     pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
-    quality_cell = screen_deployment._scored_cell(inputs.workload)
-    cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
-    batch_cells = inputs.prompt_batch_cells
-    mixed_cells = len(inputs.workload.cells) > 1
-    baseline_session_plan = SessionExecutionPlan(
-        launch_digest=incumbent_launch.digest,
-        expected_engine_config_digest=engine_config.digest,
-        engine_config=engine_config,
-        expected_preflight=expected_runtime_preflight(
-            incumbent_launch, inputs.preflight
-        ),
-        prompt_batches=inputs.prompt_batches,
-        warmup_count=session_block["warmup_count"],
-        conditioning_count=session_block["conditioning_count"],
-        max_new_tokens=policy.tokens_per_prompt,
-        top_logprobs_num=policy.topk_width,
-        temperature=float(session_block["temperature"]),
-        expected_prompt_tokens=quality_cell.input_tokens,
-        measure_phase_latency=session_block.get("measure_phase_latency", False),
-        batch_max_new_tokens=(
-            tuple(cells_by_id[cell_id].output_tokens for cell_id in batch_cells)
-            if mixed_cells
-            else ()
-        ),
-        batch_expected_prompt_tokens=(
-            tuple(cells_by_id[cell_id].input_tokens for cell_id in batch_cells)
-            if mixed_cells
-            else ()
-        ),
-    )
     pristine_launch, pristine_session_plan = _pristine_reference_authority(
         incumbent_launch,
         baseline_session_plan,
@@ -795,4 +826,5 @@ __all__ = [
     "CommissionedB300QualificationService",
     "build_commissioned_b300_qualification_service",
     "compose_commissioned_qualifications",
+    "commissioned_incumbent_arm",
 ]

@@ -63,7 +63,7 @@ class AgentReplayPlan:
             "expected_work": self.slice.expected_work(self.load), "load": self.load,
             "ramp_duration_s": format(self.ramp_duration_s, ".17g"),
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
-            "client": "aiperf-0.13.0", "idle_cap_s": 0,
+            "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
         }
 
 
@@ -259,12 +259,10 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None) -> None:
             argv = [str(plan.aiperf_binary), "profile", "--model", str(plan.tokenizer_path),
                     "--tokenizer", str(plan.tokenizer_path), "--tokenizer-trust-remote-code",
                     "--url", f"http://127.0.0.1:{port}", "--endpoint-type", "chat", "--streaming",
-                    "--scenario", "inferencex-agentx-mvp", "--input-file", str(pool),
+                    "--no-fixed-schedule", "--input-file", str(pool),
                     "--custom-dataset-type", "weka_trace", "--num-conversations", str(plan.load),
                     "--concurrency", str(plan.load), "--dataset-sampling-strategy", "sequential",
-                    "--trajectory-start-min-ratio", "0", "--trajectory-start-max-ratio", "0",
-                    "--cache-bust", "first_turn_prefix", "--system-idle-gap-cap-seconds", "0",
-                    "--unsafe-override", "--use-server-token-count",
+                    "--cache-bust", "first_turn_prefix", "--ignore-trace-delays", "--use-server-token-count",
                     "--random-seed", str(current.rules["seed"]), "--ui", "none",
                     "--output-artifact-dir", str(output / "aiperf")]
             context = session.plan.engine_config.engine_kwargs.get("context_length")
