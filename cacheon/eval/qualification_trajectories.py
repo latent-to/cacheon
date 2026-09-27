@@ -75,7 +75,8 @@ def selected_frames(lifecycle):
 def _source_rows(replay, directory: Path, batches):
     rows = {row.request_id: row for row in batches}
     result = {}
-    path = directory / f"load{replay.loads[0]}" / "aiperf" / "profile_export.jsonl"
+    # Every window replays the same prompts; the first is the one every sequential read retains.
+    path = directory / "window1" / "aiperf" / "profile_export.jsonl"
     for line in path.read_text().splitlines():
         meta = json.loads(line)["metadata"]
         if meta["benchmark_phase"] != "profiling":
@@ -112,7 +113,7 @@ def create_controls(value, controller, candidate, baseline_directory, candidate_
     )
     by_request = {baseline[key].request_id: key for key in selection.selected_prompt_digests}
     inputs = {}
-    raw_path = baseline_directory / f"load{replay.loads[0]}" / "bridge.jsonl"
+    raw_path = baseline_directory / "window1" / "bridge.jsonl"
     with raw_path.open() as stream:
         for line in stream:
             row = json.loads(line)

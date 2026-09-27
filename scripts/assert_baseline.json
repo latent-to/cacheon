@@ -119,6 +119,7 @@
 "tests/test_qualification_reasons.py": 7,
 "tests/test_qualification_recovery.py": 28,
 "tests/test_qualification_runner.py": 161,
+"tests/test_qualification_trajectories.py": 4,
 "tests/test_rebuild.py": 28,
 "tests/test_record_breaking_rewards.py": 35,
 "tests/test_recoverable_qualification_dispatcher.py": 162,
