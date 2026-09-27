@@ -152,7 +152,9 @@ class _Rounds:
     worker cannot shrink it, and fails every held request when the client has
     not opened them within ``_FIRST_ROUND_WAIT_S`` of its last arrival rather
     than idling to the session deadline. A round is released in session-key
-    order so rank placement is the same in every read.
+    order so rank placement is the same in every read, and each release is
+    numbered in that order: the engine requires batch indices in dispatch
+    order, which arrival order no longer is.
     """
 
     def __init__(self, openings: int, clock, settle_s: float = _ROUND_SETTLE_S,
@@ -161,10 +163,11 @@ class _Rounds:
         self.pending: dict[str, tuple[str, asyncio.Future]] = {}
         self.inflight: set[str] = set()
         self.first_released = False
+        self.released = 0
         self._timer = None
 
-    async def hold(self, request_id: str, key: str) -> float:
-        """Wait for the round this request joins; return the round's release time on the session clock."""
+    async def hold(self, request_id: str, key: str) -> tuple[float, int]:
+        """Wait for the round this request joins; return its release time on the session clock and dispatch ordinal."""
         future = asyncio.get_running_loop().create_future()
         self.pending[request_id] = (key, future)
         self._arm()
@@ -198,7 +201,8 @@ class _Rounds:
         for request_id, (_key, future) in sorted(self.pending.items(), key=lambda item: item[1][0]):
             if not future.done():
                 self.inflight.add(request_id)
-                future.set_result(stamp)
+                future.set_result((stamp, self.released))
+                self.released += 1
         self.pending.clear()
 
     def _starve(self) -> None:
@@ -246,10 +250,10 @@ class ReplayBridge:
                 raise ValueError("agent replay requires streaming requests")
             ids = _chat_input_ids(self.tokenizer, body)
             count = body.get("max_tokens", body.get("max_completion_tokens"))
-            index = self.first_batch_index + len(self.rows)
             self.rows[external_id] = None
-            stamp = await self.rounds.hold(external_id, _session_key(body["messages"]))
+            stamp, ordinal = await self.rounds.hold(external_id, _session_key(body["messages"]))
             self.stamps[external_id] = self._ns(stamp)
+            index = self.first_batch_index + ordinal
             rank = self.placement.acquire(body["messages"])
             request = BatchRequest(
                 self.session.session_id, self.session.plan.launch_digest,

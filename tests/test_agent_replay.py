@@ -199,25 +199,27 @@ def test_lockstep_rounds_release_together_in_session_order_and_fail_a_starved_fi
         order = []
 
         async def conversation(request_id, key):
-            stamp = await rounds.hold(request_id, key)
+            stamp, ordinal = await rounds.hold(request_id, key)
             order.append(key)
-            return stamp
+            return stamp, ordinal
 
-        # The first round waits for exactly the sealed openings, then releases them with one stamp in key order.
+        # The first round waits for exactly the sealed openings, then releases them with one stamp in key
+        # order, numbering dispatch in that order (the engine requires batch indices in dispatch order).
         b = asyncio.create_task(conversation('r-b', 'session-b'))
         await asyncio.sleep(0.05)
         assert not b.done() and not rounds.first_released
         a = asyncio.create_task(conversation('r-a', 'session-a'))
-        stamps = await asyncio.gather(a, b)
-        assert stamps[0] == stamps[1] and order == ['session-a', 'session-b']
+        (stamp_a, ordinal_a), (stamp_b, ordinal_b) = await asyncio.gather(a, b)
+        assert stamp_a == stamp_b and (ordinal_a, ordinal_b) == (0, 1) and order == ['session-a', 'session-b']
         # A request arriving while the round is in flight waits for the engine to drain, then for the
-        # settle time with no new arrival, and carries the later round's stamp.
+        # settle time with no new arrival, and carries the later round's stamp and the next ordinal.
         c = asyncio.create_task(conversation('r-c', 'session-c'))
         rounds.done('r-a')
         await asyncio.sleep(0.05)
         assert not c.done()
         rounds.done('r-b')
-        assert await c > stamps[0]
+        stamp_c, ordinal_c = await c
+        assert stamp_c > stamp_a and ordinal_c == 2
         # A first round the client never fills fails every held request instead of idling to the deadline.
         starved = _Rounds(3, loop.time, settle_s=0.02, first_wait_s=0.05)
         with pytest.raises(RuntimeError, match="1 of 3 conversations"):
