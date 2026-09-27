@@ -587,13 +587,15 @@ def _engine_session(
         )
 
 
-def _canonical_prompt_ids(engine: object, prompt: str) -> list[int]:
-    manager = getattr(engine, "tokenizer_manager", None)
-    tokenizer = getattr(manager, "tokenizer", None)
-    encode = getattr(tokenizer, "encode", None)
-    if not callable(encode):
-        raise SessionProtocolError("pristine reference lacks the pinned tokenizer API")
-    ids = encode(prompt)
+def _canonical_prompt_ids(engine: object, prompt: str | tuple[int, ...]) -> list[int]:
+    if isinstance(prompt, tuple):
+        ids = list(prompt)
+    else:
+        tokenizer = getattr(getattr(engine, "tokenizer_manager", None), "tokenizer", None)
+        encode = getattr(tokenizer, "encode", None)
+        if not callable(encode):
+            raise SessionProtocolError("pristine reference lacks the pinned tokenizer API")
+        ids = encode(prompt)
     if (
         not isinstance(ids, list)
         or not ids
@@ -743,7 +745,7 @@ def _reference_evidence(engine: object, request: object) -> object:
         request_sha256,
     )
 
-    prompt_ids = [_canonical_prompt_ids(engine, item.prompt) for item in request.prompts]
+    prompt_ids = [_canonical_prompt_ids(engine, item.input_ids or item.prompt) for item in request.prompts]
     vocab_size = _tokenizer_vocab_size(engine)
     roles = [
         _reference_role_evidence(
@@ -776,24 +778,6 @@ def _reference_evidence(engine: object, request: object) -> object:
     )
 
 
-def _read_reference_request(fd: int) -> object:
-    from cacheon.eval.reference_protocol import (
-        FRAME_HEADER_BYTES as REFERENCE_HEADER_BYTES,
-        MAX_REQUEST_BYTES,
-        REQUEST_MAGIC,
-        MIXED_REQUEST_MAGIC,
-        decode_reference_request,
-    )
-
-    header = _read_exact(fd, REFERENCE_HEADER_BYTES)
-    if header[:4] not in (REQUEST_MAGIC, MIXED_REQUEST_MAGIC):
-        raise SessionProtocolError("reference request magic/version mismatch")
-    size = struct.unpack(">I", header[4:8])[0]
-    if size > MAX_REQUEST_BYTES:
-        raise SessionProtocolError("reference request exceeds its hard bound")
-    return decode_reference_request(header + _read_exact(fd, size))
-
-
 def _serve_reference(
     engine: object,
     control_fd: int,
@@ -802,14 +786,14 @@ def _serve_reference(
     session_id: str,
     launch_digest: str,
 ) -> None:
-    from cacheon.eval.reference_protocol import encode_reference_evidence
+    from cacheon.eval.reference_protocol import encode_reference_evidence, read_reference_request
 
     expected_index = 0
     plan_digest: str | None = None
     seen_request_ids: set[str] = set()
     seen_nonces: set[str] = set()
     while True:
-        request = _read_reference_request(control_fd)
+        request = read_reference_request(lambda size: _read_exact(control_fd, size))
         if plan_digest is None:
             plan_digest = request.plan_digest
         if (

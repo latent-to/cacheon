@@ -43,9 +43,7 @@ from cacheon.eval.qualification_continuation import (
     QualityContinuation,
 )
 from cacheon.eval.qualification_timing import QualificationTimingWitness
-from cacheon.eval.qualification_continuation_runner import (
-    QualificationContinuationRunnerSeams, run_continuation_quality_stage,
-)
+from cacheon.eval.qualification_continuation_runner import run_continuation_quality_stage
 from cacheon.eval.continuation_codec import ContinuationCodec, ContinuationCodecError
 from cacheon.eval.oci_reference_session import ReferenceSessionPlan
 from cacheon.eval.oci_session_protocol import (
@@ -2565,25 +2563,6 @@ def run_causal_qualification(
         quality_state=quality_state,
         resident_lifecycle=lifecycle,
         resident_speed_witness=resident_speed_witness,
-        seams=QualificationContinuationRunnerSeams(
-            qualification_decision=QualificationDecision,
-            qualification_stage_exit_type=QualificationStageExit,
-            quality_continuation_type=QualityContinuation,
-            audit_continuation_type=AuditContinuation,
-            selection_entropy_receipt_type=SelectionEntropyReceipt,
-            qualification_runner_error=QualificationRunnerError,
-            qualification_continuation_error=QualificationContinuationError,
-            qualification_authority_digest=qualification_authority_digest,
-            run_slot_audits=_run_slot_audits,
-            selection_receipt_type=SelectionReceipt,
-            cohort_trajectory_digest=cohort_trajectory_digest,
-            lifecycle_causal_completion=_lifecycle_causal_completion,
-            canonical_digest=canonical_digest,
-            reference_request=_reference_request,
-            reference_session_plan_type=ReferenceSessionPlan,
-            publish_qualification_stage_exit=publish_qualification_stage_exit,
-            reopen_qualification_stage_exit=reopen_qualification_stage_exit,
-        ),
     )
     if continuation_stage.terminal:
         return continuation_stage.terminal_reference

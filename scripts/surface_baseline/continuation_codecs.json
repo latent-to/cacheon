@@ -30,7 +30,7 @@
  "qualification_continuation:cacheon.eval.qualification_runner.AuditWitness": ["candidate_launch_digest","decision","detail","execution_identity_digest","policy","receipts","runtime_resource_policy_digest","selected_delta_digest","session_id"],
  "qualification_continuation:cacheon.eval.reference_protocol.ReferenceEvidence": ["launch_digest","nonce","plan_digest","prompts","request_id","request_index","request_sha256","session_id","vocab_size"],
  "qualification_continuation:cacheon.eval.reference_protocol.ReferencePromptEvidence": ["prompt_digest","prompt_token_count","prompt_token_sha256","roles"],
- "qualification_continuation:cacheon.eval.reference_protocol.ReferencePromptInput": ["prompt","prompt_digest","roles"],
+ "qualification_continuation:cacheon.eval.reference_protocol.ReferencePromptInput": ["input_ids","prompt","prompt_digest","roles"],
  "qualification_continuation:cacheon.eval.reference_protocol.ReferenceRequest": ["launch_digest","nonce","plan_digest","prompts","request_id","request_index","session_id","support_width","tokens_per_prompt"],
  "qualification_continuation:cacheon.eval.reference_protocol.ReferenceRoleEvidence": ["tokens"],
  "qualification_continuation:cacheon.eval.reference_protocol.ReferenceRoleInput": ["output_ids","supports"],

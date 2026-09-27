@@ -136,4 +136,3 @@ def _manager(tmp_path: Path, commands: Commands | None = None) -> OCIProcessMana
     )
     selected.default_namespace = manager.namespace_digest
     return manager
-

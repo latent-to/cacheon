@@ -86,6 +86,12 @@ Not every artifact is public. Selection secrets and hidden tasks remain in priva
 validator storage; serializable authority records contain references and commitments, not
 the secret bytes.
 
+Pristine-reference requests can carry text or canonical input token IDs. The `ORQ3`
+frame carries the IDs directly, so the reference engine scores the same chat-template
+input used by a replay without decoding and tokenizing it again. Its response must
+match the input token count and digest. Existing `ORQ1`/`ORQ2` text frames retain their
+original encoding, and all three rollout roles share each prompt's output length.
+
 ```mermaid
 flowchart LR
     DB["SQLite state transition\nordered refs + statuses"]

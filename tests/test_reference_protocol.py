@@ -95,6 +95,32 @@ def test_request_roundtrip_is_exact_binary_and_canonical():
     assert b"first prompt" in frame and b"second \xce\xbb" in frame
 
 
+def test_canonical_inputs_survive_the_wire_and_bind_teacher_evidence():
+    import hashlib
+    import io
+
+    request = _request()
+    request = dataclasses.replace(request, prompts=tuple(
+        dataclasses.replace(prompt, prompt="", input_ids=(0, 11 + index, 65535))
+        for index, prompt in enumerate(request.prompts)
+    ))
+    frame = encode_reference_request(request)
+    assert frame[:4] == b"ORQ3"
+    assert protocol.read_reference_request(io.BytesIO(frame).read) == request
+    evidence = _evidence(request)
+    evidence = dataclasses.replace(evidence, prompts=tuple(
+        dataclasses.replace(row, prompt_token_count=len(prompt.input_ids),
+                            prompt_token_sha256=hashlib.sha256(struct.pack(">3I", *prompt.input_ids)).hexdigest())
+        for row, prompt in zip(evidence.prompts, request.prompts, strict=True)
+    ))
+    assert decode_reference_evidence(encode_reference_evidence(evidence, request), request) == evidence
+    wrong = dataclasses.replace(evidence.prompts[0], prompt_token_sha256="f" * 64)
+    with pytest.raises(ReferenceProtocolError, match="changed the canonical"):
+        encode_reference_evidence(dataclasses.replace(evidence, prompts=(wrong, evidence.prompts[1])), request)
+    with pytest.raises(ReferenceProtocolError, match="mixes text and canonical"):
+        dataclasses.replace(request, prompts=(request.prompts[0], _request().prompts[1]))
+
+
 def test_mixed_output_lengths_roundtrip_without_padding_or_truncation():
     request = _request()
     long = dataclasses.replace(request.prompts[1], roles=tuple(
