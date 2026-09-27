@@ -288,7 +288,7 @@ module implements a second lease state machine, and deployment tooling must not
 mutate lease rows with raw SQL.
 
 `cacheon chain-evaluation-lease` is the tracked one-shot operator adapter over that
-API: `preview`, `claim`, `heartbeat`, and infrastructure `release`, with all
+API: `preview`, `claim`, and `requeue-expired`, with all
 authority coming from one sealed owner-controlled config file. It is not an
 evaluation worker, daemon, or scheduler; see the
 [CLI reference](../reference/cli.md#chain-evaluation-lease).

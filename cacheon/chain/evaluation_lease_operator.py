@@ -226,32 +226,6 @@ def _cursor(store: FinalizedIntakeStore) -> tuple[int, str]:
     return point
 
 
-def _lease_id(value: object) -> str:
-    try:
-        return require_sha256_hex(value, field="evaluation lease id")
-    except (TypeError, ValueError) as exc:
-        raise FifoLeaseError(str(exc)) from None
-
-
-def _active_lease(
-    store: FinalizedIntakeStore,
-    config: FifoLeaseConfig,
-    lease_id: object,
-) -> EvaluationLease:
-    exact_id = _lease_id(lease_id)
-    matches = tuple(
-        lease
-        for lease in store.active_evaluation_leases()
-        if lease.lease_id == exact_id
-    )
-    if len(matches) != 1:
-        raise FifoLeaseError("exact active evaluation lease was not found")
-    lease = matches[0]
-    if lease.owner != config.owner or lease.stage != config.stage:
-        raise FifoLeaseError("active lease differs from the sealed owner or stage")
-    return lease
-
-
 def _max_members(config: FifoLeaseConfig) -> int:
     return config.qualification_max_members
 
@@ -316,76 +290,6 @@ def claim(config: FifoLeaseConfig) -> dict[str, object]:
             max_members=_max_members(config),
         )
         return _result("claim", point, lease=lease)
-    finally:
-        store.close()
-
-
-def heartbeat(config: FifoLeaseConfig, lease_id: object) -> dict[str, object]:
-    """Reopen one exact active lease by ID and CAS-extend its current version."""
-    exact_id = _lease_id(lease_id)
-    store = _open_store(config)
-    try:
-        point = _cursor(store)
-        lease = _active_lease(store, config, exact_id)
-        extended = store.heartbeat_evaluation_lease(
-            lease,
-            current_block=point[0],
-            lease_blocks=config.lease_blocks,
-        )
-        return _result("heartbeat", point, lease=extended)
-    finally:
-        store.close()
-
-
-def _release_reason(value: object) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value.strip() != value
-        or len(value) > 2_048
-        or any(ord(char) < 32 or ord(char) == 127 for char in value)
-    ):
-        raise FifoLeaseError("release reason is not bounded printable text")
-    return value
-
-
-def _result_digest(value: object) -> str:
-    if value == "":
-        return ""
-    try:
-        return require_sha256_hex(value, field="result_digest")
-    except (TypeError, ValueError) as exc:
-        raise FifoLeaseError(str(exc)) from None
-
-
-def release(
-    config: FifoLeaseConfig,
-    lease_id: object,
-    *,
-    reason: object,
-    result_digest: object = "",
-) -> dict[str, object]:
-    """CAS-release exact infrastructure work without consuming an attempt."""
-    exact_id = _lease_id(lease_id)
-    exact_reason = _release_reason(reason)
-    exact_digest = _result_digest(result_digest)
-    store = _open_store(config)
-    try:
-        point = _cursor(store)
-        lease = _active_lease(store, config, exact_id)
-        released = store.release_evaluation_lease(
-            lease,
-            current_block=point[0],
-            reason=exact_reason,
-            result_digest=exact_digest,
-        )
-        return _result(
-            "release",
-            point,
-            lease=released,
-            reason=exact_reason,
-            result_digest=exact_digest,
-        )
     finally:
         store.close()
 
@@ -466,22 +370,18 @@ def operate(
     config: FifoLeaseConfig,
     operation: str,
     *,
-    lease_id: object = None,
-    reason: object = None,
-    result_digest: object = "",
     authority_path: object = None,
 ) -> dict[str, object]:
-    """Dispatch one closed operator verb without adding state-machine policy."""
+    """Dispatch one closed operator verb without adding state-machine policy.
+
+    Heartbeat and release are not verbs here: every lease is a qualification
+    lease, and the recovery store refuses a generic move on one, so the only
+    lease transitions are its own recovery-owned ones.
+    """
     if operation == "preview":
         return preview(config)
     if operation == "claim":
         return claim(config)
-    if operation == "heartbeat":
-        return heartbeat(config, lease_id)
-    if operation == "release":
-        return release(
-            config, lease_id, reason=reason, result_digest=result_digest
-        )
     if operation == "requeue-expired":
         return requeue_expired(config, authority_path)
     raise FifoLeaseError("evaluation lease operation is unsupported")

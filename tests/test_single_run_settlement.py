@@ -17,7 +17,6 @@ def test_one_attempt_reaches_settlement_and_rewards_without_reproduction(tmp_pat
         assert candidate.reproduction is None
         assert candidate.speedup == candidate.primary.speedup
         assert store.get(candidate.reservation_digest).status == "qualified"
-        assert store.preview_evaluation_claim(stage="screen", max_members=1) == ()
         assert store.preview_evaluation_claim(stage="qualification", max_members=1) == ()
         assert store._db.execute("SELECT COUNT(*) FROM qualification_dispositions").fetchone()[0] == 1
         receipt = store.reopen_settlement_evidence(candidate)

@@ -31,7 +31,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
 | `chain-miner-report` | validator operator | read-only private diagnostics | Report every retained submission for one miner hotkey with its stated cause and next step |
-| `chain-evaluation-lease` | validator operator | one-shot evaluation lease transition | Preview, claim, heartbeat, or infrastructure-release store-selected work from sealed file authority |
+| `chain-evaluation-lease` | validator operator | one-shot evaluation lease transition | Preview, claim, or requeue store-selected work from sealed file authority |
 | `chain-register` | operator | chain mutation | Burn-register a hotkey and run the SDK preflight |
 | `chain-validate` | validator | production intake | Consume finalized reveals; a deployment may inject qualification services |
 | `chain-snapshot` | validator | private object-store mutation | Publish and reopen a consistent validator recovery snapshot |
@@ -397,12 +397,12 @@ or target, model, hotkey, netuid, mission, endpoint, or path default.
 Each invocation performs exactly one operator request and exits. It is not an
 evaluation worker, daemon, or scheduler.
 
-The operations are `preview`, `claim`, `heartbeat <lease-id>`,
-`release <lease-id> --reason <reason> [--result-digest <sha256>]`, and
+The operations are `preview`, `claim`, and
 `requeue-expired --authority <SEALED_JSON>`. Preview is non-mutating. Claim
-ordering, reproduction priority, qualification cohorts, lease generation,
-heartbeat CAS, infrastructure release, and the finalized block clock remain
-owned by `FinalizedIntakeStore`; this command does not evaluate or settle work.
+ordering, reproduction priority, qualification cohorts, lease generation, and
+the finalized block clock remain owned by `FinalizedIntakeStore`; every other
+lease transition is recovery-owned, so there is no operator heartbeat or
+release. This command does not evaluate or settle work.
 Every success prints canonical JSON bound to the retained finalized cursor.
 
 `requeue-expired` is the narrow validator-downtime recovery. Its owner-only

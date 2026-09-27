@@ -246,7 +246,7 @@ def test_waiter_restart_reuses_the_same_plan_request_and_carrier(
             "request_ready",
             request_id,
         )
-        assert store.get(recovery.lease.reservation_ids[0]).status == "promoted"
+        assert store.get(recovery.lease.reservation_ids[0]).status == "published"
 
     fixtures._write_completed_result(authority, transport.plan)
     transport.fail_resume = False
@@ -306,7 +306,7 @@ def test_unproven_worker_failure_retains_original_request(tmp_path: Path, failur
         assert retained.request_id == first.request_id
         assert store._db.execute("SELECT count(*) FROM evaluation_leases WHERE state='released'").fetchone()[0] == 0
         row = store.get(retained.lease.members[0].reservation_id)
-        assert row.status == "promoted" and row.decision == ""
+        assert row.status == "published" and row.decision == ""
 
 
 @pytest.mark.parametrize("reason", ("transport_hold:worker_infrastructure_result", "transport_hold:authority_changed", "transport_hold:published_carrier_missing"))

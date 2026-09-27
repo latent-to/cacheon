@@ -32,15 +32,14 @@ def _pair(tmp_path):
 
 def test_two_dispatchers_keep_fifo_baselines_and_recovery_independent(tmp_path):
     rows, (glm, qwen) = _pair(tmp_path)
-    # Screen both queues through the production claim/result path.
-    for coordinator, expected in ((qwen, rows[1]), (glm, rows[0]),
-                                  (qwen, rows[3]), (glm, rows[2])):
-        result = fixture._run_screen(coordinator)
-        assert result.lease.reservation_ids == (expected.reservation_id,)
     recoveries = []
-    for coordinator in (glm, qwen):
+    for coordinator, queue in ((glm, (rows[0], rows[2])), (qwen, (rows[1], rows[3]))):
         store, point = coordinator._open_at_durable_cursor()
         with store:
+            # Each arena's queue holds only its own rows, in finalized order.
+            assert [row.reservation_id for row in store.claimable()] == [
+                row.reservation_id for row in queue
+            ]
             incumbent = stack_manifest(coordinator.service.identity)
             assert commission_boundary(store, incumbent, tree_digest=fixture._h("tree")) is None
             recovery = store.claim_recoverable_qualification(
@@ -77,24 +76,31 @@ def test_default_alias_cannot_be_taken_by_second_arena(tmp_path):
             store.select_arena("qwen", accept_legacy_bundles=True)
     qwen.accept_legacy_bundles = True
     with pytest.raises(Exception, match="already belong"):
-        qwen.claim_screen()
+        qwen._open_at_durable_cursor()
 
 
 def test_closed_targets_retire_before_claim_without_touching_glm(tmp_path):
     rows, (glm, qwen) = _pair(tmp_path)
     qwen.service = ArenaService(replace(qwen.service.manifest,
         closed_targets=(rows[1].target_id, rows[3].target_id)), fixture._Provider())
-    qwen.readiness = fixture.WorkerReadiness.for_service(qwen.service,
-        ready_receipt_digest=fixture._h("ready-receipt"), ready_epoch=7)
-    assert qwen.claim_screen() is None
-    store, _ = qwen._open_at_durable_cursor()
-    with store:
-        for row in (rows[1], rows[3]):
-            parked = store.get(row.reservation_id)
-            assert parked.decision == "NO_DECISION" and parked.screen_attempts == 0
-            assert parked.status == "expired" and parked.reason == f"target_unavailable:{row.target_id}"
-        assert not store.active_evaluation_leases()
-    assert fixture._run_screen(glm).lease.reservation_ids == (rows[0].reservation_id,)
+    for coordinator in (qwen, glm):
+        store, point = coordinator._open_at_durable_cursor()
+        with store:
+            store.prepare_qualification_queue(
+                service_digest=coordinator.service.identity,
+                closed_targets=coordinator.service.manifest.closed_targets,
+            )
+            recovery = store.claim_recoverable_qualification(
+                owner=coordinator.owner, current_block=point[0], max_members=1,
+            )
+            if coordinator is qwen:
+                assert recovery is None
+                for row in (rows[1], rows[3]):
+                    parked = store.get(row.reservation_id)
+                    assert parked.decision == "NO_DECISION" and parked.arena_service_digest == ""
+                    assert parked.status == "expired" and parked.reason == f"target_unavailable:{row.target_id}"
+                assert not store.active_evaluation_leases()
+    assert recovery.lease.reservation_ids == (rows[0].reservation_id,)
 
 
 def test_same_target_crowns_and_rebuilds_independently_across_models(tmp_path):
@@ -149,7 +155,7 @@ def test_pre_namespace_lineage_migrates_without_changing_retained_evidence(tmp_p
 @pytest.mark.parametrize(("arena", "target"), (
     ("glm", "activation.silu_and_mul"), ("qwen", "norm.rmsnorm"),
 ))
-def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, target):
+def test_crown_cutoff_admits_commitments_once_before_qualification(tmp_path, arena, target):
     from tests.test_chain_intake import _arrival, _bh, _fingerprint, _publish
 
     with _store(tmp_path) as store:
@@ -168,19 +174,19 @@ def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, tar
         for row, marker in ((early, "a"), (late, "b")):
             _publish(store, row.reservation_id, _fingerprint(target, target, marker),
                      digest=marker * 64, root=tmp_path / marker)
-        rejected = store.prepare_screen_queue(service_digest=winner.arena_digest)
+        rejected = store.prepare_qualification_queue(service_digest=winner.arena_digest)
         assert rejected == ((late.reservation_id, "baseline_closed_at_submission"),)
         assert store.get(early.reservation_id).status == "published"
         rejected_row = store.get(late.reservation_id)
-        assert rejected_row.status == "failed" and rejected_row.screen_attempts == 0
+        assert rejected_row.status == "failed" and rejected_row.arena_service_digest == ""
         assert not store.active_evaluation_leases()
-        assert store.prepare_screen_queue(service_digest=winner.arena_digest) == ()
+        assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
         assert store.get(winner.reservation_digest).decision == "PASS"
 
     # Reopening does not turn an earlier accepted commitment into a late one.
     with _store(tmp_path) as store:
         store.select_arena(arena, accept_legacy_bundles=False)
-        assert store.prepare_screen_queue(service_digest=winner.arena_digest) == ()
+        assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
         assert store.get(early.reservation_id).status == "published"
         fresh = store.reserve_finalized(
             (_arrival(3, hotkey="fresh", block=13),),
@@ -189,7 +195,7 @@ def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, tar
         _publish(store, fresh.reservation_id, _fingerprint(target, target, "c"),
                  digest="c" * 64, root=tmp_path / "fresh")
         # A new commissioned service has its own open admission window.
-        assert store.prepare_screen_queue(service_digest=fixture._h("new-commission")) == ()
+        assert store.prepare_qualification_queue(service_digest=fixture._h("new-commission")) == ()
         assert store.get(fresh.reservation_id).status == "published"
         # Another competition does not inherit this arena's crown cutoff.
         store.select_arena("other", accept_legacy_bundles=False)
@@ -199,5 +205,5 @@ def test_crown_cutoff_admits_commitments_once_before_screen(tmp_path, arena, tar
         )[0]
         _publish(store, other.reservation_id, _fingerprint(target, target, "d"),
                  digest="d" * 64, root=tmp_path / "other")
-        assert store.prepare_screen_queue(service_digest=winner.arena_digest) == ()
+        assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
         assert store.get(other.reservation_id).status == "published"

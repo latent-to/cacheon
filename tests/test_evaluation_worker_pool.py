@@ -7,6 +7,7 @@ from threading import Barrier
 import pytest
 
 from cacheon.chain.evaluation_recovery import EvaluationRecoveryHoldError
+from cacheon.chain.intake import IntakeError
 from tests import test_evaluation_recovery_store as recovery
 from tests import test_chain_intake as intake
 
@@ -21,8 +22,6 @@ def test_simultaneous_coordinators_claim_four_distinct_oldest_jobs(tmp_path):
     cursor = fixture._CursorAuthority((fixture.BLOCK, fixture._block_hash(fixture.BLOCK)))
     workers = [fixture._coordinator(tmp_path, service, cursor, owner=f"pair-{index}",
                store_factory=RecoverableFinalizedIntakeStore) for index in range(4)]
-    for _ in rows:
-        fixture._run_screen(workers[0])
     start = Barrier(4)
 
     def claim(worker):
@@ -43,7 +42,7 @@ def test_simultaneous_coordinators_claim_four_distinct_oldest_jobs(tmp_path):
 @pytest.mark.parametrize("profile", recovery.PROFILES)
 def test_four_workers_reopen_only_their_own_fifo_claim(tmp_path, profile):
     with recovery._store(tmp_path, profile, max_cohort=1) as store:
-        rows = [recovery._promoted(store, profile, index) for index in range(6)]
+        rows = [recovery._published(store, profile, index) for index in range(6)]
         claims = [store.claim_recoverable_qualification(
             owner=f"pair-{index}", current_block=10, max_active=4,
         ) for index in range(4)]
@@ -53,9 +52,10 @@ def test_four_workers_reopen_only_their_own_fifo_claim(tmp_path, profile):
         assert store.claim_recoverable_qualification(
             owner="pair-4", current_block=10, max_active=4,
         ) is None
-        assert store.claim_evaluation_lease(
-            stage="screen", owner="pair-0", current_block=10, max_active=4,
-        ) is None
+        with pytest.raises(IntakeError, match="claim bounds"):
+            store.claim_evaluation_lease(
+                stage="screen", owner="pair-0", current_block=10, max_active=4,
+            )
         held = store.hold_recovery(claims[0], current_block=10, reason="inspection")
         with pytest.raises(EvaluationRecoveryHoldError, match="multiple active"):
             store.pending_qualification_recovery()
@@ -75,8 +75,8 @@ def test_four_workers_reopen_only_their_own_fifo_claim(tmp_path, profile):
 def test_version_two_migration_retains_active_lease_and_recovery_events(tmp_path):
     profile = recovery.PROFILES[0]
     with recovery._store(tmp_path, profile, max_cohort=1) as store:
-        recovery._promoted(store, profile)
-        recovery._promoted(store, profile, 1)
+        recovery._published(store, profile)
+        recovery._published(store, profile, 1)
         original = store.claim_recoverable_qualification(owner="pair-0", current_block=10)
         events = store.evaluation_recovery_events(original)
         path = store.path

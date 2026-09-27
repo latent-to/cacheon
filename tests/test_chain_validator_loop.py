@@ -7,9 +7,7 @@ import pytest
 
 import cacheon.chain.validator_loop as loop
 from cacheon.arena_service import (
-    SCREEN_STAGES, AdmissionDecision, ArenaQualificationWork,
-    ArenaScreenReceipt, ArenaService, ArenaServiceRegistry, PromotionDecision,
-    ScreenGrade, ScreenStageResult,
+    AdmissionDecision, ArenaQualificationWork, ArenaService, ArenaServiceRegistry,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain import FinalizedRevealSnapshot, RevealedCommitment
@@ -500,7 +498,7 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
 
     calls = []
     progress_events = []
-    promoted_limits = []
+    cohort_limits = []
     retained_blocks = []
     resident_baseline_executor = object()
     service = object.__new__(ArenaService)
@@ -516,26 +514,12 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
     )()
     registry = object.__new__(ArenaServiceRegistry)
     monkeypatch.setattr(ArenaServiceRegistry, "require", lambda *_: service)
-    monkeypatch.setattr(ArenaService, "admit", lambda *_: AdmissionDecision.ADMIT)
     monkeypatch.setattr(
         ArenaService, "admit_qualification", lambda *_args, **_kwargs: AdmissionDecision.ADMIT
     )
-    monkeypatch.setattr(
-        ArenaService,
-        "screen",
-        lambda self, candidate: ArenaScreenReceipt(
-            self.identity,
-            candidate.digest,
-            candidate.screen_attempt,
-            tuple(
-                ScreenStageResult(stage, ScreenGrade.PASS, chr(97 + index) * 64, 1)
-                for index, stage in enumerate(SCREEN_STAGES)
-            ),
-            PromotionDecision.PROMOTE,
-        ),
-    )
 
-    def plan(_self, candidates, _receipts, state=None):
+    def plan(_self, candidates, state=None):
+        assert [row.attempt for row in candidates] == [1]
         reservations = tuple(row.reservation for row in candidates)
         authority = QualificationAuthorityManifest(
             "registered", "a" * 64, "b" * 64, "c" * 64, "d" * 64,
@@ -594,13 +578,13 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
         "apply_qualification_batch",
         apply_with_progress,
     )
-    original_promoted = FinalizedIntakeStore.promoted
+    original_cohort = FinalizedIntakeStore.qualification_cohort
 
-    def promoted_with_limit(self, *, limit=None):
-        promoted_limits.append(limit)
-        return original_promoted(self, limit=limit)
+    def cohort_with_limit(self, *, limit=None):
+        cohort_limits.append(limit)
+        return original_cohort(self, limit=limit)
 
-    monkeypatch.setattr(FinalizedIntakeStore, "promoted", promoted_with_limit)
+    monkeypatch.setattr(FinalizedIntakeStore, "qualification_cohort", cohort_with_limit)
 
     def refreshed_head():
         progress_events.append("finalized_head")
@@ -617,13 +601,14 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
         arena_id="test-arena",
     )
     assert len(calls) == 1 and len(calls[0]) == 64
-    assert promoted_limits == [1]
+    assert cohort_limits == [1]
     assert progress_events == ["qualification_complete", "finalized_head", "apply"]
     assert retained_blocks == [BLOCK + 100]
     assert set(result.decisions.values()) == {"FAIL"}
     with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
         row = store.all()[0]
         assert row.status == "failed" and row.decision == "FAIL"
+        assert row.arena_service_digest == service.identity
         assert store.qualification_dispositions(row.reservation_id)[0]["decision"] == "FAIL"
 
 
@@ -808,7 +793,9 @@ def test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes(
     )()
     registry = object.__new__(ArenaServiceRegistry)
     monkeypatch.setattr(ArenaServiceRegistry, "require", lambda *_: service)
-    monkeypatch.setattr(ArenaService, "admit", lambda *_: AdmissionDecision.QUEUE)
+    monkeypatch.setattr(
+        ArenaService, "admit_qualification", lambda *_args, **_kwargs: AdmissionDecision.QUEUE
+    )
 
     result, _calls, options = _run(
         tmp_path,

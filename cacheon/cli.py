@@ -1967,9 +1967,6 @@ def cmd_chain_evaluation_lease(args: argparse.Namespace) -> int:
         result = operate(
             load_config(args.config),
             args.lease_operation,
-            lease_id=getattr(args, "lease_id", None),
-            reason=getattr(args, "reason", None),
-            result_digest=getattr(args, "result_digest", ""),
             authority_path=getattr(args, "authority", None),
         )
     except (FifoLeaseError, IntakeError, OSError) as exc:
@@ -2981,12 +2978,6 @@ def build_parser() -> argparse.ArgumentParser:
     lease_ops = sp.add_subparsers(dest="lease_operation", required=True)
     lease_ops.add_parser("preview", help="read the next canonical FIFO member IDs")
     lease_ops.add_parser("claim", help="claim the next canonical FIFO lease")
-    heartbeat = lease_ops.add_parser("heartbeat", help="extend one exact active lease")
-    heartbeat.add_argument("lease_id")
-    released = lease_ops.add_parser("release", help="release one exact active lease")
-    released.add_argument("lease_id")
-    released.add_argument("--reason", required=True)
-    released.add_argument("--result-digest", default="")
     requeue_expired = lease_ops.add_parser(
         "requeue-expired",
         help="readmit one sealed validator-downtime cohort with a fresh SLA window",

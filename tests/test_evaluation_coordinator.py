@@ -2,23 +2,17 @@ from __future__ import annotations
 
 import dataclasses
 import threading
-import time
 from pathlib import Path
 
 import pytest
 
 import cacheon.chain.evaluation_coordinator as coordinator_module
 from cacheon.arena_service import (
-    SCREEN_STAGES,
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
     ArenaRuntimeIdentity,
     ArenaService,
     ArenaServiceManifest,
-    NonCrownScreenPolicy,
-    ScreenGrade,
-    ScreenStagePolicy,
-    ScreenStageResult,
     Workload,
     WorkloadCell,
 )
@@ -28,7 +22,6 @@ from cacheon.chain.evaluation_coordinator import (
     EvaluationCoordinator,
     EvaluationCoordinatorError,
     EvaluationResultEnvelope,
-    EvaluationRun,
     WorkerReadiness,
 )
 from cacheon.chain.intake import (
@@ -40,7 +33,7 @@ from cacheon.chain.intake import (
 )
 from cacheon.chain.publication import publish_worker_bundle, reopen_worker_bundle
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
-from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
+from cacheon.eval.evidence_store import publish_evidence
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
@@ -88,10 +81,7 @@ def _manifest() -> ArenaServiceManifest:
     return ArenaServiceManifest(
         runtime,
         workload,
-        ArenaCapacityPolicy(32, 100, 4, 4, 4, 3, 3, 3),
-        NonCrownScreenPolicy(
-            tuple(ScreenStagePolicy(stage, 1_000) for stage in SCREEN_STAGES)
-        ),
+        ArenaCapacityPolicy(32, 100, 4, 4),
         _h("qualification-policy"),
         _h("provider"),
     )
@@ -100,29 +90,8 @@ def _manifest() -> ArenaServiceManifest:
 class _Provider:
     provider_digest = _h("provider")
 
-    def __init__(self, *, screen_hook=None, qualification_builder=None):
-        self.screen_hook = screen_hook
-        self.qualification_builder = qualification_builder
-        self.screen_calls: list[str] = []
-        self.qualification_calls = 0
-
-    def run_screen(self, _manifest, stage, candidate):
-        self.screen_calls.append(stage.stage)
-        if self.screen_hook is not None:
-            self.screen_hook(stage, candidate)
-        return ScreenStageResult(
-            stage.stage,
-            ScreenGrade.PASS,
-            _h(f"screen:{stage.stage}:{candidate.digest}"),
-            1,
-        )
-
     def build_qualification(self, request, state=None):
-        self.qualification_calls += 1
-        assert state is None
-        if self.qualification_builder is None:
-            raise AssertionError("qualification was not expected")
-        return self.qualification_builder(request)
+        raise AssertionError("qualification was not expected")
 
 
 @dataclasses.dataclass
@@ -248,31 +217,10 @@ def _advance(tmp_path: Path, cursor: _CursorAuthority, block: int) -> None:
     cursor.set(block)
 
 
-def _run_screen(coordinator: EvaluationCoordinator) -> EvaluationRun | None:
-    """Test-local screen cycle: claim, run the provider unlocked under the lease
-    heartbeat, seal, and CAS-commit — the shape the remote dispatcher uses."""
-    claim = coordinator.claim_screen()
-    if claim is None:
-        return None
-    heartbeat = coordinator_module._LeaseHeartbeat(coordinator, claim.lease)
-    heartbeat.start()
-    try:
-        receipt = coordinator.service.screen(claim.candidate)
-    finally:
-        lease, heartbeat_error = heartbeat.stop()
-    assert heartbeat_error is None
-    claim = dataclasses.replace(claim, lease=lease)
-    envelope = EvaluationResultEnvelope.seal(
-        lease, coordinator.readiness, coordinator.service, receipt
-    )
-    coordinator.commit_screen_result(claim, receipt, envelope)
-    return EvaluationRun(lease, envelope, receipt, "completed")
-
-
 def _claim_qualification(
     coordinator: EvaluationCoordinator,
 ) -> ClaimedQualificationEvaluation:
-    """Test-local qualification claim over promoted rows (the recoverable
+    """Test-local qualification claim over published rows (the recoverable
     dispatcher materializes the same DTO from its durable recovery lease)."""
     store, point = coordinator._open_at_durable_cursor()
     try:
@@ -285,8 +233,8 @@ def _claim_qualification(
         )
         assert lease is not None
         reservations = tuple(store.get(row) for row in lease.reservation_ids)
-        receipts = tuple(
-            store.latest_promoted_screen(row.reservation_id) for row in reservations
+        attempts = tuple(
+            store.qualification_attempts(row.reservation_id) + 1 for row in reservations
         )
     finally:
         store.close()
@@ -300,462 +248,10 @@ def _claim_qualification(
     )
     authority = coordinator_module._qualification_reservations(reservations, publications)
     candidates = tuple(
-        ArenaCandidateBinding(item, publication, row.screen_attempts)
-        for row, publication, item in zip(reservations, publications, authority, strict=True)
+        ArenaCandidateBinding(item, publication, attempt)
+        for publication, item, attempt in zip(publications, authority, attempts, strict=True)
     )
-    return ClaimedQualificationEvaluation(
-        lease, reservations, publications, candidates, receipts
-    )
-
-
-def test_readiness_mismatch_creates_no_lease_or_worker_call(tmp_path: Path) -> None:
-    row = _published_rows(tmp_path, 1)[0]
-    provider = _Provider()
-    service = ArenaService(_manifest(), provider)
-    readiness = dataclasses.replace(
-        WorkerReadiness.for_service(
-            service,
-            ready_receipt_digest=_h("ready"),
-            ready_epoch=1,
-        ),
-        runtime_digest=_h("wrong-runtime"),
-    )
-    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        cursor,
-        readiness=readiness,
-    )
-
-    with pytest.raises(EvaluationCoordinatorError, match="READY identity"):
-        _run_screen(coordinator)
-
-    with _store(tmp_path) as store:
-        assert store.active_evaluation_leases() == ()
-        assert store.get(row.reservation_id).screen_attempts == 0
-    assert provider.screen_calls == []
-
-
-def test_screen_is_fifo_and_provider_runs_without_controller_lock(
-    tmp_path: Path,
-) -> None:
-    first, second = _published_rows(tmp_path, 2)
-    lock_checks = []
-
-    def prove_unlocked(_stage, _candidate) -> None:
-        with _store(tmp_path) as other:
-            lock_checks.append(other.finalized_cursor())
-
-    provider = _Provider(screen_hook=prove_unlocked)
-    service = ArenaService(_manifest(), provider)
-    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-
-    result = _run_screen(_coordinator(tmp_path, service, cursor))
-
-    assert result is not None and result.disposition == "completed"
-    assert result.lease.reservation_ids == (first.reservation_id,)
-    assert len(lock_checks) == len(SCREEN_STAGES)
-    with _store(tmp_path) as store:
-        assert store.get(first.reservation_id).status == "promoted"
-        assert store.get(second.reservation_id).status == "published"
-
-
-def test_intake_advances_while_worker_is_blocked_and_heartbeat_cas_extends(
-    tmp_path: Path,
-) -> None:
-    row = _published_rows(tmp_path, 1)[0]
-    entered = threading.Event()
-    release = threading.Event()
-    blocked_once = False
-
-    def block_worker(_stage, _candidate) -> None:
-        nonlocal blocked_once
-        if blocked_once:
-            return
-        blocked_once = True
-        entered.set()
-        assert release.wait(5)
-
-    provider = _Provider(screen_hook=block_worker)
-    service = ArenaService(_manifest(), provider)
-    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        cursor,
-        lease_blocks=3,
-        heartbeat_interval_s=0.01,
-    )
-    outcome: list[object] = []
-
-    def run() -> None:
-        try:
-            outcome.append(_run_screen(coordinator))
-        except BaseException as exc:  # pragma: no cover - asserted below
-            outcome.append(exc)
-
-    thread = threading.Thread(target=run)
-    thread.start()
-    assert entered.wait(5)
-    # The synchronous worker is still blocked, but the coordinator closed its
-    # flock-backed store.  An independent intake owner can advance exact finality.
-    _advance(tmp_path, cursor, BLOCK + 1)
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        try:
-            with _store(tmp_path) as store:
-                observed = store.evaluation_lease_events(
-                    reservation_id=row.reservation_id
-                )
-        except IntakeError as exc:
-            assert str(exc) == "another intake controller owns this database"
-        else:
-            if any(event.event_type == "heartbeat" for event in observed):
-                break
-        threading.Event().wait(0.01)
-    else:  # pragma: no cover - deterministic failure aid
-        pytest.fail("heartbeat did not observe the advanced durable cursor")
-    release.set()
-    thread.join(5)
-
-    assert not thread.is_alive()
-    assert len(outcome) == 1 and not isinstance(outcome[0], BaseException)
-    with _store(tmp_path) as store:
-        assert store.get(row.reservation_id).status == "promoted"
-        events = store.evaluation_lease_events(
-            lease_id=outcome[0].lease.lease_id  # type: ignore[union-attr]
-        )
-    assert [event.event_type for event in events] == [
-        "claimed",
-        "heartbeat",
-        "completed",
-    ]
-
-
-def test_heartbeat_retries_after_full_transient_lock_attempt_budget(
-    tmp_path: Path,
-) -> None:
-    row = _published_rows(tmp_path, 1)[0]
-    service = ArenaService(_manifest(), _Provider())
-    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        cursor,
-        lease_blocks=3,
-        heartbeat_interval_s=0.01,
-        lock_attempts=3,
-        lock_retry_delay_s=0.001,
-    )
-    claim = coordinator.claim_screen()
-    assert claim is not None
-    _advance(tmp_path, cursor, BLOCK + 1)
-    calls = 0
-
-    def contended_factory(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls <= coordinator.lock_attempts:
-            raise IntakeError("another intake controller owns this database")
-        return FinalizedIntakeStore(*args, **kwargs)
-
-    coordinator._store_factory = contended_factory
-    heartbeat = coordinator_module._LeaseHeartbeat(coordinator, claim.lease)
-    heartbeat.start()
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        try:
-            with _store(tmp_path) as store:
-                events = store.evaluation_lease_events(
-                    reservation_id=row.reservation_id
-                )
-        except IntakeError as exc:
-            assert str(exc) == "another intake controller owns this database"
-        else:
-            if any(event.event_type == "heartbeat" for event in events):
-                break
-        threading.Event().wait(0.01)
-    else:  # pragma: no cover - deterministic failure aid
-        pytest.fail("heartbeat did not recover from transient intake ownership")
-    lease, error = heartbeat.stop()
-    assert error is None
-    assert calls >= coordinator.lock_attempts + 1
-    assert lease.expires_block == BLOCK + 4
-    with _store(tmp_path) as store:
-        events = store.evaluation_lease_events(lease_id=lease.lease_id)
-    assert [event.event_type for event in events] == ["claimed", "heartbeat"]
-
-
-def test_heartbeat_retries_after_full_transient_cursor_mismatch_budget(
-    tmp_path: Path,
-) -> None:
-    row = _published_rows(tmp_path, 1)[0]
-    service = ArenaService(_manifest(), _Provider())
-    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        cursor,
-        lease_blocks=3,
-        heartbeat_interval_s=0.01,
-        lock_attempts=3,
-        lock_retry_delay_s=0.001,
-    )
-    claim = coordinator.claim_screen()
-    assert claim is not None
-    _advance(tmp_path, cursor, BLOCK + 1)
-    calls = 0
-
-    def stale_then_live_cursor() -> tuple[int, str]:
-        nonlocal calls
-        calls += 1
-        if calls <= coordinator.lock_attempts:
-            return BLOCK, _block_hash(BLOCK)
-        return cursor()
-
-    coordinator.advance_finalized_cursor = stale_then_live_cursor
-    heartbeat = coordinator_module._LeaseHeartbeat(coordinator, claim.lease)
-    heartbeat.start()
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        try:
-            with _store(tmp_path) as store:
-                events = store.evaluation_lease_events(
-                    reservation_id=row.reservation_id
-                )
-        except IntakeError as exc:
-            assert str(exc) == "another intake controller owns this database"
-        else:
-            if any(event.event_type == "heartbeat" for event in events):
-                break
-        threading.Event().wait(0.01)
-    else:  # pragma: no cover - deterministic failure aid
-        pytest.fail("heartbeat did not recover from transient cursor mismatch")
-    lease, error = heartbeat.stop()
-
-    assert error is None
-    assert calls >= coordinator.lock_attempts + 1
-    assert lease.expires_block == BLOCK + 4
-    with _store(tmp_path) as store:
-        events = store.evaluation_lease_events(lease_id=lease.lease_id)
-    assert [event.event_type for event in events] == ["claimed", "heartbeat"]
-
-
-def test_ownership_opens_when_intake_advances_the_cursor_during_every_open(
-    tmp_path: Path,
-) -> None:
-    """The store open blocks on the intake controller's flock. An intake pass
-    that advances the durable cursor while the open waits makes every pre-open
-    reading stale; ownership must still open by re-verifying the authority
-    against the store's own durable cursor inside ownership (271 consecutive
-    live failures, mainnet 2026-08-11)."""
-
-    _published_rows(tmp_path, 1)
-    service = ArenaService(_manifest(), _Provider())
-    calls = 0
-
-    def always_behind_the_open() -> tuple[int, str]:
-        # Odd (pre-open) reads see the block the intake is about to leave;
-        # even (post-open) reads agree with the store's durable cursor.
-        nonlocal calls
-        calls += 1
-        if calls % 2:
-            return BLOCK + 1, _block_hash(BLOCK + 1)
-        return BLOCK, _block_hash(BLOCK)
-
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        always_behind_the_open,
-        lock_attempts=3,
-    )
-    store, point = coordinator._open_at_durable_cursor()
-    try:
-        assert point == (BLOCK, _block_hash(BLOCK))
-        assert store.finalized_cursor() == point
-    finally:
-        store.close()
-    assert calls == 2
-
-    # An authority that never agrees with the durable store still fails
-    # closed after the full attempt budget.
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        _CursorAuthority((BLOCK + 1, _block_hash(BLOCK + 1))),
-        lock_attempts=2,
-    )
-    with pytest.raises(
-        EvaluationCoordinatorError, match="did not stabilize within retry bounds"
-    ):
-        coordinator._open_at_durable_cursor()
-
-
-def test_completed_result_survives_transient_heartbeat_contention(
-    tmp_path: Path,
-) -> None:
-    row = _published_rows(tmp_path, 1)[0]
-    service = ArenaService(_manifest(), _Provider())
-    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        cursor,
-        lease_blocks=3,
-        heartbeat_interval_s=0.01,
-        lock_attempts=3,
-        lock_retry_delay_s=0.001,
-    )
-    claim = coordinator.claim_screen()
-    assert claim is not None
-    receipt = service.screen(claim.candidate)
-    exhausted = threading.Event()
-    calls = 0
-
-    def always_contended(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls >= coordinator.lock_attempts:
-            exhausted.set()
-        raise IntakeError("another intake controller owns this database")
-
-    coordinator._store_factory = always_contended
-    heartbeat = coordinator_module._LeaseHeartbeat(coordinator, claim.lease)
-    heartbeat.start()
-    assert exhausted.wait(2)
-    _advance(tmp_path, cursor, claim.lease.expires_block)
-    lease, error = heartbeat.stop()
-
-    assert error is None
-    assert calls >= coordinator.lock_attempts
-    assert lease == claim.lease
-    coordinator._store_factory = FinalizedIntakeStore
-    envelope = EvaluationResultEnvelope.seal(
-        lease,
-        coordinator.readiness,
-        service,
-        receipt,
-    )
-    coordinator.commit_screen_result(claim, receipt, envelope)
-
-    with _store(tmp_path) as store:
-        retained = store.get(row.reservation_id)
-        events = store.evaluation_lease_events(lease_id=lease.lease_id)
-    assert (retained.status, retained.screen_attempts) == ("promoted", 1)
-    assert [event.event_type for event in events] == ["claimed", "completed"]
-
-
-def test_expiry_reclaims_oldest_and_cross_lease_or_stale_envelope_cannot_commit(
-    tmp_path: Path,
-) -> None:
-    first, second = _published_rows(tmp_path, 2)
-    service = ArenaService(_manifest(), _Provider())
-    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        cursor,
-        lease_blocks=2,
-    )
-    original = coordinator.claim_screen()
-    assert original is not None and original.lease.reservation_ids == (
-        first.reservation_id,
-    )
-    receipt = service.screen(original.candidate)
-    old_envelope = EvaluationResultEnvelope.seal(
-        original.lease,
-        coordinator.readiness,
-        service,
-        receipt,
-    )
-
-    _advance(tmp_path, cursor, BLOCK + 2)
-    reclaimed = coordinator.claim_screen()
-    assert reclaimed is not None
-    assert reclaimed.lease.reservation_ids == (first.reservation_id,)
-    assert reclaimed.lease.generation == original.lease.generation + 1
-    assert reclaimed.lease.lease_id != original.lease.lease_id
-    with pytest.raises(EvaluationCoordinatorError, match="exact live lease"):
-        coordinator.commit_screen_result(reclaimed, receipt, old_envelope)
-
-    fresh_receipt = service.screen(reclaimed.candidate)
-    fresh_envelope = EvaluationResultEnvelope.seal(
-        reclaimed.lease,
-        coordinator.readiness,
-        service,
-        fresh_receipt,
-    )
-    _advance(tmp_path, cursor, BLOCK + 4)
-    replacement = coordinator.claim_screen()
-    assert replacement is not None
-    with pytest.raises(EvaluationCoordinatorError, match="durable lease"):
-        coordinator.commit_screen_result(reclaimed, fresh_receipt, fresh_envelope)
-
-    with _store(tmp_path) as store:
-        assert store.get(first.reservation_id).screen_attempts == 0
-        assert store.get(second.reservation_id).status == "published"
-
-
-def test_lock_collision_retries_transiently_and_commit_collision_fails_closed(
-    tmp_path: Path,
-) -> None:
-    row = _published_rows(tmp_path, 1)[0]
-    service = ArenaService(_manifest(), _Provider())
-    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    calls = 0
-
-    def transient_factory(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls < 3:
-            raise IntakeError("another intake controller owns this database")
-        return FinalizedIntakeStore(*args, **kwargs)
-
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        cursor,
-        store_factory=transient_factory,
-    )
-    claim = coordinator.claim_screen()
-    assert claim is not None and calls == 3
-    receipt = service.screen(claim.candidate)
-    envelope = EvaluationResultEnvelope.seal(
-        claim.lease,
-        coordinator.readiness,
-        service,
-        receipt,
-    )
-
-    def always_busy(*_args, **_kwargs):
-        raise IntakeError("another intake controller owns this database")
-
-    coordinator._store_factory = always_busy
-    with pytest.raises(EvaluationCoordinatorError, match="did not stabilize"):
-        coordinator.commit_screen_result(claim, receipt, envelope)
-
-    with _store(tmp_path) as store:
-        assert store.active_evaluation_leases() == (claim.lease,)
-        retained = store.get(row.reservation_id)
-        assert (retained.status, retained.screen_attempts) == (
-            "published",
-            0,
-        )
-
-
-def _promote_all(
-    tmp_path: Path,
-    service: ArenaService,
-    cursor: _CursorAuthority,
-    count: int,
-) -> tuple[str, ...]:
-    ids = tuple(row.reservation_id for row in _published_rows(tmp_path, count))
-    coordinator = _coordinator(tmp_path, service, cursor)
-    for expected in ids:
-        result = _run_screen(coordinator)
-        assert result is not None and result.lease.reservation_ids == (expected,)
-    return ids
+    return ClaimedQualificationEvaluation(lease, reservations, publications, candidates)
 
 
 def _remote_incumbent(
@@ -829,13 +325,185 @@ def _remote_commit_product(
     return authority, batch, envelope, evidence_root, attempt_ref
 
 
+def _commit(coordinator, claim, authority, batch, envelope, root, attempt_ref):
+    return coordinator.commit_remote_qualification_result(
+        claim,
+        authority_manifest=authority,
+        incumbent_stack=_remote_incumbent(coordinator.service),
+        incumbent_tree_digest=_h("remote-tree"),
+        batch=batch,
+        envelope=envelope,
+        evidence_root=root,
+        evidence_inventory=(attempt_ref,),
+    )
+
+
+def test_readiness_mismatch_cannot_commit_or_mutate_the_lease(tmp_path: Path) -> None:
+    row = _published_rows(tmp_path, 1)[0]
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(tmp_path, service, cursor)
+    claim = _claim_qualification(coordinator)
+    product = _remote_commit_product(tmp_path, coordinator, claim)
+    drifted = _coordinator(
+        tmp_path,
+        service,
+        cursor,
+        readiness=dataclasses.replace(
+            coordinator.readiness, runtime_digest=_h("wrong-runtime")
+        ),
+    )
+
+    with pytest.raises(EvaluationCoordinatorError, match="READY identity"):
+        _commit(drifted, claim, *product)
+
+    with _store(tmp_path) as store:
+        assert store.active_evaluation_leases() == (claim.lease,)
+        assert store.get(row.reservation_id).status == "published"
+        assert store.qualification_dispositions(row.reservation_id) == ()
+
+
+def test_ownership_opens_when_intake_advances_the_cursor_during_every_open(
+    tmp_path: Path,
+) -> None:
+    """The store open blocks on the intake controller's flock. An intake pass
+    that advances the durable cursor while the open waits makes every pre-open
+    reading stale; ownership must still open by re-verifying the authority
+    against the store's own durable cursor inside ownership (271 consecutive
+    live failures, mainnet 2026-08-11)."""
+
+    _published_rows(tmp_path, 1)
+    service = ArenaService(_manifest(), _Provider())
+    calls = 0
+
+    def always_behind_the_open() -> tuple[int, str]:
+        # Odd (pre-open) reads see the block the intake is about to leave;
+        # even (post-open) reads agree with the store's durable cursor.
+        nonlocal calls
+        calls += 1
+        if calls % 2:
+            return BLOCK + 1, _block_hash(BLOCK + 1)
+        return BLOCK, _block_hash(BLOCK)
+
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        always_behind_the_open,
+        lock_attempts=3,
+    )
+    store, point = coordinator._open_at_durable_cursor()
+    try:
+        assert point == (BLOCK, _block_hash(BLOCK))
+        assert store.finalized_cursor() == point
+    finally:
+        store.close()
+    assert calls == 2
+
+    # An authority that never agrees with the durable store still fails
+    # closed after the full attempt budget.
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        _CursorAuthority((BLOCK + 1, _block_hash(BLOCK + 1))),
+        lock_attempts=2,
+    )
+    with pytest.raises(
+        EvaluationCoordinatorError, match="did not stabilize within retry bounds"
+    ):
+        coordinator._open_at_durable_cursor()
+
+
+def test_expiry_reclaims_oldest_and_cross_lease_or_stale_envelope_cannot_commit(
+    tmp_path: Path,
+) -> None:
+    first, second = _published_rows(tmp_path, 2)
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        cursor,
+        lease_blocks=2,
+        qualification_max_members=1,
+    )
+    original = _claim_qualification(coordinator)
+    assert original.lease.reservation_ids == (first.reservation_id,)
+    authority, batch, old_envelope, root, attempt_ref = _remote_commit_product(
+        tmp_path, coordinator, original
+    )
+
+    _advance(tmp_path, cursor, BLOCK + 2)
+    reclaimed = _claim_qualification(coordinator)
+    assert reclaimed.lease.reservation_ids == (first.reservation_id,)
+    assert reclaimed.lease.generation == original.lease.generation + 1
+    assert reclaimed.lease.lease_id != original.lease.lease_id
+    with pytest.raises(EvaluationCoordinatorError, match="exact live lease"):
+        _commit(coordinator, reclaimed, authority, batch, old_envelope, root, attempt_ref)
+
+    fresh_envelope = EvaluationResultEnvelope.seal(
+        reclaimed.lease,
+        coordinator.readiness,
+        service,
+        batch,
+    )
+    _advance(tmp_path, cursor, BLOCK + 4)
+    replacement = _claim_qualification(coordinator)
+    assert replacement.lease.generation == reclaimed.lease.generation + 1
+    with pytest.raises(EvaluationCoordinatorError, match="durable lease"):
+        _commit(coordinator, reclaimed, authority, batch, fresh_envelope, root, attempt_ref)
+
+    with _store(tmp_path) as store:
+        assert store.qualification_dispositions(first.reservation_id) == ()
+        assert store.get(second.reservation_id).status == "published"
+
+
+def test_lock_collision_retries_transiently_and_commit_collision_fails_closed(
+    tmp_path: Path,
+) -> None:
+    row = _published_rows(tmp_path, 1)[0]
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    calls = 0
+
+    def transient_factory(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise IntakeError("another intake controller owns this database")
+        return FinalizedIntakeStore(*args, **kwargs)
+
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        cursor,
+        store_factory=transient_factory,
+    )
+    claim = _claim_qualification(coordinator)
+    assert calls == 3
+    product = _remote_commit_product(tmp_path, coordinator, claim)
+
+    def always_busy(*_args, **_kwargs):
+        raise IntakeError("another intake controller owns this database")
+
+    coordinator._store_factory = always_busy
+    with pytest.raises(EvaluationCoordinatorError, match="did not stabilize"):
+        _commit(coordinator, claim, *product)
+
+    with _store(tmp_path) as store:
+        assert store.active_evaluation_leases() == (claim.lease,)
+        retained = store.get(row.reservation_id)
+        assert (retained.status, store.qualification_dispositions(row.reservation_id)) == (
+            "published",
+            (),
+        )
+
+
 def test_remote_commit_reopens_complete_cpu_inventory_before_any_mutation(
     tmp_path: Path,
 ) -> None:
-    provider = _Provider()
-    service = ArenaService(_manifest(), provider)
+    service = ArenaService(_manifest(), _Provider())
     cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    ids = _promote_all(tmp_path, service, cursor, 1)
+    ids = tuple(row.reservation_id for row in _published_rows(tmp_path, 1))
     coordinator = _coordinator(tmp_path, service, cursor)
     claim = _claim_qualification(coordinator)
     assert type(claim) is ClaimedQualificationEvaluation
@@ -848,19 +516,10 @@ def test_remote_commit_reopens_complete_cpu_inventory_before_any_mutation(
     missing_root.mkdir(mode=0o700)
 
     with pytest.raises(EvaluationCoordinatorError, match="cannot reopen from the CPU CAS"):
-        coordinator.commit_remote_qualification_result(
-            claim,
-            authority_manifest=authority,
-            incumbent_stack=_remote_incumbent(service),
-            incumbent_tree_digest=_h("remote-tree"),
-            batch=batch,
-            envelope=envelope,
-            evidence_root=missing_root,
-            evidence_inventory=(attempt_ref,),
-        )
+        _commit(coordinator, claim, authority, batch, envelope, missing_root, attempt_ref)
 
     with _store(tmp_path) as store:
-        assert tuple(store.get(value).status for value in ids) == ("promoted",)
+        assert tuple(store.get(value).status for value in ids) == ("published",)
         assert store.qualification_dispositions(ids[0]) == ()
         assert store.active_evaluation_leases() == (claim.lease,)
         with pytest.raises(IntakeError, match="not initialized"):
@@ -870,10 +529,9 @@ def test_remote_commit_reopens_complete_cpu_inventory_before_any_mutation(
 def test_remote_commit_accepts_completed_result_after_tree_advances(
     tmp_path: Path,
 ) -> None:
-    provider = _Provider()
-    service = ArenaService(_manifest(), provider)
+    service = ArenaService(_manifest(), _Provider())
     cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    ids = _promote_all(tmp_path, service, cursor, 1)
+    ids = tuple(row.reservation_id for row in _published_rows(tmp_path, 1))
     coordinator = _coordinator(tmp_path, service, cursor)
     incumbent = _remote_incumbent(service)
     with _store(tmp_path) as store:
@@ -950,10 +608,9 @@ def test_claimed_qualification_rejects_blank_or_mixed_screen_lanes(
     tmp_path: Path,
     lane: str,
 ) -> None:
-    provider = _Provider()
-    service = ArenaService(_manifest(), provider)
+    service = ArenaService(_manifest(), _Provider())
     cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    _promote_all(tmp_path, service, cursor, 2)
+    _published_rows(tmp_path, 2)
     claim = _claim_qualification(_coordinator(tmp_path, service, cursor))
     assert type(claim) is ClaimedQualificationEvaluation
     reservations = (
@@ -967,17 +624,15 @@ def test_claimed_qualification_rejects_blank_or_mixed_screen_lanes(
             reservations,
             claim.publications,
             claim.candidates,
-            claim.screen_receipts,
         )
 
 
 def test_remote_commit_rejects_late_lease_without_consuming_attempt(
     tmp_path: Path,
 ) -> None:
-    provider = _Provider()
-    service = ArenaService(_manifest(), provider)
+    service = ArenaService(_manifest(), _Provider())
     cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    ids = _promote_all(tmp_path, service, cursor, 1)
+    ids = tuple(row.reservation_id for row in _published_rows(tmp_path, 1))
     coordinator = _coordinator(
         tmp_path,
         service,
@@ -986,45 +641,32 @@ def test_remote_commit_rejects_late_lease_without_consuming_attempt(
     )
     claim = _claim_qualification(coordinator)
     assert type(claim) is ClaimedQualificationEvaluation
-    authority, batch, envelope, root, attempt_ref = _remote_commit_product(
-        tmp_path,
-        coordinator,
-        claim,
-    )
+    product = _remote_commit_product(tmp_path, coordinator, claim)
     _advance(tmp_path, cursor, claim.lease.expires_block)
 
     with pytest.raises(EvaluationCoordinatorError, match="durable lease"):
-        coordinator.commit_remote_qualification_result(
-            claim,
-            authority_manifest=authority,
-            incumbent_stack=_remote_incumbent(service),
-            incumbent_tree_digest=_h("late-tree"),
-            batch=batch,
-            envelope=envelope,
-            evidence_root=root,
-            evidence_inventory=(attempt_ref,),
-        )
+        _commit(coordinator, claim, *product)
 
     with _store(tmp_path) as store:
         retained = store.get(ids[0])
         dispositions = store.qualification_dispositions(ids[0])
         events = store.evaluation_lease_events(lease_id=claim.lease.lease_id)
         active = store.active_evaluation_leases()
-    assert retained.status == "promoted"
+    assert retained.status == "published"
     assert dispositions == ()
     assert active == ()
     assert [row.event_type for row in events] == ["claimed", "expired"]
 
 
-def test_claim_screen_replays_a_prior_fail_onto_identical_bytes(tmp_path: Path) -> None:
+def test_admission_replays_a_prior_fail_onto_identical_bytes(tmp_path: Path) -> None:
     """A byte-identical resubmission of a FAILed bundle dies before any lease.
 
     The replay rule (``cacheon.chain.duplicate_replay``) used to run only in an
     operator sidecar sweeping every two minutes, which the one-second supervisor
-    tick beat almost every time, so duplicates bought a full screen and resident
-    qualification anyway. ``claim_screen`` now applies it on the claiming store
-    before any lease exists: the duplicate inherits the prior FAIL and costs
-    neither a screen nor a qualification. A prior PASS is never replayed.
+    tick beat almost every time, so duplicates bought a full qualification
+    anyway. Admission (``prepare_qualification_queue``) now applies it on the
+    claiming store before any lease exists: the duplicate inherits the prior
+    FAIL and costs no qualification. A prior PASS is never replayed.
     """
 
     source = tmp_path / "source-dup"
@@ -1075,36 +717,24 @@ def test_claim_screen_replays_a_prior_fail_onto_identical_bytes(tmp_path: Path) 
             for row in reserved
         )
 
-    class _FailingProvider:
-        provider_digest = _h("provider")
-
-        def run_screen(self, _manifest, stage, candidate):
-            return ScreenStageResult(
-                stage.stage,
-                ScreenGrade.FAIL,
-                _h(f"screen-fail:{stage.stage}:{candidate.digest}"),
-                1,
-            )
-
-        def build_qualification(self, request, state=None):
-            raise AssertionError("qualification was not expected")
-
-    service = ArenaService(_manifest(), _FailingProvider())
+    service = ArenaService(_manifest(), _Provider())
     cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(tmp_path, service, cursor)
-
-    assert _run_screen(coordinator) is not None
+    coordinator = _coordinator(tmp_path, service, cursor, qualification_max_members=1)
+    claim = _claim_qualification(coordinator)
+    assert claim.lease.reservation_ids == (first.reservation_id,)
+    _commit(coordinator, claim, *_remote_commit_product(tmp_path, coordinator, claim))
     with _store(tmp_path) as store:
         prior = store.get(first.reservation_id)
         untouched = store.get(second.reservation_id)
     assert (prior.status, prior.decision) == ("failed", "FAIL")
     assert untouched.status == "published"
 
-    # The identical bytes die inside the next claim, before any lease exists.
-    assert coordinator.claim_screen() is None
+    # The identical bytes die at admission, before any lease exists.
     with _store(tmp_path) as store:
+        retired = store.prepare_qualification_queue(service_digest=service.identity)
         replayed = store.get(second.reservation_id)
         leases = store._db.execute("SELECT COUNT(*) AS n FROM evaluation_leases").fetchone()
+    assert retired == ((second.reservation_id, replayed.reason),)
     assert (replayed.status, replayed.decision) == ("failed", "FAIL")
     assert replayed.reason == f"duplicate_of:{prior.reservation_id[:16]}:{prior.reason}"
-    assert leases["n"] == 1  # only the prior's own screen lease; none for the duplicate
+    assert leases["n"] == 1  # only the prior's own qualification lease

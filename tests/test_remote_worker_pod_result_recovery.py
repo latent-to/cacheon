@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import sys
-import tarfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,18 +15,24 @@ from cacheon.arena_service import ArenaService
 from cacheon.chain import remote_worker_pod_service as pod_service
 from cacheon.chain import remote_worker_registration as registration_module
 from cacheon.chain import remote_worker_spool as spool
+from cacheon.chain.qualification_request import qualification_request_body
 from cacheon.chain.remote_evaluation_dispatcher import (
     RemoteWorkerCredential,
-    _request_body_for_screen,
     seal_remote_request,
     seal_remote_response,
 )
 from cacheon.chain.execution_disposition import reopen_pre_resident_refusal
+from cacheon.chain.remote_qualification_hold import (
+    RemoteQualificationHoldReason,
+    capture_remote_qualification_hold,
+)
+from cacheon.chain.remote_worker_artifact_recovery import publication_archive
 from cacheon.chain.remote_worker_execution_marker import (
     RESIDENT_ENTRY_MARKER,
     publish_resident_entry,
 )
 from cacheon.chain.remote_worker_registration import PodPaths
+from cacheon.chain.remote_worker_request_plan import _lease_dict
 from cacheon.eval.remote_run_forensics import append_event as append_run_event, journal_path
 from cacheon.stack_identity import sha256_hex
 from tests import test_remote_evaluation_dispatcher as dispatcher_fixtures
@@ -36,47 +40,6 @@ from tests import test_remote_evaluation_dispatcher as dispatcher_fixtures
 
 def _digest(label: str) -> str:
     return sha256_hex(label.encode("utf-8"))
-
-
-def _lease_dict(lease) -> dict[str, object]:
-    return {
-        "claimed_block": lease.claimed_block,
-        "expires_block": lease.expires_block,
-        "generation": lease.generation,
-        "initial_expires_block": lease.initial_expires_block,
-        "lease_id": lease.lease_id,
-        "members": [row.to_dict() for row in lease.members],
-        "owner": lease.owner,
-        "stage": lease.stage,
-    }
-
-
-def _publication_tar(publication, destination: Path) -> None:
-    manifest = (
-        spool.spool_canonical_json(
-            {
-                "publication": publication.to_dict(),
-                "schema": "cacheon-remote-worker-publication-v1",
-            }
-        )
-        + b"\n"
-    )
-    with tarfile.open(destination, "w") as archive:
-        archive.addfile(
-            spool.tar_info("publication.json", len(manifest)), io.BytesIO(manifest)
-        )
-        native = (publication.root / spool.NATIVE_ARTIFACT_MANIFEST).read_bytes()
-        archive.addfile(
-            spool.tar_info(
-                f"bundle/{spool.NATIVE_ARTIFACT_MANIFEST}", len(native)
-            ),
-            io.BytesIO(native),
-        )
-        for row in publication.files:
-            data = publication.root.joinpath(*Path(row.path).parts).read_bytes()
-            archive.addfile(
-                spool.tar_info(f"bundle/{row.path}", len(data)), io.BytesIO(data)
-            )
 
 
 @dataclass
@@ -104,8 +67,7 @@ def authority(tmp_path: Path):
         )
     )
     coordinator = dispatcher_fixtures._coordinator(tmp_path, service, cursor)
-    claim = coordinator.claim_screen()
-    assert claim is not None
+    claim = dispatcher_fixtures._claim_qualification(coordinator)
 
     secret_bytes = hashlib.sha256(b"pod-result-recovery-test-secret").digest()
     credential = RemoteWorkerCredential("recovery-test-key", secret_bytes)
@@ -155,17 +117,22 @@ def authority(tmp_path: Path):
         service.manifest.service_id,
         identity,
         credential,
-        _request_body_for_screen(coordinator, claim),
+        qualification_request_body(
+            coordinator,
+            claim,
+            incumbent_stack_digest=dispatcher_fixtures._incumbent(service).digest,
+            incumbent_tree_digest=_digest("incumbent-tree"),
+        ),
     )
-    wire_path = tmp_path / "screen-request.json"
+    wire_path = tmp_path / "qualification-request.json"
     wire_path.write_bytes(spool.spool_canonical_json(request.to_dict()) + b"\n")
     publication_path = tmp_path / "candidate-publication.tar"
-    _publication_tar(claim.publication, publication_path)
+    publication_archive(claim.publications[0], publication_path)
     request_id, queued = spool.enqueue_request(
         registration,
         _lease_dict(claim.lease),
         (
-            ("screen_payload", wire_path),
+            ("qualification_payload", wire_path),
             ("candidate_publication", publication_path),
         ),
         tmp_path / "outbox",
@@ -194,9 +161,13 @@ def authority(tmp_path: Path):
         identity=identity,
         credential=credential,
     )
-    receipt = service.screen(claim.candidate)
-    response = seal_remote_response(request, receipt, identity, credential)
-    value = RecoveryAuthority(
+    product = capture_remote_qualification_hold(
+        request,
+        reason=RemoteQualificationHoldReason.GRAPH_EVIDENCE_INCOMPLETE,
+        diagnostic_digest=_digest("graph-evidence-incomplete"),
+    )
+    response = seal_remote_response(request, product, identity, credential)
+    return RecoveryAuthority(
         credential=credential,
         identity=identity,
         registration=registration,
@@ -206,10 +177,6 @@ def authority(tmp_path: Path):
         paths=paths,
         response_bytes=spool.spool_canonical_json(response.to_dict()) + b"\n",
     )
-    try:
-        yield value
-    finally:
-        coordinator._release(claim.lease, reason="test_cleanup")
 
 
 def _temporary(authority: RecoveryAuthority, offset: int = 0) -> Path:

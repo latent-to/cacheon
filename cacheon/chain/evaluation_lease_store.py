@@ -769,8 +769,9 @@ class EvaluationLeaseStoreMixin:
         Completion requires exactly one
         new stage disposition for every ordered member and no dispositions for
         rows outside the cohort, so acknowledging an empty, partial, or widened
-        result is impossible. A completion may win after its deadline only
-        while its exact lease remains active; expiry or reclaim wins its CAS.
+        result is impossible. A completion never wins at or after its deadline:
+        the recovery branch requires a renewal first, and the plain branch lets
+        expiry take the CAS.
         """
 
         if type(lease) is not EvaluationLease:

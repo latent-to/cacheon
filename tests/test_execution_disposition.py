@@ -227,7 +227,7 @@ def test_store_worker_release_requires_request_ready_and_exact_proof(
         assert released_lease.lease_id == ready.lease.lease_id
         assert store.pending_qualification_recovery() is None
         retained = store.get(ready.lease.reservation_ids[0])
-        assert retained.status == "promoted"
+        assert retained.status == "published"
         rows = tuple(
             store._db.execute(
                 "SELECT * FROM evaluation_recovery_events WHERE recovery_id=? "
@@ -419,7 +419,7 @@ def test_dispatcher_requeues_one_authenticated_pre_resident_refusal(
         WORKER_PRE_RESIDENT_REASON_PREFIX + failure_code,
     )
     assert lease["state"] == "released"
-    assert retained.status == "promoted"
+    assert retained.status == "published"
 
 
 def test_requeue_permits_exactly_one_fresh_request_that_completes(

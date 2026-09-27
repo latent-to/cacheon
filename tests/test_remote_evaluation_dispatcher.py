@@ -3,25 +3,19 @@ from __future__ import annotations
 import dataclasses
 import json
 import threading
-import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import cacheon.chain.evaluation_coordinator as coordinator_module
-import cacheon.chain.remote_evaluation_dispatcher as remote_dispatcher_module
 import cacheon.chain.remote_qualification_evidence as remote_evidence_module
 from cacheon.arena_service import (
-    SCREEN_STAGES,
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
     ArenaRuntimeIdentity,
     ArenaService,
     ArenaServiceManifest,
-    NonCrownScreenPolicy,
-    ScreenGrade,
-    ScreenStagePolicy,
-    ScreenStageResult,
     Workload,
     WorkloadCell,
 )
@@ -29,24 +23,24 @@ from cacheon.bundle_hash import content_hash
 from cacheon.chain.evaluation_coordinator import (
     ClaimedQualificationEvaluation,
     EvaluationCoordinator,
-    EvaluationResultEnvelope,
     WorkerReadiness,
 )
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
-    IntakeError,
     IntakePolicy,
     IntakeScope,
 )
 from cacheon.chain.publication import publish_worker_bundle, reopen_worker_bundle
+from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
+from cacheon.chain.recoverable_qualification_dispatcher import (
+    RecoverableQualificationDispatcher,
+    RecoverableQualificationDispatcherError,
+)
 from cacheon.chain.remote_evaluation_dispatcher import (
-    AuthenticatedRemoteEvaluationResponse,
     REMOTE_EVALUATION_PROTOCOL_DIGEST,
-    RemoteEvaluationDispatcher,
     RemoteEvaluationDispatcherError,
     RemoteEvaluationRequest,
-    RemoteQualificationProduct,
     RemoteWorkerCredential,
     RemoteWorkerTransportIdentity,
     capture_remote_qualification_product,
@@ -55,8 +49,6 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     qualification_batch_to_dict,
     remote_qualification_product_from_dict,
     remote_qualification_product_to_dict,
-    seal_remote_response,
-    verify_remote_request,
 )
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
 from cacheon.eval.evidence_store import publish_evidence, reopen_evidence
@@ -111,10 +103,7 @@ def _manifest() -> ArenaServiceManifest:
             "test-seed-v1",
             (WorkloadCell("s8", 8192, 1024, 64, 8),),
         ),
-        ArenaCapacityPolicy(32, 100, 4, 4, 4, 3, 3, 3),
-        NonCrownScreenPolicy(
-            tuple(ScreenStagePolicy(stage, 1_000) for stage in SCREEN_STAGES)
-        ),
+        ArenaCapacityPolicy(32, 100, 4, 4),
         _h("qualification-policy"),
         _h("provider"),
     )
@@ -140,22 +129,8 @@ def _incumbent(service: ArenaService, *, marker: str = "remote") -> EvaluationSt
 class _Provider:
     provider_digest = _h("provider")
 
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-        self.qualification_calls = 0
-
-    def run_screen(self, _manifest, stage, candidate):
-        self.calls.append(stage.stage)
-        return ScreenStageResult(
-            stage.stage,
-            ScreenGrade.PASS,
-            _h(f"screen:{stage.stage}:{candidate.digest}"),
-            1,
-        )
-
     def build_qualification(self, _request, state=None):  # pragma: no cover
-        self.qualification_calls += 1
-        raise AssertionError("qualification is not part of the screen fixture")
+        raise AssertionError("qualification work is built on the remote worker")
 
 
 @dataclasses.dataclass
@@ -239,14 +214,6 @@ def _published_rows(tmp_path: Path, count: int):
         return tuple(result)
 
 
-def _advance(tmp_path: Path, cursor: _Cursor, block: int) -> None:
-    with _store(tmp_path) as store:
-        store.reserve_finalized(
-            (), finalized_block=block, finalized_block_hash=_block_hash(block)
-        )
-    cursor.set(block)
-
-
 def _coordinator(
     tmp_path: Path,
     service: ArenaService,
@@ -273,22 +240,14 @@ def _coordinator(
     return EvaluationCoordinator(**options)
 
 
-def _promote_one(coordinator: EvaluationCoordinator) -> None:
-    """Fixture: claim the oldest screen row, run the fake provider unlocked,
-    seal, and CAS-commit the PROMOTE receipt (no transport involved)."""
-    claim = coordinator.claim_screen()
-    assert claim is not None
-    receipt = coordinator.service.screen(claim.candidate)
-    envelope = EvaluationResultEnvelope.seal(
-        claim.lease, coordinator.readiness, coordinator.service, receipt
-    )
-    coordinator.commit_screen_result(claim, receipt, envelope)
+def _promote_one(_coordinator: EvaluationCoordinator) -> None:
+    """Published rows are claimable directly; kept until its callers drop it."""
 
 
 def _claim_qualification(
     coordinator: EvaluationCoordinator,
 ) -> ClaimedQualificationEvaluation:
-    """Fixture: durable qualification lease over promoted rows, materialized
+    """Fixture: durable qualification lease over published rows, materialized
     into the CPU authority DTO the recoverable dispatcher hands to transport."""
     store, point = coordinator._open_at_durable_cursor()
     try:
@@ -301,8 +260,8 @@ def _claim_qualification(
         )
         assert lease is not None
         reservations = tuple(store.get(row) for row in lease.reservation_ids)
-        receipts = tuple(
-            store.latest_promoted_screen(row.reservation_id) for row in reservations
+        attempts = tuple(
+            store.qualification_attempts(row.reservation_id) + 1 for row in reservations
         )
     finally:
         store.close()
@@ -316,12 +275,10 @@ def _claim_qualification(
     )
     authority = coordinator_module._qualification_reservations(reservations, publications)
     candidates = tuple(
-        ArenaCandidateBinding(item, publication, row.screen_attempts)
-        for row, publication, item in zip(reservations, publications, authority, strict=True)
+        ArenaCandidateBinding(item, publication, attempt)
+        for publication, item, attempt in zip(publications, authority, attempts, strict=True)
     )
-    return ClaimedQualificationEvaluation(
-        lease, reservations, publications, candidates, receipts
-    )
+    return ClaimedQualificationEvaluation(lease, reservations, publications, candidates)
 
 
 def _transport_identity(
@@ -338,64 +295,6 @@ def _transport_identity(
         coordinator.service.identity,
         coordinator.readiness.digest,
         1 << 20,
-    )
-
-
-class _Transport:
-    def __init__(
-        self,
-        coordinator: EvaluationCoordinator,
-        credential: RemoteWorkerCredential,
-        *,
-        hook=None,
-        forged: bool = False,
-        fail: bool = False,
-        endpoint: str = "worker-endpoint-a",
-    ) -> None:
-        self.coordinator = coordinator
-        self.credential = credential
-        self.identity = _transport_identity(
-            coordinator, credential, endpoint=endpoint
-        )
-        self.hook = hook
-        self.forged = forged
-        self.fail = fail
-        self.requests: list[RemoteEvaluationRequest] = []
-
-    def run_screen(self, request, *, job):
-        parsed = RemoteEvaluationRequest.from_dict(request.to_dict())
-        verify_remote_request(parsed, self.identity, self.credential)
-        assert parsed.lease_id == job.lease.lease_id
-        assert parsed.members == job.lease.members
-        self.requests.append(parsed)
-        if self.hook is not None:
-            self.hook(parsed, job)
-        if self.fail:
-            raise RuntimeError("worker transport disappeared")
-        receipt = self.coordinator.service.screen(job.candidate)
-        response = seal_remote_response(
-            parsed, receipt, self.identity, self.credential
-        )
-        response = AuthenticatedRemoteEvaluationResponse.from_dict(
-            response.to_dict()
-        )
-        if self.forged:
-            response = dataclasses.replace(response, auth_tag="f" * 64)
-        return response
-
-    def run_qualification(self, request, *, job, work, prepared):  # pragma: no cover
-        raise AssertionError("qualification is not part of the screen fixture")
-
-
-def _dispatcher(
-    coordinator: EvaluationCoordinator,
-    transport: _Transport,
-    credential: RemoteWorkerCredential,
-) -> RemoteEvaluationDispatcher:
-    return RemoteEvaluationDispatcher(
-        coordinator=coordinator,
-        transport=transport,
-        credential=credential,
     )
 
 
@@ -438,157 +337,6 @@ def _failed_batch(
     )
 
 
-def test_remote_screen_claim_is_fifo_closed_authenticated_and_committed(
-    tmp_path: Path,
-) -> None:
-    first, second = _published_rows(tmp_path, 2)
-    service = ArenaService(_manifest(), _Provider())
-    cursor = _Cursor((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(tmp_path, service, cursor)
-    credential = RemoteWorkerCredential("screen-key-v1", b"s" * 32)
-    lock_checks = []
-
-    def prove_closed_wire_and_unlocked(request, job) -> None:
-        with _store(tmp_path) as other:
-            lock_checks.append(other.finalized_cursor())
-        wire = json.dumps(request.to_dict(), sort_keys=True)
-        assert str(job.publication.root) not in wire
-        assert not ({"command", "argv", "env", "shell"} & _all_keys(request.to_dict()))
-
-    transport = _Transport(coordinator, credential, hook=prove_closed_wire_and_unlocked)
-
-    result = _dispatcher(coordinator, transport, credential).dispatch_screen_once()
-
-    assert result is not None and result.disposition == "completed"
-    assert result.lease.reservation_ids == (first.reservation_id,)
-    assert lock_checks == [(BLOCK, _block_hash(BLOCK))]
-    assert len(transport.requests) == 1
-    with _store(tmp_path) as store:
-        assert store.get(first.reservation_id).status == "promoted"
-        assert store.get(second.reservation_id).status == "published"
-        events = store.evaluation_lease_events(lease_id=result.lease.lease_id)
-    assert [row.event_type for row in events] == ["claimed", "completed"]
-
-
-def _all_keys(value: object) -> set[str]:
-    if type(value) is dict:
-        return set(value) | {
-            key
-            for item in value.values()
-            for key in _all_keys(item)
-        }
-    if type(value) is list:
-        return {key for item in value for key in _all_keys(item)}
-    return set()
-
-
-@pytest.mark.parametrize("mode", ["exception", "forged-response"])
-def test_remote_failure_holds_without_attempt_and_next_row_continues(
-    tmp_path: Path,
-    mode: str,
-) -> None:
-    first, second = _published_rows(tmp_path, 2)
-    service = ArenaService(_manifest(), _Provider())
-    cursor = _Cursor((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(tmp_path, service, cursor)
-    credential = RemoteWorkerCredential("screen-key-v1", b"s" * 32)
-    failed = _Transport(
-        coordinator,
-        credential,
-        fail=mode == "exception",
-        forged=mode == "forged-response",
-    )
-
-    with pytest.raises(RemoteEvaluationDispatcherError, match="remote_screen_infrastructure"):
-        _dispatcher(coordinator, failed, credential).dispatch_screen_once()
-
-    with _store(tmp_path) as store:
-        retained = store.get(first.reservation_id)
-        events = store.evaluation_lease_events(reservation_id=first.reservation_id)
-    assert (retained.status, retained.screen_attempts) == ("held", 0)
-    assert [row.event_type for row in events] == ["claimed", "released"]
-
-    replacement = _Transport(
-        coordinator, credential, endpoint="replacement-worker-endpoint"
-    )
-    # The next healthy transport advances FIFO without repeating the held work.
-    result = _dispatcher(coordinator, replacement, credential).dispatch_screen_once()
-    assert result is not None
-    assert result.lease.reservation_ids == (second.reservation_id,)
-    assert result.lease.generation == 1
-    with _store(tmp_path) as store:
-        assert store.get(first.reservation_id).status == "held"
-        assert store.get(second.reservation_id).status == "promoted"
-
-
-def test_remote_screen_heartbeat_advances_while_transport_is_blocked(
-    tmp_path: Path,
-) -> None:
-    row = _published_rows(tmp_path, 1)[0]
-    service = ArenaService(_manifest(), _Provider())
-    cursor = _Cursor((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(
-        tmp_path,
-        service,
-        cursor,
-        lease_blocks=3,
-        heartbeat_interval_s=0.01,
-    )
-    credential = RemoteWorkerCredential("screen-key-v1", b"s" * 32)
-    entered = threading.Event()
-    release = threading.Event()
-
-    def block_transport(_request, _job) -> None:
-        entered.set()
-        assert release.wait(5)
-
-    transport = _Transport(coordinator, credential, hook=block_transport)
-    outcome: list[object] = []
-
-    def run() -> None:
-        try:
-            outcome.append(
-                _dispatcher(coordinator, transport, credential).dispatch_screen_once()
-            )
-        except BaseException as exc:  # pragma: no cover - asserted below
-            outcome.append(exc)
-
-    thread = threading.Thread(target=run)
-    thread.start()
-    assert entered.wait(5)
-    _advance(tmp_path, cursor, BLOCK + 1)
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        try:
-            with _store(tmp_path) as store:
-                events = store.evaluation_lease_events(
-                    reservation_id=row.reservation_id
-                )
-        except IntakeError as exc:
-            assert str(exc) == "another intake controller owns this database"
-        else:
-            if any(event.event_type == "heartbeat" for event in events):
-                break
-        threading.Event().wait(0.01)
-    else:  # pragma: no cover
-        pytest.fail("remote lease heartbeat did not advance")
-    release.set()
-    thread.join(5)
-
-    assert not thread.is_alive()
-    assert len(outcome) == 1 and not isinstance(outcome[0], BaseException)
-    with _store(tmp_path) as store:
-        assert store.get(row.reservation_id).status == "promoted"
-        events = store.evaluation_lease_events(
-            lease_id=outcome[0].lease.lease_id  # type: ignore[union-attr]
-        )
-    assert [event.event_type for event in events] == [
-        "claimed",
-        "heartbeat",
-        "completed",
-    ]
-
-
 def test_qualification_batch_wire_roundtrip_is_exact_and_closed() -> None:
     authority = _h("authority")
     reservation = _h("reservation")
@@ -624,19 +372,34 @@ def test_dispatcher_rejects_drifted_transport_identity_before_claim(
     row = _published_rows(tmp_path, 1)[0]
     service = ArenaService(_manifest(), _Provider())
     cursor = _Cursor((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(tmp_path, service, cursor)
-    credential = RemoteWorkerCredential("screen-key-v1", b"s" * 32)
-    transport = _Transport(coordinator, credential)
-    transport.identity = dataclasses.replace(
-        transport.identity, worker_readiness_digest=_h("another-ready-epoch")
+    coordinator = _coordinator(
+        tmp_path, service, cursor, store_factory=RecoverableFinalizedIntakeStore
+    )
+    credential = RemoteWorkerCredential("qualification-key-v1", b"q" * 32)
+    # Every transport method fails the test if the dispatcher reaches it.
+    transport = SimpleNamespace(
+        identity=dataclasses.replace(
+            _transport_identity(coordinator, credential),
+            worker_readiness_digest=_h("another-ready-epoch"),
+        ),
+        **dict.fromkeys(RecoverableQualificationDispatcher._TRANSPORT_METHODS, pytest.fail),
     )
 
-    with pytest.raises(RemoteEvaluationDispatcherError, match="differs from CPU authority"):
-        _dispatcher(coordinator, transport, credential)
+    with pytest.raises(RecoverableQualificationDispatcherError, match="differs from CPU authority"):
+        RecoverableQualificationDispatcher(
+            coordinator=coordinator,
+            transport=transport,
+            credential=credential,
+            qualification_evidence_root=tmp_path / "cpu-evidence",
+            qualification_incumbent_stack=_incumbent(service),
+            qualification_incumbent_tree_digest=_h("incumbent-tree"),
+        )
 
     with _store(tmp_path) as store:
         assert store.active_evaluation_leases() == ()
-        assert store.get(row.reservation_id).screen_attempts == 0
+        assert store.get(row.reservation_id).status == "published"
+
+
 def test_remote_qualification_product_closes_inventory_bytes_and_bounds(
     tmp_path: Path,
     monkeypatch,

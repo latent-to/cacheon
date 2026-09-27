@@ -3033,9 +3033,10 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         """Bind a reopened row's baseline segment to the stack that reclaimed it.
 
         Idempotent repair for a reopened row the queue backfill bound to its
-        retired arrival stack. Once the fresh qualification claim has stamped
-        the live service digest, that digest names the stack the row must drain
-        under; before the claim the row is left unbound for the claim to bind.
+        retired arrival stack. It runs only while the row still awaits its
+        fresh pair; a claimed row refuses it. The row's stamped service digest,
+        when present, names the stack the row drains under; without one the
+        row is left unbound for the claim to bind.
         """
 
         with self._transaction():
