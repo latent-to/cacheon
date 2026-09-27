@@ -600,8 +600,7 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         raise StandingCpuSupervisorError(
             f"standing config cannot reopen: {exc}"
         ) from None
-    fields = _STANDING_CONFIG_FIELDS | ({"enable_screen"} if type(raw) is dict and "enable_screen" in raw else set())
-    row = _closed_config(raw, fields, "standing supervisor config")
+    row = _closed_config(raw, _STANDING_CONFIG_FIELDS, "standing supervisor config")
     if row["schema"] != CONFIG_SCHEMA:
         raise StandingCpuSupervisorError("standing supervisor config schema is unsupported")
 
@@ -714,7 +713,7 @@ def build_standing_supervisor(
     """Compose recoverable qualification (+ settlement, weights) from sealed standing config."""
 
     from cacheon.chain.mainnet_screen_dispatcher import (
-        build_dispatcher,
+        build_coordinator_and_transport,
         load_config,
     )
     from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
@@ -728,7 +727,7 @@ def build_standing_supervisor(
         raise StandingCpuSupervisorError("standing supervisor config is not typed")
 
     dispatcher_config = load_config(config.screen_dispatcher_config)
-    dispatcher = build_dispatcher(
+    coordinator, transport = build_coordinator_and_transport(
         dispatcher_config,
         store_factory=RecoverableFinalizedIntakeStore,
     )
@@ -742,9 +741,9 @@ def build_standing_supervisor(
                 f"qualification incumbent stack cannot reopen: {exc}"
             ) from None
         qualification_dispatcher = RecoverableQualificationDispatcher(
-            coordinator=dispatcher.coordinator,
-            transport=dispatcher.transport,
-            credential=dispatcher.credential,
+            coordinator=coordinator,
+            transport=transport,
+            credential=transport.credential,
             qualification_evidence_root=config.qualification_evidence_root,
             qualification_incumbent_stack=incumbent,
             qualification_incumbent_tree_digest=(
@@ -764,7 +763,7 @@ def build_standing_supervisor(
         # never sits in the qualification path.
         subtensor = chain.connect(config.settlement_network, retry_forever=True)
         settle_once = settlement_stage(
-            open_store=dispatcher.coordinator._open_at_durable_cursor,
+            open_store=coordinator._open_at_durable_cursor,
             finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
         )
 

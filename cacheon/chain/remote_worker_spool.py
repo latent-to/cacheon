@@ -148,7 +148,6 @@ ALLOWED_ARTIFACT_ROLES = frozenset(
         "incumbent_authority",
         "qualification_authority",
         "qualification_payload",
-        "screen_payload",
         "worker_log",
     }
 )
@@ -505,13 +504,10 @@ def verify_request(
     if queued // 1_000_000_000 < created - 5:
         fail("request queue time predates request creation")
     lease = verify_lease(value["lease"])
-    expected_kind = (
-        "screen_payload" if lease["stage"] == "screen" else "qualification_payload"
-    )
     artifacts = verify_artifacts(value["artifacts"], root, allow_output_roles=False)
-    # Carrier counts are enforced at consumption: screens via artifact_for_role,
-    # qualification cohorts via pairwise checks at both transport endpoints.
-    if sum(item["role"] == expected_kind for item in artifacts) != 1:
+    # Publication carrier counts are enforced at consumption, by pairwise
+    # checks against the cohort at both transport endpoints.
+    if sum(item["role"] == "qualification_payload" for item in artifacts) != 1:
         fail("request must retain exactly one stage payload")
     wire = authenticated_wire_request(
         value, root, identity=identity, credential=credential

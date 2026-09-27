@@ -3,20 +3,16 @@
 The pod service supervises exactly one instance of this adapter per
 commissioned epoch.  The adapter authenticates the path-free
 ``RemoteEvaluationRequest``, reconstructs the immutable candidate publication
-under a content-addressed pod root, invokes the commissioned resident B300
-worker, and emits one canonical authenticated ``response.json``.  The CPU
-independently reopens the typed receipt before committing the durable lease.
+under a content-addressed pod root, invokes the commissioned B300 worker, and
+emits one canonical authenticated ``response.json``.  The CPU independently
+reopens the typed product before committing the durable lease.
 
-Stage authority: screen work executes through
-:func:`cacheon.eval.b300_screen_deployment.build_commissioned_b300_screen_worker`.
-Qualification executes only when construction receives one exact
-``B300RemoteQualificationCommission`` carrying the fuller sealed deployment
-authorities.  Each authenticated request safely materializes its promoted
-cohort's publications and derives one ``B300RemoteQualificationAdapter`` from
-that fixed commission.  Without it, qualification is refused as a typed
-pre-resident ``AdapterRequestFailed``.  Refusing before any resident call keeps
-the epoch healthy instead of failing it, and keeps an uncommissioned gap
-visible instead of silently absent.
+Qualification is the only stage.  It executes only when construction receives
+the reviewed qualification capabilities or one exact
+``B300RemoteQualificationCommission`` carrying the sealed deployment
+authorities; each authenticated request materializes its leased cohort's
+publications and derives one ``B300RemoteQualificationAdapter`` from that
+fixed commission.
 
 No request field can select a command, module, executable, environment,
 source, or output path.  All filesystem coordinates come from one closed
@@ -64,7 +60,6 @@ from cacheon.chain.remote_worker_spool import (
 )
 from cacheon.eval.b300_publication_intake import (
     resolve_cohort_publications,
-    safe_publication,
 )
 from cacheon.eval.remote_run_forensics import (
     JOURNAL_NAME,
@@ -254,20 +249,18 @@ class AdapterRuntime:
                 raise AdapterError(
                     "qualification capabilities are not exactly typed"
                 )
-        qualification_enabled = (
-            qualification_commission is not None
-            or qualification_capabilities is not None
+        if qualification_commission is None and qualification_capabilities is None:
+            raise AdapterError(
+                "qualification authority is required: supply reviewed"
+                " qualification capabilities or one injected commission"
+            )
+        from cacheon.eval.qualification_continuation import (
+            QualificationContinuationStore,
         )
-        if qualification_enabled:
-            from cacheon.eval.qualification_continuation import (
-                QualificationContinuationStore,
-            )
 
-            qualification_continuation_store = QualificationContinuationStore(
-                paths.continuation_root
-            )
-        else:
-            qualification_continuation_store = None
+        qualification_continuation_store = QualificationContinuationStore(
+            paths.continuation_root
+        )
         registration = verify_registration(load_json(paths.registration))
         ready = verify_ready_receipt(load_json(paths.ready_receipt))
         if ready["receipt_digest"] != registration["ready_receipt_digest"]:
@@ -284,8 +277,6 @@ class AdapterRuntime:
                 build_commissioned_b300_qualification_service,
             )
 
-            # One replay yields both the screen worker and the qualification
-            # commission over the same resident model lifetime.
             service = build_commissioned_b300_qualification_service(
                 registration, ready, qualification_capabilities, commissioned_root=paths.commissioned_root
             )
@@ -318,13 +309,6 @@ class AdapterRuntime:
                 qualification_commission.readiness,
             )
             self.qualification_commission = qualification_commission
-        else:
-            from cacheon.eval.b300_screen_deployment import (
-                build_commissioned_b300_screen_worker,
-            )
-
-            self.worker = build_commissioned_b300_screen_worker(registration, ready, commissioned_root=paths.commissioned_root)
-            self.qualification_commission = None
         self.qualification_continuation_store = qualification_continuation_store
         self.closed = False
 
@@ -333,11 +317,6 @@ class AdapterRuntime:
         ready = verify_ready_receipt(load_json(self.paths.ready_receipt))
         if registration != self.registration or ready != self.ready:
             raise AdapterError("commissioned registration or READY authority changed")
-
-    def resident_screen_latched(self) -> bool:
-        """True once this process can no longer serve a screen or qualification."""
-
-        return self.worker.resident_screen_latched
 
     def close(self) -> None:
         if self.closed:
@@ -356,17 +335,9 @@ class AdapterRuntime:
         """Bind one request cohort to its exact commissioned lane orientation."""
 
         commission = self.qualification_commission
-        if commission is None:
-            raise AdapterError(
-                "qualification execution authority is not commissioned"
-            )
         continuation_store = self.qualification_continuation_store
         service = self._commissioned_service
         if service is not None:
-            if continuation_store is None:
-                raise AdapterError(
-                    "qualification continuation store is not commissioned"
-                )
             return service.adapter_for(
                 publications,
                 continuation_store,
@@ -410,10 +381,7 @@ def run_with_runtime(
             "commissioned adapter authority is no longer current"
         ) from exc
 
-    from cacheon.arena_service import ArenaCandidateBinding, ArenaScreenReceipt
-    from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
     from cacheon.chain.remote_evaluation_dispatcher import seal_remote_response
-    from cacheon.eval.qualification_intake import QualificationReservation
 
     # Everything in this block consumes only the per-request carrier.  It has
     # not called the commissioned worker and therefore cannot have mutated the
@@ -432,72 +400,35 @@ def run_with_runtime(
         )
 
         stage = outer["lease"]["stage"]
+        if stage != "qualification":
+            raise AdapterError("adapter serves only qualification leases")
         wire_value = load_json(
             artifact_for_role(outer, request_dir, f"{stage}_payload"),
             maximum=64 << 20,
         )
         wire = RemoteEvaluationRequest.from_dict(wire_value)
         verify_remote_request(wire, runtime.identity, runtime.credential)
-        if stage == "qualification":
-            qualification_commission = runtime.qualification_commission
-            if qualification_commission is None:
-                raise AdapterError(
-                    "qualification execution authority is not commissioned for this"
-                    " adapter; the tracked qualification worker entrypoint awaits its"
-                    " deployment authorities"
-                )
-            body = wire.body
-            from cacheon.chain.qualification_request import require_commissioned_incumbent
+        qualification_commission = runtime.qualification_commission
+        body = wire.body
+        from cacheon.chain.qualification_request import require_commissioned_incumbent
 
-            service = runtime._commissioned_service
-            if service is not None and body.get("screen_lane") == "reproduction":
-                qualification_commission = service.reproduction_commission
-            require_commissioned_incumbent(body, qualification_commission.construction)
-            candidates = body["candidates"]
-            # Cohort size is enforced against the sealed manifest capacity by
-            # B300RemoteQualificationAdapter.run before any resident work.
-            publications = resolve_cohort_publications(
-                outer,
-                request_dir,
-                candidates,
-                runtime.paths.publication_root,
-            )
-            screen_lane = body["screen_lane"]
-            qualification_adapter = runtime.qualification_adapter_for(
-                publications,
-                screen_lane,
-            )
-        else:
-            lease_value = outer["lease"]
-            lease = EvaluationLease(
-                lease_value["lease_id"],
-                lease_value["generation"],
-                lease_value["stage"],
-                lease_value["owner"],
-                tuple(EvaluationLeaseMember(**row) for row in lease_value["members"]),
-                lease_value["claimed_block"],
-                lease_value["initial_expires_block"],
-                lease_value["expires_block"],
-            )
-            body = wire.body
-            publication = safe_publication(
-                artifact_for_role(outer, request_dir, "candidate_publication"),
-                body["publication"],
-                runtime.paths.publication_root,
-            )
-            reservation = QualificationReservation.from_dict(body["reservation"])
-            candidate = ArenaCandidateBinding(
-                reservation,
-                publication,
-                body["screen_attempt"],
-            )
-            if (
-                candidate.digest != body["candidate_digest"]
-                or lease.reservation_ids != (reservation.reservation_digest,)
-            ):
-                raise AdapterError(
-                    "reconstructed candidate differs from authenticated lease"
-                )
+        service = runtime._commissioned_service
+        if service is not None and body.get("screen_lane") == "reproduction":
+            qualification_commission = service.reproduction_commission
+        require_commissioned_incumbent(body, qualification_commission.construction)
+        candidates = body["candidates"]
+        # Cohort size is enforced against the sealed manifest capacity by
+        # B300RemoteQualificationAdapter.run before any resident work.
+        publications = resolve_cohort_publications(
+            outer,
+            request_dir,
+            candidates,
+            runtime.paths.publication_root,
+        )
+        qualification_adapter = runtime.qualification_adapter_for(
+            publications,
+            body["screen_lane"],
+        )
     except Exception as exc:
         raise AdapterRequestFailed(
             "request carrier/authentication/staging failed before resident work"
@@ -520,28 +451,10 @@ def run_with_runtime(
     # NO_DECISION outcomes, complete normally through this path.
     append_run_event(journal, request_id, f"adapter.{stage}", "started")
     try:
-        if stage == "qualification":
-            try:
-                runtime.worker.retire_resident_screen()
-                payload = qualification_adapter.run(wire)
-            finally:
-                close_adapter = getattr(qualification_adapter, "close", None)
-                if callable(close_adapter):
-                    close_adapter()
-        else:
-            evaluation = runtime.worker.run_remote_screen(lease, candidate)
-            payload = evaluation.payload
-            if type(payload) is not ArenaScreenReceipt:
-                raise AdapterError("B300 screen worker returned an untyped receipt")
-            if (
-                evaluation.lease != lease
-                or evaluation.disposition != "completed"
-                or evaluation.envelope.lease_id != lease.lease_id
-                or evaluation.envelope.payload_digest != payload.digest
-            ):
-                raise AdapterError(
-                    "B300 screen worker changed the exact lease/result envelope"
-                )
+        try:
+            payload = qualification_adapter.run(wire)
+        finally:
+            qualification_adapter.close()
         response = seal_remote_response(
             wire, payload, runtime.identity, runtime.credential
         )
@@ -558,14 +471,6 @@ def run_with_runtime(
     append_run_event(journal, request_id, f"adapter.{stage}", "completed")
     append_run_event(journal, request_id, "adapter.response", "completed")
     return stage
-
-
-def _run(request_dir: Path, result_dir: Path, paths: AdapterPaths) -> None:
-    runtime = AdapterRuntime(paths)
-    try:
-        run_with_runtime(request_dir, result_dir, runtime)
-    finally:
-        runtime.close()
 
 
 def _decode_command(raw: bytes) -> dict[str, object]:
@@ -664,12 +569,11 @@ def serve_runtime(
     for raw in input_stream:
         request_id: str | None = None
         result_dir: Path | None = None
-        stage: str | None = None
         try:
             request_id, request_dir, result_dir = validated_command_paths(raw, paths)
             with bind_request(result_dir, request_id):
                 try:
-                    stage = run_with_runtime(request_dir, result_dir, runtime)
+                    run_with_runtime(request_dir, result_dir, runtime)
                 except BaseException as exc:
                     append_run_event(
                         journal_path(result_dir),
@@ -708,44 +612,32 @@ def serve_runtime(
             )
             _emit_control("epoch_failed", request_id, output=control_output)
             return 2
-        retire_reason: str | None = None
-        if stage == "qualification":
-            # The qualification's lane containers keep the GPUs after the
-            # verdict, so the next screen's idle-envelope drain times out
-            # (2026-09-02/03: one ~5-minute infrastructure release per
-            # qualification→screen transition).  Retire behind the durable
-            # result; the next request boots a fresh adapter on idle GPUs.
-            retire_reason = "qualification_completed"
-        elif runtime.resident_screen_latched():
-            # A stock-canary miss or a dead resident engine latches the
-            # lifetime after a completed result.  Retire this process now,
-            # with the result already durable, so the pod boots a fresh
-            # adapter for the next request instead of sacrificing it to the
-            # latch (2026-09-02: one paid request lost per canary miss).
-            retire_reason = "resident_screen_latched"
-        if retire_reason is not None:
+        # The qualification's lane containers keep the GPUs after the
+        # verdict, so the next request's idle-envelope drain times out
+        # (2026-09-02/03: one ~5-minute infrastructure release per
+        # qualification transition).  Retire behind the durable result; the
+        # next request boots a fresh adapter on idle GPUs.
+        print(
+            "CACHEON-B300-ADAPTER-RETIRED: "
+            f"request={request_id} reason=qualification_completed",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            runtime.close()
+        except Exception as exc:
+            traceback.print_exception(exc, file=sys.stderr)
             print(
-                "CACHEON-B300-ADAPTER-RETIRED: "
-                f"request={request_id} reason={retire_reason}",
+                "CACHEON-B300-ADAPTER-RETIRE-TEARDOWN-FAILED: "
+                f"request={request_id} "
+                f"type={type(exc.__cause__ or exc).__name__}",
                 file=sys.stderr,
                 flush=True,
             )
-            try:
-                runtime.close()
-            except Exception as exc:
-                traceback.print_exception(exc, file=sys.stderr)
-                print(
-                    "CACHEON-B300-ADAPTER-RETIRE-TEARDOWN-FAILED: "
-                    f"request={request_id} "
-                    f"type={type(exc.__cause__ or exc).__name__}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            _emit_control(
-                "completed", request_id, output=control_output, retired=True
-            )
-            return 0
-        _emit_control("completed", request_id, output=control_output)
+        _emit_control(
+            "completed", request_id, output=control_output, retired=True
+        )
+        return 0
     return 0
 
 
@@ -804,7 +696,12 @@ def _adapter_paths(args: argparse.Namespace) -> AdapterPaths:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--serve", action="store_true")
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        required=True,
+        help="serve authenticated qualification requests from stdin (the only mode)",
+    )
     parser.add_argument("--registration", required=True)
     parser.add_argument("--ready-receipt", required=True)
     parser.add_argument("--credential", required=True)
@@ -812,15 +709,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--processing-root", required=True)
     parser.add_argument("--results-root", required=True)
     parser.add_argument("--continuation-root", required=True)
-    parser.add_argument("--commissioned-root", help="absolute root emitted by screen materialization")
-    parser.add_argument("--request-dir")
-    parser.add_argument("--result-dir")
+    parser.add_argument(
+        "--commissioned-root",
+        help="absolute root emitted by deployment materialization",
+    )
     parser.add_argument(
         "--qualification-capabilities",
         help=(
             "top-level MODULE:ATTRIBUTE naming a reviewed zero-argument factory"
             " returning B300QualificationCapabilities; requires the exact source"
-            " digest and --serve"
+            " digest"
         ),
     )
     parser.add_argument(
@@ -836,40 +734,14 @@ def main(argv: list[str] | None = None) -> int:
             " --qualification-capabilities-sha256 must be provided together"
         )
     paths = _adapter_paths(args)
-    if args.serve:
-        if args.request_dir is not None or args.result_dir is not None:
-            parser.error("--serve does not accept one-shot request paths")
-        capabilities = None
-        if args.qualification_capabilities is not None:
-            load_receipt = _load_qualification_capabilities(
-                args.qualification_capabilities,
-                args.qualification_capabilities_sha256,
-            )
-            capabilities = load_receipt.capabilities
-        return _serve(paths, capabilities)
+    capabilities = None
     if args.qualification_capabilities is not None:
-        parser.error(
-            "--qualification-capabilities requires the persistent --serve"
-            " service; one-shot mode cannot commission qualification"
+        load_receipt = _load_qualification_capabilities(
+            args.qualification_capabilities,
+            args.qualification_capabilities_sha256,
         )
-    if args.request_dir is None or args.result_dir is None:
-        parser.error("one-shot mode requires --request-dir and --result-dir")
-    request_dir = _closed_path(
-        args.request_dir, paths.processing_root, "request directory", temporary=False
-    )
-    result_dir = _closed_path(
-        args.result_dir, paths.results_root, "result directory", temporary=True
-    )
-    if (
-        request_dir.is_symlink()
-        or not request_dir.is_dir()
-        or result_dir.is_symlink()
-        or not result_dir.is_dir()
-        or any(entry.name != JOURNAL_NAME for entry in result_dir.iterdir())
-    ):
-        raise AdapterError("request/result carrier state is invalid")
-    _run(request_dir, result_dir, paths)
-    return 0
+        capabilities = load_receipt.capabilities
+    return _serve(paths, capabilities)
 
 
 if __name__ == "__main__":

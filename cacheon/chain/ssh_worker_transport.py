@@ -4,10 +4,9 @@ This module owns endpoint-pinned transport only: packing sealed request
 carriers, transferring them to the registered pod over host-key-pinned SSH,
 pulling verified result archives back, and the standing CPU transfer loop.
 ``DurableSpoolAuthenticatedWorkerTransport`` implements the tracked
-``AuthenticatedWorkerTransport`` protocol for both screen and qualification
-work; qualification additionally requires an injected publication resolver so
-the CPU-owned immutable publication bytes accompany the authenticated wire
-request.  Nothing here evaluates, settles, or manufactures a candidate
+``RecoverableQualificationTransport`` protocol; it requires an injected
+publication resolver so the CPU-owned immutable publication bytes accompany
+the authenticated wire request.  Nothing here evaluates, settles, or manufactures a candidate
 ``FAIL``; transport failures surface as infrastructure errors that release
 the durable lease without consuming an attempt.
 """
@@ -28,7 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from cacheon.chain.evaluation_coordinator import ClaimedScreenEvaluation
 from cacheon.chain.evaluation_leases import EvaluationLease
 from cacheon.chain.remote_evaluation_dispatcher import (
     AuthenticatedRemoteEvaluationResponse,
@@ -60,7 +58,6 @@ from cacheon.chain.remote_worker_spool import (
     artifact_for_role,
     atomic_bytes,
     atomic_json,
-    enqueue_request,
     fail,
     file_sha256,
     heartbeat_payload,
@@ -551,15 +548,14 @@ def cpu_serve(
 
 
 class DurableSpoolAuthenticatedWorkerTransport:
-    """AuthenticatedWorkerTransport backed by the standing VM/pod spool.
+    """RecoverableQualificationTransport backed by the standing VM/pod spool.
 
-    ``RemoteEvaluationDispatcher`` owns the durable lease and its finalized-
-    block heartbeat while a call waits; the separate standing CPU transfer
-    loop moves the sealed carriers.  Screen and qualification are both
-    supported through the same registered epoch: qualification additionally
-    requires ``qualification_publication_resolver`` so the CPU-owned
-    immutable publication accompanies the authenticated wire request, and it
-    fails closed when the resolver is not configured.
+    ``RecoverableQualificationDispatcher`` owns the durable lease and its
+    finalized-block renewal while a call waits; the separate standing CPU
+    transfer loop moves the sealed carriers.  ``qualification_publication_resolver``
+    supplies the CPU-owned immutable publication that accompanies the
+    authenticated wire request, and the transport fails closed when the
+    resolver is not configured.
     """
 
     def __init__(
@@ -662,40 +658,6 @@ class DurableSpoolAuthenticatedWorkerTransport:
         raise RemoteEvaluationDispatcherError(
             f"remote {stage} response exceeded the transport deadline"
         )
-
-    def run_screen(self, request, *, job):
-        if type(request) is not RemoteEvaluationRequest or type(job) is not ClaimedScreenEvaluation:
-            raise RemoteEvaluationDispatcherError(
-                "spool screen transport requires exact request/job types"
-            )
-        try:
-            verify_remote_request(request, self.identity, self.credential)
-            self._require_dispatcher_liveness()
-            scratch = Path(
-                tempfile.mkdtemp(prefix=".screen.", dir=self.spool_root / "state")
-            )
-            try:
-                wire_path = scratch / "screen-request.json"
-                atomic_json(wire_path, request.to_dict(), mode=0o400)
-                publication_path = scratch / "candidate-publication.tar"
-                publication_archive(job.publication, publication_path)
-                request_id, job_dir = enqueue_request(
-                    self.registration,
-                    self._lease_dict(job.lease),
-                    (
-                        ("screen_payload", wire_path),
-                        ("candidate_publication", publication_path),
-                    ),
-                    self.spool_root / "outbox",
-                    deadline_seconds=self.response_timeout_seconds,
-                    identity=self.identity,
-                    credential=self.credential,
-                )
-            finally:
-                shutil.rmtree(scratch, ignore_errors=True)
-            return self._await_completed_result(request_id, job_dir, stage="screen")
-        except RemoteWorkerError as exc:
-            raise RemoteEvaluationDispatcherError(str(exc)) from exc
 
     def _with_qualification_artifacts(self, request, operation):
         """Rebuild exact path-free inputs and invoke one non-network operation."""

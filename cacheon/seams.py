@@ -43,14 +43,6 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     # identified scheduler execution processes (active receipts == tp_size exactly).
     SeamAdapter("scheduler_gate", "sglang.srt.managers.scheduler",
                 "sglang_scheduler_gate", "run_scheduler_process"),
-    # NOT a slot seam: the resident-SCREEN-tier hot-swap hook. Inert unless the
-    # validator sets CACHEON_RESIDENT_SWAP (a control directory) — which only the
-    # persistent screening engine does, never qualification/crown launches. BEFORE
-    # hook on decode-graph (re)capture: applies a pending bundle swap in-process so
-    # the recapture warmup JIT-compiles the new kernel and the recorded graphs bake
-    # it in. See cacheon/integrations/sglang_resident_swap.py.
-    SeamAdapter("resident_swap", "sglang.srt.model_executor.model_runner",
-                "sglang_resident_swap", "ModelRunner.init_decode_cuda_graph"),
     # The generic node binder. After the model loads it binds every registered slot
     # that is a node address (a name outside cacheon.slots) to that module of the
     # served model. Which addresses an arena opens is decided at admission by the

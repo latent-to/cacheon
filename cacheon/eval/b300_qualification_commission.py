@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 import time
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
-import cacheon.eval.b300_screen_deployment as screen_deployment
+import cacheon.eval.b300_deployment as b300_deployment
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_qualification_deployment import (
@@ -34,10 +35,7 @@ from cacheon.eval.b300_sealed_qualification_commission import (
     parse_sealed_calibration_package,
     sealed_qualification_profile_rows,
 )
-from cacheon.eval.b300_screen_qualification_bridge import (
-    QUALIFICATION_EXECUTOR_ID,
-    CommissionedB300QualificationService,
-)
+from cacheon.eval.b300_qualification_declaration import QUALIFICATION_EXECUTOR_ID
 from cacheon.eval.b300_remote_worker_adapter import B300RemoteQualificationCommission
 from cacheon.eval.calibration import (
     CalibrationContext,
@@ -165,7 +163,7 @@ def _private_root(path: Path) -> Path:
 
 
 def _sealed_calibration(
-    inputs: "screen_deployment._CommissionedInputs",
+    inputs: "b300_deployment._CommissionedInputs",
     context: CalibrationContext,
     stage: str,
 ) -> tuple[
@@ -175,10 +173,10 @@ def _sealed_calibration(
 ]:
     reference = inputs.authority_refs["calibration_package"]
     try:
-        path, value, sha = screen_deployment._stable_json(
+        path, value, sha = b300_deployment._stable_json(
             reference["path"], "calibration package"
         )
-    except screen_deployment.B300ScreenDeploymentError as exc:
+    except b300_deployment.B300DeploymentError as exc:
         raise B300QualificationCommissionError(
             f"sealed calibration package is unreadable: {exc}"
         ) from None
@@ -190,7 +188,7 @@ def _sealed_calibration(
 
 
 def _lane_policies(
-    inputs: "screen_deployment._CommissionedInputs",
+    inputs: "b300_deployment._CommissionedInputs",
 ) -> tuple[DeviceStatePolicy, DeviceStatePolicy]:
     by_id = {gpu.physical_id: gpu for gpu in inputs.qualification_gpus}
     policies = []
@@ -204,7 +202,7 @@ def _lane_policies(
             raise B300QualificationCommissionError(
                 "sealed qualification lane is absent from READY inventory"
             ) from None
-        policy = screen_deployment._device_policy(gpus)
+        policy = b300_deployment._device_policy(gpus)
         if (
             policy.policy_sha256 != lane.device_policy_digest
             or policy.configuration_sha256 != lane.device_configuration_digest
@@ -216,9 +214,93 @@ def _lane_policies(
     return policies[0], policies[1]
 
 
+@dataclass
+class CommissionedB300QualificationService:
+    """One worker plus both sealed qualification orientations."""
+
+    worker: B300MainnetWorker
+    commission: B300RemoteQualificationCommission
+    reproduction_commission: B300RemoteQualificationCommission
+    _executors: tuple[OCIEngineExecutor, ...]
+    _reproduction_worker: B300MainnetWorker | None = None
+    _lock: object = field(default_factory=threading.RLock)
+    _closed: bool = False
+
+    def __post_init__(self) -> None:
+        commissions = (self.commission, self.reproduction_commission)
+        if (
+            type(self._executors) is not tuple
+            or len(self._executors) != 2
+            or any(type(row) is not OCIEngineExecutor for row in self._executors)
+            or len({id(row.manager) for row in self._executors}) != 2
+            or tuple(row.deployment.screen_lane for row in commissions)
+            != ("primary", "reproduction")
+            or commissions[0].deployment.manifest != commissions[1].deployment.manifest
+            or commissions[0].readiness != commissions[1].readiness
+            or type(self.worker) is not B300MainnetWorker
+            or self.worker.service.manifest != self.commission.deployment.manifest
+            or self.worker.readiness != self.commission.readiness
+            or self.worker._remote_qualification_lane != "primary"
+        ):
+            raise B300QualificationCommissionError(
+                "commissioned service does not own both qualification orientations"
+            )
+
+    def adapter_for(self, publications, continuation_store, screen_lane: str):
+        with self._lock:
+            if self._closed:
+                raise B300QualificationCommissionError(
+                    "commissioned qualification service is closed"
+                )
+            if screen_lane == "primary":
+                commission, worker = self.commission, self.worker
+            elif screen_lane == "reproduction":
+                commission = self.reproduction_commission
+                worker = self._reproduction_worker
+                if worker is None:
+                    worker = B300MainnetWorker(
+                        commission.deployment.manifest,
+                        commission.deployment.authorities,
+                        commission.readiness,
+                    )
+                    self._reproduction_worker = worker
+            else:
+                raise B300QualificationCommissionError(
+                    "qualification stage must be primary or reproduction"
+                )
+            return commission.adapter_for(
+                publications,
+                continuation_store,
+                worker=worker,
+            )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        failure: BaseException | None = None
+        closers = (
+            self.worker.close,
+            *(
+                ()
+                if self._reproduction_worker is None
+                else (self._reproduction_worker.close,)
+            ),
+            *(executor.manager.close for executor in self._executors),
+        )
+        for closer in closers:
+            try:
+                closer()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise failure
+
+
 def compose_commissioned_qualifications(
-    inputs: "screen_deployment._CommissionedInputs",
-    composition: "screen_deployment._Composition",
+    inputs: "b300_deployment._CommissionedInputs",
+    composition: "b300_deployment._Composition",
     readiness: WorkerReadiness,
     capabilities: B300QualificationCapabilities,
     *,
@@ -284,14 +366,14 @@ def compose_commissioned_qualifications(
     _require_cell_conformance(inputs, policy, session_block, speed_block)
 
     lane_a_policy, lane_b_policy = _lane_policies(inputs)
-    lane_a_executor = screen_deployment._build_executor(
+    lane_a_executor = b300_deployment._build_executor(
         inputs.root / "qualification-lane-a",
         inputs.preflight,
         lane_a_policy,
         executor_id=QUALIFICATION_EXECUTOR_ID,
         runtime_seed_root=inputs.runtime_seed_root, resources=inputs.authority.get("resources"),
     )
-    lane_b_executor = screen_deployment._build_executor(
+    lane_b_executor = b300_deployment._build_executor(
         inputs.root / "qualification-lane-b",
         inputs.preflight,
         lane_b_policy,
@@ -341,7 +423,7 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
     construction and must die here, not forty minutes into a measured run.
     """
 
-    quality_cell = screen_deployment._scored_cell(inputs.workload)
+    quality_cell = b300_deployment._scored_cell(inputs.workload)
     batch_cells = getattr(
         inputs,
         "prompt_batch_cells",
@@ -391,7 +473,7 @@ def _compose_locked(
 ) -> B300RemoteQualificationCommission:
     snapshot = catalog.snapshot()
     target_members, context, stock, stock_tree = (
-        screen_deployment._commissioned_stock_authority(
+        b300_deployment._commissioned_stock_authority(
             inputs,
             manifest,
             catalog,
@@ -404,7 +486,7 @@ def _compose_locked(
     # at genesis the declared entries are empty and this reopens the exact
     # stock tree above, so both arms of the branchless pair coincide.
     _, _, incumbent, incumbent_tree = (
-        screen_deployment._commissioned_stock_authority(
+        b300_deployment._commissioned_stock_authority(
             inputs,
             manifest,
             catalog,
@@ -415,21 +497,21 @@ def _compose_locked(
             resolver=capabilities.source_resolver,
         )
     )
-    engine_config = screen_deployment._engine_config(
+    engine_config = b300_deployment._engine_config(
         inputs.engine_template,
         inputs.workload.cells,
         disable_cuda_graph=False,
     )
-    dp_size = screen_deployment._data_parallel_size(engine_config)
-    baseline_hardware, baseline_physical = screen_deployment._hardware_bindings(
+    dp_size = b300_deployment._data_parallel_size(engine_config)
+    baseline_hardware, baseline_physical = b300_deployment._hardware_bindings(
         inputs.runtime, candidate_executor.device_policy, dp_size=dp_size,
     )
-    incumbent_native = screen_deployment._native_build(
+    incumbent_native = b300_deployment._native_build(
         incumbent_tree.tree_digest,
         inputs.preflight,
         candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
     )
-    pristine_native = screen_deployment._native_build(
+    pristine_native = b300_deployment._native_build(
         stock_tree.tree_digest,
         inputs.preflight,
         candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
@@ -449,7 +531,7 @@ def _compose_locked(
         model_content_digest=inputs.runtime.model_content_digest,
         validator_overlay_digest=inputs.runtime.validator_overlay_digest,
         engine_config_digest=engine_config.digest,
-        seccomp_policy_digest=screen_deployment._file_sha256(
+        seccomp_policy_digest=b300_deployment._file_sha256(
             candidate_executor.config.prebuild.seccomp_profile
         ),
         resource_policy_digest=(
@@ -471,7 +553,7 @@ def _compose_locked(
         native_build_spec=pristine_native,
     )
     pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
-    quality_cell = screen_deployment._scored_cell(inputs.workload)
+    quality_cell = b300_deployment._scored_cell(inputs.workload)
     cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
     batch_cells = inputs.prompt_batch_cells
     mixed_cells = len(inputs.workload.cells) > 1
@@ -555,10 +637,10 @@ def _compose_locked(
         evidence_root,
         calibration_evidence,
     )
-    resident_hardware, resident_physical = screen_deployment._hardware_bindings(
+    resident_hardware, resident_physical = b300_deployment._hardware_bindings(
         inputs.runtime, baseline_executor.device_policy, dp_size=dp_size,
     )
-    resident_native = screen_deployment._native_build(
+    resident_native = b300_deployment._native_build(
         incumbent_tree.tree_digest,
         inputs.preflight,
         baseline_executor.config.prebuild.policy, inputs.runtime.target_architecture,
@@ -570,7 +652,7 @@ def _compose_locked(
         resource_policy_digest=(
             baseline_executor.config.prebuild.policy.resource_policy_digest
         ),
-        seccomp_policy_digest=screen_deployment._file_sha256(
+        seccomp_policy_digest=b300_deployment._file_sha256(
             baseline_executor.config.prebuild.seccomp_profile
         ),
     )
@@ -624,7 +706,7 @@ def _compose_locked(
     )
 
     def bind_candidate(candidate_tree) -> TrustedLaunchBinding:
-        candidate_native = screen_deployment._native_build(
+        candidate_native = b300_deployment._native_build(
             candidate_tree.tree_digest,
             inputs.preflight,
             candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
@@ -734,7 +816,7 @@ def _compose_locked(
         )
     deployment = compose_b300_qualification_deployment(
         manifest=manifest,
-        screen_authorities=composition.authorities,
+        declared=composition.authorities,
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
@@ -750,7 +832,7 @@ def build_commissioned_b300_qualification_service(
     *, commissioned_root: Path | None = None,
 ) -> CommissionedB300QualificationService:
     inputs, composition, readiness = (
-        screen_deployment.replay_commissioned_screen_composition(
+        b300_deployment.replay_commissioned_composition(
             registration, ready_receipt, commissioned_root=commissioned_root
         )
     )
@@ -766,15 +848,12 @@ def build_commissioned_b300_qualification_service(
             commission.deployment.authorities,
             readiness,
         )
-        service = CommissionedB300QualificationService(
+        return CommissionedB300QualificationService(
             worker,
             commission,
             reproduction_commission,
             executors,
-            composition,
         )
-        composition = None
-        return service
     except BaseException:
         try:
             if worker is not None:
@@ -783,9 +862,6 @@ def build_commissioned_b300_qualification_service(
             for executor in executors:
                 executor.manager.close()
         raise
-    finally:
-        if composition is not None:
-            composition.close()
 
 
 __all__ = [

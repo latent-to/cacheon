@@ -67,7 +67,6 @@ from cacheon.eval.qualification_runner import (
     SpeedStageDisposition,
     _planned_prompt_digests,
 )
-from cacheon.eval.resident_screen_lane import screen_swappability
 from cacheon.eval.resident_audit_authority import (
     ResidentAuditExecutionAuthority,
 )

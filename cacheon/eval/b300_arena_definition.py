@@ -28,19 +28,19 @@ _DERIVED_ENGINE_KWARGS = {
 _CELL_FIELDS = frozenset(WorkloadCell.__dataclass_fields__)
 
 
-class B300ScreenDeploymentError(RuntimeError):
+class B300DeploymentError(RuntimeError):
     """A commissioned authority is missing, mutable, or inconsistent."""
 
 
 def _mapping(value: object, field: str) -> dict[str, object]:
     if type(value) is not dict:
-        raise B300ScreenDeploymentError(f"{field} must be a JSON object")
+        raise B300DeploymentError(f"{field} must be a JSON object")
     return value
 
 
 def string_rows(value: object, label: str) -> list[str]:
     if type(value) is not list or any(type(row) is not str for row in value):
-        raise B300ScreenDeploymentError(f"{label} must be a list of strings")
+        raise B300DeploymentError(f"{label} must be a list of strings")
     return value
 
 
@@ -51,7 +51,7 @@ def _device_ids(value: object, label: str) -> tuple[int, ...]:
         or any(type(row) is not int or row < 0 for row in value)
         or value != sorted(set(value))
     ):
-        raise B300ScreenDeploymentError(f"{label} must be ordered unique GPU indices")
+        raise B300DeploymentError(f"{label} must be ordered unique GPU indices")
     return tuple(value)
 
 
@@ -61,7 +61,7 @@ def ready_gpu_ids(ready: dict[str, object]) -> tuple[int, ...]:
     inventory = gpu.get("inventory")
     count = gpu.get("count")
     if type(count) is not int or count < 1 or type(inventory) is not list or len(inventory) != count:
-        raise B300ScreenDeploymentError("READY GPU count differs from its inventory")
+        raise B300DeploymentError("READY GPU count differs from its inventory")
     return _device_ids(
         [_mapping(row, "READY GPU row").get("index") for row in inventory],
         "READY GPU inventory",
@@ -69,13 +69,13 @@ def ready_gpu_ids(ready: dict[str, object]) -> tuple[int, ...]:
 
 
 def ready_lane(ready: dict[str, object]) -> tuple[int, ...]:
-    """Read the screen lane without assuming a host size or GPU model."""
+    """Read the READY lane without assuming a host size or GPU model."""
     lane = _mapping(ready.get("lane"), "READY lane")
     selected = _device_ids(lane.get("devices"), "READY lane")
     tp = lane.get("tensor_parallel_size")
     if type(tp) is not int or tp != len(selected):
-        raise B300ScreenDeploymentError("READY lane differs from its tensor parallel size")
-    require_digest(lane.get("lane_digest"), field="READY lane digest", error=B300ScreenDeploymentError)
+        raise B300DeploymentError("READY lane differs from its tensor parallel size")
+    require_digest(lane.get("lane_digest"), field="READY lane digest", error=B300DeploymentError)
     return selected
 
 
@@ -96,7 +96,7 @@ def ready_lanes(ready: dict[str, object]) -> tuple[tuple[int, ...], tuple[int, .
         or set(selected).intersection(baseline)
         or not set(selected + baseline).issubset(inventory)
     ):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "READY requires equal disjoint lanes within its inventory; "
             "partial-host allocations must name baseline_devices"
         )
@@ -110,7 +110,7 @@ def device_policy(gpus: tuple[GPUConfiguration, ...]) -> DeviceStatePolicy:
         or tuple(gpu.physical_id for gpu in gpus) != tuple(sorted({gpu.physical_id for gpu in gpus}))
         or len({gpu.max_memory_clock_mhz for gpu in gpus}) != 1
     ):
-        raise B300ScreenDeploymentError("selected lane must contain ordered compatible GPU configurations")
+        raise B300DeploymentError("selected lane must contain ordered compatible GPU configurations")
     return DeviceStatePolicy(
         expected_gpus=gpus,
         maximum_temperature_c=90,
@@ -134,11 +134,11 @@ def resource_policy(policy, overrides: object):
     if set(row) - {"cpu_millis", "memory_bytes", "pids_limit", "nofile_limit",
                    "cache_bytes", "cache_inodes", "tmpfs_bytes", "shm_bytes",
                    "stage_bytes", "stage_inodes"}:
-        raise B300ScreenDeploymentError("unknown OCI resource capacity field")
+        raise B300DeploymentError("unknown OCI resource capacity field")
     try:
         return replace(policy, **row)
     except (TypeError, ValueError) as exc:
-        raise B300ScreenDeploymentError(f"invalid OCI resource capacity: {exc}") from None
+        raise B300DeploymentError(f"invalid OCI resource capacity: {exc}") from None
 
 
 def hardware_bindings(
@@ -168,7 +168,7 @@ def engine_config(
 ) -> EngineSessionConfig:
     cells = (cell,) if type(cell) is WorkloadCell else tuple(cell)
     if not cells or any(type(row) is not WorkloadCell for row in cells):
-        raise B300ScreenDeploymentError("engine workload cells are not exact")
+        raise B300DeploymentError("engine workload cells are not exact")
     kwargs = dict(template.engine_kwargs)
     kwargs["context_length"] = max(
         row.input_tokens + row.output_tokens for row in cells
@@ -186,7 +186,7 @@ def engine_config(
 def data_parallel_size(config: EngineSessionConfig) -> int:
     value = config.engine_kwargs.get("dp_size", 1)
     if type(value) is not int or not 1 <= value <= config.tp_size:
-        raise B300ScreenDeploymentError("arena engine dp_size exceeds its TP degree")
+        raise B300DeploymentError("arena engine dp_size exceeds its TP degree")
     return value
 
 
@@ -195,11 +195,11 @@ def engine_template(prompt: dict[str, object]) -> EngineSessionConfig:
 
     row = _mapping(prompt.get("engine_config"), "arena engine config")
     if set(row) != _ARENA_ENGINE_FIELDS:
-        raise B300ScreenDeploymentError("arena engine config fields are not closed")
+        raise B300DeploymentError("arena engine config fields are not closed")
     engine_kwargs = _mapping(row.get("engine_kwargs"), "arena engine kwargs")
     forbidden = set(engine_kwargs) & _DERIVED_ENGINE_KWARGS
     if forbidden:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"arena engine kwargs contain derived fields: {sorted(forbidden)!r}"
         )
     try:
@@ -210,7 +210,7 @@ def engine_template(prompt: dict[str, object]) -> EngineSessionConfig:
             **row,  # type: ignore[arg-type]
         )
     except (TypeError, ValueError) as exc:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"arena engine config is invalid: {exc}"
         ) from None
 
@@ -223,15 +223,15 @@ def workload(
     singular = prompt.get("workload_cell")
     plural = prompt.get("workload_cells")
     if (singular is None) == (plural is None):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "prompt authority requires exactly one workload-cell form"
         )
     raw_rows = [singular] if singular is not None else plural
     if type(raw_rows) is not list or not raw_rows:
-        raise B300ScreenDeploymentError("workload cells are malformed")
+        raise B300DeploymentError("workload cells are malformed")
     rows = tuple(_mapping(row, "workload cell") for row in raw_rows)
     if any(set(row) != _CELL_FIELDS for row in rows):
-        raise B300ScreenDeploymentError("workload cell fields are not closed")
+        raise B300DeploymentError("workload cell fields are not closed")
     try:
         cells = tuple(WorkloadCell(**row) for row in rows)  # type: ignore[arg-type]
         parsed = Workload(
@@ -240,7 +240,7 @@ def workload(
             cells=cells,
         )
     except ArenaServiceError as exc:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"workload declaration is invalid: {exc}"
         ) from None
     prompt_batch_cells(prompt, batches, parsed)
@@ -254,7 +254,7 @@ def prompt_batch_cells(
 ) -> tuple[str, ...]:
     if len(parsed.cells) == 1:
         if "prompt_batch_cells" in prompt:
-            raise B300ScreenDeploymentError(
+            raise B300DeploymentError(
                 "one-cell prompt authority cannot declare batch-cell routing"
             )
         cells = (parsed.cells[0].cell_id,) * len(batches)
@@ -265,7 +265,7 @@ def prompt_batch_cells(
             or len(raw) != len(batches)
             or any(type(row) is not str for row in raw)
         ):
-            raise B300ScreenDeploymentError(
+            raise B300DeploymentError(
                 "prompt batch cells must exactly cover the sealed batches"
             )
         cells = tuple(raw)
@@ -275,7 +275,7 @@ def prompt_batch_cells(
         or len(batch) != by_id[cell_id].concurrency
         for batch, cell_id in zip(batches, cells, strict=True)
     ):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "sealed prompt batches do not match their declared cell concurrency"
         )
     return cells
@@ -296,21 +296,21 @@ def target_partition(
         string_rows(prompt.get("registered_targets"), "registered targets")
     )
     if not registered or registered != tuple(sorted(set(registered))):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "registered targets must be a nonempty sorted unique list"
         )
     for target in registered:
         try:
             catalog.require(target)
         except (KeyError, TypeError, ValueError) as exc:
-            raise B300ScreenDeploymentError(
+            raise B300DeploymentError(
                 f"arena target is not registered: {exc}"
             ) from None
     snapshot = catalog.snapshot().get("targets")
     if type(snapshot) is not list or any(type(row) is not dict for row in snapshot):
-        raise B300ScreenDeploymentError("target catalog snapshot is malformed")
+        raise B300DeploymentError("target catalog snapshot is malformed")
     catalog_ids = tuple(row.get("target_id") for row in snapshot)
     if any(type(target) is not str for target in catalog_ids):
-        raise B300ScreenDeploymentError("target catalog IDs are malformed")
+        raise B300DeploymentError("target catalog IDs are malformed")
     closed = tuple(target for target in catalog_ids if target not in registered)
     return registered, closed

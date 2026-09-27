@@ -252,12 +252,8 @@ def _active_lease(
     return lease
 
 
-def _max_members(config: FifoLeaseConfig) -> int | None:
-    return (
-        config.qualification_max_members
-        if config.stage == "qualification"
-        else None
-    )
+def _max_members(config: FifoLeaseConfig) -> int:
+    return config.qualification_max_members
 
 
 def _lease_dict(lease: EvaluationLease) -> dict[str, object]:

@@ -41,7 +41,6 @@ from cacheon.chain.intake import IntakePolicy, IntakeScope
 from cacheon.chain.publication import reopen_worker_bundle
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.remote_evaluation_dispatcher import (
-    RemoteEvaluationDispatcher,
     RemoteEvaluationDispatcherError,
     RemoteEvaluationRequest,
 )
@@ -560,12 +559,16 @@ def make_qualification_publication_resolver(
     return resolve
 
 
-def build_dispatcher(
+def build_coordinator_and_transport(
     config: DispatcherConfig,
     *,
     store_factory: Callable[..., Any] | None = None,
-) -> RemoteEvaluationDispatcher:
+) -> tuple[EvaluationCoordinator, DurableSpoolAuthenticatedWorkerTransport]:
     """Construct the exact CPU coordinator and durable spool adapter.
+
+    ``RecoverableQualificationDispatcher`` binds the pair and checks that the
+    transport identity, readiness digest, and credential agree with the
+    coordinator's sealed service.
 
     The default is the recovery-capable finalized intake store because recovery
     triggers are durable while their authorizing SQLite function is
@@ -640,8 +643,4 @@ def build_dispatcher(
         raise MainnetScreenDispatcherError(
             "durable spool transport differs from pinned registration authority"
         )
-    return RemoteEvaluationDispatcher(
-        coordinator=coordinator,
-        transport=transport,
-        credential=transport.credential,
-    )
+    return coordinator, transport

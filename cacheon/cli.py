@@ -1742,7 +1742,7 @@ def cmd_chain_validate(
             f"intake @finalized {res.finalized_block}: seen={res.seen} "
             f"reserved={len(res.reserved)} published={len(res.published)} "
             f"copies={len(res.copies)} rejected={len(res.rejected)} "
-            f"screens={len(res.screens)} decisions={len(res.decisions)} "
+            f"decisions={len(res.decisions)} "
             f"settlements={len(res.settlements)} held={len(res.held)}"
         )
         for reservation, why in res.rejected.items():
@@ -1881,7 +1881,7 @@ def cmd_chain_reopen_qualification(args: argparse.Namespace) -> int:
                 return 0
             state = store.rebind_remeasurement_segment(args.reservation_id)
             print(
-                "left unbound for the fresh screen to bind"
+                "left unbound for the fresh qualification claim to bind"
                 if state is None
                 else f"rebound to arena {state.arena_digest[:16]} "
                 f"generation {state.generation}"
@@ -3111,7 +3111,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser(
         "chain-reopen-qualification",
         help=(
-            "operator: return one unsettled PASS reservation to the screen "
+            "operator: return one unsettled PASS reservation to the qualification "
             "queue for a fresh qualification when retained evidence shows its credited "
             "half read the baseline lane under the arena band; never signs, "
             "settles, or crowns"
