@@ -18,8 +18,6 @@ import secrets
 import stat
 import struct
 import subprocess
-import tempfile
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
@@ -30,37 +28,24 @@ from cacheon.eval.engine_worker import (
 from cacheon.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     CONTAINER_MODEL_PATH,
-    CONTAINER_SWAP_INTAKE_PATH,
     FRAME_HEADER_BYTES,
-    MAX_BATCH_REQUEST_BYTES,
     MAX_CONTROL_BYTES,
     MAX_INIT_BYTES,
-    BatchEvidence,
     BatchRequest,
     EngineSessionConfig,
     RuntimePreflightFacts,
     SessionProtocolError,
     SlotAuditPolicy,
-    SwapRequest,
     audit_policy_from_init,
     decode_message,
     error_message,
-    evidence_frame,
     frame_message,
     preflight_message,
     ready_message,
-    swap_evidence_message,
-    validate_batch_request,
     validate_init,
     validate_preflight_accept,
-    validate_swap_request,
 )
-from cacheon.eval.phase_latency import engine_outputs as _engine_outputs
 from cacheon.eval.oci_request_loop import RequestFailure, serve_requests
-from cacheon.eval.resident_execution_evidence import (
-    ResidentExecutionEvidence,
-    summarize_rank_acks,
-)
 
 
 CONTAINER_TREE_PATH = "/cacheon/engine-tree"
@@ -602,273 +587,6 @@ def _engine_session(
         )
 
 
-def _generate(engine: object, request: BatchRequest, emit=None) -> BatchEvidence:
-    """Keep the serial resident-screen adapter on the shared async generation path."""
-    from cacheon.eval.phase_latency import generate_outputs
-
-    async def send(frame):
-        emit(frame)
-
-    return _engine_outputs(
-        engine.loop.run_until_complete(
-            generate_outputs(engine, request, send if emit is not None else None)
-        ),
-        request=request,
-    )
-
-
-RESIDENT_SWAP_TIMEOUT_SECONDS = 1800.0
-_RESIDENT_ACK_POLL_SECONDS = 0.25
-_RESIDENT_FLUSH_RETRY_SECONDS = 30.0
-
-
-def _resident_control_dir() -> str:
-    """Create the worker-private swap control dir and expose it to rank children."""
-
-    control_dir = tempfile.mkdtemp(prefix="cacheon-resident-swap-", dir="/tmp")
-    os.environ["CACHEON_RESIDENT_SWAP"] = control_dir
-    return control_dir
-
-
-class CandidateExecutionFailure(RuntimeError):
-    """The candidate raised inside a scheduler rank; the engine died with it."""
-
-
-def _candidate_failures(control_dir: str | None) -> str:
-    """Every ``failed`` receipt under the resident receipt root, as one sentence.
-
-    Read without the receipts module's scope state: the ranks wrote these under
-    ``<control_dir>/receipts/<generation>/`` and this process only ever reads.
-    Never raises — this runs on the way out of a failing session.
-    """
-
-    if not control_dir:
-        return ""
-    from cacheon.receipts import validator_runtime_failure
-
-    found: list[str] = []
-    try:
-        for path in sorted(Path(control_dir, "receipts").glob("*/failed*.json"))[:16]:
-            row = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(row, dict):
-                continue
-            message = str(row.get("error", ""))[:256].replace("\n", " ")
-            if row.get("failure_owner") == "validator_runtime" or validator_runtime_failure(
-                row.get("error_type"), message
-            ):
-                continue
-            phase = str(row.get("phase", "entry"))[:16]
-            source = str(row.get("source", ""))[:128]
-            line = row.get("line")
-            location = (
-                f" at {source}:{line}"
-                if source and type(line) is int and line > 0
-                else ""
-            )
-            found.append(
-                f"rank {row.get('rank')} {row.get('error_type')} in "
-                f"{row.get('slot')} (generation {path.parent.name}) "
-                f"during {phase}{location}: {message}"
-            )
-    except (OSError, ValueError):
-        return ""
-    return "; ".join(f"candidate raised {item}" for item in found)
-
-
-def _read_rank_acks(control_dir: str, *, tp_size: int) -> dict[int, dict]:
-    rows: dict[int, dict] = {}
-    for rank in range(tp_size):
-        path = os.path.join(control_dir, f"ack.rank{rank}.json")
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                row = json.load(handle)
-        except (OSError, ValueError):
-            continue
-        if isinstance(row, dict):
-            rows[rank] = row
-    return rows
-
-
-def _apply_resident_swap(
-    engine: object, request: SwapRequest, *, control_dir: str, tp_size: int
-) -> tuple[tuple[str, ...], ResidentExecutionEvidence]:
-    """Re-hash the staged tree, command every rank, and wait for exact acks.
-
-    Returns the registered slots and the execution evidence for the generation
-    this swap closes — each rank counts its own receipts before acknowledging,
-    so the reads that were just timed are accounted for before anything new can
-    run under the lane.
-
-    The trigger is sglang's own idle-gated ``flush_cache`` broadcast: the
-    ``resident_swap`` seam applies the pending command and recaptures CUDA
-    graphs on each scheduler rank, then writes a per-rank ack file.  The verb
-    stream is strictly serialized, so the engine is idle when this runs.
-    Weight-refresh triggers are deliberately not used: the quantized M3 loader
-    is not re-entrant (measured 2026-07-20) and the swap must never touch
-    weights anyway.
-    """
-
-    if request.bundle_digest is None:
-        bundle_value: str | None = None
-    else:
-        staged = Path(CONTAINER_SWAP_INTAKE_PATH) / request.bundle_digest
-        try:
-            staged.lstat()
-        except OSError as exc:
-            raise SessionProtocolError(
-                f"staged swap bundle is inaccessible: {exc}"
-            ) from None
-        if not _read_only_directory(staged):
-            raise SessionProtocolError("staged swap bundle is absent or writable")
-        from cacheon.bundle_hash import content_hash
-
-        try:
-            observed = content_hash(staged)
-        except (OSError, ValueError) as exc:
-            raise SessionProtocolError(
-                f"staged swap bundle is unreadable: {exc}"
-            ) from None
-        if observed != request.bundle_digest:
-            raise SessionProtocolError(
-                "staged swap bundle differs from its committed digest"
-            )
-        bundle_value = str(staged)
-    for rank in range(tp_size):
-        with contextlib.suppress(OSError):
-            os.unlink(os.path.join(control_dir, f"ack.rank{rank}.json"))
-    payload = json.dumps(
-        {"bundle": bundle_value, "generation": request.generation}, sort_keys=True
-    )
-    temporary = os.path.join(control_dir, f".command.{os.getpid()}.tmp")
-    with open(temporary, "w", encoding="utf-8") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, os.path.join(control_dir, "command.json"))
-    flush = getattr(engine, "flush_cache", None)
-    if not callable(flush):
-        raise SessionProtocolError("resident engine does not expose flush_cache()")
-    deadline = time.monotonic() + RESIDENT_SWAP_TIMEOUT_SECONDS
-    next_flush = 0.0
-    rows: dict[int, dict] = {}
-    while True:
-        now = time.monotonic()
-        if now >= deadline:
-            raise SessionProtocolError(
-                "resident swap did not complete on every rank in time"
-            )
-        if now >= next_flush:
-            # Retried because a flush can race scheduler-side work and report
-            # failure; ranks that already applied this generation ignore it.
-            try:
-                flush()
-            except Exception as exc:
-                raise SessionProtocolError(
-                    f"resident swap flush failed: {type(exc).__name__}: {exc}"
-                ) from exc
-            next_flush = time.monotonic() + _RESIDENT_FLUSH_RETRY_SECONDS
-        rows = _read_rank_acks(control_dir, tp_size=tp_size)
-        if len(rows) == tp_size and all(
-            row.get("generation") == request.generation for row in rows.values()
-        ):
-            break
-        time.sleep(_RESIDENT_ACK_POLL_SECONDS)
-    slot_views: set[tuple[str, ...]] = set()
-    for rank in range(tp_size):
-        row = rows[rank]
-        if row.get("ok") is not True:
-            detail = str(row.get("error", ""))[:512]
-            raise SessionProtocolError(
-                f"resident swap failed on rank {rank}: {detail}"
-            )
-        slots = row.get("slots")
-        if not isinstance(slots, list) or any(
-            not isinstance(slot, str) for slot in slots
-        ):
-            raise SessionProtocolError(
-                f"resident swap rank {rank} ack slots are malformed"
-            )
-        slot_views.add(tuple(sorted(slots)))
-    if len(slot_views) != 1:
-        raise SessionProtocolError(
-            "resident swap ranks registered different slot sets"
-        )
-    return slot_views.pop(), summarize_rank_acks(rows, tp_size=tp_size)
-
-
-def _serve_resident(
-    engine: object,
-    control_fd: int,
-    protocol_fd: int,
-    *,
-    session_id: str,
-    launch_digest: str,
-    control_dir: str,
-    tp_size: int,
-) -> None:
-    """Serve an ordered stream of swap and batch verbs on one live engine."""
-
-    expected_batch_index = 0
-    expected_swap_index = 0
-    applied_generation = 0
-    seen_request_ids: set[str] = set()
-    seen_nonces: set[str] = set()
-    while True:
-        message = _read_control_frame(control_fd, max_bytes=MAX_BATCH_REQUEST_BYTES)
-        kind = message.get("type")
-        if kind == "swap_request":
-            request = validate_swap_request(message)
-            if (
-                request.session_id != session_id
-                or request.launch_digest != launch_digest
-                or request.swap_index != expected_swap_index
-                or request.generation <= applied_generation
-                or request.request_id in seen_request_ids
-                or request.nonce in seen_nonces
-            ):
-                raise SessionProtocolError(
-                    "swap ordering, session, launch, or replay binding failed"
-                )
-            seen_request_ids.add(request.request_id)
-            seen_nonces.add(request.nonce)
-            slots, execution = _apply_resident_swap(
-                engine, request, control_dir=control_dir, tp_size=tp_size
-            )
-            _write_all(
-                protocol_fd,
-                frame_message(
-                    swap_evidence_message(
-                        request=request,
-                        slots=slots,
-                        rank_count=tp_size,
-                        execution=execution,
-                    ),
-                    max_bytes=MAX_CONTROL_BYTES,
-                ),
-            )
-            applied_generation = request.generation
-            expected_swap_index += 1
-        elif kind == "batch_request":
-            batch = validate_batch_request(message)
-            if (
-                batch.session_id != session_id
-                or batch.launch_digest != launch_digest
-                or batch.batch_index != expected_batch_index
-                or batch.request_id in seen_request_ids
-                or batch.nonce in seen_nonces
-            ):
-                raise SessionProtocolError(
-                    "batch ordering, session, launch, or replay binding failed"
-                )
-            seen_request_ids.add(batch.request_id)
-            seen_nonces.add(batch.nonce)
-            evidence = _generate(engine, batch)
-            _write_all(protocol_fd, evidence_frame(evidence, request=batch))
-            expected_batch_index += 1
-        else:
-            raise SessionProtocolError("resident session received an unknown verb")
-
-
 def _canonical_prompt_ids(engine: object, prompt: str) -> list[int]:
     manager = getattr(engine, "tokenizer_manager", None)
     tokenizer = getattr(manager, "tokenizer", None)
@@ -1114,7 +832,7 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
     """Serve batches until the trusted host force-destroys the container."""
 
     session_protocol = os.environ.get("CACHEON_SESSION_PROTOCOL", "ordinary")
-    if session_protocol not in {"ordinary", "reference", "resident"}:
+    if session_protocol not in {"ordinary", "reference"}:
         return 1
     protocol_fd = _reserve_protocol_fd() if output_fd is None else output_fd
     os.set_inheritable(protocol_fd, False)
@@ -1122,7 +840,6 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
     session_id: str | None = None
     launch_digest: str | None = None
     request: BatchRequest | None = None
-    resident_control_dir: str | None = None
     stage = "init"
     try:
         init = _read_control_frame(control_fd, max_bytes=MAX_INIT_BYTES)
@@ -1140,14 +857,6 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
             )
         stage = "preflight"
         facts, tree = _validate_live_preflight(config, launch_digest=launch_digest)
-        if session_protocol == "resident":
-            if not _read_only_directory(Path(CONTAINER_SWAP_INTAKE_PATH)):
-                raise SessionProtocolError(
-                    "resident session lacks its read-only swap-intake mount"
-                )
-            # Rank children inherit the control dir through the environment at
-            # engine construction, so this must precede the engine context.
-            resident_control_dir = _resident_control_dir()
         _write_all(
             protocol_fd,
             frame_message(
@@ -1170,7 +879,7 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
             and getattr(tree, "runtime_manifest", None) is not None
         ):
             raise SessionProtocolError(
-                "reference/resident trees must contain no contribution manifest"
+                "reference trees must contain no contribution manifest"
             )
         engine_context = (
             _engine_session(config, tree)
@@ -1198,19 +907,6 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                     launch_digest=launch_digest,
                 )
                 raise AssertionError("reference session loop returned")
-            if session_protocol == "resident":
-                stage = "resident"
-                assert resident_control_dir is not None
-                _serve_resident(
-                    handle.engine,
-                    control_fd,
-                    protocol_fd,
-                    session_id=session_id,
-                    launch_digest=launch_digest,
-                    control_dir=resident_control_dir,
-                    tp_size=config.tp_size,
-                )
-                raise AssertionError("resident session loop returned")
             stage = "batch"
             try:
                 handle.engine.loop.run_until_complete(serve_requests(
@@ -1224,13 +920,6 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                 raise failure.cause
     except BaseException as exc:  # noqa: BLE001 - bounded untrusted diagnostic
         reported = False
-        # A candidate that raised inside a scheduler rank takes the rank down,
-        # and what this process observes is the engine dying — an
-        # infrastructure-shaped error. The rank receipted the raise on its way
-        # out; naming it here is what keeps that failure off the lane's record.
-        blamed = _candidate_failures(resident_control_dir)
-        if blamed:
-            exc = CandidateExecutionFailure(f"{blamed}; engine: {type(exc).__name__}")
         if session_id is not None and launch_digest is not None:
             try:
                 _write_all(

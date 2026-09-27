@@ -197,8 +197,8 @@ def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> N
 
 def test_lane_policies_reopen_exact_canonical_pair() -> None:
     eight = tuple(_gpu(index) for index in range(8))
-    policy_a = commission.screen_deployment._device_policy(eight[:4])
-    policy_b = commission.screen_deployment._device_policy(eight[4:])
+    policy_a = commission.b300_deployment._device_policy(eight[:4])
+    policy_b = commission.b300_deployment._device_policy(eight[4:])
     lanes = B300QualificationLanePair(
         B300QualificationLanePolicy.from_device_policy("A", policy_a),
         B300QualificationLanePolicy.from_device_policy("B", policy_b),
@@ -495,7 +495,7 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     # manifest.toml, which the genesis-only reject condition treated as
     # "differs from the commissioned incumbent stack".
     import tests.test_engine_tree as engine_tree_fixtures
-    from cacheon.eval import b300_screen_deployment as screen_deployment
+    from cacheon.eval import b300_deployment
 
     source = engine_tree_fixtures._copy(tmp_path)
     catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
@@ -508,7 +508,7 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     )
     manifest = SimpleNamespace(digest=_h("arena"))
 
-    members, _, stock, stock_tree = screen_deployment._commissioned_stock_authority(
+    members, _, stock, stock_tree = b300_deployment._commissioned_stock_authority(
         inputs,
         manifest,
         catalog,
@@ -520,7 +520,7 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     assert stock.entries == {}
     assert stock_tree.runtime_manifest is None
 
-    _, _, incumbent, incumbent_tree = screen_deployment._commissioned_stock_authority(
+    _, _, incumbent, incumbent_tree = b300_deployment._commissioned_stock_authority(
         inputs,
         manifest,
         catalog,
@@ -540,11 +540,11 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
 def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, monkeypatch, gpu_model, tp):
     from cacheon.arena_service import ArenaService
     from cacheon.chain.evaluation_coordinator import WorkerReadiness
-    from cacheon.eval import b300_screen_deployment as screen
+    from cacheon.eval import b300_deployment as deployment
     from cacheon.eval.b300_arena_provider import B300ArenaServiceProvider
     from cacheon.eval.b300_sealed_qualification_commission import predicted_qualification_builder_digest
     from cacheon.eval.reference_quality import retained_support_policy_digest
-    from tests import test_b300_screen_deployment as fixtures
+    from tests import test_b300_deployment as fixtures
     from tests.test_b300_sealed_qualification_commission import _block
     from tests.support.b300 import GLM53_REGISTERED_TARGET_IDS
 
@@ -570,13 +570,13 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
         builder_source_digest=block["builder_source_digest"], selection_store_digest=block["selection_store_digest"])
     for name in ("authority_config", "measurement_config"):
         fixtures._write(paths[name], authority)
-    inputs = screen._authority_inputs(**paths, provisioner=None, provisioned_gpus=gpus)
-    composition = screen._compose(inputs)
+    inputs = deployment._authority_inputs(**paths, provisioner=None, provisioned_gpus=gpus)
+    composition = deployment._compose(inputs)
     judge = _Judge()
     judge.binding = HiddenJudgeBinding(*(inputs.prompt_identity[key] for key in
         ("hidden_corpus_commitment", "hidden_judge_digest", "hidden_task_policy_digest")))
     contexts, native_arches = [], []
-    native_build = screen._native_build
+    native_build = deployment._native_build
 
     def tracked_native(*args):
         built = native_build(*args)
@@ -590,7 +590,7 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
         evidence = CalibrationEvidenceSet.create(threshold, calibration_fixtures._observations())
         return threshold, derive_calibration_manifest(threshold, evidence.observations), evidence
 
-    monkeypatch.setattr(screen, "_native_build", tracked_native)
+    monkeypatch.setattr(deployment, "_native_build", tracked_native)
     executors = ()
     try:
         service = ArenaService(composition.manifest, B300ArenaServiceProvider(composition.manifest, composition.authorities))
@@ -608,4 +608,3 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
     finally:
         for executor in executors:
             executor.manager.close()
-        composition.close()

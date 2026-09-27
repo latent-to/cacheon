@@ -32,7 +32,7 @@ absolute machine paths.
 All declared paths are bundle-relative. Intake rejects path traversal, unsafe
 filesystem entries, and undeclared executable material. The fetched archive is
 rehash-checked and republished as immutable validator-owned input before any
-screen or qualification runs.
+qualification runs.
 
 ### What each file is for
 

@@ -61,8 +61,8 @@ The subnet is a market for proposals. The referee is the measurement system that
 
 1. preserves finalized proposal priority;
 2. fetches and republishes hostile bytes immutably;
-3. screens invalid or unpromising work without creating economic authority;
-4. evaluates finalists as one exact marginal substitution;
+3. rejects invalid, unregistered, and copied work without creating economic authority;
+4. evaluates each admitted proposal as one exact marginal substitution;
 5. retains and reopens the evidence;
 6. reopens the complete audited qualification before settlement; and
 7. projects rewards for active, verifiable contributions.
@@ -100,19 +100,17 @@ that registered singleton target and declare that it applies to BF16 calls on `s
    recomputes the hash, republishes an immutable tree, and resolves the claimed target
    against the active catalog. It observes the actual proposal features rather than
    trusting the manifest to grant itself permissions.
-4. Static, build, ABI, graph, and abbreviated-serving screens decide only whether the
-   candidate should consume full qualification capacity.
-5. Version-3 qualification measures every candidate on the two-process
+4. Version-3 qualification measures every candidate on the two-process
    substrate: speed policy v10 (v11 for a mixed-cell workload) launches separate
    baseline and candidate engines and always collects B/C/B′; v12 adds a
    one-token prompt pass of each lane so a prompt-processing win can qualify
    on its own sealed terms. A registered eager, untimed audit role
    (**A**) then checks the candidate delta; after candidate teardown, the
    pristine reference (**T**) supplies candidate-free quality evidence.
-6. One complete audited PASS becomes `qualified` and eligible for settlement.
+5. One complete audited PASS becomes `qualified` and eligible for settlement.
    Settlement reopens its retained evidence and may create the target crown;
    it does not schedule another qualification.
-7. If settlement creates the crown, it also creates the corresponding reward claim
+6. If settlement creates the crown, it also creates the corresponding reward claim
    for the miner's hotkey. The active incentive policy determines how that claim
    contributes to the validator's weight vector, which a separate publisher later
    submits and confirms on-chain. Product integration remains a separate decision,
@@ -122,7 +120,7 @@ that registered singleton target and declare that it applies to BF16 calls on `s
 
 If the implementation is wrong at step 1, the miner changes the bundle. If its HTTPS
 server times out at step 3, the validator may retry the same identity. If the candidate
-is slower at step 5, that exact identity fails; a revised kernel is a new proposal. This
+is slower at step 4, that exact identity fails; a revised kernel is a new proposal. This
 is why the last authoritative lifecycle state matters more than the last local command.
 
 ## Slots, targets, and engines

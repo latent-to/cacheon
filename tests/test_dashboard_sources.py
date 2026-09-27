@@ -44,14 +44,14 @@ def planes(tmp_path, monkeypatch):
     sources = {}
     for key, status, reason, publication in (
         ("glm", "failed", "manifest: unknown arena", ""),
-        ("qwen", "promoted", "screen_promoted", "published"),
+        ("qwen", "qualifying", "", "published"),
     ):
         path = tmp_path / f"{key}.sqlite3"
         with sqlite3.connect(path) as con:
             con.execute("""CREATE TABLE reservations (
                 reservation_id, status, reason, publication_digest,
                 target_id DEFAULT '', arena_service_digest DEFAULT '',
-                screen_status DEFAULT '', decision DEFAULT '', competition_arena DEFAULT '')""")
+                decision DEFAULT '', competition_arena DEFAULT '')""")
             con.execute("CREATE TABLE metadata (key, value)")
             if key == "glm":
                 con.execute("INSERT INTO metadata VALUES ('legacy_arena_id', 'glm-arena')")
@@ -81,7 +81,7 @@ def test_prepublication_rejections_do_not_claim_the_other_arenas_submission(plan
     response = client.get("/api/submissions/shared?arena=qwen")
     assert response.status_code == 200
     row = response.json()
-    assert (row["source"], row["status"]) == ("qwen", "promoted")
+    assert (row["source"], row["status"]) == ("qwen", "qualifying")
     assert row["log_url"] == "/api/submissions/shared/logs?arena=qwen"
     assert client.get("/api/submissions/shared?arena=glm").status_code == 404
     assert client.get("/api/submissions/shared").status_code == 404

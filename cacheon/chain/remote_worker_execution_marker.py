@@ -86,7 +86,7 @@ def marker_for_request(request: Mapping[str, Any]) -> dict[str, object]:
     try:
         lease = verify_lease(request.get("lease"))
         stage = lease["stage"]
-        if stage not in ("screen", "qualification"):
+        if stage != "qualification":
             _fail("resident-entry stage is unsupported")
         return {
             "generation": require_int(

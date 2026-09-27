@@ -62,13 +62,12 @@ evaluation and economic state.
 | Pod worker service | [`chain/remote_worker_pod_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_worker_pod_service.py) |
 | Remote transport CLI composition | [`chain/remote_worker_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_worker_service.py) |
 | Standing CPU supervisor daemon | [`chain/standing_cpu_supervisor.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/standing_cpu_supervisor.py) |
-| Screen dispatch config and builder | [`chain/mainnet_screen_dispatcher.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/mainnet_screen_dispatcher.py) |
+| Qualification dispatch config, coordinator, and recovery | [`chain/mainnet_screen_dispatcher.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/mainnet_screen_dispatcher.py), [`chain/recoverable_qualification_dispatcher.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/recoverable_qualification_dispatcher.py) |
 | B300 pod evaluation adapter | [`eval/b300_remote_worker_adapter.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_worker_adapter.py) |
 | Redacted chain journal | [`chain/audit_log.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py) |
 | Private validator snapshot/restore | [`chain/archive.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py) |
 | Injected arena boundary | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py) |
 | Qualification schema and regrading | [`eval/qualification.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py) |
-| Resident routing screen | [`eval/oci_resident_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_resident_session.py), [`eval/resident_queue.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_queue.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py) |
 | Adaptive two-lane qualification | [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py) |
 | Standing qualification composition | [`eval/b300_qualification_deployment.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_qualification_deployment.py), [`eval/b300_registered_qualification.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_registered_qualification.py) |
 | Sealed qualification input authorities | [`eval/b300_registered_qualification_inputs.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_registered_qualification_inputs.py) |
@@ -126,7 +125,7 @@ run.
 
 Start at `chain/intake.py`, then follow `chain/fetch.py` and
 `chain/publication.py` into `chain/validator_loop.py`. The loop resolves the
-closed `ArenaServiceRegistry`, receives screening and qualification work,
+closed `ArenaServiceRegistry`, receives qualification work,
 persists evidence references, and invokes transactional settlement. Read
 `eval/qualification_runner.py` alongside `eval/qualification.py`: the runner
 orchestrates work; the schema and regrader define what counts as authority.

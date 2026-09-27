@@ -32,7 +32,6 @@ from cacheon.chain.operator_status import (
     _qualification_dispositions,
     _readonly_connection,
     _reason,
-    _screen_dispositions,
 )
 
 
@@ -87,12 +86,24 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "The bundle failed in eager execution before graph capture.",
         "Reproduce locally with `cacheon.cli verify` before submitting.",
     ),
+    # Retired with the routing screen on 2026-09-27. Durable rows written before
+    # that day still carry these reasons, so each keeps an explanation.
     "screen_rejected": (
-        "The bundle was rejected by one of the arena screen stages and did "
-        "not enter qualification.",
-        "Read the failed stage below. Abbreviated serving is a timed stock/"
-        "candidate bracket; earlier stages cover static scan, build, ABI, "
-        "and graph behavior.",
+        "The bundle was rejected by one of the retired arena screen stages "
+        "(static scan, build, ABI, graph behavior, or a timed stock/candidate "
+        "serving bracket) and did not enter qualification.",
+        "Read the failed stage below. A new submission goes straight to "
+        "qualification; the screen no longer runs.",
+    ),
+    "screen_receipt_service_rotated": (
+        "The arena service identity changed between the retired screen and "
+        "its use, so the screen receipt no longer described the running service.",
+        "This was validator-side and not attributed to the bundle.",
+    ),
+    "screen_promoted": (
+        "Every non-crown screen passed and the submission was waiting to enter "
+        "qualification.",
+        "No action is needed. This was a queue position, not a verdict.",
     ),
     "copy_of": (
         "The bundle was detected as a copy of an earlier submission or of the "
@@ -134,17 +145,6 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "so it was never queued for evaluation.",
         "This is NOT a judgement on the bundle; nothing about it was measured. "
         "Each evaluation needs its own payment bound to the submission.",
-    ),
-    "screen_receipt_service_rotated": (
-        "The arena service identity changed between the screen and its use, so "
-        "the screen receipt no longer described the running service.",
-        "This is validator-side and not attributed to the bundle. It is "
-        "re-screened against the current service rather than failed.",
-    ),
-    "screen_promoted": (
-        "Every non-crown screen passed and the submission is waiting to enter "
-        "qualification.",
-        "No action is needed. This is a queue position, not a verdict.",
     ),
 }
 
@@ -368,7 +368,6 @@ def _submission(
         "attribution": _attribution(row),
         "reason": reason,
         "guidance": _guidance(reason.get("code")),
-        "screens": _screen_dispositions(db, row["reservation_id"]),
         "qualification_dispositions": qualifications,
         "evaluation_leases": leases,
     }
@@ -470,18 +469,6 @@ def format_miner_submissions(value: dict[str, Any]) -> str:
         finding = record.get("static_finding")
         if finding:
             lines.append(f"  static finding: {finding}")
-        for screen in record["screens"]:
-            failed = [
-                stage for stage in screen["stages"] if stage["grade"] != "pass"
-            ]
-            if failed:
-                lines.append(
-                    f"  screen[{screen['attempt_index']}] {screen['decision']}: "
-                    f"failed at {', '.join(stage['stage'] for stage in failed)}"
-                )
-            for stage in failed:
-                if stage.get("reason"):
-                    lines.append(f"    {stage['stage']}: {stage['reason']}")
         for attempt in record.get("attempt_evidence") or ():
             lines.append(f"  attempt[{attempt['attempt_index']}] evidence:")
             if attempt["retained"]:

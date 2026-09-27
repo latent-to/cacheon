@@ -377,8 +377,7 @@ NLL of the output went from 0.09 to 15.5 and 9.0
 
 A node-address bundle resolves to the
 [`forward_pass` target](../reference/target-catalog.md#registered-targets), and
-its reservation carries the addresses it declared. The resident hot-swap screen
-refuses node bundles, because a swap never re-runs the hook that binds them. The
+its reservation carries the addresses it declared. The
 check separates honest from wrong at every width from one activation to the whole
 forward pass; the runs are in
 [Qwen H100 node slots](../results/qwen-h100-node-slots.md).

@@ -1,7 +1,7 @@
 # Diagnostics by lifecycle stage
 
 Diagnose a proposal from its last authoritative state. A local PASS cannot
-override a later intake, screen, qualification, or settlement result because
+override a later intake, qualification, or settlement result because
 each stage has different identity and evidence.
 
 ## Decision vocabulary
@@ -15,8 +15,7 @@ Cacheon uses three qualification grades:
 | `NO_DECISION` | authority, infrastructure, conditioning, drift, or evidence was insufficient for a safe verdict | preserve the proposal identity and wait/retry under operator policy |
 
 `NO_DECISION` is not a weak pass, and `FAIL` is not converted to a zero-scored
-candidate. Non-crown screens use equivalent `pass`, `fail`, and `no_decision`
-grades to derive promote, reject, retry, or hold.
+candidate.
 
 ## Durable intake states
 
@@ -27,9 +26,7 @@ The production SQLite state machine currently exposes these statuses:
 | `reserved` | finalized reveal admitted and waiting for a fetch lease |
 | `fetching` | HTTPS fetch/extract/hash/publication work is active |
 | `transport_retry` | transient transport failure is eligible for another fetch attempt |
-| `published` | immutable worker publication and selected-delta identity exist; waiting for primary screens |
-| `screening` | the registered arena service is running the ordered non-crown screen prefix |
-| `promoted` | every non-crown screen passed; waiting to enter qualification |
+| `published` | immutable worker publication and selected-delta identity exist; waiting in the qualification queue |
 | `qualifying` | one authority-bound version-3 attempt—two-process B/C/B′, registered eager audit A, then pristine T—is active |
 | `reproduction_pending` | historical transition; a retained complete primary PASS is accepted on restart without another GPU run |
 | `qualified` | one complete audited PASS is retained; settlement is separate |
@@ -248,34 +245,7 @@ Publication/storage faults after a valid fetch are validator-side
 and immutable publication in
 [publication.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publication.py).
 
-## 6. Non-crown screens
-
-The arena service always runs this ordered prefix:
-
-1. `static`
-2. `build`
-3. `abi`
-4. `graph`
-5. `abbreviated_serving`
-
-A FAIL stops at the failing stage and rejects the proposal. A retryable
-`NO_DECISION` returns it to the appropriate primary or reproduction queue;
-exhausted or non-retryable uncertainty is held. Passing all five only promotes
-the candidate to full qualification—it does not score or crown it.
-
-The `abbreviated_serving` read of your bundle is time-bounded. The engine
-takes a stock read on the same prompts seconds before it swaps your bundle
-in; your read gets `max(300 s, 10 × that stock read)`. Outliving the budget
-is a terminal FAIL whose receipt reason starts with `candidate_timeout:`, and
-it is graded as your kernel's speed, not as infrastructure, because the stock
-read already proved the engine. A kernel that falls back to a per-expert
-Python loop for prefill shapes it does not cover is the usual cause.
-
-Use the last stage receipt rather than rerunning an unrelated local command.
-For example, a production build failure may involve the immutable materialized
-tree and pinned build image that a local combined rebuild did not reproduce.
-
-## 7. Full qualification
+## 6. Full qualification
 
 Qualification aggregates mandatory graph, marginal speed, registered eager
 audit A when required by the plan, and pristine T quality evidence. The current
@@ -305,14 +275,14 @@ Quality problems:
 Contributor-controlled matched A/B profiling can reproduce a mechanism, but it cannot
 contest a retained validator grade or create qualification authority.
 
-## 8. Qualification acceptance
+## 7. Qualification acceptance
 
 One complete audited PASS becomes `qualified`. The same attempt's speed, graph,
 audit, and pristine-quality evidence backs settlement; no mandatory repeat runs.
 Historical paired results retain their original evidence and lower accepted score.
 A crown still requires the separate transactional settlement step.
 
-## 9. Settlement, reward, and release
+## 8. Settlement, reward, and release
 
 `qualified` means the reproduction gate passed; settlement can still wait for
 older overlapping arrivals, a cohort lease, and retained-evidence reopening.
@@ -339,8 +309,8 @@ Do not include wallet secrets, private URLs, or validator filesystem paths.
 ### Baseline admission closed
 
 `baseline_closed_at_submission` means the finalized commitment was later than the
-first champion win on the commissioned baseline. It is rejected at routed admission,
-before screening or qualification. Earlier commitments keep their assigned baseline
+first champion win on the commissioned baseline. It is rejected at admission,
+before its first qualification claim. Earlier commitments keep their assigned baseline
 and may finish after the champion changes; settlement does not repeat the cutoff.
 A newly commissioned baseline opens its own admission window.
 

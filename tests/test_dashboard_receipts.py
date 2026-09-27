@@ -11,42 +11,6 @@ from cacheon.eval.evidence_store import (
     prepare_evidence_root,
     publish_canonical_json_evidence,
 )
-from dashboard.receipts import screen_stages
-
-
-def _receipt(stages: list[dict[str, object]]) -> str:
-    return json.dumps({"candidate_digest": "ab" * 32, "results": stages})
-
-
-def test_screen_stages_render_every_graded_check() -> None:
-    stages = screen_stages(_receipt([
-        {"stage": "static", "grade": "pass", "reason": "static_verified",
-         "elapsed_ms": 18, "evidence_digest": "cd" * 32},
-        {"stage": "abbreviated_serving", "grade": "fail",
-         "reason": "speedup 0.9958x vs required 1.0103x, noise 0.0052, confident",
-         "elapsed_ms": 176772},
-    ]))
-
-    assert stages == [
-        {"stage": "static", "grade": "pass", "reason": "static_verified",
-         "elapsed_ms": 18},
-        {"stage": "abbreviated_serving", "grade": "fail",
-         "reason": "speedup 0.9958x vs required 1.0103x, noise 0.0052, confident",
-         "elapsed_ms": 176772},
-    ]
-
-
-def test_screen_stages_tolerate_prehardening_and_corrupt_receipts() -> None:
-    # Pre-hardening receipts carry no reasons; the stage and grade still show.
-    legacy = screen_stages(_receipt([{"stage": "abbreviated_serving",
-                                      "grade": "pass"}]))
-    assert legacy == [{"stage": "abbreviated_serving", "grade": "pass",
-                       "reason": None, "elapsed_ms": None}]
-    assert screen_stages(None) is None
-    assert screen_stages("not json") is None
-    assert screen_stages(json.dumps({"no_results": True})) is None
-    assert screen_stages(json.dumps({"results": "scalar"})) is None
-    assert screen_stages(json.dumps({"results": ["scalar-row"]})) is None
 
 
 def _witness_rate(role: str, seconds: float) -> dict[str, object]:

@@ -77,11 +77,12 @@ a recovery mechanism.
 ## Deterministic plan
 
 Admission owns the baseline cutoff. The first crown on a commissioned baseline closes
-that baseline to later finalized commitments in the same competition. The routed
-admission step rejects them as `baseline_closed_at_submission` before any screen lease
-or candidate execution. A commitment in the finalized crown block or earlier remains
-admissible even if its bundle is fetched later. A new commissioned service has its own
-admission window. Screening retries and completed evaluations are not readmitted.
+that baseline to later finalized commitments in the same competition. The
+qualification queue's admission step rejects them as `baseline_closed_at_submission`
+before any qualification lease or candidate execution. A commitment in the finalized
+crown block or earlier remains admissible even if its bundle is fetched later. A new
+commissioned service has its own admission window. Work claimed once never meets a
+second cutoff, and completed evaluations are not readmitted.
 
 Settlement does not repeat the commitment-time check. An admitted candidate retains its
 measured baseline. Among eligible registered candidates, the planner chooses the highest
@@ -155,15 +156,12 @@ because the tip changed.
 
 The evaluator requests recommission only when the oldest active queue segment is
 bound to a different stack of the live arena. The boundary is checked before a
-qualification lease, request publication, or GPU action. Screening can continue
-because it is not baseline-relative. After recommissioning, the next segment runs
-against its own persisted stack; one qualification cohort can never mix stack
-segments. A segment that names a retired arena, left behind when the validator
-redeployed on new worker bytes, is not a boundary: before the check, every
-evidence-free row on it (published, in transport retry, screening, or promoted)
-is rebound to the live durable stack, and a promoted row whose screen receipt
-came from the retired identity is re-screened under the live one by the
-screen-identity rotation rule. Rows holding a lease or a PASS half keep their
+qualification lease, request publication, or GPU action. After recommissioning,
+the next segment runs against its own persisted stack; one qualification cohort
+can never mix stack segments. A segment that names a retired arena, left behind
+when the validator redeployed on new worker bytes, is not a boundary: before the
+check, every evidence-free row on it (published or in transport retry) is rebound
+to the live durable stack. Rows holding a lease or a PASS half keep their
 segment, so that boundary stays visible to the operator. A completed
 remote product that differs from the baseline assigned to its own lease is still
 released through a digest-bound stale-incumbent recovery event because that is an
@@ -241,11 +239,12 @@ artifacts show that the credited half read the baseline lane under the arena
 band (the median of every retained baseline-role read in the arena minus five
 percent, over at least six reads), the operator command
 [`chain-reopen-qualification`](../reference/cli.md#chain-reopen-qualification)
-returns the pair to the screen queue for a fresh independent pair against the
-current incumbent and archives the old candidate under `settlement_reopenings`.
-The pair stops earning the moment it leaves `qualified`. A reopened row binds
-to the stack whose service re-screens it, not the stack current at its original
-arrival, so it never parks the queue behind a retired commission. Crowned or
+returns the reservation to the qualification queue for a fresh complete
+qualification against the current incumbent and archives the old candidate under
+`settlement_reopenings`. The row stops earning the moment it leaves `qualified`.
+A reopened row binds to the stack whose service claims it again, not the stack
+current at its original arrival, so it never parks the queue behind a retired
+commission. Crowned or
 otherwise settled candidates are lineage and cannot be reopened this way.
 
 ## Dry run
@@ -445,8 +444,9 @@ Offer production must survive an evaluation pause: `follow-weights` refuses a
 projection older than its refresh window, so an offer that stops being re-minted
 while the standing supervisor is down freezes the chain vector. The standalone
 producer, `python -m cacheon.chain.weight_offer_service --config <sealed offer
-config>`, composes the supervisor's weights stage against the same sealed screen
-and weights authorities on a loop, pushes to `serve-weights`, and never signs.
+config>`, composes the supervisor's weights stage against the same sealed dispatcher
+(`screen_dispatcher_config`) and weights authorities on a loop, pushes to
+`serve-weights`, and never signs.
 Exactly one producer runs per intake database: while it is armed, the standing
 supervisor's `enable_weights` stays false.
 

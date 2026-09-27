@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from enum import Enum
 import re
 
-from cacheon.arena_service import ArenaScreenReceipt
 from cacheon.chain.remote_qualification_evidence import (
     RemoteEvaluationDispatcherError,
     RemoteQualificationProduct,
@@ -205,7 +204,7 @@ class RemoteQualificationHoldProduct:
 
 
 RemoteEvaluationResponsePayload = (
-    ArenaScreenReceipt | RemoteQualificationProduct | RemoteQualificationHoldProduct
+    RemoteQualificationProduct | RemoteQualificationHoldProduct
 )
 
 
@@ -380,8 +379,6 @@ def durable_remote_qualification_hold_reason(
 def is_exact_remote_stage_payload(payload: object, stage: object) -> bool:
     """Return whether an authenticated payload belongs to the exact stage."""
 
-    if stage == "screen":
-        return type(payload) is ArenaScreenReceipt
     if stage == "qualification":
         return type(payload) in {
             RemoteQualificationProduct,

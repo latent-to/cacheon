@@ -181,7 +181,6 @@ Move upward only after the lower layer is green:
 |---|---|---|
 | Component `verify` | Registered reference and graph replay for exercised cases | Model integration or speedup |
 | Local complete-engine A/B | Model can load and the selected delta can improve the matched workload | Validator isolation, hidden quality, crown authority, settlement |
-| Arena screen | Static/build/ABI/graph/abbreviated-serving gates all promote | B/C/B′ drift, T quality, settlement |
 | Qualification PASS | Exact marginal complete-engine delta clears all registered gates | Crown until settlement |
 | Two matching PASSes | Candidate is eligible for cohort settlement; the current registered cohort winner may be crowned while another valid pair is held | Integration safety or release readiness |
 

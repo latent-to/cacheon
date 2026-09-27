@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from cacheon.eval.device_policy_identity import logical_device_policy_digest
-from tests import test_b300_screen_deployment as fixture
+from tests import test_b300_deployment as fixture
 
 
 @pytest.mark.parametrize("gpu_model,width", [("h100", 1), ("b300", 4)])
@@ -21,7 +21,7 @@ def test_disjoint_equivalent_pairs_share_service_and_keep_physical_authority(tmp
             lane=tuple(range(start, start + width)),
             baseline=tuple(range(start + width, start + 2 * width)),
         )
-        results.append(fixture.deployment.materialize_b300_screen_identities(
+        results.append(fixture.deployment.materialize_b300_identities(
             **paths, gpu_provisioner=lambda selected, *, deadline: tuple(gpus[i] for i in selected),
         ))
         deployments.append(json.loads((paths["output_root"] / fixture.deployment.DEPLOYMENT_FILE).read_text()))

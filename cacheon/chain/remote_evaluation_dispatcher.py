@@ -1,14 +1,15 @@
-"""Authenticated remote execution for durable evaluation leases.
+"""Authenticated wire protocol for durable qualification leases.
 
 This module is the CPU-side boundary between :mod:`evaluation_coordinator` and
-an out-of-process worker fleet.  It deliberately exposes only two typed worker
-operations (screen and qualification).  There is no command, argv, environment,
-module, or shell field in the protocol.
+an out-of-process worker fleet.  It deliberately exposes one typed worker
+operation (qualification).  There is no command, argv, environment, module, or
+shell field in the protocol.
 
-The CPU remains authoritative for FIFO claims, lease heartbeats, typed result
-reopening, and CAS commits.  A transport invocation happens while the intake
-controller is closed.  Transport or worker failures release the durable lease
-without consuming an evaluation attempt, so another READY worker can reclaim it.
+The CPU remains authoritative for FIFO claims, lease renewal, typed result
+reopening, and CAS commits (``recoverable_qualification_dispatcher``).  A
+transport invocation happens while the intake controller is closed.  Transport
+or worker failures release the durable lease without consuming an evaluation
+attempt, so another READY worker can reclaim it.
 """
 
 from __future__ import annotations
@@ -18,22 +19,9 @@ import hmac
 import json
 import re
 from dataclasses import dataclass, field, replace
-from typing import Iterable, Protocol
+from typing import Iterable
 
-from cacheon.arena_service import (
-    SCREEN_STAGES,
-    ArenaScreenReceipt,
-    PromotionDecision,
-)
-from cacheon.chain.evaluation_coordinator import (
-    ClaimedQualificationEvaluation,
-    ClaimedScreenEvaluation,
-    EvaluationCoordinator,
-    EvaluationResultEnvelope,
-    EvaluationRun,
-    WorkerReadiness,
-    _LeaseHeartbeat,
-)
+from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.qualification_request import (
     INCUMBENT_FIELDS, LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS,
@@ -41,14 +29,12 @@ from cacheon.chain.qualification_request import (
 from cacheon.chain.remote_qualification_evidence import (
     _SCHEMA_VERSION,
     RemoteEvaluationDispatcherError,
-    RemoteEvaluationReleased,
     RemoteEvidenceArtifact,
     RemoteQualificationProduct,
     _digest,
     capture_remote_qualification_product,
     import_remote_qualification_evidence,
     remote_qualification_product_from_dict,
-    _screen_receipt_from_dict,
     qualification_batch_from_dict,
     qualification_batch_to_dict,
     remote_qualification_product_to_dict,
@@ -78,9 +64,9 @@ _AUTH_TAG = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_PROTOCOL_BODY_BYTES = 64 << 20
 
 REMOTE_EVALUATION_PROTOCOL_DIGEST = canonical_digest(
-    "cacheon.chain.remote-evaluation-protocol.v3",
+    "cacheon.chain.remote-evaluation-protocol.v4",
     {
-        "operations": ["screen", "qualification"],
+        "operations": ["qualification"],
         "qualification_payloads": [
             "remote_qualification_product",
             "remote_qualification_hold",
@@ -265,7 +251,7 @@ class RemoteEvaluationRequest:
             )
             or type(self.generation) is not int
             or self.generation <= 0
-            or self.stage not in {"screen", "qualification"}
+            or self.stage != "qualification"
             or not isinstance(self.owner, str)
             or not self.owner
             or not members
@@ -301,8 +287,8 @@ class RemoteEvaluationRequest:
         body = _canonical_object(self.body_bytes, "remote request body")
         if sha256_hex(self.body_bytes) != self.body_sha256:
             raise RemoteEvaluationDispatcherError("remote request body digest differs")
-        _validate_request_body(self.stage, body)
-        if _request_body_reservation_ids(self.stage, body) != tuple(
+        _validate_request_body(body)
+        if _request_body_reservation_ids(body) != tuple(
             row.reservation_id for row in members
         ):
             raise RemoteEvaluationDispatcherError(
@@ -444,19 +430,12 @@ class AuthenticatedRemoteEvaluationResponse:
         if (
             type(self.ready_epoch) is not int
             or self.ready_epoch < 0
-            or self.stage not in {"screen", "qualification"}
-            or (
-                self.stage == "screen"
-                and self.payload_kind != "arena_screen_receipt"
-            )
-            or (
-                self.stage == "qualification"
-                and self.payload_kind
-                not in {
-                    "remote_qualification_product",
-                    "remote_qualification_hold",
-                }
-            )
+            or self.stage != "qualification"
+            or self.payload_kind
+            not in {
+                "remote_qualification_product",
+                "remote_qualification_hold",
+            }
             or type(self.schema_version) is not int
             or self.schema_version != _SCHEMA_VERSION
             or not isinstance(self.auth_tag, str)
@@ -540,21 +519,7 @@ class AuthenticatedRemoteEvaluationResponse:
         return response
 
 
-class AuthenticatedWorkerTransport(Protocol):
-    """Closed worker transport; implementations must enforce endpoint pinning."""
-
-    identity: RemoteWorkerTransportIdentity
-
-    def run_screen(
-        self,
-        request: RemoteEvaluationRequest,
-        *,
-        job: ClaimedScreenEvaluation,
-    ) -> AuthenticatedRemoteEvaluationResponse: ...
-
 def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
-    if type(payload) is ArenaScreenReceipt:
-        return "arena_screen_receipt", canonical_json_bytes(payload.to_dict()), payload.digest
     if type(payload) is RemoteQualificationProduct:
         return (
             "remote_qualification_product",
@@ -569,49 +534,7 @@ def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
         )
     raise RemoteEvaluationDispatcherError("remote response payload is not exactly typed")
 
-def _validate_request_body(stage: str, value: dict[str, object]) -> None:
-    if stage == "screen":
-        fields = {
-            "candidate_digest",
-            "kind",
-            "publication",
-            "reservation",
-            "schema_version",
-            "screen_attempt",
-            "screen_policy",
-            "service_digest",
-        }
-        if (
-            set(value) != fields
-            or value["kind"] != "screen_work"
-            or value["schema_version"] != _SCHEMA_VERSION
-        ):
-            raise RemoteEvaluationDispatcherError("screen request body is not closed")
-        try:
-            candidate_digest = _digest(value["candidate_digest"], "candidate_digest")
-            _digest(value["service_digest"], "service_digest")
-            if type(value["screen_attempt"]) is not int or value["screen_attempt"] <= 0:
-                raise RemoteEvaluationDispatcherError("screen attempt is malformed")
-            reservation = QualificationReservation.from_dict(value["reservation"])
-            publication_digest = _publication_wire_digest(value["publication"])
-            _validate_screen_policy(value["screen_policy"])
-            if publication_digest != reservation.submission_digest:
-                raise RemoteEvaluationDispatcherError("screen request publication differs")
-            reservation_value = reservation.to_dict()
-            reservation_value.pop("arrival_order")
-            expected_candidate = canonical_digest(
-                "cacheon.arena.candidate-binding",
-                {
-                    "publication_digest": publication_digest,
-                    "reservation": reservation_value,
-                    "screen_attempt": value["screen_attempt"],
-                },
-            )
-            if candidate_digest != expected_candidate:
-                raise RemoteEvaluationDispatcherError("screen request candidate differs")
-        except (TypeError, ValueError, RuntimeError) as exc:
-            raise RemoteEvaluationDispatcherError("screen request body is invalid") from exc
-        return
+def _validate_request_body(value: dict[str, object]) -> None:
     if (
         frozenset(value) not in (LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS)
         or value["kind"] != "qualification_work"
@@ -623,10 +546,10 @@ def _validate_request_body(stage: str, value: dict[str, object]) -> None:
         for field in INCUMBENT_FIELDS & value.keys():
             _digest(value[field], field)
         _digest(value["qualification_policy_digest"], "qualification_policy_digest")
-        service_digest = _digest(value["service_digest"], "service_digest")
+        _digest(value["service_digest"], "service_digest")
     except (TypeError, ValueError) as exc:
         raise RemoteEvaluationDispatcherError("qualification request body is invalid") from exc
-    candidate_fields = {"candidate_digest", "publication", "reservation", "screen_receipt"}
+    candidate_fields = {"attempt", "candidate_digest", "publication", "reservation"}
     if (
         not value["candidates"]
         or value["screen_lane"] not in {"primary", "reproduction"}
@@ -640,39 +563,30 @@ def _validate_request_body(stage: str, value: dict[str, object]) -> None:
         if type(row) is not dict or set(row) != candidate_fields:
             raise RemoteEvaluationDispatcherError("qualification request candidate is malformed")
         candidate_digest = _digest(row["candidate_digest"], "candidate_digest")
+        if type(row["attempt"]) is not int or row["attempt"] <= 0:
+            raise RemoteEvaluationDispatcherError("qualification request attempt is malformed")
         reservation = QualificationReservation.from_dict(row["reservation"])
         publication_digest = _publication_wire_digest(row["publication"])
-        receipt = _screen_receipt_from_dict(row["screen_receipt"])
         reservation_value = reservation.to_dict()
         reservation_value.pop("arrival_order")
         expected_candidate = canonical_digest(
             "cacheon.arena.candidate-binding",
             {
+                "attempt": row["attempt"],
                 "publication_digest": publication_digest,
                 "reservation": reservation_value,
-                "screen_attempt": receipt.screen_attempt,
             },
         )
         if (
             publication_digest != reservation.submission_digest
-            or receipt.candidate_digest != candidate_digest
-            or receipt.service_digest != service_digest
-            or receipt.decision is not PromotionDecision.PROMOTE
             or candidate_digest != expected_candidate
         ):
             raise RemoteEvaluationDispatcherError("qualification request provenance differs")
 
 def _request_body_reservation_ids(
-    stage: str,
     value: dict[str, object],
 ) -> tuple[str, ...]:
     try:
-        if stage == "screen":
-            return (
-                QualificationReservation.from_dict(
-                    value["reservation"]
-                ).reservation_digest,
-            )
         return tuple(
             QualificationReservation.from_dict(row["reservation"]).reservation_digest
             for row in value["candidates"]  # type: ignore[union-attr]
@@ -731,40 +645,6 @@ def _publication_wire_digest(value: object) -> str:
             "schema": value["schema"],
         },
     )
-
-def _validate_screen_policy(value: object) -> None:
-    if type(value) is not dict or set(value) != {"crownable", "stages"}:
-        raise RemoteEvaluationDispatcherError("screen request policy is not closed")
-    stages = value["stages"]
-    if value["crownable"] is not False or type(stages) is not list:
-        raise RemoteEvaluationDispatcherError("screen request policy is malformed")
-    if len(stages) != len(SCREEN_STAGES):
-        raise RemoteEvaluationDispatcherError("screen request stages are incomplete")
-    for expected, row in zip(SCREEN_STAGES, stages, strict=True):
-        if (
-            type(row) is not dict
-            or set(row) != {"stage", "timeout_ms"}
-            or row["stage"] != expected
-            or type(row["timeout_ms"]) is not int
-            or row["timeout_ms"] <= 0
-        ):
-            raise RemoteEvaluationDispatcherError("screen request stage is malformed")
-
-def _request_body_for_screen(
-    coordinator: EvaluationCoordinator,
-    claim: ClaimedScreenEvaluation,
-) -> dict[str, object]:
-    return {
-        "candidate_digest": claim.candidate.digest,
-        "kind": "screen_work",
-        "publication": claim.publication.to_dict(),
-        "reservation": claim.candidate.reservation.to_dict(),
-        "schema_version": _SCHEMA_VERSION,
-        "screen_attempt": claim.candidate.screen_attempt,
-        "screen_policy": coordinator.service.manifest.screens.to_dict(),
-        "service_digest": coordinator.service.identity,
-    }
-
 
 def seal_remote_request(
     lease: EvaluationLease,
@@ -904,10 +784,7 @@ def reopen_remote_response(
     ):
         raise RemoteEvaluationDispatcherError("remote response authentication failed")
     payload: RemoteEvaluationResponsePayload
-    if response.stage == "screen":
-        payload = _screen_receipt_from_dict(response.payload)
-        observed_digest = payload.digest
-    elif response.payload_kind == "remote_qualification_product":
+    if response.payload_kind == "remote_qualification_product":
         payload = remote_qualification_product_from_dict(response.payload)
         if (
             payload.service_digest != request.body["service_digest"]
@@ -934,122 +811,10 @@ def reopen_remote_response(
     return payload
 
 
-class RemoteEvaluationDispatcher:
-    """Standing CPU service entry point for one durable remote evaluation."""
-
-    def __init__(
-        self,
-        *,
-        coordinator: EvaluationCoordinator,
-        transport: AuthenticatedWorkerTransport,
-        credential: RemoteWorkerCredential,
-    ):
-        if (
-            type(coordinator) is not EvaluationCoordinator
-            or type(credential) is not RemoteWorkerCredential
-        ):
-            raise RemoteEvaluationDispatcherError("remote dispatcher authority is not exact")
-        identity = getattr(transport, "identity", None)
-        if type(identity) is not RemoteWorkerTransportIdentity:
-            raise RemoteEvaluationDispatcherError("remote transport has no exact identity")
-        if not callable(getattr(transport, "run_screen", None)):
-            raise RemoteEvaluationDispatcherError("remote transport is not closed and typed")
-        if (
-            identity.service_digest != coordinator.service.identity
-            or identity.worker_readiness_digest != coordinator.readiness.digest
-            or identity.credential_digest != credential.digest
-        ):
-            raise RemoteEvaluationDispatcherError("remote transport differs from CPU authority")
-        coordinator.readiness.validate(coordinator.service)
-        self.coordinator = coordinator
-        self.transport = transport
-        self.credential = credential
-        self.transport_identity = identity
-
-    def _validate_live_transport(self) -> None:
-        self.coordinator.readiness.validate(self.coordinator.service)
-        if getattr(self.transport, "identity", None) != self.transport_identity:
-            raise RemoteEvaluationDispatcherError(
-                "remote transport identity drifted before claim"
-            )
-
-    def _release_after_remote_error(
-        self,
-        lease: EvaluationLease,
-        *,
-        reason: str,
-        cause: BaseException,
-        result_digest: str = "",
-    ) -> None:
-        try:
-            self.coordinator._release(lease, reason=reason, result_digest=result_digest)
-        except BaseException as release_error:
-            raise RemoteEvaluationDispatcherError(
-                f"{reason}; durable infrastructure release also failed: {release_error}"
-            ) from cause
-        raise RemoteEvaluationReleased(lease.lease_id, reason) from cause
-
-    def dispatch_screen_once(self) -> EvaluationRun | None:
-        """Claim the exact FIFO screen row, invoke remotely, and CAS-commit."""
-        self._validate_live_transport()
-        claim = self.coordinator.claim_screen()
-        if claim is None:
-            return None
-        heartbeat = _LeaseHeartbeat(self.coordinator, claim.lease)
-        try:
-            heartbeat.start()
-        except BaseException as exc:
-            self._release_after_remote_error(
-                claim.lease,
-                reason="remote_screen_heartbeat_start",
-                cause=exc,
-            )
-        try:
-            request = seal_remote_request(
-                claim.lease,
-                self.coordinator.readiness,
-                self.coordinator.service.manifest.service_id,
-                self.transport_identity,
-                self.credential,
-                _request_body_for_screen(self.coordinator, claim),
-            )
-            response = self.transport.run_screen(request, job=claim)
-            receipt = reopen_remote_response(
-                request, response, self.transport_identity, self.credential
-            )
-            if type(receipt) is not ArenaScreenReceipt:
-                raise RemoteEvaluationDispatcherError(
-                    "remote screen returned another payload type"
-                )
-        except BaseException as exc:
-            lease, heartbeat_error = heartbeat.stop()
-            self._release_after_remote_error(
-                lease,
-                reason="remote_screen_infrastructure",
-                cause=heartbeat_error or exc,
-            )
-        lease, heartbeat_error = heartbeat.stop()
-        claim = replace(claim, lease=lease)
-        envelope = EvaluationResultEnvelope.seal(
-            lease, self.coordinator.readiness, self.coordinator.service, receipt
-        )
-        if heartbeat_error is not None:
-            self._release_after_remote_error(
-                lease,
-                reason="remote_screen_heartbeat",
-                cause=heartbeat_error,
-                result_digest=envelope.digest,
-            )
-        self.coordinator.commit_screen_result(claim, receipt, envelope)
-        return EvaluationRun(lease, envelope, receipt, "completed")
-
-
 __all__ = [
     "AuthenticatedRemoteEvaluationResponse",
-    "AuthenticatedWorkerTransport",
     "REMOTE_EVALUATION_PROTOCOL_DIGEST",
     "RemoteEvidenceArtifact",
-    "RemoteEvaluationDispatcher",
     "RemoteEvaluationDispatcherError",
     "RemoteEvaluationRequest",
     "RemoteEvaluationResponsePayload",

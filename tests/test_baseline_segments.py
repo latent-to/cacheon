@@ -4,7 +4,7 @@ On 2026-09-06 a promoted reservation screened under one deployment was
 re-queued after the validator redeployed on new worker bytes. Its segment
 named the retired arena, the commission boundary refused to claim across it,
 the selector could never pick it, and the rotated-cohort re-screen sat behind
-that boundary. The rules under test: a screen under the live arena replaces a
+that boundary. The rules under test: a claim under the live arena replaces a
 retired arena's segment, the boundary rebinds evidence-free rows left on a
 retired arena before it halts, and a same-arena generation boundary still
 halts because those rows drain under the still-resident commission.
@@ -13,13 +13,12 @@ halts because those rows drain under the still-resident commission.
 from __future__ import annotations
 
 from cacheon.chain.baseline_segments import commission_boundary
-from cacheon.chain.screen_identity_rotation import rotated_reservation_ids
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
 from tests.test_chain_intake import (
+    _claim,
     _fingerprint,
     _h,
-    _promote,
     _publish,
     _reserve_one,
     _store,
@@ -33,7 +32,6 @@ from tests.test_recoverable_qualification_dispatcher import (
 
 RETIRED = _h("retired-arena")
 LIVE = _h("live-arena")
-ROTATED = "screen_receipt_service_rotated"
 
 
 def _manifest(arena: str, *, runtime: str = "runtime") -> EvaluationStackManifest:
@@ -60,6 +58,11 @@ def _published_row(store, *, index: int = 0, hotkey: str = "miner") -> str:
     return row.reservation_id
 
 
+def _requeue(store, reservation_id: str) -> None:
+    store.mark_held(reservation_id, "operator_review")
+    store.release_hold(reservation_id, reason="operator redeployed the worker")
+
+
 def _binding(store, reservation_id: str):
     return store._db.execute(
         "SELECT arena_id,binding_reason FROM reservation_baseline_segments "
@@ -68,33 +71,29 @@ def _binding(store, reservation_id: str):
     ).fetchone()
 
 
-def test_a_screen_under_the_live_arena_replaces_a_retired_arena_segment(tmp_path):
+def test_a_claim_under_the_live_arena_replaces_a_retired_arena_segment(tmp_path):
     with _store(tmp_path) as store:
         store.initialize_evaluation_stack(_manifest(RETIRED), tree_digest=_h("retired-tree"))
         rid = _published_row(store)
-        _promote(store, rid, service=RETIRED)
+        _claim(store, rid, service=RETIRED)
         assert _binding(store, rid)["arena_id"] == RETIRED
-        store.demote_promoted_for_rescreen(rid, reason=ROTATED)
+        _requeue(store, rid)
         store.initialize_evaluation_stack(_manifest(LIVE), tree_digest=_h("live-tree"))
 
-        _promote(store, rid, service=LIVE)
+        _claim(store, rid, service=LIVE)
 
         assert store.reservation_baseline_segment(rid) == store.evaluation_stack(LIVE)
         assert _binding(store, rid)["binding_reason"] == (
-            "begin_screen:rebound_from_" + RETIRED[:16]
+            "mark_qualifying:rebound_from_" + RETIRED[:16]
         )
-        # Retained screen dispositions are append-only: both receipts survive.
-        assert store._db.execute(
-            "SELECT COUNT(*) AS n FROM arena_screen_dispositions WHERE reservation_id=?",
-            (rid,),
-        ).fetchone()["n"] == 2
+        assert store.get(rid).arena_service_digest == LIVE
 
 
 def test_a_crown_does_not_change_the_manually_commissioned_baseline(tmp_path):
     with _store(tmp_path) as store:
         store.initialize_evaluation_stack(_manifest(LIVE), tree_digest=_h("live-tree"))
         rid = _published_row(store)
-        _promote(store, rid, service=LIVE)
+        _claim(store, rid, service=LIVE)
         bound = store.reservation_baseline_segment(rid)
         advanced = _manifest(LIVE, runtime="runtime-advanced")
         assert advanced.digest != bound.manifest.digest
@@ -114,13 +113,13 @@ def test_a_crown_does_not_change_the_manually_commissioned_baseline(tmp_path):
             ),
         )
 
-        store.demote_promoted_for_rescreen(rid, reason=ROTATED)
-        _promote(store, rid, service=LIVE)
-
-        assert store.reservation_baseline_segment(rid) == bound
-        assert _binding(store, rid)["binding_reason"] == "begin_screen"
+        _requeue(store, rid)
         assert commission_boundary(store, bound.manifest, tree_digest=bound.tree_digest) is None
         assert store.reservation_baseline_segment(rid) == bound
+        _claim(store, rid, service=LIVE)
+
+        assert store.reservation_baseline_segment(rid) == bound
+        assert _binding(store, rid)["binding_reason"] == "mark_qualifying"
         assert store.evaluation_stack(LIVE).manifest == advanced
 
 
@@ -128,13 +127,14 @@ def test_the_boundary_rebinds_evidence_free_rows_left_on_a_retired_arena(tmp_pat
     with _store(tmp_path) as store:
         store.initialize_evaluation_stack(_manifest(RETIRED), tree_digest=_h("retired-tree"))
         head = _published_row(store, index=0, hotkey="head")
-        _promote(store, head, service=RETIRED)
+        _claim(store, head, service=RETIRED)
+        _requeue(store, head)
         waiting = _published_row(store, index=1, hotkey="waiting")
         store._bind_reservation_baseline_segment(
             waiting, store.evaluation_stack(RETIRED), reason="backfill_current_stack"
         )
         passed = _published_row(store, index=2, hotkey="passed")
-        _promote(store, passed, service=RETIRED)
+        _claim(store, passed, service=RETIRED)
         store._db.execute(
             "UPDATE reservations SET status='reproduction_pending' WHERE reservation_id=?",
             (passed,),
@@ -150,13 +150,14 @@ def test_the_boundary_rebinds_evidence_free_rows_left_on_a_retired_arena(tmp_pat
             assert _binding(store, rid)["binding_reason"] == "commissioned_incumbent"
         # A PASS half keeps its segment: the boundary stays visible to the operator.
         assert _binding(store, passed)["arena_id"] == RETIRED
-        # The head's receipt came from the retired identity, so the claim path
-        # re-screens it under the live one instead of qualifying on it.
-        receipt = store.latest_promoted_screen(head)
-        assert rotated_reservation_ids((store.get(head),), (receipt,), LIVE) == (head,)
+        # The head was claimed under the retired identity; its next claim
+        # restamps the live one and keeps the commissioned segment.
+        _claim(store, head, service=LIVE)
+        assert store.get(head).arena_service_digest == LIVE
+        assert store.reservation_baseline_segment(head) == live_state
 
 
-def test_a_row_back_in_the_screen_queue_binds_itself_with_its_retry_group(tmp_path):
+def test_a_row_back_in_the_queue_binds_itself_with_its_retry_group(tmp_path):
     with _store(tmp_path) as store:
         store.initialize_evaluation_stack(_manifest(LIVE), tree_digest=_h("live-tree"))
         rid = _published_row(store)
@@ -165,7 +166,7 @@ def test_a_row_back_in_the_screen_queue_binds_itself_with_its_retry_group(tmp_pa
             (_h("group"), rid),
         )
 
-        _promote(store, rid, service=LIVE)
+        _claim(store, rid, service=LIVE)
 
         assert store.reservation_baseline_segment(rid) == store.evaluation_stack(LIVE)
 
@@ -184,11 +185,11 @@ def test_the_dispatcher_claims_a_head_left_on_a_retired_arena(tmp_path):
             retired, tree_digest=authority.fixtures._h("retired-tree")
         )
         head = store._db.execute(
-            "SELECT reservation_id FROM reservations WHERE status='promoted' "
+            "SELECT reservation_id FROM reservations WHERE status='published' "
             "ORDER BY block,event_index,event_subindex,hotkey,content_hash LIMIT 1"
         ).fetchone()["reservation_id"]
         store._bind_reservation_baseline_segment(
-            head, store.evaluation_stack(RETIRED), reason="begin_screen"
+            head, store.evaluation_stack(RETIRED), reason="mark_qualifying"
         )
         assert store.qualification_queue_baseline().arena_digest == RETIRED
     transport = _Transport(authority, fixtures, complete_on_publish=True)

@@ -15,7 +15,7 @@ from tests.test_agent_slice import _session, _write_slice
 from tests.test_oci_outer_session import _plan
 from cacheon.eval.scoring import marginal_workload_digest
 from cacheon.arena_service import WorkloadCell
-from cacheon.eval.b300_arena_definition import engine_config, B300ScreenDeploymentError
+from cacheon.eval.b300_arena_definition import engine_config, B300DeploymentError
 
 
 def test_chat_input_ids_use_the_tokenizer_ids_not_its_mapping_keys():
@@ -124,7 +124,7 @@ def test_declared_context_survives_cell_projection_and_must_fit(input_tokens, ou
     declared = replace(template, engine_kwargs={**template.engine_kwargs, 'context_length': 262144})
     assert engine_config(declared, cell, disable_cuda_graph=False).engine_kwargs['context_length'] == 262144
     too_short = replace(declared, engine_kwargs={**declared.engine_kwargs, 'context_length': input_tokens})
-    with pytest.raises(B300ScreenDeploymentError, match='does not fit'):
+    with pytest.raises(B300DeploymentError, match='does not fit'):
         engine_config(too_short, cell, disable_cuda_graph=False)
 
 

@@ -5,22 +5,10 @@ from dataclasses import dataclass
 
 import pytest
 
-from cacheon.arena_service import (
-    SCREEN_STAGES,
-    ArenaScreenReceipt,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStageResult,
-)
 from cacheon.chain.evaluation_recovery import (
     EvaluationRecoveryHoldError,
     RecoveryAction,
     RecoveryPhase,
-    reviewed_legacy_screen_only_reason_digests,
-)
-from cacheon.chain.evaluation_lease_operator import (
-    FifoLeaseConfig,
-    release as operator_release,
 )
 from cacheon.chain.intake import (
     FinalizedArrival,
@@ -49,22 +37,6 @@ PROFILES = (
     _Profile("alpha", 14, "collective.alpha_norm", "tp4"),
     _Profile("beta", 29, "attention.beta_projection", "tp8"),
 )
-
-
-def test_reviewed_legacy_release_reason_is_closed_and_digest_bound():
-    # The one retained historical row on mainnet carries this exact shape; the
-    # writer was retired, the reader must keep reopening the row.
-    held = _h("held-reason")
-    disposition = _h("reviewed-disposition")
-    reason = f"operator_reviewed_legacy_screen_only:v1:{held}:{disposition}"
-    assert reviewed_legacy_screen_only_reason_digests(reason) == (
-        held,
-        disposition,
-    )
-    assert reviewed_legacy_screen_only_reason_digests(reason + ":extra") is None
-    assert reviewed_legacy_screen_only_reason_digests(
-        reason.replace(disposition, disposition.upper())
-    ) is None
 
 
 def _store(
@@ -99,14 +71,14 @@ def _advance(store: RecoverableFinalizedIntakeStore, block: int) -> None:
         )
 
 
-def _promoted(store: RecoverableFinalizedIntakeStore, profile: _Profile, index: int = 0):
+def _published(store: RecoverableFinalizedIntakeStore, profile: _Profile, index: int = 0):
     row = store.reserve_finalized(
         (_arrival(profile, index),),
         finalized_block=10,
         finalized_block_hash="0x" + f"{10:064x}",
     )[0]
     store.mark_fetching(row.reservation_id)
-    published = store.mark_published(
+    return store.mark_published(
         row.reservation_id,
         delta_fingerprint=SubmittedDeltaFingerprint(
             "component",
@@ -122,29 +94,6 @@ def _promoted(store: RecoverableFinalizedIntakeStore, profile: _Profile, index: 
         publication_digest=_h(f"{profile.label}:publication"),
         publication_root=f"/published/{profile.label}",
     )
-    service = _h(f"{profile.label}:service")
-    active = store.begin_screen(published.reservation_id, service_digest=service)
-    candidate = _h(f"{profile.label}:candidate:{index}:{active.screen_attempts}")
-    receipt = ArenaScreenReceipt(
-        service,
-        candidate,
-        active.screen_attempts,
-        tuple(
-            ScreenStageResult(
-                stage,
-                ScreenGrade.PASS,
-                _h(f"{profile.label}:screen:{stage}"),
-                1,
-            )
-            for stage in SCREEN_STAGES
-        ),
-        PromotionDecision.PROMOTE,
-    )
-    return store.apply_screen_receipt(
-        published.reservation_id,
-        candidate_digest=candidate,
-        receipt=receipt,
-    )
 
 
 @pytest.mark.parametrize("profile", PROFILES)
@@ -152,7 +101,7 @@ def test_claim_and_recovery_intent_are_atomic_and_target_neutral(
     tmp_path, monkeypatch, profile
 ):
     with _store(tmp_path, profile) as store:
-        row = _promoted(store, profile)
+        row = _published(store, profile)
         original = store._create_evaluation_recovery_locked
 
         def fail_after_lease_insert(lease):
@@ -205,7 +154,7 @@ def test_claim_and_recovery_intent_are_atomic_and_target_neutral(
 def test_protected_qualification_rejects_every_generic_mutation(tmp_path):
     profile = PROFILES[0]
     with _store(tmp_path, profile) as store:
-        _promoted(store, profile)
+        _published(store, profile)
         recovery = store.claim_recoverable_qualification(
             owner="worker", current_block=10, lease_blocks=2, max_members=1
         )
@@ -243,7 +192,7 @@ def test_protected_qualification_rejects_every_generic_mutation(tmp_path):
             )
         with pytest.raises(sqlite3.IntegrityError, match="protected qualification"):
             store._db.execute(
-                "UPDATE evaluation_lease_members SET prior_status='published' "
+                "UPDATE evaluation_lease_members SET prior_status='reproduction_pending' "
                 "WHERE lease_id=?",
                 (lease.lease_id,),
             )
@@ -266,43 +215,12 @@ def test_protected_qualification_rejects_every_generic_mutation(tmp_path):
         ) is None
 
 
-def test_sealed_operator_release_cannot_bypass_recovery_fence(tmp_path):
-    profile = PROFILES[0]
-    policy = IntakePolicy()
-    scope = IntakeScope("0x" + f"{profile.netuid:064x}", profile.netuid)
-    with _store(tmp_path, profile) as store:
-        _promoted(store, profile)
-        recovery = store.claim_recoverable_qualification(
-            owner="operator-worker", current_block=10, max_members=1
-        )
-        assert recovery is not None
-        path = store.path
-
-    config = FifoLeaseConfig(
-        path,
-        policy,
-        scope,
-        "operator-worker",
-        "qualification",
-        30,
-        1,
-        1,
-        0,
-    )
-    with pytest.raises(IntakeError, match="generic release"):
-        operator_release(
-            config,
-            recovery.lease.lease_id,
-            reason="operator_release",
-        )
-
-
 @pytest.mark.parametrize("profile", PROFILES)
 def test_recovery_renewal_preserves_identity_but_cannot_commit_before_import(
     tmp_path, profile
 ):
     with _store(tmp_path, profile) as store:
-        _promoted(store, profile)
+        _published(store, profile)
         original = store.claim_recoverable_qualification(
             owner=f"{profile.label}-worker",
             current_block=10,
@@ -360,7 +278,7 @@ def test_recovery_renewal_preserves_identity_but_cannot_commit_before_import(
 def test_generic_qualification_release_is_impossible(tmp_path):
     other = PROFILES[1]
     with _store(tmp_path, other) as store:
-        _promoted(store, other)
+        _published(store, other)
         recovery = store.claim_recoverable_qualification(
             owner="worker", current_block=10, lease_blocks=5, max_members=1
         )
@@ -379,7 +297,7 @@ def test_generic_qualification_release_is_impossible(tmp_path):
 def test_result_completion_before_import_is_rejected_without_mutation(tmp_path):
     profile = PROFILES[0]
     with _store(tmp_path, profile) as store:
-        row = _promoted(store, profile)
+        row = _published(store, profile)
         recovery = store.claim_recoverable_qualification(
             owner="worker", current_block=10, lease_blocks=5, max_members=1
         )
@@ -394,7 +312,7 @@ def test_result_completion_before_import_is_rejected_without_mutation(tmp_path):
             ):
                 raise AssertionError("pre-import completion entered transaction")
 
-        assert store.get(row.reservation_id).status == "promoted"
+        assert store.get(row.reservation_id).status == "published"
         assert store.qualification_dispositions(row.reservation_id) == ()
         assert store.active_evaluation_leases() == (recovery.lease,)
         assert store.pending_qualification_recovery() == recovery
@@ -418,7 +336,7 @@ def test_result_completion_before_import_is_rejected_without_mutation(tmp_path):
 def test_missing_recovery_for_active_qualification_is_typed_hold(tmp_path):
     profile = PROFILES[0]
     with _store(tmp_path, profile) as store:
-        _promoted(store, profile)
+        _published(store, profile)
         recovery = store.claim_recoverable_qualification(
             owner="worker", current_block=10, lease_blocks=2, max_members=1
         )

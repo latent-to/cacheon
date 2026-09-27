@@ -66,3 +66,15 @@ class PipeManager:
     def spawn_attached(self, _lease, _argv):
         self.calls += 1
         return self.client
+
+
+def generate(engine, request, emit=None):
+    """Drive the production async generator from synchronous protocol tests."""
+    from cacheon.eval.phase_latency import engine_outputs, generate_outputs
+
+    async def send(frame):
+        emit(frame)
+
+    return engine_outputs(engine.loop.run_until_complete(
+        generate_outputs(engine, request, send if emit is not None else None)
+    ), request=request)

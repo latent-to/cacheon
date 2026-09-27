@@ -1,141 +1,31 @@
-"""CPU tests for resident backend pieces: staging helper + argv/mount policy."""
+"""CPU tests for the OCI runtime session registry and engine kwarg additions."""
 
 from __future__ import annotations
 
-import stat
-
 import pytest
 
-from cacheon.bundle_hash import content_hash
-from cacheon.eval.oci_backend import OCIBackendError, stage_swap_bundle
+from cacheon.eval.oci_backend import OCIBackendError, build_runtime_argv
 
 
-class TestStageSwapBundle:
-    def _source(self, tmp_path):
-        source = tmp_path / "worker-tree"
-        source.mkdir()
-        (source / "manifest.toml").write_text("[bundle]\nname='x'\n")
-        kernels = source / "kernels"
-        kernels.mkdir()
-        (kernels / "k.py").write_text("def k(): pass\n")
-        return source
-
-    def test_stage_publishes_content_addressed_tree(self, tmp_path) -> None:
-        root = tmp_path / "intake"
-        root.mkdir()
-        source = self._source(tmp_path)
-        digest = stage_swap_bundle(root, source)
-        assert digest == content_hash(source)
-        staged = root / digest
-        assert staged.is_dir()
-        assert content_hash(staged) == digest
-        assert stat.S_IMODE(staged.stat().st_mode) == 0o555
-        assert stat.S_IMODE((staged / "manifest.toml").stat().st_mode) == 0o444
-        assert stat.S_IMODE((staged / "kernels").stat().st_mode) == 0o555
-        assert stat.S_IMODE((staged / "kernels" / "k.py").stat().st_mode) == 0o444
-
-    def test_stage_normalizes_root_private_source_modes(self, tmp_path) -> None:
-        root = tmp_path / "intake"
-        root.mkdir()
-        source = self._source(tmp_path)
-        (source / "manifest.toml").chmod(0o400)
-        (source / "kernels").chmod(0o700)
-        (source / "kernels" / "k.py").chmod(0o400)
-
-        digest = stage_swap_bundle(root, source)
-
-        staged = root / digest
-        assert stat.S_IMODE(staged.stat().st_mode) == 0o555
-        assert stat.S_IMODE((staged / "manifest.toml").stat().st_mode) == 0o444
-        assert stat.S_IMODE((staged / "kernels").stat().st_mode) == 0o555
-        assert stat.S_IMODE((staged / "kernels" / "k.py").stat().st_mode) == 0o444
-
-    def test_stage_is_idempotent(self, tmp_path) -> None:
-        root = tmp_path / "intake"
-        root.mkdir()
-        source = self._source(tmp_path)
-        first = stage_swap_bundle(root, source)
-        second = stage_swap_bundle(root, source)
-        assert first == second
-
-    def test_stage_rejects_expected_digest_mismatch(self, tmp_path) -> None:
-        root = tmp_path / "intake"
-        root.mkdir()
-        source = self._source(tmp_path)
-        with pytest.raises(OCIBackendError, match="committed digest"):
-            stage_swap_bundle(root, source, expected_digest="9" * 64)
-
-    def test_stage_detects_tampered_destination(self, tmp_path) -> None:
-        root = tmp_path / "intake"
-        root.mkdir()
-        source = self._source(tmp_path)
-        digest = stage_swap_bundle(root, source)
-        (root / digest / "kernels" / "k.py").chmod(0o644)
-        (root / digest / "kernels" / "k.py").write_text("def k(): return 1\n")
-        with pytest.raises(OCIBackendError, match="different bytes"):
-            stage_swap_bundle(root, source)
-
-    def test_no_partial_publication_on_failure(self, tmp_path) -> None:
-        root = tmp_path / "intake"
-        root.mkdir()
-        source = self._source(tmp_path)
-        with pytest.raises(OCIBackendError):
-            stage_swap_bundle(root, source, expected_digest="8" * 64)
-        leftovers = [p.name for p in root.iterdir()]
-        assert leftovers == []
-
-
-class TestResidentArgvPolicy:
-    def test_swap_intake_requires_resident_protocol(self) -> None:
-        # The full argv builder needs a resolved launch; the protocol/mount
-        # pairing rule is testable through its guard clause alone.
-        from cacheon.eval.oci_backend import build_runtime_argv
-
-        with pytest.raises(OCIBackendError, match="not registered"):
-            build_runtime_argv(
-                lease=None,  # type: ignore[arg-type]
-                resolved=None,  # type: ignore[arg-type]
-                preflight=None,  # type: ignore[arg-type]
-                model_root=None,  # type: ignore[arg-type]
-                publication=None,  # type: ignore[arg-type]
-                cache_root=None,  # type: ignore[arg-type]
-                seccomp_path=None,  # type: ignore[arg-type]
-                runtime=None,  # type: ignore[arg-type]
-                session_protocol="bogus",
-            )
-
-    def test_ordinary_protocol_rejects_swap_root(self, tmp_path) -> None:
-        from cacheon.eval.oci_backend import build_runtime_argv
-
-        with pytest.raises(OCIBackendError, match="exactly for resident"):
-            build_runtime_argv(
-                lease=None,  # type: ignore[arg-type]
-                resolved=None,  # type: ignore[arg-type]
-                preflight=None,  # type: ignore[arg-type]
-                model_root=None,  # type: ignore[arg-type]
-                publication=None,  # type: ignore[arg-type]
-                cache_root=None,  # type: ignore[arg-type]
-                seccomp_path=None,  # type: ignore[arg-type]
-                runtime=None,  # type: ignore[arg-type]
-                session_protocol="ordinary",
-                swap_intake_root=tmp_path,
-            )
-
-    def test_resident_protocol_requires_swap_root(self) -> None:
-        from cacheon.eval.oci_backend import build_runtime_argv
-
-        with pytest.raises(OCIBackendError, match="exactly for resident"):
-            build_runtime_argv(
-                lease=None,  # type: ignore[arg-type]
-                resolved=None,  # type: ignore[arg-type]
-                preflight=None,  # type: ignore[arg-type]
-                model_root=None,  # type: ignore[arg-type]
-                publication=None,  # type: ignore[arg-type]
-                cache_root=None,  # type: ignore[arg-type]
-                seccomp_path=None,  # type: ignore[arg-type]
-                runtime=None,  # type: ignore[arg-type]
-                session_protocol="resident",
-            )
+@pytest.mark.parametrize("protocol", ("bogus", "resident"))
+def test_runtime_argv_registers_only_ordinary_and_reference_sessions(
+    protocol: str,
+) -> None:
+    # The full argv builder needs a resolved launch; the protocol registry is
+    # testable through its guard clause alone.  The resident hot-swap session
+    # left with the routing screen, so it is refused like any unknown protocol.
+    with pytest.raises(OCIBackendError, match="not registered"):
+        build_runtime_argv(
+            lease=None,  # type: ignore[arg-type]
+            resolved=None,  # type: ignore[arg-type]
+            preflight=None,  # type: ignore[arg-type]
+            model_root=None,  # type: ignore[arg-type]
+            publication=None,  # type: ignore[arg-type]
+            cache_root=None,  # type: ignore[arg-type]
+            seccomp_path=None,  # type: ignore[arg-type]
+            runtime=None,  # type: ignore[arg-type]
+            session_protocol=protocol,
+        )
 
 
 class TestEngineKwargAdditions:

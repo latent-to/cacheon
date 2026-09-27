@@ -847,7 +847,7 @@ class EvaluationRecoveryStoreMixin:
         The worker has returned a closed, request-bound HOLD product.  This is
         neither a candidate failure nor retry authority: retain it as a blank-
         decision reservation HOLD, complete its exact lease/recovery, and make
-        the next promoted cohort claimable.  ``HELD`` input migrates products
+        the next queued cohort claimable.  ``HELD`` input migrates products
         retained by the former campaign-halting behavior.
         """
 

@@ -27,7 +27,7 @@ from cacheon.eval.oci_session_protocol import (
     parse_frame_bytes,
     validate_batch_request,
 )
-from cacheon.eval.oci_session_worker import _generate
+from tests.support.pipes import generate as _generate
 from cacheon.eval.phase_latency import HostTokenClock, engine_outputs, generate_outputs, token_boundary
 from cacheon.eval.resident_measurement import (
     CrossoverRuntimeError,

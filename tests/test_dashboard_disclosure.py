@@ -69,7 +69,7 @@ def test_result_plus_eight_hours_gates_detail_prefix_and_direct_download(
 
 
 @pytest.mark.parametrize("status", [
-    "published", "screening", "promoted", "qualifying", "held", "no_decision",
+    "published", "reproduction_pending", "qualifying", "held", "no_decision",
 ])
 def test_waiting_or_retry_does_not_release_an_old_result(submission, client, monkeypatch, status):
     monkeypatch.setattr(disclosure.time, "time", lambda: RESULT + 100_000)

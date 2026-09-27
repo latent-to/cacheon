@@ -4,12 +4,6 @@ Production Cacheon does not reduce a proposal to one self-reported score. It der
 three-way qualification decision from retained execution, graph, speed, and pristine
 quality evidence, then reopens that complete audited PASS for settlement.
 
-## Screens are not scores
-
-Static, build, ABI, graph, and abbreviated-serving screens protect scarce evaluator
-capacity. They may promote, reject, retry, or hold a proposal, but are marked
-non-crownable. Their timings and grades cannot update the evaluation stack.
-
 ## Marginal comparison
 
 For a registered target, the production version-3 evidence protocol constructs
@@ -32,8 +26,8 @@ budget. After the speed lifetimes are quiescent, qualification runs registered
 eager audit A when the plan requires it, destroys candidate lifetimes, and then
 runs pristine T.
 Reopen recomputes tokens/second and the frozen decision from typed counts and intervals,
-not from raw session frames. Candidate-reported aggregate throughput and resident-screen
-rates are never accepted as authority.
+not from raw session frames. Candidate-reported aggregate throughput is never
+accepted as authority.
 
 The speed estimate is conceptually:
 

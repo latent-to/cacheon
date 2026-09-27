@@ -22,7 +22,6 @@ does not guarantee that the complete qualification decision can be regraded.
 
 - chain scope, finalized cursor, and reservations;
 - immutable proposal publication and copy disposition;
-- arena screen attempts and receipts;
 - qualification authority, outcomes, and reproduction state;
 - settlement candidates, leases, events, and evaluation stacks;
 - standing and discovery reward claims; and
@@ -69,7 +68,7 @@ chain, not a claim that every row is embedded in the attempt or SQLite:
 |---|---|
 | Intake | Finalized block/event order, payload, committed hash, reservation, immutable publication |
 | Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm/cohort plans |
-| Arena | Service manifest, capacity decision, ordered screen-stage evidence and receipt |
+| Arena | Service manifest, capacity decision, candidate binding (reservation, publication, qualification attempt) |
 | Launch | Runtime preflight, model mount, native build/publication, hardware/resource/seccomp identity |
 | Execution | Versioned `ResidentSpeedWitness` rows (v10/v11 B/C/B′), physical-lane roles, and the richer session/device observations validated against the frozen plan. Current source requires complete per-rank execution evidence before speed grading. Witnesses below version 8 are sealed MiniMax-M3 history and are refused |
 | Slot audit | Bounded raw eager/untimed candidate facts, exact slot × rank/process coverage, canonical decimal receipt identity, and trusted-host grade when the plan registers an audit requirement |
@@ -203,7 +202,7 @@ credentials, or unredacted logs. The operator still owns:
 - snapshot scheduling, private-bucket access, encryption, versioning/object lock,
   lifecycle, and capacity;
 - restore tests that preserve file modes, ownership, single-link shape, and absolute root;
-- capacity alerts and a policy for non-authoritative screen/debug logs;
+- capacity alerts and a policy for non-authoritative debug logs;
 - encryption and access control for private prompts, hidden tasks, model identity, and
   operational metadata; and
 - deletion rules that prevent an active reward claim from outliving its reopenable
@@ -217,8 +216,8 @@ upload is not sufficient; every scheduled snapshot should pass
 Retention clocks are type-specific. Settlement lease expiry can recycle a lease, and a
 discovery claim may have a policy lifetime. Eligible unresolved intake rows expire
 automatically against finalized arrival/progress-block authority after the configured
-SLA; wall-clock age is not the authority. Active `fetching`, `screening`, and
-`qualifying` work is excluded, and the dedicated schema-3 migration hold requires its
+SLA; wall-clock age is not the authority. Active `fetching` and `qualifying` work
+is excluded, and the dedicated schema-3 migration hold requires its
 explicit archive path. An operator may also call the typed `expire` transition after the
 configured minimum age or release a held reservation with an audited reason. None of
 these row-level transitions is a typed retirement of an entire arena. Backup or cleanup

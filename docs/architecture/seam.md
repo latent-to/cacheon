@@ -48,7 +48,6 @@ The registered rows are:
 | Adapter | SGLang chokepoint | Role |
 |---|---|---|
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot |
-| `resident_swap` | `ModelRunner.init_decode_cuda_graph` plus idle-gated scheduler cache flush | Persistent resident screening only; not qualification or a slot |
 | `nodes` | `ModelRunner.load_model` | Every registered [node address](slot-contract.md#node-addresses); binds the named modules of the served model once the weights are loaded |
 
 `nodes` is the only adapter that serves candidate code. It patches no SGLang
@@ -56,14 +55,6 @@ method: it replaces the `forward` of the modules a bundle named, so a model whos
 layers take a different class (`GemmaRMSNorm` instead of `RMSNorm`) is reached by
 the same row. The per-operation adapters it replaced each pinned one SGLang
 method and had to be re-derived for every model family and engine bump.
-
-`resident_swap` is deliberately outside the crown path. It is inert unless the
-validator supplies `CACHEON_RESIDENT_SWAP` to a persistent screening engine. The
-host stages a strictly increasing swap generation, triggers an idle-gated
-recapture, and requires an acknowledgement from every scheduler rank. A failed
-swap clears and disables the registry so the screen cannot measure a
-half-installed contribution. Qualification launches never set this control
-directory and never inherit screen evidence.
 
 ## Bootstrap across spawned processes
 
@@ -290,5 +281,4 @@ separate quality and performance gates.
 - [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py) — capture, tracing and tuning probes the dispatcher reads
 - [`integrations/sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py) — the node dispatcher
 - [`integrations/`](https://github.com/latent-to/cacheon/tree/main/cacheon/integrations) — version-pinned SGLang adapters
-- [`integrations/sglang_resident_swap.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_resident_swap.py) — screening-only swap and graph-recapture hook
 - [`compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py) — pin and chokepoint canary

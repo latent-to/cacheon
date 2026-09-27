@@ -101,10 +101,9 @@ Concrete attacker stories help reviewers test the composition of controls:
 
 The candidate tries to remain ineligible or fail and rely on fallback while the server
 still answers. Pre-selection stock routing is allowed for ordinary availability.
-One-shot qualification requires positive execution coverage and treats
-selected-path fallback as invalid evidence. Execution counts are minted per
-generation, and current source holds a leg unless every expected rank fired
-and completed the candidate under that activation generation. These receipts close
+Qualification requires positive execution coverage and treats
+selected-path fallback as invalid evidence: every scheduler rank must complete
+every registered slot, inside a CUDA-graph capture on a graphs-on run. These receipts close
 accidental non-invocation but not deliberate in-process forgery. End-to-end host timing
 is bound to the exact candidate launch identity.
 

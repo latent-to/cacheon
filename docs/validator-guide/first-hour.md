@@ -155,7 +155,7 @@ Interpret the one-pass summary by stage:
 | `copies` | Later authoritative submitted-delta copies demoted against an earlier miner |
 | `rejected` | Terminal attributable intake failures |
 | `held` | Work requiring operator or bounded retry disposition |
-| `screens`, `decisions` | Disabled in intake-only mode |
+| `decisions` | Disabled in intake-only mode |
 | `settlements` | Committed settlement leases; runs in every mode over retained accepted PASS evidence |
 
 Run the identical command a second time. With no newly finalized reveals, it should not
@@ -222,11 +222,9 @@ review all of the following as one service identity:
 1. exact runtime, base engine, validator overlay, worker distribution, model revision,
    model content, GPU architecture, topology, GPU count, and TP size;
 2. prompt-corpus digest, seed scheme, and the exact scored workload cells;
-3. queue, screen, qualification, cohort, age, and retry bounds;
-4. five ordered non-crown screen timeouts plus resident-screen swap, canary, waiver,
-   and lifetime policy;
-5. provider implementation digest and qualification-policy digest; and
-6. adaptive resident speed policy, two non-overlapping physical TP lanes, audit-only
+3. queue depth, queue age, active-qualification, and cohort bounds;
+4. provider implementation digest and qualification-policy digest; and
+5. adaptive resident speed policy, two non-overlapping physical TP lanes, audit-only
    plan, calibration, pristine reference, evidence-root, entropy, hidden judge, OCI
    executor, and absolute-deadline authorities used by `build_qualification`.
 
@@ -256,9 +254,8 @@ result = run_validator(
 ```
 
 Do not substitute a shell command, dynamic import path, or fake provider that declares
-success. A commissioned provider must return real typed screen evidence and construct the
-sealed two-process B/C/B′ speed work, audit, and pristine-T
-qualification work.
+success. A commissioned provider must construct the sealed two-process B/C/B′ speed
+work, audit, and pristine-T qualification work.
 
 ## 8. Observe one complete reservation lifecycle
 
@@ -266,8 +263,8 @@ Before daemonizing, retain evidence for one deliberately controlled admission an
 these transitions in order:
 
 ```text
-reserved → fetching → published → screening → promoted → qualifying
-         → qualified → leased settlement → crowned/held/discovery_bounty
+reserved → fetching → published → qualifying → qualified
+         → leased settlement → crowned/held/discovery_bounty
 ```
 
 A controlled negative should terminate as `failed`; an induced validator-side outage
@@ -317,7 +314,7 @@ Before enabling full validation, an operator still needs to supply and review:
 - release-key, registry, integration-review, and serving-fleet processes if operating
   the release plane.
 
-Also require explicit incident procedures for transport exhaustion, screen/qualification
+Also require explicit incident procedures for transport exhaustion, qualification
 retry exhaustion, interrupted controller state, evidence-root loss, settlement lease
 expiry, stale projections, held publication journals, signer mismatch, release-key
 rotation, and serve-receipt failure. Each procedure must preserve the original record and

@@ -114,12 +114,12 @@ class ArenaStateMixin:
                 f"ON CONFLICT({key}) DO UPDATE SET {updates}", values,
             )
 
-    def screenable(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
-        """Return validator-selected work awaiting a fresh non-crown screen."""
+    def claimable(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
+        """Return validator-selected work awaiting its qualification claim, in FIFO order."""
 
         bound = self.policy.max_cohort if limit is None else limit
         if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
-            raise _error("screen cohort limit is invalid")
+            raise _error("claimable cohort limit is invalid")
         rows = self._db.execute(
             "SELECT r.* FROM reservations AS r WHERE status IN "
             "('published','reproduction_pending') AND NOT EXISTS ("
@@ -142,14 +142,13 @@ class ArenaStateMixin:
             "SELECT r.status,r.block,el.stage FROM reservations AS r LEFT JOIN "
             "evaluation_lease_members AS em ON em.reservation_id=r.reservation_id AND em.active=1 "
             "LEFT JOIN evaluation_leases AS el USING(lease_id) WHERE r.competition_arena=? "
-            "AND r.status IN ('published','reproduction_pending','promoted','screening','qualifying')",
+            "AND r.status IN ('published','reproduction_pending','qualifying')",
             (self._competition_arena,),
         ))
         queued = [row for row in rows if row["stage"] is None and row["status"] in
-                  {"published", "reproduction_pending", "promoted"}]
+                  {"published", "reproduction_pending"}]
         return ArenaQueueSnapshot(
             len(queued), max((current_block - row["block"] for row in queued), default=0),
-            sum(row["status"] == "screening" or row["stage"] == "screen" for row in rows),
             sum(row["status"] == "qualifying" or row["stage"] == "qualification" for row in rows),
         )
 
@@ -307,49 +306,42 @@ class ArenaStateMixin:
         ))
         if owner is not None and any(row["owner"] == owner for row in active):
             return ()
-        capacity = 1 if stage == "qualification" and max_active is None else max_active
-        if capacity is not None and sum(row["stage"] == stage for row in active) >= capacity:
+        capacity = 1 if max_active is None else max_active
+        if sum(row["stage"] == stage for row in active) >= capacity:
             return ()
-        if stage == "screen":
-            predicate = "r.status IN ('published','reproduction_pending')"
-            priority = "CASE r.status WHEN 'reproduction_pending' THEN 0 ELSE 1 END"
+        baseline = self.qualification_queue_baseline()
+        if baseline is None:
+            # Genesis may be installed by the recoverable dispatcher only
+            # after reopening a qualification lease claimed by legacy CPU
+            # composition. Preserve that bootstrap path; once any durable
+            # stack exists, an unbound queue head must wait for binding.
+            if self._db.execute(
+                "SELECT 1 FROM evaluation_stacks WHERE competition_arena=? LIMIT 1",
+                (self._competition_arena,),
+            ).fetchone() is not None:
+                return ()
             segment_join = " "
             segment_predicate = " AND r.competition_arena=?"
             segment_parameters: tuple[object, ...] = (self._competition_arena,)
         else:
-            baseline = self.qualification_queue_baseline()
-            if baseline is None:
-                # Genesis may be installed by the recoverable dispatcher only
-                # after reopening a qualification lease claimed by legacy CPU
-                # composition. Preserve that bootstrap path; once any durable
-                # stack exists, an unbound queue head must wait for binding.
-                if self._db.execute(
-                    "SELECT 1 FROM evaluation_stacks WHERE competition_arena=? LIMIT 1",
-                    (self._competition_arena,),
-                ).fetchone() is not None:
-                    return ()
-                segment_join = " "
-                segment_predicate = " AND r.competition_arena=?"
-                segment_parameters = (self._competition_arena,)
-            else:
-                segment_join = (
-                    " JOIN reservation_baseline_segments AS b USING(reservation_id) "
-                )
-                segment_predicate = (
-                    " AND r.competition_arena=? AND b.arena_id=? AND b.generation=? AND b.stack_digest=? "
-                    "AND b.tree_digest=? AND b.stack_json=? "
-                    "AND b.transition_event_id=?"
-                )
-                segment_parameters = (
-                    self._competition_arena, baseline.arena_digest,
-                    baseline.generation,
-                    baseline.manifest.digest,
-                    baseline.tree_digest,
-                    self._encoded_stack_manifest(baseline),
-                    baseline.transition_event_id,
-                )
-            predicate = "r.status='promoted'"
-            priority = "CASE r.screen_lane WHEN 'reproduction' THEN 0 ELSE 1 END"
+            segment_join = (
+                " JOIN reservation_baseline_segments AS b USING(reservation_id) "
+            )
+            segment_predicate = (
+                " AND r.competition_arena=? AND b.arena_id=? AND b.generation=? AND b.stack_digest=? "
+                "AND b.tree_digest=? AND b.stack_json=? "
+                "AND b.transition_event_id=?"
+            )
+            segment_parameters = (
+                self._competition_arena, baseline.arena_digest,
+                baseline.generation,
+                baseline.manifest.digest,
+                baseline.tree_digest,
+                self._encoded_stack_manifest(baseline),
+                baseline.transition_event_id,
+            )
+        predicate = "r.status IN ('published','reproduction_pending')"
+        priority = "CASE r.status WHEN 'reproduction_pending' THEN 0 ELSE 1 END"
         query = (
             "SELECT r.* FROM reservations AS r" + segment_join + "WHERE " + predicate +
             " AND NOT EXISTS (SELECT 1 FROM evaluation_lease_members AS em "
@@ -359,7 +351,7 @@ class ArenaStateMixin:
         first = self._db.execute(query + order + " LIMIT 1", segment_parameters).fetchone()
         if first is None:
             return ()
-        if stage == "screen" or first["screen_lane"] == "reproduction":
+        if first["status"] == "reproduction_pending":
             return (first,)
         if first["retry_group_digest"]:
             selected = tuple(self._db.execute(
@@ -367,7 +359,7 @@ class ArenaStateMixin:
                 (*segment_parameters, first["retry_group_digest"]),
             ))
             total = self._db.execute(
-                "SELECT COUNT(*) AS n FROM reservations WHERE status='promoted' "
+                "SELECT COUNT(*) AS n FROM reservations WHERE status='published' "
                 "AND retry_group_digest=? AND competition_arena=?",
                 (first["retry_group_digest"], self._competition_arena),
             ).fetchone()["n"]
@@ -377,21 +369,22 @@ class ArenaStateMixin:
                 raise _error("qualification retry group exceeds lease capacity")
             return selected
         return tuple(self._db.execute(
-            query + " AND r.screen_lane='primary' AND r.retry_group_digest=''" + order + " LIMIT ?",
+            query + " AND r.status='published' AND r.retry_group_digest=''" + order + " LIMIT ?",
             (*segment_parameters, bound),
         ))
 
-    def prepare_screen_queue(
+    def prepare_qualification_queue(
         self, *, service_digest: str, closed_targets: tuple[str, ...] = (), limit: int | None = None
     ) -> tuple[tuple[str, str], ...]:
-        """Admit routed submissions before their first screen and replay prior losers.
+        """Admit routed submissions before their first claim and replay prior losers.
 
         Duplicate FAIL replay follows duplicate_replay; a PASS and the
         reproduction lane are never replayed. Closed targets release payment
         through the existing no-decision transaction, before acquiring a lease.
         The first crown on this commissioned baseline closes new commitments.
         Earlier finalized commitments may drain even when fetched after the crown;
-        work already screened is never subjected to a second admission cutoff.
+        work already claimed once (its service digest is stamped) is never
+        subjected to a second admission cutoff.
         """
         from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
         from cacheon.stack_identity import require_sha256_hex
@@ -420,13 +413,13 @@ class ArenaStateMixin:
         retired: list[tuple[str, str]] = []
         while True:
             before = len(retired)
-            for row in self.screenable(limit=limit):
-                if (row.status == "published" and not row.screen_attempts
-                        and cutoff is not None and row.arrival.block > cutoff):
+            for row in self.claimable(limit=limit):
+                first_claim = row.status == "published" and not row.arena_service_digest
+                if first_claim and cutoff is not None and row.arrival.block > cutoff:
                     rejected = self.mark_failed(row.reservation_id, "baseline_closed_at_submission")
                     retired.append((row.reservation_id, rejected.reason))
                     continue
-                if row.target_id in closed_targets and row.status == "published" and not row.screen_attempts:
+                if row.target_id in closed_targets and first_claim:
                     parked = self.mark_target_unavailable(row.reservation_id, target_id=row.target_id)
                     retired.append((row.reservation_id, parked.reason))
                     continue

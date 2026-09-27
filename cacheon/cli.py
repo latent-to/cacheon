@@ -1742,7 +1742,7 @@ def cmd_chain_validate(
             f"intake @finalized {res.finalized_block}: seen={res.seen} "
             f"reserved={len(res.reserved)} published={len(res.published)} "
             f"copies={len(res.copies)} rejected={len(res.rejected)} "
-            f"screens={len(res.screens)} decisions={len(res.decisions)} "
+            f"decisions={len(res.decisions)} "
             f"settlements={len(res.settlements)} held={len(res.held)}"
         )
         for reservation, why in res.rejected.items():
@@ -1881,7 +1881,7 @@ def cmd_chain_reopen_qualification(args: argparse.Namespace) -> int:
                 return 0
             state = store.rebind_remeasurement_segment(args.reservation_id)
             print(
-                "left unbound for the fresh screen to bind"
+                "left unbound for the fresh qualification claim to bind"
                 if state is None
                 else f"rebound to arena {state.arena_digest[:16]} "
                 f"generation {state.generation}"
@@ -1967,9 +1967,6 @@ def cmd_chain_evaluation_lease(args: argparse.Namespace) -> int:
         result = operate(
             load_config(args.config),
             args.lease_operation,
-            lease_id=getattr(args, "lease_id", None),
-            reason=getattr(args, "reason", None),
-            result_digest=getattr(args, "result_digest", ""),
             authority_path=getattr(args, "authority", None),
         )
     except (FifoLeaseError, IntakeError, OSError) as exc:
@@ -2981,12 +2978,6 @@ def build_parser() -> argparse.ArgumentParser:
     lease_ops = sp.add_subparsers(dest="lease_operation", required=True)
     lease_ops.add_parser("preview", help="read the next canonical FIFO member IDs")
     lease_ops.add_parser("claim", help="claim the next canonical FIFO lease")
-    heartbeat = lease_ops.add_parser("heartbeat", help="extend one exact active lease")
-    heartbeat.add_argument("lease_id")
-    released = lease_ops.add_parser("release", help="release one exact active lease")
-    released.add_argument("lease_id")
-    released.add_argument("--reason", required=True)
-    released.add_argument("--result-digest", default="")
     requeue_expired = lease_ops.add_parser(
         "requeue-expired",
         help="readmit one sealed validator-downtime cohort with a fresh SLA window",
@@ -3111,7 +3102,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser(
         "chain-reopen-qualification",
         help=(
-            "operator: return one unsettled PASS reservation to the screen "
+            "operator: return one unsettled PASS reservation to the qualification "
             "queue for a fresh qualification when retained evidence shows its credited "
             "half read the baseline lane under the arena band; never signs, "
             "settles, or crowns"

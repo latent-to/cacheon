@@ -140,8 +140,8 @@ cacheon chain-validate \
 ```
 
 Expected output summarizes finalized block, arrivals, reservations, immutable
-publications, copies, rejections, screens, decisions, settlements, and holds. In
-intake-only mode the screen, qualification, and settlement counts remain disabled.
+publications, copies, rejections, decisions, settlements, and holds. In
+intake-only mode the qualification and settlement counts remain disabled.
 
 Run the same command again. No new reveal should be republished; durable identity and the
 finalized cursor make the pass idempotent.
@@ -173,7 +173,7 @@ select the arena. See [Arena service](arena-service.md) and
 commands, scoring policy, chain-signing credentials, and weight publication belong to
 separate authorities and must not be added to the intake service definition.
 
-With an injected deployment registry, the same testnet loop may screen, qualify, retain a
+With an injected deployment registry, the same testnet loop may qualify, retain a
 complete audited PASS, and settle. That does not move qualification onto chain: the chain supplies
 arrival and current metagraph authority, while the registered OCI/referee fleet produces
 and retains the evidence. Production version-3 qualification uses the
@@ -257,7 +257,8 @@ Before treating a deployment as production-capable, require evidence for all of:
 - endpoint/genesis/netuid scope and finality behavior;
 - HTTPS intake limits, committed hash, publication reopen, copy ordering, and restart;
 - registered arena manifest/provider identity and queue behavior;
-- faithful and broken non-crown screen controls;
+- faithful, broken, and infrastructure qualification controls through the production
+  entrypoint;
 - one real complete isolated qualification with evidence restore and no duplicate evaluator run;
 - settlement lease expiry, blocker, atomic-commit, and stale-incumbent controls;
 - live V1 dry-run projection plus signer journal/readback drills under approved policy;

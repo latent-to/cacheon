@@ -13,14 +13,14 @@ commands, model paths, workloads or qualification factories.
 |---|---|
 | Runtime | Arena ID, runtime/base engine/overlay/worker identities, model revision/manifest/content, architecture, topology, GPU count and TP size |
 | Workload | Prompt corpus, seed scheme, serving cells and timed reads |
-| Capacity | Queue depth/age, concurrent screens and qualifications, cohort size and retry budgets |
-| Screens | Ordered non-crownable stages and deadlines |
+| Capacity | `max_queue_depth`, `max_queue_age_blocks`, `max_active_qualifications` and `max_cohort_size` |
 | Authorities | Reviewed provider digest, qualification policy and closed targets |
 
-The manifest digest identifies one immutable commission. Changing the model,
-image, runtime, workload, hardware allocation or policy creates new evidence
-identity. A provider must match the declared digest and typed interface;
-deployment review establishes that its installed bytes match that declaration.
+The manifest carries schema version 3, and its digest identifies one immutable
+commission. Changing the model, image, runtime, workload, hardware allocation or
+policy creates new evidence identity. A provider must match the declared digest
+and typed interface; deployment review establishes that its installed bytes
+match that declaration.
 This check is not remote attestation.
 
 ## Scored workload
@@ -42,72 +42,58 @@ so another arena adding a target cannot silently change this arena's policy.
 Unmeasured submissions for closed targets leave as NO_DECISION and release
 payment before dispatch; see [Why submissions fail](../miner-guide/why-submissions-fail.md).
 
-## Non-crownable screens
-
-Stages run in order: `static`, `build`, `abi`, `graph`, `abbreviated_serving`.
-Each emits bounded typed evidence: `pass`, `fail`, or `no_decision`. Receipts
-must be a contiguous prefix; a provider cannot skip a stage or exceed its
-registered timeout while retaining a pass. Preserve the bytes named by each
-evidence digest.
-
-A resident screen keeps stock loaded and executes stock/candidate/stock swaps.
-Each candidate must reach its registered dispatch, recapture/replay graphs and
-prove stock restoration on every rank. Reads bind to the current generation;
-stock-canary drift withdraws the lane. These measurements only route work and
-cannot crown, settle or authorize rewards.
-
-Standing-resident deployments defer separate ABI/graph lifetimes to this
-all-rank swap/read, preserving their fixed stage positions. Full qualification
-still supplies the independent audit, the pristine quality gate, and the
-captured completions of the timed run, which together are the crownable graph
-proof.
-Non-swappable AOT artifacts, dependency patches, native rebuilds and setup
-hooks receive an explicit routing waiver into full qualification, never a
-performance pass.
-
 ## Admission and capacity
 
-The controller supplies a durable queue snapshot. Capacity comes from measured
-operational budgets; finalized chain order remains authoritative.
+A published candidate enters qualification directly; the qualification's first
+window is the only screen. The controller supplies a durable queue snapshot.
+Capacity comes from measured operational budgets; finalized chain order remains
+authoritative.
 
 | Decision | Effect |
 |---|---|
-| `admit` | Claims a screen or qualified cohort within available capacity |
+| `admit` | Claims a qualification cohort within available capacity |
 | `queue` | Leaves work in its durable lane and stops selection this pass |
 | `hold` | Retains work when age/depth/cohort limits require intervention |
 
-A first screen NO_DECISION retries. An inconclusive final serving canary routes
-to isolated qualification. Candidate-caused screen failure rejects; provider,
-baseline, teardown and incomplete-evidence failures remain infrastructure
-failures. Qualification HOLD has an explicit recovery path. Monitor held rows
-and preserve evidence; deleting them is not recovery.
+Admission runs before the first claim: an exact copy of a loser inherits its
+FAIL, closed targets release payment as NO_DECISION, and commitments after the
+first crown on the commissioned baseline fail as `baseline_closed_at_submission`.
+Candidate-caused qualification failure rejects; provider, baseline, teardown and
+incomplete-evidence failures remain infrastructure failures. Qualification HOLD
+has an explicit recovery path. Monitor held rows and preserve evidence; deleting
+them is not recovery.
 
 ## Boundary types
 
-`ArenaCandidateBinding` binds publication, reservation and screen attempt.
-`ArenaScreenReceipt` retains routing evidence. `ArenaQualificationRequest` and
-`ArenaQualificationWork` bind authoritative qualification. `ArenaServiceRegistry`
-resolves exact logical arena IDs.
+`ArenaCandidateBinding` binds reservation, publication and the one-based
+qualification attempt; a retry after an infrastructure hold is a new binding.
+`ArenaQualificationRequest` and `ArenaQualificationWork` bind authoritative
+qualification. `ArenaServiceRegistry` resolves exact logical arena IDs.
 
 ## Provider interface
 
-`ArenaServiceProvider.run_screen(manifest, stage, candidate)` returns the
-requested stage's evidence. `build_qualification(request, state=None)` preserves
-promoted reservation order and supplies the frozen plan factory, isolated
+`ArenaServiceProvider.build_qualification(request, state=None)` preserves the
+claimed reservation order and supplies the frozen plan factory, isolated
 executor, post-commit entropy, hidden judge and absolute deadline. The controller
 checks these identities before importing retained outcomes.
 
 `B300ArenaServiceProvider` is the shared implementation. Historical names and
 signed digest domains remain stable; hardware comes from commissioned inputs.
-Private capabilities remain validator-owned.
+Commissioning seals only `B300DeclaredAuthorities` (runtime identity plus the
+declared qualification) into the manifest; executors, judge, entropy and
+deadline exist only inside the qualification worker. Private capabilities remain
+validator-owned.
 
 ## Deployment composition
 
-The screen materializer, qualification commissioner and worker consume one
-sealed definition per arena. READY's `gpu.inventory` describes the host;
-`lane.devices` selects the screen lane and `lane.tensor_parallel_size` must
-equal its width. Optional `lane.baseline_devices` selects an equal-width,
-disjoint baseline lane of the same GPU model and memory capacity. If omitted,
+The deployment materializer (`python -m cacheon.eval.b300_deployment
+materialize`), qualification commissioner and worker consume one sealed
+definition per arena. The materializer writes `deployment.json` (schema
+`cacheon-b300-deployment-v3`), `arena-service-manifest.json` and
+`worker-readiness.json` under its output root. READY's `gpu.inventory` describes
+the host; `lane.devices` selects the commissioned TP lane and
+`lane.tensor_parallel_size` must equal its width. Optional
+`lane.baseline_devices` selects an equal-width, disjoint baseline lane of the same GPU model and memory capacity. If omitted,
 the complete host complement must have exactly that width.
 
 TP1 therefore needs two GPUs, including an explicit pair within an eight-GPU
@@ -122,7 +108,7 @@ existing OCI capacity fields: `cpu_millis`, `memory_bytes`, `pids_limit`,
 `stage_bytes`, and `stage_inodes`, where supported by the respective policy.
 UID/GID, executable and deadlines retain their existing authorities. Absent
 resource objects preserve prior policy. Both authority and measurement inputs
-must agree; screen, graph and qualification executors consume the same values.
+must agree; every qualification executor consumes the same values.
 
 Commissioning requires faithful, broken and infrastructure controls through the
 production entrypoint, with graphs, audit/T roles, retained evidence and restart
@@ -155,20 +141,19 @@ share the arena service identity. Calibration and complete B/C/B′, audit and T
 evidence remain specific to each job and physical pair.
 
 Run one supervisor and relay per pair with distinct `owner`, registration, spool,
-evidence and runtime paths. Each supervisor uses the existing screen and
-qualification entrypoints, with `enable_settlement=false` and
-`enable_weights=false`. A separate supervisor runs economics with
-`enable_screen=false` and `enable_qualification=false`, so long evaluations do
-not stop finalization. `enable_screen` is optional and defaults to `true`.
-The sealed service's `max_active_screens` and `max_active_qualifications` bound
-transactional claims. One worker can hold only one active job, and one reservation
-can belong to only one active lease. Recovery reopens by worker owner.
+evidence and runtime paths. Each supervisor uses the existing qualification
+entrypoint, with `enable_settlement=false` and `enable_weights=false`. A
+separate supervisor runs economics with `enable_qualification=false`, so long
+evaluations do not stop finalization. The sealed standing config has no screen
+gate; a config that carries `enable_screen` is refused. The sealed service's
+`max_active_qualifications` bounds transactional claims. One worker can hold
+only one active job, and one reservation can belong to only one active lease. Recovery reopens by worker owner.
 
 To free an allocation, stop its supervisor with SIGTERM or SIGINT. It stops
 claiming new work, continues renewing and importing any active qualification,
 then exits. A bounded result-wait timeout does not end this drain. Keep the relay
 and pod service running until import finishes; then stop the relay and interrupt
-the idle pod service with SIGINT so its adapter closes any resident screen engine.
+the idle pod service with SIGINT.
 Confirm the commissioned devices are idle before using them elsewhere. An idle
 worker releases immediately; an active job must finish first.
 
@@ -214,7 +199,7 @@ injected arena authority and conflicts with `intake_only`.
 ## Operating signals
 
 Monitor queue age/depth, capacity, stage latency, verdicts, holds, restarts,
-stock-canary drift and evidence reopen failures. Label these by service digest,
+B/B′ baseline drift and evidence reopen failures. Label these by service digest,
 runtime/model identity and lane; arena ID alone does not distinguish epochs.
 
 The CPU relay refreshes its heartbeat during request and result copies; this
@@ -228,16 +213,14 @@ NO_DECISION verdict, including insufficient coverage.
 ## Nonclaims
 
 Registration is not a performance win or proof of a representative workload.
-Screens, waivers and optional sampled audits cannot replace qualification.
-Qualification remains bound to one arena/stack and does not authorize release.
+Optional sampled audits cannot replace qualification. Qualification remains
+bound to one arena/stack and does not authorize release.
 
 Next: [Authoritative qualification](qualification.md).
 
 ## Source anchors
 
 - [Arena service types and registry](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py)
-- [Resident screen bridge](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py)
-- [Resident screen queue](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_queue.py)
-- [Resident OCI session](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_resident_session.py)
+- [B300 deployment materializer](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_deployment.py)
 - [Arena service tests](https://github.com/latent-to/cacheon/blob/main/tests/test_arena_service.py)
 - [Qualification intake projection](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py)

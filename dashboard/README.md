@@ -26,7 +26,7 @@ to run the dashboard and its API tests.
 |-----|---------|
 | Overview | Status counts, submissions/day sparkline, failure reasons, currently running eval |
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
-| Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
+| Submissions | All reservations: status, hotkey, submit time/block, fee tx, decisions, full detail drawer (qualification attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (0.5 τ minimum): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
 | Winners | Retained PASS settlement candidates: credited gain, measured candidate and baseline tok/s, prefill gain, served weight share, settlement status, and current on-chain emission |
 | Miners | Per-hotkey leaderboard sorted by served weight share: submissions, crowns, qualified/failed, fees paid, registration + emission |
@@ -123,9 +123,7 @@ baseline has no submission; missing historical links are labelled explicitly.
 The previous-best scoring comparison also links to that submission's details.
 
 The submission detail renders the signed evaluation records in full. Each
-screen attempt carries `stages` — every graded check from the signed receipt
-(stage, grade, reason, elapsed time), so a `screen_rejected` names the exact
-failing check and its measured margin. Each qualification attempt carries
+qualification attempt carries
 `speed` — the lane rates from the retained stage-exit artifact (per-role
 tokens/second, timed windows, window scatter, conditioning ratio, and the
 C/B speedup); `speed` is null when no local evidence store retains that

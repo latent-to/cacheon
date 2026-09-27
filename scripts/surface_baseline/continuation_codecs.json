@@ -39,9 +39,5 @@
  "qualification_continuation:cacheon.eval.service_capacity.LoadRead": ["arm","lane","load","records","window"],
  "qualification_continuation:cacheon.eval.service_capacity.TurnRecord": ["cached_tokens","credit_issued_ns","first_token_ns","kind","ordinal","output_tokens","prompt_tokens","request_end_ns","request_start_ns","root_session_id","status"],
  "qualification_continuation:cacheon.eval.speed_verdict.SpeedStageDecision": [],
- "qualification_continuation:roots": ["cacheon.eval.crossover_runtime.ResidentCrossoverEvidence","cacheon.eval.oci_backend.EngineExecutionEvidence","cacheon.eval.oci_backend.PristineReferenceExecutionEvidence","cacheon.eval.oci_process.OCIQuiescenceReceipt","cacheon.eval.qualification.SelectionEntropyReceipt","cacheon.eval.reference_protocol.ReferenceRequest","cacheon.eval.qualification_runner.AuditWitness","cacheon.eval.evidence_store.EvidenceArtifactRef"],
- "resident_execution:cacheon.eval.resident_execution_evidence.RankExecution": ["load_error","loaded","rank","slots"],
- "resident_execution:cacheon.eval.resident_execution_evidence.ResidentExecutionEvidence": ["prior_execution_ranks","prior_generation","ranks"],
- "resident_execution:cacheon.eval.resident_execution_evidence.SlotExecution": ["calls","captured","error","skipped","slot"],
- "resident_execution:roots": ["cacheon.eval.resident_execution_evidence.ResidentExecutionEvidence","cacheon.eval.resident_execution_evidence.RankExecution"]
+ "qualification_continuation:roots": ["cacheon.eval.crossover_runtime.ResidentCrossoverEvidence","cacheon.eval.oci_backend.EngineExecutionEvidence","cacheon.eval.oci_backend.PristineReferenceExecutionEvidence","cacheon.eval.oci_process.OCIQuiescenceReceipt","cacheon.eval.qualification.SelectionEntropyReceipt","cacheon.eval.reference_protocol.ReferenceRequest","cacheon.eval.qualification_runner.AuditWitness","cacheon.eval.evidence_store.EvidenceArtifactRef"]
 }

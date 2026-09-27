@@ -237,11 +237,10 @@ def domain_surface() -> dict[str, list[str]]:
 
 
 def codec_surface() -> dict[str, object]:
-    from cacheon.eval import qualification_continuation, resident_execution_evidence
+    from cacheon.eval import qualification_continuation
 
     codecs = {
         "qualification_continuation": qualification_continuation._codec(),
-        "resident_execution": resident_execution_evidence.EXECUTION_CODEC,
     }
     out: dict[str, object] = {}
     for name, codec in codecs.items():

@@ -122,7 +122,6 @@ class _Configured:
     construction: B300QualificationConstructionAuthority
     readiness: WorkerReadiness
     candidate: object
-    receipt: object
     adapter: adapter_module.B300RemoteQualificationAdapter
     executors: tuple[OCIEngineExecutor, OCIEngineExecutor]
 
@@ -180,20 +179,20 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         candidate_executor,
         baseline_executor,
     )
-    screen = deployment_fixtures._screen_authorities(
+    declared = deployment_fixtures._declared_authorities(
         construction,
         candidate_executor,
         baseline_executor,
         lane_pair,
     )
-    manifest = deployment_fixtures._manifest(screen)
+    manifest = deployment_fixtures._manifest(declared)
     construction = _bind_construction(
         construction,
         manifest,
     )
     deployment = compose_b300_qualification_deployment(
         manifest=manifest,
-        screen_authorities=screen,
+        declared=declared,
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
@@ -201,7 +200,6 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     readiness = _readiness(deployment)
     candidate = deployment_fixtures._bundle(tmp_path / "bundle", 0)
-    receipt = deployment_fixtures._receipt(manifest.digest, candidate)
     resolver = adapter_module.B300WorkerBundleResolver((candidate.publication,))
     adapter = adapter_module.B300RemoteQualificationAdapter(
         deployment,
@@ -215,7 +213,6 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         construction,
         readiness,
         candidate,
-        receipt,
         adapter,
         (candidate_executor, baseline_executor),
     )
@@ -228,21 +225,19 @@ def _body(
     configured: _Configured,
     *,
     candidate=None,
-    receipt=None,
     service_digest: str | None = None,
     policy_digest: str | None = None,
     screen_lane: str = "primary",
 ) -> dict[str, object]:
     candidate = configured.candidate if candidate is None else candidate
-    receipt = configured.receipt if receipt is None else receipt
     manifest = configured.deployment.manifest
     return {
         "candidates": [
             {
+                "attempt": candidate.attempt,
                 "candidate_digest": candidate.digest,
                 "publication": candidate.publication.to_dict(),
                 "reservation": candidate.reservation.to_dict(),
-                "screen_receipt": receipt.to_dict(),
             }
         ],
         "kind": "qualification_work",
@@ -280,7 +275,7 @@ def _request(
         (
             EvaluationLeaseMember(
                 candidate.reservation.reservation_digest,
-                "promoted",
+                "published",
             ),
         ),
         100,
@@ -334,13 +329,11 @@ def _patch_worker_result(
         self,
         lease,
         candidates,
-        receipts,
         *,
         screen_lane,
         continuation_store,
         request_digest,
     ):
-        del receipts
         calls.append((continuation_store, request_digest))
         candidate = candidates[0]
         manifest = _authority(candidate)
@@ -458,14 +451,10 @@ def test_publication_identity_and_configured_root_substitution_fail_closed(
     tmp_path: Path,
 ) -> None:
     other = deployment_fixtures._bundle(tmp_path / "other-bundle", 9)
-    other_receipt = deployment_fixtures._receipt(
-        configured.deployment.manifest.digest,
-        other,
-    )
     substituted_request = _request(
         configured,
         candidate=other,
-        body=_body(configured, candidate=other, receipt=other_receipt),
+        body=_body(configured, candidate=other),
     )
     with pytest.raises(
         adapter_module.B300RemoteQualificationAdapterError,
@@ -509,12 +498,7 @@ def test_request_service_policy_lane_and_readiness_drift_fail_closed(
         body = _body(configured, policy_digest=_h("drifted-policy"))
     elif drift == "service":
         service = _h("drifted-service")
-        receipt = replace(configured.receipt, service_digest=service)
-        body = _body(
-            configured,
-            receipt=receipt,
-            service_digest=service,
-        )
+        body = _body(configured, service_digest=service)
         readiness = replace(readiness, service_digest=service)
     else:
         readiness = replace(readiness, ready_epoch=readiness.ready_epoch + 1)
@@ -589,18 +573,29 @@ def test_evidence_omission_and_tamper_fail_closed(
         configured.adapter.run(_request(configured))
 
 
-@pytest.mark.parametrize("field", ("publication_root", "control_state"))
-def test_remote_request_cannot_supply_paths_or_control_state(
+@pytest.mark.parametrize(
+    ("field", "refusal"),
+    (
+        ("publication_root", "not closed|malformed"),
+        ("control_state", "not closed|malformed"),
+        ("attempt", "provenance differs"),
+    ),
+)
+def test_remote_request_cannot_supply_paths_control_state_or_attempt(
     configured: _Configured,
     field: str,
+    refusal: str,
 ) -> None:
     body = _body(configured)
     if field == "publication_root":
         body["candidates"][0][field] = "/tmp/request-selected"  # type: ignore[index]
+    elif field == "attempt":
+        # The attempt is bound into the authenticated candidate digest.
+        body["candidates"][0][field] = configured.candidate.attempt + 1  # type: ignore[index]
     else:
         body[field] = {"evidence_root": "/tmp/request-selected"}
 
-    with pytest.raises(RemoteEvaluationDispatcherError, match="not closed|malformed"):
+    with pytest.raises(RemoteEvaluationDispatcherError, match=refusal):
         _request(configured, body=body)
 
 

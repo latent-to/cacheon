@@ -1,11 +1,10 @@
-"""Commission the sealed B300/TP4 screen worker from pod-owned authorities."""
+"""Commission the sealed B300/TP4 qualification worker from pod-owned authorities."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import math
 import os
 import stat
 import time
@@ -14,57 +13,37 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Sequence
 
 from cacheon.arena_service import (
-    SCREEN_STAGES,
     ArenaCapacityPolicy,
-    ArenaCandidateBinding,
     ArenaRuntimeIdentity,
     ArenaService,
     ArenaServiceManifest,
-    NonCrownScreenPolicy,
-    ScreenStagePolicy,
     Workload,
     WorkloadCell,
 )
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.engine_tree import (
-    inspect_contribution,
     materialize_engine_tree,
     reopen_materialized_engine_tree,
 )
-from cacheon.eval.device_policy_identity import logical_device_policy_digest
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
+    B300DeclaredAuthorities,
     B300DeclaredQualificationAuthorities,
     B300QualificationLanePair,
     B300QualificationLanePolicy,
-    B300ResidentScreenFactory,
-    B300ResidentScreenLifetime,
-    B300ScreenDeploymentAuthorities,
     b300_arena_provider_digest,
 )
 from cacheon.eval.b300_arena_definition import (
-    B300ScreenDeploymentError,
-    data_parallel_size as _data_parallel_size,
+    B300DeploymentError,
     device_policy as _device_policy,
-    engine_config as _engine_config,
     engine_template as _engine_template,
-    hardware_bindings as _hardware_bindings,
     prompt_batch_cells as _prompt_batch_cells,
-    ready_gpu_ids as _ready_gpu_ids,
     ready_lane as _ready_lane,
     ready_lanes as _ready_lanes,
     resource_policy as _resource_policy,
-    scored_cell as _scored_cell,
     string_rows as _string_rows,
     target_partition as _target_partition,
     workload as _workload,
-)
-from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
-from cacheon.eval.b300_screen_stages import (
-    B300BuildABIGraphScreenAdapter,
-    B300ScreenExecutionPlan,
-    B300StaticScreenAdapter,
-    compose_b300_non_serving_screen_handlers,
 )
 from cacheon.eval.device_state import (
     DeviceStatePolicy,
@@ -72,11 +51,7 @@ from cacheon.eval.device_state import (
     provision_gpu_configurations,
 )
 from cacheon.eval.engine_launch import (
-    EngineLaunchSpec,
-    LogicalHardwareSpec,
     NativeBuildSpec,
-    PhysicalHardwareBinding,
-    TrustedLaunchBinding,
     native_compiler_policy_digest,
     native_patcher_digest,
     native_toolchain_digest,
@@ -86,49 +61,43 @@ from cacheon.eval.oci_backend import (
     OCIBackendConfig,
     OCIEngineExecutor,
     OCIRuntimeResourcePolicy,
-    TrustedArenaModelMountReceipt,
-    expected_runtime_preflight,
     runtime_identity_from_preflight,
 )
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.oci_process import OCIProcessManager
 from cacheon.eval.oci_session_protocol import EngineSessionConfig
-from cacheon.eval.b300_screen_qualification_bridge import (
-    B300ScreenQualificationBridgeError,
-    derive_b300_screen_qualification,
+from cacheon.eval.b300_qualification_declaration import (
+    B300QualificationDeclarationError,
+    derive_b300_qualification_declaration,
 )
-from cacheon.eval.b300_resident_screen import _resident_factory
 from cacheon.eval.runtime_preflight import (
     HOST_RECEIPT_SCHEMA,
     RuntimePreflightReceipt,
 )
-from cacheon.eval.screen_quant_policy import slot_quant_requirements
-from cacheon.stack_identity import canonical_digest, canonical_json_bytes
+from cacheon.stack_identity import canonical_json_bytes
 from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
-    ProposalContributionRef,
 )
-from cacheon.stack_plan import plan_candidate_stack
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
 from cacheon._strict import require_digest
 
 
-DEPLOYMENT_SCHEMA = "cacheon-b300-screen-deployment-v2"
-DEPLOYMENT_FILE = "screen-deployment.json"
+DEPLOYMENT_SCHEMA = "cacheon-b300-deployment-v3"
+DEPLOYMENT_FILE = "deployment.json"
 MANIFEST_FILE = "arena-service-manifest.json"
 READINESS_FILE = "worker-readiness.json"
-MATERIALIZATION_SCHEMA = "cacheon-b300-screen-materialization-v1"
+MATERIALIZATION_SCHEMA = "cacheon-b300-materialization-v2"
 DEFAULT_OUTPUT_ROOT = Path("/data/cacheon-b300/remote-worker/commissioned")
 def _digest(value: object, field: str) -> str:
-    return require_digest(value, field=field, error=B300ScreenDeploymentError)
+    return require_digest(value, field=field, error=B300DeploymentError)
 
 
 def _canonical_bytes(value: object) -> bytes:
     try:
         return canonical_json_bytes(value) + b"\n"
     except (TypeError, ValueError) as exc:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"deployment authority is not canonical JSON data: {exc}"
         ) from None
 
@@ -144,27 +113,27 @@ def _file_sha256(path: Path) -> str:
 def _stable_json(path_value: str | os.PathLike[str], field: str) -> tuple[Path, dict[str, object], str]:
     path = Path(path_value)
     if not path.is_absolute() or path.is_symlink():
-        raise B300ScreenDeploymentError(f"{field} must be an absolute non-symlink file")
+        raise B300DeploymentError(f"{field} must be an absolute non-symlink file")
     try:
         before = path.stat()
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise B300ScreenDeploymentError(
+            raise B300DeploymentError(
                 f"{field} must be a single-linked regular file"
             )
         raw = path.read_bytes()
         after = path.stat()
-    except B300ScreenDeploymentError:
+    except B300DeploymentError:
         raise
     except OSError as exc:
-        raise B300ScreenDeploymentError(f"cannot read {field}: {exc}") from None
+        raise B300DeploymentError(f"cannot read {field}: {exc}") from None
     stable = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
     if any(getattr(before, name) != getattr(after, name) for name in stable):
-        raise B300ScreenDeploymentError(f"{field} changed while being read")
+        raise B300DeploymentError(f"{field} changed while being read")
     # 256MiB: these are validator-sealed, sha-bound inputs (never miner
     # bytes); the sealed S8 prompt authority embeds 16x128 8k-token prompts
     # (~77MB), which the old 64MiB bound predated.
     if not raw or len(raw) > 256 << 20:
-        raise B300ScreenDeploymentError(f"{field} is empty or exceeds its byte bound")
+        raise B300DeploymentError(f"{field} is empty or exceeds its byte bound")
     try:
         value = json.loads(
             raw.decode("utf-8"),
@@ -174,9 +143,9 @@ def _stable_json(path_value: str | os.PathLike[str], field: str) -> tuple[Path, 
             ),
         )
     except (UnicodeError, ValueError, RecursionError) as exc:
-        raise B300ScreenDeploymentError(f"{field} is malformed JSON: {exc}") from None
+        raise B300DeploymentError(f"{field} is malformed JSON: {exc}") from None
     if type(value) is not dict:
-        raise B300ScreenDeploymentError(f"{field} must be a JSON object")
+        raise B300DeploymentError(f"{field} must be a JSON object")
     return path.resolve(strict=True), value, hashlib.sha256(raw).hexdigest()
 
 
@@ -191,7 +160,7 @@ def _no_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _mapping(value: object, field: str) -> dict[str, object]:
     if type(value) is not dict:
-        raise B300ScreenDeploymentError(f"{field} must be a JSON object")
+        raise B300DeploymentError(f"{field} must be a JSON object")
     return value
 
 
@@ -203,13 +172,13 @@ def _text(value: object, field: str, *, maximum: int = 512) -> str:
         or len(value) > maximum
         or any(character in value for character in "\x00\r\n")
     ):
-        raise B300ScreenDeploymentError(f"{field} is not canonical text")
+        raise B300DeploymentError(f"{field} is not canonical text")
     return value
 
 
 def _integer(value: object, field: str, *, minimum: int = 0) -> int:
     if type(value) is not int or value < minimum:
-        raise B300ScreenDeploymentError(f"{field} is not a bounded integer")
+        raise B300DeploymentError(f"{field} is not a bounded integer")
     return value
 
 
@@ -217,7 +186,7 @@ def _absolute_path(value: object, field: str) -> Path:
     raw = _text(value, field, maximum=4096)
     path = PurePosixPath(raw)
     if not path.is_absolute() or ".." in path.parts or "." in path.parts or str(path) != raw:
-        raise B300ScreenDeploymentError(f"{field} is not a canonical absolute path")
+        raise B300DeploymentError(f"{field} is not a canonical absolute path")
     return Path(raw)
 
 
@@ -227,12 +196,12 @@ def _authority_ref(path: Path, digest: str) -> dict[str, str]:
 
 def _prepare_private_root(path: Path) -> Path:
     if not path.is_absolute() or path.is_symlink():
-        raise B300ScreenDeploymentError("output root must be absolute and not a symlink")
+        raise B300DeploymentError("output root must be absolute and not a symlink")
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     root = path.resolve(strict=True)
     info = root.stat()
     if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
-        raise B300ScreenDeploymentError("output root must be a private directory")
+        raise B300DeploymentError("output root must be a private directory")
     return root
 
 
@@ -240,7 +209,7 @@ def _atomic_canonical(path: Path, value: object) -> None:
     raw = _canonical_bytes(value)
     if path.exists():
         if path.is_symlink() or not path.is_file() or path.read_bytes() != raw:
-            raise B300ScreenDeploymentError(
+            raise B300DeploymentError(
                 f"refusing to replace differing commissioned artifact {path.name}"
             )
         return
@@ -254,7 +223,7 @@ def _atomic_canonical(path: Path, value: object) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     except OSError as exc:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"cannot publish commissioned artifact {path.name}: {exc}"
         ) from None
     finally:
@@ -271,7 +240,7 @@ def _find_preflight(value: object) -> dict[str, object]:
 
     def visit(item: object, depth: int) -> None:
         if depth > 16:
-            raise B300ScreenDeploymentError("device authority nesting exceeds policy")
+            raise B300DeploymentError("device authority nesting exceeds policy")
         if type(item) is dict:
             if item.get("schema") == HOST_RECEIPT_SCHEMA:
                 found.append(item)
@@ -284,7 +253,7 @@ def _find_preflight(value: object) -> dict[str, object]:
     visit(value, 0)
     unique = {json.dumps(row, sort_keys=True, separators=(",", ":")): row for row in found}
     if len(unique) != 1:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "device execution authority must contain one canonical runtime preflight"
         )
     return next(iter(unique.values()))
@@ -327,11 +296,11 @@ def _runtime_preflight(row_value: object) -> RuntimePreflightReceipt:
             security_argv_sha256=row["security_argv_sha256"],
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"runtime preflight authority is malformed: {type(exc).__name__}"
         ) from None
     if receipt.schema != HOST_RECEIPT_SCHEMA:
-        raise B300ScreenDeploymentError("runtime preflight schema differs")
+        raise B300DeploymentError("runtime preflight schema differs")
     return receipt
 
 
@@ -339,11 +308,11 @@ def _gpu_from_dict(row_value: object) -> GPUConfiguration:
     row = _mapping(row_value, "GPU configuration")
     expected = {field.name for field in fields(GPUConfiguration)}
     if set(row) != expected:
-        raise B300ScreenDeploymentError("GPU configuration fields differ")
+        raise B300DeploymentError("GPU configuration fields differ")
     try:
         return GPUConfiguration(**row)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"GPU configuration is invalid: {exc}"
         ) from None
 
@@ -391,7 +360,7 @@ def _seccomp_path() -> Path:
 
     path = Path(oci_backend.__file__).with_name("seccomp_moby_v0_2_1.json")
     if path.is_symlink() or not path.is_file():
-        raise B300ScreenDeploymentError("fixed seccomp profile is unavailable")
+        raise B300DeploymentError("fixed seccomp profile is unavailable")
     return path.resolve(strict=True)
 
 
@@ -405,7 +374,7 @@ def _backend_config(
 ) -> OCIBackendConfig:
     capacity = {} if resources is None else _mapping(resources, "OCI resources")
     if set(capacity) - {"runtime", "prebuild"}:
-        raise B300ScreenDeploymentError("unknown OCI resource policy")
+        raise B300DeploymentError("unknown OCI resource policy")
     runtime = _resource_policy(_runtime_policy(preflight), capacity.get("runtime", {}))
     return OCIBackendConfig(
         OCIPrebuildConfig(
@@ -427,7 +396,7 @@ def _build_executor(
     preflight: RuntimePreflightReceipt,
     device_policy: DeviceStatePolicy,
     *,
-    executor_id: str = "b300-screen",
+    executor_id: str,
     runtime_seed_root: Path | None = None,
     resources: dict | None = None,
 ) -> OCIEngineExecutor:
@@ -448,7 +417,7 @@ def _build_executor(
 def _catalog_specs(catalog: TargetCatalog) -> dict[str, str]:
     rows = catalog.snapshot().get("targets")
     if not isinstance(rows, list):  # pragma: no cover - validator table invariant
-        raise B300ScreenDeploymentError("target catalog snapshot is malformed")
+        raise B300DeploymentError("target catalog snapshot is malformed")
     return {
         str(row["target_id"]): catalog.target_spec_digest(str(row["target_id"]))
         for row in rows
@@ -469,8 +438,8 @@ def _commissioned_stock_authority(
 ):
     """Target members plus one commissioned incumbent tree, from one catalog.
 
-    With no ``entries`` this is the empty-stack stock identity the screen and
-    pristine-reference paths share — same context, same empty manifest, same
+    With no ``entries`` this is the empty-stack stock identity the commission
+    and pristine-reference paths share — same context, same empty manifest, same
     on-disk ``resident-stock-{digest}`` tree (name kept for pod tree-cache
     continuity). A qualification commission passes the durable incumbent's
     ``entries`` plus the capabilities source resolver and gets the current
@@ -584,301 +553,46 @@ class _CommissionedInputs:
     engine_template: EngineSessionConfig
     registered_target_ids: tuple[str, ...]
     closed_targets: tuple[str, ...]
-    plan_resolver_digest: str
-    evidence_policy_digest: str
-    resident_factory_digest: str
-    resident_resource_ids: tuple[str, ...]
     declared_qualification: B300DeclaredQualificationAuthorities
     qualification_commission: dict[str, object] | None
     runtime_seed_root: Path | None = None
 
 
-class _CommissionedScreenPlanResolver:
-    """Concrete, validator-owned resolver for candidate OCI screen plans."""
-
-    def __init__(
-        self,
-        inputs: _CommissionedInputs,
-        executor: OCIEngineExecutor,
-        catalog: TargetCatalog,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        if type(executor) is not OCIEngineExecutor or type(catalog) is not TargetCatalog:
-            raise B300ScreenDeploymentError("screen resolver inputs are not exact")
-        self.inputs = inputs
-        self.executor = executor
-        self.catalog = catalog
-        self.clock = clock
-
-    def __call__(
-        self,
-        manifest: ArenaServiceManifest,
-        candidate: ArenaCandidateBinding,
-    ) -> B300ScreenExecutionPlan:
-        if (
-            type(manifest) is not ArenaServiceManifest
-            or type(candidate) is not ArenaCandidateBinding
-            or manifest.runtime != self.inputs.runtime
-        ):
-            raise B300ScreenDeploymentError("screen plan request differs from commission")
-        inspected = inspect_contribution(candidate.publication.root, catalog=self.catalog)
-        reservation = candidate.reservation
-        target = self.catalog.require(reservation.target_id)
-        if (
-            inspected.target_id != reservation.target_id
-            or inspected.target_spec_digest
-            != self.catalog.target_spec_digest(reservation.target_id)
-            or inspected.selected_delta_digest != reservation.selected_delta_digest
-            or not self.catalog.admits(target, reservation.target_members)
-        ):
-            raise B300ScreenDeploymentError(
-                "candidate contribution differs from finalized reservation"
-            )
-        proposal = ProposalContributionRef(
-            target_id=inspected.target_id,
-            target_spec_digest=inspected.target_spec_digest,
-            artifact_digest=candidate.publication.content_hash,
-            selected_payload_digest=inspected.selected_payload_digest,
-            attribution_digest=canonical_digest(
-                "cacheon.eval.b300-screen-attribution.v1",
-                {
-                    "candidate_digest": candidate.digest,
-                    "publication_digest": candidate.publication.digest,
-                    "reservation_digest": reservation.reservation_digest,
-                    "service_digest": manifest.digest,
-                },
-            ),
-        )
-        if proposal.selected_delta_digest != reservation.selected_delta_digest:
-            raise B300ScreenDeploymentError("proposal changed selected delta identity")
-        context = EvaluationStackContext(
-            runtime_digest=self.inputs.runtime.runtime_digest,
-            base_engine_digest=self.inputs.runtime.base_engine_digest,
-            arena_digest=manifest.digest,
-            catalog_snapshot=self.catalog.snapshot(),
-            catalog_digest=self.catalog.digest,
-            target_spec_digests=_catalog_specs(self.catalog),
-        )
-        incumbent = EvaluationStackManifest(
-            runtime_digest=context.runtime_digest,
-            base_engine_digest=context.base_engine_digest,
-            arena_digest=context.arena_digest,
-            catalog_snapshot=self.catalog.snapshot(),
-            catalog_digest=self.catalog.digest,
-            entries={},
-        )
-        stack = plan_candidate_stack(
-            incumbent,
-            proposal,
-            catalog=self.catalog,
-            expected_context=context,
-        )
-        trees_root = self.inputs.root / "engine-trees"
-        trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        destination = trees_root / stack.digest
-        if destination.exists():
-            tree = reopen_materialized_engine_tree(destination)
-            if tree.stack_digest != stack.digest:
-                raise B300ScreenDeploymentError(
-                    "existing engine tree names another candidate stack"
-                )
-        else:
-            tree = materialize_engine_tree(
-                stack,
-                context=context,
-                catalog=self.catalog,
-                resolver={
-                    ("proposal", proposal.artifact_digest): candidate.publication.root
-                },
-                destination=destination,
-            )
-        if tree.stack_digest != stack.digest:
-            raise B300ScreenDeploymentError("materialized engine stack changed")
-
-        policy = self.inputs.device_policy
-        dp_size = _data_parallel_size(self.inputs.engine_template)
-        hardware, physical = _hardware_bindings(
-            self.inputs.runtime, policy, dp_size=dp_size,
-        )
-        native = _native_build(
-            tree.tree_digest,
-            self.inputs.preflight,
-            self.executor.config.prebuild.policy,
-            self.inputs.runtime.target_architecture,
-        )
-        binding = TrustedLaunchBinding(
-            materialized_tree_root=tree.root,
-            controller_distribution_digest=self.inputs.controller_distribution_digest,
-            native_build_spec=native,
-            runtime_preflight_receipt=self.inputs.preflight,
-            physical_hardware=physical,
-        )
-        arena_digest = manifest.digest
-        mount = TrustedArenaModelMountReceipt.capture(
-            self.inputs.model_root,
-            arena_digest=arena_digest,
-            model_revision_digest=self.inputs.runtime.model_revision_digest,
-            model_manifest_digest=self.inputs.runtime.model_manifest_digest,
-            model_content_digest=self.inputs.runtime.model_content_digest,
-        )
-        cell = _scored_cell(self.inputs.workload)
-        graph_config = _engine_config(
-            self.inputs.engine_template,
-            cell,
-            disable_cuda_graph=False,
-        )
-        seccomp_digest = _file_sha256(self.executor.config.prebuild.seccomp_profile)
-
-        def launch(config: EngineSessionConfig) -> EngineLaunchSpec:
-            return EngineLaunchSpec(
-                runtime_digest=self.inputs.runtime.runtime_digest,
-                base_engine_digest=self.inputs.runtime.base_engine_digest,
-                arena_digest=arena_digest,
-                stack_digest=tree.stack_digest,
-                tree_digest=tree.tree_digest,
-                image_digest=self.inputs.preflight.image_digest,
-                platform_digest=self.inputs.preflight.platform_digest,
-                controller_distribution_digest=(
-                    self.inputs.controller_distribution_digest
-                ),
-                worker_distribution_digest=(
-                    self.inputs.preflight.worker_distribution_digest
-                ),
-                model_revision_digest=self.inputs.runtime.model_revision_digest,
-                model_manifest_digest=self.inputs.runtime.model_manifest_digest,
-                model_content_digest=self.inputs.runtime.model_content_digest,
-                validator_overlay_digest=(
-                    self.inputs.runtime.validator_overlay_digest
-                ),
-                engine_config_digest=config.digest,
-                seccomp_policy_digest=seccomp_digest,
-                resource_policy_digest=(
-                    self.executor.config.prebuild.policy.resource_policy_digest
-                ),
-                native_build_spec_digest=native.digest,
-                hardware=hardware,
-            )
-
-        graph_launch = launch(graph_config)
-        deadline = float(self.clock()) + 4 * 60 * 60
-        if not math.isfinite(deadline):
-            raise B300ScreenDeploymentError("screen deadline clock is invalid")
-        return B300ScreenExecutionPlan(
-            service_digest=manifest.digest,
-            candidate_digest=candidate.digest,
-            screen_attempt=candidate.screen_attempt,
-            selected_delta_digest=reservation.selected_delta_digest,
-            graph_launch=graph_launch,
-            binding=binding,
-            model_mount=mount,
-            deadline=deadline,
-        )
-
-
-
-
 @dataclass(frozen=True)
 class _Composition:
-    manifest: ArenaServiceManifest
-    authorities: B300ScreenDeploymentAuthorities
-    build_executor: OCIEngineExecutor
-    resident_executor: OCIEngineExecutor
-    pipeline: B300BuildABIGraphScreenAdapter
+    """The sealed service identity: the public manifest and its declared authorities."""
 
-    def close(self) -> None:
-        self.pipeline.close()
-        self.build_executor.manager.close()
-        self.resident_executor.manager.close()
+    manifest: ArenaServiceManifest
+    authorities: B300DeclaredAuthorities
 
 
 def _compose(inputs: _CommissionedInputs) -> _Composition:
-    catalog = default_target_catalog()
-    build_executor = _build_executor(
-        inputs.root,
-        inputs.preflight,
-        inputs.device_policy,
-        executor_id="b300-screen-build",
-        runtime_seed_root=inputs.runtime_seed_root, resources=inputs.authority.get("resources"),
-    )
-    resident_executor = _build_executor(
-        inputs.root,
-        inputs.preflight,
-        inputs.device_policy,
-        executor_id="b300-screen-resident",
-        runtime_seed_root=inputs.runtime_seed_root, resources=inputs.authority.get("resources"),
-    )
-    resolver = _CommissionedScreenPlanResolver(inputs, build_executor, catalog)
-    static = B300StaticScreenAdapter(
-        catalog,
-        required_slot_quant=slot_quant_requirements(
-            inputs.engine_template.engine_kwargs.get("quantization")
-        ),
-    )
-    pipeline = B300BuildABIGraphScreenAdapter(
-        catalog=catalog,
-        executor=build_executor,
-        plan_resolver_digest=inputs.plan_resolver_digest,
-        plan_resolver=resolver,
-        evidence_policy_digest=inputs.evidence_policy_digest,
-        evidence_root=inputs.root / "screen-evidence",
-    )
-    handlers = compose_b300_non_serving_screen_handlers(
-        static,
-        pipeline,
-        pipeline_resource_ids=("b300-screen-build",),
-    )
-    manifest_box: list[ArenaServiceManifest] = []
-    authorities = B300ScreenDeploymentAuthorities(
+    authorities = B300DeclaredAuthorities(
         runtime_identity=inputs.runtime,
-        screen_handlers=handlers,
-        resident_screen_factory=_resident_factory(
-            inputs,
-            resident_executor,
-            catalog,
-            lambda: manifest_box[0],
-        ),
         qualification=inputs.declared_qualification,
     )
     manifest = ArenaServiceManifest(
         runtime=inputs.runtime,
         workload=inputs.workload,
-        capacity=ArenaCapacityPolicy(32, 64, 1, 4, 4, 2, 2, 3),
-        screens=NonCrownScreenPolicy(
-            tuple(
-                ScreenStagePolicy(stage, timeout)
-                for stage, timeout in zip(
-                    SCREEN_STAGES,
-                    (60_000, 7_200_000, 1_800_000, 1_800_000, 3_600_000),
-                    strict=True,
-                )
-            )
-        ),
+        capacity=ArenaCapacityPolicy(32, 64, 4, 4),
         qualification_policy_digest=(
             inputs.declared_qualification.qualification_policy_digest
         ),
         provider_digest=b300_arena_provider_digest(authorities),
         closed_targets=inputs.closed_targets,
     )
-    manifest_box.append(manifest)
-    return _Composition(
-        manifest,
-        authorities,
-        build_executor,
-        resident_executor,
-        pipeline,
-    )
+    return _Composition(manifest, authorities)
 
 
 def _prompt_batches(value: object) -> tuple[tuple[str, ...], ...]:
     prompt = _mapping(value, "prompt authority")
     raw = prompt.get("prompt_batches")
     if type(raw) is not list:
-        raise B300ScreenDeploymentError("prompt authority has no prompt batches")
+        raise B300DeploymentError("prompt authority has no prompt batches")
     try:
         batches = tuple(tuple(batch) for batch in raw)
     except TypeError:
-        raise B300ScreenDeploymentError("prompt batches are not nested arrays") from None
+        raise B300DeploymentError("prompt batches are not nested arrays") from None
     if (
         len(batches) < 3
         or any(not batch for batch in batches)
@@ -891,7 +605,7 @@ def _prompt_batches(value: object) -> tuple[tuple[str, ...], ...]:
             for item in batch
         )
     ):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "prompt authority must contain at least three bounded nonempty batches"
         )
     return batches
@@ -924,7 +638,7 @@ def _same_authority_identity(
 ) -> None:
     for field in ("arena_id", "qualification_builder_digest", "resources"):
         if authority.get(field) != measurement.get(field):
-            raise B300ScreenDeploymentError(
+            raise B300DeploymentError(
                 f"authority and measurement differ at {field}"
             )
     for section, names in (
@@ -937,7 +651,7 @@ def _same_authority_identity(
         left = _mapping(authority.get(section), f"authority {section}")
         right = _mapping(measurement.get(section), f"measurement {section}")
         if any(left.get(name) != right.get(name) for name in names):
-            raise B300ScreenDeploymentError(
+            raise B300DeploymentError(
                 f"authority and measurement differ at {section}"
             )
 
@@ -950,7 +664,7 @@ def _validate_ready_inventory(
     inventory = gpu.get("inventory")
     allocated = tuple(sorted(index for lane in _ready_lanes(ready) for index in lane))
     if tuple(gpu.physical_id for gpu in gpus) != allocated:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "provisioned GPU set differs from the commissioned lane pair"
         )
     for configured in gpus:
@@ -962,7 +676,7 @@ def _validate_ready_inventory(
                 == configured.physical_id
             )
         except StopIteration:
-            raise B300ScreenDeploymentError("READY GPU row is missing") from None
+            raise B300DeploymentError("READY GPU row is missing") from None
         if (
             row.get("index") != configured.physical_id
             or row.get("uuid") != configured.uuid
@@ -970,23 +684,9 @@ def _validate_ready_inventory(
             or row.get("name") != configured.name
             or row.get("memory_mib") != configured.memory_total_mib
         ):
-            raise B300ScreenDeploymentError(
+            raise B300DeploymentError(
                 "provisioned GPU configuration differs from READY inventory"
             )
-
-
-def _project_fmha_identity(authority: dict[str, object]) -> dict[str, object] | None:
-    value = authority.get("fmha_cache_seed")
-    if value is None:
-        return None
-    row = _mapping(value, "FMHA cache authority")
-    return {
-        "directory_count": _integer(row.get("directory_count"), "FMHA directory count"),
-        "file_count": _integer(row.get("file_count"), "FMHA file count"),
-        "plan_sha256": _digest(row.get("plan_sha256"), "FMHA plan SHA-256"),
-        "total_bytes": _integer(row.get("total_bytes"), "FMHA total bytes"),
-        "tree_sha256": _digest(row.get("tree_sha256"), "FMHA tree SHA-256"),
-    }
 
 
 def _derive_inputs(
@@ -1004,13 +704,13 @@ def _derive_inputs(
     selected, complement_ids = _ready_lanes(ready)
     _validate_ready_inventory(ready, gpus)
     if len({(gpu.name, gpu.memory_total_mib) for gpu in gpus}) != 1:
-        raise B300ScreenDeploymentError("qualification lanes require the same GPU model and memory capacity")
+        raise B300DeploymentError("qualification lanes require the same GPU model and memory capacity")
     by_id = {gpu.physical_id: gpu for gpu in gpus}
     try:
         selected_gpus = tuple(by_id[physical_id] for physical_id in selected)
     except KeyError:
-        raise B300ScreenDeploymentError(
-            "commissioned screen lane is absent from the allocated pair"
+        raise B300DeploymentError(
+            "commissioned lane is absent from the allocated pair"
         ) from None
     complement_gpus = tuple(by_id[physical_id] for physical_id in complement_ids)
     device_policy = _device_policy(selected_gpus)
@@ -1030,13 +730,13 @@ def _derive_inputs(
     try:
         authority_lane = tuple(int(row) for row in raw_lane)  # type: ignore[union-attr]
     except (TypeError, ValueError):
-        raise B300ScreenDeploymentError("topology authority lane is malformed") from None
+        raise B300DeploymentError("topology authority lane is malformed") from None
     if (
         topology.get("gpu_count") != len(selected)
         or topology.get("tensor_parallel_size") != len(selected)
         or authority_lane != selected
     ):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "sealed topology differs from the commissioned TP lane"
         )
     authority_lane_digest = _digest(
@@ -1069,7 +769,7 @@ def _derive_inputs(
         or worker.get("worker_distribution_digest")
         != preflight.worker_distribution_digest
     ):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "sealed worker authority differs from runtime preflight or READY"
         )
     model = _mapping(authority.get("model"), "model authority")
@@ -1080,11 +780,11 @@ def _derive_inputs(
         or ready_model.get("content_digest") != model.get("content_digest")
         or ready_model.get("readonly_inventory_verified") is not True
     ):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "sealed model authority differs from commissioned READY model"
         )
     if model_root.is_symlink() or not model_root.is_dir():
-        raise B300ScreenDeploymentError("commissioned model root is unavailable")
+        raise B300DeploymentError("commissioned model root is unavailable")
 
     source = _mapping(ready.get("source"), "READY source")
     runtime_root = _mapping(ready.get("runtime"), "READY runtime")
@@ -1130,54 +830,13 @@ def _derive_inputs(
     model_profile_key = _text(prompt.get("model_profile_key"), "model profile key")
     engine_template = _engine_template(prompt)
     if engine_template.tp_size != runtime.tensor_parallel_size:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "arena engine tensor parallel size differs from READY runtime"
         )
     catalog = default_target_catalog()
     registered_target_ids, closed_targets = _target_partition(prompt, catalog)
-    # Calibration is qualification evidence bound by the sealed deployment
-    # payload.  It cannot be part of the screen resolver identity: its context
-    # names the arena manifest, whose provider identity names this resolver.
-    policy_facts = {
-        "catalog_digest": catalog.digest,
-        "controller_distribution_digest": controller_distribution_digest,
-        "device_policy_digest": logical_device_policy_digest(device_policy),
-        "fmha_cache_identity": _project_fmha_identity(authority),
-        "model_content_digest": runtime.model_content_digest,
-        "model_profile_key": model_profile_key,
-        "engine_template_digest": engine_template.digest,
-        "prompt_identity": prompt_identity,
-        "runtime_tree_digest": _digest(
-            runtime_root.get("tree_digest"), "READY runtime tree digest"
-        ),
-        "topology_digest": topology_digest,
-        "worker_distribution_digest": runtime.worker_distribution_digest,
-    }
-    plan_resolver_digest = canonical_digest(
-        "cacheon.eval.b300-screen-plan-resolver.v3", policy_facts
-    )
-    evidence_policy_digest = canonical_digest(
-        "cacheon.eval.b300-screen-evidence-policy.v1",
-        {
-            "audit": "all-rank-slot-audit",
-            "evidence_root": "content-addressed",
-            "host_regrade": True,
-        },
-    )
-    resident_factory_digest = canonical_digest(
-        "cacheon.eval.b300-resident-routing-factory.v1",
-        {
-            "candidate_limit_per_lifetime": 1_000,
-            "engine_mode": f"stock-tp{runtime.tensor_parallel_size}-graph-resident",
-            "lifetime_deadline_seconds": 30 * 24 * 60 * 60,
-            "native_rebuild_route": "qualification-waiver",
-            "prompt_authority_sha256": prompt_identity["sha256"],
-            "swappable_route": "all-rank-swap-recapture-read",
-        },
-    )
-
     try:
-        declared, qualification_commission = derive_b300_screen_qualification(
+        declared, qualification_commission = derive_b300_qualification_declaration(
             authority=authority,
             prompt_identity=prompt_identity,
             catalog=catalog,
@@ -1187,8 +846,8 @@ def _derive_inputs(
                 root, preflight, executor_id=executor_id, resources=authority.get("resources")
             ),
         )
-    except B300ScreenQualificationBridgeError as exc:
-        raise B300ScreenDeploymentError(str(exc)) from None
+    except B300QualificationDeclarationError as exc:
+        raise B300DeploymentError(str(exc)) from None
     return _CommissionedInputs(
         root=root,
         ready=ready,
@@ -1211,10 +870,6 @@ def _derive_inputs(
         engine_template=engine_template,
         registered_target_ids=registered_target_ids,
         closed_targets=closed_targets,
-        plan_resolver_digest=plan_resolver_digest,
-        evidence_policy_digest=evidence_policy_digest,
-        resident_factory_digest=resident_factory_digest,
-        resident_resource_ids=("b300-resident-screen-lane",),
         declared_qualification=declared,
         qualification_commission=qualification_commission,
         runtime_seed_root=runtime_seed_root,
@@ -1277,13 +932,13 @@ def _authority_inputs(
             "calibration binding SHA-256",
         )
     ):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "explicit sealed authority paths or SHA-256 values differ from config"
         )
     preflight = _runtime_preflight(_find_preflight(device_execution))
     selected = tuple(sorted(index for lane in _ready_lanes(ready) for index in lane))
     if (provisioner is None) == (provisioned_gpus is None):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "GPU configuration requires exactly one provisioner or sealed inventory"
         )
     if provisioner is not None:
@@ -1293,14 +948,14 @@ def _authority_inputs(
                 deadline=time.monotonic() + 60.0,
             )
         except Exception as exc:
-            raise B300ScreenDeploymentError(
+            raise B300DeploymentError(
                 f"fixed GPU provisioning failed: {type(exc).__name__}"
             ) from None
     else:
         assert provisioned_gpus is not None
         gpus = provisioned_gpus
     if type(gpus) is not tuple or any(type(row) is not GPUConfiguration for row in gpus):
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "GPU provisioner did not return exact immutable configurations"
         )
     refs = {
@@ -1338,11 +993,9 @@ def _deployment_payload(inputs: _CommissionedInputs) -> dict[str, object]:
             inputs.device_policy.configuration_sha256
         ),
         "device_policy_digest": inputs.device_policy.policy_sha256,
-        "evidence_policy_digest": inputs.evidence_policy_digest,
         "gpu_configurations": [
             gpu.canonical_dict() for gpu in inputs.qualification_gpus
         ],
-        "plan_resolver_digest": inputs.plan_resolver_digest,
         "preflight_sha256": inputs.preflight.sha256,
         "prompt_identity": dict(inputs.prompt_identity),
         "ready": {
@@ -1357,15 +1010,13 @@ def _deployment_payload(inputs: _CommissionedInputs) -> dict[str, object]:
                 inputs.ready.get("worker_epoch"), "READY worker epoch"
             ),
         },
-        "resident_factory_digest": inputs.resident_factory_digest,
-        "resident_resource_ids": list(inputs.resident_resource_ids),
         "runtime": inputs.runtime.to_dict(),
         "schema": DEPLOYMENT_SCHEMA,
         "topology_digest": inputs.topology_digest,
     }
 
 
-def materialize_b300_screen_identities(
+def materialize_b300_identities(
     *,
     ready_receipt: str | os.PathLike[str],
     authority_config: str | os.PathLike[str],
@@ -1395,48 +1046,41 @@ def materialize_b300_screen_identities(
         output_root=output_root,
         provisioner=gpu_provisioner,
     )
-    composition: _Composition | None = None
-    try:
-        composition = _compose(inputs)
-        service = ArenaService(
-            composition.manifest,
-            B300ArenaServiceProvider(
-                composition.manifest, composition.authorities
-            ),
-        )
-        epoch = _text(inputs.ready.get("worker_epoch"), "READY worker epoch")
-        if len(epoch) != 32 or any(character not in "0123456789abcdef" for character in epoch):
-            raise B300ScreenDeploymentError("READY worker epoch is not 128-bit hex")
-        readiness = WorkerReadiness.for_service(
-            service,
-            ready_receipt_digest=_digest(
-                inputs.ready.get("receipt_digest"), "READY receipt digest"
-            ),
-            ready_epoch=int(epoch, 16),
-        )
-        deployment = _deployment_payload(inputs)
-        _atomic_canonical(inputs.root / DEPLOYMENT_FILE, deployment)
-        _atomic_canonical(inputs.root / MANIFEST_FILE, composition.manifest.to_dict())
-        _atomic_canonical(inputs.root / READINESS_FILE, readiness.to_dict())
-        return {
-            "arena_service_manifest": str(inputs.root / MANIFEST_FILE),
-            "arena_service_manifest_sha256": _file_sha256(
-                inputs.root / MANIFEST_FILE
-            ),
-            "deployment": str(inputs.root / DEPLOYMENT_FILE),
-            "deployment_sha256": _file_sha256(inputs.root / DEPLOYMENT_FILE),
-            "provider_digest": composition.manifest.provider_digest,
-            "schema": MATERIALIZATION_SCHEMA,
-            "service_digest": composition.manifest.digest,
-            "worker_readiness": str(inputs.root / READINESS_FILE),
-            "worker_readiness_digest": readiness.digest,
-            "worker_readiness_sha256": _file_sha256(
-                inputs.root / READINESS_FILE
-            ),
-        }
-    finally:
-        if composition is not None:
-            composition.close()
+    composition = _compose(inputs)
+    service = ArenaService(
+        composition.manifest,
+        B300ArenaServiceProvider(composition.manifest, composition.authorities),
+    )
+    epoch = _text(inputs.ready.get("worker_epoch"), "READY worker epoch")
+    if len(epoch) != 32 or any(character not in "0123456789abcdef" for character in epoch):
+        raise B300DeploymentError("READY worker epoch is not 128-bit hex")
+    readiness = WorkerReadiness.for_service(
+        service,
+        ready_receipt_digest=_digest(
+            inputs.ready.get("receipt_digest"), "READY receipt digest"
+        ),
+        ready_epoch=int(epoch, 16),
+    )
+    deployment = _deployment_payload(inputs)
+    _atomic_canonical(inputs.root / DEPLOYMENT_FILE, deployment)
+    _atomic_canonical(inputs.root / MANIFEST_FILE, composition.manifest.to_dict())
+    _atomic_canonical(inputs.root / READINESS_FILE, readiness.to_dict())
+    return {
+        "arena_service_manifest": str(inputs.root / MANIFEST_FILE),
+        "arena_service_manifest_sha256": _file_sha256(
+            inputs.root / MANIFEST_FILE
+        ),
+        "deployment": str(inputs.root / DEPLOYMENT_FILE),
+        "deployment_sha256": _file_sha256(inputs.root / DEPLOYMENT_FILE),
+        "provider_digest": composition.manifest.provider_digest,
+        "schema": MATERIALIZATION_SCHEMA,
+        "service_digest": composition.manifest.digest,
+        "worker_readiness": str(inputs.root / READINESS_FILE),
+        "worker_readiness_digest": readiness.digest,
+        "worker_readiness_sha256": _file_sha256(
+            inputs.root / READINESS_FILE
+        ),
+    }
 
 
 def _runtime_from_dict(value: object) -> ArenaRuntimeIdentity:
@@ -1444,7 +1088,7 @@ def _runtime_from_dict(value: object) -> ArenaRuntimeIdentity:
     try:
         return ArenaRuntimeIdentity(**row)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
-        raise B300ScreenDeploymentError(f"runtime identity is invalid: {exc}") from None
+        raise B300DeploymentError(f"runtime identity is invalid: {exc}") from None
 
 
 def _manifest_from_dict(value: object) -> ArenaServiceManifest:
@@ -1452,10 +1096,7 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
     workload_row = _mapping(row.get("workload"), "workload")
     raw_cells = workload_row.get("cells")
     if type(raw_cells) is not list:
-        raise B300ScreenDeploymentError("workload cells are malformed")
-    screens_row = _mapping(row.get("screens"), "screen policy")
-    if screens_row.get("crownable") is not False or type(screens_row.get("stages")) is not list:
-        raise B300ScreenDeploymentError("screen policy is malformed")
+        raise B300DeploymentError("workload cells are malformed")
     try:
         return ArenaServiceManifest(
             runtime=_runtime_from_dict(row["runtime"]),
@@ -1468,39 +1109,15 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
                 ),
             ),
             capacity=ArenaCapacityPolicy(**_mapping(row["capacity"], "capacity")),
-            screens=NonCrownScreenPolicy(
-                tuple(
-                    ScreenStagePolicy(**_mapping(stage, "screen stage"))
-                    for stage in screens_row["stages"]  # type: ignore[union-attr]
-                )
-            ),
             qualification_policy_digest=row["qualification_policy_digest"],  # type: ignore[arg-type]
             provider_digest=row["provider_digest"],  # type: ignore[arg-type]
             closed_targets=tuple(_string_rows(row["closed_targets"], "closed targets")),
             schema_version=row["schema_version"],  # type: ignore[arg-type]
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"arena service manifest is invalid: {type(exc).__name__}"
         ) from None
-
-
-class _CommissionedB300ScreenWorker(B300MainnetWorker):
-    """Worker that also releases composition-owned screen resources."""
-
-    def __init__(self, composition: _Composition, readiness: WorkerReadiness) -> None:
-        self._commissioned_composition = composition
-        try:
-            super().__init__(composition.manifest, composition.authorities, readiness)
-        except BaseException:
-            composition.close()
-            raise
-
-    def close(self) -> None:
-        try:
-            super().close()
-        finally:
-            self._commissioned_composition.close()
 
 
 def _ref_path(refs: dict[str, object], name: str) -> Path:
@@ -1510,7 +1127,7 @@ def _ref_path(refs: dict[str, object], name: str) -> Path:
         row.get("sha256"), f"deployment authority {name} SHA-256"
     )
     if _file_sha256(path) != expected:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"deployment authority {name} changed after materialization"
         )
     return path
@@ -1519,11 +1136,11 @@ def _ref_path(refs: dict[str, object], name: str) -> Path:
 def _canonical_artifact(path: Path, field: str) -> dict[str, object]:
     resolved, value, _sha = _stable_json(path, field)
     if resolved != path.resolve(strict=True) or path.read_bytes() != _canonical_bytes(value):
-        raise B300ScreenDeploymentError(f"{field} is not canonical JSON")
+        raise B300DeploymentError(f"{field} is not canonical JSON")
     return value
 
 
-def replay_commissioned_screen_composition(
+def replay_commissioned_composition(
     registration: dict[str, object],
     ready_receipt: dict[str, object],
     *, commissioned_root: Path | None = None,
@@ -1533,21 +1150,20 @@ def replay_commissioned_screen_composition(
     ``registration`` and ``ready_receipt`` come from the fixed authenticated
     transport codec.  They select no local paths: this function reopens only
     the three fixed commissioned filenames and the SHA-bound authority refs
-    inside the commissioned deployment artifact.  The caller owns the returned
-    composition and must close it.
+    inside the commissioned deployment artifact.
     """
 
     if type(registration) is not dict or type(ready_receipt) is not dict:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "commissioned worker inputs must be exact JSON objects"
         )
     root = _prepare_private_root(DEFAULT_OUTPUT_ROOT if commissioned_root is None else commissioned_root)
     deployment_path = root / DEPLOYMENT_FILE
     manifest_path = root / MANIFEST_FILE
     readiness_path = root / READINESS_FILE
-    deployment = _canonical_artifact(deployment_path, "screen deployment")
+    deployment = _canonical_artifact(deployment_path, "deployment")
     if deployment.get("schema") != DEPLOYMENT_SCHEMA:
-        raise B300ScreenDeploymentError("screen deployment schema differs")
+        raise B300DeploymentError("deployment schema differs")
     refs = _mapping(deployment.get("authorities"), "deployment authorities")
     required_refs = {
         "authority_config",
@@ -1559,10 +1175,10 @@ def replay_commissioned_screen_composition(
         "ready_receipt",
     }
     if set(refs) != required_refs:
-        raise B300ScreenDeploymentError("deployment authority inventory differs")
+        raise B300DeploymentError("deployment authority inventory differs")
     gpu_rows = deployment.get("gpu_configurations")
     if type(gpu_rows) is not list:
-        raise B300ScreenDeploymentError("deployment GPU inventory is malformed")
+        raise B300DeploymentError("deployment GPU inventory is malformed")
     gpus = tuple(_gpu_from_dict(row) for row in gpu_rows)
     inputs = _authority_inputs(
         ready_receipt=_ref_path(refs, "ready_receipt"),
@@ -1578,7 +1194,7 @@ def replay_commissioned_screen_composition(
         provisioned_gpus=gpus,
     )
     if inputs.ready != ready_receipt or _deployment_payload(inputs) != deployment:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             "commissioned deployment did not replay from sealed authorities"
         )
     stored_manifest = _manifest_from_dict(
@@ -1588,82 +1204,41 @@ def replay_commissioned_screen_composition(
     try:
         readiness = WorkerReadiness(**readiness_row)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
-        raise B300ScreenDeploymentError(
+        raise B300DeploymentError(
             f"worker readiness is invalid: {exc}"
         ) from None
-    composition: _Composition | None = None
-    try:
-        composition = _compose(inputs)
-        if composition.manifest != stored_manifest:
-            raise B300ScreenDeploymentError(
-                "arena service manifest did not replay from deployment"
-            )
-        service = ArenaService(
-            composition.manifest,
-            B300ArenaServiceProvider(
-                composition.manifest, composition.authorities
-            ),
+    composition = _compose(inputs)
+    if composition.manifest != stored_manifest:
+        raise B300DeploymentError(
+            "arena service manifest did not replay from deployment"
         )
-        readiness.validate(service)
-        lane_devices = registration.get("lane_devices")
-        if (
-            registration.get("ready_receipt_digest")
-            != ready_receipt.get("receipt_digest")
-            or registration.get("worker_epoch")
-            != ready_receipt.get("worker_epoch")
-            or registration.get("service_identity")
-            != composition.manifest.service_id
-            or registration.get("worker_readiness") != readiness.to_dict()
-            or registration.get("worker_readiness_digest") != readiness.digest
-            or type(lane_devices) is not list
-            or tuple(lane_devices) != _ready_lane(ready_receipt)
-        ):
-            raise B300ScreenDeploymentError(
-                "registration differs from commissioned service, READY, or TP4 lane"
-            )
-        result = (inputs, composition, readiness)
-        composition = None
-        return result
-    finally:
-        if composition is not None:
-            composition.close()
-
-
-def commissioned_screen_worker_from_composition(
-    composition: _Composition,
-    readiness: WorkerReadiness,
-) -> B300MainnetWorker:
-    """Adopt one replayed composition as the commissioned screen worker."""
-
-    if type(composition) is not _Composition or type(readiness) is not WorkerReadiness:
-        raise B300ScreenDeploymentError(
-            "commissioned worker adoption inputs are not exact"
-        )
-    return _CommissionedB300ScreenWorker(composition, readiness)
-
-
-def build_commissioned_b300_screen_worker(
-    registration: dict[str, object],
-    ready_receipt: dict[str, object],
-    *, commissioned_root: Path | None = None,
-) -> B300MainnetWorker:
-    """Reopen the fixed commissioned artifacts and build one screen worker."""
-
-    _inputs, composition, readiness = replay_commissioned_screen_composition(
-        registration, ready_receipt, commissioned_root=commissioned_root
+    service = ArenaService(
+        composition.manifest,
+        B300ArenaServiceProvider(composition.manifest, composition.authorities),
     )
-    try:
-        worker = commissioned_screen_worker_from_composition(composition, readiness)
-        composition = None
-        return worker
-    finally:
-        if composition is not None:
-            composition.close()
+    readiness.validate(service)
+    lane_devices = registration.get("lane_devices")
+    if (
+        registration.get("ready_receipt_digest")
+        != ready_receipt.get("receipt_digest")
+        or registration.get("worker_epoch")
+        != ready_receipt.get("worker_epoch")
+        or registration.get("service_identity")
+        != composition.manifest.service_id
+        or registration.get("worker_readiness") != readiness.to_dict()
+        or registration.get("worker_readiness_digest") != readiness.digest
+        or type(lane_devices) is not list
+        or tuple(lane_devices) != _ready_lane(ready_receipt)
+    ):
+        raise B300DeploymentError(
+            "registration differs from commissioned service, READY, or TP4 lane"
+        )
+    return inputs, composition, readiness
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m cacheon.eval.b300_screen_deployment"
+        prog="python -m cacheon.eval.b300_deployment"
     )
     subparsers = parser.add_subparsers(dest="operation", required=True)
     materialize = subparsers.add_parser("materialize")
@@ -1680,8 +1255,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.operation != "materialize":  # pragma: no cover - argparse is closed
-        raise B300ScreenDeploymentError("unsupported deployment operation")
-    result = materialize_b300_screen_identities(
+        raise B300DeploymentError("unsupported deployment operation")
+    result = materialize_b300_identities(
         ready_receipt=args.ready_receipt,
         authority_config=args.authority_config,
         measurement_config=args.measurement_config,
@@ -1695,18 +1270,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
-    "B300ScreenDeploymentError",
+    "B300DeploymentError",
     "DEFAULT_OUTPUT_ROOT",
     "DEPLOYMENT_FILE",
     "DEPLOYMENT_SCHEMA",
     "MANIFEST_FILE",
     "MATERIALIZATION_SCHEMA",
     "READINESS_FILE",
-    "build_commissioned_b300_screen_worker",
-    "commissioned_screen_worker_from_composition",
     "main",
-    "materialize_b300_screen_identities",
-    "replay_commissioned_screen_composition",
+    "materialize_b300_identities",
+    "replay_commissioned_composition",
 ]
 
 

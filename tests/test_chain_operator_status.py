@@ -7,20 +7,26 @@ import json
 import pytest
 
 import cacheon.cli as cli
-from cacheon.arena_service import (
-    ArenaScreenReceipt,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStageResult,
-)
 from cacheon.chain.audit_log import append_chain_audit, pass_audit_record
 from cacheon.chain.intake import FinalizedArrival, FinalizedIntakeStore, IntakeScope
+from cacheon.chain.miner_feedback import format_miner_submissions, miner_submissions
 from cacheon.chain.operator_status import (
     OperatorStatusError,
     format_reservation_status,
     reservation_status,
 )
 from cacheon.chain.validator_loop import PassResult
+from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.qualification_intake import (
+    QualificationIntakeBatch,
+    QualificationIntakeOutcome,
+)
+from cacheon.eval.remote_run_forensics import (
+    append_event as append_run_event,
+    journal_path,
+    publish_worker_log,
+)
+from tests.test_chain_intake import ATTEMPT, _claim, _fingerprint, _h, _publish
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
@@ -89,7 +95,7 @@ def test_live_writer_read_is_snapshot_safe_and_redacts_private_fields(tmp_path):
         finally:
             store._db.execute("ROLLBACK")
 
-    assert value["schema"] == "cacheon.operator.reservation-status.v2"
+    assert value["schema"] == "cacheon.operator.reservation-status.v3"
     assert value["reservation"]["attribution"] == {
         "class": "unattributed",
         "basis": "status_without_typed_decision",
@@ -176,7 +182,7 @@ def test_queue_position_matches_actual_selectable_lane_order(tmp_path):
         )
 
         lease = store.claim_evaluation_lease(
-            stage="screen",
+            stage="qualification",
             owner="private-worker-name",
             current_block=BLOCK,
             lease_blocks=10,
@@ -185,17 +191,17 @@ def test_queue_position_matches_actual_selectable_lane_order(tmp_path):
         assert lease.members[0].reservation_id == second.reservation_id
         leased = reservation_status(store.path, reservation_id=second.reservation_id)
         assert leased["queue"] == {
-            "phase": "arena_screen",
+            "phase": "arena_qualification",
             "state": "leased",
             "lane": "reproduction",
             "position": None,
             "depth": 2,
-            "ordering_authority": "reproduction_priority_then_finalized_arrival",
+            "ordering_authority": "reproduction_and_retry_group_qualification_scheduler",
         }
         assert leased["evaluation_lease"] == {
             "lease_id": lease.lease_id,
             "generation": 1,
-            "stage": "screen",
+            "stage": "qualification",
             "claimed_block": BLOCK,
             "initial_expires_block": BLOCK + 10,
             "expires_block": BLOCK + 10,
@@ -211,13 +217,13 @@ def test_queue_position_matches_actual_selectable_lane_order(tmp_path):
         assert primary_after_lease["queue"]["depth"] == 2
 
         store._db.execute(
-            "UPDATE reservations SET status='screening',screen_lane='primary' "
+            "UPDATE reservations SET status='qualifying',screen_lane='primary' "
             "WHERE reservation_id=?",
             (first.reservation_id,),
         )
         active = reservation_status(store.path, reservation_id=first.reservation_id)
         assert active["queue"] == {
-            "phase": "arena_screen",
+            "phase": "arena_qualification",
             "state": "active",
             "lane": "primary",
             "position": None,
@@ -226,33 +232,34 @@ def test_queue_position_matches_actual_selectable_lane_order(tmp_path):
         }
 
 
-def test_typed_screen_stages_explain_rejection_without_status_inference(tmp_path):
+def test_typed_fail_disposition_explains_rejection_without_status_inference(tmp_path):
     arrival = _arrival(0)
-    service_digest = "1" * 64
-    candidate_digest = "2" * 64
-    stage_digest = "3" * 64
+    report_digest = "4" * 64
     with _store(tmp_path) as store:
         _reserve(store, arrival)
-        store._db.execute(
-            "UPDATE reservations SET status='published' WHERE reservation_id=?",
-            (arrival.reservation_id,),
+        _publish(
+            store, arrival.reservation_id, _fingerprint("target.a", "slot.a"),
+            digest="d" * 64, root="/published/a",
         )
-        store.begin_screen(arrival.reservation_id, service_digest=service_digest)
-        receipt = ArenaScreenReceipt(
-            service_digest,
-            candidate_digest,
-            1,
-            (
-                ScreenStageResult(
-                    "static", ScreenGrade.FAIL, stage_digest, 17
+        _claim(store, arrival.reservation_id)
+        store.apply_qualification_batch(
+            QualificationIntakeBatch(
+                "7" * 64,
+                (
+                    QualificationIntakeOutcome(
+                        arrival.reservation_id,
+                        "3" * 64,
+                        "7" * 64,
+                        QualificationDecision.FAIL,
+                        "speed_regression",
+                        False,
+                        attempt_artifact_sha256=ATTEMPT.sha256,
+                        report_digest=report_digest,
+                    ),
                 ),
+                ATTEMPT,
             ),
-            PromotionDecision.REJECT,
-        )
-        store.apply_screen_receipt(
-            arrival.reservation_id,
-            candidate_digest=candidate_digest,
-            receipt=receipt,
+            current_finalized_block=BLOCK,
         )
         value = reservation_status(store.path, reservation_id=arrival.reservation_id)
 
@@ -261,26 +268,29 @@ def test_typed_screen_stages_explain_rejection_without_status_inference(tmp_path
         "class": "fail_disposition",
         "basis": "persisted_FAIL",
     }
-    assert value["screens"] == [
+    assert value["qualification_dispositions"] == [
         {
             "attempt_index": 0,
-            "lane": "primary",
-            "decision": "reject",
-            "service_digest": service_digest,
-            "candidate_digest": candidate_digest,
-            "receipt_digest": receipt.digest,
-            "stages": [
-                {
-                    "elapsed_ms": 17,
-                    "evidence_digest": stage_digest,
-                    "grade": "fail",
-                    "stage": "static",
-                }
-            ],
+            "authority_digest": "7" * 64,
+            "evidence_digest": ATTEMPT.sha256,
+            "attempt_ref": ATTEMPT.to_dict(),
+            "report_digest": report_digest,
+            "failure_digest": "",
+            "decision": "FAIL",
+            "reason": {
+                "code": "speed_regression",
+                "digest": _h("speed_regression"),
+                "detail_redacted": False,
+            },
+            "diagnostic_reference": "attempt_artifact",
         }
     ]
+    assert "screens" not in value
     assert value["evidence_limitations"] == []
-    assert "stage[static]: grade=fail" in format_reservation_status(value)
+    assert (
+        "qualification[0]: decision=FAIL reason=speed_regression "
+        "reference=attempt_artifact"
+    ) in format_reservation_status(value)
 
 
 def test_digest_only_infrastructure_failure_is_reported_as_partial_evidence(tmp_path):
@@ -323,6 +333,71 @@ def test_digest_only_infrastructure_failure_is_reported_as_partial_evidence(tmp_
     assert value["evidence_limitations"] == [
         "qualification_failure_retained_by_digest_only"
     ]
+
+
+def test_miner_report_joins_lease_transport_and_exact_worker_failure(tmp_path):
+    arrival = _arrival(0)
+    with _store(tmp_path) as store:
+        _reserve(store, arrival)
+        path = store.path
+    request_id = "a" * 64
+    spool = tmp_path / "remote-worker"
+    carrier = spool / "outbox" / f"00000000000000000001-{request_id}"
+    carrier.mkdir(parents=True)
+    (carrier / "request.json").write_text(
+        json.dumps(
+            {
+                "lease": {"members": [{"reservation_id": arrival.reservation_id}]},
+                "request_id": request_id,
+            }
+        )
+    )
+    (spool / "events.jsonl").write_text(
+        json.dumps({"event": "request_transferred", "request_id": request_id})
+        + "\n"
+    )
+    result = spool / "results" / request_id
+    result.mkdir(parents=True)
+    append_run_event(
+        journal_path(result),
+        request_id,
+        "adapter.qualification",
+        "failed",
+        failure={
+            "component": "sglang",
+            "exceptions": [
+                {
+                    "frames": [
+                        {
+                            "component": "sglang",
+                            "file": "/usr/local/lib/python3.12/dist-packages/sglang/runtime.py",
+                            "function": "capture",
+                            "line": 77,
+                        }
+                    ],
+                    "message": "graph capture failed",
+                    "type": "RuntimeError",
+                }
+            ],
+        },
+    )
+    worker_log = publish_worker_log(result, request_id)
+    (result / "result.json").write_text(
+        json.dumps(
+            {
+                "artifacts": [worker_log],
+                "failure_code": "adapter_epoch_failed",
+                "request_id": request_id,
+                "state": "no_decision",
+            }
+        )
+    )
+
+    report = miner_submissions(path, hotkey="miner-0", spool_roots=(spool,))
+    text = format_miner_submissions(report)
+    assert "remote request aaaaaaaaaaaaaaaa: no_decision (adapter_epoch_failed)" in text
+    assert "adapter.qualification in sglang" in text
+    assert "sglang/runtime.py:77 in capture" in text
 
 
 def test_redacted_audit_chronology_is_attached_with_utc_time(tmp_path):
