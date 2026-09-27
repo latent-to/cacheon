@@ -9,9 +9,10 @@ N-file edit (see the project review). So all three derive from the ONE table her
 adding a seam is a single entry, and the bootstrap watch-list, the install loop, and
 the canary all pick it up.
 
-No row names an operation of the model. Candidate code is served by the one ``nodes``
+No row names an operation of the model. Model code is served by the one ``nodes``
 row, which binds whatever modules a bundle named; the per-operation rows it replaced
-each pinned one sglang method and churned on every ``PINNED_SGLANG`` bump.
+each pinned one sglang method and churned on every ``PINNED_SGLANG`` bump. The
+``cache`` row serves the one scheduler object a bundle may replace, the prefix cache.
 
 Import-light on purpose (stdlib only): the ``.pth`` bootstrap imports this at
 interpreter startup, before — and without — importing torch or sglang.
@@ -44,11 +45,16 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     SeamAdapter("scheduler_gate", "sglang.srt.managers.scheduler",
                 "sglang_scheduler_gate", "run_scheduler_process"),
     # The generic node binder. After the model loads it binds every registered slot
-    # that is a node address (a name outside cacheon.slots) to that module of the
-    # served model. Which addresses an arena opens is decided at admission by the
-    # target catalog, not here.
+    # that is a node address (a name outside cacheon.slots, other than the cache's)
+    # to that module of the served model. Which addresses an arena opens is decided
+    # at admission by the target catalog, not here.
     SeamAdapter("nodes", "sglang.srt.model_executor.model_runner",
                 "sglang_nodes", "ModelRunner.load_model"),
+    # The prefix cache. The scheduler builds it through this built-in selection chain,
+    # so a bundle naming the ``tree_cache`` address is constructed there, on the
+    # engine's pools, instead of stock. The catalog opens the address like a node.
+    SeamAdapter("cache", "sglang.srt.mem_cache.registry",
+                "sglang_cache", "default_radix_cache_factory"),
 )
 
 # The modules whose import should trigger seam installation (consumed by bootstrap).

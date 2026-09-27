@@ -954,10 +954,10 @@ DP_ATTENTION_EXCHANGE_MEMBERS = (
 SPARSE_ATTENTION_TARGET = "attention.sparse_mla.v1"
 SPARSE_ATTENTION_MEMBERS = ("attention.indexer_select", "attention.sparse_mla")
 # One broad target: a bundle names the modules of the served model it replaces, from
-# one activation up to both roots. SGLang gives every causal LM these two top-level
-# modules, so the target carries no model or arena identity.
+# one activation up to both model roots, or the scheduler's prefix cache. SGLang gives
+# every causal LM all three, so the target carries no model or arena identity.
 FORWARD_PASS_TARGET = "forward_pass"
-FORWARD_PASS_ROOTS = ("logits_processor", "model")
+FORWARD_PASS_ROOTS = ("logits_processor", "model", "tree_cache")
 
 
 @lru_cache(maxsize=1)

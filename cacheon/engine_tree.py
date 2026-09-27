@@ -829,12 +829,6 @@ def _op_identity(manifest: Manifest, op: OpEntry) -> dict[str, object]:
     return identity
 
 
-def _runtime_op_identity(manifest: Manifest, op: OpEntry) -> dict[str, object]:
-    """Return one emitted runtime row."""
-
-    return _op_identity(manifest, op)
-
-
 def _validate_variant_domains(root: Path, manifest: Manifest) -> None:
     from cacheon.registry import (
         eligibility_domain_is_empty,
@@ -881,6 +875,7 @@ def _inspect_contribution(
 ) -> InspectedContribution:
     """Inspect one registered contribution source without executing it."""
 
+    from cacheon.integrations.sglang_cache import ADDRESS, admit
     from cacheon.registry import eligibility_from_metadata
     from cacheon.target_catalog import TargetCatalog
 
@@ -930,6 +925,11 @@ def _inspect_contribution(
     )
     for relative in python_files:
         _module_name("cacheon_validation", relative)
+
+    for op in manifest.ops:
+        if op.slot.split(".")[0] == ADDRESS:
+            source = _logical_path(op.source, field="python source")
+            admit(_parse_python(root, source)[1], op.slot, op.entry, error=EngineTreeError)
 
     file_rows: list[dict[str, object]] = []
     for role, paths in (
@@ -1134,7 +1134,7 @@ def _contribution_files(
 
     op_rows: list[dict[str, object]] = []
     for op in sorted(inspection.manifest.ops, key=lambda row: (row.slot, row.variant)):
-        row = _runtime_op_identity(inspection.manifest, op)
+        row = _op_identity(inspection.manifest, op)
         row["source"] = entry_paths[op.source]
         row["metadata"] = metadata_paths.get(op.metadata) if op.metadata else None
         row["cuda_sources"] = [native_paths[path] for path in row["cuda_sources"]]

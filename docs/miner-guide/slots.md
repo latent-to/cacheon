@@ -16,6 +16,7 @@ that every model contains or admits each address:
 | `model.layers.3` | Decoder layer 3 |
 | `model.layers.*.self_attn.q_b_proj` | Matching attention projection modules |
 | `model` | Whole decoder stack, only where the arena can grade it |
+| `tree_cache` | The scheduler's prefix cache: a class, not a module (see below) |
 
 `*` matches exactly one segment. The binder refuses addresses that match no
 module and parent/child claims that overlap. Binding succeeds only when the
@@ -48,6 +49,29 @@ entry = "forward"
 
 The bundle uses that node's stock `forward` interface, with its module or
 prepared state as the first argument. See [Kernel ABI](kernel-abi.md).
+
+## The prefix cache
+
+`tree_cache` names the scheduler's prefix cache instead of a module. Its entry is
+a class defined in the op's source file and derived from a class imported from
+`sglang.srt.mem_cache`, usually `BasePrefixCache` or `RadixCache` of the pinned
+SGLang. The engine constructs it as `entry(params)` on its own KV allocator and
+request pool, which the cache must keep. Declare no `prepare`, dtypes,
+architectures or eligibility metadata for it.
+
+```toml
+[[ops]]
+slot = "tree_cache"
+source = "cache/policy.py"
+entry = "PolicyCache"
+```
+
+Every prefix the cache reports as cached is checked against the validator's
+record of what each KV slot holds. A wrong, stale, stitched or over-long claim,
+or a host-tier hit, stops the engine as the candidate's failure. The address
+serves full-attention models without the hierarchical cache, and a bundle naming
+it does not complete a graphs-on qualification; see
+[the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
 ## Selecting a target
 

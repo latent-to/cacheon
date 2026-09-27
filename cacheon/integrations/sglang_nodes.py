@@ -7,7 +7,8 @@ segment (``model.layers.*.mlp``). The candidate is a drop-in for that node's sto
 returns what stock returns. ``prepare(module)`` runs once per bound node; a bundle
 without one receives the module itself. The same body therefore serves one
 activation, a fused MoE block, a decoder layer or the whole decoder stack, and a
-bundle that lists several addresses replaces several nodes at once.
+bundle that lists several addresses replaces several nodes at once. The prefix
+cache's address ``tree_cache`` is not a node; ``sglang_cache`` serves it.
 
 Truth is the stock node in the running engine, not hand-written reference math. On
 an audited eager call stock answers first; its outputs and the engine-state rows
@@ -50,6 +51,7 @@ from cacheon.capabilities import CallDescriptor
 from cacheon.dispatch import (
     _arch_tag, _dtype_name, _dynamo_compiling, _flashinfer_tuning, _in_cuda_graph,
 )
+from cacheon.integrations.sglang_cache import ADDRESS as _CACHE
 from cacheon.integrations.sglang_dsa_state import StateFormat, dsa_state_rows, state_values
 from cacheon.registry import REGISTRY, KernelRegistry
 from cacheon.slots import SLOTS
@@ -580,7 +582,7 @@ def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
 
     named = dict(runner.model.named_modules())
     bound: dict[str, str] = {}
-    for slot in sorted(s for s in registry.slots() if s not in SLOTS):
+    for slot in sorted(s for s in registry.slots() if s not in SLOTS and s != _CACHE):
         pattern = node_pattern(slot)
         names = [name for name in named if pattern.match(name)]
         error = None

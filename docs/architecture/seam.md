@@ -49,12 +49,14 @@ The registered rows are:
 |---|---|---|
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot |
 | `nodes` | `ModelRunner.load_model` | Every registered [node address](slot-contract.md#node-addresses); binds the named modules of the served model once the weights are loaded |
+| `cache` | `default_radix_cache_factory` | The [prefix cache](slot-contract.md#the-prefix-cache); builds a bundle's `tree_cache` class in place of stock, on the engine's pools, and checks every prefix it claims |
 
-`nodes` is the only adapter that serves candidate code. It patches no SGLang
-method: it replaces the `forward` of the modules a bundle named, so a model whose
-layers take a different class (`GemmaRMSNorm` instead of `RMSNorm`) is reached by
-the same row. The per-operation adapters it replaced each pinned one SGLang
-method and had to be re-derived for every model family and engine bump.
+`nodes` serves all candidate model code and `cache` the one scheduler object a
+bundle may replace. `nodes` patches no SGLang method: it replaces the `forward` of
+the modules a bundle named, so a model whose layers take a different class
+(`GemmaRMSNorm` instead of `RMSNorm`) is reached by the same row. The
+per-operation adapters it replaced each pinned one SGLang method and had to be
+re-derived for every model family and engine bump.
 
 ## Bootstrap across spawned processes
 

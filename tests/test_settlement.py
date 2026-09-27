@@ -360,6 +360,7 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     # Epoch 2026-09-06 widens families and makes sparse attention atomic.
     # Epoch 2026-09-16 adds fused DP output projection with explicit displacement.
     # Epoch 2026-09-19 retired both reduce-owning targets and the conflicts table; added forward_pass.
+    # Epoch 2026-09-27 opens the scheduler's prefix cache (tree_cache) as a forward_pass root.
     # Historical records are unaffected: they embed their own catalog snapshot.
     catalog = default_target_catalog()
     candidate = _candidate(
@@ -368,10 +369,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "b54b8ad5364ad5e5dbb4948a1d01edb6161733b70128c6710c45667afac452ee"
+        "783264f622a9e84b7aed756ae272ae5adab59072effe928714a09f4451e66890"
     )
     assert candidate.digest == (
-        "b594423086dad74d0a2ca824ffef5ed20179effb03ef1930a667d127829cd2e5"
+        "1717cc70e65e777fd816d5f6ecb7ca36551b37016020df47b9655799e2caecba"
     )
 
 
