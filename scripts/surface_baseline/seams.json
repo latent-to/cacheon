@@ -1,6 +1,5 @@
 {
  "adapter:nodes": {"chokepoint":"ModelRunner.load_model","integration":"sglang_nodes","name":"nodes","target_module":"sglang.srt.model_executor.model_runner"},
- "adapter:resident_swap": {"chokepoint":"ModelRunner.init_decode_cuda_graph","integration":"sglang_resident_swap","name":"resident_swap","target_module":"sglang.srt.model_executor.model_runner"},
  "adapter:scheduler_gate": {"chokepoint":"run_scheduler_process","integration":"sglang_scheduler_gate","name":"scheduler_gate","target_module":"sglang.srt.managers.scheduler"},
  "target_modules": ["sglang.srt.managers.scheduler","sglang.srt.model_executor.model_runner"]
 }
