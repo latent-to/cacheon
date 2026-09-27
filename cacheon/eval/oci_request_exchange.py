@@ -182,15 +182,39 @@ class RequestExchange:
 
     def __init__(
         self, transport: SessionTransport, *, clock: Callable[[], float],
-        deadline: float, audit_policy: SlotAuditPolicy | None = None,
+        deadline: float, audit_policy: SlotAuditPolicy | None = None, next_index: int = 0,
     ):
         self.transport, self.clock, self.deadline = transport, clock, deadline
         self.audit_policy = audit_policy
         self.requests: dict[str, BatchRequest] = {}
         self.pending: dict[str, _Pending] = {}
         self.writer = asyncio.Lock()
+        self.next_index = next_index
+        self.turns: dict[int, asyncio.Future[None]] = {}
         self.reader = None
         self.failure = None
+
+    async def _turn(self, index: int, deadline: float) -> None:
+        """Hold a request until every lower batch index is on the pipe.
+
+        The worker counts frames and refuses an index it did not expect, and
+        concurrent replay coroutines reach the writer in scheduler order rather
+        than dispatch order (2026-09-27: a window's first frame carried index 3
+        while the worker expected 2).
+        """
+        if index < self.next_index:
+            raise OuterSessionInfrastructureError("batch index was already written")
+        if index == self.next_index:
+            return
+        turn = asyncio.get_running_loop().create_future()
+        self.turns[index] = turn
+        try:
+            await asyncio.wait_for(turn, max(0, deadline - _now(self.clock)))
+        except asyncio.TimeoutError:
+            raise OuterSessionTimeoutError("batch write turn timed out") from None
+        finally:
+            if self.turns.get(index) is turn:
+                del self.turns[index]
 
     async def __aenter__(self):
         return self
@@ -265,10 +289,15 @@ class RequestExchange:
             started, HostTokenClock(request, self.clock, started), future, on_progress
         )
         try:
+            await self._turn(request.batch_index, deadline)
             async with self.writer:
                 await self.transport.awrite_frame(
                     frame_message(request.to_dict(), max_bytes=MAX_BATCH_REQUEST_BYTES), deadline=deadline
                 )
+                self.next_index += 1
+                turn = self.turns.pop(self.next_index, None)
+                if turn is not None and not turn.done():
+                    turn.set_result(None)
             if self.reader is None or self.reader.done():
                 self.reader = asyncio.create_task(self._read())
             try:
@@ -281,6 +310,9 @@ class RequestExchange:
             for item in self.pending.values():
                 if not item.future.done():
                     item.future.set_exception(exc)
+            for turn in self.turns.values():
+                if not turn.done():
+                    turn.set_exception(exc)
             if self.reader is not None:
                 self.reader.cancel()
             raise
