@@ -267,10 +267,17 @@ class RequestExchange:
         except BaseException as exc:
             if isinstance(exc, SessionProtocolError):
                 exc = OuterSessionProtocolError(str(exc))
-            self.failure = exc
-            for item in self.pending.values():
-                if not item.future.done():
-                    item.future.set_exception(exc)
+            self._fail(exc)
+
+    def _fail(self, exc: BaseException) -> None:
+        """Fail every pending response and every request still waiting for its write turn."""
+        self.failure = exc
+        for item in self.pending.values():
+            if not item.future.done():
+                item.future.set_exception(exc)
+        for turn in self.turns.values():
+            if not turn.done():
+                turn.set_exception(exc)
 
     async def execute(
         self, request: BatchRequest, *, deadline: float,
@@ -305,14 +312,8 @@ class RequestExchange:
             except asyncio.TimeoutError:
                 raise OuterSessionTimeoutError("session response read timed out") from None
         except BaseException as exc:
-            self.failure = exc
             future.cancel()
-            for item in self.pending.values():
-                if not item.future.done():
-                    item.future.set_exception(exc)
-            for turn in self.turns.values():
-                if not turn.done():
-                    turn.set_exception(exc)
+            self._fail(exc)
             if self.reader is not None:
                 self.reader.cancel()
             raise
