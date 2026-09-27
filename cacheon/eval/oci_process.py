@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Callable, Iterable, Protocol
 
-from cacheon.eval.oci_client_cleanup import cleanup_client as _cleanup_client
+from cacheon.eval.oci_client_cleanup import await_container_absence, cleanup_client as _cleanup_client
 
 
 LEASE_SCHEMA = "cacheon.oci-process-lease.v1"
@@ -790,6 +790,7 @@ class OCIProcessManager:
         executor_id: str,
         runner: CommandRunner = _bounded_command_runner,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if not isinstance(docker_binary, str) or not docker_binary.startswith("/"):
             raise OCIProcessError("docker_binary must be an absolute path")
@@ -858,7 +859,7 @@ class OCIProcessManager:
             stat.S_IMODE(diagnostics_info.st_mode),
         )
         self.runner = runner
-        self.clock = clock
+        self.clock, self.sleep = clock, sleep
         # A trusted controller may reserve the complete B/C/B-prime/T
         # transaction while re-entering for each individual engine lifetime.
         self.transaction_lock = threading.RLock()
@@ -1391,8 +1392,7 @@ class OCIProcessManager:
             # The independent bounded listing below is authoritative. A timed-out
             # remove may still have completed in the daemon.
             pass
-        if self._listed_container_id(lease) is not None:
-            raise _ContainerRemovalPending("lease container still exists after forced removal")
+        await_container_absence(self, lease)
 
     @staticmethod
     def _terminate_client(process: subprocess.Popen[bytes]) -> None:

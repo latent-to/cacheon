@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import cacheon.eval.oci_client_cleanup as cleanup_mod
 import cacheon.eval.oci_process as process_mod
 from cacheon.eval.oci_process import (
     ATTACHED_STDERR_MAX_BYTES,
@@ -620,6 +621,35 @@ def test_absence_listing_is_authoritative(tmp_path: Path) -> None:
     manager.runner = stuck
     with pytest.raises(OCIProcessError, match="still exists"):
         manager.force_remove_container(lease)
+    # The proof waited its whole bounded budget before giving up on the daemon.
+    assert manager.clock.slept >= cleanup_mod.CONTAINER_DESTROY_WAIT_S - cleanup_mod.CONTAINER_DESTROY_POLL_S
+
+
+def test_forced_removal_waits_for_the_daemon_to_destroy_the_container(tmp_path: Path) -> None:
+    # 2026-09-27: two B300 lease containers took 98 s from `docker rm --force` to the destroy
+    # event; a proof that gave up after ~35 s held a finished qualification without a verdict.
+    commands = Commands()
+    manager = _manager(tmp_path, commands)
+    lease = manager.register(lease_id="lease-1", container_name="container-1")
+    commands.present.add("container-1")
+    original = commands.__call__
+    ordered = []
+
+    def slow_daemon(argv, *, timeout_s, max_output_bytes):
+        if tuple(argv)[1:3] == ("rm", "--force"):
+            # The daemon acknowledges the removal at once and destroys 98 s of wall clock later.
+            ordered.append(manager.clock.now)
+            commands.rows.append(tuple(argv))
+            return CommandResult(0, b"", b"")
+        if tuple(argv)[1:3] == ("container", "ls") and ordered and manager.clock.now >= ordered[0] + 98.0:
+            commands.present.discard("container-1")
+        return original(argv, timeout_s=timeout_s, max_output_bytes=max_output_bytes)
+
+    manager.runner = slow_daemon
+    manager.force_remove_container(lease)
+    assert not commands.present
+    assert 98.0 <= manager.clock.slept < 98.0 + 2 * cleanup_mod.CONTAINER_DESTROY_POLL_S
+    assert len(ordered) == 1
 
 
 def test_cleanup_refuses_same_name_container_with_wrong_lease_labels(tmp_path: Path) -> None:

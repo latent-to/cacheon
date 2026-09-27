@@ -8,6 +8,26 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from cacheon.eval.oci_process import OCIAttachedClient, OCILease, OCIProcessManager
 
+CONTAINER_DESTROY_WAIT_S = 300.0
+CONTAINER_DESTROY_POLL_S = 2.0
+
+
+def await_container_absence(manager: OCIProcessManager, lease: OCILease) -> None:
+    """Wait, bounded by the manager's clock, until the daemon has destroyed the exact lease container.
+
+    The daemon acknowledges a forced removal before it destroys: on 2026-09-27 two
+    4-GPU B300 lease containers took 98 s from ``docker rm --force`` to docker's
+    destroy event, and a proof that gave up after ~35 s held a finished
+    qualification without a verdict.
+    """
+    from cacheon.eval.oci_process import _ContainerRemovalPending
+
+    deadline = float(manager.clock()) + CONTAINER_DESTROY_WAIT_S
+    while manager._listed_container_id(lease) is not None:
+        if float(manager.clock()) >= deadline:
+            raise _ContainerRemovalPending("lease container still exists after forced removal")
+        manager.sleep(CONTAINER_DESTROY_POLL_S)
+
 
 def cleanup_client(
     manager: OCIProcessManager,
