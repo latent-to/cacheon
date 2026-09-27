@@ -26,6 +26,9 @@ dependencies = [
 cpu = ["torch"]
 dev = ["pytest>=7", "ruff==0.12.7", "httpx>=0.24"]
 dashboard = ["fastapi>=0.100", "uvicorn>=0.23"]
+# AIPerf 0.13.0 runs in its own Python 3.12+ environment; this is its trusted
+# HTTP-to-OCI adapter, which also runs on existing Python 3.10 controllers.
+replay = ["aiohttp>=3.9,<4", "transformers>=4.51"]
 # S3-compatible object stores (Hippius / AWS / MinIO). boto3 is Apache-2.0.
 object-store = ["boto3>=1.34"]
 

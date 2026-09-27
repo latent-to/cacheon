@@ -647,3 +647,37 @@ session affinity. Token IDs avoid re-tokenizing rendered chat text with an extra
 BOS token. First/final token events are timed by the controller and checked
 against the existing final binary evidence; one-token requests still have TTFT.
 No HTTP listener or candidate network access is added inside the container.
+
+## Finite agent replay
+
+`SessionExecutionPlan.replay` selects `AgentReplayPlan` for an off-chain load
+read through the ordinary OCI executor. Install the controller's `replay` extra
+and supply a separate AIPerf 0.13.0 executable, the local model tokenizer, a
+sealed slice manifest, load, output directory and service contract. The existing
+engine conditioning runs first. AIPerf then starts exactly the declared number
+of root sessions and drains their turns and children; there is no duration cut
+or request-count truncation. The loopback chat adapter passes canonical input
+IDs and sticky DP ranks through the same isolated-worker pipes.
+
+The slice loader verifies the named files in sealed order. A per-load directory
+contains only the first `load` files. Output budgets come from those traces;
+context overflow or an incomplete export fails the read. The client preserves
+`X-Request-ID`; the collector joins it to source trace and child coordinates,
+then requires the exact main/inner turn counts for every root. All scoring
+timestamps use host nanoseconds in the same epoch clock domain, with the
+monotonic-to-epoch anchor retained in `clock.json`.
+
+Each fresh output directory retains the AIPerf command, log and raw export,
+`bridge.jsonl` with canonical inputs, actual output IDs and host timing,
+`turns.jsonl` in the service-capacity record format, and `read.json` with fixed
+work rate and attainment. These are single-load development evidence; they do
+not by themselves provide the paired capacity comparison, quality audit or
+authoritative qualification result. Existing commissions continue to execute
+their sealed workload until recommissioned.
+
+AIPerf's concurrency ramp increases the live-session limit from one to the
+target. It does not enforce a fixed interval between root starts: a completed
+tree releases its slot early. The ramp duration is part of workload identity.
+Omit `--warmup-request-count` for no user-requested warmup; version 0.13.0 rejects
+an explicit zero. Agentic snapshot warmup records, if any, are excluded from
+service scoring.

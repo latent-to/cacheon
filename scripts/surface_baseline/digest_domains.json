@@ -57,7 +57,7 @@
  "cacheon/eval/resident_audit_authority.py": ["cacheon.eval.resident-audit-allocation.v1","cacheon.eval.resident-audit-charged-plan.v1","cacheon.eval.resident-audit-execution-authority.v1","cacheon.eval.resident-audit-launch-binding.v1","cacheon.eval.resident-audit-session-plan.v1"],
  "cacheon/eval/resident_screen_lane.py": ["cacheon.arena.resident-screen-candidate-failure.v1","cacheon.arena.resident-screen-stage.v2","cacheon.arena.resident-screen-stock-canary-failure.v1","cacheon.arena.resident-screen-waiver.v1"],
  "cacheon/eval/runtime_preflight.py": ["cacheon-installed-distribution-v1","cacheon-runtime-container-preflight-v2","cacheon-runtime-platform-v1","cacheon-runtime-preflight-v2"],
- "cacheon/eval/scoring.py": ["cacheon.qualification.marginal-workload.v2","cacheon.qualification.marginal-workload.v3","cacheon.qualification.prompt-occurrence"],
+ "cacheon/eval/scoring.py": ["cacheon.qualification.agent-workload.v1","cacheon.qualification.marginal-workload.v2","cacheon.qualification.marginal-workload.v3","cacheon.qualification.prompt-occurrence"],
  "cacheon/eval/tokenizer_identity.py": ["cacheon.private-b300-tokenizer-identity.v1"],
  "cacheon/model_provision.py": ["cacheon.model-content","cacheon.model-provision-receipt"],
  "cacheon/patchers/build_cuda_ext.py": ["cacheon.cuda-extension-set.v3"],

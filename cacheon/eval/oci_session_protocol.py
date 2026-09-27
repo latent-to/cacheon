@@ -55,15 +55,15 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     **dict.fromkeys("""
         chunked_prefill_size context_length dp_size max_mamba_cache_size
         max_prefill_tokens page_size speculative_num_steps speculative_eagle_topk
-        speculative_num_draft_tokens
+        speculative_num_draft_tokens hicache_size
     """.split(), "positive_int"),
     **dict.fromkeys("""
         cuda_graph_backend_prefill kv_cache_dtype mamba_ssm_dtype quantization
-        speculative_algorithm
+        speculative_algorithm hicache_mem_layout hicache_io_backend
     """.split(), "token"),
     **dict.fromkeys("""
         disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
-        enable_linear_replayssm_spec trust_remote_code
+        enable_linear_replayssm_spec trust_remote_code enable_hierarchical_cache
     """.split(), "bool"),
     **dict.fromkeys(("cuda_graph_bs", "cuda_graph_bs_decode"), "int_list"),
     # Resident sessions recapture CUDA graphs on a LIVE scheduler loop; the

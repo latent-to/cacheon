@@ -53,6 +53,10 @@ def marginal_workload_digest(plan: object) -> str:
     }
     if plan.measure_phase_latency:
         payload["measure_phase_latency"] = True
+    if plan.replay is not None:
+        return canonical_digest("cacheon.qualification.agent-workload.v1", {
+            **payload, "replay": plan.replay.workload_identity(),
+        })
     if not plan.batch_max_new_tokens:
         # Retained one-shape evidence keeps its exact v2 identity.
         return canonical_digest(

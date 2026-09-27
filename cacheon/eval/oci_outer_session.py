@@ -281,7 +281,7 @@ class AttachedSessionTransport:
 
 @dataclass(frozen=True)
 class SessionExecutionPlan:
-    """Host-only session inputs; only one prompt batch crosses at a time."""
+    """Validator-owned engine inputs and either a batch workload or a finite replay."""
 
     launch_digest: str
     expected_engine_config_digest: str
@@ -299,8 +299,13 @@ class SessionExecutionPlan:
     batch_max_new_tokens: tuple[int, ...] = ()
     batch_expected_prompt_tokens: tuple[int | None, ...] = ()
     measure_phase_latency: bool = False
+    replay: object | None = None
 
     def __post_init__(self) -> None:
+        if self.replay is not None:
+            from cacheon.eval.agent_replay import AgentReplayPlan
+            if type(self.replay) is not AgentReplayPlan or self.audit_policy is not None:
+                raise OuterSessionInfrastructureError("replay plan is untyped or overlaps eager audit")
         if not isinstance(self.engine_config, EngineSessionConfig):
             raise OuterSessionInfrastructureError("engine_config is not typed")
         if self.audit_policy is not None and (
@@ -799,9 +804,9 @@ class OpenedOuterSession:
         if type(require_all) is not bool or not self.started or self.closed:
             raise OuterSessionInfrastructureError("session finish order is invalid")
         minimum = self.plan.warmup_count + 1
-        if len(self.batch_rows) < minimum or (
-            require_all and len(self.batch_rows) != len(self.plan.prompt_batches)
-        ):
+        expected = (len(self.plan.prompt_batches) if self.plan.replay is None else
+                    self.plan.warmup_count + self.plan.replay.slice.turns(self.plan.replay.load))
+        if len(self.batch_rows) < minimum or (require_all and len(self.batch_rows) != expected):
             raise OuterSessionInfrastructureError(
                 "session lacks the required planned batch coverage"
             )
@@ -814,7 +819,7 @@ class OpenedOuterSession:
                 raise OuterSessionTimeoutError("session deadline expired before cleanup")
             self.transport.finalize()
             session_completed_at = _now(
-                self.clock, previous=self.batch_rows[-1].response_completed_at
+                self.clock, previous=self.last_host_time
             )
             if session_completed_at > self.deadline:
                 raise OuterSessionTimeoutError(
@@ -877,7 +882,7 @@ def run_outer_session(
     clock: Callable[[], float] = time.monotonic,
     boundary_callback: BoundaryCallback | None = None,
 ) -> SessionExecutionEvidence:
-    """Execute every planned batch and destroy the engine (legacy wrapper)."""
+    """Execute the commissioned workload through one engine lifetime."""
 
     session = OpenedOuterSession(
         plan,
@@ -889,6 +894,15 @@ def run_outer_session(
         boundary_callback=boundary_callback,
     )
     session.start()
-    while session.next_batch_index < len(plan.prompt_batches):
-        session.execute_next()
-    return session.finish()
+    try:
+        for _ in range(plan.warmup_count):
+            session.execute_next()
+        if plan.replay is None:
+            while session.next_batch_index < len(plan.prompt_batches):
+                session.execute_next()
+        else:
+            from cacheon.eval.agent_replay import run_replay
+            asyncio.run(run_replay(session, plan.replay))
+        return session.finish()
+    except BaseException as exc:
+        session._fail(exc)
