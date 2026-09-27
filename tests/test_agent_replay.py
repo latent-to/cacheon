@@ -14,6 +14,8 @@ from cacheon.eval.service_capacity import ServiceContract, ServiceEvidenceError
 from tests.test_agent_slice import _session, _write_slice
 from tests.test_oci_outer_session import _plan
 from cacheon.eval.scoring import marginal_workload_digest
+from cacheon.arena_service import WorkloadCell
+from cacheon.eval.b300_arena_definition import engine_config, B300ScreenDeploymentError
 
 
 def _inputs(tmp_path):
@@ -83,3 +85,14 @@ def test_routing_and_workload_identity_do_not_depend_on_followup_text(tmp_path, 
     first = _plan(replay=replay)
     changed = replace(first, replay=replace(replay, ramp_duration_s=2))
     assert marginal_workload_digest(first) != marginal_workload_digest(changed)
+
+
+@pytest.mark.parametrize('input_tokens,output_tokens', [(8192, 1024), (65536, 4096)])
+def test_declared_context_survives_cell_projection_and_must_fit(input_tokens, output_tokens):
+    cell = WorkloadCell('coding', input_tokens, output_tokens, 2, 1)
+    template = _plan().engine_config
+    declared = replace(template, engine_kwargs={**template.engine_kwargs, 'context_length': 262144})
+    assert engine_config(declared, cell, disable_cuda_graph=False).engine_kwargs['context_length'] == 262144
+    too_short = replace(declared, engine_kwargs={**declared.engine_kwargs, 'context_length': input_tokens})
+    with pytest.raises(B300ScreenDeploymentError, match='does not fit'):
+        engine_config(too_short, cell, disable_cuda_graph=False)

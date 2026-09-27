@@ -21,7 +21,6 @@ _ARENA_ENGINE_FIELDS = ENGINE_CONFIG_FIELDS - {
     "model_path",
 }
 _DERIVED_ENGINE_KWARGS = {
-    "context_length",
     "enable_flashinfer_allreduce_fusion",
     "watchdog_timeout",
 }
@@ -170,9 +169,12 @@ def engine_config(
     if not cells or any(type(row) is not WorkloadCell for row in cells):
         raise B300ScreenDeploymentError("engine workload cells are not exact")
     kwargs = dict(template.engine_kwargs)
-    kwargs["context_length"] = max(
+    required_context = max(
         row.input_tokens + row.output_tokens for row in cells
     ) + 128
+    kwargs.setdefault("context_length", required_context)
+    if kwargs["context_length"] < required_context:
+        raise B300ScreenDeploymentError("declared context does not fit the workload cells")
     if not disable_cuda_graph:
         kwargs["watchdog_timeout"] = 1800
     return replace(

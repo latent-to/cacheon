@@ -653,7 +653,10 @@ No HTTP listener or candidate network access is added inside the container.
 `SessionExecutionPlan.replay` selects `AgentReplayPlan` for an off-chain load
 read through the ordinary OCI executor. Install the controller's `replay` extra
 and supply a separate AIPerf 0.13.0 executable, the local model tokenizer, a
-sealed slice manifest, load, output directory and service contract. The existing
+sealed slice manifest, load, output directory and service contract. An explicit
+`engine_config.engine_kwargs.context_length` is retained; batch workloads derive
+it from their cells only when absent and reject a declared context that is too
+small. Replay uses the complete sealed engine template. The existing
 engine conditioning runs first. AIPerf then starts exactly the declared number
 of root sessions and drains their turns and children; there is no duration cut
 or request-count truncation. `--ignore-trace-delays` removes recorded user and
