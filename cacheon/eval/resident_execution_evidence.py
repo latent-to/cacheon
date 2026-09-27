@@ -107,8 +107,8 @@ class RankExecution:
 
     @classmethod
     def from_receipts(cls, rank: int, rows: Mapping[str, object]) -> "RankExecution":
-        """Reduce one rank's receipt rows by kind, as ``receipts.rows_for_scope``
-        returns them, to the facts a gate and a miner both need.
+        """Reduce one rank's receipt rows, keyed by receipt kind, to the facts a
+        gate and a miner both need.
 
         A slot the rank registered but never completed is kept with zero calls:
         "loaded and never called" is the phantom-pass shape and must stay visible.

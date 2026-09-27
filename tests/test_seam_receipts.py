@@ -119,14 +119,6 @@ def test_resolving_an_impl_writes_nothing(receipt_dir):
     assert receipts.collect(receipt_dir, "completed") == []
 
 
-def test_completed_receipt_rearms_for_each_resident_scope(receipt_dir, monkeypatch):
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    for scope in ("1", "2"):
-        receipts.set_scope(scope)
-        receipts.completed("norm.rmsnorm")
-        assert len(receipts.collect(receipt_dir / scope, "completed")) == 1
-
-
 def test_registry_miss_writes_nothing(receipt_dir, monkeypatch):
     reg = KernelRegistry()
     reg.register(KernelImpl(slot="norm.rmsnorm", bundle_id="t", entry=lambda *a: None,
@@ -247,49 +239,6 @@ def test_without_a_probe_capture_is_unknown_not_false(receipt_dir):
     receipts.flush_calls()
     row = receipts.collect(receipt_dir, "completed")[0]
     assert row["calls"] == 1 and "captured" not in row
-
-
-def test_scope_change_finalizes_and_resets_the_tally(receipt_dir, monkeypatch):
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    receipts.set_scope("1")
-    for _ in range(4):
-        receipts.completed("norm.rmsnorm")
-    receipts.set_scope("2")
-    receipts.completed("norm.rmsnorm")
-    receipts.flush_calls()
-    assert receipts.collect(receipt_dir / "1", "completed")[0]["calls"] == 4
-    assert receipts.collect(receipt_dir / "2", "completed")[0]["calls"] == 1
-
-
-def test_scope_rows_report_the_live_tally_for_the_live_scope(receipt_dir, monkeypatch):
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    receipts.set_graph_probe(lambda: True)
-    receipts.set_scope("7")
-    for _ in range(7):
-        receipts.completed("norm.rmsnorm")
-    rows = receipts.rows_for_scope("7", pid=os.getpid())
-    (row,) = rows["completed"]  # one receipt file
-    assert row["calls"] == 7 and row["captured"] is True
-
-
-def test_reading_a_closed_scope_does_not_flush_the_live_tally_into_it(
-    receipt_dir, monkeypatch
-):
-    """The flush belongs to the scope being tallied, not to whichever is read.
-
-    A swap reads the generation it closes while the new generation is already
-    armed; flushing on that read would write the new scope's calls under the old
-    one's directory name.
-    """
-
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    receipts.set_scope("1")
-    receipts.completed("norm.rmsnorm")
-    receipts.set_scope("2")
-    for _ in range(3):
-        receipts.completed("norm.rmsnorm")
-    (row,) = receipts.rows_for_scope("1", pid=os.getpid())["completed"]
-    assert row["calls"] == 1
 
 
 def test_detected_identity_overrides_payload(receipt_dir, monkeypatch):
@@ -583,251 +532,23 @@ def test_coverage_rejects_duplicate_and_unexpected_completion():
     )["ok"]
 
 
-def test_scope_lets_each_swap_generation_receipt_the_same_slot(
-    tmp_path, monkeypatch
-):
-    """A resident engine serves many candidates on one process.
-
-    Execution receipts are once-per-slot-per-root. Without a scope the second
-    candidate onward emits nothing, so a controller would either read the first
-    candidate's evidence as if it were theirs or see an empty directory and
-    convict an honest bundle. Scoping by swap generation fixes both.
-    """
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    root = tmp_path / "receipts"
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(root))
-
-    assert receipts.set_scope(7) == "7"
-    receipts.completed("moe.fused_experts")
-    receipts.completed("moe.fused_experts")
-    assert receipts.set_scope(9) == "9"
-    receipts.completed("moe.fused_experts")
-
-    assert len(receipts.collect(root / "7", "completed")) == 1
-    assert len(receipts.collect(root / "9", "completed")) == 1
-
-
-def test_scope_with_no_invocation_stays_empty(tmp_path, monkeypatch):
-    """The R-1 discriminator: a candidate that never ran leaves nothing."""
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    root = tmp_path / "receipts"
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(root))
-
-    receipts.set_scope(3)
-    receipts.completed("moe.fused_experts")
-    receipts.set_scope(4)
-
-    assert len(receipts.collect(root / "3", "completed")) == 1
-    assert receipts.collect(root / "4", "completed") == []
-
-
-@pytest.mark.parametrize("hostile", ("..", "../..", "/etc", ".", "", None))
-def test_scope_never_escapes_the_receipt_root(tmp_path, monkeypatch, hostile):
-    """This runs inside the candidate's own process; a scope must not traverse."""
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    root = tmp_path / "receipts"
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(root))
-
-    assert receipts.set_scope(hostile) == ""
-    receipts.completed("moe.fused_experts")
-
-    assert len(receipts.collect(root, "completed")) == 1
-    assert not list(tmp_path.glob("completed*"))
-
-
-def test_scope_directory_exists_before_any_receipt_is_written(
-    tmp_path, monkeypatch
-):
-    """"Did not invoke" and "receipt path broken" must not look identical.
-
-    Receipt files are written lazily, so without eager scope creation an
-    un-invoked candidate and an unsound evidence path are the same observation.
-    A reader would then have to turn an infrastructure fault into a candidate
-    verdict. Present-but-empty means the candidate did not run; absent means the
-    evidence path is unsound and no verdict may be drawn from it.
-    """
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    root = tmp_path / "receipts"
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(root))
-
-    receipts.set_scope(12)
-
-    assert (root / "12").is_dir()
-    assert receipts.collect(root / "12", "completed") == []
-
-    receipts.completed("moe.fused_experts")
-    assert len(receipts.collect(root / "12", "completed")) == 1
-
-
-def test_scope_creation_failure_is_silent(tmp_path, monkeypatch):
-    """An unwritable receipt root must not raise into the engine."""
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    blocker = tmp_path / "receipts"
-    blocker.write_text("not a directory")
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(blocker))
-
-    assert receipts.set_scope(5) == "5"
-    receipts.completed("moe.fused_experts")
-    assert not (tmp_path / "receipts" / "5").exists()
-
-
-def test_seam_root_lets_a_stock_launched_lane_receipt_at_all(tmp_path, monkeypatch):
-    """The resident defect, at its source.
-
-    A resident lane is launched stock, so the one-shot driver mints it no
-    receipt directory and forces the environment variable empty for the whole
-    life of the engine. Every candidate the lane ever served therefore ran with
-    receipts disabled, which is how a bundle that never dispatched a kernel was
-    recorded as a PASS. The seam establishes the root itself, at the swap.
-    """
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    monkeypatch.setattr(receipts, "_ROOT", "")
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
-
-    # Exactly the live pod's state: the variable is present but empty.
-    receipts.completed("moe.fused_experts")
-    assert not list(tmp_path.rglob("completed*.json"))
-
-    root = tmp_path / "swap-receipts"
-    assert receipts.set_root(root) == str(root)
-    receipts.set_scope(4)
-    receipts.completed("moe.fused_experts")
-    assert len(receipts.collect(root / "4", "completed")) == 1
-
-
-def test_driver_environment_outranks_the_seam_root(tmp_path, monkeypatch):
-    """The one-shot path keeps its own directory; the seam only fills a gap."""
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    monkeypatch.setattr(receipts, "_ROOT", "")
-    driver_root = tmp_path / "driver"
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(driver_root))
-
-    assert receipts.set_root(tmp_path / "seam") == str(driver_root)
-    receipts.set_scope(1)
-    receipts.completed("moe.fused_experts")
-    assert len(receipts.collect(driver_root / "1", "completed")) == 1
-    assert not (tmp_path / "seam").exists()
-
-
-@pytest.mark.parametrize("hostile", ["", "   ", None, "relative/path", 12345])
-def test_seam_root_refuses_anything_that_is_not_an_absolute_path(
-    tmp_path, monkeypatch, hostile
-):
-    monkeypatch.setattr(receipts, "_ROOT", "")
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
-    assert receipts.set_root(hostile) == ""
-
-
-def test_rows_distinguish_unobservable_from_an_observed_zero(
-    tmp_path, monkeypatch
-):
-    """The tri-state the whole guard rests on.
-
-    ``None`` means the evidence path is unusable and no verdict may be drawn.
-    An empty dict means the scope existed and nothing ran under it, which is
-    a fact about the candidate rather than the plumbing.
-    """
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    monkeypatch.setattr(receipts, "_ROOT", "")
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
-
-    # No root at all: unobservable.
-    assert receipts.rows_for_scope(5) is None
-
-    root = tmp_path / "receipts"
-    receipts.set_root(root)
-    # Root, but that generation never opened a scope: still unobservable.
-    assert receipts.rows_for_scope(5) is None
-
-    # The scope is created eagerly by set_scope, before anything is written, so
-    # "ran nothing" is observable rather than looking like a broken path.
-    receipts.set_scope(5)
-    assert receipts.rows_for_scope(5) == {}
-
-    receipts.completed("moe.fused_experts")
-    assert len(receipts.rows_for_scope(5)["completed"]) == 1
-
-
-def test_rows_restricted_to_this_process_ignore_peer_ranks(
-    tmp_path, monkeypatch
-):
-    """Each rank reads only what it wrote, so peers cannot race the reading."""
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    monkeypatch.setattr(receipts, "_ROOT", "")
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
-    root = tmp_path / "receipts"
-    receipts.set_root(root)
-    receipts.set_scope(2)
-    receipts.completed("moe.fused_experts")
-
-    assert len(receipts.rows_for_scope(2, pid=os.getpid())["completed"]) == 1
-    assert receipts.rows_for_scope(2, pid=os.getpid() + 1) == {}
-
-
-@pytest.mark.parametrize("hostile", ["..", "../escape", ".", "", None])
-def test_rows_refuse_a_scope_that_would_escape_the_root(
-    tmp_path, monkeypatch, hostile
-):
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    monkeypatch.setattr(receipts, "_ROOT", "")
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
-    receipts.set_root(tmp_path / "receipts")
-    assert receipts.rows_for_scope(hostile) is None
-
-
-def test_rows_treat_malformed_evidence_as_unobservable(tmp_path, monkeypatch):
-    """A corrupt receipt is not an execution of zero; it is no reading at all."""
-
-    monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    monkeypatch.setattr(receipts, "_ROOT", "")
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
-    root = tmp_path / "receipts"
-    receipts.set_root(root)
-    receipts.set_scope(8)
-    (root / "8" / "completed.9999.json").write_text("{ not json")
-    assert receipts.rows_for_scope(8) is None
-
-
 def test_a_candidate_raise_is_receipted_and_blamed_all_the_way_out(
     tmp_path, monkeypatch
 ):
     """The path that used to crash the lane with nothing to show for it.
 
-    A raise inside the entry is receipted under the live scope, survives into
-    the rows the closing swap reads, reduces to a rank that is not clean, and
-    is named by the session worker when the engine dies under it.
+    A raise inside the entry is receipted under the driver's receipt root,
+    reduces to a rank that is not clean, and is named by the session worker
+    when the engine dies under it.
     """
 
     from cacheon.eval import oci_session_worker as worker
     from cacheon.eval.resident_execution_evidence import RankExecution
 
     monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    monkeypatch.setattr(receipts, "_ROOT", "")
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
     control = tmp_path / "ctl"
-    receipts.set_root(control / "receipts")
-    receipts.set_scope(4)
+    root = control / "receipts" / "4"
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(root))
 
     def entry(_x):
         raise RuntimeError("CUDA error: illegal memory access\nat line 3")
@@ -838,7 +559,7 @@ def test_a_candidate_raise_is_receipted_and_blamed_all_the_way_out(
     with pytest.raises(RuntimeError):
         receipts.invoke("attention.msa_block_score", entry, object())
 
-    rows = receipts.rows_for_scope(4, pid=os.getpid())
+    rows = {"failed": receipts.collect(root, "failed")}
     (failed,) = rows["failed"]
     assert failed["slot"] == "attention.msa_block_score"
     assert failed["error_type"] == "RuntimeError"
@@ -860,12 +581,9 @@ def test_validator_library_permission_is_not_blamed_on_candidate(
     from cacheon.eval import oci_session_worker as worker
 
     monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setattr(receipts, "_SCOPE", "")
-    monkeypatch.setattr(receipts, "_ROOT", "")
-    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
     control = tmp_path / "ctl"
-    receipts.set_root(control / "receipts")
-    receipts.set_scope(5)
+    root = control / "receipts" / "5"
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(root))
 
     def entry(_x):
         raise PermissionError(
@@ -876,7 +594,7 @@ def test_validator_library_permission_is_not_blamed_on_candidate(
 
     with pytest.raises(PermissionError):
         receipts.invoke("moe.fused_experts", entry, object())
-    rows = receipts.rows_for_scope(5, pid=os.getpid())
+    rows = {"failed": receipts.collect(root, "failed")}
     (failed,) = rows["failed"]
     assert failed["failure_owner"] == "validator_runtime"
     assert worker._candidate_failures(str(control)) == ""

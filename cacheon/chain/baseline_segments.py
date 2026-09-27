@@ -48,7 +48,7 @@ def bind_reservation_baseline_segment(
     *,
     reason: str,
 ) -> None:
-    """Bind one reservation, and its promoted retry group, to ``state``.
+    """Bind one reservation, and its retry group, to ``state``.
 
     A segment that already names ``state``'s arena is kept whatever its
     generation: learning the service after a crown must not rewrite a durable

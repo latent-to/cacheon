@@ -86,6 +86,25 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "The bundle failed in eager execution before graph capture.",
         "Reproduce locally with `cacheon.cli verify` before submitting.",
     ),
+    # Retired with the routing screen on 2026-09-27. Durable rows written before
+    # that day still carry these reasons, so each keeps an explanation.
+    "screen_rejected": (
+        "The bundle was rejected by one of the retired arena screen stages "
+        "(static scan, build, ABI, graph behavior, or a timed stock/candidate "
+        "serving bracket) and did not enter qualification.",
+        "Read the failed stage below. A new submission goes straight to "
+        "qualification; the screen no longer runs.",
+    ),
+    "screen_receipt_service_rotated": (
+        "The arena service identity changed between the retired screen and "
+        "its use, so the screen receipt no longer described the running service.",
+        "This was validator-side and not attributed to the bundle.",
+    ),
+    "screen_promoted": (
+        "Every non-crown screen passed and the submission was waiting to enter "
+        "qualification.",
+        "No action is needed. This was a queue position, not a verdict.",
+    ),
     "copy_of": (
         "The bundle was detected as a copy of an earlier submission or of the "
         "validator's own reference library.",
