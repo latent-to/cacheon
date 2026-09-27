@@ -448,6 +448,14 @@ def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver,
     cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
     batch_cells = inputs.prompt_batch_cells
     mixed_cells = len(inputs.workload.cells) > 1
+    prompts = inputs.prompt_batches
+    tokens = policy_block["tokens_per_prompt"]
+    if replay is not None:
+        # The old128/24-request conditioning cost229k decode tokens before a
+        # two-session replay. Warm the engine at its declared replay load.
+        prompts = tuple(batch[:replay.load] for batch in prompts[:session_block["warmup_count"]])
+        batch_cells = batch_cells[:len(prompts)]
+        tokens = 16
     baseline_session_plan = SessionExecutionPlan(
         launch_digest=incumbent_launch.digest,
         expected_engine_config_digest=engine_config.digest,
@@ -455,17 +463,18 @@ def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver,
         expected_preflight=expected_runtime_preflight(
             incumbent_launch, inputs.preflight
         ),
-        prompt_batches=inputs.prompt_batches,
+        prompt_batches=prompts,
         warmup_count=session_block["warmup_count"],
         conditioning_count=session_block["conditioning_count"],
-        max_new_tokens=policy_block["tokens_per_prompt"],
+        max_new_tokens=tokens,
         top_logprobs_num=policy_block["topk_width"],
         temperature=float(session_block["temperature"]),
         expected_prompt_tokens=quality_cell.input_tokens,
         measure_phase_latency=session_block.get("measure_phase_latency", False),
         replay=replay,
         batch_max_new_tokens=(
-            tuple(cells_by_id[cell_id].output_tokens for cell_id in batch_cells)
+            tuple(tokens if replay is not None else cells_by_id[cell_id].output_tokens
+                  for cell_id in batch_cells)
             if mixed_cells
             else ()
         ),

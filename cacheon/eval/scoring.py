@@ -53,29 +53,20 @@ def marginal_workload_digest(plan: object) -> str:
     }
     if plan.measure_phase_latency:
         payload["measure_phase_latency"] = True
+    if plan.batch_max_new_tokens:
+        payload["batch_request_geometry"] = [
+            [tokens, prompt_tokens]
+            for tokens, prompt_tokens in zip(
+                plan.batch_max_new_tokens, plan.batch_expected_prompt_tokens, strict=True,
+            )
+        ]
     if plan.replay is not None:
         return canonical_digest("cacheon.qualification.agent-workload.v1", {
             **payload, "replay": plan.replay.workload_identity(),
         })
-    if not plan.batch_max_new_tokens:
-        # Retained one-shape evidence keeps its exact v2 identity.
-        return canonical_digest(
-            "cacheon.qualification.marginal-workload.v2", payload
-        )
-    return canonical_digest(
-        "cacheon.qualification.marginal-workload.v3",
-        {
-            **payload,
-            "batch_request_geometry": [
-                [tokens, prompt_tokens]
-                for tokens, prompt_tokens in zip(
-                    plan.batch_max_new_tokens,
-                    plan.batch_expected_prompt_tokens,
-                    strict=True,
-                )
-            ],
-        },
-    )
+    if plan.batch_max_new_tokens:
+        return canonical_digest("cacheon.qualification.marginal-workload.v3", payload)
+    return canonical_digest("cacheon.qualification.marginal-workload.v2", payload)
 
 
 def planned_prompt_texts(plan: object) -> dict[str, str]:

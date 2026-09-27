@@ -656,8 +656,10 @@ and supply a separate AIPerf 0.13.0 virtual environment executable, the local mo
 sealed slice manifest, load, output directory and service contract. An explicit
 `engine_config.engine_kwargs.context_length` is retained; batch workloads derive
 it from their cells only when absent and reject a declared context that is too
-small. Replay uses the complete sealed engine template. The existing
-engine conditioning runs first. AIPerf then starts exactly the declared number
+small. Replay uses the complete sealed engine template. Engine conditioning
+runs first with at most the declared session count per conditioning batch and
+16 output tokens per request. The replay plan retains only those conditioning
+rows; AIPerf supplies the measured work. AIPerf starts exactly the declared number
 of root sessions and drains their turns and children; there is no duration cut
 or request-count truncation. `--ignore-trace-delays` removes recorded user and
 tool waiting; each session continues as soon as its preceding work completes.

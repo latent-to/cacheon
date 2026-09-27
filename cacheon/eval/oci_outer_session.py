@@ -346,8 +346,9 @@ class SessionExecutionPlan:
             batches = tuple(tuple(batch) for batch in self.prompt_batches)
         except TypeError:
             raise OuterSessionInfrastructureError("each prompt batch must be a sequence") from None
-        if not batches or type(self.warmup_count) is not int or not 1 <= self.warmup_count < len(batches):
-            raise OuterSessionInfrastructureError("session requires warmup and timed batches")
+        maximum_warmups = len(batches) - (self.replay is None)
+        if not batches or type(self.warmup_count) is not int or not 1 <= self.warmup_count <= maximum_warmups:
+            raise OuterSessionInfrastructureError("session requires warmup and measured work")
         if type(self.conditioning_count) is not int or not 1 <= self.conditioning_count <= self.warmup_count:
             raise OuterSessionInfrastructureError("conditioning_count must be in 1..warmup_count")
         object.__setattr__(self, "prompt_batches", batches)

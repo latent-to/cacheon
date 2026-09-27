@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from cacheon.eval.agent_replay import AgentReplayPlan, collect_read, _rank, _chat_input_ids
-from cacheon.eval.oci_outer_session import BatchExecutionEvidence
+from cacheon.eval.oci_outer_session import BatchExecutionEvidence, OuterSessionInfrastructureError
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.service_capacity import ServiceContract, ServiceEvidenceError
 from tests.test_agent_slice import _session, _write_slice
@@ -102,6 +102,19 @@ def test_routing_and_workload_identity_do_not_depend_on_followup_text(tmp_path, 
     first = _plan(replay=replay)
     changed = replace(first, replay=replace(replay, ramp_duration_s=2))
     assert marginal_workload_digest(first) != marginal_workload_digest(changed)
+
+
+def test_replay_needs_no_dummy_timed_batches_and_binds_conditioning_geometry(tmp_path):
+    replay, _, _ = _inputs(tmp_path)
+    plan = _plan(replay=replay)
+    warmup = replace(plan, prompt_batches=plan.prompt_batches[:plan.warmup_count],
+                     batch_max_new_tokens=(1,) * plan.warmup_count,
+                     batch_expected_prompt_tokens=(5,) * plan.warmup_count)
+    assert len(warmup.prompt_batches) == warmup.warmup_count
+    changed = replace(warmup, batch_max_new_tokens=(2,) * plan.warmup_count)
+    assert marginal_workload_digest(warmup) != marginal_workload_digest(changed)
+    with pytest.raises(OuterSessionInfrastructureError, match="warmup and measured work"):
+        replace(warmup, replay=None)
 
 
 @pytest.mark.parametrize('input_tokens,output_tokens', [(8192, 1024), (65536, 4096)])
