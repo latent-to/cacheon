@@ -105,7 +105,7 @@
 "tests/test_oci_session_worker_order.py": 70,
 "tests/test_oci_session_worker_private_cache.py": 10,
 "tests/test_parallel_arenas.py": 32,
-"tests/test_phase_latency.py": 41,
+"tests/test_phase_latency.py": 50,
 "tests/test_prefill_lane.py": 94,
 "tests/test_qualification.py": 39,
 "tests/test_qualification_audit_reopen.py": 4,

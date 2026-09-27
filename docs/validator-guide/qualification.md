@@ -141,6 +141,11 @@ retains the relative host times in each timed window's `prompt_latencies`.
 Worker-supplied timestamps are never accepted. Missing, duplicate, stale or
 inconsistent boundaries are measurement failures, not candidate speed failures.
 
+SGLang's intermediate stream rows may share a growing token-ID list with an
+earlier usage-count snapshot. The adapter accepts that documented shape within
+the requested budget; final token IDs and final usage must still match the
+exact budget. Intermediate usage is never substituted for delivered tokens.
+
 The isolated worker uses SGLang's persistent async engine loop for generation.
 It can accept another disclosed request while an earlier request awaits output;
 complete binary evidence and streaming boundaries retain their original request

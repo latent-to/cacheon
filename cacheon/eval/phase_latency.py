@@ -91,11 +91,18 @@ async def generate_outputs(
             or type(ids[-1]) is not int
         ):
             raise SessionProtocolError("stream output lacks token IDs")
-        if (
-            len(ids) != meta.get("completion_tokens")
-            or len(ids) > request.max_new_tokens
-        ):
-            raise SessionProtocolError("stream output is not cumulative token evidence")
+        reported = meta.get("completion_tokens")
+        finished = meta.get("finish_reason") is not None
+        # SGLang 0.5.20 shares its live ID list on intermediate chunks. The
+        # batch fan-in can deliver that list after it has grown beyond the
+        # chunk's usage snapshot. Final chunks carry their own copied IDs.
+        if (type(reported) is not int or not 1 <= reported <= len(ids) <= request.max_new_tokens
+                or (finished and reported != len(ids))):
+            raise SessionProtocolError(
+                f"stream output is not cumulative token evidence: ids={len(ids)} "
+                f"reported={reported if type(reported) is int else None} "
+                f"budget={request.max_new_tokens} finished={finished}"
+            )
         if index in final:
             raise SessionProtocolError("stream repeated a completed prompt")
         if index not in first:
@@ -103,7 +110,7 @@ async def generate_outputs(
             await emit(token_boundary(request, index, "first", ids[0]))
         elif ids[0] != first[index]:
             raise SessionProtocolError("stream changed its first token")
-        if meta.get("finish_reason") is not None:
+        if finished:
             if len(ids) != request.max_new_tokens:
                 raise SessionProtocolError(
                     "stream completed before its exact token budget"

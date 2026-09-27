@@ -145,6 +145,22 @@ def test_stream_exhaustion_and_repeated_completion_fail_loudly():
             _generate(_engine(chunks, []), _request(), lambda _: None)
 
 
+def test_live_intermediate_ids_can_advance_beyond_the_usage_snapshot():
+    request = _request(prompts=("alpha",))
+    intermediate = _chunk(0, 1)
+    # The pinned engine shares this list, then awaits batch fan-in. Its
+    # producer can append another token before the consumer sees the row.
+    intermediate["output_ids"].append(1)
+    evidence = _generate(
+        _engine([intermediate, _chunk(0, 4, complete=True)], []), request, lambda _: None,
+    )
+    assert evidence.prompts[0].output_ids == (0, 1, 2, 3)
+    final = _chunk(0, 4, complete=True)
+    final["meta_info"]["completion_tokens"] = 3
+    with pytest.raises(SessionProtocolError, match="cumulative"):
+        _generate(_engine([final], []), request, lambda _: None)
+
+
 def test_one_token_turn_retains_ttft_without_inventing_a_decode_interval():
     request = _request(prompts=("alpha",), max_new_tokens=1)
     clock = _Clock(2.0)
