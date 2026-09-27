@@ -1,12 +1,15 @@
-"""Service capacity of one engine on a fixed agent slice, and the paired verdict.
+"""Service rate of one engine on a fixed agent slice, and the paired verdict.
 
-The agent arena scores capacity at the service boundary: the fixed-work turn
-rate an engine sustains at the load where its latency attainment crosses the
-sealed contract. Two sealed loads bracket that boundary; the crossing is
-interpolated log-linearly in load between them, which keeps the score
-continuous in per-user speed instead of stepping between bracket points.
-Every number here is recomputed from per-turn rows stamped by the trusted
-controller, so a retained run regrades to the same verdict.
+The agent arena scores speed at the service boundary: the fixed-work turn rate
+an engine sustains at the sealed operating load, where the sealed contract
+(decode floor, queue-inclusive TTFT bound) holds for the incumbent. Candidate
+and incumbent replay identical work at that load in paired windows; the
+verdict is the rate ratio, gated by attainment non-inferiority so a candidate
+cannot buy rate by starving turns. Every number here is recomputed from
+per-turn rows stamped by the trusted controller, so a retained run regrades to
+the same verdict. The 2026-09-26 interpolated-capacity design (two bracket
+loads, log-linear crossing) was withdrawn on 2026-09-27: its 8×12 pairings
+carried a 9-15% same-engine spread.
 """
 
 from __future__ import annotations
@@ -14,8 +17,8 @@ from __future__ import annotations
 import gzip
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, fields
-from enum import Enum
 from pathlib import Path
 
 from cacheon.eval.speed_verdict import SpeedStageDecision, invariant_decision
@@ -176,98 +179,75 @@ def attainment(read: LoadRead, contract: ServiceContract) -> float:
     return sum(1 for r in read.records if r.meets(contract)) / len(read.records)
 
 
-class CapacityStatus(str, Enum):
-    INTERPOLATED = "interpolated"
-    CLAMPED = "clamped"
-    INFEASIBLE = "infeasible"
-
-
-@dataclass(frozen=True)
-class Capacity:
-    """Fixed-work rate at the load where attainment crosses the contract."""
-
-    value: float | None
-    load: float | None
-    status: CapacityStatus
-    low: tuple[float, float]  # (attainment, rate) at the low bracket load
-    high: tuple[float, float]  # (attainment, rate) at the high bracket load
-
-
-def capacity(
-    low: LoadRead,
-    high: LoadRead,
-    contract: ServiceContract,
-    expected_by_load: dict[int, dict[str, tuple[int, int]]],
-) -> Capacity:
-    """Interpolate the service boundary between the two sealed bracket loads.
-
-    Attainment falls and the fixed-work rate rises with load, so the crossing
-    is unique when it lies inside the bracket. Above the bracket the score is
-    clamped at the high load and the bracket needs rotating; below it the
-    engine cannot serve the contract at the arena's floor load.
-    """
-    if not (low.arm == high.arm and low.window == high.window and low.load < high.load):
-        raise ServiceEvidenceError("a bracket is one arm, one window, two increasing loads")
-    a_lo = attainment(low, contract)
-    a_hi = attainment(high, contract)
-    g_lo = fixed_work_rate(low, expected_by_load[low.load]).rate
-    g_hi = fixed_work_rate(high, expected_by_load[high.load]).rate
-    ends = ((a_lo, g_lo), (a_hi, g_hi))
-    if a_lo < contract.attainment:
-        return Capacity(None, None, CapacityStatus.INFEASIBLE, *ends)
-    if a_hi >= contract.attainment:
-        return Capacity(g_hi, float(high.load), CapacityStatus.CLAMPED, *ends)
-    fraction = (a_lo - contract.attainment) / (a_lo - a_hi)
-    span = math.log(high.load) - math.log(low.load)
-    load = math.exp(math.log(low.load) + fraction * span)
-    return Capacity(g_lo + fraction * (g_hi - g_lo), load, CapacityStatus.INTERPOLATED, *ends)
-
-
 @dataclass(frozen=True)
 class ServiceVerdict:
     decision: SpeedStageDecision
-    ratio: float | None  # conservative: min(candidate) / max(incumbent)
+    ratio: float | None  # conservative: min(candidate rate) / max(incumbent rate)
     required: float
     detail: str
 
 
-def service_verdict(
-    candidate: list[Capacity], incumbent: list[Capacity], required: float
+def grade(
+    candidate: Sequence[LoadRead],
+    incumbent: Sequence[LoadRead],
+    contract: ServiceContract,
+    expected: dict[str, tuple[int, int]],
+    *,
+    required: float,
+    attainment_tolerance: float,
+    attainment_margin: float,
 ) -> ServiceVerdict:
-    """The verdict that survives the spread of the paired windows.
+    """The paired fixed-load verdict: rate over identical work, attainment as a non-inferiority gate.
 
-    Each window contributes one capacity per arm. The candidate must clear the
-    required ratio against its least favorable pairing to PASS and lose against
-    its most favorable to FAIL; anything in between is undetermined and the
-    sealed repeat, not a rerun of a favorable arm, is the only escalation.
+    Each window pairs one candidate read with one incumbent read at the same
+    sealed load over the same fixed work, so the fixed-work turn rates compare
+    like for like. The candidate must clear ``required`` against its least
+    favorable pairing to PASS and lose against its most favorable to FAIL; a
+    ratio that flips inside the observed spread is NO_DECISION, and the sealed
+    repeat, never a rerun of one arm, is the only escalation.
+
+    Attainment is graded on the paired difference A_candidate - A_incumbent.
+    Its one-sided lower bound, the difference less ``attainment_margin`` (the
+    calibrated allowance for the difference's own noise), must stay above
+    -``attainment_tolerance`` (the fixed product tolerance) in every window;
+    otherwise the candidate bought its rate by starving turns below the
+    contract and FAILs before rate is considered. Neither threshold comes from
+    the candidate, and more noise makes the gate harder, never easier. Work
+    that differs from the sealed slice raises: it is invalid evidence, not a
+    verdict.
     """
     if not _finite_positive(required) or required < 1.0:
         raise ServiceEvidenceError("required ratio must be at least 1.0")
-    if len(candidate) != len(incumbent) or not candidate:
-        raise ServiceEvidenceError("paired windows need one capacity per arm per window")
-    if any(c.status is CapacityStatus.INFEASIBLE for c in incumbent):
-        return ServiceVerdict(
-            SpeedStageDecision.NO_DECISION, None, required,
-            "incumbent cannot serve the contract at the floor load; bracket miscalibrated",
-        )
-    if any(c.status is CapacityStatus.INFEASIBLE for c in candidate):
-        return ServiceVerdict(
-            SpeedStageDecision.FAIL, None, required, "service_infeasible",
-        )
-    cands = [c.value for c in candidate]
-    bases = [b.value for b in incumbent]
-    assert all(v is not None for v in (*cands, *bases))
-    decision = invariant_decision(bases, cands, required)  # type: ignore[arg-type]
-    ratio = min(cands) / max(bases)  # type: ignore[type-var]
+    for name, value in (("attainment_tolerance", attainment_tolerance), ("attainment_margin", attainment_margin)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) < 1:
+            raise ServiceEvidenceError(f"{name} must be in [0, 1)")
+    if not candidate or len(candidate) != len(incumbent):
+        raise ServiceEvidenceError("paired windows need one read per arm per window")
+    rates_c: list[float] = []
+    rates_i: list[float] = []
+    windows: list[tuple[int, float, float]] = []
+    for cand, inc in zip(candidate, incumbent, strict=True):
+        if (cand.arm, inc.arm) != ("candidate", "incumbent") or (cand.window, cand.load) != (inc.window, inc.load):
+            raise ServiceEvidenceError("a window pairs one candidate and one incumbent read at one load")
+        rates_c.append(fixed_work_rate(cand, expected).rate)
+        rates_i.append(fixed_work_rate(inc, expected).rate)
+        windows.append((cand.window, attainment(cand, contract), attainment(inc, contract)))
+    ratio = min(rates_c) / max(rates_i)
+    for window, a_cand, a_inc in windows:
+        if a_cand - a_inc - attainment_margin < -attainment_tolerance:
+            return ServiceVerdict(
+                SpeedStageDecision.FAIL, ratio, required,
+                f"service_contract_not_met: window {window} attainment {a_cand:.4f} against the incumbent's "
+                f"{a_inc:.4f} is below the non-inferiority bound (tolerance {attainment_tolerance:.4g}, "
+                f"margin {attainment_margin:.4g})",
+            )
+    decision = invariant_decision(rates_i, rates_c, required)
     if decision is SpeedStageDecision.PASS:
-        detail = "candidate clears the required capacity ratio in every window pairing"
+        detail = "candidate clears the required fixed-work rate ratio in every window pairing"
     elif decision is SpeedStageDecision.FAIL:
-        detail = "candidate does not clear the required capacity ratio in any window pairing"
+        detail = "candidate does not clear the required fixed-work rate ratio in any window pairing"
     else:
-        decision = SpeedStageDecision.NO_DECISION
-        detail = "window spread crosses the capacity decision boundary"
-    if any(c.status is CapacityStatus.CLAMPED for c in (*candidate, *incumbent)):
-        detail += "; a capacity was clamped at the high bracket load: rotate the bracket"
+        decision, detail = SpeedStageDecision.NO_DECISION, "window spread crosses the required ratio"
     return ServiceVerdict(decision, ratio, required, detail)
 
 
@@ -311,8 +291,6 @@ def _finite_positive(value: object) -> bool:
 
 
 __all__ = [
-    "Capacity",
-    "CapacityStatus",
     "LoadRead",
     "ServiceContract",
     "ServiceEvidenceError",
@@ -320,9 +298,8 @@ __all__ = [
     "TurnRecord",
     "WorkRate",
     "attainment",
-    "capacity",
     "completed_work",
     "fixed_work_rate",
+    "grade",
     "load_reads_jsonl",
-    "service_verdict",
 ]

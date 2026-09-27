@@ -25,7 +25,7 @@ from cacheon.eval.agent_slice import SliceManifest, load_slice_manifest
 from cacheon.eval.oci_session_protocol import BatchRequest, MAX_BATCH_REQUEST_BYTES
 from cacheon.eval.oci_request_exchange import flush_cache
 from cacheon.eval.service_capacity import (
-    LoadRead, ServiceContract, ServiceEvidenceError, TurnRecord, attainment, capacity, fixed_work_rate,
+    LoadRead, ServiceContract, ServiceEvidenceError, TurnRecord, attainment, fixed_work_rate,
 )
 
 
@@ -47,8 +47,8 @@ class AgentReplayPlan:
 
     def __post_init__(self):
         manifest = load_slice_manifest(self.manifest_path)
-        if type(self.loads) is not tuple or len(self.loads) not in (1, 2) or tuple(sorted(set(self.loads))) != self.loads:
-            raise ValueError("replay window needs one load or an increasing two-load bracket")
+        if type(self.loads) is not tuple or len(self.loads) != 1:
+            raise ValueError("replay window needs exactly one sealed load")
         for load in self.loads:
             manifest.expected_work(load)
         if manifest.loader != "weka_trace":
@@ -341,9 +341,5 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_r
         session.replay_reads.append(read)
         reads.append(read)
     result = {"workload": plan.workload_identity(), "reads": [asdict(read) for read in reads]}
-    if len(reads) == 2:
-        result["capacity"] = asdict(capacity(
-            *reads, plan.contract, {load: plan.slice.expected_work(load) for load in plan.loads},
-        ))
     (plan.output_directory / "window.json").write_text(json.dumps(result, indent=2) + "\n")
     return tuple(reads)

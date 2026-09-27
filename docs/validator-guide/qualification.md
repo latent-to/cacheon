@@ -642,8 +642,8 @@ No HTTP listener or candidate network access is added inside the container.
 ## Finite agent replay
 
 `SessionExecutionPlan.replay` selects `AgentReplayPlan` for a finite load
-window through the ordinary OCI executor. The plan seals an increasing tuple
-of loads: one for a functional read, or two for a service-capacity bracket.
+window through the ordinary OCI executor. The plan seals exactly one load, the
+operating load of the paired fixed-work comparison.
 Install the controller's `replay` extra
 and supply a separate AIPerf 0.13.0 virtual environment executable, the local model tokenizer, a
 sealed slice manifest, loads, output directory and service contract. An explicit
@@ -673,8 +673,8 @@ the HiCache host pool. Failure stops the window. Each load's fresh output
 directory retains the AIPerf command, log and raw export,
 `bridge.jsonl` with canonical inputs, actual output IDs and host timing,
 `turns.jsonl` in the service-capacity record format, and `read.json` with fixed
-work rate and attainment. `window.json` retains both reads and their interpolated
-capacity for a two-load window. The existing engine-session evidence also carries
+work rate and attainment. `window.json` retains the workload identity and the
+read. The existing engine-session evidence also carries
 the typed `LoadRead` records, so continuation retains them with the token evidence.
 A window does not by itself provide the paired capacity comparison, quality audit or
 authoritative qualification result. Existing commissions continue to execute

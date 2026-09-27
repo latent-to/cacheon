@@ -128,14 +128,17 @@ def test_declared_context_survives_cell_projection_and_must_fit(input_tokens, ou
         engine_config(too_short, cell, disable_cuda_graph=False)
 
 
-def test_two_load_window_flushes_each_read_and_retains_capacity(tmp_path, monkeypatch):
+def test_window_is_one_sealed_load_flushed_before_its_read_and_retained(tmp_path, monkeypatch):
     import asyncio
     from cacheon.eval import agent_replay
     from cacheon.eval.continuation_codec import ContinuationCodec
     from cacheon.eval.service_capacity import LoadRead, TurnRecord
 
     manifest = _write_slice(tmp_path, [_session(i, k=1, inner=0) for i in (1, 2)])
-    plan = AgentReplayPlan(manifest, (1, 2), Path('/bin/aiperf'), Path('/model'),
+    with pytest.raises(ValueError, match="exactly one sealed load"):
+        AgentReplayPlan(manifest, (1, 2), Path('/bin/aiperf'), Path('/model'),
+                        tmp_path / 'window', ServiceContract(20, 2, .8), 'candidate', 1, 'B', 2.)
+    plan = AgentReplayPlan(manifest, (2,), Path('/bin/aiperf'), Path('/model'),
                            tmp_path / 'window', ServiceContract(20, 2, .8), 'candidate', 1, 'B', 2.)
     events = []
     session = SimpleNamespace(replay_reads=[])
@@ -154,10 +157,9 @@ def test_two_load_window_flushes_each_read_and_retains_capacity(tmp_path, monkey
 
     monkeypatch.setattr(agent_replay, '_run_load_read', read)
     result = asyncio.run(agent_replay.run_replay(session, plan, tokenizer=object()))
-    assert events == ['flush', 1, 'flush', 2]
+    assert events == ['flush', 2]
     assert tuple(session.replay_reads) == result
     artifact = json.loads((plan.output_directory / 'window.json').read_text())
-    assert artifact['capacity']['status'] == 'clamped'
-    assert artifact['capacity']['value'] == 10.0
+    assert set(artifact) == {'workload', 'reads'} and len(artifact['reads']) == 1
     codec = ContinuationCodec((LoadRead,))
-    assert codec.decode(codec.encode(result[1])) == result[1]
+    assert codec.decode(codec.encode(result[0])) == result[0]
