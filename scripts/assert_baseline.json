@@ -1,4 +1,5 @@
 {
+"tests/test_agent_slice.py": 12,
 "tests/test_arena_allocation.py": 38,
 "tests/test_arena_service.py": 46,
 "tests/test_b300_arena_provider.py": 73,
@@ -150,6 +151,7 @@
 "tests/test_screen_reason_travels_with_the_receipt.py": 16,
 "tests/test_seam_activation_live.py": 2,
 "tests/test_seam_receipts.py": 94,
+"tests/test_service_capacity.py": 50,
 "tests/test_session_environment.py": 13,
 "tests/test_settlement.py": 84,
 "tests/test_sglang_resident_swap.py": 30,
