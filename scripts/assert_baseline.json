@@ -1,5 +1,5 @@
 {
-"tests/test_agent_replay.py": 21,
+"tests/test_agent_replay.py": 23,
 "tests/test_agent_slice.py": 12,
 "tests/test_arena_allocation.py": 38,
 "tests/test_arena_service.py": 32,

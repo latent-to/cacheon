@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cacheon.eval.agent_replay import AgentReplayPlan, collect_read, _rank, _chat_input_ids
+from cacheon.eval.agent_replay import AgentReplayPlan, collect_read, _Placement, _chat_input_ids
 from cacheon.eval.oci_outer_session import BatchExecutionEvidence, OuterSessionInfrastructureError
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.service_capacity import ServiceContract, ServiceEvidenceError
@@ -94,10 +94,20 @@ def test_invalid_join_never_becomes_a_goodput_result(tmp_path, fault):
 
 
 @pytest.mark.parametrize('ranks', [1, 4])
-def test_routing_and_workload_identity_do_not_depend_on_followup_text(tmp_path, ranks):
-    opening = [{'role': 'system', 'content': 'coding'}, {'role': 'user', 'content': 'session-a'}]
+def test_routing_is_session_sticky_and_balanced(tmp_path, ranks):
+    placement = _Placement(ranks)
+    opening = [{'role': 'system', 'content': 'coding'}, {'role': 'user', 'content': '[rid:0a1b2c]\n\nsession-a'}]
     later = opening + [{'role': 'assistant', 'content': 'answer'}, {'role': 'user', 'content': 'followup'}]
-    assert _rank(opening, ranks) == _rank(later, ranks) < ranks
+    first = placement.acquire(opening)
+    placement.release(first)
+    assert placement.acquire(later) == first == 0
+    placement.release(first)
+    # A different marker on the same opening is the same session; new sessions spread over the ranks.
+    reminted = [{'role': 'system', 'content': 'coding'}, {'role': 'user', 'content': '[rid:ffffff]\n\nsession-a'}]
+    assert placement.acquire(reminted) == first
+    placement.release(first)
+    others = [placement.acquire([{'role': 'user', 'content': f'[rid:{i:06x}]\n\nsession-{i}'}]) for i in range(ranks)]
+    assert others == [(i + 1) % ranks for i in range(ranks)]
     replay, _, _ = _inputs(tmp_path)
     first = _plan(replay=replay)
     changed = replace(first, replay=replace(replay, ramp_seconds_per_session=2))

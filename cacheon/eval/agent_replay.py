@@ -75,16 +75,53 @@ class AgentReplayPlan:
         }
 
 
-def _rank(messages: list[dict], ranks: int) -> int:
-    # Preserve the working profitability proxy's affinity rule, including its
-    # first-user prefix. AIPerf's per-session cache buster is inside this opening.
+def _session_key(messages: list[dict]) -> str:
+    """The conversation's opening (system messages plus the first user turn), stable across its turns.
+
+    AIPerf's per-session cache-bust marker sits at the head of the first user turn and is stripped
+    so the key names the sealed session, not the marker a client happened to mint for it.
+    """
     head = [("system", json.dumps(m.get("content"), sort_keys=True)[:4096])
             for m in messages if m.get("role") == "system"]
     for message in messages:
         if message.get("role") == "user":
-            head.append(("user", json.dumps(message.get("content"), sort_keys=True)[:4096]))
+            content = message.get("content")
+            text = content if isinstance(content, str) else json.dumps(content, sort_keys=True)
+            if text.startswith("[rid:") and "\n\n" in text[:80]:
+                text = text.split("\n\n", 1)[1]
+            head.append(("user", text[:4096]))
             break
-    return int.from_bytes(hashlib.sha256(json.dumps(head).encode()).digest()[:8], "big") % ranks
+    return hashlib.sha256(json.dumps(head).encode()).hexdigest()
+
+
+class _Placement:
+    """Balanced session-to-rank placement for one read: each DP rank owns its own radix cache.
+
+    A session's every turn goes to the rank chosen at its first turn. A new session takes
+    the rank with the fewest turns in flight, then the fewest sessions placed, then the lowest
+    index, so a read's roots land 0,1,2,3,... whatever the ramp timing. Hashing the opening
+    instead re-randomised placement per run and cost 5-7% of the fixed-work rate at loads 12-16
+    (calibration, 2026-09-27).
+    """
+
+    def __init__(self, ranks: int) -> None:
+        self.ranks = ranks
+        self.assigned = [0] * ranks
+        self.inflight = [0] * ranks
+        self.table: dict[str, int] = {}
+
+    def acquire(self, messages: list[dict]) -> int:
+        key = _session_key(messages)
+        rank = self.table.get(key)
+        if rank is None:
+            rank = min(range(self.ranks), key=lambda r: (self.inflight[r], self.assigned[r], r))
+            self.table[key] = rank
+            self.assigned[rank] += 1
+        self.inflight[rank] += 1
+        return rank
+
+    def release(self, rank: int) -> None:
+        self.inflight[rank] -= 1
 
 
 def _chat_input_ids(tokenizer, body):
@@ -103,6 +140,7 @@ class ReplayBridge:
         self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
+        self.placement = _Placement(session.plan.engine_config.engine_kwargs.get("dp_size", 1))
         self.failed = asyncio.Event()
         self.offset_ns = time.time_ns() - round(session.clock() * 1e9)
         (output / "clock.json").write_text(json.dumps({
@@ -117,6 +155,7 @@ class ReplayBridge:
         """Deliver the real output, with server token usage and no synthetic successes."""
         from aiohttp import web
 
+        rank = None
         try:
             body = await http_request.json()
             external_id = http_request.headers["X-Request-ID"]
@@ -128,11 +167,11 @@ class ReplayBridge:
             ids = _chat_input_ids(self.tokenizer, body)
             count = body.get("max_tokens", body.get("max_completion_tokens"))
             index = self.first_batch_index + len(self.rows)
+            rank = self.placement.acquire(body["messages"])
             request = BatchRequest(
                 self.session.session_id, self.session.plan.launch_digest,
                 request_id, secrets.token_hex(16), index, (), count, 0,
-                self.session.plan.temperature, len(ids), True, (tuple(ids),),
-                _rank(body["messages"], self.session.plan.engine_config.engine_kwargs.get("dp_size", 1)),
+                self.session.plan.temperature, len(ids), True, (tuple(ids),), rank,
             )
             if index == self.session.plan.warmup_count and self.session.boundary_callback:
                 self.session.boundary_callback("before_first_timed", index, self.session.deadline)
@@ -200,6 +239,9 @@ class ReplayBridge:
             self.failure = exc
             self.failed.set()
             raise
+        finally:
+            if rank is not None:
+                self.placement.release(rank)
 
 
 def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:

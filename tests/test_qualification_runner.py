@@ -557,6 +557,7 @@ def _install_resident_runner_path(
         policy=SimpleNamespace(
             digest=_d("resident-policy"),
             max_qualification_seconds=7_200,
+            goodput=None,
         ),
         baseline_lane_digest=_d("resident-baseline-lane"),
         candidate_lane_digest=_d("resident-candidate-lane"),
@@ -584,6 +585,7 @@ def _install_resident_runner_path(
     class FakeResidentCrossover:
         def __init__(self) -> None:
             self.escalated = False
+            self.goodput = None  # legacy batch policy: no paired replay reads on this crossover
 
     crossover = FakeResidentCrossover()
 
@@ -592,6 +594,7 @@ def _install_resident_runner_path(
             assert prepared is harness.value.prepared
             assert plan is harness.value.resident_speed_plan
             assert observed is crossover
+            self.crossover = observed
             self.candidates = harness.lifecycle.candidates
             self.final_baseline = harness.lifecycle.final_baseline
 
