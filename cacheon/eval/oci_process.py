@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Callable, Iterable, Protocol
 
+from cacheon.eval.oci_client_cleanup import cleanup_client as _cleanup_client
+
 
 LEASE_SCHEMA = "cacheon.oci-process-lease.v1"
 EXECUTOR_LABEL = "cacheon.executor_id"
@@ -53,6 +55,10 @@ _INSPECT_FORMAT = (
 
 class OCIProcessError(RuntimeError):
     pass
+
+
+class _ContainerRemovalPending(OCIProcessError):
+    """The exact lease remains visible after a bounded force-remove attempt."""
 
 
 class OCIProcessTimeout(OCIProcessError):
@@ -1386,7 +1392,7 @@ class OCIProcessManager:
             # remove may still have completed in the daemon.
             pass
         if self._listed_container_id(lease) is not None:
-            raise OCIProcessError("lease container still exists after forced removal")
+            raise _ContainerRemovalPending("lease container still exists after forced removal")
 
     @staticmethod
     def _terminate_client(process: subprocess.Popen[bytes]) -> None:
@@ -1409,30 +1415,6 @@ class OCIProcessManager:
         except OSError:
             process.kill()
         process.wait(timeout=10)
-
-    def _reap_failed_process(
-        self, lease: OCILease, process: subprocess.Popen[bytes]
-    ) -> None:
-        failures: list[BaseException] = []
-        try:
-            self.force_remove_container(lease)
-        except BaseException as exc:
-            failures.append(exc)
-        try:
-            self._terminate_client(process)
-        except BaseException as exc:
-            failures.append(exc)
-        # Docker may create the named container after the first absence proof but
-        # before its client is terminated.  Only the proof after client death closes
-        # that race; it must run even when the first cleanup reported success.
-        try:
-            self.force_remove_container(lease)
-        except BaseException as exc:
-            failures.append(exc)
-        if failures:
-            raise OCIProcessError(
-                "OCI failure cleanup could not prove both client and container removal"
-            ) from failures[0]
 
     def spawn_attached(
         self,
@@ -1462,54 +1444,9 @@ class OCIProcessManager:
             self.force_remove_container(lease)
             raise OCIProcessError(f"could not start attached OCI client: {exc}") from None
         if process.stdin is None or process.stdout is None:
-            self._reap_failed_process(lease, process)
+            _cleanup_client(self, lease, process)
             raise OCIProcessError("attached OCI client did not expose byte streams")
         return OCIAttachedClient(self, lease, process)
-
-    def _close_attached(
-        self, client: OCIAttachedClient, *, retain_stderr_artifact: bool
-    ) -> None:
-        if not isinstance(client, OCIAttachedClient) or client._manager is not self:
-            raise OCIProcessError("attached OCI client belongs to another manager")
-        if client.closed:
-            return
-        process = client._process
-        failures: list[BaseException] = []
-        try:
-            self.force_remove_container(client.lease)
-        except BaseException as exc:
-            failures.append(exc)
-        try:
-            self._terminate_client(process)
-        except BaseException as exc:
-            failures.append(exc)
-        client._finish_stderr_capture()
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is None or stream.closed:
-                continue
-            try:
-                stream.close()
-            except BaseException as exc:
-                failures.append(exc)
-        client._finish_stderr_capture()
-        # A foreground Docker client can create the named container after the first
-        # absence proof.  Only this proof after process-group death closes that race.
-        try:
-            self.force_remove_container(client.lease)
-        except BaseException as exc:
-            failures.append(exc)
-        if failures:
-            raise OCIProcessError(
-                "attached OCI cleanup could not prove both client and container removal"
-            ) from failures[0]
-        if not retain_stderr_artifact:
-            try:
-                client._stderr_capture.discard_artifact()
-            except (OSError, OCIProcessError) as exc:
-                raise OCIProcessError(
-                    f"could not discard successful OCI stderr artifact: {exc}"
-                ) from None
-        client._closed = True
 
     def finalize_attached(self, client: OCIAttachedClient) -> None:
         """Normal host teardown after the caller consumed its final exact response.
@@ -1524,11 +1461,15 @@ class OCIProcessManager:
         specific guard at all. Retention is bounded per lease by
         ``ATTACHED_STDERR_ARTIFACT_MAX_BYTES``.
         """
-        self._close_attached(client, retain_stderr_artifact=True)
+        if not isinstance(client, OCIAttachedClient) or client._manager is not self:
+            raise OCIProcessError("attached OCI client belongs to another manager")
+        if not client.closed:
+            _cleanup_client(self, client.lease, client._process, client=client)
+            client._closed = True
 
     def abort_attached(self, client: OCIAttachedClient) -> None:
         """Exceptional host teardown; cleanup authority is identical to finalize."""
-        self._close_attached(client, retain_stderr_artifact=True)
+        self.finalize_attached(client)
 
     def run(
         self,
@@ -1597,10 +1538,10 @@ class OCIProcessManager:
         try:
             process.communicate(input=stdin_bytes, timeout=float(timeout_s))
         except subprocess.TimeoutExpired:
-            self._reap_failed_process(lease, process)
+            _cleanup_client(self, lease, process)
             timed_out = True
         except BaseException:
-            self._reap_failed_process(lease, process)
+            _cleanup_client(self, lease, process)
             raise
         finally:
             stderr_capture.finish()

@@ -23,140 +23,15 @@ from cacheon.eval.oci_process import (
     OCIQuiescenceReceipt,
     OCIProcessError,
     OCIProcessManager,
-    OCIProcessTimeout,
 )
 
 
-CONTAINER_ID = "d" * 64
+from tests.support.oci_process import Commands, FakeProcess, FakeStream, _manager
 
 
 @pytest.fixture(autouse=True)
 def _clear_gpu_reservation_env(monkeypatch) -> None:
     monkeypatch.delenv(GPU_RESERVATION_ENV, raising=False)
-
-
-class Commands:
-    def __init__(self) -> None:
-        self.rows: list[tuple[str, ...]] = []
-        self.present: set[str] = set()
-        self.labels: dict[str, tuple[str, str]] = {}
-        self.namespace_labels: dict[str, str | None] = {}
-        self.default_namespace: str | None = None
-        self.gpu_labels: dict[str, str] = {}
-
-    def __call__(self, argv, *, timeout_s, max_output_bytes):
-        row = tuple(argv)
-        self.rows.append(row)
-        if row[1:3] == ("container", "ls"):
-            names = [value for value in row if value.startswith("name=^/")]
-            labels = [value[6:] for value in row if value.startswith("label=")]
-            matching = []
-            for name in self.present:
-                if names and names[0][7:-1] != name:
-                    continue
-                executor, lease = self.labels.get(name, ("validator-a", "lease-1"))
-                observed = {
-                    "cacheon.executor_id": executor,
-                    "cacheon.lease_id": lease,
-                }
-                namespace = self.namespace_labels.get(name, self.default_namespace)
-                if namespace is not None:
-                    observed[NAMESPACE_LABEL] = namespace
-                parsed_labels = tuple(item.split("=", 1) for item in labels if "=" in item)
-                if len(parsed_labels) == len(labels) and all(
-                    observed.get(key) == value for key, value in parsed_labels
-                ):
-                    matching.append(name)
-            return CommandResult(
-                0,
-                (CONTAINER_ID + "\n").encode() if matching else b"",
-                b"",
-            )
-        if row[1:3] == ("container", "inspect"):
-            name = next(iter(self.present))
-            executor, lease = self.labels.get(name, ("validator-a", "lease-1"))
-            labels = {
-                "cacheon.executor_id": executor,
-                "cacheon.lease_id": lease,
-            }
-            namespace = self.namespace_labels.get(name, self.default_namespace)
-            if namespace is not None:
-                labels[NAMESPACE_LABEL] = namespace
-            if name in self.gpu_labels:
-                labels[GPU_RESERVATION_LABEL] = self.gpu_labels[name]
-            payload = {
-                "Id": CONTAINER_ID,
-                "Name": f"/{name}",
-                "Labels": labels,
-            }
-            return CommandResult(0, json.dumps(payload).encode(), b"")
-        if row[1:3] == ("rm", "--force"):
-            self.present.clear()
-        return CommandResult(0, b"", b"")
-
-
-class FakeProcess:
-    next_pid = 4000
-
-    def __init__(self, argv, **kwargs):
-        self.argv = tuple(argv)
-        self.kwargs = kwargs
-        self.pid = FakeProcess.next_pid
-        FakeProcess.next_pid += 1
-        self.returncode = None
-        self.input = None
-        self.waits = []
-        self.terminated = False
-        self.killed = False
-
-    def communicate(self, *, input, timeout):
-        self.input = input
-        self.waits.append(timeout)
-        self.returncode = 0
-
-    def wait(self, timeout):
-        self.waits.append(timeout)
-        if self.returncode is None:
-            self.returncode = -9 if self.killed else -15 if self.terminated else 0
-        return self.returncode
-
-    def terminate(self):
-        self.terminated = True
-        self.returncode = -15
-
-    def kill(self):
-        self.killed = True
-        self.returncode = -9
-
-    def poll(self):
-        return self.returncode
-
-
-class FakeStream:
-    next_fd = 80
-
-    def __init__(self) -> None:
-        self.closed = False
-        self.fd = FakeStream.next_fd
-        FakeStream.next_fd += 1
-
-    def fileno(self) -> int:
-        return self.fd
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _manager(tmp_path: Path, commands: Commands | None = None) -> OCIProcessManager:
-    selected = commands or Commands()
-    manager = OCIProcessManager(
-        docker_binary="/usr/bin/docker",
-        recovery_root=tmp_path / "recovery",
-        executor_id="validator-a",
-        runner=selected,
-    )
-    selected.default_namespace = manager.namespace_digest
-    return manager
 
 
 def test_register_writes_exact_lease_and_run_prefix(tmp_path: Path) -> None:
@@ -545,48 +420,6 @@ def test_run_rejects_argv_without_exact_lease_prefix(tmp_path: Path) -> None:
         manager.run(lease, ("/usr/bin/docker", "run", "image"), timeout_s=1)
 
 
-def test_attached_client_spawn_and_normal_finalize_use_manager_cleanup(
-    tmp_path: Path, monkeypatch
-) -> None:
-    commands = Commands()
-    manager = _manager(tmp_path, commands)
-    lease = manager.register(lease_id="lease-1", container_name="container-1")
-    process = FakeProcess(())
-    process.stdin = FakeStream()
-    process.stdout = FakeStream()
-    process.stderr = None
-    monkeypatch.setattr(process_mod.subprocess, "Popen", lambda *args, **kwargs: process)
-    events = []
-    original_remove = manager.force_remove_container
-
-    def remove(observed_lease):
-        events.append("remove")
-        return original_remove(observed_lease)
-
-    def terminate(observed_process):
-        events.append("terminate")
-        observed_process.terminate()
-        observed_process.wait(timeout=10)
-
-    monkeypatch.setattr(manager, "force_remove_container", remove)
-    monkeypatch.setattr(manager, "_terminate_client", terminate)
-    argv = (*lease.run_prefix(manager.docker_binary), "--network=none", "image@sha256:x")
-
-    client = manager.spawn_attached(lease, argv)
-    assert client.stdin is process.stdin and client.stdout is process.stdout
-    commands.present.add("container-1")
-    client.finalize()
-
-    assert events == ["remove", "terminate", "remove"]
-    assert client.closed and process.terminated
-    assert process.stdin.closed and process.stdout.closed
-    assert "container-1" not in commands.present
-    # Teardown is idempotent for a defensive finally: abort after finalize cannot
-    # revive or remove a different resource.
-    client.abort()
-    assert events == ["remove", "terminate", "remove"]
-
-
 def test_attached_spawn_uses_pipes_no_shell_and_new_process_group(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -679,59 +512,6 @@ def test_attached_diagnostic_rejects_overflow_and_renders_a_bounded_safe_excerpt
     assert "\\x1b" in rendered and "\\x00" in rendered
 
 
-def test_attached_abort_rechecks_container_after_client_death(
-    tmp_path: Path, monkeypatch
-) -> None:
-    commands = Commands()
-    manager = _manager(tmp_path, commands)
-    lease = manager.register(lease_id="lease-1", container_name="container-1")
-    process = FakeProcess(())
-    process.stdin = FakeStream()
-    process.stdout = FakeStream()
-    process.stderr = None
-    monkeypatch.setattr(process_mod.subprocess, "Popen", lambda *args, **kwargs: process)
-    client = manager.spawn_attached(
-        lease, (*lease.run_prefix(manager.docker_binary), "image@sha256:x")
-    )
-
-    def terminate_then_late_create(observed_process):
-        observed_process.terminate()
-        commands.present.add("container-1")
-
-    monkeypatch.setattr(manager, "_terminate_client", terminate_then_late_create)
-    client.abort()
-
-    assert client.closed
-    assert "container-1" not in commands.present
-    assert any(row[1:3] == ("rm", "--force") for row in commands.rows)
-
-
-def test_attached_finalize_never_signals_an_already_reaped_process_group(
-    tmp_path: Path, monkeypatch
-) -> None:
-    manager = _manager(tmp_path)
-    lease = manager.register(lease_id="lease-1", container_name="container-1")
-    process = FakeProcess(())
-    process.stdin = FakeStream()
-    process.stdout = FakeStream()
-    process.stderr = None
-    process.returncode = 0
-    monkeypatch.setattr(process_mod.subprocess, "Popen", lambda *args, **kwargs: process)
-    client = manager.spawn_attached(
-        lease, (*lease.run_prefix(manager.docker_binary), "image@sha256:x")
-    )
-    monkeypatch.setattr(
-        process_mod.os,
-        "killpg",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("reaped PID was signalled")),
-    )
-
-    client.finalize()
-
-    assert client.closed
-    assert not process.terminated and not process.killed
-
-
 @pytest.mark.skipif(sys.platform != "linux", reason="process-group residue proof uses /proc")
 def test_attached_finalize_kills_descendant_after_unreaped_leader_exit(
     tmp_path: Path, monkeypatch
@@ -820,91 +600,6 @@ def test_attached_spawn_rejects_wrong_prefix_and_occupied_name(tmp_path: Path) -
         manager.spawn_attached(
             lease, (*lease.run_prefix(manager.docker_binary), "image@sha256:x")
         )
-
-
-def test_timeout_force_removes_container_and_terminates_client(tmp_path: Path, monkeypatch) -> None:
-    commands = Commands()
-    manager = _manager(tmp_path, commands)
-    lease = manager.register(lease_id="lease-1", container_name="container-1")
-    proc = FakeProcess(())
-
-    def communicate(*, input, timeout):
-        commands.present.add("container-1")
-        raise subprocess.TimeoutExpired("docker", timeout)
-
-    proc.communicate = communicate
-    monkeypatch.setattr(process_mod.subprocess, "Popen", lambda *args, **kwargs: proc)
-    monkeypatch.setattr(process_mod.os, "killpg", lambda *_args: (_ for _ in ()).throw(OSError()))
-
-    with pytest.raises(OCIProcessTimeout) as raised:
-        manager.run(
-            lease,
-            (*lease.run_prefix(manager.docker_binary), "image@sha256:x"),
-            timeout_s=0.1,
-        )
-    assert proc.terminated
-    assert raised.value.diagnostic is not None
-    assert raised.value.diagnostic.artifact is not None
-    assert manager.reopen_stderr_artifact(
-        raised.value.diagnostic.artifact
-    ) == raised.value.diagnostic.artifact.artifact_path
-    assert any(row[1:3] == ("rm", "--force") for row in commands.rows)
-
-
-def test_timeout_rechecks_after_client_death_closes_late_create_race(
-    tmp_path: Path, monkeypatch
-) -> None:
-    commands = Commands()
-    manager = _manager(tmp_path, commands)
-    lease = manager.register(lease_id="lease-1", container_name="container-1")
-    proc = FakeProcess(())
-
-    def timeout(*, input, timeout):
-        raise subprocess.TimeoutExpired("docker", timeout)
-
-    def terminate_then_late_create(_process):
-        commands.present.add("container-1")
-
-    proc.communicate = timeout
-    monkeypatch.setattr(process_mod.subprocess, "Popen", lambda *args, **kwargs: proc)
-    monkeypatch.setattr(manager, "_terminate_client", terminate_then_late_create)
-
-    with pytest.raises(OCIProcessTimeout):
-        manager.run(
-            lease,
-            (*lease.run_prefix(manager.docker_binary), "image@sha256:x"),
-            timeout_s=0.1,
-        )
-    assert "container-1" not in commands.present
-    assert any(row[1:3] == ("rm", "--force") for row in commands.rows)
-
-
-def test_timeout_still_terminates_client_when_absence_proof_fails(
-    tmp_path: Path, monkeypatch
-) -> None:
-    commands = Commands()
-    manager = _manager(tmp_path, commands)
-    lease = manager.register(lease_id="lease-1", container_name="container-1")
-    proc = FakeProcess(())
-    def timeout(*, input, timeout):
-        commands.present.add("container-1")
-        raise subprocess.TimeoutExpired("docker", timeout)
-
-    proc.communicate = timeout
-    monkeypatch.setattr(process_mod.subprocess, "Popen", lambda *args, **kwargs: proc)
-    monkeypatch.setattr(process_mod.os, "killpg", lambda *_args: (_ for _ in ()).throw(OSError()))
-    monkeypatch.setattr(
-        manager,
-        "force_remove_container",
-        lambda _lease: (_ for _ in ()).throw(OCIProcessError("absence unavailable")),
-    )
-    with pytest.raises(OCIProcessError, match="could not prove"):
-        manager.run(
-            lease,
-            (*lease.run_prefix(manager.docker_binary), "image@sha256:x"),
-            timeout_s=0.1,
-        )
-    assert proc.terminated
 
 
 def test_absence_listing_is_authoritative(tmp_path: Path) -> None:

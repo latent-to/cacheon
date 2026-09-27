@@ -267,7 +267,7 @@ class AttachedSessionTransport:
         except OCIProcessError as exc:
             raise self._diagnostic_error(
                 OuterSessionInfrastructureError, f"session cleanup failed: {exc}"
-            ) from None
+            ) from exc
 
     def abort(self) -> None:
         if self.client is None or self.client.closed:
@@ -277,7 +277,7 @@ class AttachedSessionTransport:
         except OCIProcessError as exc:
             raise self._diagnostic_error(
                 OuterSessionInfrastructureError, f"session cleanup failed: {exc}"
-            ) from None
+            ) from exc
 
 
 @dataclass(frozen=True)

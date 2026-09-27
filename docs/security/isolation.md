@@ -160,6 +160,11 @@ process manager verifies ownership before removal, performs cleanup after succes
 failure, and repeats removal checks to close client/container races. Startup recovery
 releases stale leases and orphan resources in the executor's own namespace.
 
+If the first bounded removal is still pending, cleanup requires a successful absence
+check after the foreground client is reaped. That final check can resolve the pending
+removal; it cannot erase an ownership, client, or stream error. Cleanup exceptions
+retain their original cause alongside the worker diagnostics.
+
 If cleanup, unmount, device drain, or absence proof cannot be established, qualification
 fails as infrastructure authority; it must not become a candidate `PASS` or `FAIL`.
 

@@ -25,6 +25,7 @@ from cacheon.eval.oci_outer_session import (
 from cacheon.eval.oci_process import (
     STDERR_ARTIFACT_SCHEMA,
     OCIAttachedDiagnostic,
+    OCIProcessError,
     OCIStderrArtifactReceipt,
 )
 from cacheon.eval.oci_session_protocol import (
@@ -671,6 +672,24 @@ def test_attached_transport_is_nonblocking_and_manager_owns_both_teardown_paths(
     try:
         transport.abort()
         assert client.aborted and not client.finalized
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("operation", ["finalize", "abort"])
+def test_cleanup_preserves_the_manager_failure_chain(monkeypatch, operation):
+    transport, client = _attached(OCIAttachedDiagnostic(b"worker log", False, True))
+    cause = OCIProcessError("original lease-removal failure")
+
+    def fail():
+        raise OCIProcessError("attached OCI cleanup could not prove removal") from cause
+
+    monkeypatch.setattr(client, operation, fail)
+    try:
+        with pytest.raises(OuterSessionInfrastructureError) as raised:
+            getattr(transport, operation)()
+        assert raised.value.__cause__.__cause__ is cause
+        assert raised.value.diagnostic.stderr_tail == b"worker log"
     finally:
         client.close()
 
