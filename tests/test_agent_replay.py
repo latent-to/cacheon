@@ -76,7 +76,8 @@ def test_join_keeps_source_kind_clock_and_exact_work(tmp_path):
     # The credit is the round stamp: two rounds of 0.5 s each, not the 1.5 s makespan.
     assert [r.credit_issued_ns for r in read.records] == [1_000_000_000, 2_000_000_000]
     summary = json.loads((plan.output_directory / 'read.json').read_text())
-    assert summary['turns'] == 2 and summary['elapsed_s'] == 1.0
+    # The first round is the untimed cold prefill; the warm inner turn is 0.5 s from its release.
+    assert summary['turns'] == 1 and summary['elapsed_s'] == 0.5
     assert len((plan.output_directory / 'turns.jsonl').read_text().splitlines()) == 2
 
 

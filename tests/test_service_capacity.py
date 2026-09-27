@@ -55,7 +55,10 @@ def test_fixture_reads_carry_the_study_turn_counts(final_pairs):
               for key, read in final_pairs.items()}
     assert counts == {("candidate", 24): 694, ("candidate", 48): 911, ("incumbent", 24): 672, ("incumbent", 48): 873}
     for key, turns in counts.items():
-        assert fixed_work_rate(final_pairs[key], completed_work(final_pairs[key])).turns == turns
+        # Study exports credited every request separately, so only the earliest one is the cold round.
+        cold = min(r.credit_issued_ns for r in final_pairs[key].records)
+        assert fixed_work_rate(final_pairs[key], completed_work(final_pairs[key])).turns == turns - sum(
+            1 for r in final_pairs[key].records if r.credit_issued_ns == cold)
 
 
 def test_attainment_under_the_locked_contract(final_pairs):
@@ -88,18 +91,22 @@ def test_fixed_work_refuses_wrapped_or_missing_work():
         fixed_work_rate(read, {"a": (3, 0), "b": (1, 0)})
     with pytest.raises(ServiceEvidenceError, match="differing"):
         fixed_work_rate(read, {"a": (2, 0)})
-    work = fixed_work_rate(read, {"a": (3, 0)})
-    assert work.turns == 3 and work.rate == pytest.approx(3 / work.elapsed_s)
+    work = fixed_work_rate(read, {"a": (3, 0)})  # three rounds of one turn: the first is cold
+    assert work.turns == 2 and work.rate == pytest.approx(2 / work.elapsed_s)
 
 
-def test_fixed_work_rate_sums_round_spans_and_excludes_the_barrier_wait():
-    # Two lockstep rounds released 10 s apart: three turns ending 1.5, 2.5 and 3.5 s after the first
-    # release, two ending 1.5 and 2.5 s after the second. The client's wait at the barrier is not engine time.
-    first = [_turn(f"a{i}", "main", 0, start_s=0, ttft_s=0.5, out=1 + 100 * (i + 1)) for i in range(3)]
-    second = [_turn(f"b{i}", "main", 0, start_s=10, ttft_s=0.5, out=1 + 100 * (i + 1)) for i in range(2)]
-    read = LoadRead("candidate", 1, "lane-1", 5, tuple(first + second))
+def test_fixed_work_rate_times_warm_turns_from_their_round_credit_and_skips_the_cold_round():
+    # Three lockstep rounds released 10 s apart. The first is the cold prefill round and is not timed.
+    # Warm turns end 1.5, 2.5 and 3.5 s after the second release and 1.5 and 2.5 s after the third; a turn's
+    # latency runs from its round's release, so the client's wait at the barrier is not engine time.
+    cold = [_turn(f"c{i}", "main", 0, start_s=0, ttft_s=20.0, out=1 + 100 * (i + 1)) for i in range(2)]
+    first = [_turn(f"a{i}", "main", 0, start_s=10, ttft_s=0.5, out=1 + 100 * (i + 1)) for i in range(3)]
+    second = [_turn(f"b{i}", "main", 0, start_s=20, ttft_s=0.5, out=1 + 100 * (i + 1)) for i in range(2)]
+    read = LoadRead("candidate", 1, "lane-1", 5, tuple(cold + first + second))
     work = fixed_work_rate(read, completed_work(read))
-    assert work.turns == 5 and work.elapsed_s == pytest.approx(6.0) and work.rate == pytest.approx(5 / 6.0)
+    assert work.turns == 5 and work.elapsed_s == pytest.approx(11.5) and work.rate == pytest.approx(5 / 11.5)
+    with pytest.raises(ServiceEvidenceError, match="no timed warm turns"):
+        fixed_work_rate(LoadRead("candidate", 1, "lane-1", 2, tuple(cold)), {"c0": (1, 0), "c1": (1, 0)})
 
 
 def test_misses_and_one_token_turns():
@@ -123,23 +130,26 @@ def test_inner_requests_count_per_root():
     )
     read = LoadRead("incumbent", 2, "lane-2", 1, rows)
     assert completed_work(read) == {"root": (1, 2)}
-    assert fixed_work_rate(read, {"root": (1, 2)}).turns == 3
+    assert fixed_work_rate(read, {"root": (1, 2)}).turns == 2  # the main turn opened the cold round
 
 
 WORK = {f"s{i}": (1, 0) for i in range(20)}
 
 
 def _read(arm: str, *, rate: float, attain: float, window: int = 1, load: int = 12) -> LoadRead:
-    """A synthetic one-round read of the 20 one-turn roots in WORK whose rate and attainment are set by construction."""
-    turns = 20
+    """A synthetic read of the 20 one-turn roots in WORK: a two-turn cold round, then one warm round
+    whose rate and attainment are set by construction."""
+    turns, cold = 20, 2
     met = round(attain * turns)
     rows = [
-        _turn(f"s{i}", "main", 0, start_s=0, ttft_s=0.1, out=10, decode_tps=200.0 if i < met else 10.0)
+        _turn(f"s{i}", "main", 0, start_s=0 if i < cold else 10, ttft_s=0.1, out=10,
+              decode_tps=200.0 if i < met else 10.0)
         for i in range(turns)
     ]
-    # Stretch the last turn so the round's span yields exactly ``rate`` turns per second.
+    # Stretch the last warm turn so the warm turns' summed latency yields exactly ``rate`` turns per second.
     last = rows[-1]
-    end = rows[0].credit_issued_ns + int(turns / rate * 1e9)
+    others = sum(r.request_end_ns - r.credit_issued_ns for r in rows[cold:-1])
+    end = last.credit_issued_ns + int((turns - cold) / rate * 1e9) - others
     rows[-1] = TurnRecord(last.root_session_id, last.kind, last.ordinal, last.credit_issued_ns,
                           last.request_start_ns, min(last.first_token_ns, end), end,
                           last.prompt_tokens, last.output_tokens, last.status)

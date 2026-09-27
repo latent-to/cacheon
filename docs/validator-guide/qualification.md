@@ -688,8 +688,13 @@ sealed slice rather than from the engine's own timing jitter. The first round
 waits for exactly `load` conversations; if the client has not opened them
 within 120 s of its last arrival, the read fails with that cause. A turn's
 credit is its round's release time, so TTFT and the fixed-work rate exclude the
-wait at the barrier: elapsed time is the sum of round spans, each from release
-to the round's last completion.
+wait at the barrier. The first round of every window is the cold prefill of
+each session's opening context; it fills the cache the operating point assumes
+and is not timed. The rate is the warm turns divided by their summed latency
+from release to completion, the reciprocal of the mean warm-turn latency, which
+at a fixed session count is the served throughput per session. Averaging the
+turns of a round rather than timing its slowest one is what keeps one long
+turn's decode-step count from moving the score.
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens and DP routing identical between arms and windows. Each

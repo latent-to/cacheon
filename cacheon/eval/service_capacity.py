@@ -131,6 +131,8 @@ class LoadRead:
 
 @dataclass(frozen=True)
 class WorkRate:
+    """Timed warm turns, their summed credit-to-end latency, and turns per latency second."""
+
     turns: int
     elapsed_s: float
     rate: float
@@ -148,14 +150,22 @@ def completed_work(read: LoadRead) -> dict[str, tuple[int, int]]:
 
 
 def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> WorkRate:
-    """Turns per second of lockstep round time for the sealed work, refusing any other work.
+    """Warm turns per second of their summed latency for the sealed work, refusing any other work.
 
-    A read is a sequence of rounds: every turn of a round carries the round's
-    release stamp as its credit, and the round lasts until its last turn ends.
-    Elapsed is the sum of round spans, so a client's wait at the barrier is not
-    engine time. A read that completed a different set of turns (a wrapped
-    root, a missing session, a lane that stopped early) is invalid evidence,
-    never a slower or faster engine.
+    Every turn of a lockstep round carries the round's release stamp as its
+    credit, so a turn's latency runs from that release to its own end and the
+    client's wait at the barrier is not engine time. The first round of a
+    window is the cold prefill of every session's opening context; it fills
+    the cache that the operating point assumes and is not timed. The rate is
+    the reciprocal of the mean warm-turn latency at the sealed load, which by
+    Little's law is the served throughput per session. It averages a round's
+    turns instead of taking its slowest one: on 2026-09-27 four identical-code
+    windows (run f2ad8c31) put the round-span ratio at 0.987/0.997/1.029/1.022
+    and this ratio at 1.013/1.000/1.002/0.999, because one long turn's
+    decode-step count swings a maximum and barely moves a mean, and the cold
+    round alone carried a 60 s swing. A read that completed a different set of
+    turns (a wrapped root, a missing session, a lane that stopped early) is
+    invalid evidence, never a slower or faster engine.
     """
     done = completed_work(read)
     if done != expected:
@@ -166,14 +176,12 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> Wor
             f"completed work differs from the sealed slice: missing={missing[:3]} "
             f"extra={extra[:3]} differing={differing[:3]}"
         )
-    rounds: dict[int, int] = {}
-    for record in read.records:
-        rounds[record.credit_issued_ns] = max(rounds.get(record.credit_issued_ns, 0), record.request_end_ns)
-    elapsed = sum((end - stamp) / 1e9 for stamp, end in rounds.items())
-    if elapsed <= 0:
-        raise ServiceEvidenceError("read elapsed time is not positive")
-    turns = sum(main + inner for main, inner in expected.values())
-    return WorkRate(turns, elapsed, turns / elapsed)
+    cold = min(record.credit_issued_ns for record in read.records)
+    warm = [record for record in read.records if record.credit_issued_ns != cold]
+    latency = sum((record.request_end_ns - record.credit_issued_ns) / 1e9 for record in warm)
+    if not warm or latency <= 0:
+        raise ServiceEvidenceError("read has no timed warm turns")
+    return WorkRate(len(warm), latency, len(warm) / latency)
 
 
 def attainment(read: LoadRead, contract: ServiceContract) -> float:
@@ -202,14 +210,15 @@ def grade(
     """The paired fixed-load verdict: rate over identical work, attainment as a non-inferiority gate.
 
     Each window pairs one candidate read with one incumbent read at the same
-    sealed load over the same fixed work, so the fixed-work turn rates compare
-    like for like. The score is the mean of the per-window rate ratios and the
+    sealed load over the same fixed work, so the warm-turn rates compare like
+    for like. The score is the mean of the per-window rate ratios and the
     verdict is PASS at or above ``required``, FAIL below it. The engine's own
     token stream is not reproducible under batching (2026-09-27: identical
-    prompts changed their decode step counts in 233 of 237 turns, 0.6% of
-    round time per read), so the sealed window count and ``required`` carry
-    that noise; taking the least favorable pairing instead would bias a
-    multi-window read against every honest candidate by the spread itself.
+    prompts changed their decode step counts in 233 of 237 turns; the warm
+    mean-latency ratio of identical code scattered 0.56% per window over four
+    windows), so the sealed window count and ``required`` carry that noise;
+    taking the least favorable pairing instead would bias a multi-window read
+    against every honest candidate by the spread itself.
 
     Attainment is graded on the paired difference A_candidate - A_incumbent.
     Its one-sided lower bound, the difference less ``attainment_margin`` (the
