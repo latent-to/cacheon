@@ -103,7 +103,7 @@ _CELL_FIELDS = frozenset(WorkloadCell.__dataclass_fields__)
 
 
 class MainnetScreenDispatcherError(RuntimeError):
-    """The standing screen dispatcher cannot preserve its closed authority."""
+    """The standing dispatcher cannot preserve its closed authority."""
 
 
 def _closed(value: object, fields: frozenset[str], label: str) -> dict[str, Any]:
