@@ -12,7 +12,9 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import signal
+import tempfile
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field, replace
@@ -391,6 +393,9 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
         site = web.TCPSite(runner, "127.0.0.1", 0)
         client = None
         waiters = []
+        # AIPerf binds Unix sockets under its IPC directory and sun_path holds 107 bytes; the
+        # spool's TMPDIR can be deep (2026-09-27: a 121-byte path killed both arms' clients).
+        ipc = Path(tempfile.mkdtemp(prefix="cacheon-aiperf-", dir="/tmp"))
         try:
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
@@ -404,7 +409,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
                     "--concurrency", str(load), "--dataset-sampling-strategy", "sequential",
                     "--cache-bust", "first_turn_prefix", "--ignore-trace-delays", "--use-server-token-count",
                     "--random-seed", str(current.rules["seed"]), "--ui", "none",
-                    "--output-artifact-dir", str(output / "aiperf")]
+                    "--zmq-ipc-path", str(ipc), "--output-artifact-dir", str(output / "aiperf")]
             context = session.plan.engine_config.engine_kwargs.get("context_length")
             if context is not None:
                 argv.extend(("--max-context-length", str(context)))
@@ -441,6 +446,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
                     await client.wait()
             await runner.cleanup()
             bridge.raw.close()
+            shutil.rmtree(ipc, ignore_errors=True)
 
 
 async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_read=None) -> tuple[LoadRead, ...]:

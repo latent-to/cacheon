@@ -694,7 +694,9 @@ The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens and DP routing identical between arms and windows. Each
 client retains separate memory-mapped dataset files under its output directory;
-concurrent clients share no writable dataset state. The client requires exactly
+concurrent clients share no writable dataset state. Each client's ZMQ IPC
+sockets live in a short private temporary directory under `/tmp`, because Unix
+socket paths are limited to 107 bytes and the spool root may be deep. The client requires exactly
 AIPerf 0.13.0 because it consumes that version's API.
 
 The driver runs AIPerf at concurrency `load` with `--no-fixed-schedule` and
