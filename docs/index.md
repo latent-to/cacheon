@@ -83,9 +83,8 @@ mixed-cell workload) launches separate baseline and candidate engines and
 always takes B′; v12 appends a one-token prompt pass of each lane. The earlier
 schedules (v1–v7) are sealed MiniMax-M3 history that
 this tree no longer decodes. Primary and reproduction
-attempts also exchange incumbent and candidate physical-lane roles. A persistent
-hot-swap screen may route candidates before this schedule, but its measurements
-cannot qualify or settle a contribution.
+attempts also exchange incumbent and candidate physical-lane roles. There is no
+separate screen; the qualification's first window is the only one.
 
 This separates the **execution unit** (a complete disposable engine) from the
 **economic unit** (one singleton target or atomic target). A new optimization can

@@ -122,12 +122,6 @@ them. Qualification launches separate engine processes for the request and
 always reads B/C/B′. A request-local launch does not relax containment: mount,
 protocol, device, deadline, and evidence identities remain exact.
 
-The earlier resident **screen** is a different lifetime and authority. Its hot-swap
-control directory exists only in the routing tier, admits only safely swappable bundles,
-and cannot produce crown evidence. Direct AOT, dependency-patched, native-rebuild, and
-setup-hook contributions bypass that screen through an explicit waiver and still receive
-the full isolated qualification path.
-
 When a qualification plan requires sampled slot audit, the candidate also runs in a
 separate eager, untimed role. Its bounded facts are host-regraded and cannot be mixed into
 the charged speed evidence.

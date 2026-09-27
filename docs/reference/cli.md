@@ -38,7 +38,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-snapshot-verify` | validator | recovery verification | Download and semantically reopen one snapshot, optionally into fresh staging |
 | `chain-archive-schema3-hold` | validator | durable state transition | Terminally archive one exact legacy schema-3 reproduction hold |
 | `chain-release-hold` | validator | durable state transition | Return one held or no-decision reservation to its queue under a stated reason |
-| `chain-reopen-qualification` | validator | durable state transition | Return one unsettled PASS reservation to the screen queue for a fresh qualification when retained evidence shows its credited half read the baseline lane under the arena band |
+| `chain-reopen-qualification` | validator | durable state transition | Return one unsettled PASS reservation to the qualification queue for a fresh qualification when retained evidence shows its credited half read the baseline lane under the arena band |
 | `chain-backfill-lineage` | validator | durable state transition | Rebuild the per-target lineage ledger from the newest recorded crown; idempotent |
 | `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation, or run the subnet-owner burn bypass |
 | `mint-push-credentials` | operator | weight-share push auth | Create/rotate HMAC secrets for eval → serve-weights |
@@ -231,7 +231,7 @@ python -m cacheon.cli chain-status \
 ```
 
 The wallet arguments add registration information. This command does not expose the
-validator's private intake, screening, qualification, or settlement database.
+validator's private intake, qualification, or settlement database.
 
 ### Register a hotkey
 
@@ -317,19 +317,16 @@ python -m cacheon.cli chain-miner-report \
 Each submission is reported with its typed outcome, the persisted reason code, a
 stated cause, and a next step. Reasons that are not the candidate's fault —
 queue-window expiry and validator-side infrastructure holds — say so explicitly
-rather than reading as a verdict. A screen rejection names the stage that
-stopped the bundle and the reason that stage recorded, which travels inside the
-signed screen receipt. Add `--json` for the machine-readable record.
+rather than reading as a verdict. Add `--json` for the machine-readable record.
 
 Pass `--evidence-root <dir>` (repeatable, one per worker generation) to reopen
 the retained qualification evidence behind each attempt. The report then renders
-what the attempt measured and, for resident-lane runs, what every GPU did with
-the kernel: whether it loaded, how often each slot was called, whether those
-calls were inside the CUDA graph the timed windows replay, whether it raised,
-and why any call routed to SGLang's kernel instead. Those rows are published by
-the run as the unsealed `qualification.execution` artifact and matched to the
-submission by its publication digest; an attempt whose store is not configured
-is reported as not retained rather than omitted.
+what the attempt measured and, when that evidence carries a
+`qualification.execution` artifact, what every GPU did with the kernel: whether
+it loaded, how often each slot was called, whether those calls were inside the
+CUDA graph the timed windows replay, whether it raised, and why any call routed
+to SGLang's kernel instead. An attempt whose store is not configured is reported
+as not retained rather than omitted.
 
 Pass `--remote-spool-root <dir>` once per retained worker epoch to join the
 immutable lease/recovery history with request transport events and the result's
@@ -363,18 +360,16 @@ The command opens the live WAL database read-only and takes one consistent SQLit
 snapshot. It does not acquire the `FinalizedIntakeStore` process lock, mutate a row, or
 interrupt the intake daemon. Its queue position is a position among work that is
 actually selectable: reproduction work precedes new primary work, both lanes retain
-finalized arrival order, and active screening or qualification is reported as active
-rather than assigned a fictitious queue rank. Work held by an active remote evaluation
-lease is reported as `leased`, is excluded from waiting position and depth, and includes
-the lease ID, stage, generation, cohort position, and expiry block. The private worker
-owner is not printed. Promoted qualification work may be selected as an indivisible
-retry group or bounded cohort, so the command does not invent a per-row numeric rank for
-that phase.
+finalized arrival order, and active qualification is reported as active rather than
+assigned a fictitious queue rank. Work held by an active remote evaluation lease is
+reported as `leased`, is excluded from waiting position and depth, and includes the
+lease ID, stage, generation, cohort position, and expiry block. The private worker
+owner is not printed.
 
 Human and JSON output omit the submitted URL, private publication paths, evidence-root
 paths, and raw exception text. A redacted reason includes its digest so an operator can
 correlate it with private incident material without disclosing that material. The
-record includes the finalized arrival key, typed screen stages and grades, qualification
+record includes the finalized arrival key, qualification
 decisions and artifact references, retained settlement qualification references, and
 whether referenced evidence is available on the host.
 
@@ -415,7 +410,7 @@ authority file must use the closed
 `cacheon-validator-downtime-requeue-authority-v1` schema, the exact reason
 `validator_worker_unavailable`, a nonempty reservation-ID cohort, and a disjoint
 list of retained-result reservation IDs. It atomically restores only exact
-expired rows to their durable pre-expiry `published` or `promoted` lane and
+expired rows that retain a worker publication to the `published` queue and
 starts a fresh finalized-block SLA without erasing prior evidence. One ordinary
 refresh is allowed if the cohort expires again; a further refresh requires the
 authority to set the explicit boolean `allow_repeat_refresh`. This is not a
@@ -557,8 +552,8 @@ python -m cacheon.cli chain-reopen-qualification \
 ```
 
 Returns one `qualified` PASS reservation whose settlement candidate is
-still `pending` to the screen queue as `published`, exactly like a fresh
-submission: the live worker screens it again, binds it to the live stack, and
+still `pending` to the qualification queue as `published`, exactly like a fresh
+submission: its next qualification claim binds it to the live stack and
 measures a new complete qualification against the current incumbent. The retained
 candidate and its accepted attempts move to `settlement_reopenings`, so the contribution stops
 earning the moment it leaves `qualified`. The command refuses unless the
@@ -567,10 +562,10 @@ speedup read the baseline lane under the arena band — the median of every
 retained baseline-role read in that arena minus five percent, over at least six
 reads — and it prints that evidence either way. `--dry-run` prints the evidence
 and changes nothing. Crowned or otherwise settled candidates are lineage and
-are refused. A reopened row binds to the stack whose service re-screens it,
+are refused. A reopened row binds to the stack whose service claims it,
 never to the stack current at its original arrival; running the command again
 on a reopened row that is still waiting for its fresh qualification repairs that
-binding (or leaves the row unbound for the screen to bind) and changes nothing
+binding (or leaves the row unbound for the claim to bind) and changes nothing
 else. It never signs, settles, or crowns.
 
 ### `chain-backfill-lineage`
@@ -795,30 +790,6 @@ python -m cacheon.cli model-provision \
 ```
 
 The result is an immutable content-addressed model tree and receipt.
-
-### Verify a release
-
-```bash
-python -m cacheon.cli release-verify /srv/cacheon/releases/<digest> \
-  --expected-public-key <ed25519-public-key> \
-  --descriptor-digest <expected-digest>
-```
-
-The expected public key is an external trust input. A key discovered only inside the
-release cannot authenticate its signer.
-
-### Materialize a container context
-
-```bash
-python -m cacheon.cli release-context \
-  /srv/cacheon/releases/<digest> ./context \
-  --expected-public-key <ed25519-public-key> \
-  --descriptor-digest <expected-digest>
-```
-
-The command reopens the complete signed publication before writing a deterministic OCI
-context. Release construction and signing remain programmatic APIs; there is no public
-`release-create` command.
 
 ## Exit behavior
 

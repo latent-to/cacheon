@@ -52,7 +52,7 @@
   not installed source, a crown, or a release.
 
 **Qualification**
-: The complete registered evidence procedure: screens; a sealed current speed
+: The complete registered evidence procedure: a sealed current speed
   schedule (two-process B/C/B′, v10 or v11, or v12 with its prompt pass);
   registered eager audit A; candidate teardown; pristine T quality grading;
   exact-schema decision; and retained evidence.

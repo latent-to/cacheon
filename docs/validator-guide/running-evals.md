@@ -8,13 +8,8 @@ not provide a local qualification substitute.
 |---|---|---|
 | `scan` | Does the declared bundle tree satisfy the static intake policy? | Local admission diagnostic |
 | `verify` | Do applicable variants satisfy the registered component ABI, reference, and graph checks? | Local component diagnostic |
-| Arena screen | Can the exact materialized delta pass static, build, ABI, graph, and abbreviated-serving routing gates? | Promotion eligibility only |
 | Two-process B/C/B′ (v10, or v11 mixed-cell) + audit/T | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
 | Independent reproduction | Do two separately bound PASS attempts reopen and agree? | Settlement prerequisite |
-
-The static arena screen also rejects a candidate whose declared eligibility cannot
-run under a sealed runtime requirement, such as a dense-only MoE implementation in
-an NVFP4 arena. That rejection happens before paid build or GPU qualification work.
 
 Unknown bundles still execute code during verification. Run them only inside the minimum
 [hostile-code isolation boundary](../security/isolation.md#operator-requirements) used for
@@ -155,7 +150,6 @@ state, not the validator's private lifecycle database.
 | CPU verify | Exercised component reference checks | CUDA graphs or performance |
 | CUDA verify | Exercised component and registered graph checks | Model integration or crown authority |
 | Local B/C/B′ bracket | A development performance hypothesis | Registered arena identity or quality authority |
-| Resident abbreviated-serving screen | Capacity routing under its exact lane policy | Speed witness, PASS qualification, or crown |
 | One arena PASS | Complete qualification under one authority | Settlement |
 | One reopened complete audited PASS | Settlement eligibility for that exact context | Integration or release readiness |
 

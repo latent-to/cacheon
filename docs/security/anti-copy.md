@@ -97,8 +97,8 @@ parser. Renaming CUDA identifiers and changing constants can evade that advisory
   near-copy.
 - It cannot distinguish independent convergence when two deltas normalize identically;
   finalized priority is the deterministic policy in that case.
-- It does not award a crown. Non-copy candidates still need screens, two qualifications,
-  and transactional settlement.
+- It does not award a crown. Non-copy candidates still need a complete audited
+  qualification and transactional settlement.
 - It does not create reward by splitting one implementation across identities; rewards
   attach to active target contributions, not raw submission count.
 

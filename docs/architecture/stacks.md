@@ -119,14 +119,13 @@ must be validated and recorded together.
 
 ## Cohorts
 
-The routing screen may amortize a frozen incumbent across a chain-ordered cohort
-`C1..Ck`. Cohorting does not weaken marginal identity:
+A qualification claim may bind a chain-ordered cohort `C1..Ck` to one frozen
+incumbent. Cohorting does not weaken marginal identity:
 
 - every candidate is derived from the same frozen incumbent digest;
 - each candidate still changes exactly one registered target;
 - candidate order is derived from committed authority rather than network arrival;
-- shared screen brackets remain routing evidence only;
-- each promoted candidate receives a fresh authoritative qualification whose
+- each candidate receives a fresh authoritative qualification whose
   policy-required B and B′ reads are the exact incumbent;
 - the retained qualification evidence binds each candidate to its own selected
   delta and physical-lane role assignment;
@@ -134,10 +133,7 @@ The routing screen may amortize a frozen incumbent across a chain-ordered cohort
   current v5+ later-bracket drift uses the registered exclusion rule, while
   unauthenticated evidence yields `NO_DECISION`.
 
-Cohorting is a scheduling optimization, not an economic change. Direct AOT,
-dependency-patch, native-rebuild, and setup-hook contributions are not
-hot-swappable; they receive an explicit screen waiver and proceed to the same
-authoritative qualification rather than inheriting a synthetic screen result.
+Cohorting is a scheduling optimization, not an economic change.
 
 ## Deterministic engine materialization
 

@@ -108,10 +108,10 @@ the exact incumbent and candidate engines on the two-process substrate and
 serializes timed work.
 Bookending detects drift, A supplies the
 registered sampled slot regrade, and T prevents “fast because behavior changed”
-from becoming a win. Static, build, ABI, graph, and abbreviated-serving checks
-are admission screens only; they cannot crown a proposal.
+from becoming a win. There is no separate admission screen; the qualification's
+first window is the only one.
 
-One complete audited PASS qualifies a promoted proposal for settlement.
+One complete audited PASS qualifies a proposal for settlement.
 The crown records the accepted qualification speedup. After the complete audited attempt,
 the durable intake state is `qualified`; settlement and confirmed weights remain separate.
 

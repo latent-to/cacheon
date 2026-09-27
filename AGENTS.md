@@ -89,8 +89,6 @@ AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
 - CUDA graphs are part of the scored contract.
 - One complete audited PASS qualifies for settlement. Each new bundle receives one
   B/C/B′ qualification; historical PASS pairs retain their existing identities and credit.
-- The resident hot-swap screen is routing-only. Its measurements cannot crown,
-  settle, or authorize rewards.
 - Production version-3 qualification binds two physical TP lanes. Speed
   policy is the two-process B/C/B′ schedule for every candidate (v10, or v11
   for a mixed-cell workload); it warms every workload cell and retains a
@@ -110,7 +108,7 @@ security review—not a local implementation shortcut.
 ```text
 cacheon/                    runtime and control-plane package
   chain/                   finalized intake, durable state, activation, weights
-  eval/                    screening, qualification, OCI, evidence, scoring
+  eval/                    qualification, OCI, evidence, scoring
   integrations/            version-pinned SGLang adapters
 cacheon_kernels/            validator-owned reference kernel library
 examples/                  miner bundles and adversarial controls

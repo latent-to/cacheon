@@ -33,10 +33,10 @@ failure. Plaintext submissions from older clients remain readable.
 7. **Reconcile copies.** Compare durable fingerprints in finalized order. This step is
    separate and idempotent so a crash between publication and copy disposition cannot
    bypass priority.
-8. **Screen and qualify.** If a registered arena service was injected, run its staged
-   screens, use the routing-only resident lane where applicable, form a
-   capacity-bounded cohort, execute authoritative resident qualification, and persist
-   outcomes.
+8. **Admit and qualify.** If a registered arena service was injected, run admission
+   on the queue (duplicate `FAIL` replay, closed targets, the post-crown cutoff), form
+   a capacity-bounded cohort, execute authoritative resident qualification, and
+   persist outcomes. There is no separate screen stage.
 9. **Settle retained PASSes.** Lease economically unblocked, completely qualified
    candidates and apply the resulting settlement plan transactionally.
 
@@ -54,22 +54,16 @@ stateDiagram-v2
     fetching --> transport_retry: transient transport / publication fault
     transport_retry --> fetching: bounded retry
     fetching --> published: hash + manifest + publication pass
-    published --> screening
-    screening --> promoted: five screens pass
-    screening --> published: primary screen retry
-    promoted --> qualifying
+    published --> qualifying: first claim admits
     qualifying --> qualified: complete audited PASS
     qualifying --> published: primary NO_DECISION requeue
     reserved --> failed
     fetching --> failed
     published --> failed
-    screening --> failed
     qualifying --> failed
     reserved --> held
     fetching --> held
     published --> held
-    screening --> held
-    promoted --> held
     qualifying --> held
     no_decision --> published: reviewed requeue / release
 ```
@@ -84,10 +78,9 @@ Several terminal paths are omitted from the diagram for readability: an operator
 explicitly expire sufficiently old inactive work, copy reconciliation can turn a later
 submission into `failed`, and bounded retry exhaustion leads to `held`.
 
-The lease layer holds a screen after its first infrastructure release.
-Authenticated pre-resident qualification retries retain a cap of three. Releases
-whose reasons begin with `operator` (a deliberate operator disposition) or
-`screen_claim_` (a pre-dispatch claim race) remain exempt. The count covers releases
+The lease layer caps authenticated pre-resident qualification retries at three
+infrastructure releases. Releases whose reasons begin with `operator` (a deliberate
+operator disposition) remain exempt. The count covers releases
 since the reservation's most recent completed lease,
 so a successful stage resets it and a fleet-wide transient does not permanently
 poison rows that later succeed. At the cap the reservation is parked as `held` with
@@ -219,14 +212,11 @@ Read the result in this order:
    event index, event subindex, hotkey, and content hash.
 2. `queue` is present only for queued or active work. A numeric position ranks actual
    selectable work: reproduction first, then primary, with finalized order inside each
-   class. An active screen or qualification has no queue position. A durable remote
+   class. An active qualification has no queue position. A durable remote
    lease is `leased`, has no queue position, and is excluded from the remaining waiting
    depth; `evaluation_lease` supplies its stage, generation, cohort position, and expiry
-   block without exposing the private worker owner. Promoted qualification work can be
-   an indivisible retry group or bounded cohort, so it is not assigned a misleading
-   single-row rank.
-3. A screen `reject` is explained by the terminal typed stage, grade, and evidence
-   digest in `screens`. A qualification outcome is explained by its persisted
+   block without exposing the private worker owner.
+3. A qualification outcome is explained by its persisted
    `PASS`/`FAIL`/`NO_DECISION`, reason code, report or failure digest, and typed attempt
    reference when one was retained.
 4. Attribution is derived only from a persisted typed decision. A row whose status is
@@ -320,26 +310,28 @@ semantic digest. The immutable worker carrier places the validator's
 against the chain commitment. `chain/remote_worker_spool.py` owns the sealed
 request/result carriers and their verification;
 `chain/ssh_worker_transport.py` shuttles them over host-key-pinned SSH and
-implements the authenticated transport the remote evaluation dispatcher uses
-for both screen and qualification; `chain/remote_worker_pod_service.py`
+implements the authenticated transport that
+`chain/recoverable_qualification_dispatcher.py` drives; the recoverable
+dispatcher and this durable spool transport are the only dispatch path.
+`chain/remote_worker_pod_service.py`
 supervises one persistent pod adapter per epoch and parks the epoch on its
 first command-level adapter failure rather than restarting into an unproven
-resident model. Transport, pod, and adapter failures surface as
-infrastructure `no_decision` records that release the durable lease without
-consuming an evaluation attempt; the standing supervisor records that release
-as a `released` disposition and continues to the next unit rather than
-exiting. After every completed qualification the pod adapter retires itself
-behind the durable result, exactly as it does behind a latched resident
-screen, so the next screen boots a fresh adapter on idle GPUs instead of
-waiting on the qualification's lane containers.
+resident model. Transport, pod, and adapter failures are infrastructure
+outcomes, never a candidate verdict: an authenticated pre-resident refusal
+releases the durable lease without consuming an evaluation attempt, and an
+unresolved transport failure holds the recovery. The standing supervisor
+records the typed requeue or hold disposition and continues to the next unit
+rather than exiting. After every completed qualification the pod adapter
+retires itself behind the durable result, so the next request boots a fresh
+adapter on idle GPUs instead of waiting on the qualification's lane containers.
 
-The tracked B300 adapter has two closed construction modes. Screen-only mode
-executes through the commissioned screen deployment and refuses qualification
-before resident work. Persistent `--serve` mode may additionally load one
-digest-exact qualification-capabilities factory; it then constructs the shared
-commissioned B300 service, resolves each authenticated promoted cohort, and
-executes remote qualification through the same READY-bound worker and durable
-continuation store. One-shot mode cannot commission qualification. Deployment
+The tracked B300 adapter (`python -m cacheon.eval.b300_remote_worker_adapter
+--serve`) has one mode: it serves authenticated qualification requests from
+stdin and refuses to start without qualification authority, which is one
+digest-exact `--qualification-capabilities` factory (or, from Python, one
+injected commission). It constructs the shared commissioned B300 service,
+resolves each authenticated leased cohort, and executes remote qualification
+through the same READY-bound worker and durable continuation store. Deployment
 wrappers supply every installed path as an explicit argument; active endpoints,
 credentials, sealed capability bytes, and process composition stay in the
 private operations tree.
@@ -347,7 +339,7 @@ private operations tree.
 New qualification requests bind `incumbent_stack_digest` and
 `incumbent_tree_digest` from the CPU's commissioned authority. The worker checks
 both against the requested primary or reproduction commission before resolving
-publications, marking resident entry, or retiring the screen. A returned product
+publications or marking resident entry. A returned product
 must match that authenticated request pin. Retained requests keep their original
 bytes and grammar when reopened; an older unbound request remains readable for
 completed-result recovery but cannot start execution on the new worker.
@@ -374,16 +366,17 @@ the retained request and lease; actual renewal errors still propagate.
 
 `python -m cacheon.chain.standing_cpu_supervisor --config <path>` is the
 standing CPU daemon over those pieces. Its sealed, closed, owner-controlled
-config names the screen-dispatcher config (`chain/mainnet_screen_dispatcher.py`
-supplies the config schema and the dispatcher builder) and the
+config names the dispatcher config under the key `screen_dispatcher_config`
+(`chain/mainnet_screen_dispatcher.py` supplies that config's schema and builds
+the CPU coordinator and durable spool transport) and the
 recoverable-qualification authorities to compose, and optionally the settlement
-network. The screen stage reopens the intake-only validator's durable finalized
-cursor read-only — rejecting scope drift, regression, and hash changes — claims
-exactly one durable screen lease at a time, and hands the typed request to the
-authenticated spool transport. The required `ArenaService` provider slot is
-filled by a digest-exact remote-only proxy whose execution methods always fail
-closed. The qualification stage resumes the same durable request across
-restarts rather than restarting the experiment. Stage faults tear down the
+network. The coordinator reopens the intake-only validator's durable finalized
+cursor read-only, rejecting scope drift, regression, and hash changes. The
+qualification stage runs admission, claims one durable qualification lease at a
+time, hands the typed request to the authenticated spool transport, and resumes
+the same durable request across restarts rather than restarting the experiment.
+The required `ArenaService` provider slot is filled by a digest-exact
+remote-only proxy whose execution method always fails closed. Stage faults tear down the
 constructed authority and rebuild it under bounded exponential backoff; every
 status change is one canonical-JSON line on stdout.
 
@@ -395,10 +388,10 @@ boundary and never opens a wallet. A commission may stage a nonempty
 one-field change; enabling settlement with an empty endpoint is refused.
 
 For a pool of independent GPU pairs, each evaluation supervisor has its own
-dispatcher `owner` and worker paths. Set the optional `enable_screen=false` and
-`enable_qualification=false` on the separate economics supervisor so it continues
-settlement and weight publication while all evaluation workers are occupied.
-Existing configurations omit `enable_screen` and keep screening enabled. See
+dispatcher `owner` and worker paths. Set `enable_qualification=false` on the
+separate economics supervisor so it continues settlement and weight publication
+while all evaluation workers are occupied. The config has no screen gate; a
+config that carries `enable_screen` is refused. See
 [same-arena worker pools](arena-service.md#registry-and-cli-boundary) for allocation,
 schema migration and ordered reward eligibility.
 
@@ -437,9 +430,9 @@ An illustrative allocation file is:
   "activation_block": 200,
   "burn_hotkey": "REGISTERED_BURN_HOTKEY",
   "sources": {
-    "primary": "/config/primary-screen.json",
-    "secondary": "/config/secondary-screen.json",
-    "third": "/config/third-screen.json"
+    "primary": "/config/primary-dispatcher.json",
+    "secondary": "/config/secondary-dispatcher.json",
+    "third": "/config/third-dispatcher.json"
   },
   "history": [
     {"from_block": 0, "weights_ppm": {"primary": 1000000, "secondary": 0, "third": 0}},
@@ -448,8 +441,9 @@ An illustrative allocation file is:
 }
 ```
 
-Each source names an existing sealed screen-dispatcher config, which supplies
-its intake database, scope and intake policy. Paths must be absolute and
+Each source names an existing sealed dispatcher config (the file a supervisor
+names as `screen_dispatcher_config`), which supplies its intake database, scope
+and intake policy. Paths must be absolute and
 databases distinct, with exactly one matching the producer's primary store.
 Every history row names every source. Names may describe any commissioned
 arenas; no model identities are hardcoded. The example assigns a quarter-strength
@@ -508,7 +502,7 @@ The store makes work and failure class explicit:
 
 | Class | States |
 |---|---|
-| Active | `reserved`, `fetching`, `transport_retry`, `published`, `screening`, `promoted`, `qualifying`, `reproduction_pending` |
+| Active | `reserved`, `fetching`, `transport_retry`, `published`, `qualifying`, `reproduction_pending` |
 | Terminal | `failed`, `expired`, `qualified` |
 | Operator/retry disposition | `held`, `no_decision` |
 
@@ -526,7 +520,7 @@ The default `IntakePolicy` values are:
 | Per hotkey / epoch | 16 | Limits one submitter's intake occupancy |
 | Per target / epoch | 64 | Applied after the target is resolved from submitted bytes |
 | Transport / qualification attempts | 3 / 3 | Exhaustion produces a retained hold rather than infinite work |
-| Controller cohort | 8 | Bounds fetch, screening, and qualification selection per pass |
+| Controller cohort | 8 | Bounds fetch and qualification selection per pass |
 | Finalized-block expiry SLA | 500,000 blocks | Keeps queued work for roughly 69 days before automatic stale-state expiry and sets the minimum age for explicit expiry |
 
 The expiry SLA is only meaningful against the queue's service rate. The former
@@ -538,23 +532,23 @@ Treat any cohort expiring without being reached as a capacity fault, not a miner
 An exact cohort that expired because the validator worker was unavailable can be
 readmitted with `chain-evaluation-lease requeue-expired --authority <SEALED_JSON>`.
 The closed authority binds the reservation IDs, retained-result IDs, and the
-fixed `validator_worker_unavailable` reason. The store restores each row to its
-durable `published` or `promoted` lane and grants a fresh finalized-block SLA
+fixed `validator_worker_unavailable` reason. The store restores each row that
+retains a worker publication to the `published` queue and grants a fresh finalized-block SLA
 without deleting history. The bounded refresh budget fails closed; an
 owner-escalated repeat must be explicit in a newly sealed authority. This is not
 a generic expiry undo.
 
-Arena capacity is an additional bound. Its queue age/depth, active-screen,
-active-qualification, cohort, and retry limits are content-bound in the service manifest.
+Arena capacity is an additional bound. Its queue age/depth, active-qualification,
+and cohort limits are content-bound in the service manifest.
 Changing either policy changes operational behavior and should be reviewed and recorded;
 the code defaults are not calibrated economics.
 
 The controller applies the finalized-block SLA on every pass, including retained-only
 passes, and inside intake and settlement transactions that depend on unresolved priority.
-Eligible `reserved`, `transport_retry`, `published`, `promoted`,
+Eligible `reserved`, `transport_retry`, `published`,
 `reproduction_pending`, `held`, and `no_decision` rows expire automatically when their
-arrival or retained-progress block reaches the bound. In-flight `fetching`, `screening`,
-and `qualifying` rows are not aged out underneath active work. A first retained PASS
+arrival or retained-progress block reaches the bound. In-flight `fetching` and
+`qualifying` rows are not aged out underneath active work. A first retained PASS
 records a fresh finalized progress block and starts a full bounded reproduction window
 from that block. Legacy retained evidence with an unknown progress block, including the
 dedicated schema-3 migration hold, remains fail closed for explicit operator disposition.
@@ -564,7 +558,7 @@ PASS from becoming a permanent priority veto.
 ### Eval-cost admission policy
 
 Eval-cost admission is deliberately separate from the shared `IntakePolicy` used by
-screen and evaluation-lease services. `chain-validate --eval-cost-tao-rao` controls the
+the dispatcher and evaluation-lease services. `chain-validate --eval-cost-tao-rao` controls the
 required `transfer_keep_alive` amount and defaults to `0` (off). Quote TTL defaults to
 300 blocks and the payment-to-reveal window defaults to 7,200 blocks. A quote above
 the required amount is accepted when the transfer covers the full quoted amount;
@@ -579,9 +573,9 @@ nor allowed to pre-claim a future payment.
 Byte-identical resubmissions replay their prior verdict before any lease is claimed:
 a bundle whose exact content hash already reached a terminal `FAIL` under the exact
 current arena service digest inherits that `FAIL` (reason
-`duplicate_of:<reservation>:<original reason>`) and costs neither a screen nor a
-qualification. A prior `PASS` is never replayed — settlement requires an independently
-bound audited PASS, so a resubmitted winner queues for a real evaluation. Any changed
+`duplicate_of:<reservation>:<original reason>`) and costs no qualification. A prior
+`PASS` is never replayed — settlement requires an independently bound audited PASS,
+so a resubmitted winner queues for a real evaluation. Any changed
 byte, or any change to the arena, produces a fresh evaluation.
 
 An operator can grant one artificial make-good with
@@ -602,14 +596,13 @@ The controller maps failures according to where authority was lost:
 | Invalid chain payload, unpaid or invalid eval-cost payment, unsafe archive, content-hash mismatch, malformed proposal | `failed` / `FAIL` | None; attributable intake failure |
 | Eval-cost payment lookup RPC/decode blip | pass aborted; cursor unchanged | Retry the pass; do not fail the miner |
 | Transient HTTPS/DNS or immutable-publication storage fault | `transport_retry` / `NO_DECISION` | Retry until the transport budget, then `held` |
-| Static/build/ABI/graph/serving screen `FAIL` | `failed` / `FAIL` | None under that screen authority |
-| Serving-canary inconclusive evidence | Retry once, then retain `NO_DECISION` and advance to full qualification | A routing canary cannot indefinitely hold the queue |
 | Qualification plan/runner/raw-speed failure affecting a registered cohort | `NO_DECISION` for every member plus a persisted bisection plan | Cohort halves are retried to isolate poisoning without assigning losses |
 | Per-candidate post-attempt `NO_DECISION` | Retained report plus one-candidate requeue | Retry in primary or reproduction lane |
 | Complete audited `PASS` | `qualified`; candidate becomes settlement-pending | No second qualification; settlement leases it when earlier economic blockers clear |
 
-The qualification retry counter counts retained qualification dispositions. The screen
-counter counts retained screen attempts. Restarting the service does not reset either.
+The qualification retry counter counts retained qualification dispositions; the same
+count numbers the next candidate binding's attempt. Restarting the service does not
+reset it.
 Likewise, changing a reason string or moving files does not create a fresh economic
 identity.
 
@@ -617,8 +610,7 @@ identity.
 
 On restart, the store does not pretend interrupted work completed:
 
-- interrupted fetch or qualification becomes `held` with `NO_DECISION`;
-- an interrupted screen returns to the appropriate retry lane; and
+- interrupted fetch or qualification becomes `held` with `NO_DECISION`; and
 - an expired settlement lease returns to pending with a new generation.
 
 The finalized cursor, reservation identities, and immutable publications make repeated
@@ -629,9 +621,7 @@ loss. A supervisor can restart the loop, but must not delete or hand-edit the da
 Recovery is intentionally conservative:
 
 - `fetching` and `qualifying` become `held` with `NO_DECISION`, because the controller
-  cannot prove what completed outside the transaction;
-- `screening` returns to `published` or `reproduction_pending` with a retry disposition,
-  preserving which lane was interrupted; and
+  cannot prove what completed outside the transaction; and
 - a `leased` settlement candidate returns to `pending`, clears its lease, and increments
   the generation so a stale worker cannot commit it later.
 
@@ -669,7 +659,7 @@ the evidence. Generic expiry and hold release are not substitutes.
 | “another intake controller owns this database” | Find the legitimate owner; do not remove `.lock` | Exactly one live controller/signer window owns the DB |
 | Repeated transport retry | Preserve URL, DNS, TLS, redirect, and archive evidence | Same committed bytes can be fetched within policy, or work remains held |
 | Publication fault | Stop worker consumption of the affected address | Storage ownership/modes and independent reopen pass |
-| Growing queue age | Stop new operational expansion; inspect screen/qualification capacity | Registered capacity and hardware can drain finalized order without reordering |
+| Growing queue age | Stop new operational expansion; inspect qualification capacity | Registered capacity and hardware can drain finalized order without reordering |
 | Cohort-wide `NO_DECISION` | Preserve failure digest and retry groups | Bisection or infrastructure repair completes under the same frozen authority |
 | Evidence root unavailable | Block settlement and weights | Exact referenced artifacts reopen; rebuilding “equivalent” JSON is insufficient |
 | Repeated pass exceptions | Let the bounded loop exit and quarantine the host if needed | Root cause fixed; one `--once` pass succeeds before daemon restart |
@@ -689,7 +679,7 @@ the evidence. Generic expiry and hold release are not substitutes.
 - Keep coldkeys off this host. Intake needs no wallet; the separate weight signer uses
   only the configured validator hotkey.
 - Coordinate signer access between passes because the SQLite authority is single-owner.
-- Retain service manifest, policy, logs, screen receipts, qualification artifacts, and
+- Retain service manifest, policy, logs, qualification artifacts, and
   software/image digests long enough to explain every standing claim.
 
 Continue with [Arena service](arena-service.md) and

@@ -20,8 +20,8 @@ paying again. See [Submitting](submitting.md#step-by-step-commands).
 
     The active policy determines how that claim contributes to validator weights.
     A separate publisher later combines all eligible claims into a weight vector and
-    confirms that vector on-chain. Merely submitting code, reporting a local
-    benchmark, or passing a routing screen earns nothing.
+    confirms that vector on-chain. Merely submitting code or reporting a local
+    benchmark earns nothing.
 
 ## Why participate?
 

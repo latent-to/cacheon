@@ -7,9 +7,8 @@ The production answer comes from the version-3 qualification protocol executed
 by a trusted host controller. Every candidate is measured by separate baseline
 and candidate engine processes on two isolated TP lanes under one sealed
 physical-lane authority. Timed GPU work is
-serialized in either case. The answer does not come from a routing screen, local
-diagnostic launch, candidate-side self-audit, miner report, or arbitrary
-evaluator command.
+serialized in either case. The answer does not come from a local diagnostic
+launch, candidate-side self-audit, miner report, or arbitrary evaluator command.
 
 ## Identities before execution
 
@@ -323,13 +322,6 @@ comparison; entirely idle calls and tuner batches without token counts add no
 audit coverage. Candidate execution and returned buffers are unchanged.
 The slot's numerical comparison and acceptance thresholds are unchanged.
 
-Resident screening retains one candidate's loaded module and prepared MoE state
-across stock/candidate swaps. Stock disables candidate dispatch; a different
-bundle evicts the prepared state. Every swap still recaptures both graph phases.
-Retained worker logs report `CACHEON-PREPARE` start, completion or failure, and
-host wall time, separately from graph capture. An interrupted prepare has no
-completion marker; a session timeout alone does not establish prepare failure.
-
 The eager audit preserves the charged workload's prompt batches, concurrency,
 and per-batch input-token expectations, including mixed-length workloads.
 It runs one warmup batch, then the first charged batch of each distinct concurrency
@@ -438,29 +430,25 @@ recognized plan, runner, and raw-speed authority failures into typed failure pro
 retry plans. Other controller exceptions are contained by the pass loop and recovered
 conservatively on restart.
 
-### Resident execution evidence
+### Execution evidence
 
-A resident lane is launched stock and acquires candidates by hot-swap, so registering a
-slot is the only thing a swap by itself proves. Registration is not execution: a bundle
-can load, register its slot, capture, and then never dispatch, and such a run still
-produces a complete speed number.
+Registration is not execution: a bundle can load, register its slot, capture, and
+then never dispatch, and such a run still produces a complete speed number. The
+candidate engine therefore proves execution from dispatcher receipts. Every
+scheduler rank must activate the same registered slot set at launch and complete
+every registered slot during the run. On a graphs-on run, only completions the
+dispatcher recorded inside a CUDA-graph capture count.
 
-Each swap therefore reports per-rank execution evidence for the generation it closes —
-the scope is final only once the lane has swapped away from it. A resident candidate leg
-is screened or graded only when every rank fired and completed the candidate under exactly
-the activation generation. A rank that fell back to the trusted baseline, or failed to
-load the bundle, does not count as having executed it.
+| Observation | Decision |
+|---|---|
+| Ranks do not all activate the same slot set | Launch fails; infrastructure HOLD unless rank receipts record the candidate's own load or invocation failure |
+| No completion at all, or completions only outside a capture | `FAIL` (`candidate_never_executed`) under the singleton attribution rule above |
+| Some ranks or slots complete and others do not | Infrastructure HOLD / non-verdict |
+| Every rank completes every registered slot | Speed evidence may be graded |
 
-The reported count is a tri-state, and the states carry different authority:
-
-| Reported | Meaning | Decision |
-|---|---|---|
-| Unobserved | The evidence path itself is unusable | Infrastructure HOLD / non-verdict |
-| Observed, short of the rank group | The candidate did not execute on every rank | HOLD / non-verdict |
-| Observed, complete | Execution is proven for that generation | Speed evidence may be graded |
-
-Unobserved is never read as zero. Absent or incomplete evidence may not be
-converted into candidate PASS or FAIL. The durable store represents this as a
+In the eager audit role, missing execution grades `NO_DECISION`
+(`audit_not_covered`) instead. Partial evidence may not be converted into
+candidate PASS or FAIL. The durable store represents a non-verdict as a
 reservation HOLD with no candidate decision, which is semantically
 `NO_DECISION` without reviving the retired literal decision field.
 
@@ -533,7 +521,6 @@ replay, the attempt schema must first be extended to retain and bind those produ
 |---|---|
 | Candidate engine exceeds deadline or violates protocol with attributable evidence | Grade under the frozen requirement; `FAIL` only when attribution is complete |
 | Typed worker failure binds one exact candidate arm | Contain that candidate; retain its attributable outcome and preserve unaffected cohort results |
-| Screen infrastructure failure | HOLD after the first release; preserve diagnostics and do not automatically rescreen |
 | Recognized worker, Docker, GPU, driver, plan, runner, or raw-speed authority failure | HOLD with the original evidence; automatic retry requires authenticated proof that resident execution never began |
 | Evidence-store publication failure | Abort the pass; recovery holds an interrupted `qualifying` row as `controller_restart_during_qualifying` rather than manufacturing a typed `NO_DECISION` |
 | Baseline drift exceeds calibration | `NO_DECISION`; do not increase the candidate's denominator or tune the bar after seeing C |
@@ -560,8 +547,8 @@ two resident TP4 lanes are carved from the one commissioned eight-B300 pod, and 
 physical lane pair, device identities, and role swap are validated against the READY
 receipt before any engine work.
 
-Remote execution of qualification returns a sealed `RemoteQualificationProduct` under
-remote-evaluation protocol schema version 2: size-bounded evidence artifacts are
+Qualification is the only operation of remote-evaluation protocol v4. It returns
+a sealed `RemoteQualificationProduct` (schema version 2): size-bounded evidence artifacts are
 rehashed on capture and on import, and the coordinator's durable
 `commit_remote_qualification_result` pins the incumbent stack and tree identity per
 arena on first commit and rejects any later mismatch atomically. Transport,
@@ -569,14 +556,14 @@ authentication, and identity-check failures release the durable lease as
 infrastructure outcomes; they are never converted into a candidate verdict.
 
 The persistent production consumer is
-`eval/b300_remote_worker_adapter.py`. In `--serve` mode it loads one
+`eval/b300_remote_worker_adapter.py`, whose only mode is `--serve`. It loads one
 digest-exact qualification-capabilities factory, calls
-`build_commissioned_b300_qualification_service`, and derives both the screen
-worker and qualification commission from the same registered READY authority.
-Each authenticated qualification request resolves its closed promoted cohort,
+`build_commissioned_b300_qualification_service`, and derives the worker and the
+primary and reproduction commissions from the same registered READY authority.
+Without those capabilities or an injected commission it refuses to start.
+Each authenticated qualification request resolves its leased cohort,
 derives a candidate-local `B300RemoteQualificationAdapter`, and runs through
-`B300MainnetWorker.run_remote_qualification`. Screen-only construction and
-one-shot adapter mode still refuse qualification before resident work.
+`B300MainnetWorker.run_remote_qualification`.
 
 Registered B300 qualification seals only the canonical retained-support policy
 digest derived by `retained_support_policy_digest()`. A stale support-policy
@@ -592,8 +579,7 @@ plan carries, so plan and execution cannot disagree. Pristine T stays anchored
 to the empty stock stack regardless of the declared incumbent, so the untimed
 audit reference never inherits crowned contributions. A declaration that does not reproduce the
 durable stack identity fails closed at the dispatcher's incumbent pin and at
-the durable commit. Screens keep the stock baseline: the resident hot-swap
-screen is routing-only and cannot crown.
+the durable commit.
 
 `eval/crossover_runtime.py` owns qualification planning and scoring for the
 two-process schedule. Deployment-private capability bytes still supply sealed

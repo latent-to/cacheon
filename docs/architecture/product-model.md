@@ -76,8 +76,8 @@ record a new crown while qualification continues against that same baseline;
 changing the measured incumbent requires an explicit operator commission. The first
 crown on a commissioned baseline closes admission to later commitments against
 that baseline. Admission checks finalized commitment blocks before the first
-screen; accepted work keeps its baseline and is not checked against the cutoff
-again at settlement.
+qualification claim; accepted work keeps its baseline and is not checked against
+the cutoff again at settlement.
 
 This is the core composability property: later work can be evaluated on top of earlier wins without copying earlier contributors' artifacts and without collapsing attribution into winner-take-all engine ownership.
 
