@@ -397,8 +397,10 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
         site = web.TCPSite(runner, "127.0.0.1", 0)
         client = None
         waiters = []
-        # AIPerf binds Unix sockets under its IPC directory and sun_path holds 107 bytes; the
-        # spool's TMPDIR can be deep (2026-09-27: a 121-byte path killed both arms' clients).
+        # AIPerf binds Unix sockets under its IPC directory and, at larger loads, its dataset
+        # loader's worker pool binds more under TMPDIR; sun_path holds 107 bytes and the spool's
+        # TMPDIR can be deep (2026-09-27: a 121-byte path killed both arms' clients at load 12,
+        # and the pool's socket did the same at load 24). Both live in this short directory.
         ipc = Path(tempfile.mkdtemp(prefix="cacheon-aiperf-", dir="/tmp"))
         try:
             await site.start()
@@ -419,7 +421,10 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
                 argv.extend(("--max-context-length", str(context)))
             (output / "command.json").write_text(json.dumps(argv, indent=2) + "\n")
             with (output / "aiperf.log").open("w") as log:
-                client = await asyncio.create_subprocess_exec(*argv, stdout=log, stderr=log, start_new_session=True)
+                client = await asyncio.create_subprocess_exec(
+                    *argv, stdout=log, stderr=log, start_new_session=True,
+                    env={**os.environ, "TMPDIR": str(ipc)},
+                )
                 waiters = [asyncio.create_task(client.wait()), asyncio.create_task(bridge.failed.wait())]
                 done, _ = await asyncio.wait(waiters, timeout=max(0, session.deadline - session.clock()),
                                              return_when=asyncio.FIRST_COMPLETED)
