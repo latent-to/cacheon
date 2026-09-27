@@ -23,6 +23,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from dashboard.forensics import (
     DashboardForensicsError,
@@ -37,7 +38,7 @@ from cacheon.chain.baseline_band import qualification_evidence_roots, qualificat
 from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
 from dashboard.receipts import evaluation_recovery
 from dashboard.winners import (
-    conservative_candidate_tokens_per_second,
+    candidate_measurement,
     measured_baseline,
     prefill_summary,
     settlement_hold_notice, settlement_label,
@@ -558,8 +559,7 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
     measured_attempts = [a for a in detail["qualification_attempts"] if a["decision"] == "PASS"] or detail["qualification_attempts"]
     speed_reads = [a["speed"] for a in measured_attempts if a["speed"]]
     detail["baseline_measurements"] = measured_baseline(speed_reads, {})
-    candidate_tps = conservative_candidate_tokens_per_second(speed_reads)
-    detail["tokens_per_second"] = float(candidate_tps) if candidate_tps is not None else None
+    detail.update(candidate_measurement(speed_reads))
 
     detail["leases"] = rows(con, """
         SELECT el.lease_id, el.stage, el.state, el.generation, el.claimed_block,
@@ -764,8 +764,6 @@ def winners() -> dict[str, Any]:
         target = primary.get("target_id") or cj.get("target_id") or ""
         speeds = tuple(filter(None, (safe_float(p.get("speedup")) for p in (primary, repro))))
         speedup = min(speeds) if speeds else None
-        candidate_tps = conservative_candidate_tokens_per_second(
-            speeds_by_reservation.get(row["reservation_id"], []))
         hotkey = row["hotkey"]
         hk = value("ENRICHER", ENRICHER).hotkey_info(hotkey)
         passed_block = max(int(row["passed_block"] or 0), int(row["submission_block"]))
@@ -782,7 +780,7 @@ def winners() -> dict[str, Any]:
             "waiting_for_queue": bool(row["waiting_for_queue"]),
             "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
-            "tokens_per_second": round(float(candidate_tps), 1) if candidate_tps is not None else None,
+            **candidate_measurement(speeds_by_reservation.get(row["reservation_id"], [])),
             "passed": with_time(passed_block),
             "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
@@ -958,6 +956,7 @@ def _sqlite_error(_req: Any, exc: sqlite3.Error) -> JSONResponse:
     return JSONResponse(status_code=503, content={"error": f"database: {exc}"})
 
 
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 install_sources(app, globals())
 
 if ENRICH:

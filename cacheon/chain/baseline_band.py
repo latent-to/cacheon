@@ -101,6 +101,8 @@ def qualification_speed_from_payload(
                 return None
             result = reports[0]
         witness = result["speed_witness"]
+        if isinstance(witness, dict) and witness.get("goodput") is not None:
+            return _replay_measurements(witness)
         rates = witness["rates"]
     except (TypeError, ValueError, KeyError):
         return None
@@ -175,6 +177,42 @@ def qualification_speed_from_payload(
     return speed
 
 
+def _replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
+    """Report the same retained warm-turn measurements and verdict the replay scorer consumes."""
+    from dataclasses import asdict
+    from cacheon.eval.qualification_runner import ResidentSpeedWitness
+    from cacheon.eval.service_capacity import attainment, fixed_work_rate
+
+    speed: dict[str, Any] = {"metric": "warm_turn_latency", "lanes": []}
+    try:
+        retained = ResidentSpeedWitness.from_dict(witness)
+        reads, policy = retained.goodput, retained.resident_policy.goodput
+        grade = reads.grade(policy)
+        expected = {root: (main, inner) for root, main, inner in reads.expected}
+        lanes = []
+        for role, windows in (("B", reads.incumbent), ("C", reads.candidate)):
+            for read in windows:
+                work = fixed_work_rate(read, expected)
+                lanes.append({"role": role, "window": read.window, "load": read.load,
+                              "warm_turns": work.turns,
+                              "mean_warm_latency_s": work.elapsed_s / work.turns,
+                              "attainment": attainment(read, policy.contract)})
+        speed.update({
+            "lanes": lanes, "speedup": float(grade.settled_speedup),
+            "workload_digest": retained.workload_digest,
+            "load": reads.incumbent[0].load, "windows": len(reads.incumbent),
+            "contract": asdict(policy.contract),
+            "grading": {"decision": grade.decision.value, "detail": grade.verdict.detail,
+                        "required_speedup": grade.verdict.required,
+                        "null_noise": policy.null_noise,
+                        "attainment_tolerance": policy.attainment_tolerance,
+                        "attainment_margin": policy.attainment_margin},
+        })
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        speed["grading_error"] = str(exc)
+    return speed
+
+
 def _phase_measurements(windows: list[dict[str, Any]]) -> list[dict[str, object]]:
     """Recompute delivery metrics from retained host times, not cached cell summaries."""
     if not any(window.get("prompt_latencies") for window in windows):
@@ -239,7 +277,7 @@ def retained_half_rates(store, roots: tuple[Path, ...]) -> tuple[RetainedHalfRat
     for reservation_id, arena_digest, speedups, refs in store.retained_pass_pairs():
         for index, attempt_ref_json in refs:
             speed = qualification_speed(attempt_ref_json, roots)
-            if speed is None:
+            if speed is None or speed.get("metric") == "warm_turn_latency":
                 continue
             baseline = tuple(
                 Decimal(str(lane["tokens_per_second"]))

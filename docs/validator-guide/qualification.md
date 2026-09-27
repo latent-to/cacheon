@@ -741,6 +741,14 @@ window and the plain mean decides. Regrading replays the rule from the
 retained reads, so a read that stopped anywhere else is invalid evidence.
 Earlier policy versions retain their sealed arithmetic.
 
+The dashboard reports replay measurements as **seconds per warm turn** (lower is
+better), including each arm's per-window latency and service attainment, the
+operating load, completed window count, workload identity and required gain.
+The displayed improvement comes from the replay scorer's mean paired ratio;
+dividing the combined mean latencies need not produce that same ratio. Historical
+batch evaluations retain their token-throughput units. Replay evidence does not
+enter the historical token-rate baseline band.
+
 On a speed PASS, the candidate engine closes and the existing entropy provider
 selects source occurrences from the completed B/C trajectories. The still-loaded
 incumbent generates only those selected controls. Canonical input digests bind
