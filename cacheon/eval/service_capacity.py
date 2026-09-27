@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-from cacheon.eval.speed_verdict import SpeedStageDecision, invariant_decision
+from cacheon.eval.speed_verdict import SpeedStageDecision
 
 TURN_KINDS = frozenset({"main", "inner"})
 TURN_STATUSES = frozenset({"ok", "error", "cancelled"})
@@ -134,7 +134,6 @@ class WorkRate:
     turns: int
     elapsed_s: float
     rate: float
-    drain_fraction: float
 
 
 def completed_work(read: LoadRead) -> dict[str, tuple[int, int]]:
@@ -149,11 +148,14 @@ def completed_work(read: LoadRead) -> dict[str, tuple[int, int]]:
 
 
 def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> WorkRate:
-    """Turns per elapsed second for the sealed work, refusing any other work.
+    """Turns per second of lockstep round time for the sealed work, refusing any other work.
 
-    A read that completed a different set of turns (a wrapped root, a missing
-    session, a lane that stopped early) is invalid evidence, never a slower or
-    faster engine.
+    A read is a sequence of rounds: every turn of a round carries the round's
+    release stamp as its credit, and the round lasts until its last turn ends.
+    Elapsed is the sum of round spans, so a client's wait at the barrier is not
+    engine time. A read that completed a different set of turns (a wrapped
+    root, a missing session, a lane that stopped early) is invalid evidence,
+    never a slower or faster engine.
     """
     done = completed_work(read)
     if done != expected:
@@ -164,14 +166,14 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> Wor
             f"completed work differs from the sealed slice: missing={missing[:3]} "
             f"extra={extra[:3]} differing={differing[:3]}"
         )
-    first = min(r.credit_issued_ns for r in read.records)
-    last_start = max(r.request_start_ns for r in read.records)
-    last = max(r.request_end_ns for r in read.records)
-    if last <= first:
+    rounds: dict[int, int] = {}
+    for record in read.records:
+        rounds[record.credit_issued_ns] = max(rounds.get(record.credit_issued_ns, 0), record.request_end_ns)
+    elapsed = sum((end - stamp) / 1e9 for stamp, end in rounds.items())
+    if elapsed <= 0:
         raise ServiceEvidenceError("read elapsed time is not positive")
     turns = sum(main + inner for main, inner in expected.values())
-    elapsed = (last - first) / 1e9
-    return WorkRate(turns, elapsed, turns / elapsed, (last - last_start) / (last - first))
+    return WorkRate(turns, elapsed, turns / elapsed)
 
 
 def attainment(read: LoadRead, contract: ServiceContract) -> float:
@@ -182,7 +184,7 @@ def attainment(read: LoadRead, contract: ServiceContract) -> float:
 @dataclass(frozen=True)
 class ServiceVerdict:
     decision: SpeedStageDecision
-    ratio: float | None  # conservative: min(candidate rate) / max(incumbent rate)
+    ratio: float  # mean over windows of candidate rate / incumbent rate
     required: float
     detail: str
 
@@ -201,10 +203,13 @@ def grade(
 
     Each window pairs one candidate read with one incumbent read at the same
     sealed load over the same fixed work, so the fixed-work turn rates compare
-    like for like. The candidate must clear ``required`` against its least
-    favorable pairing to PASS and lose against its most favorable to FAIL; a
-    ratio that flips inside the observed spread is NO_DECISION, and the sealed
-    repeat, never a rerun of one arm, is the only escalation.
+    like for like. The score is the mean of the per-window rate ratios and the
+    verdict is PASS at or above ``required``, FAIL below it. The engine's own
+    token stream is not reproducible under batching (2026-09-27: identical
+    prompts changed their decode step counts in 233 of 237 turns, 0.6% of
+    round time per read), so the sealed window count and ``required`` carry
+    that noise; taking the least favorable pairing instead would bias a
+    multi-window read against every honest candidate by the spread itself.
 
     Attainment is graded on the paired difference A_candidate - A_incumbent.
     Its one-sided lower bound, the difference less ``attainment_margin`` (the
@@ -232,7 +237,7 @@ def grade(
         rates_c.append(fixed_work_rate(cand, expected).rate)
         rates_i.append(fixed_work_rate(inc, expected).rate)
         windows.append((cand.window, attainment(cand, contract), attainment(inc, contract)))
-    ratio = min(rates_c) / max(rates_i)
+    ratio = sum(c / i for c, i in zip(rates_c, rates_i, strict=True)) / len(rates_c)
     for window, a_cand, a_inc in windows:
         if a_cand - a_inc - attainment_margin < -attainment_tolerance:
             return ServiceVerdict(
@@ -241,14 +246,11 @@ def grade(
                 f"{a_inc:.4f} is below the non-inferiority bound (tolerance {attainment_tolerance:.4g}, "
                 f"margin {attainment_margin:.4g})",
             )
-    decision = invariant_decision(rates_i, rates_c, required)
-    if decision is SpeedStageDecision.PASS:
-        detail = "candidate clears the required fixed-work rate ratio in every window pairing"
-    elif decision is SpeedStageDecision.FAIL:
-        detail = "candidate does not clear the required fixed-work rate ratio in any window pairing"
-    else:
-        decision, detail = SpeedStageDecision.NO_DECISION, "window spread crosses the required ratio"
-    return ServiceVerdict(decision, ratio, required, detail)
+    if ratio >= required:
+        return ServiceVerdict(SpeedStageDecision.PASS, ratio, required,
+                              f"mean fixed-work rate ratio over {len(rates_c)} paired window(s) clears the required ratio")
+    return ServiceVerdict(SpeedStageDecision.FAIL, ratio, required,
+                          f"mean fixed-work rate ratio over {len(rates_c)} paired window(s) is below the required ratio")
 
 
 def load_reads_jsonl(path: Path) -> list[LoadRead]:

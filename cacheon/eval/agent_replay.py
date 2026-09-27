@@ -2,7 +2,7 @@
 
 The validator owns this loopback HTTP adapter, chat template and timestamps.
 The candidate still sees only disclosed generation inputs over its OCI pipes.
-AIPerf owns trajectory scheduling; no second session scheduler lives here.
+AIPerf owns trajectory order; the bridge owns arrival timing as lockstep rounds.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import math
 import os
 import secrets
 import signal
@@ -42,7 +41,7 @@ class AgentReplayPlan:
     arm: str
     window: int
     lane: str
-    ramp_seconds_per_session: float = 0.0
+    windows: int = 1
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -55,8 +54,8 @@ class AgentReplayPlan:
             raise ValueError("agent replay requires the sealed Weka loader")
         if self.arm not in ("incumbent", "candidate") or not self.lane or self.window < 1:
             raise ValueError("agent replay read identity is invalid")
-        if not math.isfinite(self.ramp_seconds_per_session) or self.ramp_seconds_per_session < 0:
-            raise ValueError("agent replay ramp must be finite and non-negative")
+        if type(self.windows) is not int or self.windows < 1:
+            raise ValueError("agent replay needs at least one sealed window")
         object.__setattr__(self, "slice", manifest)
 
     def workload_identity(self) -> dict:
@@ -67,7 +66,8 @@ class AgentReplayPlan:
             "rules_json": json.dumps(self.slice.rules, sort_keys=True, separators=(",", ":"), allow_nan=False),
             "expected_work": {str(load): self.slice.expected_work(load) for load in self.loads},
             "loads": list(self.loads),
-            "ramp_seconds_per_session": format(self.ramp_seconds_per_session, ".17g"),
+            "windows": self.windows,
+            "arrival": "lockstep-rounds",
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
@@ -99,7 +99,7 @@ class _Placement:
 
     A session's every turn goes to the rank chosen at its first turn. A new session takes
     the rank with the fewest turns in flight, then the fewest sessions placed, then the lowest
-    index, so a read's roots land 0,1,2,3,... whatever the ramp timing. Hashing the opening
+    index, so a read's roots land 0,1,2,3,... whatever the arrival timing. Hashing the opening
     instead re-randomised placement per run and cost 5-7% of the fixed-work rate at loads 12-16
     (calibration, 2026-09-27).
     """
@@ -133,13 +133,91 @@ def _chat_input_ids(tokenizer, body):
     )
 
 
+_ROUND_SETTLE_S = 0.5
+_FIRST_ROUND_WAIT_S = 120.0
+
+
+class _Rounds:
+    """Lockstep arrival barrier: a round releases every held request at once, after the previous round drained.
+
+    The client issues each conversation's next request the moment the previous
+    one completes, so its timing carries the engine's own jitter back into the
+    arrival pattern and a read is never the same schedule twice (closed-loop
+    calibration scattered 1% per read, 2026-09-27). Holding requests until
+    nothing is in flight and no new request has arrived for ``_ROUND_SETTLE_S``
+    makes the batch composition a function of the slice alone. The first round
+    waits for exactly ``openings`` conversations instead, so a slow client
+    worker cannot shrink it, and fails every held request when the client has
+    not opened them within ``_FIRST_ROUND_WAIT_S`` of its last arrival rather
+    than idling to the session deadline. A round is released in session-key
+    order so rank placement is the same in every read.
+    """
+
+    def __init__(self, openings: int, clock, settle_s: float = _ROUND_SETTLE_S,
+                 first_wait_s: float = _FIRST_ROUND_WAIT_S):
+        self.openings, self.clock, self.settle_s, self.first_wait_s = openings, clock, settle_s, first_wait_s
+        self.pending: dict[str, tuple[str, asyncio.Future]] = {}
+        self.inflight: set[str] = set()
+        self.first_released = False
+        self._timer = None
+
+    async def hold(self, request_id: str, key: str) -> float:
+        """Wait for the round this request joins; return the round's release time on the session clock."""
+        future = asyncio.get_running_loop().create_future()
+        self.pending[request_id] = (key, future)
+        self._arm()
+        return await future
+
+    def done(self, request_id: str) -> None:
+        self.inflight.discard(request_id)
+        self.pending.pop(request_id, None)
+        self._arm()
+
+    def _arm(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        if self.inflight or not self.pending:
+            return
+        loop = asyncio.get_running_loop()
+        if self.first_released:
+            self._timer = loop.call_later(self.settle_s, self._release)
+        elif len(self.pending) >= self.openings:
+            self._release()
+        else:
+            self._timer = loop.call_later(self.first_wait_s, self._starve)
+
+    def _release(self) -> None:
+        self._timer = None
+        if self.inflight or not self.pending or (not self.first_released and len(self.pending) < self.openings):
+            return
+        self.first_released = True
+        stamp = self.clock()
+        for request_id, (_key, future) in sorted(self.pending.items(), key=lambda item: item[1][0]):
+            if not future.done():
+                self.inflight.add(request_id)
+                future.set_result(stamp)
+        self.pending.clear()
+
+    def _starve(self) -> None:
+        self._timer = None
+        error = RuntimeError(f"first lockstep round holds {len(self.pending)} of {self.openings} conversations "
+                             f"after {self.first_wait_s:g} s without a new arrival")
+        for _key, future in self.pending.values():
+            if not future.done():
+                future.set_exception(error)
+        self.pending.clear()
+
+
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
-    def __init__(self, session, exchange, tokenizer, output: Path):
+    def __init__(self, session, exchange, tokenizer, output: Path, load: int):
         self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
+        self.stamps: dict[str, int] = {}
+        self.rounds = _Rounds(load, session.clock)
         self.placement = _Placement(session.plan.engine_config.engine_kwargs.get("dp_size", 1))
         self.failed = asyncio.Event()
         self.offset_ns = time.time_ns() - round(session.clock() * 1e9)
@@ -155,7 +233,7 @@ class ReplayBridge:
         """Deliver the real output, with server token usage and no synthetic successes."""
         from aiohttp import web
 
-        rank = None
+        rank = external_id = None
         try:
             body = await http_request.json()
             external_id = http_request.headers["X-Request-ID"]
@@ -167,6 +245,9 @@ class ReplayBridge:
             ids = _chat_input_ids(self.tokenizer, body)
             count = body.get("max_tokens", body.get("max_completion_tokens"))
             index = self.first_batch_index + len(self.rows)
+            self.rows[external_id] = None
+            stamp = await self.rounds.hold(external_id, _session_key(body["messages"]))
+            self.stamps[external_id] = self._ns(stamp)
             rank = self.placement.acquire(body["messages"])
             request = BatchRequest(
                 self.session.session_id, self.session.plan.launch_digest,
@@ -175,7 +256,6 @@ class ReplayBridge:
             )
             if index == self.session.plan.warmup_count and self.session.boundary_callback:
                 self.session.boundary_callback("before_first_timed", index, self.session.deadline)
-            self.rows[external_id] = None
             progress = asyncio.Queue()
             task = asyncio.create_task(self.exchange.execute(
                 request, deadline=min(self.session.deadline, self.session.clock() + self.session.batch_timeout_s),
@@ -240,6 +320,8 @@ class ReplayBridge:
             self.failed.set()
             raise
         finally:
+            if external_id is not None:
+                self.rounds.done(external_id)
             if rank is not None:
                 self.placement.release(rank)
 
@@ -264,7 +346,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
         key = root, kind
         prompt = row.evidence.prompts[0]
         records.append(TurnRecord(
-            root, kind, ordinals[key], meta["credit_issued_ns"], bridge._ns(row.request_started_at),
+            root, kind, ordinals[key], bridge.stamps[external_id], bridge._ns(row.request_started_at),
             bridge._ns(row.request_started_at + row.prompt_latencies[0][0]),
             bridge._ns(row.response_completed_at), prompt.prompt_tokens, len(prompt.output_ids), "ok",
         ))
@@ -301,7 +383,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
     for source in sorted(current.directory.glob("*.json"))[:load]:
         (pool / source.name).symlink_to(source.resolve())
     async with session.exchange() as exchange:
-        bridge = ReplayBridge(session, exchange, tokenizer, output)
+        bridge = ReplayBridge(session, exchange, tokenizer, output, load)
         app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
         app.router.add_post("/v1/chat/completions", bridge.chat)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)
@@ -326,8 +408,6 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
             context = session.plan.engine_config.engine_kwargs.get("context_length")
             if context is not None:
                 argv.extend(("--max-context-length", str(context)))
-            if plan.ramp_seconds_per_session:
-                argv.extend(("--concurrency-ramp-duration", str(plan.ramp_seconds_per_session * load)))
             (output / "command.json").write_text(json.dumps(argv, indent=2) + "\n")
             with (output / "aiperf.log").open("w") as log:
                 client = await asyncio.create_subprocess_exec(*argv, stdout=log, stderr=log, start_new_session=True)
@@ -364,21 +444,24 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
 
 
 async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_read=None) -> tuple[LoadRead, ...]:
-    """Execute and grade one complete window, flushing cache before each sealed load.
+    """Execute the sealed windows of one load, flushing cache before each window's read.
 
     ``before_read`` synchronizes paired lanes after their cache flushes and
-    before releasing either client's first request. Single-lane execution uses
-    the identical read and retained evidence path without a peer barrier.
+    before releasing either client's first request of that window. Single-lane
+    execution uses the identical read and retained evidence path without a
+    peer barrier. Every window is a fresh read of the same fixed work; the
+    scorer averages the paired ratios, so a sealed window count buys margin.
     """
     if tokenizer is None:
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(plan.tokenizer_path, trust_remote_code=True, local_files_only=True)
     reads = []
-    for load in plan.loads:
+    (load,) = plan.loads
+    for window in range(1, plan.windows + 1):
         await flush_cache(session)
         if before_read is not None:
-            await before_read(load)
-        read_plan = replace(plan, loads=(load,), output_directory=plan.output_directory / f"load{load}")
+            await before_read(load, window)
+        read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")
         read = await _run_load_read(session, read_plan, tokenizer=tokenizer)
         session.replay_reads.append(read)
         reads.append(read)
