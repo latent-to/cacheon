@@ -731,9 +731,15 @@ records; its `grade` entrypoint and the quality producer must be available befor
 an engine launches. Each sealed window is a fresh paired read of the same fixed
 work after a cache flush on both lanes; the verdict is the mean of the
 per-window rate ratios against `required`, with no timed B′ or automatic
-repeat. The sealed `null_noise` is the paired null of that mean, so more
-windows buy a smaller required margin. Earlier policy versions retain their
-sealed arithmetic.
+repeat. The sealed `windows` count is a budget, not a fixed length: from the
+second window on, both lanes publish the finished window's rate at the barrier
+and stop once the running mean sits two sigma clear of `required` on either
+side, with sigma the sealed `null_noise` (the per-window paired null ratio's
+standard deviation) over the square root of the windows read. A clear win or a
+plain copy settles in two windows; a marginal candidate reads every sealed
+window and the plain mean decides. Regrading replays the rule from the
+retained reads, so a read that stopped anywhere else is invalid evidence.
+Earlier policy versions retain their sealed arithmetic.
 
 On a speed PASS, the candidate engine closes and the existing entropy provider
 selects source occurrences from the completed B/C trajectories. The still-loaded

@@ -184,6 +184,32 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> Wor
     return WorkRate(len(warm), latency, len(warm) / latency)
 
 
+STOP_MIN_WINDOWS = 2
+STOP_Z = 2.0
+
+
+def continue_windows(ratios: Sequence[float], *, required: float, null_noise: float, max_windows: int) -> bool:
+    """Whether the sealed budget and the running mean still call for another paired window.
+
+    A sequential test on the per-window ratios: from the second window on, the
+    read stops once the mean sits ``STOP_Z`` sigma clear of ``required`` on
+    either side, with sigma the sealed per-window null noise over the square
+    root of the windows read. A clear win or a plain copy settles in two
+    windows; a marginal candidate runs to the sealed maximum, where the plain
+    mean decides. Both lanes call this on the same published rates, and the
+    regrade replays it from the retained reads, so the stopping point is part
+    of the evidence.
+    """
+    count = len(ratios)
+    if count >= max_windows:
+        return False
+    if count < STOP_MIN_WINDOWS:
+        return True
+    mean = sum(ratios) / count
+    band = STOP_Z * null_noise / math.sqrt(count)
+    return mean - band < required <= mean + band
+
+
 def attainment(read: LoadRead, contract: ServiceContract) -> float:
     """Fraction of attempted turns meeting the contract; errors and cancels are misses."""
     return sum(1 for r in read.records if r.meets(contract)) / len(read.records)

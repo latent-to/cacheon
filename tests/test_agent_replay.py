@@ -168,10 +168,11 @@ def test_window_is_one_sealed_load_flushed_before_its_read_and_retained(tmp_path
 
     async def ready(load, window):
         events.append(('ready', load, window))
+        return True
 
     async def read(_session, read_plan, *, tokenizer):
         (load,) = read_plan.loads
-        assert read_plan.output_directory == plan.output_directory / f'window{read_plan.window}'
+        assert read_plan.output_directory.name == f'window{read_plan.window}'
         events.append(('read', load, read_plan.window))
         read_plan.output_directory.mkdir(parents=True)
         records = tuple(TurnRecord(root, 'main', 0, 1_000_000_000, 1_000_000_000,
@@ -189,6 +190,20 @@ def test_window_is_one_sealed_load_flushed_before_its_read_and_retained(tmp_path
     assert (artifact['workload']['windows'], artifact['workload']['arrival']) == (2, 'lockstep-rounds')
     codec = ContinuationCodec((LoadRead,))
     assert codec.decode(codec.encode(result[0])) == result[0]
+
+    # The peer barrier answers the sealed sequential rule: a False after the flush ends the read there.
+    events.clear()
+    session = SimpleNamespace(replay_reads=[])
+    stopped_plan = replace(plan, output_directory=tmp_path / 'stopped')
+
+    async def stop_after_one(load, window):
+        events.append(('ready', load, window))
+        return window == 1
+
+    result = asyncio.run(agent_replay.run_replay(session, stopped_plan, tokenizer=object(), before_read=stop_after_one))
+    assert events == ['flush', ('ready', 2, 1), ('read', 2, 1), 'flush', ('ready', 2, 2)]
+    assert [r.window for r in result] == [1] and tuple(session.replay_reads) == result
+    assert len(json.loads((stopped_plan.output_directory / 'window.json').read_text())['reads']) == 1
 
 
 def test_lockstep_rounds_release_together_in_session_order_and_fail_a_starved_first_round():

@@ -22,6 +22,7 @@ from cacheon.eval.service_capacity import (
     TurnRecord,
     attainment,
     completed_work,
+    continue_windows,
     fixed_work_rate,
     grade,
     load_reads_jsonl,
@@ -107,6 +108,17 @@ def test_fixed_work_rate_times_warm_turns_from_their_round_credit_and_skips_the_
     assert work.turns == 5 and work.elapsed_s == pytest.approx(11.5) and work.rate == pytest.approx(5 / 11.5)
     with pytest.raises(ServiceEvidenceError, match="no timed warm turns"):
         fixed_work_rate(LoadRead("candidate", 1, "lane-1", 2, tuple(cold)), {"c0": (1, 0), "c1": (1, 0)})
+
+
+def test_sequential_rule_stops_clear_results_early_and_runs_marginal_ones_to_the_sealed_budget():
+    rule = dict(required=1.01, null_noise=0.0056, max_windows=5)
+    assert continue_windows([], **rule) and continue_windows([1.03], **rule)  # never decide on one window
+    assert not continue_windows([1.03, 1.028], **rule)  # 2 sigma clear above required: PASS settles at two
+    assert not continue_windows([1.001, 0.999], **rule)  # a plain copy fails at two
+    assert continue_windows([1.012, 1.011], **rule)  # marginal: keep reading
+    assert continue_windows([1.012, 1.011, 1.013, 1.012], **rule)
+    assert not continue_windows([1.012, 1.011, 1.013, 1.012, 1.011], **rule)  # the sealed budget ends it
+    assert not continue_windows([1.02, 1.02], required=1.01, null_noise=0.0, max_windows=8)  # no noise: two decide
 
 
 def test_misses_and_one_token_turns():

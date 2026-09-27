@@ -9,7 +9,9 @@ import math
 from dataclasses import asdict, dataclass, replace
 
 from cacheon.eval.continuation_codec import ContinuationCodec
-from cacheon.eval.service_capacity import LoadRead, ServiceContract, ServiceVerdict, fixed_work_rate
+from cacheon.eval.service_capacity import (
+    LoadRead, ServiceContract, ServiceVerdict, continue_windows, fixed_work_rate,
+)
 from cacheon.eval.scoring import SpeedupVerdict
 from cacheon.eval.speed_verdict import SpeedStageDecision
 
@@ -147,10 +149,24 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
                 for _ in range(session_plan.warmup_count):
                     controller.execute_next()
 
+                rates = {"incumbent": [], "candidate": []}
+
                 async def ready(load, window):
-                    key = f"{load}:{window}:ready:"
+                    # Both lanes publish the finished window's rate, then decide identically whether
+                    # the sealed sequential rule wants another; a split decision cannot pair and
+                    # times out at the barrier instead of reading on alone.
+                    proceed = True
+                    if window > 1:
+                        rates[prefix].append(fixed_work_rate(controller.replay_reads[-1], work).rate)
+                        schedule.put(f"{load}:{window - 1}:rate:{prefix}", rates[prefix][-1])
+                        rates[peer].append(schedule.get(f"{load}:{window - 1}:rate:{peer}", deadline=deadline, clock=clock))
+                        ratios = [c / i for c, i in zip(rates["candidate"], rates["incumbent"], strict=True)]
+                        proceed = continue_windows(ratios, required=plan.policy.goodput.required,
+                                                   null_noise=plan.policy.goodput.null_noise, max_windows=replay.windows)
+                    key = f"{load}:{window}:{'ready' if proceed else 'stop'}:"
                     schedule.put(key + prefix)
                     schedule.get(key + peer, deadline=deadline, clock=clock)
+                    return proceed
 
                 read_plan = replace(replay, output_directory=replay.output_directory / controller.session_id)
                 reads = asyncio.run(run_replay(controller, read_plan, before_read=ready))
@@ -222,11 +238,11 @@ def regrade_goodput_execution(evidence, plan):
     ):
         _validate_execution_binding(execution, arm)
         session = execution.session
-        if reads != session.replay_reads or len(reads) != replay.windows:
+        if reads != session.replay_reads or not 1 <= len(reads) <= replay.windows:
             raise CrossoverRuntimeError("goodput reads differ from their completed engine session")
         warmup = arm.session_plan.warmup_count
         count = replay.slice.turns(load)
-        measured = count * replay.windows
+        measured = count * len(reads)
         controls = evidence.reference_inputs if arm is plan.baseline else ()
         if (len(session.batches) != warmup + measured + len(controls)
             or tuple(row.batch_index for row in session.batches) != tuple(range(len(session.batches)))
@@ -256,6 +272,14 @@ def regrade_goodput_execution(evidence, plan):
                 or control.roles[2].output_ids != row.evidence.prompts[0].output_ids
                 or row.input_ids_sha256 != (hashlib.sha256(control.input_bytes).hexdigest(),)):
                 raise CrossoverRuntimeError("incumbent quality control differs from its completed request")
+    # The lanes stopped where the sealed sequential rule stopped them, replayed from the retained rates.
+    work = replay.slice.expected_work(load)
+    ratios = [fixed_work_rate(cand, work).rate / fixed_work_rate(inc, work).rate
+              for cand, inc in zip(evidence.goodput.candidate, evidence.goodput.incumbent, strict=True)]
+    for read in range(1, len(ratios) + 1):
+        if continue_windows(ratios[:read], required=plan.policy.goodput.required,
+                            null_noise=plan.policy.goodput.null_noise, max_windows=replay.windows) != (read < len(ratios)):
+            raise CrossoverRuntimeError("goodput reads did not stop where the sealed sequential rule stops")
     if evidence.decision is SpeedStageDecision.PASS:
         if not evidence.reference_inputs or not evidence.prompt_pairs or evidence.quality_entropy is None:
             raise CrossoverRuntimeError("passing replay lacks its selected incumbent quality controls")
