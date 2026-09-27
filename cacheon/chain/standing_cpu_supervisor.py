@@ -1,14 +1,13 @@
 """Standing CPU supervisor: compose public FIFO stages into one forever loop.
 
 Handoff (aug6-2-1 §5) requires one continuously running CPU service that
-advances finalized work through screen and same-request qualification without
-inventing retry policy, reclaiming terminal rows, or requiring a per-bundle
-operator command.
+advances finalized work through same-request qualification without inventing
+retry policy, reclaiming terminal rows, or requiring a per-bundle operator
+command.
 
 This module owns only the public composition state machine and status surface.
 Stage work is delegated to the existing dispatchers:
 
-- screen FIFO → ``RemoteEvaluationDispatcher.dispatch_screen_once``
 - qualification FIFO + same-request recovery →
   ``RecoverableQualificationDispatcher.dispatch_once``
 - later gates attach settlement / weights as injectable stages
@@ -71,7 +70,6 @@ class SupervisorPhase(str, Enum):
     """Coarse public phase for monitoring (not a second recovery authority)."""
 
     IDLE = "idle"
-    SCREEN = "screen"
     QUALIFICATION = "qualification"
     SETTLEMENT = "settlement"
     WEIGHTS = "weights"
@@ -174,16 +172,14 @@ class SupervisorStageResult:
 
 # Stage callables: zero-arg, return None (idle), SupervisorStageResult, or a
 # legacy EvaluationRun / recoverable Hold|Requeue which the supervisor normalizes.
-ScreenOnce = Callable[[], Any]
 QualificationOnce = Callable[[], Any]
 OptionalStage = Callable[[], Any]
 
 
 @dataclass
 class StandingCpuSupervisor:
-    """Compose screen + recoverable qualification (+ later stages) with status."""
+    """Compose recoverable qualification (+ later stages) with status."""
 
-    screen_once: ScreenOnce | None
     qualification_once: QualificationOnce | None
     settle_once: OptionalStage | None = None
     weights_once: OptionalStage | None = None
@@ -193,7 +189,7 @@ class StandingCpuSupervisor:
     _last_tick_progressed: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        for name in ("screen_once", "qualification_once", "settle_once", "weights_once"):
+        for name in ("qualification_once", "settle_once", "weights_once"):
             value = getattr(self, name)
             if value is not None and not callable(value):
                 raise StandingCpuSupervisorError(f"{name} is not callable")
@@ -223,8 +219,6 @@ class StandingCpuSupervisor:
         if phase is None:
             if result.hold_reason:
                 phase = SupervisorPhase.HOLD
-            elif result.stage == "screen":
-                phase = SupervisorPhase.SCREEN
             elif result.stage == "qualification":
                 phase = SupervisorPhase.QUALIFICATION
             elif result.stage == "settlement":
@@ -325,7 +319,6 @@ class StandingCpuSupervisor:
         )
 
     def _run_stage(self, stage: str, callback: Callable[[], Any]) -> SupervisorStageResult | None:
-        from cacheon.chain.remote_qualification_evidence import RemoteEvaluationReleased
         from cacheon.chain.qualification_wait import QualificationWaitPending
 
         try:
@@ -339,18 +332,6 @@ class StandingCpuSupervisor:
                 stage=stage, progressed=False, disposition="waiting",
                 request_id=exc.recovery.request_id, lease_id=exc.recovery.lease.lease_id,
                 phase=SupervisorPhase.QUALIFICATION,
-            )
-        except RemoteEvaluationReleased as exc:
-            # The dispatcher committed the lease release with its typed reason
-            # (release-cap accounting included) before raising.  That is a
-            # durable disposition, not an invented one: record it and keep
-            # serving (2026-09-02/03: each screen infrastructure release ended
-            # the process instead).
-            return SupervisorStageResult(
-                stage=stage,
-                progressed=True,
-                disposition="released",
-                lease_id=exc.lease_id,
             )
         except Exception as exc:
             # Never invent COMPLETE/REQUEUE/HOLD from exception class alone.
@@ -380,7 +361,6 @@ class StandingCpuSupervisor:
         for stage, callback in (
             ("settlement", self.settle_once),
             ("qualification", self.qualification_once),
-            ("screen", self.screen_once),
             ("weights", self.weights_once),
         ):
             if stop is not None and stop.is_set() and (
@@ -598,7 +578,6 @@ class StandingSupervisorConfig:
     idle_poll_s: float
     restart_initial_backoff_s: float
     restart_max_backoff_s: float
-    enable_screen: bool = True
 
     @property
     def digest(self) -> str:
@@ -649,9 +628,9 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
 
     enable_weights = _exact_bool(row["enable_weights"], "enable_weights")
     enable_settlement = _exact_bool(row["enable_settlement"], "enable_settlement")
-    # Operator gate for the qualification stage: screens keep draining while a
-    # qualification-side defect is being repaired, instead of the broken stage
-    # consuming every claim window.
+    # Operator gate for the qualification stage: settlement and weights keep
+    # running while a qualification-side defect is being repaired, instead of
+    # the broken stage consuming every claim window.
     enable_qualification = _exact_bool(
         row["enable_qualification"], "enable_qualification"
     )
@@ -720,7 +699,6 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         enable_weights=enable_weights,
         enable_settlement=enable_settlement,
         enable_qualification=enable_qualification,
-        enable_screen=_exact_bool(row.get("enable_screen", True), "enable_screen"),
         settlement_network=settlement_network,
         weights_stage=weights_stage,
         stall_timeout_s=stall_timeout_ms / 1000.0,
@@ -733,7 +711,7 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
 def build_standing_supervisor(
     config: StandingSupervisorConfig,
 ) -> StandingCpuSupervisor:
-    """Compose screen + recoverable qualification from sealed standing config."""
+    """Compose recoverable qualification (+ settlement, weights) from sealed standing config."""
 
     from cacheon.chain.mainnet_screen_dispatcher import (
         build_dispatcher,
@@ -749,9 +727,9 @@ def build_standing_supervisor(
     if type(config) is not StandingSupervisorConfig:
         raise StandingCpuSupervisorError("standing supervisor config is not typed")
 
-    screen_config = load_config(config.screen_dispatcher_config)
-    screen_dispatcher = build_dispatcher(
-        screen_config,
+    dispatcher_config = load_config(config.screen_dispatcher_config)
+    dispatcher = build_dispatcher(
+        dispatcher_config,
         store_factory=RecoverableFinalizedIntakeStore,
     )
     qualification_once = None
@@ -764,9 +742,9 @@ def build_standing_supervisor(
                 f"qualification incumbent stack cannot reopen: {exc}"
             ) from None
         qualification_dispatcher = RecoverableQualificationDispatcher(
-            coordinator=screen_dispatcher.coordinator,
-            transport=screen_dispatcher.transport,
-            credential=screen_dispatcher.credential,
+            coordinator=dispatcher.coordinator,
+            transport=dispatcher.transport,
+            credential=dispatcher.credential,
             qualification_evidence_root=config.qualification_evidence_root,
             qualification_incumbent_stack=incumbent,
             qualification_incumbent_tree_digest=(
@@ -783,10 +761,10 @@ def build_standing_supervisor(
         # shape the intake loop uses. ``retry_forever`` keeps an endpoint blip
         # from tearing down a supervisor that is mid-qualification; the stage
         # itself is skipped whenever nothing is pending, so a slow head read
-        # never sits in the screen/qualification path.
+        # never sits in the qualification path.
         subtensor = chain.connect(config.settlement_network, retry_forever=True)
         settle_once = settlement_stage(
-            open_store=screen_dispatcher.coordinator._open_at_durable_cursor,
+            open_store=dispatcher.coordinator._open_at_durable_cursor,
             finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
         )
 
@@ -800,15 +778,14 @@ def build_standing_supervisor(
             config.weights_stage,
             store_factory=partial(
                 RecoverableFinalizedIntakeStore,
-                screen_config.intake_db,
-                screen_config.policy,
-                scope=screen_config.scope,
+                dispatcher_config.intake_db,
+                dispatcher_config.policy,
+                scope=dispatcher_config.scope,
             ),
-            scope=screen_config.scope,
+            scope=dispatcher_config.scope,
         )
 
     return StandingCpuSupervisor(
-        screen_once=screen_dispatcher.dispatch_screen_once if config.enable_screen else None,
         qualification_once=qualification_once,
         settle_once=settle_once,
         weights_once=weights_once,
@@ -823,7 +800,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             "absolute path to a closed standing-supervisor config that names "
-            "the screen and recoverable-qualification authorities to compose"
+            "the dispatcher and recoverable-qualification authorities to compose"
         ),
     )
     return parser

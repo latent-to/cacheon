@@ -43,17 +43,17 @@ if TYPE_CHECKING:
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
 _ACTIVE = (
-    "deferred", "reserved", "fetching", "transport_retry", "published", "screening",
-    "promoted", "qualifying", "reproduction_pending",
+    "deferred", "reserved", "fetching", "transport_retry", "published",
+    "qualifying", "reproduction_pending",
 )
 _TERMINAL = ("failed", "expired", "qualified")
 _STATUSES = frozenset((*_ACTIVE, *_TERMINAL, "held", "no_decision"))
 _EXPLICITLY_EXPIRABLE = (
-    "deferred", "reserved", "transport_retry", "published", "promoted",
+    "deferred", "reserved", "transport_retry", "published",
     "reproduction_pending", "held", "no_decision",
 )
 _AUTOMATICALLY_EXPIRABLE = (
-    "deferred", "reserved", "transport_retry", "published", "promoted",
+    "deferred", "reserved", "transport_retry", "published",
     "reproduction_pending", "held", "no_decision",
 )
 _AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
@@ -256,9 +256,6 @@ class IntakeReservation:
     qualification_evidence_digest: str
     arena_service_digest: str
     screen_lane: str
-    screen_status: str
-    screen_stage_count: int
-    screen_attempts: int
     decision: str
     reason: str
     competition_arena: str = ""
@@ -294,17 +291,6 @@ class IntakeReservation:
             raise IntakeError("reservation decision is unsupported")
         if self.screen_lane not in {"", "primary", "reproduction"}:
             raise IntakeError("reservation screen lane is unsupported")
-        if self.screen_status not in {
-            "", "running", "promote", "reject", "retry", "hold",
-        }:
-            raise IntakeError("reservation screen status is unsupported")
-        if (
-            type(self.screen_stage_count) is not int
-            or self.screen_stage_count < 0
-            or type(self.screen_attempts) is not int
-            or self.screen_attempts < 0
-        ):
-            raise IntakeError("reservation screen counters are malformed")
 
 
 @dataclass(frozen=True)
@@ -538,9 +524,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 qualification_evidence_digest TEXT NOT NULL DEFAULT '',
                 arena_service_digest TEXT NOT NULL DEFAULT '',
                 screen_lane TEXT NOT NULL DEFAULT '',
-                screen_status TEXT NOT NULL DEFAULT '',
-                screen_stage_count INTEGER NOT NULL DEFAULT 0,
-                screen_attempts INTEGER NOT NULL DEFAULT 0,
                 retry_group_digest TEXT NOT NULL DEFAULT '',
                 retry_position INTEGER NOT NULL DEFAULT 0,
                 decision TEXT NOT NULL DEFAULT '',
@@ -568,18 +551,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 failure_digest TEXT NOT NULL,
                 decision TEXT NOT NULL,
                 reason TEXT NOT NULL,
-                PRIMARY KEY(reservation_id, attempt_index)
-            ) STRICT;
-            CREATE TABLE IF NOT EXISTS arena_screen_dispositions (
-                reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
-                attempt_index INTEGER NOT NULL,
-                service_digest TEXT NOT NULL,
-                candidate_digest TEXT NOT NULL,
-                receipt_digest TEXT NOT NULL UNIQUE,
-                receipt_json TEXT NOT NULL,
-                decision TEXT NOT NULL,
-                stage_count INTEGER NOT NULL,
-                lane TEXT NOT NULL,
                 PRIMARY KEY(reservation_id, attempt_index)
             ) STRICT;
             CREATE TABLE IF NOT EXISTS settlement_qualifications (
@@ -704,9 +675,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             "arena_service_digest": "TEXT NOT NULL DEFAULT ''",
             "competition_arena": "TEXT NOT NULL DEFAULT ''",
             "screen_lane": "TEXT NOT NULL DEFAULT ''",
-            "screen_status": "TEXT NOT NULL DEFAULT ''",
-            "screen_stage_count": "INTEGER NOT NULL DEFAULT 0",
-            "screen_attempts": "INTEGER NOT NULL DEFAULT 0",
             "eval_cost_payment_block": "INTEGER NOT NULL DEFAULT 0",
             "eval_cost_payment_extrinsic_index": "INTEGER NOT NULL DEFAULT 0",
         }
@@ -787,12 +755,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 "UPDATE reservations SET status='held', decision='', "
                 "reason='controller_restart_during_' || status "
                 "WHERE status IN ('fetching','qualifying')"
-            )
-            self._db.execute(
-                "UPDATE reservations SET status=CASE screen_lane "
-                "WHEN 'reproduction' THEN 'reproduction_pending' ELSE 'published' END,"
-                "decision='',screen_status='retry',"
-                "reason='controller_restart_during_screening' WHERE status='screening'"
             )
             self._db.execute(
                 "UPDATE settlement_candidates SET status='pending',lease_id='',"
@@ -914,8 +876,8 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 raise IntakeError("finalized cursor regressed or changed hash")
             pending = self._db.execute(
                 "SELECT COUNT(*) AS n FROM reservations WHERE status IN "
-                "('reserved','fetching','transport_retry','published','screening',"
-                "'promoted','qualifying','reproduction_pending','held','no_decision')"
+                "('reserved','fetching','transport_retry','published',"
+                "'qualifying','reproduction_pending','held','no_decision')"
             ).fetchone()["n"]
             for arrival in rows:
                 existing = self._db.execute(
@@ -1072,8 +1034,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             row["target_id"], members, fingerprint, row["transport_attempts"],
             row["publication_digest"], row["publication_root"],
             row["qualification_authority_digest"], row["qualification_evidence_digest"],
-            row["arena_service_digest"], row["screen_lane"], row["screen_status"],
-            row["screen_stage_count"], row["screen_attempts"],
+            row["arena_service_digest"], row["screen_lane"],
             row["decision"], row["reason"], row["competition_arena"],
         )
 
@@ -1093,8 +1054,8 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
     def _activate_deferred_rows(self) -> tuple[str, ...]:
         active = self._db.execute(
             "SELECT COUNT(*) AS n FROM reservations WHERE status IN ("
-            "'reserved','fetching','transport_retry','published','screening',"
-            "'promoted','qualifying','reproduction_pending','held','no_decision')"
+            "'reserved','fetching','transport_retry','published',"
+            "'qualifying','reproduction_pending','held','no_decision')"
         ).fetchone()["n"]
         capacity = max(0, self.policy.max_pending - active)
         if capacity == 0:
@@ -1179,7 +1140,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         with self._transaction():
             self._require_evaluation_mutation_authority(reservation_id)
             row = self.get(reservation_id)
-            if row.status not in {"fetching", "published"} or row.screen_attempts:
+            if row.status not in {"fetching", "published"} or row.arena_service_digest:
                 raise IntakeError(
                     f"closed-target disposal from {row.status!r} is forbidden"
                 )
@@ -1209,7 +1170,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
 
         This is an operator recovery seam for a validator reader-compatibility
         defect, not a general terminal-result override.  It refuses rows with
-        any publication, screen, qualification, lease, or settlement history;
+        any publication, qualification, lease, or settlement history;
         the caller must also bind the exact retained reason bytes.  The normal
         intake loop then reopens the content-addressed private tree, reruns the
         current manifest policy, and publishes through the ordinary path.
@@ -1234,18 +1195,12 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 or row.qualification_authority_digest
                 or row.qualification_evidence_digest
                 or row.arena_service_digest
-                or row.screen_attempts
             ):
                 raise IntakeError(
                     "reservation is not the exact pre-publication compatibility failure"
                 )
             covered = (
                 self._db.execute(
-                    "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
-                    "WHERE reservation_id=?",
-                    (reservation_id,),
-                ).fetchone()["n"]
-                + self._db.execute(
                     "SELECT COUNT(*) AS n FROM qualification_dispositions "
                     "WHERE reservation_id=?",
                     (reservation_id,),
@@ -1284,8 +1239,8 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         return self._transition(
             reservation_id,
             {
-                "reserved", "fetching", "transport_retry", "published", "screening",
-                "promoted", "qualifying", "reproduction_pending", "no_decision",
+                "reserved", "fetching", "transport_retry", "published",
+                "qualifying", "reproduction_pending", "no_decision",
             },
             "held",
             "",
@@ -1321,7 +1276,8 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 status, reason = "failed", "target_epoch_admission_limit"
             self._db.execute(
                 "UPDATE reservations SET status=?,target_id=?,target_members_json=?,delta_fingerprint_json=?,"
-                "publication_digest=?,publication_root=?,decision=?,reason=?,competition_arena=? WHERE reservation_id=?",
+                "publication_digest=?,publication_root=?,decision=?,reason=?,competition_arena=?,"
+                "screen_lane='primary' WHERE reservation_id=?",
                 (
                     status, target_id, json.dumps(members, separators=(",", ":")),
                     json.dumps(delta_fingerprint.to_dict(), separators=(",", ":"), sort_keys=True),
@@ -1331,173 +1287,25 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             )
         return self.get(reservation_id)
 
-    def begin_screen(
-        self, reservation_id: str, *, service_digest: str
-    ) -> IntakeReservation:
-        require_sha256_hex(service_digest, field="arena service digest")
-        with self._transaction():
-            self._require_evaluation_mutation_authority(reservation_id)
-            row = self.get(reservation_id)
-            if row.competition_arena != self._competition_arena:
-                raise IntakeError("screen reservation belongs to another competition arena")
-            if row.status not in {"published", "reproduction_pending"}:
-                raise IntakeError("only screenable intake may begin arena screening")
-            stack = self._unambiguous_evaluation_stack(service_digest)
-            if stack is not None and stack.generation == 0:
-                self._bind_reservation_baseline_segment(
-                    reservation_id, stack, reason="begin_screen"
-                )
-            lane = (
-                "reproduction" if row.status == "reproduction_pending" else "primary"
-            )
-            attempts = self._db.execute(
-                "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
-                "WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["n"]
-            self._db.execute(
-                "UPDATE reservations SET status='screening',arena_service_digest=?,"
-                "screen_lane=?,screen_status='running',screen_stage_count=0,"
-                "screen_attempts=?,decision='',reason='' WHERE reservation_id=?",
-                (service_digest, lane, attempts + 1, reservation_id),
-            )
-        return self.get(reservation_id)
+    def qualification_cohort(
+        self, *, limit: int | None = None
+    ) -> tuple[IntakeReservation, ...]:
+        """The exact ordered cohort the next qualification claim would bind."""
 
-    def apply_screen_receipt(
-        self,
-        reservation_id: str,
-        *,
-        candidate_digest: str,
-        receipt,
-    ) -> IntakeReservation:
-        """Atomically retain one non-crown screen and its derived disposition."""
-
-        from cacheon.arena_service import ArenaScreenReceipt, PromotionDecision
-
-        require_sha256_hex(candidate_digest, field="screen candidate digest")
-        if type(receipt) is not ArenaScreenReceipt:
-            raise IntakeError("arena screen receipt is not exactly typed")
-        encoded = json.dumps(
-            receipt.to_dict(), separators=(",", ":"), sort_keys=True
-        )
-        with self._transaction():
-            row = self.get(reservation_id)
-            if (
-                row.status != "screening"
-                or row.arena_service_digest != receipt.service_digest
-                or row.screen_attempts != receipt.screen_attempt
-                or receipt.candidate_digest != candidate_digest
-            ):
-                raise IntakeError("arena screen receipt differs from active screening")
-            attempt = row.screen_attempts - 1
-            self._db.execute(
-                "INSERT INTO arena_screen_dispositions(reservation_id,attempt_index,"
-                "service_digest,candidate_digest,receipt_digest,receipt_json,decision,"
-                "stage_count,lane) VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    reservation_id, attempt, receipt.service_digest,
-                    candidate_digest, receipt.digest, encoded, receipt.decision.value,
-                    len(receipt.results), row.screen_lane,
-                ),
-            )
-            if receipt.decision is PromotionDecision.PROMOTE:
-                status, decision, reason = "promoted", "", "screen_promoted"
-            elif receipt.decision is PromotionDecision.REJECT:
-                status, decision, reason = "failed", "FAIL", "screen_rejected"
-            elif receipt.decision is PromotionDecision.RETRY:
-                status = (
-                    "reproduction_pending"
-                    if row.screen_lane == "reproduction"
-                    else "published"
-                )
-                decision, reason = "", "screen_retry"
-            else:
-                status, decision, reason = "held", "", "screen_held"
-            self._db.execute(
-                "UPDATE reservations SET status=?,screen_status=?,screen_stage_count=?,"
-                "decision=?,reason=? WHERE reservation_id=?",
-                (
-                    status, receipt.decision.value, len(receipt.results),
-                    decision, reason, reservation_id,
-                ),
-            )
-        return self.get(reservation_id)
-
-    def demote_promoted_for_rescreen(
-        self, reservation_id: str, *, reason: str
-    ) -> "IntakeReservation":
-        """Return one promoted reservation to the screen queue.
-
-        A promoted row carries a screen receipt bound to the service identity
-        that produced it. Once that identity is retired the receipt can no
-        longer authorize qualification, and because the qualification selector
-        is deterministic it would otherwise re-pick the same unusable head for
-        as long as the row stays promoted. Demotion re-enters the row in the
-        screen FIFO so a fresh receipt is produced under the live identity.
-        Retained screen dispositions are append-only and are not disturbed."""
-
-        if type(reason) is not str or not reason or len(reason) > 64:
-            raise IntakeError("rescreen reason is malformed")
-        with self._transaction():
-            row = self.get(reservation_id)
-            if row.status != "promoted" or row.screen_status != "promote":
-                raise IntakeError("only a promoted reservation may be rescreened")
-            # Mirrors the screen-retry disposition, which is the proven inverse
-            # of promotion and keeps the reproduction lane in its own queue.
-            status = (
-                "reproduction_pending"
-                if row.screen_lane == "reproduction"
-                else "published"
-            )
-            self._db.execute(
-                "UPDATE reservations SET status=?,screen_status='',decision='',"
-                "reason=? WHERE reservation_id=?",
-                (status, reason, reservation_id),
-            )
-        return self.get(reservation_id)
-
-    def latest_promoted_screen(self, reservation_id: str):
-        from cacheon.arena_service import (
-            ArenaScreenReceipt, PromotionDecision, ScreenStageResult,
-        )
-
-        row = self.get(reservation_id)
-        if row.status != "promoted" or row.screen_status != "promote":
-            raise IntakeError("reservation has no standing promoted screen")
-        retained = self._db.execute(
-            "SELECT receipt_digest,receipt_json,stage_count FROM "
-            "arena_screen_dispositions WHERE reservation_id=? "
-            "ORDER BY attempt_index DESC LIMIT 1",
-            (reservation_id,),
-        ).fetchone()
-        if retained is None:
-            raise IntakeError("promoted screen receipt is missing")
-        try:
-            raw = json.loads(retained["receipt_json"])
-            results = tuple(
-                ScreenStageResult.from_dict(item) for item in raw["results"]
-            )
-            receipt = ArenaScreenReceipt(
-                raw["service_digest"], raw["candidate_digest"],
-                raw["screen_attempt"], results,
-                PromotionDecision(raw["decision"]),
-            )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise IntakeError(f"promoted screen receipt is corrupt: {exc}") from None
-        if (
-            receipt.digest != retained["receipt_digest"]
-            or len(receipt.results) != retained["stage_count"]
-            or receipt.decision is not PromotionDecision.PROMOTE
-        ):
-            raise IntakeError("promoted screen receipt differs from retained bytes")
-        return receipt
-
-    def promoted(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
         bound = self.policy.max_cohort if limit is None else limit
         if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
-            raise IntakeError("promoted cohort limit is invalid")
+            raise IntakeError("qualification cohort limit is invalid")
         rows = self._select_evaluation_rows("qualification", bound)
         return tuple(self._row(row) for row in rows)
+
+    def qualification_attempts(self, reservation_id: str) -> int:
+        """Retained qualification attempts of one reservation, for its next binding."""
+
+        self.get(reservation_id)
+        return self._db.execute(
+            "SELECT COUNT(*) AS n FROM qualification_dispositions WHERE reservation_id=?",
+            (reservation_id,),
+        ).fetchone()["n"]
 
     def settlement_blockers(self, reservation_id: str) -> tuple[IntakeReservation, ...]:
         candidate = self.get(reservation_id)
@@ -1556,7 +1364,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         return self._transition(
             reservation_id,
             {
-                "published", "screening", "promoted", "qualifying",
+                "published", "qualifying",
                 "reproduction_pending", "qualified", "held", "no_decision",
             },
             "failed",
@@ -1576,7 +1384,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         return self._transition(
             reservation_id,
             {
-                "published", "screening", "promoted", "qualifying",
+                "published", "qualifying",
                 "reproduction_pending", "qualified", "held", "no_decision",
             },
             "failed",
@@ -1589,7 +1397,16 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         reservation_id: str,
         authority_digest: str,
         authority_manifest: dict[str, object],
+        *,
+        service_digest: str,
     ) -> IntakeReservation:
+        """Enter qualification directly from the published queue.
+
+        The claim stamps the arena service identity the row is measured
+        under; that stamp is what FAIL replay, remeasurement rebinding, and the
+        one-shot admission cutoff key on.
+        """
+
         require_sha256_hex(authority_digest, field="qualification_authority_digest")
         if type(authority_manifest) is not dict or not authority_manifest:
             raise IntakeError("qualification authority manifest is not a closed object")
@@ -1598,16 +1415,31 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         )
         if len(authority_json.encode("utf-8")) > 1 << 20:
             raise IntakeError("qualification authority manifest is oversized")
+        require_sha256_hex(service_digest, field="arena service digest")
         with self._transaction():
             self._require_evaluation_mutation_authority(reservation_id)
             row = self.get(reservation_id)
-            if row.status != "promoted" or row.screen_status != "promote":
-                raise IntakeError("only screen-promoted intake may enter qualification")
+            if row.competition_arena != self._competition_arena:
+                raise IntakeError("reservation belongs to another competition arena")
+            if row.status not in {"published", "reproduction_pending"}:
+                raise IntakeError("only published intake may enter qualification")
+            # The first claim under a generation-0 stack binds the baseline
+            # segment the row drains under; the standing path binds at the
+            # commission boundary and this is its in-process equivalent.
+            stack = self._unambiguous_evaluation_stack(service_digest)
+            if stack is not None and stack.generation == 0:
+                self._bind_reservation_baseline_segment(
+                    reservation_id, stack, reason="mark_qualifying"
+                )
+            lane = (
+                "reproduction" if row.status == "reproduction_pending" else "primary"
+            )
             self._db.execute(
-                "UPDATE reservations SET status='qualifying',qualification_authority_digest=?,"
+                "UPDATE reservations SET status='qualifying',arena_service_digest=?,"
+                "screen_lane=?,qualification_authority_digest=?,"
                 "qualification_authority_json=?,"
                 "decision='',reason='' WHERE reservation_id=?",
-                (authority_digest, authority_json, reservation_id),
+                (service_digest, lane, authority_digest, authority_json, reservation_id),
             )
         return self.get(reservation_id)
 
@@ -2789,53 +2621,12 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                     raise IntakeError(
                         "validator downtime requeue conflicts with an active lease"
                     )
-                # Promote restore keys off the live receipt: after a service-
-                # identity rotation a row may carry an older promote under the
-                # retired service plus a fresh promote under the live one
-                # (append-only dispositions).  Require the latest promote to
-                # match the reservation's arena_service_digest.
-                if row.screen_status == "promote":
-                    latest = self._db.execute(
-                        "SELECT decision,service_digest FROM arena_screen_dispositions "
-                        "WHERE reservation_id=? ORDER BY attempt_index DESC LIMIT 1",
-                        (row.reservation_id,),
-                    ).fetchone()
-                    if (
-                        latest is None
-                        or latest["decision"] != "promote"
-                        or not row.arena_service_digest
-                        or latest["service_digest"] != row.arena_service_digest
-                    ):
-                        raise IntakeError(
-                            "validator downtime requeue screen authority is incomplete"
-                        )
-                    status = "promoted"
-                    clear_screen = False
-                elif (
-                    row.screen_status == ""
-                    and row.publication_digest
-                    and row.publication_root
-                ):
-                    status = "published"
-                    clear_screen = False
-                elif (
-                    row.screen_status in ("hold", "retry")
-                    and row.publication_digest
-                    and row.publication_root
-                ):
-                    # Mid-screen when the SLA expired: drop back to the
-                    # pre-screen published queue so screening starts fresh.
-                    # Disposition history stays append-only.
-                    status = "published"
-                    clear_screen = True
-                else:
+                if not (row.publication_digest and row.publication_root):
                     raise IntakeError(
                         "validator downtime requeue cannot restore this pipeline phase"
                     )
-                restored.append(
-                    (row.reservation_id, status, reset_reason, clear_screen)
-                )
-            for reservation_id, _status, reset_reason, _clear in restored:
+                restored.append((row.reservation_id, "published", reset_reason))
+            for reservation_id, _status, reset_reason in restored:
                 if reset_reason == _VALIDATOR_DOWNTIME_REQUEUE_REASON:
                     self._db.execute(
                         "INSERT INTO reservation_sla_resets(reservation_id,"
@@ -2858,26 +2649,15 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                             reservation_id,
                         ),
                     )
-            for reservation_id, status, reset_reason, clear_screen in restored:
-                if clear_screen:
-                    self._db.execute(
-                        "UPDATE reservations SET status=?,screen_status='',"
-                        "screen_stage_count=0,decision='',reason=?,"
-                        "retry_group_digest='',retry_position=0,"
-                        "qualification_authority_digest='',"
-                        "qualification_authority_json='',"
-                        "qualification_evidence_digest='' WHERE reservation_id=?",
-                        (status, reset_reason, reservation_id),
-                    )
-                else:
-                    self._db.execute(
-                        "UPDATE reservations SET status=?,decision='',reason=?,"
-                        "retry_group_digest='',retry_position=0,"
-                        "qualification_authority_digest='',"
-                        "qualification_authority_json='',"
-                        "qualification_evidence_digest='' WHERE reservation_id=?",
-                        (status, reset_reason, reservation_id),
-                    )
+            for reservation_id, status, reset_reason in restored:
+                self._db.execute(
+                    "UPDATE reservations SET status=?,decision='',reason=?,"
+                    "retry_group_digest='',retry_position=0,"
+                    "qualification_authority_digest='',"
+                    "qualification_authority_json='',"
+                    "qualification_evidence_digest='' WHERE reservation_id=?",
+                    (status, reset_reason, reservation_id),
+                )
         return tuple(self.get(reservation_id) for reservation_id in reservation_ids)
 
     def _transition(
@@ -3119,7 +2899,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             ).fetchone()["n"]
             status = (
                 "reproduction_pending" if reproductions == 1
-                else "promoted" if row.screen_status == "promote"
                 else "published" if row.publication_digest
                 else "transport_retry"
             )
@@ -3165,12 +2944,12 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
     def reopen_for_remeasurement(
         self, reservation_id: str, *, reason: str
     ) -> IntakeReservation:
-        """Return one unsettled acceptance to the screen queue after explicit operator review.
+        """Return one unsettled acceptance to the queue after explicit operator review.
 
         The retained candidate and its qualification attempts move to
         ``settlement_reopenings`` (append-only), so the row stops earning the
         moment it leaves ``qualified`` and re-enters intake like a new
-        submission: a fresh screen under the live service identity, a fresh
+        submission: a fresh claim under the live service identity, a fresh
         baseline binding to the live stack, and a fresh complete qualification
         against the current incumbent. A crowned or otherwise settled candidate
         is lineage and is refused.
@@ -3219,12 +2998,12 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 self._db.execute(
                     f"DELETE FROM {table} WHERE reservation_id=?", (reservation_id,)
                 )
-            # The service digest names the arena that screened the old pair.
+            # The service digest names the arena that measured the old pair.
             # Left in place, the queue backfill would bind the row to that
-            # retired stack before its fresh screen could bind the live one.
+            # retired stack before its fresh claim could bind the live one.
             self._db.execute(
-                "UPDATE reservations SET status='published',screen_lane='',"
-                "screen_status='',arena_service_digest='',decision='',reason=?,"
+                "UPDATE reservations SET status='published',screen_lane='primary',"
+                "arena_service_digest='',decision='',reason=?,"
                 "retry_group_digest='',retry_position=0,"
                 "qualification_authority_digest='',qualification_authority_json='',"
                 "qualification_evidence_digest='' WHERE reservation_id=?",
@@ -3237,7 +3016,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
 
         row = self.get(reservation_id)
         return (
-            row.status in {"published", "screening", "promoted"}
+            row.status == "published"
             and self._db.execute(
                 "SELECT 1 FROM settlement_reopenings WHERE reservation_id=?",
                 (reservation_id,),
@@ -3251,12 +3030,12 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
     def rebind_remeasurement_segment(
         self, reservation_id: str
     ) -> EvaluationStackState | None:
-        """Bind a reopened row's baseline segment to the stack that re-screened it.
+        """Bind a reopened row's baseline segment to the stack that reclaimed it.
 
         Idempotent repair for a reopened row the queue backfill bound to its
-        retired arrival stack. Once the fresh screen has stamped the live
-        service digest, that digest names the stack the row must drain under;
-        before the screen the row is left unbound for the screen to bind.
+        retired arrival stack. Once the fresh qualification claim has stamped
+        the live service digest, that digest names the stack the row must drain
+        under; before the claim the row is left unbound for the claim to bind.
         """
 
         with self._transaction():
@@ -3272,9 +3051,9 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 return None
             state = self._unambiguous_evaluation_stack(row.arena_service_digest)
             if state is None:
-                raise IntakeError("reopened reservation's screen names no evaluation stack")
+                raise IntakeError("reopened reservation's claim names no evaluation stack")
             self._bind_reservation_baseline_segment(
-                reservation_id, state, reason="remeasure_rescreen"
+                reservation_id, state, reason="remeasure_reclaim"
             )
         return state
 
