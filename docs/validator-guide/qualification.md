@@ -652,7 +652,7 @@ No HTTP listener or candidate network access is added inside the container.
 
 `SessionExecutionPlan.replay` selects `AgentReplayPlan` for an off-chain load
 read through the ordinary OCI executor. Install the controller's `replay` extra
-and supply a separate AIPerf 0.13.0 executable, the local model tokenizer, a
+and supply a separate AIPerf 0.13.0 virtual environment executable, the local model tokenizer, a
 sealed slice manifest, load, output directory and service contract. An explicit
 `engine_config.engine_kwargs.context_length` is retained; batch workloads derive
 it from their cells only when absent and reject a declared context that is too
@@ -683,6 +683,13 @@ their sealed workload until recommissioned.
 AIPerf's concurrency ramp increases the live-session limit from one to the
 target. It does not enforce a fixed interval between root starts: a completed
 tree releases its slot early. The ramp duration is part of workload identity.
+The driver uses the executable's sibling Python interpreter to call AIPerf's
+single-run API. The sealed slice digest supplies its benchmark identity, keeping
+cache-buster tokens and DP routing identical between arms and windows. Each
+client retains separate memory-mapped dataset files under its output directory;
+concurrent clients share no writable dataset state. The client requires exactly
+AIPerf 0.13.0 because it consumes that version's API.
+
 The driver uses ordinary closed-loop concurrency with `--no-fixed-schedule`,
 without the AgentX scenario. The AgentX trajectory warmup is designed for
 recorded timestamps; stripping those timestamps can omit intended turns.

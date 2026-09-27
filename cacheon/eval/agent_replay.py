@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from uuid import UUID
 
+from cacheon.eval import aiperf_client
 from cacheon.eval.agent_slice import SliceManifest, load_slice_manifest
 from cacheon.eval.oci_session_protocol import BatchRequest, MAX_BATCH_REQUEST_BYTES
 from cacheon.eval.service_capacity import (
@@ -64,6 +65,7 @@ class AgentReplayPlan:
             "ramp_duration_s": format(self.ramp_duration_s, ".17g"),
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
+            "cache_bust_identity": "sealed-slice-digest",
         }
 
 
@@ -256,7 +258,9 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None) -> None:
         try:
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
-            argv = [str(plan.aiperf_binary), "profile", "--model", str(plan.tokenizer_path),
+            argv = [str(plan.aiperf_binary.with_name("python")),
+                    str(Path(aiperf_client.__file__)), current.digest, str(output),
+                    "--model", str(plan.tokenizer_path),
                     "--tokenizer", str(plan.tokenizer_path), "--tokenizer-trust-remote-code",
                     "--url", f"http://127.0.0.1:{port}", "--endpoint-type", "chat", "--streaming",
                     "--no-fixed-schedule", "--input-file", str(pool),
