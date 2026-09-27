@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cacheon.eval.agent_replay import AgentReplayPlan, collect_read, _rank
+from cacheon.eval.agent_replay import AgentReplayPlan, collect_read, _rank, _chat_input_ids
 from cacheon.eval.oci_outer_session import BatchExecutionEvidence
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.service_capacity import ServiceContract, ServiceEvidenceError
@@ -16,6 +16,23 @@ from tests.test_oci_outer_session import _plan
 from cacheon.eval.scoring import marginal_workload_digest
 from cacheon.arena_service import WorkloadCell
 from cacheon.eval.b300_arena_definition import engine_config, B300ScreenDeploymentError
+
+
+def test_chat_input_ids_use_the_tokenizer_ids_not_its_mapping_keys():
+    transformers = pytest.importorskip("transformers")
+    from tokenizers import Tokenizer, models, pre_tokenizers
+
+    backend = Tokenizer(models.WordLevel({"[UNK]": 0, "user": 1, "hello": 2, "assistant": 3},
+                                         unk_token="[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]")
+    tokenizer.chat_template = (
+        "{% for m in messages %}{{ m.role }} {{ m.content }} {% endfor %}"
+        "{% if add_generation_prompt %}assistant{% endif %}"
+    )
+    ids = _chat_input_ids(tokenizer, {"messages": [{"role": "user", "content": "hello"}]})
+    assert ids == [1, 2, 3]
+    assert all(type(token) is int for token in ids)
 
 
 def _inputs(tmp_path):

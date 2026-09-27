@@ -81,6 +81,15 @@ def _rank(messages: list[dict], ranks: int) -> int:
     return int.from_bytes(hashlib.sha256(json.dumps(head).encode()).digest()[:8], "big") % ranks
 
 
+def _chat_input_ids(tokenizer, body):
+    # Transformers 5 defaults to BatchEncoding. Iterating that mapping sent its
+    # field names as IDs and stopped the first real GLM replay before generation.
+    return tokenizer.apply_chat_template(
+        body["messages"], tools=body.get("tools"), tokenize=True,
+        add_generation_prompt=True, return_dict=False,
+    )
+
+
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
@@ -109,10 +118,7 @@ class ReplayBridge:
                 raise ValueError("AIPerf repeated an X-Request-ID")
             if body.get("stream") is not True:
                 raise ValueError("agent replay requires streaming requests")
-            ids = self.tokenizer.apply_chat_template(
-                body["messages"], tools=body.get("tools"), tokenize=True,
-                add_generation_prompt=True,
-            )
+            ids = _chat_input_ids(self.tokenizer, body)
             count = body.get("max_tokens", body.get("max_completion_tokens"))
             index = self.session.plan.warmup_count + len(self.rows)
             request = BatchRequest(
