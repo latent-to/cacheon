@@ -38,7 +38,7 @@ def test_chat_input_ids_use_the_tokenizer_ids_not_its_mapping_keys():
 def _inputs(tmp_path):
     session = _session(1, k=1, inner=1)
     manifest = _write_slice(tmp_path, [session])
-    plan = AgentReplayPlan(manifest, 1, Path('/bin/aiperf'), Path('/model'), tmp_path / 'out',
+    plan = AgentReplayPlan(manifest, (1,), Path('/bin/aiperf'), Path('/model'), tmp_path / 'out',
                            ServiceContract(20, 2, .8), 'candidate', 1, 'second')
     export = plan.output_directory / 'aiperf'
     export.mkdir(parents=True)
@@ -100,7 +100,7 @@ def test_routing_and_workload_identity_do_not_depend_on_followup_text(tmp_path, 
     assert _rank(opening, ranks) == _rank(later, ranks) < ranks
     replay, _, _ = _inputs(tmp_path)
     first = _plan(replay=replay)
-    changed = replace(first, replay=replace(replay, ramp_duration_s=2))
+    changed = replace(first, replay=replace(replay, ramp_seconds_per_session=2))
     assert marginal_workload_digest(first) != marginal_workload_digest(changed)
 
 
@@ -126,3 +126,38 @@ def test_declared_context_survives_cell_projection_and_must_fit(input_tokens, ou
     too_short = replace(declared, engine_kwargs={**declared.engine_kwargs, 'context_length': input_tokens})
     with pytest.raises(B300ScreenDeploymentError, match='does not fit'):
         engine_config(too_short, cell, disable_cuda_graph=False)
+
+
+def test_two_load_window_flushes_each_read_and_retains_capacity(tmp_path, monkeypatch):
+    import asyncio
+    from cacheon.eval import agent_replay
+    from cacheon.eval.continuation_codec import ContinuationCodec
+    from cacheon.eval.service_capacity import LoadRead, TurnRecord
+
+    manifest = _write_slice(tmp_path, [_session(i, k=1, inner=0) for i in (1, 2)])
+    plan = AgentReplayPlan(manifest, (1, 2), Path('/bin/aiperf'), Path('/model'),
+                           tmp_path / 'window', ServiceContract(20, 2, .8), 'candidate', 1, 'B', 2.)
+    events = []
+    session = SimpleNamespace(replay_reads=[])
+    async def flush(_session):
+        events.append('flush')
+    monkeypatch.setattr(agent_replay, 'flush_cache', flush)
+
+    async def read(_session, read_plan, *, tokenizer):
+        (load,) = read_plan.loads
+        events.append(load)
+        read_plan.output_directory.mkdir(parents=True)
+        records = tuple(TurnRecord(root, 'main', 0, 1_000_000_000, 1_000_000_000,
+                                  1_100_000_000, 1_200_000_000, 64, 8, 'ok')
+                        for root in read_plan.slice.expected_work(load))
+        return LoadRead(read_plan.arm, read_plan.window, read_plan.lane, load, records)
+
+    monkeypatch.setattr(agent_replay, '_run_load_read', read)
+    result = asyncio.run(agent_replay.run_replay(session, plan, tokenizer=object()))
+    assert events == ['flush', 1, 'flush', 2]
+    assert tuple(session.replay_reads) == result
+    artifact = json.loads((plan.output_directory / 'window.json').read_text())
+    assert artifact['capacity']['status'] == 'clamped'
+    assert artifact['capacity']['value'] == 10.0
+    codec = ContinuationCodec((LoadRead,))
+    assert codec.decode(codec.encode(result[1])) == result[1]

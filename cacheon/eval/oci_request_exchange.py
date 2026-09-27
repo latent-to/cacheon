@@ -281,3 +281,29 @@ class RequestExchange:
             if self.reader is not None:
                 self.reader.cancel()
             raise
+
+
+async def flush_cache(session) -> None:
+    """Clear device and host prefix state between complete load reads."""
+    from cacheon.eval.oci_request_input import cache_flush_message
+    from cacheon.eval.oci_outer_session import _fresh_id, diagnostic_provider
+    if not session.started or session.closed:
+        raise OuterSessionInfrastructureError("cache flush requires an open session")
+    try:
+        if session.transport.has_pending_output():
+            raise OuterSessionProtocolError("worker has pending output at the cache boundary")
+        message = cache_flush_message(
+            session_id=session.session_id, launch_digest=session.plan.launch_digest,
+            request_id=_fresh_id(session.seen), nonce=_fresh_id(session.seen),
+            batch_index=session.next_batch_index,
+        )
+        deadline = session._phase_deadline(session.batch_timeout_s)
+        await session.transport.awrite_frame(frame_message(message, max_bytes=MAX_CONTROL_BYTES), deadline=deadline)
+        reply = await session.transport.aread_control(max_bytes=MAX_CONTROL_BYTES, deadline=deadline)
+        detail = parse_error_message(reply, session_id=session.session_id, launch_digest=session.plan.launch_digest)
+        if detail is not None:
+            raise _worker_error(detail, diagnostic_provider=diagnostic_provider(session.transport))
+        if reply != {**message, "type": "cache_flushed"}:
+            raise OuterSessionProtocolError("cache flush acknowledgement differs from its request")
+    except BaseException as exc:
+        session._fail(exc)

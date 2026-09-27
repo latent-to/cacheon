@@ -45,6 +45,7 @@ from cacheon.eval.oci_session_protocol import (
     validate_ready,
 )
 from cacheon.stack_identity import require_sha256_hex
+from cacheon.eval.service_capacity import LoadRead
 
 
 class OuterSessionError(RuntimeError):
@@ -460,6 +461,7 @@ class SessionExecutionEvidence:
     conditioning_token_numerator: int
     session_completed_at: float
     audit_policy_digest: str | None = None
+    replay_reads: tuple[LoadRead, ...] = field(default=(), metadata={"wire_optional": True})
 
     @property
     def audit_receipts(self) -> tuple[AuditReceiptFacts, ...]:
@@ -694,6 +696,7 @@ class OpenedOuterSession:
         self.seen: set[str] = set()
         self.session_id = _fresh_id(self.seen)
         self.batch_rows: list[BatchExecutionEvidence] = []
+        self.replay_reads: list[LoadRead] = []
         self.conditioning_start_index = plan.warmup_count - plan.conditioning_count
         self.conditioning_started_at: float | None = None
         self.first_timed_completed_at: float | None = None
@@ -806,7 +809,7 @@ class OpenedOuterSession:
             raise OuterSessionInfrastructureError("session finish order is invalid")
         minimum = self.plan.warmup_count + 1
         expected = (len(self.plan.prompt_batches) if self.plan.replay is None else
-                    self.plan.warmup_count + self.plan.replay.slice.turns(self.plan.replay.load))
+                    self.plan.warmup_count + sum(self.plan.replay.slice.turns(load) for load in self.plan.replay.loads))
         if len(self.batch_rows) < minimum or (require_all and len(self.batch_rows) != expected):
             raise OuterSessionInfrastructureError(
                 "session lacks the required planned batch coverage"
@@ -862,6 +865,7 @@ class OpenedOuterSession:
             audit_policy_digest=(
                 None if self.plan.audit_policy is None else self.plan.audit_policy.digest
             ),
+            replay_reads=tuple(self.replay_reads),
         )
 
     def abort(self) -> None:

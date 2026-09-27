@@ -453,7 +453,7 @@ def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver,
     if replay is not None:
         # The old128/24-request conditioning cost229k decode tokens before a
         # two-session replay. Warm the engine at its declared replay load.
-        prompts = tuple(batch[:replay.load] for batch in prompts[:session_block["warmup_count"]])
+        prompts = tuple(batch[:max(replay.loads)] for batch in prompts[:session_block["warmup_count"]])
         batch_cells = batch_cells[:len(prompts)]
         tokens = 16
     baseline_session_plan = SessionExecutionPlan(

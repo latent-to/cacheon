@@ -650,10 +650,12 @@ No HTTP listener or candidate network access is added inside the container.
 
 ## Finite agent replay
 
-`SessionExecutionPlan.replay` selects `AgentReplayPlan` for an off-chain load
-read through the ordinary OCI executor. Install the controller's `replay` extra
+`SessionExecutionPlan.replay` selects `AgentReplayPlan` for a finite load
+window through the ordinary OCI executor. The plan seals an increasing tuple
+of loads: one for a functional read, or two for a service-capacity bracket.
+Install the controller's `replay` extra
 and supply a separate AIPerf 0.13.0 virtual environment executable, the local model tokenizer, a
-sealed slice manifest, load, output directory and service contract. An explicit
+sealed slice manifest, loads, output directory and service contract. An explicit
 `engine_config.engine_kwargs.context_length` is retained; batch workloads derive
 it from their cells only when absent and reject a declared context that is too
 small. Replay uses the complete sealed engine template. Engine conditioning
@@ -674,17 +676,23 @@ then requires the exact main/inner turn counts for every root. All scoring
 timestamps use host nanoseconds in the same epoch clock domain, with the
 monotonic-to-epoch anchor retained in `clock.json`.
 
-Each fresh output directory retains the AIPerf command, log and raw export,
+The engine stays loaded across the window. Before each load, the controller
+requires an acknowledged SGLang cache flush covering device radix state and
+the HiCache host pool. Failure stops the window. Each load's fresh output
+directory retains the AIPerf command, log and raw export,
 `bridge.jsonl` with canonical inputs, actual output IDs and host timing,
 `turns.jsonl` in the service-capacity record format, and `read.json` with fixed
-work rate and attainment. These are single-load development evidence; they do
-not by themselves provide the paired capacity comparison, quality audit or
+work rate and attainment. `window.json` retains both reads and their interpolated
+capacity for a two-load window. The existing engine-session evidence also carries
+the typed `LoadRead` records, so continuation retains them with the token evidence.
+A window does not by itself provide the paired capacity comparison, quality audit or
 authoritative qualification result. Existing commissions continue to execute
 their sealed workload until recommissioned.
 
 AIPerf's concurrency ramp increases the live-session limit from one to the
 target. It does not enforce a fixed interval between root starts: a completed
-tree releases its slot early. The ramp duration is part of workload identity.
+tree releases its slot early. The sealed `ramp_seconds_per_session` multiplied by
+the load gives each read's ramp duration.
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens and DP routing identical between arms and windows. Each

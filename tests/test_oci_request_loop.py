@@ -193,3 +193,46 @@ def test_failure_waits_for_started_frame_before_reporting_its_original_cause():
                 os.close(fd)
 
     asyncio.run(asyncio.wait_for(run(), 2))
+
+
+@pytest.mark.parametrize('accepted', [True, False])
+def test_cache_boundary_requires_engine_acceptance(accepted):
+    from cacheon.eval.oci_request_input import cache_flush_message
+    from cacheon.eval.oci_session_protocol import MAX_CONTROL_BYTES, parse_frame_bytes
+
+    async def run():
+        control_read, control_write = os.pipe()
+        output_read, output_write = os.pipe()
+        reader = asyncio.StreamReader()
+        transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader), os.fdopen(output_read, 'rb', buffering=0),
+        )
+        calls = []
+        async def flush():
+            calls.append('flush')
+            return SimpleNamespace(success=accepted)
+        engine = SimpleNamespace(tokenizer_manager=SimpleNamespace(flush_cache=flush))
+        task = asyncio.create_task(serve_requests(
+            SimpleNamespace(engine=engine), control_read, output_write,
+            session_id='a' * 32, launch_digest='b' * 64, audit_policy=None,
+        ))
+        request = cache_flush_message(session_id='a' * 32, launch_digest='b' * 64,
+                                      request_id='c' * 32, nonce='d' * 32, batch_index=0)
+        try:
+            os.write(control_write, frame_message(request, max_bytes=MAX_CONTROL_BYTES))
+            if accepted:
+                header = await asyncio.wait_for(reader.readexactly(8), 2)
+                payload = await reader.readexactly(struct.unpack('>I', header[4:])[0])
+                reply = parse_frame_bytes(header + payload, max_bytes=MAX_CONTROL_BYTES)
+                assert reply == {**request, 'type': 'cache_flushed'}
+            else:
+                with pytest.raises(SessionProtocolError, match='refused cache flush'):
+                    await asyncio.wait_for(task, 2)
+            assert calls == ['flush']
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            transport.close()
+            for fd in (control_read, control_write, output_write):
+                os.close(fd)
+    asyncio.run(run())

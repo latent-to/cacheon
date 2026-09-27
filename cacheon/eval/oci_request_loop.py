@@ -29,6 +29,7 @@ from cacheon.eval.oci_session_protocol import (
     validate_batch_request,
 )
 from cacheon.eval.phase_latency import engine_outputs, generate_outputs
+from cacheon.eval.oci_request_input import cache_flush_message
 
 
 class RequestFailure(Exception):
@@ -98,13 +99,14 @@ async def serve_requests(
                 await writing
                 raise
 
-    async def read_request() -> BatchRequest:
+    async def read_request() -> BatchRequest | dict:
         header = await reader.readexactly(FRAME_HEADER_BYTES)
         size = struct.unpack(">I", header[4:])[0]
         if header[:4] != CONTROL_MAGIC or size > MAX_BATCH_REQUEST_BYTES:
             raise SessionProtocolError("controller sent an invalid request frame")
         payload = await reader.readexactly(size)
-        return validate_batch_request(decode_message(payload, max_bytes=MAX_BATCH_REQUEST_BYTES))
+        message = decode_message(payload, max_bytes=MAX_BATCH_REQUEST_BYTES)
+        return message if message.get("type") == "cache_flush" else validate_batch_request(message)
 
     async def execute(request: BatchRequest) -> None:
         try:
@@ -158,6 +160,27 @@ async def serve_requests(
                 # Runtime/engine errors still interrupt the loop immediately.
                 await asyncio.gather(*pending)
                 raise SessionProtocolError("controller closed a partial session request") from None
+            if isinstance(request, dict):
+                expected = cache_flush_message(
+                    session_id=session_id, launch_digest=launch_digest,
+                    request_id=request.get("request_id"), nonce=request.get("nonce"),
+                    batch_index=expected_index,
+                )
+                if (request != expected or request["request_id"] in seen_ids
+                        or request["nonce"] in seen_nonces):
+                    raise SessionProtocolError("cache flush session, ordering or replay binding failed")
+                seen_ids.add(request["request_id"])
+                seen_nonces.add(request["nonce"])
+                await asyncio.gather(*pending)
+                pending.clear()
+                # Engine.flush_cache nests run_until_complete; this worker is
+                # already on that loop, so call its pinned async operation.
+                result = await handle.engine.tokenizer_manager.flush_cache()
+                if result.success is not True:
+                    raise SessionProtocolError("engine refused cache flush at the load boundary")
+                await emit(frame_message({**request, "type": "cache_flushed"}, max_bytes=MAX_CONTROL_BYTES))
+                reading = asyncio.create_task(read_request())
+                continue
             if (
                 request.session_id != session_id
                 or request.launch_digest != launch_digest

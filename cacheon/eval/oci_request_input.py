@@ -11,6 +11,20 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 
+def cache_flush_message(*, session_id: str, launch_digest: str, request_id: str,
+                        nonce: str, batch_index: int) -> dict[str, object]:
+    """Bind a cache boundary to one session and its next undisclosed request."""
+    from cacheon.eval.oci_session_protocol import SESSION_SCHEMA, _binding_id, _bounded_int, _digest
+    return {
+        "schema": SESSION_SCHEMA, "type": "cache_flush",
+        "session_id": _binding_id(session_id, field_name="session_id"),
+        "launch_digest": _digest(launch_digest, field_name="launch_digest"),
+        "request_id": _binding_id(request_id, field_name="request_id"),
+        "nonce": _binding_id(nonce, field_name="nonce"),
+        "batch_index": _bounded_int(batch_index, field_name="batch_index", minimum=0, maximum=2_147_483_647),
+    }
+
+
 @dataclass(frozen=True)
 class BatchRequest:
     """One host-disclosed prompt batch and its exact evidence shape."""
