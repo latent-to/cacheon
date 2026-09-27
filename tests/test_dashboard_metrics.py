@@ -101,8 +101,6 @@ def _dashboard_db(path, reference, root, target):
         CREATE TABLE reservations(reservation_id TEXT, status TEXT, decision TEXT,
             reason TEXT, hotkey TEXT, content_hash TEXT, target_id TEXT, block INTEGER,
             event_index INTEGER, admission_epoch INTEGER);
-        CREATE TABLE arena_screen_dispositions(reservation_id TEXT, attempt_index INTEGER,
-            decision TEXT, lane TEXT, stage_count INTEGER, receipt_json TEXT);
         CREATE TABLE qualification_dispositions(reservation_id TEXT, attempt_index INTEGER,
             decision TEXT, reason TEXT, attempt_ref_json TEXT);
         CREATE TABLE settlement_candidates(reservation_id TEXT, status TEXT, reason TEXT,
@@ -150,7 +148,7 @@ def test_payment_recovery_links_actual_evaluation_without_rewriting_rejection(tm
     with sqlite3.connect(db) as con:
         con.execute("ALTER TABLE metadata ADD COLUMN value TEXT")
         for column in ("event_subindex", "invalid_reason", "transport_attempts", "screen_lane",
-                       "screen_status", "screen_attempts", "retry_position",
+                       "retry_position",
                        "eval_cost_payment_block", "eval_cost_payment_extrinsic_index"):
             con.execute(f"ALTER TABLE reservations ADD COLUMN {column}")
         con.execute("UPDATE reservations SET reason='eval_cost_payment_invalid'")

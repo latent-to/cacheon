@@ -35,7 +35,7 @@ from dashboard.disclosure import disclose_bundle, install_disclosure_routes
 from dashboard.competition import competition_label, submission_baseline, target_summary
 from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
 from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
-from dashboard.receipts import evaluation_recovery, screen_stages
+from dashboard.receipts import evaluation_recovery
 from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     measured_baseline,
@@ -91,17 +91,16 @@ CUTOFF_RESERVATION = os.environ.get(
 
 ACTIVE_STATUSES = (
     "deferred", "reserved", "fetching", "transport_retry", "published",
-    "screening", "promoted", "qualifying", "reproduction_pending",
+    "qualifying", "reproduction_pending",
 )
 TERMINAL_STATUSES = ("failed", "expired", "qualified")
 
 # Queue stage order used to compute a submission's pipeline progress.
 STAGE_ORDER = {
     "deferred": 0, "reserved": 1, "fetching": 2, "transport_retry": 2,
-    "published": 3, "screening": 4, "promoted": 5, "qualifying": 6,
-    "reproduction_pending": 7,
-    "held": 8, "no_decision": 8,
-    "qualified": 9, "failed": 9, "expired": 9,
+    "published": 3, "qualifying": 4, "reproduction_pending": 5,
+    "held": 6, "no_decision": 6,
+    "qualified": 7, "failed": 7, "expired": 7,
 }
 
 # ------------------------------------------------------------- db access ---
@@ -282,8 +281,6 @@ def submission_row(r: dict[str, Any]) -> dict[str, Any]:
         "admission_epoch": r["admission_epoch"],
         "competition": competition_label(r["block"], r.get("competition_arena", "")),
         "screen_lane": r.get("screen_lane") or "",
-        "screen_status": r.get("screen_status") or "",
-        "screen_attempts": r.get("screen_attempts") or 0,
         "transport_attempts": r.get("transport_attempts") or 0,
         "retry_position": r.get("retry_position") or 0,
         "stage_order": STAGE_ORDER.get(str(r["status"]), 0),
@@ -528,14 +525,6 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
     detail["publication_digest"] = r.get("publication_digest") or ""
     detail["block_hash"] = r.get("block_hash") or ""
 
-    detail["screen_attempts_history"] = [
-        {"attempt": d["attempt_index"], "decision": d["decision"],
-         "lane": d["lane"], "stage_count": d["stage_count"],
-         "stages": screen_stages(d["receipt_json"])}
-        for d in rows(con, """
-            SELECT attempt_index, decision, lane, stage_count, receipt_json
-            FROM arena_screen_dispositions WHERE reservation_id=? ORDER BY attempt_index
-        """, (rid,))]
     evidence_roots = qualification_evidence_roots(
         value("QUAL_EVIDENCE_STATE", QUAL_EVIDENCE_STATE), value("QUAL_EVIDENCE_EXTRA", QUAL_EVIDENCE_EXTRA), con, stage_dir=value("STAGE_ROOT", LOG_ROOT.parent / "stage"))
     try:

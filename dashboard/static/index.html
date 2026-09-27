@@ -253,8 +253,8 @@ function blockLink(t, links) {
   return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${b}</a>` : b;
 }
 const STATUS_TONE = {
-  qualified: "ok", promoted: "ok", crowned: "crown", published: "info",
-  screening: "info", qualifying: "info", reproduction_pending: "info",
+  qualified: "ok", crowned: "crown", published: "info",
+  qualifying: "info", reproduction_pending: "info",
   reserved: "mute", deferred: "mute", fetching: "info", transport_retry: "warn",
   held: "warn", no_decision: "warn", failed: "bad", expired: "mute",
   active: "ok", completed: "ok", released: "mute", inactive: "warn",
@@ -396,7 +396,6 @@ async function viewQueue() {
     <td>${key(s.hotkey, s.hotkey_links)}</td>
     <td>${fmtTime(s.submitted)}<div class="muted small">waiting ${dur(s.waiting_seconds)}</div></td>
     <td>${s.payment ? '<span class="pill ok">1 τ paid</span>' : '<span class="pill mute">unpaid</span>'}</td>
-    <td>${esc(s.screen_status || "—")} <span class="muted small">×${s.screen_attempts}</span></td>
     <td class="small muted">${esc(short(s.reason, 46))}</td></tr>`);
   const gpu = (q.gpu_requests || []).map((r) => `<tr>
     <td><code>${esc(r.request_id)}</code></td>
@@ -421,7 +420,7 @@ async function viewQueue() {
     ${table(["Stage","Reservation","Target","Hotkey","Started","Lease left","State"], active,
       "No active evaluation lease.")}
     <h2>Pending submissions (queue order)</h2>
-    ${table(["#","Reservation","Status","Target","Hotkey","Submitted","Fee","Screen","Reason"], pending,
+    ${table(["#","Reservation","Status","Target","Hotkey","Submitted","Fee","Reason"], pending,
       "Queue is empty — no active-pipeline submissions.")}
     <div class="grid2 queue-details">
       <div><h2>GPU spool requests</h2>${table(["Request","Queued","Deadline","Kind"], gpu, "Spool outbox empty.")}</div>
@@ -450,11 +449,10 @@ async function viewSubmissions() {
     <td>${s.payment
         ? `<a href="${esc(s.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(s.payment.ref)}</a>`
         : '<span class="muted">—</span>'}</td>
-    <td>${esc(s.screen_status || "—")}</td>
     <td>${esc(s.decision || "—")}</td>
     <td class="small muted" title="${esc(s.reason)}">${esc(short(s.reason || s.invalid_reason, 44))}${recoveryLink(s.evaluation_recovery)}</td>
   </tr>`);
-  const statuses = ["", "published", "promoted", "screening", "qualifying", "held",
+  const statuses = ["", "published", "qualifying", "reproduction_pending", "held",
     "qualified", "failed", "expired", "reserved", "deferred"];
   const page = Math.floor(subFilters.offset / 50) + 1;
   const pages = Math.max(1, Math.ceil(d.total / 50));
@@ -473,7 +471,7 @@ async function viewSubmissions() {
       <button class="btn" ${subFilters.offset + 50 < d.total ? "" : "disabled"}
         onclick="subFilters.offset+=50;refresh();">Next ›</button>
     </div>
-    ${table(["Reservation","Status","Hotkey","Submitted","Block","Target","Baseline","Fee tx","Screen","Decision","Detail"],
+    ${table(["Reservation","Status","Hotkey","Submitted","Block","Target","Baseline","Fee tx","Decision","Detail"],
       rows, "No submissions match.")}`;
 }
 
@@ -842,8 +840,6 @@ window.openDetail = async (rid) => {
         ${kv("Arena", baseline.arena_digest ? `<code>${esc(baseline.arena_digest)}</code>` : "—")}
       </dl>
     </div>`;
-  const screens = (d.screen_attempts_history || []).map((a) =>
-    `<tr><td>#${a.attempt}</td><td>${pill(a.decision)}</td><td>${esc(a.lane)}</td><td>${a.stage_count} stages</td></tr>`);
   const performance = (d.qualification_attempts || []).map(performanceMetrics).join("");
   const leases = (d.leases || []).map((l) =>
     `<tr><td>${pill(l.stage)}</td><td>${pill(l.state)}</td><td>${fmtTime(l.claimed)}</td>
@@ -904,7 +900,7 @@ window.openDetail = async (rid) => {
       ${kv("Eval fee", d.payment
           ? `<a href="${esc(d.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(d.payment.ref)}</a> · ${fmtTime(d.payment)}`
           : "unpaid / pre-fee")}
-      ${kv("Screen", esc(d.screen_status || "—") + " · lane " + esc(d.screen_lane || "—") + " · attempts " + d.screen_attempts)}
+      ${kv("Qualification lane", esc(d.screen_lane || "—"))}
       ${kv("Transport attempts", d.transport_attempts)}
       ${kv("Competition", d.competition)}
       ${kv("Admission epoch", d.admission_epoch)}
@@ -912,7 +908,6 @@ window.openDetail = async (rid) => {
     ${performance}
     ${baselineCard}
     ${settle}
-    ${screens.length ? "<h2>Screen attempts</h2>" + table(["#","Decision","Lane","Stages"], screens) : ""}
     ${leases.length ? "<h2>Evaluation leases</h2>" + table(["Stage","State","Claimed","Reason"], leases) : ""}
     ${forensics}`;
 };
