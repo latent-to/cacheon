@@ -103,10 +103,6 @@ def _root() -> str:
     return os.environ.get("CACHEON_SEAM_RECEIPT_DIR", "").strip()
 
 
-def _dir() -> str:
-    return _root()
-
-
 def _resolved_dir(raw: str) -> Path:
     try:
         return Path(raw).expanduser().resolve(strict=False)
@@ -194,7 +190,7 @@ def _write_to(root: Path, kind: str, payload: dict, *, tag: str = "") -> bool:
 
 def write(kind: str, payload: dict, *, tag: str = "") -> None:
     """Write one receipt file; never raises (a receipt must not break an engine)."""
-    raw = _dir()
+    raw = _root()
     if raw:
         _write_to(_resolved_dir(raw), kind, payload, tag=tag)
 
@@ -224,7 +220,7 @@ def _write_execution_once(
     entry: Callable[..., object] | None = None,
 ) -> None:
     """Write one slot execution receipt without adding hot-path file churn."""
-    rdir = _dir()
+    rdir = _root()
     if not rdir:
         # Do not consume the guard: a later independently receipted launch in this
         # process must still produce evidence.
@@ -445,7 +441,7 @@ def not_selected(slot: str, outcome: str, mismatches: Iterable) -> None:
             for field, reason, expected in detail
         ],
     }
-    rdir = _dir()
+    rdir = _root()
     if not rdir:
         return
     try:
@@ -467,7 +463,7 @@ def flush_calls() -> None:
     Never raises — accounting must not be able to kill an engine.
     """
 
-    rdir = _dir()
+    rdir = _root()
     if not rdir or not _CALLS:
         return
     try:

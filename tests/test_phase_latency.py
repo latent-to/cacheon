@@ -222,9 +222,9 @@ def test_real_frame_reader_uses_host_delivery_clock_and_checks_final_token_ids()
             clock.value = next(times)
             collector.observe(message)
 
-        evidence = transport.read_evidence(
-            request, deadline=100.0, on_progress=received
-        )
+        evidence = asyncio.run(transport.aread_response(
+            {request.request_id: request}, deadline=100.0, on_progress=received
+        ))[1]
         assert collector.finish(evidence, 18.0) == ((2.0, 5.0), (1.0, 7.0))
         assert evidence == raw
         assert not transport.has_pending_output()

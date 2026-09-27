@@ -567,52 +567,6 @@ class EvaluationLeaseStoreMixin:
                 raise _intake_error("evaluation lease event stream continued after terminal")
         return events
 
-    def heartbeat_evaluation_lease(
-        self,
-        lease: EvaluationLease,
-        *,
-        current_block: int,
-        lease_blocks: int = 30,
-    ) -> EvaluationLease:
-        """CAS-extend an active lease; every older lease object becomes stale."""
-
-        if (
-            type(lease) is not EvaluationLease
-            or type(lease_blocks) is not int
-            or lease_blocks <= 0
-            or lease_blocks > self.policy.expiry_blocks
-        ):
-            raise _intake_error("evaluation lease heartbeat bounds are malformed")
-        if self._evaluation_recovery_enabled:
-            self._generic_lease_operation_allowed(lease, "heartbeat")
-        self._require_evaluation_clock(current_block)
-        if self._durably_expire_exact_evaluation_lease_if_due(
-            lease, current_block
-        ):
-            raise _intake_error("evaluation lease expired before heartbeat")
-        with self._transaction():
-            self._active_evaluation_lease_row(lease)
-            expires = current_block + lease_blocks
-            if expires <= lease.expires_block:
-                raise _intake_error("evaluation heartbeat does not extend the deadline")
-            cursor = self._db.execute(
-                "UPDATE evaluation_leases SET expires_block=? WHERE lease_id=? "
-                "AND state='active' AND expires_block=?",
-                (expires, lease.lease_id, lease.expires_block),
-            )
-            if cursor.rowcount != 1:
-                raise _intake_error("evaluation lease changed during heartbeat")
-            retained = self._db.execute(
-                "SELECT * FROM evaluation_leases WHERE lease_id=?", (lease.lease_id,)
-            ).fetchone()
-            if retained is None:
-                raise _intake_error("evaluation lease disappeared during heartbeat")
-            extended = self._evaluation_lease(retained)
-            self._append_evaluation_lease_event(
-                extended, "heartbeat", finalized_block=current_block
-            )
-        return extended
-
     def expire_evaluation_leases(
         self, *, current_block: int
     ) -> tuple[EvaluationLease, ...]:
@@ -637,72 +591,6 @@ class EvaluationLeaseStoreMixin:
             if lease not in expired:
                 raise _intake_error("due evaluation lease was not expired")
         return True
-
-    def release_evaluation_lease(
-        self,
-        lease: EvaluationLease,
-        *,
-        current_block: int,
-        reason: str,
-        result_digest: str = "",
-    ) -> EvaluationLease:
-        """CAS-release infrastructure work without consuming a candidate attempt."""
-
-        if (
-            type(lease) is not EvaluationLease
-            or not isinstance(reason, str)
-            or not reason
-            or reason.strip() != reason
-            or len(reason) > 2_048
-            or any(ord(char) < 32 or ord(char) == 127 for char in reason)
-            or (result_digest and _HASH.fullmatch(result_digest) is None)
-        ):
-            raise _intake_error("evaluation lease release is malformed")
-        if self._evaluation_recovery_enabled:
-            self._generic_lease_operation_allowed(lease, "release")
-        self._require_evaluation_clock(current_block)
-        if self._durably_expire_exact_evaluation_lease_if_due(
-            lease, current_block
-        ):
-            raise _intake_error("evaluation lease expired before release")
-        with self._transaction():
-            self._active_evaluation_lease_row(lease)
-            if any(
-                self.get(member.reservation_id).status != member.prior_status
-                for member in lease.members
-            ):
-                raise _intake_error("evaluation lease no longer has its exact queue state")
-            cursor = self._db.execute(
-                "UPDATE evaluation_leases SET state='released',completed_block=?,"
-                "reason=?,result_digest=? WHERE lease_id=? AND state='active' "
-                "AND expires_block=?",
-                (
-                    current_block,
-                    reason,
-                    result_digest,
-                    lease.lease_id,
-                    lease.expires_block,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise _intake_error("evaluation lease changed during release")
-            members = self._db.execute(
-                "UPDATE evaluation_lease_members SET active=0 WHERE lease_id=? "
-                "AND active=1",
-                (lease.lease_id,),
-            )
-            if members.rowcount != len(lease.members):
-                raise _intake_error("evaluation lease members changed during release")
-            self._append_evaluation_lease_event(
-                lease,
-                "released",
-                finalized_block=current_block,
-                reason=reason,
-                result_digest=result_digest,
-            )
-            if not reason.startswith(self._CAP_EXEMPT_RELEASE_PREFIXES):
-                self._cap_infrastructure_releases(lease)
-        return lease
 
     _SYSTEMIC_RELEASE_CAP = 3
     # Deliberate operator actions never indicate a poisoned row.  Every other

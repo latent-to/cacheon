@@ -240,10 +240,6 @@ def _coordinator(
     return EvaluationCoordinator(**options)
 
 
-def _promote_one(_coordinator: EvaluationCoordinator) -> None:
-    """Published rows are claimable directly; kept until its callers drop it."""
-
-
 def _claim_qualification(
     coordinator: EvaluationCoordinator,
 ) -> ClaimedQualificationEvaluation:

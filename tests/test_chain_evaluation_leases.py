@@ -257,37 +257,6 @@ def test_expiry_wins_over_a_qualification_result_at_its_deadline(tmp_path):
         )] == ["claimed", "expired"]
 
 
-def test_heartbeat_is_cas_and_stale_completion_is_rejected(tmp_path):
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        original = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-a", current_block=10, lease_blocks=10
-        )
-        assert original is not None
-        _advance(store, 15)
-        extended = store.heartbeat_evaluation_lease(
-            original, current_block=15, lease_blocks=10
-        )
-        assert extended.expires_block == 25
-        _advance(store, 16)
-        with pytest.raises(IntakeError, match="stale"):
-            with store.accept_evaluation_result(
-                original, current_block=16, result_digest=_h("stale-result")
-            ):
-                raise AssertionError("stale lease entered its mutation context")
-        with store.accept_evaluation_result(
-            extended, current_block=16, result_digest=_h("qualification-result")
-        ) as members:
-            assert tuple(row.reservation_id for row in members) == (
-                row.reservation_id,
-            )
-            _complete(store, extended)
-        assert store.get(row.reservation_id).status == "failed"
-        assert [event.event_type for event in store.evaluation_lease_events(
-            lease_id=extended.lease_id
-        )] == ["claimed", "heartbeat", "completed"]
-
-
 def test_only_one_claimer_can_own_one_queue_row(tmp_path):
     with _store(tmp_path) as store:
         row = _published_rows(store, 1)[0]
@@ -372,6 +341,7 @@ def test_default_capacity_is_one_and_unresolved_predecessors_fence_settlement(tm
             stage="qualification",
             owner="worker-a",
             current_block=10,
+            lease_blocks=1,
             max_members=1,
         )
         assert active is not None
@@ -407,41 +377,11 @@ def test_default_capacity_is_one_and_unresolved_predecessors_fence_settlement(tm
         assert store.has_pending_settlement() is False
         assert store.lease_settlement_cohort(current_block=10) is None
         _advance(store, 11)
-        store.release_evaluation_lease(
-            active, current_block=11, reason="operator_release"
-        )
+        assert store.expire_evaluation_leases(current_block=11) == (active,)
         assert store.has_pending_settlement() is False
         for row in rows[:2]:
             store.expire(row.reservation_id, current_block=500010, reason="operator_terminal_expiry")
         assert store.has_pending_settlement() is True
-
-
-def test_systemic_release_retains_diagnostic_and_consumes_no_attempt(tmp_path):
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        lease = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-a", current_block=10
-        )
-        assert lease is not None
-        failure = _h("oci-backend-failure")
-        _advance(store, 11)
-        store.release_evaluation_lease(
-            lease,
-            current_block=11,
-            reason="oci_backend",
-            result_digest=failure,
-        )
-        retained = store.get(row.reservation_id)
-        assert (retained.status, store.qualification_attempts(row.reservation_id)) == (
-            "published",
-            0,
-        )
-        event = store.evaluation_lease_events(lease_id=lease.lease_id)[-1]
-        assert (event.event_type, event.reason, event.result_digest) == (
-            "released",
-            "oci_backend",
-            failure,
-        )
 
 
 def test_qualification_cohort_is_claimed_and_completed_atomically(tmp_path):
@@ -639,98 +579,3 @@ def test_event_reader_recomputes_canonical_identity(tmp_path):
         )
         with pytest.raises(IntakeError, match="event identity"):
             store.evaluation_lease_events(lease_id=lease.lease_id)
-
-
-def test_exempt_releases_never_trip_the_cap(tmp_path):
-    # Deliberate operator actions are the only release class outside the cap;
-    # four of them, one more than the cap, park nothing.
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        clock = 10
-        for reason in (
-            "operator_release",
-            "operator:verified-no-execution",
-            "operator_requeue",
-            "operator_release",
-        ):
-            _advance(store, clock)
-            lease = store.claim_evaluation_lease(
-                stage="qualification", owner="worker-a", current_block=clock
-            )
-            assert lease is not None
-            _advance(store, clock + 1)
-            store.release_evaluation_lease(
-                lease, current_block=clock + 1, reason=reason
-            )
-            clock += 2
-        assert store.get(row.reservation_id).status == "published"
-
-
-def test_release_cap_counts_consecutively_and_resets_on_completion(tmp_path):
-    # Two refusals stay under the cap. A completed result then resets the
-    # counter for authenticated pre-resident qualification refusals.
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        clock = 10
-
-        def refuse_once() -> None:
-            nonlocal clock
-            _advance(store, clock)
-            lease = store.claim_evaluation_lease(
-                stage="qualification", owner="worker-a", current_block=clock
-            )
-            assert lease is not None
-            _advance(store, clock + 1)
-            store.release_evaluation_lease(
-                lease,
-                current_block=clock + 1,
-                reason="worker_pre_resident:adapter_request_failed",
-            )
-            clock += 2
-
-        for _ in range(2):
-            refuse_once()
-            assert store.get(row.reservation_id).status == "published"
-        _advance(store, clock)
-        lease = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-a", current_block=clock
-        )
-        assert lease is not None
-        authority, failure = _h("reset-authority"), _h("reset-failure")
-        with store.accept_evaluation_result(
-            lease, current_block=clock, result_digest=_h("reset-result")
-        ):
-            store.mark_qualifying(
-                row.reservation_id, authority, AUTHORITY, service_digest=_h("service")
-            )
-            store.apply_qualification_batch(
-                QualificationIntakeBatch(
-                    authority,
-                    (
-                        QualificationIntakeOutcome(
-                            row.reservation_id,
-                            row.delta_fingerprint.selected_delta_digest,
-                            authority,
-                            QualificationDecision.NO_DECISION,
-                            "outer_session",
-                            True,
-                            failure_digest=failure,
-                        ),
-                    ),
-                    retry_plan=QualificationRetryPlan(
-                        authority, "requeue", ((row.reservation_id,),), failure
-                    ),
-                ),
-                current_finalized_block=clock,
-            )
-        assert store.get(row.reservation_id).status == "held"
-        store.release_hold(row.reservation_id, reason="operator:verified-no-execution")
-        clock += 2
-        for round_number in (1, 2, 3):
-            refuse_once()
-            retained = store.get(row.reservation_id)
-            if round_number < 3:
-                assert retained.status == "published", f"round {round_number} parked"
-            else:
-                assert retained.status == "held"
-                assert retained.reason == "systemic_release_cap:3"

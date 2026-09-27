@@ -416,11 +416,11 @@ refresh is allowed if the cohort expires again; a further refresh requires the
 authority to set the explicit boolean `allow_repeat_refresh`. This is not a
 generic resurrection or a way to rerun a favorable terminal result.
 
-For claim, heartbeat, and release, the durable store mutation and canonical JSON
-emission are not one transaction. A process or output failure after the store commits
-can therefore leave the result ambiguous. These mutating verbs have no process-level
-idempotency promise: inspect the authoritative durable lease state before deciding
-whether to issue another exact operation.
+For claim, the durable store mutation and canonical JSON emission are not one
+transaction. A process or output failure after the store commits can therefore
+leave the result ambiguous. Claim has no process-level idempotency promise:
+inspect the authoritative durable lease state before deciding whether to issue
+another exact operation.
 
 ### `chain-validate`
 

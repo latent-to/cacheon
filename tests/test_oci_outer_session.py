@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import os
@@ -803,7 +804,7 @@ def test_worker_error_attaches_private_artifact_receipt_path_and_digest(
             frame_message(error, max_bytes=MAX_CONTROL_BYTES),
         )
         with pytest.raises(OuterSessionWorkerError) as raised:
-            transport.read_evidence(current, deadline=time.monotonic() + 1)
+            asyncio.run(transport.aread_response({current.request_id: current}, deadline=time.monotonic() + 1))[1]
         assert raised.value.diagnostic == diagnostic
         rendered = str(raised.value)
         assert repr(str(receipt.artifact_path)) in rendered
@@ -822,7 +823,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
     try:
         os.write(client.response_write, evidence_frame(_batch_evidence(stale), request=stale))
         with pytest.raises(OuterSessionProtocolError, match="binding"):
-            transport.read_evidence(current, deadline=time.monotonic() + 1)
+            asyncio.run(transport.aread_response({current.request_id: current}, deadline=time.monotonic() + 1))[1]
     finally:
         transport.abort()
         client.close()
@@ -838,7 +839,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
         )
         os.write(client.response_write, frame_message(error, max_bytes=MAX_CONTROL_BYTES))
         with pytest.raises(OuterSessionWorkerError, match="failed"):
-            transport.read_evidence(current, deadline=time.monotonic() + 1)
+            asyncio.run(transport.aread_response({current.request_id: current}, deadline=time.monotonic() + 1))[1]
     finally:
         transport.abort()
         client.close()
@@ -847,7 +848,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
     try:
         frame = evidence_frame(_batch_evidence(current), request=current)
         os.write(client.response_write, frame + b"x")
-        assert transport.read_evidence(current, deadline=time.monotonic() + 1)
+        assert asyncio.run(transport.aread_response({current.request_id: current}, deadline=time.monotonic() + 1))[1]
         assert transport.has_pending_output()
     finally:
         transport.abort()

@@ -128,13 +128,9 @@ class Manifest:
     raw: dict[str, Any] = field(default_factory=dict)
     competition: CompetitionEntry | None = None
 
-    def ops_for(self, slot: str) -> tuple[OpEntry, ...]:
-        """Return every implementation row for one semantic slot."""
-        return tuple(op for op in self.ops if op.slot == slot)
-
     def op_for(self, slot: str, variant: str | None = None) -> OpEntry | None:
         """Return one row without allowing manifest order to select a variant."""
-        matches = self.ops_for(slot)
+        matches = tuple(op for op in self.ops if op.slot == slot)
         if variant is not None:
             return next((op for op in matches if op.variant == variant), None)
         if len(matches) > 1:

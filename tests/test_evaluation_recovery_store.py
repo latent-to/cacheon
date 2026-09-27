@@ -161,14 +161,6 @@ def test_protected_qualification_rejects_every_generic_mutation(tmp_path):
         assert recovery is not None
         lease = recovery.lease
 
-        with pytest.raises(IntakeError, match="generic heartbeat"):
-            store.heartbeat_evaluation_lease(
-                lease, current_block=10, lease_blocks=3
-            )
-        with pytest.raises(IntakeError, match="generic release"):
-            store.release_evaluation_lease(
-                lease, current_block=10, reason="operator_release"
-            )
         with pytest.raises(sqlite3.IntegrityError, match="protected qualification"):
             store._db.execute(
                 "UPDATE evaluation_leases SET state='released' WHERE lease_id=?",
@@ -275,25 +267,6 @@ def test_recovery_renewal_preserves_identity_but_cannot_commit_before_import(
         ] == ["claimed"]
 
 
-def test_generic_qualification_release_is_impossible(tmp_path):
-    other = PROFILES[1]
-    with _store(tmp_path, other) as store:
-        _published(store, other)
-        recovery = store.claim_recoverable_qualification(
-            owner="worker", current_block=10, lease_blocks=5, max_members=1
-        )
-        assert recovery is not None
-        with pytest.raises(IntakeError, match="generic release"):
-            store.release_evaluation_lease(
-                recovery.lease, current_block=10, reason="operator_release"
-            )
-        held = store.hold_recovery(
-            recovery, current_block=10, reason="qualification_requires_review"
-        )
-        assert held.phase is RecoveryPhase.HELD
-        assert held.action is RecoveryAction.HOLD
-
-
 def test_result_completion_before_import_is_rejected_without_mutation(tmp_path):
     profile = PROFILES[0]
     with _store(tmp_path, profile) as store:
@@ -366,10 +339,6 @@ def test_missing_recovery_for_active_qualification_is_typed_hold(tmp_path):
         _advance(reopened, 12)
         with pytest.raises(EvaluationRecoveryHoldError, match="HOLD"):
             reopened.expire_evaluation_leases(current_block=12)
-        with pytest.raises(EvaluationRecoveryHoldError, match="HOLD"):
-            reopened.release_evaluation_lease(
-                lease, current_block=12, reason="operator_release"
-            )
         with pytest.raises(sqlite3.IntegrityError, match="protected qualification"):
             reopened._db.execute(
                 "UPDATE evaluation_leases SET state='expired' WHERE lease_id=?",

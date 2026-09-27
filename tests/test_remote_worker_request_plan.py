@@ -160,8 +160,6 @@ def _authority(
     if recoverable:
         coordinator_options["store_factory"] = RecoverableFinalizedIntakeStore
     coordinator = fixtures._coordinator(root, service, cursor, **coordinator_options)
-    for _name in cohort:
-        fixtures._promote_one(coordinator)
     claim = fixtures._claim_qualification(coordinator)
     assert len(claim.publications) == len(cohort)
     credential = RemoteWorkerCredential("qualification-key-v1", b"q" * 32)
