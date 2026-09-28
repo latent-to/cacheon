@@ -58,13 +58,15 @@ _SAMPLE = 64  # served pages checked per handoff
 _CHUNK = 64  # pages hashed per pass, which bounds the temporaries
 _CELLS = 1 << 24  # one-byte cells of the pair table, two per pair
 # The methods the scheduler hands requests through; the check runs inside them.
-_HANDOFFS = frozenset({"match_prefix", "cache_unfinished_req", "cache_finished_req", "reset"})
+_HANDOFFS = frozenset({"match_prefix", "cache_unfinished_req", "cache_finished_req", "reset",
+                       "ready_to_load_host_cache"})
 # Verdict bits: the device raises them, a later handoff reads them.
-_FAKE, _MOVED, _ROW = 1, 2, 4
+_FAKE, _MOVED, _ROW, _STATE = 1, 2, 4, 8
 _VERDICTS = {
     _FAKE: "served a page that does not hold the KV the engine computed for its prefix",
     _MOVED: "moved KV slots a request computed itself",
     _ROW: "left a request row that disagrees with the request's prefix",
+    _STATE: "served or changed unrecorded sliding-window or recurrent state",
 }
 
 
@@ -138,7 +140,8 @@ class _Guard:
         self.allocator = params.token_to_kv_pool_allocator
         self.requests = params.req_to_token_pool
         self.page = int(params.page_size)
-        self.bigram = int(bool(params.is_eagle))
+        # The pinned tree disables EAGLE bigram keys for recurrent checkpoints.
+        self.bigram = int(bool(params.is_eagle) and not ctx.is_hybrid_ssm)
         self.device = self.requests.req_to_token.device  # with its index, unlike a flag string
         cuda = self.device.type == "cuda"
         # The forward pass writes KV on its own stream; the check reads behind it.
@@ -149,7 +152,8 @@ class _Guard:
         seed = int.from_bytes(os.urandom(8), "little") >> 1
         draws = torch.Generator().manual_seed(seed)
         self.draws = torch.Generator(device=self.device).manual_seed(seed // 3)
-        self.layers = self._layers(KV_BUFFERS, params, draws)
+        self.layers = self._layers(KV_BUFFERS, params, draws,
+                                   allow_empty=ctx.is_hybrid_swa or ctx.is_hybrid_ssm)
         width = len(self._words(torch.arange(self.page, device=self.device)[None])[0])
         self.weights = torch.randint(1, _MODULI[0][0], (width,), generator=draws).to(self.device)
         self.mix = torch.randint(1, _MODULI[1][0], (len(_MODULI), 2), generator=draws).tolist()
@@ -162,6 +166,11 @@ class _Guard:
         self.event = torch.cuda.Event() if cuda else None
         self.namespaces: dict[tuple, int] = {}
         self.held: dict[object, _Held] = {}
+        self.hybrid = None
+        if ctx.is_hybrid_swa or ctx.is_hybrid_ssm:
+            from cacheon.integrations.sglang_cache_state import PrefixStateAudit
+
+            self.hybrid = PrefixStateAudit(self, ctx)
 
     def refuse(self, message, **kwargs) -> NoReturn:
         _refuse(message, candidate=self.candidate, **kwargs)
@@ -172,7 +181,8 @@ class _Guard:
             return _receipts.invoke(ADDRESS, function, *args, kwargs=kwargs)
         return function(*args, **kwargs)
 
-    def _layers(self, names: tuple[str, ...], params, draws) -> list[tuple[Any, bool]]:
+    def _layers(self, names: tuple[str, ...], params, draws,
+                *, allow_empty=False) -> list[tuple[Any, bool]]:
         """Draw the layers hashed, per KV buffer kind of the target and draft pools.
 
         Token-addressed buffers hold one row per slot; the DSA indexer's hold one
@@ -181,6 +191,7 @@ class _Guard:
 
         torch = self.torch
         pools = (self.allocator.get_kvcache(), *params.mtp_draft_device_pools)
+        pools = tuple(getattr(pool, "full_kv_pool", pool) for pool in pools)
         kinds = [(getattr(pool, name, None), False) for pool in pools for name in names]
         kinds += [(getattr(pool, "index_k_with_scale_buffer", None), True) for pool in pools]
         chosen = []
@@ -189,6 +200,8 @@ class _Guard:
             picks = torch.randperm(len(layers), generator=draws)[:_LAYERS].tolist()
             chosen += [(layers[i], by_page) for i in sorted(picks)]
         if not any(not by_page for _, by_page in chosen):
+            if allow_empty and all(getattr(pool, "layer_num", None) == 0 for pool in pools):
+                return []
             raise RuntimeError(f"{ADDRESS}: no KV buffer recognized on {type(pools[0]).__name__}")
         return chosen
 
@@ -202,7 +215,9 @@ class _Guard:
             rows = buffer.index_select(0, index).reshape(len(slots), -1)
             rows = rows if rows.dtype == torch.uint8 else rows.view(torch.uint8)
             parts.append(rows.view(torch.int32) if rows.shape[1] % 4 == 0 else rows.to(torch.int32))
-        return torch.cat(parts, dim=1)
+        return torch.cat(parts, dim=1) if parts else torch.empty(
+            (len(slots), 0), dtype=torch.int32, device=self.device,
+        )
 
     def _content(self, slots):
         prime = _MODULI[0][0]
@@ -267,18 +282,21 @@ class _Guard:
             self.refuse("the cache must hold the engine's KV allocator and request pool",
                     error=TypeError, phase=phase)
 
-    def matched(self, cache, key, result, kind: type) -> None:
+    def matched(self, cache, params, result, kind: type) -> None:
         """Refuse a match that is malformed or claims more tokens than its key allows."""
 
         self.owned(cache)
         if not isinstance(result, kind) or not isinstance(result.device_indices, self.torch.Tensor):
             self.refuse(f"match_prefix returned a {type(result).__name__}, not a MatchResult of slots")
+        key = params.key
         limit = len(key) - (0 if getattr(key, "is_bigram", False) else self.bigram)
         claimed = len(result.device_indices) + result.host_hit_length
         if claimed > limit:
             self.refuse(f"it claimed {claimed} cached tokens of a {limit}-token key")
+        if self.hybrid is not None:
+            self.hybrid.matched(params, result)
 
-    def handoff(self, cache, req, ids):
+    def handoff(self, cache, req, ids, *, finished=False):
         """Check what a request read from the cache and record what its forward passes computed.
 
         Runs before the cache sees the request, so nothing the cache does at this
@@ -301,6 +319,8 @@ class _Guard:
         if self.forward is not None:
             torch.cuda.current_stream().wait_stream(self.forward)
         row = self.requests.req_to_token[req.kv.req_pool_idx, :n].to(torch.int64)
+        if self.hybrid is not None:
+            self.hybrid.record(req, ids, row, held, finished=finished)
         if held.kept is not None:
             # A finished request may hand over fewer tokens than it last held.
             last = min(held.until, n)
@@ -348,6 +368,8 @@ class _Guard:
         self._flag(_MOVED, after[protected:] != row[protected:])
         held.own = max(held.own, protected)
         held.until, held.kept = n, after[held.own:].clone()
+        if self.hybrid is not None:
+            self.hybrid.settled(req, row)
         self.publish()
 
     def finished(self, req) -> None:
@@ -370,6 +392,8 @@ class _Guard:
         self.poll(block=True)
         self.table.zero_()
         self.held.clear()
+        if self.hybrid is not None:
+            self.hybrid.reset()
 
 
 class _Pinned:
@@ -426,7 +450,7 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
         @pinned
         def match_prefix(self, params):
             result = guard.invoke(super().match_prefix, params)
-            guard.matched(self, params.key, result, MatchResult)
+            guard.matched(self, params, result, MatchResult)
             return result
 
         @pinned
@@ -438,7 +462,7 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
         @pinned
         def cache_finished_req(self, req, *args, **kwargs):
             tokens = req.origin_input_ids + req.output_ids
-            guard.handoff(self, req, tokens[: kwargs["kv_len_to_handle"]])
+            guard.handoff(self, req, tokens[: kwargs["kv_len_to_handle"]], finished=True)
             guard.invoke(super().cache_finished_req, req, *args, **kwargs)
             guard.finished(req)
 
@@ -446,6 +470,13 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
         def reset(self):
             guard.reset()
             return guard.invoke(super().reset)
+
+        @pinned
+        def ready_to_load_host_cache(self):
+            result = guard.invoke(super().ready_to_load_host_cache)
+            if guard.hybrid is not None:
+                guard.hybrid.ready(self)
+            return result
 
     for klass in reversed(cls.__mro__[: cls.__mro__.index(base)]):  # the most derived wins
         for name, value in vars(klass).items():
@@ -459,11 +490,10 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
 def _bind(impl, ctx, stock):
     """Pass the runtime-built object to the candidate and guard its handoffs."""
 
-    if ctx.is_hybrid_swa or ctx.is_hybrid_ssm:
+    if (ctx.is_hybrid_swa or ctx.is_hybrid_ssm) and ctx.disable_radix_cache:
         if impl is None:
             return stock(ctx)
-        # Missing validator coverage is infrastructure, not a failed miner cache.
-        raise RuntimeError(f"{ADDRESS}: state validation is unavailable for sliding-window or recurrent caches")
+        raise RuntimeError(f"{ADDRESS}: this hybrid runtime disables prefix caching")
     base = importlib.import_module("sglang.srt.mem_cache.base_prefix_cache").BasePrefixCache
     if impl is not None and inspect.isclass(impl.entry):
         _refuse("entry must accept the runtime cache, not its construction parameters",
