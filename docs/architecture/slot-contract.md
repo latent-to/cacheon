@@ -414,6 +414,10 @@ full-attention KV; sliding-window and recurrent state are not yet enabled. A new
 model does not require a new miner contract, but unimplemented state validation
 must not be presented as working support.
 
+The [GLM GPU checks](../results/glm-prefix-cache.md) exercise prefix reuse,
+native host restoration, reset, graph execution, audit import and rejection of
+corrupted cached state under this contract.
+
 Cache versions replace one another within this target. Iterative improvement
 means the next implementation retains the useful behavior of the current winner
 and beats that complete winner. The validator does not merge arbitrary cache
