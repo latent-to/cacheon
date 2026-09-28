@@ -57,7 +57,6 @@ _LAYERS = 4  # layers hashed per KV buffer kind, drawn once per engine
 _SAMPLE = 64  # served pages checked per handoff
 _CHUNK = 64  # pages hashed per pass, which bounds the temporaries
 _CELLS = 1 << 24  # one-byte cells of the pair table, two per pair
-_AUDIT_MODE = "kv_content"
 # The methods the scheduler hands requests through; the check runs inside them.
 _HANDOFFS = frozenset({"match_prefix", "cache_unfinished_req", "cache_finished_req", "reset"})
 # Verdict bits: the device raises them, a later handoff reads them.
@@ -361,7 +360,8 @@ class _Guard:
             _receipts.completed(ADDRESS)
         if self.candidate and audit.sampled():
             self.poll(block=True)
-            audit.record_fraction(ADDRESS, 1.0, 1.0, _AUDIT_MODE)
+            # The worker's typed receipt rejects the old "kv_content" mode (2026-09-29).
+            audit.record_fraction(ADDRESS, 1.0, 1.0, "matched_ratio")
 
     def reset(self) -> None:
         """Read every pending verdict, then forget every pair: a flush invalidates the pools."""

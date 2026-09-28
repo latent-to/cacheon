@@ -595,6 +595,12 @@ def test_a_claim_longer_than_its_key_or_not_a_match_is_refused_at_the_match(sgla
 
 
 def test_an_audited_request_waits_for_its_verdict_and_is_receipted(sglang, monkeypatch):
+    from cacheon.audit_gate import gate
+    from cacheon.eval.oci_session_protocol import AuditReceiptFacts
+
+    monkeypatch.setattr(receipts, "_IDENTITY", None)
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "1")
     monkeypatch.setitem(audit._state, "rate", 1.0)
     monkeypatch.setitem(audit._state, "rng", __import__("random").Random(0))
     monkeypatch.setattr(audit, "_stats", {})
@@ -602,7 +608,10 @@ def test_an_audited_request_waits_for_its_verdict_and_is_receipted(sglang, monke
     engine.serve(A)
     engine.serve(A + B)
     (row,) = receipts.collect(sglang.receipts, "audit")
-    assert (row["slot"], row["n"], row["violations"], row["mode"]) == (ADDRESS, 2, 0, "kv_content")
+    facts = AuditReceiptFacts.from_receipt_dict(row)
+    assert (facts.slot, facts.n, facts.violations, facts.mode) == (ADDRESS, 2, 0, "matched_ratio")
+    assert gate([facts.to_gate_dict()], min_calls=2,
+                expected_slots=[ADDRESS], expected_member_count=1)[0] == "PASS"
 
 
 def test_a_cache_that_trades_the_engine_pools_away_is_refused_at_its_next_handoff(sglang):
