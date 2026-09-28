@@ -38,6 +38,7 @@ from cacheon.eval.oci_backend import (
 )
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
+from cacheon.eval.qualification_trajectories import _rollout
 from cacheon.eval.qualification_continuation import (
     AuditContinuation, QualificationContinuation, QualificationContinuationError,
     QualityContinuation,
@@ -712,19 +713,19 @@ class ResidentSpeedWitness:
             raise QualificationRunnerError(str(exc)) from None
         kwargs = {
             "selected_delta_digest": value.selected_delta_digest,
-            "candidate_launch_digest": value.candidate_execution.launch_digest,
+            "candidate_launch_digest": plan.candidate.launch.digest,
             "calibration_digest": value.policy.calibration_digest,
             "calibration_context_digest": value.policy.calibration_context_digest,
             "workload_digest": value.workload_digest,
             "baseline_runtime_resource_policy_digest": (
-                value.baseline_execution.resource_policy_digest
+                plan.baseline.runtime_resource_policy_digest
             ),
             "candidate_runtime_resource_policy_digest": (
-                value.candidate_execution.resource_policy_digest
+                plan.candidate.runtime_resource_policy_digest
             ),
             "plan_digest": value.plan_digest,
-            "baseline_lane_digest": value.baseline_lane_digest,
-            "candidate_lane_digest": value.candidate_lane_digest,
+            "baseline_lane_digest": plan.baseline_lane_digest,
+            "candidate_lane_digest": plan.candidate_lane_digest,
             "baseline_quiescence_digest": value.baseline_quiescence.digest,
             "candidate_quiescence_digest": value.candidate_quiescence.digest,
             "raw_crossover_digest": value.digest,
@@ -1652,71 +1653,6 @@ def _hidden_judge_binding(
         profile.hidden_task_policy_digest,
     )
 
-def _rollout(
-    *,
-    profile: QualificationProfile,
-    prompt_digest: str,
-    frame: dict[str, object],
-    role_input: ReferenceRoleInput,
-    role_evidence: object,
-    hidden_judge: HiddenJudge,
-) -> RawRolloutEvidence:
-    tokens = []
-    evidence_tokens = tuple(getattr(role_evidence, "tokens"))
-    for position, (output_id, support, teacher, raw_position) in enumerate(zip(
-        role_input.output_ids,
-        role_input.supports,
-        evidence_tokens,
-        frame["top_logprobs"],
-        strict=True,
-    )):
-        by_token = {row[1]: float(row[0]) for row in raw_position}
-        if tuple(sorted(by_token)) != support:
-            raise QualificationRunnerError("rollout support differs from its T request")
-        if support:
-            rollout = distribution_from_f32_logprobs(
-                support,
-                tuple(by_token[token] for token in support),
-                true_argmax_token_id=raw_position[0][1],
-            )
-            teacher_distribution = distribution_from_f32_logprobs(
-                support,
-                teacher.support_logprobs,
-                true_argmax_token_id=teacher.true_argmax_token_id,
-            )
-        else:
-            # Teacher-NLL-only mode (topk_width 0): the retained frames carry
-            # no top-k and no distribution evidence exists to project.
-            rollout = teacher_distribution = None
-        tokens.append(RawTokenEvidence(
-            position,
-            output_id,
-            target_nll_from_f32(teacher.target_logprob),
-            teacher_distribution,
-            rollout,
-        ))
-    tasks = _task_digests(profile, prompt_digest)
-    receipt = hidden_judge(
-        prompt_digest=prompt_digest,
-        output_ids=role_input.output_ids,
-        task_digests=tasks,
-    )
-    if (
-        type(receipt) is not HiddenJudgeReceipt
-        or receipt.binding_digest != _hidden_judge_binding(profile).digest
-        or receipt.prompt_digest != prompt_digest
-        or receipt.output_ids_digest
-        != hidden_judge_output_digest(prompt_digest, role_input.output_ids)
-        or receipt.task_digests != tasks
-    ):
-        raise QualificationRunnerError("hidden judge receipt differs from the sealed rollout")
-    return RawRolloutEvidence(
-        tuple(tokens),
-        tuple(
-            RawHiddenTaskResult(task, passed)
-            for task, passed in zip(tasks, receipt.passed, strict=True)
-        ),
-    )
 
 def _raw_artifact(
     lifecycle: ResidentMarginalLifecycleEvidence,
@@ -2262,6 +2198,10 @@ def reopen_causal_qualification(
                 and tuple(row.lane_digest for row in rates)
                 == expected_lanes
             )
+            if plan.policy.goodput is not None:
+                session_shape_valid = not rates and (
+                    speed.baseline_lane_digest, speed.candidate_lane_digest
+                ) == (plan.baseline_lane_digest, plan.candidate_lane_digest)
             if (
                 (speed.selected_delta_digest, speed.candidate_launch_digest,
                  speed.evidence_digest)

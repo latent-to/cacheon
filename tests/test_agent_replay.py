@@ -242,3 +242,13 @@ def test_lockstep_rounds_release_together_in_session_order_and_fail_a_starved_fi
             await starved.hold('r-x', 'session-x')
 
     asyncio.run(scenario())
+
+
+def test_elapsed_accounting_keeps_the_same_lockstep_arrival_policy(tmp_path):
+    from dataclasses import replace
+
+    plan, _, _ = _inputs(tmp_path)
+    changed = replace(plan, elapsed_cost=True)
+    assert plan.workload_identity()['arrival'] == changed.workload_identity()['arrival'] == 'lockstep-rounds'
+    assert 'time_accounting' not in plan.workload_identity()
+    assert changed.workload_identity()['time_accounting'] == 'elapsed-serving-span'

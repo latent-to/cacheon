@@ -135,6 +135,7 @@ class ResidentCrossoverPlan:
         replay = self.baseline.session_plan.replay
         if bool(replay) != bool(self.policy.goodput) or (replay is not None and (
             len(replay.loads) != 1 or replay.contract != self.policy.goodput.contract
+            or replay.elapsed_cost != bool(self.policy.goodput.error_rate)
         )):
             raise CrossoverRuntimeError("goodput plan requires one sealed load and its service contract")
         allowed_differences = {
@@ -397,6 +398,7 @@ class ResidentCrossoverEvidence:
     prompt_pairs: tuple[tuple[str, int, int], ...] = dataclass_field(default=(), metadata={"wire_optional": True})
     reference_inputs: tuple[ReferencePromptInput, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
     quality_entropy: SelectionEntropyReceipt | None = dataclass_field(default=None, metadata={"wire_optional": True})
+    prior_executions: tuple[EngineExecutionEvidence, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         version = (
@@ -408,11 +410,15 @@ class ResidentCrossoverEvidence:
             raise CrossoverRuntimeError(
                 "resident crossover evidence below version 8 is sealed history"
             )
-        if version != 16 and (self.prompt_pairs or self.reference_inputs or self.quality_entropy is not None):
+        if version not in (16, 17) and (self.prompt_pairs or self.reference_inputs or self.quality_entropy is not None):
             raise CrossoverRuntimeError("replay quality control requires a replay speed policy")
+        if ((version == 17 and (len(self.prior_executions) != 2
+                               or any(type(v) is not EngineExecutionEvidence for v in self.prior_executions)))
+            or (version != 17 and self.prior_executions)):
+            raise CrossoverRuntimeError("swapped replay requires both first-orientation executions")
         # Only the new policy versions may retain one complete repeated round.
-        roles = () if version == 16 else resident_speed_roles(version, len(self.rates))
-        schedule_valid = (not self.escalated and type(self.goodput) is GoodputReadSet) if version == 16 else (
+        roles = () if version in (16, 17) else resident_speed_roles(version, len(self.rates))
+        schedule_valid = (not self.escalated and type(self.goodput) is GoodputReadSet) if version in (16, 17) else (
             self.goodput is None and self.escalated is (version >= 13 and len(self.rates) > len(schedule_roles(version)))
         )
         for field in (
@@ -464,6 +470,11 @@ class ResidentCrossoverEvidence:
     def regrade(self, plan: ResidentCrossoverPlan) -> SpeedupVerdict:
         """Recompute the adaptive grade only from the sealed plan and raw spans."""
 
+        final_plan = plan
+        if plan.policy.version == 17:
+            from cacheon.eval.goodput_runtime import _orientation_plan
+            windows = plan.baseline.session_plan.replay.windows
+            final_plan = _orientation_plan(plan, windows-windows//2, swapped=True)
         if (
             type(plan) is not ResidentCrossoverPlan
             or self.plan_digest != plan.digest
@@ -471,12 +482,12 @@ class ResidentCrossoverEvidence:
             or self.policy != plan.policy
             or self.workload_digest
             != marginal_workload_digest(plan.baseline.session_plan)
-            or self.baseline_lane_digest != _expected_lane_digest(plan.baseline)
-            or self.candidate_lane_digest != _expected_lane_digest(plan.candidate)
+            or self.baseline_lane_digest != _expected_lane_digest(final_plan.baseline)
+            or self.candidate_lane_digest != _expected_lane_digest(final_plan.candidate)
             or self.baseline_quiescence.namespace_digest
-            != plan.baseline.executor_namespace_digest
+            != final_plan.baseline.executor_namespace_digest
             or self.candidate_quiescence.namespace_digest
-            != plan.candidate.executor_namespace_digest
+            != final_plan.candidate.executor_namespace_digest
             or any(
                 (row.container_ids, row.lease_records, row.resource_entries)
                 != ((), (), ())
@@ -546,6 +557,8 @@ class ResidentCrossoverEvidence:
                 "plan": self.plan_digest,
                 "rates": [row.to_dict() for row in self.rates],
                 **({"goodput": self.goodput.to_dict()} if self.goodput is not None else {}),
+                **({"prior_executions": [_execution_digest(row) for row in self.prior_executions]}
+                   if self.prior_executions else {}),
                 **({"prompt_pairs": self.prompt_pairs,
                     "reference_inputs": [{"prompt": row.prompt_digest,
                                           "input": hashlib.sha256(row.input_bytes).hexdigest(),

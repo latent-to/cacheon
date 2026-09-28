@@ -121,6 +121,11 @@ Use `docs/reference/codebase-map.md` for authority-oriented entry points.
 
 ## Development workflow
 
+Use `apply_patch` for every edit to a Git-tracked file so the change is visible
+in the app's diff UI. Do not modify tracked files through heredocs, shell
+redirection, or script-based rewrites. Heredocs are permitted only for throwaway
+scripts and files or folders ignored by Git. This rule also applies to subagents.
+
 Start from a clean understanding of the worktree:
 
 ```bash

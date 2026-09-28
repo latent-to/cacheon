@@ -208,9 +208,32 @@ def test_stock_drift_projection_uses_the_scored_per_prompt_statistic() -> None:
         for index, delta in enumerate(deltas)
     ))
     policy = MetricCalibration("worst_nll", "lower", "10", "10")
+    # The worst-token bound sets aside its most extreme prompt (23.2); a mean keeps every prompt.
     assert stock_drift_upper_bound(evidence, policy, "2") == pytest.approx(
-        8.594552802349563, rel=0, abs=1e-15
+        6.646277734657473, rel=0, abs=1e-15
     )
+    assert stock_drift_upper_bound(
+        evidence, MetricCalibration("mean_nll", "lower", "10", "10"), "2"
+    ) == pytest.approx(8.594552802349563, rel=0, abs=1e-15)
+
+    def scored(baseline: tuple[float, ...], candidate: tuple[float, ...]):
+        manifest = replace(calibration, quality_metrics=(policy,))
+        prompts = tuple(
+            PromptQualityEvidence(f"{index + 1:064x}", rollout(b), rollout(c), rollout(0.0), 1, 1)
+            for index, (b, c) in enumerate(zip(baseline, candidate, strict=True))
+        )
+        verdict = score_reference_quality(
+            _evidence(manifest, prompts), calibration=manifest, expected_context=_context()
+        )
+        return verdict.decision, verdict.overlapping_metrics
+
+    # 2026-09-28 mainnet request 4903f33c: one 12-nat control event on two prompts voided the run.
+    # Two prompts still void it; eight prompts with the same event reach the candidate's checks.
+    assert scored((3.962, 12.014), (3.962, 12.014)) == ("NO_DECISION", ("worst_nll.stock_drift",))
+    calm = (3.962, 12.014, 0.134, 3.462, 1.4, 1.4, 1.4, 1.4)
+    assert scored(calm, calm) == ("PASS", ())
+    # The candidate's own bound keeps every prompt: one 40-nat token among eight is not set aside.
+    assert scored((0.0,) * 8, (40.0,) + (0.0,) * 7) == ("NO_DECISION", ("worst_nll",))
 
 
 def test_hidden_task_floor_is_an_external_failure() -> None:

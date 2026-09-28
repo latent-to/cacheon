@@ -154,7 +154,7 @@
 "tests/test_scoring.py": 38,
 "tests/test_seam_activation_live.py": 2,
 "tests/test_seam_receipts.py": 55,
-"tests/test_service_capacity.py": 53,
+"tests/test_service_capacity.py": 52,
 "tests/test_session_environment.py": 13,
 "tests/test_settlement.py": 84,
 "tests/test_sglang_cache_seam.py": 28,

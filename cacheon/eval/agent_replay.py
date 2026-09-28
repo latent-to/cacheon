@@ -44,6 +44,8 @@ class AgentReplayPlan:
     window: int
     lane: str
     windows: int = 1
+    elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
+    max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -58,11 +60,17 @@ class AgentReplayPlan:
             raise ValueError("agent replay read identity is invalid")
         if type(self.windows) is not int or self.windows < 1:
             raise ValueError("agent replay needs at least one sealed window")
+        if type(self.elapsed_cost) is not bool:
+            raise ValueError("replay cost accounting must be boolean")
+        if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
+            raise ValueError("replay work deadline is outside its bound")
         object.__setattr__(self, "slice", manifest)
 
     def workload_identity(self) -> dict:
         """Bind the consumed bytes, root accounting and replay policy, not local paths."""
         return {
+            **({"time_accounting": "elapsed-serving-span"} if self.elapsed_cost else {}),
+            **({"max_work_seconds": self.max_work_seconds} if self.max_work_seconds else {}),
             "slice": self.slice.digest, "dataset": self.slice.dataset,
             "revision": self.slice.revision,
             "rules_json": json.dumps(self.slice.rules, sort_keys=True, separators=(",", ":"), allow_nan=False),
@@ -194,7 +202,8 @@ class _Rounds:
 
     def _release(self) -> None:
         self._timer = None
-        if self.inflight or not self.pending or (not self.first_released and len(self.pending) < self.openings):
+        if (self.inflight or not self.pending
+            or (not self.first_released and len(self.pending) < self.openings)):
             return
         self.first_released = True
         stamp = self.clock()
@@ -361,7 +370,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
         raise ServiceEvidenceError("bridge has requests absent from the retained AIPerf export")
     (load,) = plan.loads
     read = LoadRead(plan.arm, plan.window, plan.lane, load, tuple(records))
-    rate = fixed_work_rate(read, plan.slice.expected_work(load))
+    rate = fixed_work_rate(read, plan.slice.expected_work(load), wall_time=plan.elapsed_cost)
     output = plan.output_directory
     with (output / "turns.jsonl").open("x") as f:
         for record in records:
