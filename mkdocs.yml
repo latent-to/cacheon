@@ -156,7 +156,7 @@ nav:
   - Results and development:
       - MiniMax-M3 case study: results/minimax-m3.md
       - Qwen H100 node slots: results/qwen-h100-node-slots.md
-      - GLM prefix-cache slot: results/glm-prefix-cache.md
+      - Prefix-cache slot: results/prefix-cache.md
       - GPU setup: dev/gpu-setup.md
       - Development environment: dev/environment.md
       - SGLang compatibility: dev/sglang-tracking.md

@@ -104,6 +104,14 @@ def test_unchecked_host_state_cannot_be_recorded_as_fresh_model_work(state):
         state.guard.handoff(state.cache, req, tokens)
 
 
+def test_corrupt_restored_state_cannot_hide_behind_a_valid_device_source(state):
+    tokens = list(range(8))
+    _, row = state.record(tokens)
+    state.match(tokens, row, source=1, host=True)
+    with pytest.raises(RuntimeError, match="recurrent state"):
+        state.guard.hybrid.ready(state.cache)
+
+
 def test_cache_must_preserve_unfinished_recurrent_state(state):
     req, row = state.record(list(range(8)), finished=False)
     state.temporal[5].zero_()

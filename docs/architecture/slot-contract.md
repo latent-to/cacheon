@@ -416,11 +416,11 @@ sliding-window index state are explicitly unsupported. A new model does not
 require a new miner contract; an unfamiliar storage layout requires validator
 support before a contribution can use it.
 
-The [GLM GPU checks](../results/glm-prefix-cache.md) exercise prefix reuse,
+The [GLM and Qwen GPU checks](../results/prefix-cache.md) exercise prefix reuse,
 native host restoration, reset, graph execution, audit import and rejection of
-corrupted cached state under this contract. Those GPU results cover GLM's
-full-attention layout; they do not establish GPU coverage for every recognized
-state layout.
+corrupted cached state under this contract. The GPU results cover GLM's
+full-attention layout and Qwen's recurrent state; they do not establish GPU
+coverage for every recognized state layout.
 
 Cache versions replace one another within this target. Iterative improvement
 means the next implementation retains the useful behavior of the current winner
