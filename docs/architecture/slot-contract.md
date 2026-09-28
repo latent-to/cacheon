@@ -396,16 +396,15 @@ serves it; the node adapter does not.
 The entry is a class defined in the op's source file that derives, directly or
 through another class of that file, from a class the file imports at top level
 from `sglang.srt.mem_cache`, which intake checks without running it. In the
-scheduler it must derive from the pinned SGLang's `UnifiedRadixCache`, the class
-the stock chain builds for a full-attention model; an abstract class or a declared
-`prepare` is the candidate's failure. For the one `default_radix_cache_factory`
-call the stock class name points at the candidate, so it receives the tree
-components, hierarchical cache and layer-transfer counter stock would, and
-`create_tree_cache` applies the same checks and wrappers under the same engine
-flags. The cache must keep the engine's KV allocator and request-to-token pool,
-through which the scheduler allocates and evicts, so device KV memory stays the
-validator's. The choice is made once, at engine start, with an empty call
-descriptor: an op declaring dtypes, architectures or eligibility never matches.
+scheduler it must derive from the pinned SGLang's `UnifiedRadixCache`, which the
+stock chain builds for a full-attention model, and must not be abstract or declare
+a `prepare`. For the one `default_radix_cache_factory` call the stock class name
+points at the candidate, so it receives the tree components, hierarchical cache
+and layer-transfer counter stock would, under the same engine flags and
+`create_tree_cache` checks. It must keep the engine's KV allocator and request
+pool, through which the scheduler allocates and evicts the validator's KV memory.
+The choice is made once, at engine start, with an empty call descriptor: an op
+declaring dtypes, architectures or eligibility never matches.
 
 What a cache can fake is a hit: a served prefix whose slots do not hold what the
 engine computed for it skips that prefill and returns wrong tokens fast. The
@@ -426,17 +425,20 @@ the prefix left on the request. A match may claim no more tokens than its key.
 
 The check runs on the scheduler's stream behind the forward pass that wrote the
 bytes; the host reads each verdict at a later handoff, and only a flush or an
-audited request waits for one. Every refusal stops the engine and is receipted as
-the candidate's. A page is checked after the forward pass that read it, so bytes
-moved into a served slot after that pass are not told apart from bytes placed
-before. The check does not bound memory a cache allocates beyond the engine's pools.
+audited request waits for one. A page is checked after the forward pass that read
+it, so bytes moved into a served slot after that pass are not told apart from bytes
+placed before. The check does not bound memory a cache allocates beyond the
+engine's pools. The handoffs `match_prefix`, `cache_unfinished_req`,
+`cache_finished_req` and `reset` may be overridden in the class but not replaced on
+the instance or class later.
 
-The address serves full-attention models: an engine with a hybrid sliding-window
-or state-space model, or whose chain builds another class, refuses it at engine
-start as the arena's configuration, not the candidate's failure. The cache runs
-in the scheduler, never inside a CUDA graph, so its completions count on a
-graphs-on run without a capture, and in the audit role each audited request waits
-for its verdict and adds one unit to the address's audit receipt.
+Every refusal and every raise in a method the bundle defines stops the engine as
+the candidate's failure. So does an engine that serves no such cache, because its
+model keeps sliding-window or recurrent state or its chain builds another class,
+as for a node address the served model lacks. The cache runs in the scheduler,
+never in a CUDA graph, so its completions count on a graphs-on run without a
+capture; in the audit role each audited request waits for its verdict and adds one
+unit to the address's audit receipt.
 
 ## Escape hatches
 

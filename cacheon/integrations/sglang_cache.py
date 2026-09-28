@@ -63,6 +63,8 @@ _SAMPLE = 64  # served pages checked per handoff
 _CHUNK = 64  # pages hashed per pass, which bounds the temporaries
 _CELLS = 1 << 24  # one-byte cells of the pair table, two per pair
 _AUDIT_MODE = "kv_content"
+# The methods the scheduler hands requests through; the check runs inside them.
+_HANDOFFS = frozenset({"match_prefix", "cache_unfinished_req", "cache_finished_req", "reset"})
 # Verdict bits: the device raises them, a later handoff reads them.
 _FAKE, _MOVED, _ROW = 1, 2, 4
 _VERDICTS = {
@@ -386,46 +388,95 @@ class _Guard:
         self.held.clear()
 
 
-def _guarded(cls: type, guard: _Guard) -> type:
-    """Subclass the candidate so every request it is handed passes through the guard."""
+class _Pinned:
+    """A handoff method no instance attribute can shadow, since the check runs inside it."""
+
+    def __init__(self, function) -> None:
+        self.function = function
+
+    def __get__(self, obj, owner=None):
+        return self.function if obj is None else self.function.__get__(obj, owner)
+
+    def __set__(self, obj, value) -> NoReturn:
+        _refuse(f"it replaced {self.function.__name__} on the instance, which skips the check")
+
+
+def _receipted(function):
+    """Run a method the bundle defines so that its raise is receipted as the candidate's."""
+
+    @functools.wraps(function)
+    def call(self, *args, **kwargs):
+        return _receipts.invoke(ADDRESS, function, self, *args, kwargs=kwargs)
+
+    return call
+
+
+def _guarded(cls: type, base: type, guard: _Guard) -> type:
+    """Subclass the candidate so every request it is handed passes through the guard.
+
+    The scheduler also calls the cache for eviction, locks and host loads, so every
+    method the bundle defines runs receipted: a raise there is the candidate's.
+    """
 
     from sglang.srt.mem_cache.base_prefix_cache import MatchResult
 
-    class Guarded(cls):
+    class Sealed(type(cls)):
+        """Keeps a handoff from being swapped on the class after it is built."""
+
+        def __setattr__(klass, name, value):
+            if name in _HANDOFFS:
+                _refuse(f"it replaced {name} on its class, which skips the check")
+            super().__setattr__(name, value)
+
+        def __delattr__(klass, name):
+            if name in _HANDOFFS:
+                _refuse(f"it replaced {name} on its class, which skips the check")
+            super().__delattr__(name)
+
+    class Guarded(cls, metaclass=Sealed):
         """The candidate's class, with the validator at each handoff."""
 
+        @_Pinned
         def match_prefix(self, params):
             result = _receipts.invoke(ADDRESS, super().match_prefix, params)
             guard.matched(self, params.key, result, MatchResult)
             return result
 
+        @_Pinned
         def cache_unfinished_req(self, req, *args, **kwargs):
             row = guard.handoff(self, req, req.get_fill_ids())
             _receipts.invoke(ADDRESS, super().cache_unfinished_req, req, *args, kwargs=kwargs)
             guard.settle(req, row)
 
+        @_Pinned
         def cache_finished_req(self, req, *args, **kwargs):
             tokens = req.origin_input_ids + req.output_ids
             guard.handoff(self, req, tokens[: kwargs["kv_len_to_handle"]])
             _receipts.invoke(ADDRESS, super().cache_finished_req, req, *args, kwargs=kwargs)
             guard.finished(req)
 
+        @_Pinned
         def reset(self):
             guard.reset()
             return _receipts.invoke(ADDRESS, super().reset)
 
+    for klass in reversed(cls.__mro__[: cls.__mro__.index(base)]):  # the most derived wins
+        for name, value in vars(klass).items():
+            if inspect.isfunction(value) and not name.startswith("__") and name not in _HANDOFFS:
+                setattr(Guarded, name, _receipted(value))
     Guarded.__name__, Guarded.__qualname__ = cls.__name__, cls.__qualname__
     Guarded.__module__ = cls.__module__
     return Guarded
 
 
 def _bind(impl, ctx, stock):
-    """Build the candidate through the stock chain, guarded, or raise the reason it cannot be."""
+    """Build the candidate through the stock chain, guarded, or refuse it as the candidate's."""
 
     if ctx.is_hybrid_swa or ctx.is_hybrid_ssm:
-        # Their second pools hold state the check does not read. The arena chose
-        # them, so this is not receipted as the candidate's failure.
-        raise RuntimeError(f"{ADDRESS}: the seam serves full-attention models only")
+        # As for a node address the served model lacks: the check does not read the
+        # window or recurrent state such a model keeps beside its KV.
+        _refuse("this arena's model is not full-attention, which the address serves",
+                phase="prepare")
     home = importlib.import_module(_HOME)
     base = getattr(home, _CLASS)
     cls = impl.entry
@@ -437,16 +488,15 @@ def _bind(impl, ctx, stock):
         _refuse(f"entry {cls.__name__} leaves {sorted(cls.__abstractmethods__)} abstract",
                 error=TypeError, phase="prepare")
     guard = _Guard(ctx)
-    guarded = _guarded(cls, guard)
+    guarded = _guarded(cls, base, guard)
     setattr(home, _CLASS, guarded)
     try:
         cache = _receipts.invoke(ADDRESS, stock, ctx, phase="prepare")
     finally:
         setattr(home, _CLASS, base)
     if type(cache) is not guarded:
-        raise RuntimeError(
-            f"{ADDRESS}: this engine builds {type(cache).__name__}, not the {_CLASS} it replaces"
-        )
+        _refuse(f"this engine builds {type(cache).__name__}, not the {_CLASS} the address replaces",
+                phase="prepare")
     guard.owned(cache, phase="prepare")
     return cache
 

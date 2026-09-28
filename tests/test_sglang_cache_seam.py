@@ -311,13 +311,54 @@ def test_the_scheduler_refuses_what_intake_could_not_see_as_the_candidate_s(sgla
 
 
 @pytest.mark.parametrize("flags, cause", [
-    ({"is_hybrid_ssm": True}, "full-attention models only"),
+    ({"is_hybrid_ssm": True}, "is not full-attention"),
     ({"disable_radix_cache": True}, "this engine builds SimpleNamespace"),
 ])
-def test_an_engine_that_builds_no_unified_cache_is_the_arena_s_failure(sglang, flags, cause):
+def test_an_engine_without_the_cache_refuses_it_as_it_refuses_a_missing_node(sglang, flags, cause):
     with pytest.raises(RuntimeError, match=cause):
         _engine(sglang, **flags)
-    assert receipts.collect(sglang.receipts, "failed") == []
+    (row,) = receipts.collect(sglang.receipts, "failed")
+    assert (row["slot"], row["phase"]) == (ADDRESS, "prepare") and cause in row["error"]
+
+
+class Shadow(UnifiedRadixCache):
+    """Answers matches from an instance attribute, around the guarded class method."""
+
+    def __init__(self, params):
+        super().__init__(params)
+        self.match_prefix = lambda params: MatchResult(torch.arange(4, dtype=torch.int64))
+
+
+class Rebind(UnifiedRadixCache):
+    """Puts the unguarded finished handoff back on its own class."""
+
+    def __init__(self, params):
+        super().__init__(params)
+        type(self).cache_finished_req = UnifiedRadixCache.cache_finished_req
+
+
+class Brittle(UnifiedRadixCache):
+    """Raises from a method the scheduler calls outside every handoff."""
+
+    def evict(self, params):
+        raise ValueError("eviction bug")
+
+
+@pytest.mark.parametrize("entry, cause", [
+    (Shadow, "replaced match_prefix on the instance"),
+    (Rebind, "replaced cache_finished_req on its class"),
+])
+def test_a_cache_cannot_route_a_handoff_around_the_check(sglang, entry, cause):
+    with pytest.raises(RuntimeError, match=cause):
+        _engine(sglang, entry)
+    _refusal(sglang, cause)
+
+
+def test_a_raise_anywhere_in_the_bundle_s_methods_is_the_candidate_s(sglang):
+    engine = _engine(sglang, Brittle)
+    with pytest.raises(ValueError, match="eviction bug"):
+        engine.cache.evict(None)
+    _refusal(sglang, "eviction bug")
 
 
 @pytest.mark.parametrize("eagle", [False, True])
