@@ -100,10 +100,13 @@ def reward_comparisons(db) -> dict[str, dict]:
         group = (primary["arena_digest"], primary["incumbent_stack_digest"])
         qualifications = tuple(payload[key] for key in ("primary", "reproduction") if key in payload)
         score = min(Decimal(q["speedup"]) for q in qualifications)
-        previous, previous_id = best.get(group, (Decimal(1), None))
+        previous, previous_id, previous_qualifications = best.get(group, (Decimal(1), None, ()))
         relative = score / previous
+        margin, statistical = (Decimal(0), False)
+        if not exempt and previous_id is not None and score > previous:
+            margin, statistical = _reward_comparison_margin(db, qualifications, previous_qualifications)
         eligible = exempt or previous_id is None or (score > previous and
-            score >= previous * (1 + _reward_min_margin(db, qualifications)))
+            score >= previous * (1 + margin))
         comparisons[row["reservation_id"]] = {
             "previous_best_reservation_id": previous_id,
             "previous_best_speedup": previous,
@@ -112,8 +115,8 @@ def reward_comparisons(db) -> dict[str, dict]:
             "reward_eligible": eligible,
             "grandfathered": exempt,
         }
-        if score > previous:
-            best[group] = (score, row["reservation_id"])
+        if score > previous and (eligible or not statistical):
+            best[group] = (score, row["reservation_id"], qualifications)
     return comparisons
 
 
@@ -135,14 +138,57 @@ def reward_grandfathered_runtimes(db) -> list[str]:
 
 def _reward_min_margin(db, qualifications):
     """Read the configured margin from the same retained attempts as the score."""
-    import json
+    return _reward_comparison_margin(db, qualifications, ())[0]
+
+
+def _reward_comparison_margin(db, qualifications, previous):
+    """Use the retained statistical contrast for new policies; preserve historical margins."""
+    import math
     from decimal import Decimal
+
+    from cacheon.chain.intake import IntakeError
+    from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
+
+    reports = _reward_reports(db, qualifications)
+    policies = [report["speed_witness"]["resident_policy"] for report in reports]
+    statistical = [policy.get("version") == 17 for policy in policies]
+    if any(statistical) and not all(statistical):
+        raise IntakeError("reward comparison mixes statistical and historical qualifications")
+    if not any(statistical):
+        margins = [Decimal(str(policy["min_margin"])) for policy in policies]
+        if any(not value.is_finite() or not 0 < value < 1 for value in margins):
+            raise IntakeError("reward comparison margin is invalid")
+        return max(margins), False
+
+    def uncertainties(rows):
+        results = []
+        for report in rows:
+            witness = report["speed_witness"]
+            policy = witness["resident_policy"]
+            if policy.get("version") != 17:
+                raise IntakeError("statistical reward predecessor lacks comparable uncertainty")
+            reads = GoodputReadSet.from_dict(witness["goodput"])
+            grade = reads.grade(GoodputPolicy.from_dict(policy["goodput"]))
+            results.append((grade.verdict.noise, math.log(grade.verdict.required)/grade.verdict.noise))
+        return results
+
+    current = uncertainties(reports)
+    predecessor_se = max((row[0] for row in uncertainties(_reward_reports(db, previous))), default=0.0) if previous else 0.0
+    # Separate qualifications have separate boot draws. Eligibility accounts
+    # for both estimates; credit still uses the unshrunken marginal point ratio.
+    margin = max(math.expm1(z*math.hypot(se, predecessor_se)) for se, z in current)
+    return Decimal(str(margin)), True
+
+
+def _reward_reports(db, qualifications):
+    """Reopen the existing attempt authority without introducing another reward record."""
+    import json
     from pathlib import Path
 
     from cacheon.chain.intake import IntakeError
     from cacheon.eval.evidence_store import EvidenceArtifactRef, reopen_evidence
 
-    margins = []
+    result = []
     rows = db.execute(
         "SELECT attempt_ref_json,evidence_root FROM settlement_qualifications "
         "WHERE reservation_id=? ORDER BY reproduction_index",
@@ -162,10 +208,10 @@ def _reward_min_margin(db, qualifications):
                            if report["selected_delta_digest"] == qualification["selected_delta_digest"]]
             if len(reports) != 1:
                 raise ValueError("reward comparison report is ambiguous")
-            margin = Decimal(str(reports[0]["speed_witness"]["resident_policy"]["min_margin"]))
-            if not margin.is_finite() or not 0 < margin < 1:
-                raise ValueError("reward comparison margin is invalid")
+            policy = reports[0]["speed_witness"]["resident_policy"]
+            if policy.get("version") != 17:
+                policy["min_margin"]
+            result.append(reports[0])
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise IntakeError(f"reward comparison cannot read retained margin: {exc}") from None
-        margins.append(margin)
-    return max(margins)
+    return result

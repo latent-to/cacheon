@@ -680,21 +680,16 @@ A window does not by itself provide the paired capacity comparison, quality audi
 authoritative qualification result. Existing commissions continue to execute
 their sealed workload until recommissioned.
 
-Arrivals are lockstep rounds, not closed-loop concurrency. The loopback bridge
-holds every request until the previous round has drained and no new request
-has arrived for 0.5 s, then releases the held requests together in session-key
-order, so each round's batch composition and DP placement follow from the
-sealed slice rather than from the engine's own timing jitter. The first round
-waits for exactly `load` conversations; if the client has not opened them
-within 120 s of its last arrival, the read fails with that cause. A turn's
-credit is its round's release time, so TTFT and the fixed-work rate exclude the
-wait at the barrier. The first round of every window is the cold prefill of
-each session's opening context; it fills the cache the operating point assumes
-and is not timed. The rate is the warm turns divided by their summed latency
-from release to completion, the reciprocal of the mean warm-turn latency, which
-at a fixed session count is the served throughput per session. Averaging the
-turns of a round rather than timing its slowest one is what keeps one long
-turn's decode-step count from moving the score.
+Policy v17 releases cold openings together in session-key order, then drains
+them to establish the declared warm-cache operating point. Warm requests run
+as soon as their session permits; a slow peer does not impose a round barrier.
+The measured cost spans the first warm release through the last warm completion,
+including handoffs and tails. Fixed workload value and GPU allocation make its
+inverse monotone in profit for this workload and pricing scenario. Native output
+generation, MTP acceptance costs, and prefix-cache behavior remain in this cost.
+The first opening group must fill within 120 seconds of its last arrival.
+Historical v16 reads retain lockstep rounds and inverse mean request latency;
+that quantity is not wall-time throughput and is not the v17 score.
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens and DP routing identical between arms and windows. Each
@@ -713,33 +708,40 @@ explicit zero. The engine still receives its ordinary conditioning requests.
 
 Replay qualification is commissioned with `session.replay`: absolute `manifest_path`,
 `aiperf_binary` and `tokenizer_path`, the manifest's computed `slice_digest`, a
-single operating `load`, and the number of paired `windows`. `resident_speed.goodput`
+single operating `load`, and the number of paired `windows`. Optional
+`max_work_seconds` bounds replay work, split across orientations in proportion to
+their window budgets; expiry aborts, never grades incomplete work. Engine startup
+retains its separate OCI initialization deadline. `resident_speed.goodput`
 seals the service `contract`
 (`decode_floor_tps`, `ttft_bound_s`, `attainment`), `required` ratio, paired
 `null_noise`, fixed `attainment_tolerance`, and its calibrated one-sided
 `attainment_margin`. These values use canonical decimal strings. The existing
 window-scatter, conditioning-slowdown and minimum-window fields are zero for this
-policy. The required ratio must equal `1 + max(min_margin, noise_multiplier *
-null_noise)` under the frozen calibration. Greedy sampling and zero rollout top-k
-width are required; the reference token maximum equals the largest output budget
-in the selected slice, while conditioning still generates 16 tokens.
+policy. V17 seals `required=1`, `error_rate=0.01`, paired per-window log-cost
+standard deviation `null_noise`, and paired boot standard deviation `boot_noise`.
+At least one uncertainty component must be positive. These are calibrated
+uncertainty bounds, not a desired detection threshold. Greedy sampling and zero
+rollout top-k width are required. Coding replay uses a teacher-only quality
+profile (`hidden_tasks_per_prompt=0`, `hidden_tasks_required=false`), not numeric
+answer tasks. Its reference token maximum equals the largest output budget in
+the selected slice; conditioning generates 16 tokens.
 
-This selects speed policy v16. Both OCI engines finish conditioning and cache
-flush before their concurrent fixed-work reads. Both reads finish before either
-engine is removed. The service scorer supplies the verdict from retained turn
-records; its `grade` entrypoint and the quality producer must be available before
-an engine launches. Each sealed window is a fresh paired read of the same fixed
-work after a cache flush on both lanes; the verdict is the mean of the
-per-window rate ratios against `required`, with no timed B′ or automatic
-repeat. The sealed `windows` count is a budget, not a fixed length: from the
-second window on, both lanes publish the finished window's rate at the barrier
-and stop once the running mean sits two sigma clear of `required` on either
-side, with sigma the sealed `null_noise` (the per-window paired null ratio's
-standard deviation) over the square root of the windows read. A clear win or a
-plain copy settles in two windows; a marginal candidate reads every sealed
-window and the plain mean decides. Regrading replays the rule from the
-retained reads, so a read that stopped anywhere else is invalid evidence.
-Earlier policy versions retain their sealed arithmetic.
+Both OCI engines condition and flush before concurrent reads. V17 permits two
+to five paired windows, splitting them between both physical orientations. Costs
+pool within each orientation; the score is the geometric mean of the two pooled
+cost ratios. This cancels a stable multiplicative lane factor without dropping
+slow windows. The standard error retains paired boot variance and the larger of
+the calibrated window variance or observed whole-window jackknife variance.
+Requests sharing a window are not treated as independent replications.
+
+Eligibility requires a positive one-sided log-gain bound. At most four looks
+share the 1% error budget: 5%, 5%, 10%, and 80% of that budget, with unused looks
+unspent. Both orientations must exist before a PASS. This normal-model guarantee
+depends on the sealed noise bounds and independent boot contrasts; it does not
+establish runtime resolution by itself. A fixed 1% gain floor is absent. Reward
+credit uses the point estimate, not a confidence-bound haircut. Regrading checks
+the exact stopping point, all four engine identities, host timings, and controls.
+V16 retains its old fixed margin and mean-of-ratios rule for historical evidence.
 
 On a speed PASS, the candidate engine closes and the existing entropy provider
 selects source occurrences from the completed B/C trajectories. The still-loaded

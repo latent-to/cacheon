@@ -34,7 +34,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (8, 9, 10, 11, 12, 13, 14, 15, 16)
+            or self.version not in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -56,7 +56,7 @@ class ResidentSpeedPolicy:
                     self.prefill_credit_weight,
                 )
             )
-            or not 0 < self.min_margin < 1
+            or not (self.min_margin == 0 if self.version == 17 else 0 < self.min_margin < 1)
             or self.noise_multiplier <= 0
             or not 0 <= self.max_noise < 1
         ):
@@ -68,21 +68,25 @@ class ResidentSpeedPolicy:
             raise CrossoverRuntimeError(
                 "resident speed policy requires max_noise <= 0.02"
             )
-        if self.version == 16:
+        if self.version in (16, 17):
             if (type(self.goodput) is not GoodputPolicy
-                or self.goodput.required != 1 + max(self.min_margin, self.noise_multiplier * self.goodput.null_noise)
+                or (self.version == 16 and (
+                    self.goodput.error_rate != 0
+                    or self.goodput.required != 1 + max(self.min_margin, self.noise_multiplier * self.goodput.null_noise)))
+                or (self.version == 17 and (self.goodput.error_rate != 0.01 or self.goodput.required != 1))
                 or self.goodput.null_noise > self.max_noise
+                or self.goodput.boot_noise > self.max_noise
                 or any((self.min_windows, self.max_window_scatter, self.max_conditioning_slowdown))):
                 raise CrossoverRuntimeError("goodput policy differs from its frozen calibration")
         elif self.goodput is not None:
-            raise CrossoverRuntimeError("goodput authority requires policy version 16")
-        if self.version != 16 and not 3 <= self.min_windows <= 512:
+            raise CrossoverRuntimeError("goodput authority requires policy version 16 or 17")
+        if self.version not in (16, 17) and not 3 <= self.min_windows <= 512:
             raise CrossoverRuntimeError("resident speed policy requires 3..512 timed windows")
-        if self.version != 16 and not 0 < self.max_window_scatter <= 0.25:
+        if self.version not in (16, 17) and not 0 < self.max_window_scatter <= 0.25:
             raise CrossoverRuntimeError("resident speed policy requires window scatter in (0, 0.25]")
         # Conditioning is outside scored windows. The historical v3 bound
         # catches gross startup regressions; each timed full request includes prefill.
-        if self.version != 16 and not 1.0 < self.max_conditioning_slowdown <= 2.0:
+        if self.version not in (16, 17) and not 1.0 < self.max_conditioning_slowdown <= 2.0:
             raise CrossoverRuntimeError(
                 "resident speed policy requires a conditioning slowdown bound in (1, 2]"
             )
@@ -170,6 +174,9 @@ class ResidentSpeedPolicy:
             return canonical_digest("cacheon.qualification.goodput-speed-policy.v1", {
                 **self.to_dict(), "read_order": ["B", "C"],
                 "timing": "paired_fixed_work_host_time", "repeat_limit": 0,
+                **({"orientations": 2, "aggregation": "pooled_elapsed_serving_time_equal_log_orientation",
+                    "eligibility": "alpha_spending_0.05_0.05_0.10_0.80"}
+                   if self.version == 17 else {}),
             })
         return canonical_digest(
             "cacheon.qualification.resident-speed-policy",
@@ -224,7 +231,7 @@ class ResidentSpeedPolicy:
             raise CrossoverRuntimeError("resident speed policy fields differ")
         if value["version"] in (12, 15):
             fields |= {"prefill_credit_weight", "prefill_min_margin"}
-        if value["version"] == 16:
+        if value["version"] in (16, 17):
             fields.add("goodput")
         if set(value) != fields:
             raise CrossoverRuntimeError("resident speed policy fields differ")
@@ -273,7 +280,7 @@ class ResidentSpeedPolicy:
             raise CrossoverRuntimeError(str(exc)) from None
         return cls(
             max_stage_seconds=max_stage_seconds,
-            min_margin=float(decimal_value(calibration.speed.min_margin)),
+            min_margin=0.0 if version == 17 else float(decimal_value(calibration.speed.min_margin)),
             noise_multiplier=float(decimal_value(calibration.speed.noise_multiplier)),
             max_noise=float(decimal_value(calibration.speed.max_noise)),
             calibration_digest=calibration.digest,

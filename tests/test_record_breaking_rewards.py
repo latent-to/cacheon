@@ -170,3 +170,36 @@ def test_scoring_compares_all_slots_and_subthreshold_records_but_not_later_rows(
         assert third["score_speedup"] == Decimal("1.12") / Decimal("1.105")
         assert third["reward_eligible"]
         assert comparisons[candidates[0].reservation_digest]["score_speedup"] == Decimal("1.1")
+
+
+def test_statistical_records_pay_small_gains_without_an_unpaid_ratchet(tmp_path):
+    from decimal import Decimal
+    from cacheon.chain.evaluation_order import reward_comparisons
+    from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
+    from tests.test_service_statistics import CONTRACT, WORK, _read
+
+    policy = GoodputPolicy(CONTRACT, 1.0, 0.0003, 0.0, 0.0, 0.01, 0.0001)
+    with _store(tmp_path) as store:
+        candidates = []
+        for index, score in enumerate((1.05, 1.0504, 1.0508)):
+            baseline, candidate = [], []
+            for window, lane in enumerate(("A", "A", "B", "B"), 1):
+                baseline.append(_read("incumbent", lane, window, 100))
+                candidate.append(_read("candidate", "B" if lane == "A" else "A", window, 100/score))
+            reads = GoodputReadSet(tuple(baseline), tuple(candidate),
+                                   tuple((root, *counts) for root, counts in WORK.items()), 4)
+            payload = json.dumps({"speed_witness": {
+                "resident_policy": {"version": 17, "goodput": policy.to_dict()},
+                "goodput": reads.to_dict(),
+            }}).encode()
+            candidates.append(_qualified_settlement_candidate(
+                store, index=index, marker=str(index), speedups=(str(score), str(score)),
+                attempt_payloads=(payload, payload),
+            ))
+        store.passed_reward_claims()
+        comparisons = reward_comparisons(store._db)
+        first, unpaid, paid = (comparisons[c.reservation_digest] for c in candidates)
+        assert first["reward_eligible"] and not unpaid["reward_eligible"] and paid["reward_eligible"]
+        assert paid["previous_best_reservation_id"] == candidates[0].reservation_digest
+        assert paid["score_speedup"] == Decimal("1.0508") / Decimal("1.05")
+        assert {c.hotkey for c in store.passed_reward_claims()} == {candidates[i].hotkey for i in (0, 2)}

@@ -117,7 +117,7 @@ def _bind_hidden_judge(
 ) -> object:
     judge = capability
     binder = getattr(capability, "bind_prompt_plan", None)
-    if callable(binder):
+    if hidden_tasks_per_prompt and callable(binder):
         if getattr(capability, "tokenizer_digest", None) != tokenizer_digest:
             raise B300QualificationCommissionError(
                 "hidden judge tokenizer differs from the sealed prompt identity"
@@ -433,6 +433,8 @@ def _require_cell_conformance(inputs, policy, session_block, speed_block) -> Non
     if "replay" in session_block:
         if policy.topk_width != 0 or float(session_block["temperature"]) != 0:
             raise B300QualificationCommissionError("goodput replay requires greedy decoding and teacher-NLL quality")
+        if policy.hidden_tasks_required or policy.hidden_tasks_per_prompt:
+            raise B300QualificationCommissionError("replay prompts require a teacher-only profile without numeric hidden tasks")
         return
     quality_cell = _scored_cell(inputs.workload)
     batch_cells = getattr(
@@ -505,6 +507,8 @@ def _compose_locked(
             Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
             inputs.root / "qualification-replays" / screen_lane,
             goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
+            work_conserving=bool(goodput.error_rate),
+            max_work_seconds=settings.get("max_work_seconds", 0),
         )
         if replay.slice.digest != settings["slice_digest"]:
             raise B300QualificationCommissionError("replay slice differs from its sealed authority")
@@ -647,7 +651,7 @@ def _compose_locked(
         # New commissions seal one bounded borderline repeat: v13 single-cell,
         # v14 mixed-cell, or v15 with the prefill pass. Existing evidence keeps
         # its original version and arithmetic.
-        version=16 if goodput is not None else 15 if prefill_lane is not None else 14 if mixed_cells else 13,
+        version=(17 if goodput.error_rate else 16) if goodput is not None else 15 if prefill_lane is not None else 14 if mixed_cells else 13,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),

@@ -1,5 +1,5 @@
 {
- "qualification_continuation:cacheon.eval.crossover_runtime.ResidentCrossoverEvidence": ["baseline_execution","baseline_lane_digest","baseline_quiescence","candidate_execution","candidate_lane_digest","candidate_quiescence","completed_monotonic_s","decision","escalated","exit_reason","final_verdict","goodput","initial_verdict","plan_digest","policy","prompt_pairs","quality_entropy","rates","reference_inputs","selected_delta_digest","started_monotonic_s","workload_digest"],
+ "qualification_continuation:cacheon.eval.crossover_runtime.ResidentCrossoverEvidence": ["baseline_execution","baseline_lane_digest","baseline_quiescence","candidate_execution","candidate_lane_digest","candidate_quiescence","completed_monotonic_s","decision","escalated","exit_reason","final_verdict","goodput","initial_verdict","plan_digest","policy","prior_executions","prompt_pairs","quality_entropy","rates","reference_inputs","selected_delta_digest","started_monotonic_s","workload_digest"],
  "qualification_continuation:cacheon.eval.crossover_runtime.ResidentReadRate": ["charged_seconds","charged_tokens","conditioning_seconds","conditioning_tokens","first_batch_index","first_timed_batch_index","lane_digest","last_batch_index","last_timed_batch_index","launch_digest","role","session_id","timed_seconds","timed_tokens","tokens_per_second","windows"],
  "qualification_continuation:cacheon.eval.crossover_runtime.ResidentSpeedPolicy": ["calibration_context_digest","calibration_digest","goodput","max_conditioning_slowdown","max_noise","max_qualification_seconds","max_stage_seconds","max_window_scatter","min_margin","min_windows","noise_multiplier","prefill_credit_weight","prefill_min_margin","version"],
  "qualification_continuation:cacheon.eval.crossover_runtime.TimedWindow": ["batch_index","input_tokens","prompt_latencies","seconds","tokens"],
@@ -9,8 +9,8 @@
  "qualification_continuation:cacheon.eval.device_state.GPUProcess": ["kind","physical_id","pid","process_name"],
  "qualification_continuation:cacheon.eval.device_state.GPUTelemetry": ["current_graphics_clock_mhz","current_memory_clock_mhz","gpu_utilization_percent","memory_utilization_percent","physical_id","power_draw_mw","pstate","temperature_c","uuid"],
  "qualification_continuation:cacheon.eval.evidence_store.EvidenceArtifactRef": ["domain","media_type","schema","sha256","size"],
- "qualification_continuation:cacheon.eval.goodput_runtime.GoodputPolicy": ["attainment_margin","attainment_tolerance","contract","null_noise","required"],
- "qualification_continuation:cacheon.eval.goodput_runtime.GoodputReadSet": ["candidate","expected","incumbent"],
+ "qualification_continuation:cacheon.eval.goodput_runtime.GoodputPolicy": ["attainment_margin","attainment_tolerance","boot_noise","contract","error_rate","null_noise","required"],
+ "qualification_continuation:cacheon.eval.goodput_runtime.GoodputReadSet": ["candidate","expected","incumbent","window_limit"],
  "qualification_continuation:cacheon.eval.native_artifact.NativeArtifactFile": ["path","sha256","size"],
  "qualification_continuation:cacheon.eval.native_artifact.NativeArtifactPublication": ["build_spec_digest","directories","files","publication_digest","reused","root"],
  "qualification_continuation:cacheon.eval.oci_backend.CandidateFreeRuntimeIdentity": ["base_engine_digest","runtime_digest","validator_overlay_digest"],

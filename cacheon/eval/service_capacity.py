@@ -17,6 +17,7 @@ from __future__ import annotations
 import gzip
 import json
 import math
+from statistics import NormalDist
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -149,23 +150,14 @@ def completed_work(read: LoadRead) -> dict[str, tuple[int, int]]:
     return {root: (main, inner) for root, (main, inner) in counts.items()}
 
 
-def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> WorkRate:
-    """Warm turns per second of their summed latency for the sealed work, refusing any other work.
+def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]], *, wall_time=False) -> WorkRate:
+    """Rate over exact warm work; new policies charge the complete elapsed serving span.
 
-    Every turn of a lockstep round carries the round's release stamp as its
-    credit, so a turn's latency runs from that release to its own end and the
-    client's wait at the barrier is not engine time. The first round of a
-    window is the cold prefill of every session's opening context; it fills
-    the cache that the operating point assumes and is not timed. The rate is
-    the reciprocal of the mean warm-turn latency at the sealed load, which by
-    Little's law is the served throughput per session. It averages a round's
-    turns instead of taking its slowest one: on 2026-09-27 four identical-code
-    windows (run f2ad8c31) put the round-span ratio at 0.987/0.997/1.029/1.022
-    and this ratio at 1.013/1.000/1.002/0.999, because one long turn's
-    decode-step count swings a maximum and barely moves a mean, and the cold
-    round alone carried a 60 s swing. A read that completed a different set of
-    turns (a wrapped root, a missing session, a lane that stopped early) is
-    invalid evidence, never a slower or faster engine.
+    Cold openings populate the declared warm-cache operating point before timing.
+    Wall time includes tails and client handoffs between warm turns. With fixed
+    work value and GPU allocation its inverse is monotone in profit. Historical
+    policies retain summed request latency only for reopening their old scores;
+    inverse mean latency under round barriers is not throughput.
     """
     done = completed_work(read)
     if done != expected:
@@ -178,8 +170,11 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> Wor
         )
     cold = min(record.credit_issued_ns for record in read.records)
     warm = [record for record in read.records if record.credit_issued_ns != cold]
-    latency = sum((record.request_end_ns - record.credit_issued_ns) / 1e9 for record in warm)
-    if not warm or latency <= 0:
+    if not warm:
+        raise ServiceEvidenceError("read has no timed warm turns")
+    latency = ((max(r.request_end_ns for r in warm) - min(r.credit_issued_ns for r in warm)) / 1e9
+               if wall_time else sum((r.request_end_ns-r.credit_issued_ns)/1e9 for r in warm))
+    if latency <= 0:
         raise ServiceEvidenceError("read has no timed warm turns")
     return WorkRate(len(warm), latency, len(warm) / latency)
 
@@ -221,6 +216,8 @@ class ServiceVerdict:
     ratio: float  # mean over windows of candidate rate / incumbent rate
     required: float
     detail: str
+    standard_error: float = 0.0
+    lower_ratio: float = 0.0
 
 
 def grade(
@@ -288,6 +285,76 @@ def grade(
                           f"mean fixed-work rate ratio over {len(rates_c)} paired window(s) is below the required ratio")
 
 
+
+def statistical_grade(
+    candidate: Sequence[LoadRead], incumbent: Sequence[LoadRead],
+    contract: ServiceContract, expected: dict[str, tuple[int, int]], *,
+    window_noise: float, boot_noise: float, error_rate: float, max_windows: int,
+    attainment_tolerance: float, attainment_margin: float,
+) -> ServiceVerdict:
+    """Pool fixed-work costs within each orientation and spend one sealed error budget.
+
+    Noise parameters bound log-ratio variation: window noise averages within a
+    boot; paired boot noise does not. Both physical orientations are necessary
+    for eligibility. Unequal numbers of windows retain equal orientation weight.
+    """
+    if (not candidate or len(candidate) != len(incumbent)
+        or not 0 < error_rate < 0.5 or type(max_windows) is not int
+        or not 2 <= max_windows <= 5 or len(candidate) > max_windows
+        or any(not math.isfinite(v) or v < 0 for v in (window_noise, boot_noise))
+        or window_noise == boot_noise == 0):
+        raise ServiceEvidenceError("statistical comparison has invalid reads or uncertainty")
+    groups: dict[tuple[str, str], list[tuple[float, float]]] = {}
+    for cand, inc in zip(candidate, incumbent, strict=True):
+        if ((cand.arm, inc.arm) != ("candidate", "incumbent")
+            or (cand.window, cand.load) != (inc.window, inc.load) or cand.lane == inc.lane):
+            raise ServiceEvidenceError("statistical reads are not paired on disjoint lanes")
+        c = fixed_work_rate(cand, expected, wall_time=True)
+        b = fixed_work_rate(inc, expected, wall_time=True)
+        if c.turns != b.turns:
+            raise ServiceEvidenceError("paired windows completed different timed work")
+        groups.setdefault((inc.lane, cand.lane), []).append((b.elapsed_s, c.elapsed_s))
+    orientations = tuple(groups)
+    if len(groups) > 2 or (len(groups) == 2 and orientations[0] != orientations[1][::-1]):
+        raise ServiceEvidenceError("statistical comparison did not swap the same physical lanes")
+    estimates, variances = [], []
+    for pairs in groups.values():
+        b_total, c_total = (math.fsum(row[i] for row in pairs) for i in (0, 1))
+        estimates.append(math.log(b_total / c_total))
+        n = len(pairs)
+        # A whole window is one observation. Requests within a window are not
+        # independent replications, and a boot offset never divides by n.
+        variance = window_noise ** 2 / n
+        if n > 1:
+            deleted = [math.log((b_total-b)/(c_total-c)) for b, c in pairs]
+            center = math.fsum(deleted) / n
+            variance = max(variance, (n-1)/n * math.fsum((v-center)**2 for v in deleted))
+        variances.append(variance + boot_noise ** 2)
+    count = len(estimates)
+    estimate = math.fsum(estimates) / count
+    se = math.sqrt(math.fsum(variances)) / count
+    # At most four looks (2,3,4,5). Unused early allocations remain unspent.
+    look = len(candidate)
+    share = 0.8 if look == max_windows else 0.1 if look == max_windows-1 else 0.05
+    z = NormalDist().inv_cdf(1-error_rate*share)
+    ratio, required, lower = math.exp(estimate), math.exp(z*se), math.exp(estimate-z*se)
+    attainment_check = grade(candidate, incumbent, contract, expected, required=1.0,
+                            attainment_tolerance=attainment_tolerance,
+                            attainment_margin=attainment_margin)
+    if count == 2 and attainment_check.detail.startswith("service_contract_not_met"):
+        return ServiceVerdict(SpeedStageDecision.FAIL, ratio, required,
+                              attainment_check.detail, se, lower)
+    if count < 2:
+        decision, detail = SpeedStageDecision.NO_DECISION, "both lane orientations are required"
+    elif lower > 1:
+        decision, detail = SpeedStageDecision.PASS, "positive paired gain clears the sealed statistical boundary"
+    elif look == max_windows or estimate+z*se < 0:
+        decision, detail = SpeedStageDecision.FAIL, "positive paired gain is not established within the sealed budget"
+    else:
+        decision, detail = SpeedStageDecision.NO_DECISION, "paired comparison needs its remaining sealed windows"
+    return ServiceVerdict(decision, ratio, required, detail, se, lower)
+
+
 def load_reads_jsonl(path: Path) -> list[LoadRead]:
     """Group flat per-turn rows, one JSON object per line and gzip allowed, into load reads.
 
@@ -338,5 +405,6 @@ __all__ = [
     "completed_work",
     "fixed_work_rate",
     "grade",
+    "statistical_grade",
     "load_reads_jsonl",
 ]
