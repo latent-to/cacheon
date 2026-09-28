@@ -1,10 +1,11 @@
 """Service rate scoring (cacheon/eval/service_capacity.py).
 
 The real-record tests replay the retained 2026-09-26 final budget-4 pairs (AIPerf profile exports converted to
-turn rows, profiling phase only) and pin the fixed-work rates and attainments the arena design was decided on;
+turn rows, profiling phase only) and pin the turn counts and attainments the arena design was decided on;
 those duration-bounded reads also show why `grade` refuses work that differs between arms. The synthetic tests pin
-the invariants: fixed work is checked per root, misses stay in the denominator, the rate verdict survives the
-spread of the paired windows, and the attainment gate is non-inferiority with fixed thresholds.
+the invariants: fixed work is checked per root, elapsed time is the sum of lockstep round spans, misses stay in
+the denominator, the rate verdict is the mean of the paired window ratios, and the attainment gate is
+non-inferiority with fixed thresholds.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from cacheon.eval.service_capacity import (
     TurnRecord,
     attainment,
     completed_work,
+    continue_windows,
     fixed_work_rate,
     grade,
     load_reads_jsonl,
@@ -49,17 +51,15 @@ def _turn(root: str, kind: str, ordinal: int, *, start_s: float, ttft_s: float, 
 
 # ----------------------------------------------------------------- real records
 
-def test_fixed_work_rates_match_the_study(final_pairs):
-    expected = {
-        ("candidate", 24): (694, 0.7572), ("candidate", 48): (911, 0.9852),
-        ("incumbent", 24): (672, 0.7368), ("incumbent", 48): (873, 0.9496),
-    }
-    for key, (turns, rate) in expected.items():
-        read = final_pairs[key]
-        work = fixed_work_rate(read, completed_work(read))
-        assert work.turns == turns
-        assert work.rate == pytest.approx(rate, abs=5e-4)
-        assert work.drain_fraction < 0.03
+def test_fixture_reads_carry_the_study_turn_counts(final_pairs):
+    counts = {key: sum(main + inner for main, inner in completed_work(read).values())
+              for key, read in final_pairs.items()}
+    assert counts == {("candidate", 24): 694, ("candidate", 48): 911, ("incumbent", 24): 672, ("incumbent", 48): 873}
+    for key, turns in counts.items():
+        # Study exports credited every request separately, so only the earliest one is the cold round.
+        cold = min(r.credit_issued_ns for r in final_pairs[key].records)
+        assert fixed_work_rate(final_pairs[key], completed_work(final_pairs[key])).turns == turns - sum(
+            1 for r in final_pairs[key].records if r.credit_issued_ns == cold)
 
 
 def test_attainment_under_the_locked_contract(final_pairs):
@@ -78,7 +78,7 @@ def test_grade_refuses_duration_bounded_reads_and_grades_identical_work(final_pa
     twin = replace(cand, arm="incumbent", lane="lane-2")
     verdict = grade([cand], [twin], CONTRACT, completed_work(cand), required=1.01, attainment_tolerance=0.0, attainment_margin=0.0)
     assert verdict.decision is SpeedStageDecision.FAIL and verdict.ratio == 1.0
-    assert verdict.detail.startswith("candidate does not clear")
+    assert verdict.detail == "mean fixed-work rate ratio over 1 paired window(s) is below the required ratio"
     assert attainment(cand, CONTRACT) == pytest.approx(0.8862, abs=5e-4)
 
 
@@ -92,8 +92,33 @@ def test_fixed_work_refuses_wrapped_or_missing_work():
         fixed_work_rate(read, {"a": (3, 0), "b": (1, 0)})
     with pytest.raises(ServiceEvidenceError, match="differing"):
         fixed_work_rate(read, {"a": (2, 0)})
-    work = fixed_work_rate(read, {"a": (3, 0)})
-    assert work.turns == 3 and work.rate == pytest.approx(3 / work.elapsed_s)
+    work = fixed_work_rate(read, {"a": (3, 0)})  # three rounds of one turn: the first is cold
+    assert work.turns == 2 and work.rate == pytest.approx(2 / work.elapsed_s)
+
+
+def test_fixed_work_rate_times_warm_turns_from_their_round_credit_and_skips_the_cold_round():
+    # Three lockstep rounds released 10 s apart. The first is the cold prefill round and is not timed.
+    # Warm turns end 1.5, 2.5 and 3.5 s after the second release and 1.5 and 2.5 s after the third; a turn's
+    # latency runs from its round's release, so the client's wait at the barrier is not engine time.
+    cold = [_turn(f"c{i}", "main", 0, start_s=0, ttft_s=20.0, out=1 + 100 * (i + 1)) for i in range(2)]
+    first = [_turn(f"a{i}", "main", 0, start_s=10, ttft_s=0.5, out=1 + 100 * (i + 1)) for i in range(3)]
+    second = [_turn(f"b{i}", "main", 0, start_s=20, ttft_s=0.5, out=1 + 100 * (i + 1)) for i in range(2)]
+    read = LoadRead("candidate", 1, "lane-1", 5, tuple(cold + first + second))
+    work = fixed_work_rate(read, completed_work(read))
+    assert work.turns == 5 and work.elapsed_s == pytest.approx(11.5) and work.rate == pytest.approx(5 / 11.5)
+    with pytest.raises(ServiceEvidenceError, match="no timed warm turns"):
+        fixed_work_rate(LoadRead("candidate", 1, "lane-1", 2, tuple(cold)), {"c0": (1, 0), "c1": (1, 0)})
+
+
+def test_sequential_rule_stops_clear_results_early_and_runs_marginal_ones_to_the_sealed_budget():
+    rule = dict(required=1.01, null_noise=0.0056, max_windows=5)
+    assert continue_windows([], **rule) and continue_windows([1.03], **rule)  # never decide on one window
+    assert not continue_windows([1.03, 1.028], **rule)  # 2 sigma clear above required: PASS settles at two
+    assert not continue_windows([1.001, 0.999], **rule)  # a plain copy fails at two
+    assert continue_windows([1.012, 1.011], **rule)  # marginal: keep reading
+    assert continue_windows([1.012, 1.011, 1.013, 1.012], **rule)
+    assert not continue_windows([1.012, 1.011, 1.013, 1.012, 1.011], **rule)  # the sealed budget ends it
+    assert not continue_windows([1.02, 1.02], required=1.01, null_noise=0.0, max_windows=8)  # no noise: two decide
 
 
 def test_misses_and_one_token_turns():
@@ -117,42 +142,50 @@ def test_inner_requests_count_per_root():
     )
     read = LoadRead("incumbent", 2, "lane-2", 1, rows)
     assert completed_work(read) == {"root": (1, 2)}
-    assert fixed_work_rate(read, {"root": (1, 2)}).turns == 3
+    assert fixed_work_rate(read, {"root": (1, 2)}).turns == 2  # the main turn opened the cold round
 
 
 WORK = {f"s{i}": (1, 0) for i in range(20)}
 
 
 def _read(arm: str, *, rate: float, attain: float, window: int = 1, load: int = 12) -> LoadRead:
-    """A synthetic read of the 20 one-turn roots in WORK whose rate and attainment are set by construction."""
-    turns = 20
+    """A synthetic read of the 20 one-turn roots in WORK: a two-turn cold round, then one warm round
+    whose rate and attainment are set by construction."""
+    turns, cold = 20, 2
     met = round(attain * turns)
     rows = [
-        _turn(f"s{i}", "main", 0, start_s=i / rate, ttft_s=0.1, out=10, decode_tps=200.0 if i < met else 10.0)
+        _turn(f"s{i}", "main", 0, start_s=0 if i < cold else 10, ttft_s=0.1, out=10,
+              decode_tps=200.0 if i < met else 10.0)
         for i in range(turns)
     ]
-    # Stretch the last turn so the elapsed span yields exactly ``rate`` turns per second.
+    # Stretch the last warm turn so the warm turns' summed latency yields exactly ``rate`` turns per second.
     last = rows[-1]
-    end = rows[0].credit_issued_ns + int(turns / rate * 1e9)
+    others = sum(r.request_end_ns - r.credit_issued_ns for r in rows[cold:-1])
+    end = last.credit_issued_ns + int((turns - cold) / rate * 1e9) - others
     rows[-1] = TurnRecord(last.root_session_id, last.kind, last.ordinal, last.credit_issued_ns,
                           last.request_start_ns, min(last.first_token_ns, end), end,
                           last.prompt_tokens, last.output_tokens, last.status)
     return LoadRead(arm, window, "lane-1" if arm == "candidate" else "lane-2", load, tuple(rows))
 
 
-def test_grade_rate_verdict_survives_the_window_spread():
+def test_grade_rate_verdict_is_the_mean_of_the_paired_window_ratios():
     inc = [_read("incumbent", rate=1.0, attain=0.9), _read("incumbent", rate=1.02, attain=0.9, window=2)]
     fast = [_read("candidate", rate=1.10, attain=0.9), _read("candidate", rate=1.12, attain=0.9, window=2)]
     slow = [_read("candidate", rate=1.00, attain=0.9), _read("candidate", rate=1.03, attain=0.9, window=2)]
     mixed = [_read("candidate", rate=1.04, attain=0.9), _read("candidate", rate=1.09, attain=0.9, window=2)]
     thresholds = dict(required=1.05, attainment_tolerance=0.05, attainment_margin=0.0)
     passed = grade(fast, inc, CONTRACT, WORK, **thresholds)
-    assert passed.decision is SpeedStageDecision.PASS
-    assert passed.ratio == pytest.approx(1.10 / 1.02, rel=1e-3) and passed.required == 1.05
+    assert passed.decision is SpeedStageDecision.PASS and passed.required == 1.05
+    assert passed.ratio == pytest.approx((1.10 / 1.0 + 1.12 / 1.02) / 2, rel=1e-3)
+    assert "2 paired window(s)" in passed.detail
     assert grade(slow, inc, CONTRACT, WORK, **thresholds).decision is SpeedStageDecision.FAIL
-    undetermined = grade(mixed, inc, CONTRACT, WORK, **thresholds)
-    assert undetermined.decision is SpeedStageDecision.NO_DECISION
-    assert "spread" in undetermined.detail
+    # One window under and one over the requirement is a mean, not a spread verdict: the sealed
+    # window count and required ratio carry the engine's own per-read noise.
+    averaged = grade(mixed, inc, CONTRACT, WORK, **thresholds)
+    assert averaged.decision is SpeedStageDecision.PASS
+    assert averaged.ratio == pytest.approx((1.04 / 1.0 + 1.09 / 1.02) / 2, rel=1e-3)
+    with pytest.raises(ServiceEvidenceError, match="pairs one candidate"):
+        grade(fast, list(reversed(inc)), CONTRACT, WORK, **thresholds)
 
 
 def test_grade_attainment_gate_is_non_inferiority_with_fixed_thresholds():

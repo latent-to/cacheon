@@ -161,9 +161,12 @@ failure, and repeats removal checks to close client/container races. Startup rec
 releases stale leases and orphan resources in the executor's own namespace.
 
 If the first bounded removal is still pending, cleanup requires a successful absence
-check after the foreground client is reaped. That final check can resolve the pending
-removal; it cannot erase an ownership, client, or stream error. Cleanup exceptions
-retain their original cause alongside the worker diagnostics.
+check after the foreground client is reaped. Docker acknowledges a forced removal
+before it destroys the container, and a multi-GPU engine container can take well over
+a minute to die, so each absence check waits up to five minutes for the daemon's
+destroy event before it reports the lease as still present. That final check can
+resolve the pending removal; it cannot erase an ownership, client, or stream error.
+Cleanup exceptions retain their original cause alongside the worker diagnostics.
 
 If cleanup, unmount, device drain, or absence proof cannot be established, qualification
 fails as infrastructure authority; it must not become a candidate `PASS` or `FAIL`.

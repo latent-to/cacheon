@@ -9,6 +9,7 @@ import pytest
 
 from cacheon.eval.oci_outer_session import (
     AttachedSessionTransport,
+    OuterSessionInfrastructureError,
     OuterSessionProcessError,
     OuterSessionTimeoutError,
 )
@@ -105,6 +106,48 @@ def test_exchange_propagates_transport_failure_to_every_pending_request(failure)
             assert all(isinstance(result, expected) for result in results)
             assert not exchange.requests and not exchange.pending
         finally:
+            client.close()
+
+    asyncio.run(run())
+
+
+def test_exchange_writes_frames_in_batch_index_order_whatever_order_callers_arrive():
+    """The production worker refuses an unexpected index, so it is the oracle here."""
+    async def run():
+        client = PipeClient()
+        transport = AttachedSessionTransport(PipeManager(client), object(), ("worker",))
+        transport.start()
+        served = []
+
+        async def generate(**kwargs):
+            served.append(int(kwargs["prompt"][0]))
+
+            async def stream():
+                yield {"index": 0, "output_ids": [7], "meta_info": {
+                    "prompt_tokens": 5, "completion_tokens": 1, "finish_reason": {"type": "length"},
+                }}
+
+            return stream()
+
+        worker = asyncio.create_task(serve_requests(
+            SimpleNamespace(engine=SimpleNamespace(async_generate=generate), require_completion=lambda: None),
+            client.request_read, client.response_write,
+            session_id="a" * 32, launch_digest="b" * 64, audit_policy=None,
+        ))
+        deadline = time.monotonic() + 3
+        try:
+            async with RequestExchange(transport, clock=time.monotonic, deadline=deadline) as exchange:
+                rows = await asyncio.gather(*(
+                    exchange.execute(_request(i, 1), deadline=deadline) for i in (2, 1, 0)
+                ))
+                assert served == [0, 1, 2]
+                assert [row.batch_index for row in rows] == [2, 1, 0]
+                assert exchange.next_index == 3 and not exchange.turns
+                with pytest.raises(OuterSessionInfrastructureError, match="already written"):
+                    await exchange.execute(_request(1, 1), deadline=deadline)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
             client.close()
 
     asyncio.run(run())

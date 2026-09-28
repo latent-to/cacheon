@@ -753,7 +753,7 @@ class OpenedOuterSession:
         return RequestExchange(
             self.transport, clock=self.clock,
             deadline=self.deadline if deadline is None else min(deadline, self.deadline),
-            audit_policy=self.plan.audit_policy,
+            audit_policy=self.plan.audit_policy, next_index=self.next_batch_index,
         )
 
     def execute_next(self) -> BatchExecutionEvidence:

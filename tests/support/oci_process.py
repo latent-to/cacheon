@@ -126,13 +126,32 @@ class FakeStream:
 
 
 
+class FakeClock:
+    """A monotonic clock that only the manager's own sleeps advance, so bounded waits cost no wall time."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.slept = 0.0
+
+    def __call__(self) -> float:
+        self.now += 0.001
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += float(seconds)
+        self.slept += float(seconds)
+
+
 def _manager(tmp_path: Path, commands: Commands | None = None) -> OCIProcessManager:
     selected = commands or Commands()
+    clock = FakeClock()
     manager = OCIProcessManager(
         docker_binary="/usr/bin/docker",
         recovery_root=tmp_path / "recovery",
         executor_id="validator-a",
         runner=selected,
+        clock=clock,
+        sleep=clock.sleep,
     )
     selected.default_namespace = manager.namespace_digest
     return manager

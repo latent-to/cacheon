@@ -680,26 +680,41 @@ A window does not by itself provide the paired capacity comparison, quality audi
 authoritative qualification result. Existing commissions continue to execute
 their sealed workload until recommissioned.
 
-AIPerf's concurrency ramp increases the live-session limit from one to the
-target. It does not enforce a fixed interval between root starts: a completed
-tree releases its slot early. The sealed `ramp_seconds_per_session` multiplied by
-the load gives each read's ramp duration.
+Arrivals are lockstep rounds, not closed-loop concurrency. The loopback bridge
+holds every request until the previous round has drained and no new request
+has arrived for 0.5 s, then releases the held requests together in session-key
+order, so each round's batch composition and DP placement follow from the
+sealed slice rather than from the engine's own timing jitter. The first round
+waits for exactly `load` conversations; if the client has not opened them
+within 120 s of its last arrival, the read fails with that cause. A turn's
+credit is its round's release time, so TTFT and the fixed-work rate exclude the
+wait at the barrier. The first round of every window is the cold prefill of
+each session's opening context; it fills the cache the operating point assumes
+and is not timed. The rate is the warm turns divided by their summed latency
+from release to completion, the reciprocal of the mean warm-turn latency, which
+at a fixed session count is the served throughput per session. Averaging the
+turns of a round rather than timing its slowest one is what keeps one long
+turn's decode-step count from moving the score.
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens and DP routing identical between arms and windows. Each
 client retains separate memory-mapped dataset files under its output directory;
-concurrent clients share no writable dataset state. The client requires exactly
+concurrent clients share no writable dataset state. Each client's ZMQ IPC
+sockets live in a short private temporary directory under `/tmp`, because Unix
+socket paths are limited to 107 bytes and the spool root may be deep. The client requires exactly
 AIPerf 0.13.0 because it consumes that version's API.
 
-The driver uses ordinary closed-loop concurrency with `--no-fixed-schedule`,
-without the AgentX scenario. The AgentX trajectory warmup is designed for
+The driver runs AIPerf at concurrency `load` with `--no-fixed-schedule` and
+without the AgentX scenario; the bridge, not the client, sets the arrival
+schedule. The AgentX trajectory warmup is designed for
 recorded timestamps; stripping those timestamps can omit intended turns.
 Omit `--warmup-request-count` for no client warmup; version 0.13.0 rejects an
 explicit zero. The engine still receives its ordinary conditioning requests.
 
 Replay qualification is commissioned with `session.replay`: absolute `manifest_path`,
-`aiperf_binary` and `tokenizer_path`, the manifest's computed `slice_digest`, and a
-single operating `load`. `resident_speed.goodput` seals the service `contract`
+`aiperf_binary` and `tokenizer_path`, the manifest's computed `slice_digest`, a
+single operating `load`, and the number of paired `windows`. `resident_speed.goodput`
+seals the service `contract`
 (`decode_floor_tps`, `ttft_bound_s`, `attainment`), `required` ratio, paired
 `null_noise`, fixed `attainment_tolerance`, and its calibrated one-sided
 `attainment_margin`. These values use canonical decimal strings. The existing
@@ -713,8 +728,18 @@ This selects speed policy v16. Both OCI engines finish conditioning and cache
 flush before their concurrent fixed-work reads. Both reads finish before either
 engine is removed. The service scorer supplies the verdict from retained turn
 records; its `grade` entrypoint and the quality producer must be available before
-an engine launches. There is one paired window, with no timed B′ or automatic
-repeat. Earlier policy versions retain their sealed arithmetic.
+an engine launches. Each sealed window is a fresh paired read of the same fixed
+work after a cache flush on both lanes; the verdict is the mean of the
+per-window rate ratios against `required`, with no timed B′ or automatic
+repeat. The sealed `windows` count is a budget, not a fixed length: from the
+second window on, both lanes publish the finished window's rate at the barrier
+and stop once the running mean sits two sigma clear of `required` on either
+side, with sigma the sealed `null_noise` (the per-window paired null ratio's
+standard deviation) over the square root of the windows read. A clear win or a
+plain copy settles in two windows; a marginal candidate reads every sealed
+window and the plain mean decides. Regrading replays the rule from the
+retained reads, so a read that stopped anywhere else is invalid evidence.
+Earlier policy versions retain their sealed arithmetic.
 
 On a speed PASS, the candidate engine closes and the existing entropy provider
 selects source occurrences from the completed B/C trajectories. The still-loaded

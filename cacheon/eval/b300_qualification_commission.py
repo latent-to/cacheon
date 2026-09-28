@@ -504,7 +504,7 @@ def _compose_locked(
             Path(settings["manifest_path"]), (settings["load"],),
             Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
             inputs.root / "qualification-replays" / screen_lane,
-            goodput.contract, "incumbent", 1, screen_lane,
+            goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
         )
         if replay.slice.digest != settings["slice_digest"]:
             raise B300QualificationCommissionError("replay slice differs from its sealed authority")

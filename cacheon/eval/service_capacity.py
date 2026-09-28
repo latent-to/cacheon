@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-from cacheon.eval.speed_verdict import SpeedStageDecision, invariant_decision
+from cacheon.eval.speed_verdict import SpeedStageDecision
 
 TURN_KINDS = frozenset({"main", "inner"})
 TURN_STATUSES = frozenset({"ok", "error", "cancelled"})
@@ -131,10 +131,11 @@ class LoadRead:
 
 @dataclass(frozen=True)
 class WorkRate:
+    """Timed warm turns, their summed credit-to-end latency, and turns per latency second."""
+
     turns: int
     elapsed_s: float
     rate: float
-    drain_fraction: float
 
 
 def completed_work(read: LoadRead) -> dict[str, tuple[int, int]]:
@@ -149,11 +150,22 @@ def completed_work(read: LoadRead) -> dict[str, tuple[int, int]]:
 
 
 def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> WorkRate:
-    """Turns per elapsed second for the sealed work, refusing any other work.
+    """Warm turns per second of their summed latency for the sealed work, refusing any other work.
 
-    A read that completed a different set of turns (a wrapped root, a missing
-    session, a lane that stopped early) is invalid evidence, never a slower or
-    faster engine.
+    Every turn of a lockstep round carries the round's release stamp as its
+    credit, so a turn's latency runs from that release to its own end and the
+    client's wait at the barrier is not engine time. The first round of a
+    window is the cold prefill of every session's opening context; it fills
+    the cache that the operating point assumes and is not timed. The rate is
+    the reciprocal of the mean warm-turn latency at the sealed load, which by
+    Little's law is the served throughput per session. It averages a round's
+    turns instead of taking its slowest one: on 2026-09-27 four identical-code
+    windows (run f2ad8c31) put the round-span ratio at 0.987/0.997/1.029/1.022
+    and this ratio at 1.013/1.000/1.002/0.999, because one long turn's
+    decode-step count swings a maximum and barely moves a mean, and the cold
+    round alone carried a 60 s swing. A read that completed a different set of
+    turns (a wrapped root, a missing session, a lane that stopped early) is
+    invalid evidence, never a slower or faster engine.
     """
     done = completed_work(read)
     if done != expected:
@@ -164,14 +176,38 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> Wor
             f"completed work differs from the sealed slice: missing={missing[:3]} "
             f"extra={extra[:3]} differing={differing[:3]}"
         )
-    first = min(r.credit_issued_ns for r in read.records)
-    last_start = max(r.request_start_ns for r in read.records)
-    last = max(r.request_end_ns for r in read.records)
-    if last <= first:
-        raise ServiceEvidenceError("read elapsed time is not positive")
-    turns = sum(main + inner for main, inner in expected.values())
-    elapsed = (last - first) / 1e9
-    return WorkRate(turns, elapsed, turns / elapsed, (last - last_start) / (last - first))
+    cold = min(record.credit_issued_ns for record in read.records)
+    warm = [record for record in read.records if record.credit_issued_ns != cold]
+    latency = sum((record.request_end_ns - record.credit_issued_ns) / 1e9 for record in warm)
+    if not warm or latency <= 0:
+        raise ServiceEvidenceError("read has no timed warm turns")
+    return WorkRate(len(warm), latency, len(warm) / latency)
+
+
+STOP_MIN_WINDOWS = 2
+STOP_Z = 2.0
+
+
+def continue_windows(ratios: Sequence[float], *, required: float, null_noise: float, max_windows: int) -> bool:
+    """Whether the sealed budget and the running mean still call for another paired window.
+
+    A sequential test on the per-window ratios: from the second window on, the
+    read stops once the mean sits ``STOP_Z`` sigma clear of ``required`` on
+    either side, with sigma the sealed per-window null noise over the square
+    root of the windows read. A clear win or a plain copy settles in two
+    windows; a marginal candidate runs to the sealed maximum, where the plain
+    mean decides. Both lanes call this on the same published rates, and the
+    regrade replays it from the retained reads, so the stopping point is part
+    of the evidence.
+    """
+    count = len(ratios)
+    if count >= max_windows:
+        return False
+    if count < STOP_MIN_WINDOWS:
+        return True
+    mean = sum(ratios) / count
+    band = STOP_Z * null_noise / math.sqrt(count)
+    return mean - band < required <= mean + band
 
 
 def attainment(read: LoadRead, contract: ServiceContract) -> float:
@@ -182,7 +218,7 @@ def attainment(read: LoadRead, contract: ServiceContract) -> float:
 @dataclass(frozen=True)
 class ServiceVerdict:
     decision: SpeedStageDecision
-    ratio: float | None  # conservative: min(candidate rate) / max(incumbent rate)
+    ratio: float  # mean over windows of candidate rate / incumbent rate
     required: float
     detail: str
 
@@ -200,11 +236,15 @@ def grade(
     """The paired fixed-load verdict: rate over identical work, attainment as a non-inferiority gate.
 
     Each window pairs one candidate read with one incumbent read at the same
-    sealed load over the same fixed work, so the fixed-work turn rates compare
-    like for like. The candidate must clear ``required`` against its least
-    favorable pairing to PASS and lose against its most favorable to FAIL; a
-    ratio that flips inside the observed spread is NO_DECISION, and the sealed
-    repeat, never a rerun of one arm, is the only escalation.
+    sealed load over the same fixed work, so the warm-turn rates compare like
+    for like. The score is the mean of the per-window rate ratios and the
+    verdict is PASS at or above ``required``, FAIL below it. The engine's own
+    token stream is not reproducible under batching (2026-09-27: identical
+    prompts changed their decode step counts in 233 of 237 turns; the warm
+    mean-latency ratio of identical code scattered 0.56% per window over four
+    windows), so the sealed window count and ``required`` carry that noise;
+    taking the least favorable pairing instead would bias a multi-window read
+    against every honest candidate by the spread itself.
 
     Attainment is graded on the paired difference A_candidate - A_incumbent.
     Its one-sided lower bound, the difference less ``attainment_margin`` (the
@@ -232,7 +272,7 @@ def grade(
         rates_c.append(fixed_work_rate(cand, expected).rate)
         rates_i.append(fixed_work_rate(inc, expected).rate)
         windows.append((cand.window, attainment(cand, contract), attainment(inc, contract)))
-    ratio = min(rates_c) / max(rates_i)
+    ratio = sum(c / i for c, i in zip(rates_c, rates_i, strict=True)) / len(rates_c)
     for window, a_cand, a_inc in windows:
         if a_cand - a_inc - attainment_margin < -attainment_tolerance:
             return ServiceVerdict(
@@ -241,14 +281,11 @@ def grade(
                 f"{a_inc:.4f} is below the non-inferiority bound (tolerance {attainment_tolerance:.4g}, "
                 f"margin {attainment_margin:.4g})",
             )
-    decision = invariant_decision(rates_i, rates_c, required)
-    if decision is SpeedStageDecision.PASS:
-        detail = "candidate clears the required fixed-work rate ratio in every window pairing"
-    elif decision is SpeedStageDecision.FAIL:
-        detail = "candidate does not clear the required fixed-work rate ratio in any window pairing"
-    else:
-        decision, detail = SpeedStageDecision.NO_DECISION, "window spread crosses the required ratio"
-    return ServiceVerdict(decision, ratio, required, detail)
+    if ratio >= required:
+        return ServiceVerdict(SpeedStageDecision.PASS, ratio, required,
+                              f"mean fixed-work rate ratio over {len(rates_c)} paired window(s) clears the required ratio")
+    return ServiceVerdict(SpeedStageDecision.FAIL, ratio, required,
+                          f"mean fixed-work rate ratio over {len(rates_c)} paired window(s) is below the required ratio")
 
 
 def load_reads_jsonl(path: Path) -> list[LoadRead]:

@@ -9,7 +9,9 @@ import math
 from dataclasses import asdict, dataclass, replace
 
 from cacheon.eval.continuation_codec import ContinuationCodec
-from cacheon.eval.service_capacity import LoadRead, ServiceContract, ServiceVerdict, fixed_work_rate
+from cacheon.eval.service_capacity import (
+    LoadRead, ServiceContract, ServiceVerdict, continue_windows, fixed_work_rate,
+)
 from cacheon.eval.scoring import SpeedupVerdict
 from cacheon.eval.speed_verdict import SpeedStageDecision
 
@@ -89,7 +91,7 @@ class GoodputReadSet:
             attainment_margin=policy.attainment_margin,
         )
         if (type(result) is not ServiceVerdict or result.required != policy.required
-            or result.ratio is None or not math.isfinite(result.ratio) or result.ratio <= 0):
+            or not math.isfinite(result.ratio) or result.ratio <= 0):
             raise ValueError("service scorer returned another policy or result type")
         confident = result.decision is not SpeedStageDecision.NO_DECISION
         passed = result.decision is SpeedStageDecision.PASS
@@ -147,10 +149,24 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
                 for _ in range(session_plan.warmup_count):
                     controller.execute_next()
 
-                async def ready(load):
-                    key = f"{load}:ready:"
+                rates = {"incumbent": [], "candidate": []}
+
+                async def ready(load, window):
+                    # Both lanes publish the finished window's rate, then decide identically whether
+                    # the sealed sequential rule wants another; a split decision cannot pair and
+                    # times out at the barrier instead of reading on alone.
+                    proceed = True
+                    if window > 1:
+                        rates[prefix].append(fixed_work_rate(controller.replay_reads[-1], work).rate)
+                        schedule.put(f"{load}:{window - 1}:rate:{prefix}", rates[prefix][-1])
+                        rates[peer].append(schedule.get(f"{load}:{window - 1}:rate:{peer}", deadline=deadline, clock=clock))
+                        ratios = [c / i for c, i in zip(rates["candidate"], rates["incumbent"], strict=True)]
+                        proceed = continue_windows(ratios, required=plan.policy.goodput.required,
+                                                   null_noise=plan.policy.goodput.null_noise, max_windows=replay.windows)
+                    key = f"{load}:{window}:{'ready' if proceed else 'stop'}:"
                     schedule.put(key + prefix)
                     schedule.get(key + peer, deadline=deadline, clock=clock)
+                    return proceed
 
                 read_plan = replace(replay, output_directory=replay.output_directory / controller.session_id)
                 reads = asyncio.run(run_replay(controller, read_plan, before_read=ready))
@@ -222,39 +238,48 @@ def regrade_goodput_execution(evidence, plan):
     ):
         _validate_execution_binding(execution, arm)
         session = execution.session
-        if reads != session.replay_reads or len(reads) != 1:
+        if reads != session.replay_reads or not 1 <= len(reads) <= replay.windows:
             raise CrossoverRuntimeError("goodput reads differ from their completed engine session")
-        read = reads[0]
-        if (read.window, read.load, read.lane) != (replay.window, load, _expected_lane_digest(arm)):
-            raise CrossoverRuntimeError("goodput read differs from its commissioned load or lane")
         warmup = arm.session_plan.warmup_count
         count = replay.slice.turns(load)
-        rows = session.batches[warmup:warmup + count]
+        measured = count * len(reads)
         controls = evidence.reference_inputs if arm is plan.baseline else ()
-        if (len(session.batches) != warmup + count + len(controls)
+        if (len(session.batches) != warmup + measured + len(controls)
             or tuple(row.batch_index for row in session.batches) != tuple(range(len(session.batches)))
             or len({row.request_id for row in session.batches}) != len(session.batches)
             or len({row.nonce for row in session.batches}) != len(session.batches)):
             raise CrossoverRuntimeError("goodput host requests are incomplete or repeated")
-        rows = sorted(rows, key=lambda row: row.request_started_at)
-        records = sorted(read.records, key=lambda row: row.request_start_ns)
-        offset = records[0].request_start_ns - round(rows[0].request_started_at * 1e9)
-        for row, record in zip(rows, records, strict=True):
-            if len(row.evidence.prompts) != 1 or len(row.prompt_latencies) != 1 or row.audit_receipts:
-                raise CrossoverRuntimeError("goodput request lacks its canonical token and timing evidence")
-            prompt = row.evidence.prompts[0]
-            if (record.request_start_ns != offset + round(row.request_started_at * 1e9)
-                or record.first_token_ns != offset + round((row.request_started_at + row.prompt_latencies[0][0]) * 1e9)
-                or record.request_end_ns != offset + round(row.response_completed_at * 1e9)
-                or (record.prompt_tokens, record.output_tokens) != (prompt.prompt_tokens, len(prompt.output_ids))
-                or row.token_numerator != record.output_tokens
-                or row.response_completed_at > session.session_completed_at):
-                raise CrossoverRuntimeError("goodput record does not regrade from its host request")
-        for control, row in zip(controls, session.batches[warmup + count:], strict=True):
+        for window, read in enumerate(reads, start=1):
+            if (read.window, read.load, read.lane) != (window, load, _expected_lane_digest(arm)):
+                raise CrossoverRuntimeError("goodput read differs from its commissioned load, window or lane")
+            first = warmup + (window - 1) * count
+            rows = sorted(session.batches[first:first + count], key=lambda row: row.request_started_at)
+            records = sorted(read.records, key=lambda row: row.request_start_ns)
+            offset = records[0].request_start_ns - round(rows[0].request_started_at * 1e9)
+            for row, record in zip(rows, records, strict=True):
+                if len(row.evidence.prompts) != 1 or len(row.prompt_latencies) != 1 or row.audit_receipts:
+                    raise CrossoverRuntimeError("goodput request lacks its canonical token and timing evidence")
+                prompt = row.evidence.prompts[0]
+                if (record.request_start_ns != offset + round(row.request_started_at * 1e9)
+                    or record.first_token_ns != offset + round((row.request_started_at + row.prompt_latencies[0][0]) * 1e9)
+                    or record.request_end_ns != offset + round(row.response_completed_at * 1e9)
+                    or (record.prompt_tokens, record.output_tokens) != (prompt.prompt_tokens, len(prompt.output_ids))
+                    or row.token_numerator != record.output_tokens
+                    or row.response_completed_at > session.session_completed_at):
+                    raise CrossoverRuntimeError("goodput record does not regrade from its host request")
+        for control, row in zip(controls, session.batches[warmup + measured:], strict=True):
             if (len(row.evidence.prompts) != 1 or row.audit_receipts
                 or control.roles[2].output_ids != row.evidence.prompts[0].output_ids
                 or row.input_ids_sha256 != (hashlib.sha256(control.input_bytes).hexdigest(),)):
                 raise CrossoverRuntimeError("incumbent quality control differs from its completed request")
+    # The lanes stopped where the sealed sequential rule stopped them, replayed from the retained rates.
+    work = replay.slice.expected_work(load)
+    ratios = [fixed_work_rate(cand, work).rate / fixed_work_rate(inc, work).rate
+              for cand, inc in zip(evidence.goodput.candidate, evidence.goodput.incumbent, strict=True)]
+    for read in range(1, len(ratios) + 1):
+        if continue_windows(ratios[:read], required=plan.policy.goodput.required,
+                            null_noise=plan.policy.goodput.null_noise, max_windows=replay.windows) != (read < len(ratios)):
+            raise CrossoverRuntimeError("goodput reads did not stop where the sealed sequential rule stops")
     if evidence.decision is SpeedStageDecision.PASS:
         if not evidence.reference_inputs or not evidence.prompt_pairs or evidence.quality_entropy is None:
             raise CrossoverRuntimeError("passing replay lacks its selected incumbent quality controls")

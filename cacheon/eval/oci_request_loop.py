@@ -189,7 +189,12 @@ async def serve_requests(
                 or request.nonce in seen_nonces
             ):
                 raise RequestFailure(request, SessionProtocolError(
-                    "batch ordering, session, launch, or replay binding failed"
+                    "batch ordering, session, launch, or replay binding failed: "
+                    f"batch_index {request.batch_index} (expected {expected_index}), "
+                    f"session {'bound' if request.session_id == session_id else 'foreign'}, "
+                    f"launch {'bound' if request.launch_digest == launch_digest else 'foreign'}, "
+                    f"request_id {'repeated' if request.request_id in seen_ids else 'fresh'}, "
+                    f"nonce {'repeated' if request.nonce in seen_nonces else 'fresh'}"
                 ))
             seen_ids.add(request.request_id)
             seen_nonces.add(request.nonce)
