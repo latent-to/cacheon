@@ -93,6 +93,19 @@ def test_a_timed_run_requires_the_candidate_inside_a_capture(tmp_path):
     )
 
 
+def test_the_prefix_cache_completes_a_timed_run_outside_every_capture(tmp_path):
+    # The scheduler runs its prefix cache between forward passes, never in a graph.
+    slots = ("model.layers.*.mlp", "tree_cache")
+    for slot, captured in zip(slots, (True, False)):
+        _write(tmp_path, "completed", {
+            "pid": 10, "rank": 0, "world_size": 1, "slot": slot, "calls": 5, "captured": captured,
+        }, slot)
+    assert "2/2" in engine_worker._require_execution_completion(
+        str(tmp_path), active_receipts=[_active(10, 0, slots=slots, world_size=1)],
+        expected_slots=list(slots), expected_member_count=1, require_captured=True,
+    )
+
+
 def test_only_candidate_owned_receipts_type_the_engine_failure(tmp_path):
     candidate = tmp_path / "candidate"
     runtime = tmp_path / "runtime"

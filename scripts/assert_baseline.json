@@ -60,7 +60,7 @@
 "tests/test_duplicate_replay.py": 16,
 "tests/test_economics.py": 61,
 "tests/test_engine_launch.py": 46,
-"tests/test_engine_tree.py": 126,
+"tests/test_engine_tree.py": 124,
 "tests/test_eval_cost.py": 108,
 "tests/test_evaluation_coordinator.py": 52,
 "tests/test_evaluation_lease_operator.py": 56,

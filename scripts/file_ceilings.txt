@@ -11,7 +11,7 @@ cacheon/chain/remote_worker_request_plan.py 940
 cacheon/chain/remote_worker_spool.py 994
 cacheon/chain/weight_share.py 1528
 cacheon/cli.py 3209
-cacheon/engine_tree.py 1607
+cacheon/engine_tree.py 1583
 cacheon/eval/b300_deployment.py 1287
 cacheon/eval/b300_qualification_deployment.py 963
 cacheon/eval/calibration.py 922
@@ -34,7 +34,7 @@ dashboard/app.py 973
 tests/test_chain_intake.py 2048
 tests/test_crossover_runtime.py 918
 tests/test_device_state.py 1001
-tests/test_engine_tree.py 1175
+tests/test_engine_tree.py 1167
 tests/test_eval_cost.py 1019
 tests/test_oci_backend.py 1134
 tests/test_qualification.py 1000

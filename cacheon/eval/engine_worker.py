@@ -334,6 +334,7 @@ def _require_execution_completion(
     """Fail closed unless every active member completed every registered slot."""
 
     from cacheon import receipts
+    from cacheon.eval.resident_execution_evidence import eager_slots
 
     completed = receipts.collect(receipt_dir, "completed")
     coverage = dict(
@@ -343,8 +344,12 @@ def _require_execution_completion(
     )
     # A completion counts on a graphs-on run only if the dispatcher saw the candidate
     # invoked inside a capture: one absent from the graph is timed as stock while
-    # its eager-warmup completion sits on disk.
-    captured = [row for row in completed if row.get("captured") is True]
+    # its eager-warmup completion sits on disk. A slot SGLang serves outside the
+    # graph, such as the scheduler's prefix cache, runs in every timed step without one.
+    eager = eager_slots()
+    captured = [
+        row for row in completed if row.get("captured") is True or row.get("slot") in eager
+    ]
     passed, detail = receipts.completed_gate(
         captured if require_captured else completed, **coverage
     )

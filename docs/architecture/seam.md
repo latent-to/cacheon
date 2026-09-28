@@ -49,7 +49,7 @@ The registered rows are:
 |---|---|---|
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot |
 | `nodes` | `ModelRunner.load_model` | Every registered [node address](slot-contract.md#node-addresses); binds the named modules of the served model once the weights are loaded |
-| `cache` | `default_radix_cache_factory` | The [prefix cache](slot-contract.md#the-prefix-cache); builds a bundle's `tree_cache` class in place of stock, on the engine's pools, and checks every prefix it claims |
+| `cache` | `default_radix_cache_factory` | The [prefix cache](slot-contract.md#the-prefix-cache); builds a bundle's `tree_cache` class through the stock chain in place of stock, and checks the KV behind every prefix it serves |
 
 `nodes` serves all candidate model code and `cache` the one scheduler object a
 bundle may replace. `nodes` patches no SGLang method: it replaces the `forward` of

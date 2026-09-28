@@ -53,11 +53,11 @@ prepared state as the first argument. See [Kernel ABI](kernel-abi.md).
 ## The prefix cache
 
 `tree_cache` names the scheduler's prefix cache instead of a module. Its entry is
-a class defined in the op's source file and derived from a class imported from
-`sglang.srt.mem_cache`, usually `BasePrefixCache` or `RadixCache` of the pinned
-SGLang. The engine constructs it as `entry(params)` on its own KV allocator and
-request pool, which the cache must keep. Declare no `prepare`, dtypes,
-architectures or eligibility metadata for it.
+a class defined in the op's source file and derived from the pinned SGLang's
+`UnifiedRadixCache`, imported from `sglang.srt.mem_cache.unified_radix_cache`.
+The engine builds it exactly where and how it builds stock, hierarchical cache
+included, on its own KV allocator and request pool, which the cache must keep.
+Declare no `prepare`, dtypes, architectures or eligibility metadata for it.
 
 ```toml
 [[ops]]
@@ -66,12 +66,11 @@ source = "cache/policy.py"
 entry = "PolicyCache"
 ```
 
-Every prefix the cache reports as cached is checked against the validator's
-record of what each KV slot holds. A wrong, stale, stitched or over-long claim,
-or a host-tier hit, stops the engine as the candidate's failure. The address
-serves full-attention models without the hierarchical cache, and a bundle naming
-it does not complete a graphs-on qualification; see
-[the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
+The KV behind every prefix the cache serves is checked against what the engine
+computed for it, whichever slot or host tier the bytes came through. Serving other
+bytes, keeping pages across a flush, moving a request's own slots or claiming more
+tokens than the key stops the engine as the candidate's failure. The address
+serves full-attention models; see [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
 ## Selecting a target
 

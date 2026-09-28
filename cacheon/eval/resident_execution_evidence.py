@@ -140,13 +140,18 @@ class RankExecution:
 def eager_slots() -> frozenset[str]:
     """Registered slots SGLang serves outside its CUDA graph.
 
-    Resolved from the slot registry when it is importable; a process without it
-    treats every slot as graph-served, which is the stricter reading.
+    The scheduler's prefix cache always is. The slot registry's are resolved when
+    it is importable; a process without it treats them as graph-served, which is
+    the stricter reading.
     """
+
+    from cacheon.integrations.sglang_cache import ADDRESS
 
     try:
         from cacheon.slots import SLOTS
     except Exception:  # noqa: BLE001 - the registry needs torch; the gate must not
-        return frozenset()
-    return frozenset(name for name, spec in SLOTS.items() if not spec.serving_graph_captured)
+        return frozenset({ADDRESS})
+    return frozenset(
+        {ADDRESS, *(name for name, spec in SLOTS.items() if not spec.serving_graph_captured)}
+    )
 

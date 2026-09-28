@@ -384,59 +384,59 @@ forward pass; the runs are in
 
 ## The prefix cache
 
-The address `tree_cache` names the scheduler's prefix cache: the
-`BasePrefixCache` the scheduler keeps as `tree_cache`, which matches a request's
-leading tokens to KV slots already written, takes finished and chunked requests
-in, and locks and evicts. It is a root of the `forward_pass` target beside
-`model` and `logits_processor`, with no sub-addresses, and a bundle may name it
-alone or with node addresses.
+The address `tree_cache` names the scheduler's prefix cache: the object the
+scheduler keeps as `tree_cache`, which matches a request's leading tokens to KV
+slots already written, takes finished and chunked requests in, locks, evicts and,
+with the hierarchical cache on, moves KV between device and host memory. It is a
+root of the `forward_pass` target beside `model` and `logits_processor`, with no
+sub-addresses, and a bundle may name it alone or with node addresses.
 [`sglang_cache.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache.py)
 serves it; the node adapter does not.
 
 The entry is a class defined in the op's source file that derives, directly or
 through another class of that file, from a class the file imports at top level
-from `sglang.srt.mem_cache`, such as `BasePrefixCache` or `RadixCache`. Intake
-checks this in the source without running it. The engine builds the class where
-it builds its own cache, in `default_radix_cache_factory`, as `entry(params)`
-with the engine's `CacheInitParams`: both arms run the same engine flags, and
-`create_tree_cache` applies its checks and wrappers to the candidate as to
-stock. There the subclass relation is checked again, and an abstract class or a
-declared `prepare` is refused as the candidate's failure. The cache receives the
-engine's KV allocator and request-to-token pool and must keep both: the
-scheduler allocates and evicts through the cache's allocator, so KV memory stays
-the validator's. The choice is made once, at engine start, with an empty call
-descriptor, so an op that declares dtypes, architectures or eligibility metadata
-never matches and stock is built.
+from `sglang.srt.mem_cache`, which intake checks without running it. In the
+scheduler it must derive from the pinned SGLang's `UnifiedRadixCache`, the class
+the stock chain builds for a full-attention model; an abstract class or a declared
+`prepare` is the candidate's failure. For the one `default_radix_cache_factory`
+call the stock class name points at the candidate, so it receives the tree
+components, hierarchical cache and layer-transfer counter stock would, and
+`create_tree_cache` applies the same checks and wrappers under the same engine
+flags. The cache must keep the engine's KV allocator and request-to-token pool,
+through which the scheduler allocates and evicts, so device KV memory stays the
+validator's. The choice is made once, at engine start, with an empty call
+descriptor: an op declaring dtypes, architectures or eligibility never matches.
 
-Every prefix the cache claims is checked, because a claimed prefix the KV slots
-do not hold lets the scheduler skip its prefill and return wrong tokens fast. The
-validator keeps a ledger beside the cache. When a request's row is handed to the
-cache, the ledger records for each of its KV slots a digest of the whole prefix
-the slot was computed from: the request's `extra_key` and `cache_salt`, its
-tokens up to and including the slot's own, and under EAGLE the next token too,
-which the draft KV reads. A record ends when the allocator hands the slot out
-again or the engine flushes its pools. A match, whether the scheduler's, the
-schedule policy's or one the cache makes internally, passes only if it claims no
-more tokens than the request allows and every claimed slot's live record
-digests the request's own prefix at that position. Whole-prefix digests accept
-two requests that computed the same prefix into different slots and refuse slots
-stitched from different contexts. The prefix a chunked insert leaves on the
-request is checked the same way, and the request's row, which the next forward
-reads, must agree with it. A host-tier hit has no record and is refused, and a
-request row the cache pointed at another prefix's KV is refused at the next
-claim. Every refusal stops the engine and is receipted as the candidate's. Each
-nonempty claim costs the candidate arm one device synchronization.
+What a cache can fake is a hit: a served prefix whose slots do not hold what the
+engine computed for it skips that prefill and returns wrong tokens fast. The
+validator checks content, not the path the bytes took, so a host-memory tier,
+stock's or the bundle's own, passes whenever it brings back the exact bytes.
+Whenever the scheduler hands a request to the cache, before the cache sees it,
+the validator hashes each complete page of KV the request's own forward passes
+computed and records the pair of that hash and a digest of the prefix through the
+page: the request's `extra_key` and `cache_salt`, its tokens, and under EAGLE the
+token after the page, which the draft KV reads. At the same handoff it hashes up
+to 64 randomly chosen pages the request read from the cache and requires each
+pair to be on record. Hashes cover four layers, drawn at engine start, of each KV
+buffer kind in the target and draft pools, the DSA indexer's included. The pairs
+live in a 16 MB table on the device, and a flush forgets them. After the cache
+handles an unfinished request, the request's own slots beyond what the cache now
+protects must be unmoved, and the row the next forward pass reads must agree with
+the prefix left on the request. A match may claim no more tokens than its key.
 
-The address is served for full-attention models with a device-only cache. An
-engine with a hybrid sliding-window or state-space model, or with the
-hierarchical cache, refuses it at engine start as the arena's configuration
-rather than the candidate's failure.
+The check runs on the scheduler's stream behind the forward pass that wrote the
+bytes; the host reads each verdict at a later handoff, and only a flush or an
+audited request waits for one. Every refusal stops the engine and is receipted as
+the candidate's. A page is checked after the forward pass that read it, so bytes
+moved into a served slot after that pass are not told apart from bytes placed
+before. The check does not bound memory a cache allocates beyond the engine's pools.
 
-A graphs-on qualification requires every registered address to have run inside
-a CUDA-graph capture, and its audit role requires per-call audit receipts for
-each address. The prefix cache runs in the scheduler, outside any capture, and
-writes no audit receipts, so a bundle that names `tree_cache` does not complete a
-graphs-on qualification.
+The address serves full-attention models: an engine with a hybrid sliding-window
+or state-space model, or whose chain builds another class, refuses it at engine
+start as the arena's configuration, not the candidate's failure. The cache runs
+in the scheduler, never inside a CUDA graph, so its completions count on a
+graphs-on run without a capture, and in the audit role each audited request waits
+for its verdict and adds one unit to the address's audit receipt.
 
 ## Escape hatches
 
