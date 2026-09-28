@@ -160,7 +160,15 @@ def _orientation_plan(plan, windows, *, swapped=False):
 
 def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount, deadline, clock, quality_control):
     """Use one execution path for historical pairs and statistically scored lane swaps."""
-    kwargs = dict(model_mount=model_mount, deadline=deadline, clock=clock, quality_control=quality_control)
+    from transformers import AutoTokenizer
+
+    # Concurrent lazy imports failed after both engines had booted (2026-09-28).
+    # Resolve every tokenizer input before launching either lane; each thread owns one instance.
+    tokenizers = tuple(AutoTokenizer.from_pretrained(
+        arm.session_plan.replay.tokenizer_path, trust_remote_code=True, local_files_only=True,
+    ) for arm in (plan.baseline, plan.candidate))
+    kwargs = dict(model_mount=model_mount, deadline=deadline, clock=clock,
+                  quality_control=quality_control, tokenizers=tokenizers)
     if not plan.policy.goodput.error_rate:
         return _run_orientation(plan, baseline_executor=baseline_executor,
                                 candidate_executor=candidate_executor, **kwargs)
@@ -191,7 +199,7 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
 
 
 def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount, deadline, clock,
-                     quality_control, full_plan=None, prior=None):
+                     quality_control, tokenizers, full_plan=None, prior=None):
     """Keep each pair resident through its timed reads and any selected quality controls."""
     from cacheon.eval.agent_replay import run_replay
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
@@ -264,7 +272,7 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
 
                 read_plan = replace(replay, output_directory=replay.output_directory / controller.session_id)
                 async def bounded_replay():
-                    task = run_replay(controller, read_plan, before_read=ready)
+                    task = run_replay(controller, read_plan, tokenizer=tokenizers[index], before_read=ready)
                     return await asyncio.wait_for(task, timeout=read_plan.max_work_seconds or None)
 
                 reads = asyncio.run(bounded_replay())

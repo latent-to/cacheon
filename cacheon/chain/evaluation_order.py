@@ -102,9 +102,9 @@ def reward_comparisons(db) -> dict[str, dict]:
         score = min(Decimal(q["speedup"]) for q in qualifications)
         previous, previous_id, previous_qualifications = best.get(group, (Decimal(1), None, ()))
         relative = score / previous
-        margin, statistical = (Decimal(0), False)
+        margin = Decimal(0)
         if not exempt and previous_id is not None and score > previous:
-            margin, statistical = _reward_comparison_margin(db, qualifications, previous_qualifications)
+            margin = _reward_min_margin(db, qualifications, previous_qualifications)
         eligible = exempt or previous_id is None or (score > previous and
             score >= previous * (1 + margin))
         comparisons[row["reservation_id"]] = {
@@ -115,7 +115,7 @@ def reward_comparisons(db) -> dict[str, dict]:
             "reward_eligible": eligible,
             "grandfathered": exempt,
         }
-        if score > previous and (eligible or not statistical):
+        if eligible and score > previous:
             best[group] = (score, row["reservation_id"], qualifications)
     return comparisons
 
@@ -136,12 +136,7 @@ def reward_grandfathered_runtimes(db) -> list[str]:
     return values
 
 
-def _reward_min_margin(db, qualifications):
-    """Read the configured margin from the same retained attempts as the score."""
-    return _reward_comparison_margin(db, qualifications, ())[0]
-
-
-def _reward_comparison_margin(db, qualifications, previous):
+def _reward_min_margin(db, qualifications, previous=()):
     """Use the retained statistical contrast for new policies; preserve historical margins."""
     import math
     from decimal import Decimal
@@ -158,7 +153,7 @@ def _reward_comparison_margin(db, qualifications, previous):
         margins = [Decimal(str(policy["min_margin"])) for policy in policies]
         if any(not value.is_finite() or not 0 < value < 1 for value in margins):
             raise IntakeError("reward comparison margin is invalid")
-        return max(margins), False
+        return max(margins)
 
     def uncertainties(rows):
         results = []
@@ -177,7 +172,7 @@ def _reward_comparison_margin(db, qualifications, previous):
     # Separate qualifications have separate boot draws. Eligibility accounts
     # for both estimates; credit still uses the unshrunken marginal point ratio.
     margin = max(math.expm1(z*math.hypot(se, predecessor_se)) for se, z in current)
-    return Decimal(str(margin)), True
+    return Decimal(str(margin))
 
 
 def _reward_reports(db, qualifications):

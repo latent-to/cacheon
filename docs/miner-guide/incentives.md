@@ -167,7 +167,7 @@ V2 creates no claim and pays no principal.
 V1 is relative rather than fixed:
 
 1. A distinct contribution with a complete audited PASS earns V1 credit when it
-   beats the best earlier PASS on the same arena and commissioned baseline by
+   beats the best earlier rewarded PASS on the same arena and commissioned baseline by
    its sealed eligibility boundary. V17 uses the uncertainty of both retained
    estimates instead of a fixed percentage margin, and an unpaid result does not
    raise the next miner's hurdle. Historical policies retain their minimum-margin

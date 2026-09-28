@@ -152,7 +152,7 @@ def test_scoring_uses_queue_record_without_rewriting_claims_or_clocks(tmp_path, 
         assert _reward_projection_inputs(store)["score_speedups"] == scores
 
 
-def test_scoring_compares_all_slots_and_subthreshold_records_but_not_later_rows(tmp_path):
+def test_scoring_compares_all_slots_without_advancing_unpaid_or_later_records(tmp_path):
     from decimal import Decimal
     from cacheon.chain.evaluation_order import reward_comparisons
 
@@ -166,8 +166,8 @@ def test_scoring_compares_all_slots_and_subthreshold_records_but_not_later_rows(
         comparisons = reward_comparisons(store._db)
         second, third = (comparisons[c.reservation_digest] for c in candidates[1:3])
         assert not second["reward_eligible"]
-        assert third["previous_best_reservation_id"] == candidates[1].reservation_digest
-        assert third["score_speedup"] == Decimal("1.12") / Decimal("1.105")
+        assert third["previous_best_reservation_id"] == candidates[0].reservation_digest
+        assert third["score_speedup"] == Decimal("1.12") / Decimal("1.1")
         assert third["reward_eligible"]
         assert comparisons[candidates[0].reservation_digest]["score_speedup"] == Decimal("1.1")
 

@@ -197,8 +197,8 @@ The reward builder reopens retained PASS evidence and pays only records that bea
 the preceding rewarded v17 record against the same baseline with a statistically
 positive marginal gain. The comparison retains uncertainty from both independent
 qualifications; credit remains the unshrunken marginal logarithmic reward. An
-unpaid v17 estimate does not advance the reward record. Historical policies retain
-their configured minimum margin and preceding-PASS comparison.
+unpaid estimate does not advance the reward record. Historical policies retain
+their configured minimum margin against the preceding rewarded record.
 Pre-policy runtime generations retain their existing eligibility. See
 [emissions policy](../reference/emissions-policy.md) for grandfathering and ordering.
 The builder also reopens the active stacks

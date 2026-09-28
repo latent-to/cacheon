@@ -16,6 +16,24 @@ CONTRACT = ServiceContract(0.001, 1000.0, 0.8)
 WORK = {"session": (2, 0)}
 
 
+def test_tokenizer_failure_stays_before_the_gpu_boundary(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from cacheon.eval import goodput_runtime
+
+    def unavailable(*args, **kwargs):
+        raise OSError("tokenizer input is unavailable")
+
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(
+        AutoTokenizer=SimpleNamespace(from_pretrained=unavailable)))
+    monkeypatch.setattr(goodput_runtime, "_run_orientation", lambda *a, **k: pytest.fail("opened GPU lane"))
+    arm = SimpleNamespace(session_plan=SimpleNamespace(replay=SimpleNamespace(tokenizer_path="/missing")))
+    with pytest.raises(OSError, match="tokenizer input is unavailable"):
+        goodput_runtime.run_goodput_pair(SimpleNamespace(baseline=arm, candidate=arm),
+            baseline_executor=None, candidate_executor=None, model_mount=None,
+            deadline=100, clock=lambda: 0, quality_control=None)
+
+
 def _read(arm, lane, window, seconds):
     cold = TurnRecord("session", "main", 0, 10**9, 10**9, 10**9+1,
                       2*10**9, 100, 2, "ok")
