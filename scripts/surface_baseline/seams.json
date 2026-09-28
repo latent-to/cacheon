@@ -1,5 +1,5 @@
 {
- "adapter:cache": {"chokepoint":"default_radix_cache_factory","integration":"sglang_cache","name":"cache","target_module":"sglang.srt.mem_cache.registry"},
+ "adapter:cache": {"chokepoint":"create_tree_cache","integration":"sglang_cache","name":"cache","target_module":"sglang.srt.mem_cache.registry"},
  "adapter:nodes": {"chokepoint":"ModelRunner.load_model","integration":"sglang_nodes","name":"nodes","target_module":"sglang.srt.model_executor.model_runner"},
  "adapter:scheduler_gate": {"chokepoint":"run_scheduler_process","integration":"sglang_scheduler_gate","name":"scheduler_gate","target_module":"sglang.srt.managers.scheduler"},
  "target_modules": ["sglang.srt.managers.scheduler","sglang.srt.mem_cache.registry","sglang.srt.model_executor.model_runner"]

@@ -223,4 +223,15 @@ def singleton_contracts() -> dict:
             correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.75"),
             tolerances=(ToleranceContractRef("bfloat16", "0", "0.02"),),
         ),
+        "prefix_cache": _contract_ref(
+            "prefix_cache", kind="block", entry="entry", prepare=None,
+            graph_dynamic_inputs=(),
+            input_abi_id="prefix-cache.runtime-object.input.v1",
+            output_abi_id="prefix-cache.runtime-subclass.output.v1",
+            reference_id="prefix-cache.engine-state.reference.v1",
+            verification_profile_id="prefix-cache.content.verify.v1",
+            binding_family_id="sglang.prefix-cache.v1",
+            correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="1"),
+            tolerances=(),
+        ),
     }

@@ -50,11 +50,10 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     # at admission by the target catalog, not here.
     SeamAdapter("nodes", "sglang.srt.model_executor.model_runner",
                 "sglang_nodes", "ModelRunner.load_model"),
-    # The prefix cache. The scheduler builds it through this built-in selection chain,
-    # so a bundle naming the ``tree_cache`` address is constructed there, on the
-    # engine's pools, instead of stock. The catalog opens the address like a node.
+    # Bind the scheduler's initialized cache after backend selection and wrappers,
+    # preserving the pool and transfer-worker references created by that backend.
     SeamAdapter("cache", "sglang.srt.mem_cache.registry",
-                "sglang_cache", "default_radix_cache_factory"),
+                "sglang_cache", "create_tree_cache"),
 )
 
 # The modules whose import should trigger seam installation (consumed by bootstrap).

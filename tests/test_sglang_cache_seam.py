@@ -25,16 +25,13 @@ from cacheon.integrations import sglang_cache, sglang_nodes
 from cacheon.integrations.sglang_cache import ADDRESS
 from cacheon.kernel_trace import arm
 from cacheon.registry import REGISTRY, KernelImpl, KernelRegistry
-from cacheon.target_catalog import FORWARD_PASS_ROOTS, default_target_catalog
+from cacheon.target_catalog import FORWARD_PASS_ROOTS, PREFIX_CACHE_TARGET, default_target_catalog
 from tests.test_target_catalog import _bundle
 
 _REGISTRY = "sglang.srt.mem_cache.registry"
 _BASE = "sglang.srt.mem_cache.base_prefix_cache"
 _HOME = "sglang.srt.mem_cache.unified_radix_cache"
-_CACHE_SOURCE = (
-    "from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache as Stock\n\n\n"
-    "class Local(Stock):\n    pass\n\n\nclass entry_0(Local):\n    pass\n"
-)
+_CACHE_SOURCE = "def entry_0(cache):\n    return type(cache)\n"
 PAGE, SLOTS = 4, 256
 
 
@@ -61,7 +58,11 @@ class Key:
         return len(self.raw_token_ids())
 
 
-class UnifiedRadixCache:
+class BasePrefixCache:
+    """The runtime's shared cache interface, independently of the selected implementation."""
+
+
+class UnifiedRadixCache(BasePrefixCache):
     """SGLang 0.5.20's stock cache, reduced: page-aligned prefixes of what requests
     handed in, served longest first, a later duplicate pointed at the first's slots."""
 
@@ -190,13 +191,16 @@ def sglang(tmp_path, monkeypatch):
     monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(rdir))
     monkeypatch.setattr(receipts, "_ONCE", set())
     base, home, module = (types.ModuleType(name) for name in (_BASE, _HOME, _REGISTRY))
-    base.MatchResult, home.UnifiedRadixCache = MatchResult, UnifiedRadixCache
+    base.MatchResult, base.BasePrefixCache = MatchResult, BasePrefixCache
+    home.UnifiedRadixCache = UnifiedRadixCache
 
     def default_radix_cache_factory(ctx):
         if ctx.disable_radix_cache:
             return types.SimpleNamespace()  # stands for ChunkCache
         ctx.params.tree_components = ("full",)
-        return home.UnifiedRadixCache(ctx.params)  # the class is looked up per call
+        cache = home.UnifiedRadixCache(ctx.params)
+        cache.guard_params = ctx.params
+        return cache
 
     module.default_radix_cache_factory = default_radix_cache_factory
     module.create_tree_cache = lambda ctx: module.default_radix_cache_factory(ctx)
@@ -222,8 +226,15 @@ def _ctx(eagle=False, **flags):
 
 
 def _engine(sglang, entry=None, eagle=False, **flags):
+    candidate = entry or type("Miner", (UnifiedRadixCache,), {})
+
+    def factory(cache):
+        if issubclass(candidate, type(cache)):
+            cache.__dict__.update(candidate(cache.guard_params).__dict__)
+        return candidate
+
     REGISTRY.register(KernelImpl(slot=ADDRESS, bundle_id="cache-test",
-                                 entry=entry or type("Miner", (UnifiedRadixCache,), {})))
+                                 entry=factory))
     REGISTRY.enable()
     sglang_cache.install(REGISTRY)
     ctx = _ctx(eagle, **flags)
@@ -242,8 +253,9 @@ A, B, C = list(range(1, 23)), list(range(40, 51)), list(range(60, 79))
 
 def test_one_address_is_the_seam_row_the_catalog_root_and_no_node(monkeypatch):
     row = next(a for a in seams.SEAM_ADAPTERS if a.integration == "sglang_cache")
-    assert (row.target_module, row.chokepoint) == (_REGISTRY, "default_radix_cache_factory")
-    assert _REGISTRY in seams.TARGET_MODULES and ADDRESS in FORWARD_PASS_ROOTS
+    assert (row.target_module, row.chokepoint) == (_REGISTRY, "create_tree_cache")
+    assert _REGISTRY in seams.TARGET_MODULES and ADDRESS not in FORWARD_PASS_ROOTS
+    assert default_target_catalog().require(PREFIX_CACHE_TARGET).node_roots == (ADDRESS,)
     registry = KernelRegistry()
     registry.register(KernelImpl(slot=ADDRESS, bundle_id="cache-test", entry=UnifiedRadixCache))
     assert sglang_nodes.bind(types.SimpleNamespace(model=torch.nn.Module()), registry) == []
@@ -254,30 +266,75 @@ def test_one_address_is_the_seam_row_the_catalog_root_and_no_node(monkeypatch):
 
 
 def test_the_stock_chain_builds_the_candidate_as_it_builds_stock(sglang):
-    stock = sglang.module.default_radix_cache_factory
+    stock = sglang.module.create_tree_cache
     seam._install_adapters(False)  # the seam table's own install loop
-    assert sglang.module.default_radix_cache_factory._cacheon_stock_factory is stock
-    assert type(sglang.module.create_tree_cache(_ctx())) is UnifiedRadixCache  # the reference arm
+    assert sglang.module.create_tree_cache._cacheon_stock_factory is stock
+    assert type(sglang.module.create_tree_cache(_ctx())).__mro__[1] is UnifiedRadixCache
     REGISTRY.register(KernelImpl(slot="model.layers.*.mlp", bundle_id="nodes", entry=print))
     REGISTRY.enable()
-    assert type(sglang.module.create_tree_cache(_ctx())) is UnifiedRadixCache  # no cache named
+    assert type(sglang.module.create_tree_cache(_ctx())).__mro__[1] is UnifiedRadixCache
 
     class Miner(UnifiedRadixCache):
         pass
 
     engine = _engine(sglang, Miner)  # installs again: still one wrapper, around stock
-    assert sglang.module.default_radix_cache_factory._cacheon_stock_factory is stock
+    assert sglang.module.create_tree_cache._cacheon_stock_factory is stock
     assert type(engine.cache).__mro__[1] is Miner and type(engine.cache).__name__ == "Miner"
     assert engine.cache.token_to_kv_pool_allocator is engine.allocator
     assert sglang.home.UnifiedRadixCache is UnifiedRadixCache  # the swap ends with the call
 
 
+@pytest.mark.parametrize("other_backend", [False, True])
+def test_factory_uses_the_selected_runtime_type_and_preserves_component_references(sglang, other_backend):
+    selected = type("OtherCache", (BasePrefixCache,), {
+        name: value for name, value in vars(UnifiedRadixCache).items()
+        if not name.startswith("__") or name == "__init__"
+    }) if other_backend else UnifiedRadixCache
+    built = []
+
+    def stock(ctx):
+        ctx.params.tree_components = ("full",)
+        cache = selected(ctx.params)
+        cache.component = types.SimpleNamespace(cache=cache)
+        built.append(cache)
+        return cache
+
+    def factory(cache):
+        class Replacement(type(cache)):
+            pass
+
+        return Replacement
+
+    sglang.module.create_tree_cache = stock
+    REGISTRY.register(KernelImpl(slot=ADDRESS, bundle_id="generic", entry=factory))
+    REGISTRY.enable()
+    sglang_cache.install(REGISTRY)
+    cache = sglang.module.create_tree_cache(_ctx())
+    assert cache is built[0] and cache.component.cache is cache
+    assert isinstance(cache, selected) and type(cache).__mro__[1].__name__ == "Replacement"
+
+
+def test_stock_gets_the_same_content_checks_without_candidate_attribution(sglang):
+    sglang.home.UnifiedRadixCache = Liar
+    sglang_cache.install(REGISTRY)
+    cache = sglang.module.create_tree_cache(_ctx())
+    engine = Engine(cache)
+    engine.serve(A)
+    with pytest.raises(RuntimeError, match="does not hold the KV the engine computed"):
+        engine.serve(C)
+    assert receipts.collect(sglang.receipts, "completed") == []
+    assert receipts.collect(sglang.receipts, "failed") == []
+
+
 @pytest.mark.parametrize("slot, source, cause", [
-    (ADDRESS, None, "is not a class defined in its source"),
-    (ADDRESS, "class entry_0(dict):\n    pass\n", "does not derive from a class of sglang"),
+    (ADDRESS, "class entry_0(dict):\n    pass\n", "must be a function accepting the runtime cache"),
+    (ADDRESS, "async def entry_0(cache):\n    return cache\n", "must be a function accepting the runtime cache"),
+    (ADDRESS, "def entry_0():\n    pass\n", "must be callable with only the runtime cache"),
+    (ADDRESS, "def entry_0(cache, required):\n    pass\n", "must be callable with only the runtime cache"),
+    (ADDRESS, "def entry_0(cache, *, required):\n    pass\n", "must be callable with only the runtime cache"),
     ("tree_cache.lru", _CACHE_SOURCE, "has no sub-addresses"),
 ])
-def test_intake_refuses_a_cache_entry_it_cannot_see_is_a_cache_class(tmp_path, slot, source, cause):
+def test_intake_refuses_an_invalid_cache_factory(tmp_path, slot, source, cause):
     root = _bundle(tmp_path, rows=({"slot": slot},))
     if source is not None:
         (root / "kernels" / "k0.py").write_text(source)
@@ -285,10 +342,40 @@ def test_intake_refuses_a_cache_entry_it_cannot_see_is_a_cache_class(tmp_path, s
         inspect_contribution(root, catalog=default_target_catalog())
 
 
-def test_intake_admits_a_cache_class_to_the_forward_pass(tmp_path):
+def test_intake_admits_a_cache_factory_to_its_own_target(tmp_path):
     root = _bundle(tmp_path, rows=({"slot": ADDRESS},))
     (root / "kernels" / "k0.py").write_text(_CACHE_SOURCE)
-    assert inspect_contribution(root, catalog=default_target_catalog()).target_id == "forward_pass"
+    assert inspect_contribution(root, catalog=default_target_catalog()).target_id == PREFIX_CACHE_TARGET
+
+
+def test_cache_replacements_preserve_model_source_through_materialization(tmp_path):
+    from cacheon.engine_tree import materialize_engine_tree
+    from cacheon.stack_plan import plan_candidate_stack
+    from tests.test_engine_tree import _evaluation_context, _proposal_ref
+    from tests.test_stack_plan import _stack
+
+    catalog = default_target_catalog()
+    context = _evaluation_context(catalog)
+    model = _bundle(tmp_path / "model", rows=({"slot": "model.layers.*.mlp"},))
+    first = _bundle(tmp_path / "first", rows=({"slot": ADDRESS},))
+    second = _bundle(tmp_path / "second", rows=({"slot": ADDRESS},))
+    (first / "kernels/k0.py").write_text(_CACHE_SOURCE)
+    (second / "kernels/k0.py").write_text(_CACHE_SOURCE + "\nVERSION = 2\n")
+    sources = {("proposal", ref.artifact_digest): root for root in (model, first, second)
+               for ref in (_proposal_ref(root, catalog),)}
+    model_ref, first_ref, second_ref = (_proposal_ref(root, catalog) for root in (model, first, second))
+    incumbent = _stack(catalog, {"forward_pass": model_ref})
+    for number, cache_ref in enumerate((first_ref, second_ref)):
+        candidate = plan_candidate_stack(incumbent, cache_ref, catalog=catalog, expected_context=context)
+        assert candidate.entries["forward_pass"] == model_ref
+        assert candidate.entries[PREFIX_CACHE_TARGET] == cache_ref
+        tree = materialize_engine_tree(candidate, context=context, catalog=catalog,
+                                       resolver=sources,
+                                       destination=tmp_path / f"stack-{number}")
+        from cacheon.manifest import load_manifest
+
+        assert {op.slot for op in load_manifest(tree.root).ops} == {"model.layers.*.mlp", ADDRESS}
+        incumbent = candidate
 
 
 class OwnPool(UnifiedRadixCache):
@@ -300,7 +387,7 @@ class OwnPool(UnifiedRadixCache):
 
 
 @pytest.mark.parametrize("entry, cause", [
-    (dict, "is not a UnifiedRadixCache subclass"),
+    (dict, "must return a subclass of the runtime cache"),
     (OwnPool, "must hold the engine's KV allocator and request pool"),
 ])
 def test_the_scheduler_refuses_what_intake_could_not_see_as_the_candidate_s(sglang, entry, cause):
@@ -310,13 +397,17 @@ def test_the_scheduler_refuses_what_intake_could_not_see_as_the_candidate_s(sgla
     assert (row["slot"], row["phase"], row["error_type"]) == (ADDRESS, "prepare", "TypeError")
 
 
-@pytest.mark.parametrize("flags, cause", [
-    ({"is_hybrid_ssm": True}, "is not full-attention"),
-    ({"disable_radix_cache": True}, "this engine builds SimpleNamespace"),
-])
-def test_an_engine_without_the_cache_refuses_it_as_it_refuses_a_missing_node(sglang, flags, cause):
+@pytest.mark.parametrize("flag", ["is_hybrid_swa", "is_hybrid_ssm"])
+def test_missing_state_validation_is_not_a_candidate_failure(sglang, flag):
+    with pytest.raises(RuntimeError, match="state validation is unavailable"):
+        _engine(sglang, **{flag: True})
+    assert receipts.collect(sglang.receipts, "failed") == []
+
+
+def test_an_engine_without_the_cache_refuses_it_as_it_refuses_a_missing_node(sglang):
+    cause = "this engine builds SimpleNamespace"
     with pytest.raises(RuntimeError, match=cause):
-        _engine(sglang, **flags)
+        _engine(sglang, disable_radix_cache=True)
     (row,) = receipts.collect(sglang.receipts, "failed")
     assert (row["slot"], row["phase"]) == (ADDRESS, "prepare") and cause in row["error"]
 
@@ -332,9 +423,9 @@ class Shadow(UnifiedRadixCache):
 class Rebind(UnifiedRadixCache):
     """Puts the unguarded finished handoff back on its own class."""
 
-    def __init__(self, params):
-        super().__init__(params)
+    def match_prefix(self, params):
         type(self).cache_finished_req = UnifiedRadixCache.cache_finished_req
+        return super().match_prefix(params)
 
 
 class Brittle(UnifiedRadixCache):
@@ -350,7 +441,7 @@ class Brittle(UnifiedRadixCache):
 ])
 def test_a_cache_cannot_route_a_handoff_around_the_check(sglang, entry, cause):
     with pytest.raises(RuntimeError, match=cause):
-        _engine(sglang, entry)
+        _engine(sglang, entry).serve(A)
     _refusal(sglang, cause)
 
 

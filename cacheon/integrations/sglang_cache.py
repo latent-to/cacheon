@@ -4,14 +4,12 @@ The address ``tree_cache`` names the object SGLang's scheduler keeps under that
 attribute: the cache that matches a request's leading tokens to KV slots already
 written, takes finished and chunked requests in, locks, evicts and, with the RAM
 tier on, moves KV between the device and host memory. A bundle naming the address
-supplies a subclass of the pinned SGLang's ``UnifiedRadixCache``, the class the
-stock selection chain builds for a full-attention model. The engine builds the
-candidate there: this adapter wraps
-``sglang.srt.mem_cache.registry.default_radix_cache_factory`` and, for that one
-call, rebinds the stock class name to the candidate, so the chain gives the
-candidate the tree components, RAM tier and layer-transfer counter it gives stock,
-and ``create_tree_cache`` applies the same checks and wrappers to both. No engine
-flag differs between the arms.
+supplies ``entry(cache)``. SGLang first constructs its real cache with its own
+components, pools and host tier, then the entry returns a subclass of its runtime
+type. The validator binds those methods onto the existing object, preserving
+the references its components and transfer workers already hold. The
+contract is the runtime cache object's interface, not a particular cache class
+or model. No engine flag differs between the arms.
 
 What a cache alone can fake is a hit: a served prefix whose slots do not hold what
 the engine computed for it skips that prefill and returns wrong tokens fast. The
@@ -52,9 +50,6 @@ from cacheon.registry import REGISTRY, KernelRegistry
 
 ADDRESS = "tree_cache"
 _MODULE = "sglang.srt.mem_cache.registry"
-_HOME = "sglang.srt.mem_cache.unified_radix_cache"
-_CLASS = "UnifiedRadixCache"
-_PACKAGE = "sglang.srt.mem_cache"
 _STOCK = "_cacheon_stock_factory"
 # (prime, base) pairs below 2**31, so every product of two residues fits in int64.
 _MODULI = ((2147483647, 48271), (2147483629, 69621))
@@ -75,49 +70,28 @@ _VERDICTS = {
 
 
 def admit(tree: ast.Module, slot: str, entry: str, *, error: type[Exception]) -> None:
-    """Refuse an entry its source does not define as a class derived from SGLang's cache package.
-
-    Intake runs this on the parsed source of every op under the cache's address, so
-    no bundle code executes. The address has no children. Only that file is read:
-    the entry class, or a class of that file it derives from, must name a top-level
-    import from ``sglang.srt.mem_cache`` among its bases. That it derives from
-    ``UnifiedRadixCache`` is checked in the scheduler, where the class exists.
-    """
+    """Check the factory declaration without importing the miner into intake."""
 
     if slot != ADDRESS:
         raise error(f"{slot!r}: the prefix cache {ADDRESS!r} has no sub-addresses")
-    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
-    imported: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.ImportFrom) and not node.level and _in_package(node.module or ""):
-            imported.update(alias.asname or alias.name for alias in node.names)
-        elif isinstance(node, ast.Import):
-            imported.update(a.asname for a in node.names if a.asname and _in_package(a.name))
-
-    def derives(name: str, seen: frozenset[str]) -> bool:
-        node = classes.get(name)
-        return node is not None and name not in seen and any(
-            text.startswith(_PACKAGE + ".") or text.split(".")[0] in imported
-            or derives(text, seen | {name})
-            for text in map(ast.unparse, node.bases)
-        )
-
-    if entry not in classes:
-        raise error(f"{ADDRESS} entry {entry!r} is not a class defined in its source")
-    if not derives(entry, frozenset()):
-        raise error(f"{ADDRESS} entry {entry!r} does not derive from a class of {_PACKAGE}")
-
-
-def _in_package(module: str) -> bool:
-    return module == _PACKAGE or module.startswith(_PACKAGE + ".")
+    factory = next((node for node in tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == entry), None)
+    if factory is None:
+        raise error(f"{ADDRESS} entry {entry!r} must be a function accepting the runtime cache")
+    args = factory.args
+    positional = len(args.posonlyargs) + len(args.args)
+    if (positional - len(args.defaults) > 1 or (positional < 1 and args.vararg is None)
+            or any(default is None for default in args.kw_defaults)):
+        raise error(f"{ADDRESS} entry {entry!r} must be callable with only the runtime cache")
 
 
 def _refuse(message: str, *, error: type[Exception] = RuntimeError,
-            phase: str = "entry") -> NoReturn:
+            phase: str = "entry", candidate: bool = True) -> NoReturn:
     """Receipt the refusal as the candidate's, then take the engine down with it."""
 
     failure = error(f"{ADDRESS}: {message}")
-    _receipts.failed(ADDRESS, failure, phase=phase)
+    if candidate:
+        _receipts.failed(ADDRESS, failure, phase=phase)
     raise failure
 
 
@@ -155,13 +129,13 @@ class _Held:
 class _Guard:
     """The validator's record of which prefix each KV page it saw computed holds."""
 
-    def __init__(self, ctx) -> None:
+    def __init__(self, ctx, *, candidate: bool = True) -> None:
         import torch
 
         from cacheon.integrations.sglang_dsa_state import KV_BUFFERS
 
         params = ctx.params
-        self.torch = torch
+        self.torch, self.candidate = torch, candidate
         self.allocator = params.token_to_kv_pool_allocator
         self.requests = params.req_to_token_pool
         self.page = int(params.page_size)
@@ -189,6 +163,15 @@ class _Guard:
         self.event = torch.cuda.Event() if cuda else None
         self.namespaces: dict[tuple, int] = {}
         self.held: dict[object, _Held] = {}
+
+    def refuse(self, message, **kwargs) -> NoReturn:
+        _refuse(message, candidate=self.candidate, **kwargs)
+
+    def invoke(self, function, *args, **kwargs):
+        """Keep stock failures outside candidate attribution while applying the same checks."""
+        if self.candidate:
+            return _receipts.invoke(ADDRESS, function, *args, kwargs=kwargs)
+        return function(*args, **kwargs)
 
     def _layers(self, names: tuple[str, ...], params, draws) -> list[tuple[Any, bool]]:
         """Draw the layers hashed, per KV buffer kind of the target and draft pools.
@@ -274,7 +257,7 @@ class _Guard:
         else:
             return
         if code:
-            _refuse("the cache " + "; ".join(t for bit, t in _VERDICTS.items() if code & bit))
+            self.refuse("the cache " + "; ".join(t for bit, t in _VERDICTS.items() if code & bit))
 
     def owned(self, cache, phase: str = "entry") -> None:
         """Refuse a cache that no longer holds the engine's pools."""
@@ -282,7 +265,7 @@ class _Guard:
         if getattr(cache, "token_to_kv_pool_allocator", None) is not self.allocator or (
             getattr(cache, "req_to_token_pool", None) is not self.requests
         ):
-            _refuse("the cache must hold the engine's KV allocator and request pool",
+            self.refuse("the cache must hold the engine's KV allocator and request pool",
                     error=TypeError, phase=phase)
 
     def matched(self, cache, key, result, kind: type) -> None:
@@ -290,11 +273,11 @@ class _Guard:
 
         self.owned(cache)
         if not isinstance(result, kind) or not isinstance(result.device_indices, self.torch.Tensor):
-            _refuse(f"match_prefix returned a {type(result).__name__}, not a MatchResult of slots")
+            self.refuse(f"match_prefix returned a {type(result).__name__}, not a MatchResult of slots")
         limit = len(key) - (0 if getattr(key, "is_bigram", False) else self.bigram)
         claimed = len(result.device_indices) + result.host_hit_length
         if claimed > limit:
-            _refuse(f"it claimed {claimed} cached tokens of a {limit}-token key")
+            self.refuse(f"it claimed {claimed} cached tokens of a {limit}-token key")
 
     def handoff(self, cache, req, ids):
         """Check what a request read from the cache and record what its forward passes computed.
@@ -314,7 +297,7 @@ class _Guard:
         if held is None:
             served = len(req.prefix_indices)
             if served % self.page:
-                _refuse(f"it served a prefix of {served} tokens, which ends inside a page")
+                self.refuse(f"it served a prefix of {served} tokens, which ends inside a page")
             held = self.held[req.rid] = _Held(own=min(served, n))
         if self.forward is not None:
             torch.cuda.current_stream().wait_stream(self.forward)
@@ -358,9 +341,9 @@ class _Guard:
         n, held = len(row), self.held[req.rid]
         prefix, protected = req.prefix_indices, req.kv.cache_protected_len
         if not isinstance(prefix, torch.Tensor) or prefix.device != self.device or len(prefix) != n:
-            _refuse(f"it left a prefix that is not {n} slots on the device on a request with {n} tokens")
+            self.refuse(f"it left a prefix that is not {n} slots on the device on a request with {n} tokens")
         if not 0 <= protected <= n or protected % self.page:
-            _refuse(f"it protected {protected} of a request's {n} tokens, not whole pages of them")
+            self.refuse(f"it protected {protected} of a request's {n} tokens, not whole pages of them")
         after = self.requests.req_to_token[req.kv.req_pool_idx, :n].to(torch.int64)
         self._flag(_ROW, after != prefix)
         self._flag(_MOVED, after[protected:] != row[protected:])
@@ -374,8 +357,9 @@ class _Guard:
         from cacheon import audit
 
         self.held.pop(req.rid, None)
-        _receipts.completed(ADDRESS)
-        if audit.sampled():
+        if self.candidate:
+            _receipts.completed(ADDRESS)
+        if self.candidate and audit.sampled():
             self.poll(block=True)
             audit.record_fraction(ADDRESS, 1.0, 1.0, _AUDIT_MODE)
 
@@ -391,22 +375,22 @@ class _Guard:
 class _Pinned:
     """A handoff method no instance attribute can shadow, since the check runs inside it."""
 
-    def __init__(self, function) -> None:
-        self.function = function
+    def __init__(self, function, guard) -> None:
+        self.function, self.guard = function, guard
 
     def __get__(self, obj, owner=None):
         return self.function if obj is None else self.function.__get__(obj, owner)
 
     def __set__(self, obj, value) -> NoReturn:
-        _refuse(f"it replaced {self.function.__name__} on the instance, which skips the check")
+        self.guard.refuse(f"it replaced {self.function.__name__} on the instance, which skips the check")
 
 
-def _receipted(function):
+def _receipted(function, guard):
     """Run a method the bundle defines so that its raise is receipted as the candidate's."""
 
     @functools.wraps(function)
     def call(self, *args, **kwargs):
-        return _receipts.invoke(ADDRESS, function, self, *args, kwargs=kwargs)
+        return guard.invoke(function, self, *args, **kwargs)
 
     return call
 
@@ -420,99 +404,113 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
 
     from sglang.srt.mem_cache.base_prefix_cache import MatchResult
 
+    def pinned(function):
+        return _Pinned(function, guard)
+
     class Sealed(type(cls)):
         """Keeps a handoff from being swapped on the class after it is built."""
 
         def __setattr__(klass, name, value):
             if name in _HANDOFFS:
-                _refuse(f"it replaced {name} on its class, which skips the check")
+                guard.refuse(f"it replaced {name} on its class, which skips the check")
             super().__setattr__(name, value)
 
         def __delattr__(klass, name):
             if name in _HANDOFFS:
-                _refuse(f"it replaced {name} on its class, which skips the check")
+                guard.refuse(f"it replaced {name} on its class, which skips the check")
             super().__delattr__(name)
 
     class Guarded(cls, metaclass=Sealed):
         """The candidate's class, with the validator at each handoff."""
 
-        @_Pinned
+        @pinned
         def match_prefix(self, params):
-            result = _receipts.invoke(ADDRESS, super().match_prefix, params)
+            result = guard.invoke(super().match_prefix, params)
             guard.matched(self, params.key, result, MatchResult)
             return result
 
-        @_Pinned
+        @pinned
         def cache_unfinished_req(self, req, *args, **kwargs):
             row = guard.handoff(self, req, req.get_fill_ids())
-            _receipts.invoke(ADDRESS, super().cache_unfinished_req, req, *args, kwargs=kwargs)
+            guard.invoke(super().cache_unfinished_req, req, *args, **kwargs)
             guard.settle(req, row)
 
-        @_Pinned
+        @pinned
         def cache_finished_req(self, req, *args, **kwargs):
             tokens = req.origin_input_ids + req.output_ids
             guard.handoff(self, req, tokens[: kwargs["kv_len_to_handle"]])
-            _receipts.invoke(ADDRESS, super().cache_finished_req, req, *args, kwargs=kwargs)
+            guard.invoke(super().cache_finished_req, req, *args, **kwargs)
             guard.finished(req)
 
-        @_Pinned
+        @pinned
         def reset(self):
             guard.reset()
-            return _receipts.invoke(ADDRESS, super().reset)
+            return guard.invoke(super().reset)
 
     for klass in reversed(cls.__mro__[: cls.__mro__.index(base)]):  # the most derived wins
         for name, value in vars(klass).items():
             if inspect.isfunction(value) and not name.startswith("__") and name not in _HANDOFFS:
-                setattr(Guarded, name, _receipted(value))
+                setattr(Guarded, name, _receipted(value, guard))
     Guarded.__name__, Guarded.__qualname__ = cls.__name__, cls.__qualname__
     Guarded.__module__ = cls.__module__
     return Guarded
 
 
 def _bind(impl, ctx, stock):
-    """Build the candidate through the stock chain, guarded, or refuse it as the candidate's."""
+    """Pass the runtime-built object to the candidate and guard its handoffs."""
 
     if ctx.is_hybrid_swa or ctx.is_hybrid_ssm:
-        # As for a node address the served model lacks: the check does not read the
-        # window or recurrent state such a model keeps beside its KV.
-        _refuse("this arena's model is not full-attention, which the address serves",
-                phase="prepare")
-    home = importlib.import_module(_HOME)
-    base = getattr(home, _CLASS)
-    cls = impl.entry
-    if not isinstance(cls, type) or not issubclass(cls, base):
-        _refuse(f"entry {cls!r} is not a {_CLASS} subclass", error=TypeError, phase="prepare")
-    if impl.prepare is not None:
-        _refuse("a cache entry takes no prepare", error=TypeError, phase="prepare")
-    if inspect.isabstract(cls):
-        _refuse(f"entry {cls.__name__} leaves {sorted(cls.__abstractmethods__)} abstract",
+        if impl is None:
+            return stock(ctx)
+        # Missing validator coverage is infrastructure, not a failed miner cache.
+        raise RuntimeError(f"{ADDRESS}: state validation is unavailable for sliding-window or recurrent caches")
+    base = importlib.import_module("sglang.srt.mem_cache.base_prefix_cache").BasePrefixCache
+    if impl is not None and inspect.isclass(impl.entry):
+        _refuse("entry must accept the runtime cache, not its construction parameters",
                 error=TypeError, phase="prepare")
-    guard = _Guard(ctx)
-    guarded = _guarded(cls, base, guard)
-    setattr(home, _CLASS, guarded)
-    try:
-        cache = _receipts.invoke(ADDRESS, stock, ctx, phase="prepare")
-    finally:
-        setattr(home, _CLASS, base)
-    if type(cache) is not guarded:
-        _refuse(f"this engine builds {type(cache).__name__}, not the {_CLASS} the address replaces",
+    if impl is not None and impl.prepare is not None:
+        _refuse("a cache entry takes no prepare", error=TypeError, phase="prepare")
+    cache = stock(ctx)
+    if not isinstance(cache, base):
+        if impl is None:
+            return cache
+        _refuse(f"this engine builds {type(cache).__name__}, not a BasePrefixCache",
                 phase="prepare")
+    guard = _Guard(ctx, candidate=impl is not None)
+    if impl is not None:
+        cls = _receipts.invoke(ADDRESS, impl.entry, cache, phase="prepare")
+        if not inspect.isclass(cls) or not issubclass(cls, type(cache)):
+            _refuse("entry must return a subclass of the runtime cache's type",
+                    error=TypeError, phase="prepare")
+        if inspect.isabstract(cls):
+            _refuse(f"entry leaves {sorted(cls.__abstractmethods__)} abstract",
+                    error=TypeError, phase="prepare")
+    else:
+        cls = type(cache)
     guard.owned(cache, phase="prepare")
+    guarded = _guarded(cls, base, guard)
+    try:
+        cache.__class__ = guarded
+    except TypeError as exc:
+        guard.refuse(f"cache object cannot bind its guarded methods: {exc}", phase="prepare")
+    for name in _HANDOFFS:
+        if name in vars(cache):
+            guard.refuse(f"it replaced {name} on the instance, which skips the check", phase="prepare")
     return cache
 
 
 def install(registry: KernelRegistry = REGISTRY) -> None:
-    """Wrap the built-in cache choice once its module is imported."""
+    """Bind the cache after the selected backend and runtime wrappers have initialized it."""
 
     module = sys.modules.get(_MODULE)
-    stock = getattr(module, "default_radix_cache_factory", None)
+    stock = getattr(module, "create_tree_cache", None)
     if stock is None or hasattr(stock, _STOCK):
         return
 
     @functools.wraps(stock)
-    def default_radix_cache_factory(ctx):
+    def create_tree_cache(ctx):
         impl = registry.select(ADDRESS, CallDescriptor()).impl
-        return stock(ctx) if impl is None else _bind(impl, ctx, stock)
+        return _bind(impl, ctx, stock)
 
-    setattr(default_radix_cache_factory, _STOCK, stock)
-    module.default_radix_cache_factory = default_radix_cache_factory
+    setattr(create_tree_cache, _STOCK, stock)
+    module.create_tree_cache = create_tree_cache

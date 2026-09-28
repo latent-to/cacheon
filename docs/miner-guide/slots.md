@@ -16,7 +16,7 @@ that every model contains or admits each address:
 | `model.layers.3` | Decoder layer 3 |
 | `model.layers.*.self_attn.q_b_proj` | Matching attention projection modules |
 | `model` | Whole decoder stack, only where the arena can grade it |
-| `tree_cache` | The scheduler's prefix cache: a class, not a module (see below) |
+| `tree_cache` | The scheduler's runtime cache object (see below) |
 
 `*` matches exactly one segment. The binder refuses addresses that match no
 module and parent/child claims that overlap. Binding succeeds only when the
@@ -26,7 +26,7 @@ coverage are checked separately.
 ## Current GLM-5.3 availability
 
 The GLM node arena is `glm53-b300-node-v1`, using GLM-5.3 NVFP4 with
-SGLang 0.5.18 on B300, TP4 and attention DP4. Its incumbent is the composed
+SGLang 0.5.20 on B300, TP4 and attention DP4. Its incumbent is the composed
 champion implementation. Use the [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
 with that model and topology. Arena-specific inputs and supported boundaries
 remain part of the published contract; Qwen checks do not establish GLM coverage.
@@ -52,25 +52,50 @@ prepared state as the first argument. See [Kernel ABI](kernel-abi.md).
 
 ## The prefix cache
 
-`tree_cache` names the scheduler's prefix cache instead of a module. Its entry is
-a class defined in the op's source file and derived from the pinned SGLang's
-`UnifiedRadixCache`, imported from `sglang.srt.mem_cache.unified_radix_cache`.
-The engine builds it exactly where and how it builds stock, hierarchical cache
-included, on its own KV allocator and request pool, which the cache must keep.
+`tree_cache` names the scheduler's prefix cache instead of a module. The factory
+`entry(cache)` receives the initialized runtime object and returns a subclass of
+its type. The same interface applies across models. The validator installs those
+methods on the existing object, preserving its components, host tier, allocator
+and request pool. The factory may initialize its own fields on the cache.
 Declare no `prepare`, dtypes, architectures or eligibility metadata for it.
 
 ```toml
+[competition]
+target = "prefix_cache"
+mode = "slot"
+arena = "<published-arena-id>"
+
 [[ops]]
 slot = "tree_cache"
 source = "cache/policy.py"
-entry = "PolicyCache"
+entry = "build"
 ```
+
+An identity implementation is:
+
+```python
+def build(cache):
+    return type(cache)
+```
+
+An implementation can return a subclass with its own `evict`, `match_prefix` or
+other cache methods. It inherits the runtime cache interface instead of naming a
+particular SGLang cache class. The identity implementation establishes binding,
+not a speed win. A cache bundle is a separate target from model computation, so
+the validator retains the commissioned model-kernel contribution in its candidate.
 
 The KV behind every prefix the cache serves is checked against what the engine
 computed for it, whichever slot or host tier the bytes came through. Serving other
 bytes, keeping pages across a flush, moving a request's own slots or claiming more
 tokens than the key stops the engine as the candidate's failure. The address
-serves full-attention models; see [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
+currently has validation coverage for full-attention KV; sliding-window and
+recurrent validation remain adapter work under the same contract. See
+[the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
+
+Start each iteration from the current winning cache implementation, retaining its
+useful behavior. A later cache version replaces the earlier version; two cache
+classes are not automatically combined. Its reward is based on improvement over
+the commissioned incumbent, including the existing kernels and cache.
 
 ## Selecting a target
 

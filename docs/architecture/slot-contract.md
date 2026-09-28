@@ -388,23 +388,38 @@ The address `tree_cache` names the scheduler's prefix cache: the object the
 scheduler keeps as `tree_cache`, which matches a request's leading tokens to KV
 slots already written, takes finished and chunked requests in, locks, evicts and,
 with the hierarchical cache on, moves KV between device and host memory. It is a
-root of the `forward_pass` target beside `model` and `logits_processor`, with no
-sub-addresses, and a bundle may name it alone or with node addresses.
+separate `prefix_cache` target, with no sub-addresses. A cache replacement retains
+the commissioned `forward_pass` contribution. Combining addresses in a manifest
+is not a substitute for preserving independently owned stack entries.
 [`sglang_cache.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache.py)
 serves it; the node adapter does not.
 
-The entry is a class defined in the op's source file that derives, directly or
-through another class of that file, from a class the file imports at top level
-from `sglang.srt.mem_cache`, which intake checks without running it. In the
-scheduler it must derive from the pinned SGLang's `UnifiedRadixCache`, which the
-stock chain builds for a full-attention model, and must not be abstract or declare
-a `prepare`. For the one `default_radix_cache_factory` call the stock class name
-points at the candidate, so it receives the tree components, hierarchical cache
-and layer-transfer counter stock would, under the same engine flags and
-`create_tree_cache` checks. It must keep the engine's KV allocator and request
-pool, through which the scheduler allocates and evicts the validator's KV memory.
+There is one contract across models: `entry(cache)` receives the initialized
+runtime cache and returns a subclass of `type(cache)`. The factory may initialize
+state on that object; the validator binds the returned methods onto it. Its
+components and transfer workers retain their references to the same object.
+There is no model name, cache implementation name, dimension, or dtype in this
+ABI, and no separate `prepare`. SGLang constructs the object, its components,
+host tier and transfer counters before the factory runs. The replacement keeps
+the engine's KV allocator and request pool, through which the scheduler allocates
+and evicts the validator's KV memory. It must preserve the runtime object's
+interfaces and state guarantees; returning a subclass is not correctness proof.
 The choice is made once, at engine start, with an empty call descriptor: an op
 declaring dtypes, architectures or eligibility never matches.
+
+The same content checks run for stock and candidate. Stock checking failures are
+infrastructure failures; they are not attributed to a miner's cache. Storage
+validation is adapter work under this common contract. Its current coverage is
+full-attention KV; sliding-window and recurrent state are not yet enabled. A new
+model does not require a new miner contract, but unimplemented state validation
+must not be presented as working support.
+
+Cache versions replace one another within this target. Iterative improvement
+means the next implementation retains the useful behavior of the current winner
+and beats that complete winner. The validator does not merge arbitrary cache
+algorithms or infer source inheritance. After recommissioning, the next
+qualification measures the additional gain over that cache and the retained
+kernel stack; it does not repay their inherited speedup.
 
 What a cache can fake is a hit: a served prefix whose slots do not hold what the
 engine computed for it skips that prefill and returns wrong tokens fast. The
@@ -432,10 +447,9 @@ engine's pools. The handoffs `match_prefix`, `cache_unfinished_req`,
 `cache_finished_req` and `reset` may be overridden in the class but not replaced on
 the instance or class later.
 
-Every refusal and every raise in a method the bundle defines stops the engine as
-the candidate's failure. So does an engine that serves no such cache, because its
-model keeps sliding-window or recurrent state or its chain builds another class,
-as for a node address the served model lacks. The cache runs in the scheduler,
+Every candidate refusal and every raise in a method the bundle defines stops the
+engine as the candidate's failure. An unsupported cache or state layout is refused
+before the factory runs. The cache runs in the scheduler,
 never in a CUDA graph, so its completions count on a graphs-on run without a
 capture; in the audit role each audited request waits for its verdict and adds one
 unit to the address's audit receipt.

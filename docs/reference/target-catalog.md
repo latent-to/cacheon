@@ -44,12 +44,11 @@ atomic targets. GLM opens family targets, not every internal member identity:
 | `collective.dp_attention_exchange.v1` | atomic | Owns both DP-attention exchange members below |
 | `attention.sparse_mla.v1` | atomic | Owns `attention.sparse_mla` and `attention.indexer_select` together |
 | `forward_pass` | slot | The model's forward pass: a bundle names the modules it replaces |
+| `prefix_cache` | slot | The scheduler's cache object at `tree_cache` |
 
 `forward_pass` is the node target. Its `node_roots` are `logits_processor` and
-`model`, the two top-level modules SGLang gives every causal LM, and `tree_cache`,
-the scheduler's [prefix cache](../architecture/slot-contract.md#the-prefix-cache),
-so it carries no model or arena identity. A bundle resolves to it when every `slot`
-it declares is `tree_cache` or a
+`model`, the two top-level modules SGLang gives every causal LM, so it carries no
+model or arena identity. A bundle resolves to it when every `slot` it declares is a
 [node address](../architecture/slot-contract.md#node-addresses) at or under a
 model root. Its resolved members are the addresses the bundle declared, from one
 activation up to every root; one bundle may not name a node and another node
@@ -57,6 +56,13 @@ inside it. Two reservations overlap when any of their addresses do, which for
 slot ids is the same as sharing a member. Copy detection treats every
 `forward_pass` bundle as one namespace, so a stolen body relabelled at another
 width or padded with a second node is still a copy.
+
+`prefix_cache` owns only `tree_cache`, the scheduler's
+[prefix cache](../architecture/slot-contract.md#the-prefix-cache). It has one
+runtime-object contract across models. It is a separate stack entry, so replacing
+a cache contribution preserves the incumbent `forward_pass` contribution. A new
+cache version replaces the previous cache version in full; the validator does not
+merge their source or combine their policies automatically.
 
 The DP atomic target owns and displaces both
 `collective.all_gather_into_tensor` and

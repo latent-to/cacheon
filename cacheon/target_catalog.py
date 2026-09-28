@@ -953,11 +953,11 @@ DP_ATTENTION_EXCHANGE_MEMBERS = (
 )
 SPARSE_ATTENTION_TARGET = "attention.sparse_mla.v1"
 SPARSE_ATTENTION_MEMBERS = ("attention.indexer_select", "attention.sparse_mla")
-# One broad target: a bundle names the modules of the served model it replaces, from
-# one activation up to both model roots, or the scheduler's prefix cache. SGLang gives
-# every causal LM all three, so the target carries no model or arena identity.
+# Model and cache replacements are distinct stack entries. Sharing one target
+# erased the incumbent kernels when a miner submitted only a cache (2026-09-28).
 FORWARD_PASS_TARGET = "forward_pass"
-FORWARD_PASS_ROOTS = ("logits_processor", "model", "tree_cache")
+FORWARD_PASS_ROOTS = ("logits_processor", "model")
+PREFIX_CACHE_TARGET = "prefix_cache"
 
 
 @lru_cache(maxsize=1)
@@ -989,11 +989,11 @@ def default_target_catalog() -> TargetCatalog:
             allowed_features=_STANDARD_COMPONENT_FEATURES,
             atomic_semantics_id=f"{target}.atomic-semantics.v1",
         ))
-    specs.append(TargetSpec(
-        target_id=FORWARD_PASS_TARGET, kind=TargetKind.SLOT,
-        members=(FORWARD_PASS_TARGET,),
-        allowed_features=_STANDARD_COMPONENT_FEATURES,
-        contract_ref=contracts[FORWARD_PASS_TARGET],
-        node_roots=FORWARD_PASS_ROOTS,
-    ))
+    for target, roots in ((FORWARD_PASS_TARGET, FORWARD_PASS_ROOTS),
+                          (PREFIX_CACHE_TARGET, ("tree_cache",))):
+        specs.append(TargetSpec(
+            target_id=target, kind=TargetKind.SLOT, members=(target,),
+            allowed_features=_STANDARD_COMPONENT_FEATURES,
+            contract_ref=contracts[target], node_roots=roots,
+        ))
     return TargetCatalog(specs)
