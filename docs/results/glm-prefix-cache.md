@@ -14,7 +14,8 @@ also supplied `entry(cache)` returning `type(cache)` at `tree_cache`.
 
 The graph checks retained CUDA graphs and the native 120 GB host cache per rank.
 Each DP rank had capacity for 1,274,688 device tokens and 2,637,184 host tokens.
-Request batches had a 120-second deadline. The serving lifecycle and terminal
+The development engines capped running requests at 24 per lane. Request batches
+had a 120-second deadline. The serving lifecycle and terminal
 execution check were the production `cacheon.miner_check._engine` path.
 
 ## Reuse, eviction and restoration

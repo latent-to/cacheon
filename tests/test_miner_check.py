@@ -17,6 +17,21 @@ from cacheon import miner_check
 from cacheon.cli import build_parser
 
 
+def test_glm_development_inputs_cover_cache_audits_on_every_dp_rank():
+    arena = Path(__file__).parents[1] / "examples/arena_inputs/glm53"
+    config = json.loads((arena / "engine-config.json").read_text())
+    requests = json.loads((arena / "development-requests.json").read_text())
+    assert config["disable_radix_cache"] is False
+    assert config["enable_hierarchical_cache"] is True
+    assert (config["speculative_num_steps"], config["speculative_num_draft_tokens"]) == (3, 4)
+    # Cache completions belong to the request's DP rank, unlike collective node calls.
+    count = sum(len(request["input_ids"]) for request in requests)
+    assert count // config["dp_size"] >= 4
+    original, reused = (request["input_ids"] for request in requests)
+    assert all(len(row) == 8192 for row in original)
+    assert {tuple(row) for row in reused} == {tuple(row[:512]) for row in original}
+
+
 def _bundle(root, body="def forward(module, *args, **kwargs):\n    return None\n"):
     root.mkdir()
     (root / "entry.py").write_text(body)
@@ -55,6 +70,13 @@ def test_verify_loads_bundle_local_helpers_without_importing_them_in_controller(
     )
     assert miner_check.verify_nodes(str(bundle)) == 0
     assert "glm_check_helper" not in sys.modules
+
+
+def test_verify_accepts_the_cache_factory_through_the_public_command(tmp_path):
+    bundle = _bundle(tmp_path / "bundle", "def forward(cache):\n    return type(cache)\n")
+    path = bundle / "manifest.toml"
+    path.write_text(path.read_text().replace("model.layers.*.mlp", "tree_cache"))
+    assert miner_check.verify_nodes(str(bundle)) == 0
 
 
 @pytest.mark.parametrize("monitor", [None, lambda: None])

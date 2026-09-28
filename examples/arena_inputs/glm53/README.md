@@ -5,12 +5,13 @@ image on four B300 GPUs (TP4 and attention DP4). Keep this folder outside
 the submitted bundle. Mount it read-only at `/arena`, the model at `/model`,
 and a writable result/cache directory at `/work`.
 
-Native MTP uses the checkpoint's nextn layer with `EAGLE`, one speculative
-step, top-k one and two draft tokens. No separate draft model is required.
-The full arena retains concurrency 128 at 8,192 input/1,024 output tokens and
-concurrency 24 at 65,536 input/4,096 output tokens. Qualification of this
-configuration must use its exact image and workload; historical non-MTP results
-do not establish its throughput or the champion's benefit over stock.
+Native MTP uses the checkpoint's nextn layer with `EAGLE`, three speculative
+steps, top-k one and four draft tokens. No separate draft model is required.
+Prefix caching and the native hierarchical cache are enabled, matching the
+agent-replay runtime. The host tier allocates 120 GB per DP rank, or 480 GB per
+TP4 lane, in addition to model-loading memory. The development config caps
+running requests at 24 per lane to bound graph setup. Qualification owns its
+sealed workload and configuration; this check does not produce a speed score.
 
 The image applies a bounds fix to SGLang 0.5.20's `memcpy_triton`: EAGLE draft
 gather/scatter counts can exceed the local tensor rows. The copy is clamped to
@@ -39,16 +40,26 @@ mode = "slot"
 arena = "glm53-b300-node-v1"
 ```
 
+A `tree_cache` bundle uses `target = "prefix_cache"` with the same `mode` and
+arena. The runtime factory is described in
+[the cache contract](../../../docs/architecture/slot-contract.md#the-prefix-cache).
+Development support does not advertise that target on a live arena; use the
+arena's published target availability before submitting.
+
 ```bash
 python -m cacheon.cli check /bundles/my_bundle \
   --model /model --engine-config /arena/engine-config.json \
   --requests /arena/development-requests.json --output /work/check-001
 ```
 
-The set contains eight public synthetic prompts, each tokenized to exactly
-8,192 tokens with this GLM tokenizer, and eight deterministic output tokens
-with EOS stopping disabled. It exercises a substantial prefill and decode on
-every rank while keeping the untimed, per-call development audit bounded.
+The first batch contains eight public synthetic prompts, each tokenized to
+exactly 8,192 tokens with this GLM tokenizer. A second batch reuses 512-token
+prefixes of those prompts, twice each. Both generate eight deterministic output
+tokens with EOS stopping disabled. The 24 requests provide six cache completions
+per DP rank under the default round-robin routing, above the four-call audit
+minimum. A single eight-request batch only supplies two cache completions per
+rank and cannot qualify the cache audit. These inputs exercise prefill, decode
+and prefix reuse while keeping the untimed, per-call audit bounded.
 The text describes summing a list of integers and dividing by its length; each
 prompt has a distinct numbered prefix. No hidden quality questions are included.
 
