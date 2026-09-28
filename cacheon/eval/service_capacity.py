@@ -14,19 +14,15 @@ carried a 9-15% same-engine spread.
 
 from __future__ import annotations
 
-import gzip
-import json
 import math
 from statistics import NormalDist
 from collections.abc import Sequence
-from dataclasses import dataclass, fields
-from pathlib import Path
+from dataclasses import dataclass
 
 from cacheon.eval.speed_verdict import SpeedStageDecision
 
 TURN_KINDS = frozenset({"main", "inner"})
 TURN_STATUSES = frozenset({"ok", "error", "cancelled"})
-READ_KEYS = ("arm", "window", "lane", "load")
 
 
 class ServiceEvidenceError(ValueError):
@@ -213,7 +209,7 @@ def attainment(read: LoadRead, contract: ServiceContract) -> float:
 @dataclass(frozen=True)
 class ServiceVerdict:
     decision: SpeedStageDecision
-    ratio: float  # mean over windows of candidate rate / incumbent rate
+    ratio: float  # candidate's fastest-pass rate / incumbent's fastest-pass rate
     required: float
     detail: str
     standard_error: float = 0.0
@@ -234,14 +230,24 @@ def grade(
 
     Each window pairs one candidate read with one incumbent read at the same
     sealed load over the same fixed work, so the warm-turn rates compare like
-    for like. The score is the mean of the per-window rate ratios and the
-    verdict is PASS at or above ``required``, FAIL below it. The engine's own
+    for like. A window is one complete pass over the sealed basket. The score
+    is the candidate's fastest pass over the incumbent's fastest pass and the
+    verdict is PASS at or above ``required``, FAIL below it. Every turn keeps
+    its cost weight, because a pass is never split, and both engines drop
+    their slower passes alike, so a slowdown that recurs in every pass stays a
+    cost; taking the least favorable pairing instead would bias a multi-window
+    read against every honest candidate by the spread itself. The engine's own
     token stream is not reproducible under batching (2026-09-27: identical
     prompts changed their decode step counts in 233 of 237 turns; the warm
     mean-latency ratio of identical code scattered 0.56% per window over four
-    windows), so the sealed window count and ``required`` carry that noise;
-    taking the least favorable pairing instead would bias a multi-window read
-    against every honest candidate by the spread itself.
+    windows), and the first pass after an engine load is not steady state: in
+    six retained runs the incumbent's first window was 3-20% slower than its
+    second, by a different amount than the candidate's. The 2026-09-28 mainnet
+    run averaged the window ratios and passed a slower bundle at 1.0189:
+    allocator retries on a nearly full device stalled the incumbent in its
+    first window (38 retries against the candidate's 3), and summed latency
+    charges one stall to every turn in flight. Fastest passes grade that run
+    0.9853.
 
     Attainment is graded on the paired difference A_candidate - A_incumbent.
     Its one-sided lower bound, the difference less ``attainment_margin`` (the
@@ -269,7 +275,7 @@ def grade(
         rates_c.append(fixed_work_rate(cand, expected).rate)
         rates_i.append(fixed_work_rate(inc, expected).rate)
         windows.append((cand.window, attainment(cand, contract), attainment(inc, contract)))
-    ratio = sum(c / i for c, i in zip(rates_c, rates_i, strict=True)) / len(rates_c)
+    ratio = max(rates_c) / max(rates_i)
     for window, a_cand, a_inc in windows:
         if a_cand - a_inc - attainment_margin < -attainment_tolerance:
             return ServiceVerdict(
@@ -280,10 +286,9 @@ def grade(
             )
     if ratio >= required:
         return ServiceVerdict(SpeedStageDecision.PASS, ratio, required,
-                              f"mean fixed-work rate ratio over {len(rates_c)} paired window(s) clears the required ratio")
+                              f"fastest-pass fixed-work rate ratio over {len(rates_c)} paired window(s) clears the required ratio")
     return ServiceVerdict(SpeedStageDecision.FAIL, ratio, required,
-                          f"mean fixed-work rate ratio over {len(rates_c)} paired window(s) is below the required ratio")
-
+                          f"fastest-pass fixed-work rate ratio over {len(rates_c)} paired window(s) is below the required ratio")
 
 
 def statistical_grade(
@@ -355,36 +360,6 @@ def statistical_grade(
     return ServiceVerdict(decision, ratio, required, detail, se, lower)
 
 
-def load_reads_jsonl(path: Path) -> list[LoadRead]:
-    """Group flat per-turn rows, one JSON object per line and gzip allowed, into load reads.
-
-    This is the retained evidence shape: every row carries its read identity
-    (``arm``, ``window``, ``lane``, ``load``) beside the turn fields, so a run
-    regrades from the file alone.
-    """
-    record_fields = tuple(f.name for f in fields(TurnRecord))
-    allowed = frozenset(record_fields) | frozenset(READ_KEYS)
-    required = allowed - {"cached_tokens"}
-    groups: dict[tuple[str, int, str, int], list[TurnRecord]] = {}
-    opener = gzip.open if str(path).endswith(".gz") else open
-    with opener(path, "rt", encoding="utf-8") as handle:
-        for number, line in enumerate(handle, 1):
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                raise ServiceEvidenceError(f"row {number} is not JSON") from None
-            if type(row) is not dict or not required <= set(row) <= allowed:
-                raise ServiceEvidenceError(f"row {number} fields are not the retained shape")
-            key = tuple(row[k] for k in READ_KEYS)
-            record = TurnRecord(**{k: row[k] for k in record_fields if k in row})
-            groups.setdefault(key, []).append(record)  # type: ignore[arg-type]
-    if not groups:
-        raise ServiceEvidenceError("no turn rows")
-    return [LoadRead(*key, tuple(rows)) for key, rows in sorted(groups.items())]
-
-
 def _finite_positive(value: object) -> bool:
     return (
         not isinstance(value, bool)
@@ -406,5 +381,4 @@ __all__ = [
     "fixed_work_rate",
     "grade",
     "statistical_grade",
-    "load_reads_jsonl",
 ]

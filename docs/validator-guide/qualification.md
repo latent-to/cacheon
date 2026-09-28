@@ -688,7 +688,7 @@ including handoffs and tails. Fixed workload value and GPU allocation make its
 inverse monotone in profit for this workload and pricing scenario. Native output
 generation, MTP acceptance costs, and prefix-cache behavior remain in this cost.
 The first opening group must fill within 120 seconds of its last arrival.
-Historical v16 reads retain lockstep rounds and inverse mean request latency;
+V16 reads retain lockstep rounds and inverse mean request latency;
 that quantity is not wall-time throughput and is not the v17 score.
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
@@ -741,7 +741,13 @@ depends on the sealed noise bounds and independent boot contrasts; it does not
 establish runtime resolution by itself. A fixed 1% gain floor is absent. Reward
 credit uses the point estimate, not a confidence-bound haircut. Regrading checks
 the exact stopping point, all four engine identities, host timings, and controls.
-V16 retains its old fixed margin and mean-of-ratios rule for historical evidence.
+V16 retains its fixed margin on one orientation. Each paired window is one complete
+pass over the sealed basket, and the V16 score is the candidate's fastest pass over
+the incumbent's fastest pass. Every turn keeps its cost weight because a pass is
+never split. Both engines drop their slower passes alike, so the first pass after
+an engine load, whose allocator and cache warm-up differs between engines, does not
+decide the verdict, while a slowdown that recurs in every pass remains a cost. The
+attainment gate still applies to every window.
 
 On a speed PASS, the candidate engine closes and the existing entropy provider
 selects source occurrences from the completed B/C trajectories. The still-loaded
@@ -750,3 +756,10 @@ all three rollouts, and the speed continuation retains the controls before the
 separate eager audit and pristine T run. Reopening selection after the audit must
 return the same retained entropy. Source identities use trace/outer/inner indices,
 so parallel child arrival order does not change which turn T evaluates.
+
+Before it judges the candidate, the quality gate bounds the incumbent's drift from
+pristine stock per metric; a bound outside the calibrated envelope is `NO_DECISION`.
+A rollout's worst token is an extreme value, so from four scored prompts on the
+worst-token drift bound may set aside its single most extreme prompt, and never
+rises by doing so. The mean and tail-rate bounds, and every candidate regression
+bound, use all scored prompts.

@@ -4,13 +4,15 @@ The real-record tests replay the retained 2026-09-26 final budget-4 pairs (AIPer
 turn rows, profiling phase only) and pin the turn counts and attainments the arena design was decided on;
 those duration-bounded reads also show why `grade` refuses work that differs between arms. The synthetic tests pin
 the invariants: fixed work is checked per root, elapsed time is the sum of lockstep round spans, misses stay in
-the denominator, the rate verdict is the mean of the paired window ratios, and the attainment gate is
+the denominator, the rate verdict compares each engine's fastest pass, and the attainment gate is
 non-inferiority with fixed thresholds.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
+import gzip
+import json
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
@@ -25,7 +27,6 @@ from cacheon.eval.service_capacity import (
     continue_windows,
     fixed_work_rate,
     grade,
-    load_reads_jsonl,
 )
 from cacheon.eval.speed_verdict import SpeedStageDecision
 
@@ -35,7 +36,13 @@ CONTRACT = ServiceContract(decode_floor_tps=60.0, ttft_bound_s=5.0, attainment=0
 
 @pytest.fixture(scope="module")
 def final_pairs() -> dict[tuple[str, int], LoadRead]:
-    return {(read.arm, read.load): read for read in load_reads_jsonl(FIXTURE)}
+    names = tuple(field.name for field in fields(TurnRecord))
+    groups: dict[tuple, list[TurnRecord]] = {}
+    with gzip.open(FIXTURE, "rt", encoding="utf-8") as handle:
+        for row in map(json.loads, handle):
+            key = (row["arm"], row["window"], row["lane"], row["load"])
+            groups.setdefault(key, []).append(TurnRecord(**{name: row[name] for name in names if name in row}))
+    return {(key[0], key[3]): LoadRead(*key, tuple(rows)) for key, rows in groups.items()}
 
 
 def _turn(root: str, kind: str, ordinal: int, *, start_s: float, ttft_s: float, out: int,
@@ -78,7 +85,7 @@ def test_grade_refuses_duration_bounded_reads_and_grades_identical_work(final_pa
     twin = replace(cand, arm="incumbent", lane="lane-2")
     verdict = grade([cand], [twin], CONTRACT, completed_work(cand), required=1.01, attainment_tolerance=0.0, attainment_margin=0.0)
     assert verdict.decision is SpeedStageDecision.FAIL and verdict.ratio == 1.0
-    assert verdict.detail == "mean fixed-work rate ratio over 1 paired window(s) is below the required ratio"
+    assert verdict.detail == "fastest-pass fixed-work rate ratio over 1 paired window(s) is below the required ratio"
     assert attainment(cand, CONTRACT) == pytest.approx(0.8862, abs=5e-4)
 
 
@@ -168,22 +175,26 @@ def _read(arm: str, *, rate: float, attain: float, window: int = 1, load: int = 
     return LoadRead(arm, window, "lane-1" if arm == "candidate" else "lane-2", load, tuple(rows))
 
 
-def test_grade_rate_verdict_is_the_mean_of_the_paired_window_ratios():
+def test_grade_rate_verdict_compares_each_engines_fastest_pass():
     inc = [_read("incumbent", rate=1.0, attain=0.9), _read("incumbent", rate=1.02, attain=0.9, window=2)]
     fast = [_read("candidate", rate=1.10, attain=0.9), _read("candidate", rate=1.12, attain=0.9, window=2)]
     slow = [_read("candidate", rate=1.00, attain=0.9), _read("candidate", rate=1.03, attain=0.9, window=2)]
-    mixed = [_read("candidate", rate=1.04, attain=0.9), _read("candidate", rate=1.09, attain=0.9, window=2)]
     thresholds = dict(required=1.05, attainment_tolerance=0.05, attainment_margin=0.0)
     passed = grade(fast, inc, CONTRACT, WORK, **thresholds)
     assert passed.decision is SpeedStageDecision.PASS and passed.required == 1.05
-    assert passed.ratio == pytest.approx((1.10 / 1.0 + 1.12 / 1.02) / 2, rel=1e-3)
+    assert passed.ratio == pytest.approx(1.12 / 1.02, rel=1e-3)
     assert "2 paired window(s)" in passed.detail
     assert grade(slow, inc, CONTRACT, WORK, **thresholds).decision is SpeedStageDecision.FAIL
-    # One window under and one over the requirement is a mean, not a spread verdict: the sealed
-    # window count and required ratio carry the engine's own per-read noise.
-    averaged = grade(mixed, inc, CONTRACT, WORK, **thresholds)
-    assert averaged.decision is SpeedStageDecision.PASS
-    assert averaged.ratio == pytest.approx((1.04 / 1.0 + 1.09 / 1.02) / 2, rel=1e-3)
+    # The 2026-09-28 mainnet shape: the incumbent stalls in its first pass after the load and the
+    # candidate does not. The mean of the window ratios passed that slower candidate at 1.0189.
+    stalled = [_read("incumbent", rate=0.934, attain=0.9), _read("incumbent", rate=1.0, attain=0.9, window=2)]
+    steady = [_read("candidate", rate=0.985, attain=0.9), _read("candidate", rate=0.983, attain=0.9, window=2)]
+    launch = dict(required=1.015, attainment_tolerance=0.05, attainment_margin=0.0)
+    graded = grade(steady, stalled, CONTRACT, WORK, **launch)
+    assert (0.985 / 0.934 + 0.983 / 1.0) / 2 > 1.015
+    assert graded.decision is SpeedStageDecision.FAIL and graded.ratio == pytest.approx(0.985, rel=1e-3)
+    # A pass is dropped for both engines alike; a candidate that is slow in every pass stays slow.
+    assert grade(list(reversed(steady)), list(reversed(stalled)), CONTRACT, WORK, **launch).ratio == graded.ratio
     with pytest.raises(ServiceEvidenceError, match="pairs one candidate"):
         grade(fast, list(reversed(inc)), CONTRACT, WORK, **thresholds)
 
@@ -231,12 +242,3 @@ def test_record_and_contract_validation():
     with pytest.raises(ServiceEvidenceError):
         LoadRead("stock", 1, "lane-1", 24, (_turn("a", "main", 0, start_s=0, ttft_s=0.1, out=5),))
 
-
-def test_rows_file_rejects_the_wrong_shape(tmp_path):
-    rows = tmp_path / "rows.jsonl"
-    rows.write_text('{"arm": "candidate", "window": 1, "lane": "l", "load": 24, "root_session_id": "a"}\n')
-    with pytest.raises(ServiceEvidenceError, match="retained shape"):
-        load_reads_jsonl(rows)
-    rows.write_text("")
-    with pytest.raises(ServiceEvidenceError, match="no turn rows"):
-        load_reads_jsonl(rows)
