@@ -507,7 +507,7 @@ def _compose_locked(
             Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
             inputs.root / "qualification-replays" / screen_lane,
             goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
-            work_conserving=bool(goodput.error_rate),
+            elapsed_cost=bool(goodput.error_rate),
             max_work_seconds=settings.get("max_work_seconds", 0),
         )
         if replay.slice.digest != settings["slice_digest"]:

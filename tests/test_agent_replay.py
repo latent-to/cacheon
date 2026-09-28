@@ -244,22 +244,11 @@ def test_lockstep_rounds_release_together_in_session_order_and_fail_a_starved_fi
     asyncio.run(scenario())
 
 
-def test_work_conserving_arrivals_wait_for_cold_openings_only():
-    import asyncio
+def test_elapsed_accounting_keeps_the_same_lockstep_arrival_policy(tmp_path):
+    from dataclasses import replace
 
-    async def scenario():
-        rounds = _Rounds(2, asyncio.get_running_loop().time, settle_s=0.001, work_conserving=True)
-        await asyncio.gather(rounds.hold("cold-a", "a"), rounds.hold("cold-b", "b"))
-        first = asyncio.create_task(rounds.hold("warm-a", "a"))
-        rounds.done("cold-a")
-        await asyncio.sleep(0.005)
-        assert not first.done()
-        rounds.done("cold-b")
-        _, first_index = await asyncio.wait_for(first, 0.1)
-        # Another request proceeds while warm-a is still running. Slow peers
-        # cannot impose artificial round barriers on production-shaped traffic.
-        _, second_index = await asyncio.wait_for(rounds.hold("warm-b", "b"), 0.1)
-        assert (first_index, second_index) == (2, 3)
-        assert rounds.inflight == {"warm-a", "warm-b"}
-
-    asyncio.run(scenario())
+    plan, _, _ = _inputs(tmp_path)
+    changed = replace(plan, elapsed_cost=True)
+    assert plan.workload_identity()['arrival'] == changed.workload_identity()['arrival'] == 'lockstep-rounds'
+    assert 'time_accounting' not in plan.workload_identity()
+    assert changed.workload_identity()['time_accounting'] == 'elapsed-serving-span'

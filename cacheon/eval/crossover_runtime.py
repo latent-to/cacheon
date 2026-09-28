@@ -135,7 +135,7 @@ class ResidentCrossoverPlan:
         replay = self.baseline.session_plan.replay
         if bool(replay) != bool(self.policy.goodput) or (replay is not None and (
             len(replay.loads) != 1 or replay.contract != self.policy.goodput.contract
-            or replay.work_conserving != bool(self.policy.goodput.error_rate)
+            or replay.elapsed_cost != bool(self.policy.goodput.error_rate)
         )):
             raise CrossoverRuntimeError("goodput plan requires one sealed load and its service contract")
         allowed_differences = {

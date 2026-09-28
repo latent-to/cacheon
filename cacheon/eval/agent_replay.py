@@ -44,7 +44,7 @@ class AgentReplayPlan:
     window: int
     lane: str
     windows: int = 1
-    work_conserving: bool = field(default=False, metadata={"wire_optional": True})
+    elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
     max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
     slice: SliceManifest = field(init=False, repr=False)
 
@@ -60,8 +60,8 @@ class AgentReplayPlan:
             raise ValueError("agent replay read identity is invalid")
         if type(self.windows) is not int or self.windows < 1:
             raise ValueError("agent replay needs at least one sealed window")
-        if type(self.work_conserving) is not bool:
-            raise ValueError("replay arrival policy must be boolean")
+        if type(self.elapsed_cost) is not bool:
+            raise ValueError("replay cost accounting must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
             raise ValueError("replay work deadline is outside its bound")
         object.__setattr__(self, "slice", manifest)
@@ -69,6 +69,7 @@ class AgentReplayPlan:
     def workload_identity(self) -> dict:
         """Bind the consumed bytes, root accounting and replay policy, not local paths."""
         return {
+            **({"time_accounting": "elapsed-serving-span"} if self.elapsed_cost else {}),
             **({"max_work_seconds": self.max_work_seconds} if self.max_work_seconds else {}),
             "slice": self.slice.digest, "dataset": self.slice.dataset,
             "revision": self.slice.revision,
@@ -76,7 +77,7 @@ class AgentReplayPlan:
             "expected_work": {str(load): self.slice.expected_work(load) for load in self.loads},
             "loads": list(self.loads),
             "windows": self.windows,
-            "arrival": "work-conserving-after-cold-openings" if self.work_conserving else "lockstep-rounds",
+            "arrival": "lockstep-rounds",
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
@@ -165,9 +166,8 @@ class _Rounds:
     """
 
     def __init__(self, openings: int, clock, settle_s: float = _ROUND_SETTLE_S,
-                 first_wait_s: float = _FIRST_ROUND_WAIT_S, *, work_conserving=False):
+                 first_wait_s: float = _FIRST_ROUND_WAIT_S):
         self.openings, self.clock, self.settle_s, self.first_wait_s = openings, clock, settle_s, first_wait_s
-        self.work_conserving, self.warm_started = work_conserving, False
         self.pending: dict[str, tuple[str, asyncio.Future]] = {}
         self.inflight: set[str] = set()
         self.first_released = False
@@ -190,9 +190,6 @@ class _Rounds:
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
-        if self.work_conserving and self.warm_started:
-            self._release()
-            return
         if self.inflight or not self.pending:
             return
         loop = asyncio.get_running_loop()
@@ -205,11 +202,9 @@ class _Rounds:
 
     def _release(self) -> None:
         self._timer = None
-        if ((self.inflight and not self.warm_started) or not self.pending
+        if (self.inflight or not self.pending
             or (not self.first_released and len(self.pending) < self.openings)):
             return
-        if self.first_released and self.work_conserving:
-            self.warm_started = True
         self.first_released = True
         stamp = self.clock()
         for request_id, (_key, future) in sorted(self.pending.items(), key=lambda item: item[1][0]):
@@ -232,12 +227,12 @@ class _Rounds:
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
-    def __init__(self, session, exchange, tokenizer, output: Path, load: int, *, work_conserving=False):
+    def __init__(self, session, exchange, tokenizer, output: Path, load: int):
         self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
         self.stamps: dict[str, int] = {}
-        self.rounds = _Rounds(load, session.clock, work_conserving=work_conserving)
+        self.rounds = _Rounds(load, session.clock)
         self.placement = _Placement(session.plan.engine_config.engine_kwargs.get("dp_size", 1))
         self.failed = asyncio.Event()
         self.offset_ns = time.time_ns() - round(session.clock() * 1e9)
@@ -375,7 +370,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
         raise ServiceEvidenceError("bridge has requests absent from the retained AIPerf export")
     (load,) = plan.loads
     read = LoadRead(plan.arm, plan.window, plan.lane, load, tuple(records))
-    rate = fixed_work_rate(read, plan.slice.expected_work(load), wall_time=plan.work_conserving)
+    rate = fixed_work_rate(read, plan.slice.expected_work(load), wall_time=plan.elapsed_cost)
     output = plan.output_directory
     with (output / "turns.jsonl").open("x") as f:
         for record in records:
@@ -403,8 +398,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
     for source in sorted(current.directory.glob("*.json"))[:load]:
         (pool / source.name).symlink_to(source.resolve())
     async with session.exchange() as exchange:
-        bridge = ReplayBridge(session, exchange, tokenizer, output, load,
-                              work_conserving=plan.work_conserving)
+        bridge = ReplayBridge(session, exchange, tokenizer, output, load)
         app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
         app.router.add_post("/v1/chat/completions", bridge.chat)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)

@@ -126,7 +126,7 @@ def test_lane_swap_rebinds_the_actual_launch_and_preflight(tmp_path, distinct_po
     plan, *_ = _rig(tmp_path, (1.0, 1.0, 1.0), distinct_runtime_policies=distinct_policies)
     manifest = _write_slice(tmp_path, [_session(1, k=3, inner=0)])
     replay = AgentReplayPlan(manifest, (1,), Path("/aiperf"), Path("/model"), tmp_path / "out",
-                             CONTRACT, "incumbent", 1, "lane", windows=5, work_conserving=True)
+                             CONTRACT, "incumbent", 1, "lane", windows=5, elapsed_cost=True)
     goodput = GoodputPolicy(CONTRACT, 1.0, 0.003, 0.0, 0.0, 0.01, 0.001)
     policy = replace(plan.policy, version=17, min_margin=0, min_windows=0,
                      max_window_scatter=0, max_conditioning_slowdown=0, goodput=goodput)

@@ -655,7 +655,7 @@ runs first with at most the declared session count per conditioning batch and
 rows; AIPerf supplies the measured work. AIPerf starts exactly the declared number
 of root sessions and drains their turns and children; there is no duration cut
 or request-count truncation. `--ignore-trace-delays` removes recorded user and
-tool waiting; each session continues as soon as its preceding work completes.
+tool waiting; the bridge releases ready requests in lockstep rounds.
 Turn order and child joins remain intact. The loopback chat adapter passes canonical input
 IDs and sticky DP ranks through the same isolated-worker pipes.
 
@@ -680,9 +680,9 @@ A window does not by itself provide the paired capacity comparison, quality audi
 authoritative qualification result. Existing commissions continue to execute
 their sealed workload until recommissioned.
 
-Policy v17 releases cold openings together in session-key order, then drains
-them to establish the declared warm-cache operating point. Warm requests run
-as soon as their session permits; a slow peer does not impose a round barrier.
+Policy v17 retains the lockstep replay schedule: requests are released together
+in session-key order after the preceding round drains. The cold opening round
+establishes the declared warm-cache operating point before measurement.
 The measured cost spans the first warm release through the last warm completion,
 including handoffs and tails. Fixed workload value and GPU allocation make its
 inverse monotone in profit for this workload and pricing scenario. Native output
