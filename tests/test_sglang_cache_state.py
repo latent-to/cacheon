@@ -121,15 +121,17 @@ def test_cache_must_preserve_unfinished_recurrent_state(state):
         state.guard.poll(block=True)
 
 
+@pytest.mark.parametrize("state_buffer", ["kv", "index"])
 @pytest.mark.parametrize("corrupt", [False, True])
 @pytest.mark.parametrize("evicted,hit", [(True, 16), (False, 16), (False, 8)])
-def test_swa_checks_live_windows_including_earlier_branches(monkeypatch, corrupt, evicted, hit):
+def test_swa_checks_live_windows_including_earlier_branches(monkeypatch, corrupt, evicted, hit, state_buffer):
     monkeypatch.setitem(audit._state, "rate", 1.0)
     ctx = _ctx(is_hybrid_swa=True)
     p = ctx.params
     p.sliding_window_size, p.enable_mamba_extra_buffer = 8, False
     full = p.token_to_kv_pool_allocator.pool
-    swa = NS(k_buffer=[torch.zeros(64, 4)], v_buffer=[torch.zeros(64, 2)])
+    swa = NS(k_buffer=[torch.zeros(64, 4)], v_buffer=[torch.zeros(64, 2)], page_size=PAGE,
+             index_k_with_scale_buffer=[torch.zeros(64 // PAGE, PAGE, dtype=torch.uint8)])
     mapping = torch.full((256,), -1, dtype=torch.int64)
     begin = 8 if evicted else 0
     mapping[PAGE + begin:PAGE + 16] = torch.arange(begin, 16)
@@ -146,9 +148,13 @@ def test_swa_checks_live_windows_including_earlier_branches(monkeypatch, corrupt
     for i in range(begin, 16):
         swa.k_buffer[0][i] = sum(tokens[:i + 1])
         swa.v_buffer[0][i] = tokens[i]
+        swa.index_k_with_scale_buffer[0][i // PAGE, i % PAGE] = tokens[i]
     guard.handoff(cache, req, tokens, finished=True)
     if corrupt:
-        swa.k_buffer[0][hit - 3].add_(7)
+        if state_buffer == "kv":
+            swa.k_buffer[0][hit - 3].add_(7)
+        else:
+            swa.index_k_with_scale_buffer[0][(hit - 3) // PAGE, (hit - 3) % PAGE] += 7
     tokens, row = tokens[:hit], row[:hit]
     query = Req("query", tokens + [99], 1)
     query.kv.swa_evicted_seqlen = 0
@@ -157,6 +163,55 @@ def test_swa_checks_live_windows_including_earlier_branches(monkeypatch, corrupt
     guard.matched(cache, params, result, NS)
     if corrupt:
         with pytest.raises(RuntimeError, match="sliding-window"):
+            guard.poll(block=True)
+    else:
+        guard.poll(block=True)
+
+
+@pytest.mark.parametrize("corrupt", [None, "quantized", "scale", "conv"])
+def test_encoded_checkpoint_uses_declared_rounding_and_separate_slot_ids(monkeypatch, corrupt):
+    monkeypatch.setitem(audit._state, "rate", 1.0)
+    ctx = _ctx(eagle=True, is_hybrid_ssm=True)
+    params = ctx.params
+    params.sliding_window_size, params.enable_mamba_extra_buffer = None, False
+    temporal, conv = torch.zeros(16, 1, 2, 2), torch.zeros(16, 2)
+    active = NS(replayssm_write_pos=None)
+    active._iter_transfer_state_entries = lambda: iter((
+        ("temporal", temporal, 0, 2), ("conv", conv, 0, 2),
+    ))
+    encoded = NS(temporal=NS(qdata=torch.zeros(1, 8, 1, 2, 2, dtype=torch.int8),
+                             scale=torch.zeros(1, 8, 1, 1, 2)),
+                 conv=[torch.zeros(1, 8, 2)])
+    params.req_to_token_pool.mamba_pool = active
+    params.req_to_token_pool.mamba_ckpt_pool = encoded
+    params.req_to_token_pool.translate_mamba_indices = lambda ids: ids + 4
+    guard = _Guard(ctx)
+    cache = NS(token_to_kv_pool_allocator=guard.allocator, req_to_token_pool=guard.requests)
+    tokens = list(range(8))
+    source = Req("source", tokens, 0)
+    source.kv.mamba_pool_idx = torch.tensor(1)
+    temporal[5] = torch.tensor([[[1., -1.], [.005, -.005]]])
+    conv[5] = torch.tensor([7., 8.])
+    row = torch.arange(PAGE, PAGE + len(tokens))
+    guard.requests.req_to_token[0, :len(row)] = row.int()
+    guard.handoff(cache, source, tokens, finished=True)
+    # Known codec result: the small entries round to one quantization step.
+    encoded.temporal.qdata[0, 3] = torch.tensor([[[127, -127], [1, -1]]], dtype=torch.int8)
+    encoded.temporal.scale[0, 3] = 1 / 127
+    encoded.conv[0][0, 3] = conv[5]
+    if corrupt == "quantized":
+        encoded.temporal.qdata[0, 3].zero_()
+    elif corrupt == "scale":
+        encoded.temporal.scale[0, 3].mul_(2)
+    elif corrupt == "conv":
+        encoded.conv[0][0, 3].zero_()
+    query = Req("query", tokens + [99], 1)
+    query.kv.mamba_cow_src_index = torch.tensor(3)
+    query.kv.mamba_pool_idx = torch.tensor(2)
+    match = NS(device_indices=row, host_hit_length=0, swa_host_hit_length=0, mamba_host_hit_length=0)
+    guard.matched(cache, NS(key=Key(tokens + [99]), req=query, cow_mamba=True), match, NS)
+    if corrupt:
+        with pytest.raises(RuntimeError, match="recurrent state"):
             guard.poll(block=True)
     else:
         guard.poll(block=True)
