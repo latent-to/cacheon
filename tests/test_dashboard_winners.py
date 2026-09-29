@@ -7,6 +7,7 @@ from pathlib import Path
 from dashboard.winners import (
     conservative_candidate_tokens_per_second,
     live_offer_shares,
+    winner_reward,
     measured_baseline,
     prefill_summary,
     settlement_hold_notice,
@@ -105,17 +106,48 @@ def test_live_offer_shares_reports_absence_instead_of_a_vector(tmp_path: Path) -
     assert live_offer_shares(broken) == (None, {})
 
 
+def test_submission_snapshot_requires_the_exact_served_projection(tmp_path: Path) -> None:
+    path, snapshot = tmp_path / "offer.json", tmp_path / "shares.json"
+    path.write_text(json.dumps({"offer": {"projection_digest": "current",
+        "projection": {"effective_block": 10, "weights_ppm": [["miner", 1_000_000]]}}}))
+    report = {"projection_digest": "current", "submission_weights_ppm": {"a": 300_000, "b": 700_000}}
+    snapshot.write_text(json.dumps(report))
+    summary, shares = live_offer_shares(path, submission_path=snapshot)
+    assert summary["submission_shares_available"] and shares == {"a": Decimal(".3"), "b": Decimal(".7")}
+    assert live_offer_shares(path)[1] == {"miner": Decimal(1)}
+    report["projection_digest"] = "another-offer"
+    snapshot.write_text(json.dumps(report))
+    summary, shares = live_offer_shares(path, submission_path=snapshot)
+    assert not summary["submission_shares_available"] and not shares
+    snapshot.unlink()
+    assert live_offer_shares(path, submission_path=snapshot)[1] == {}
+
+
 def test_winners_and_miners_render_the_served_weight_share() -> None:
     html = (
         Path(__file__).parents[1] / "dashboard" / "static" / "index.html"
     ).read_text()
 
-    assert '"Weight share (served offer)"' in html
+    assert '"Submission weight share (served offer)"' in html
     assert '"Registered","Weight share","Subs"' in html
     assert "w.weight_share" in html and "m.weight_share" in html
     assert "Served weight offer" in html
     assert "follower journal" in html
     assert "Weight publications (latest)" not in html
+
+
+def test_winner_share_uses_reservation_including_zero_and_missing_attribution() -> None:
+    offer = {"submission_shares_available": True}
+    shares = {"first": Decimal("0.3"), "second": Decimal("0.6")}
+    row = {"reservation_id": "first", "hotkey": "same-miner", "waiting_for_queue": False}
+    assert winner_reward(row, offer, shares) == {"weight_share": .3, "reward_claim_status": "earning"}
+    row["reservation_id"] = "second"
+    assert winner_reward(row, offer, shares)["weight_share"] == .6
+    row["reservation_id"] = "unpaid"
+    assert winner_reward(row, offer, shares) == {"weight_share": 0, "reward_claim_status": "not_earning"}
+    assert winner_reward(row, {}, shares) == {"weight_share": None, "reward_claim_status": "attribution_unavailable"}
+    row["waiting_for_queue"] = True
+    assert winner_reward(row, offer, shares) == {"weight_share": None, "reward_claim_status": "waiting_for_queue"}
 
 
 

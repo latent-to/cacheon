@@ -1,6 +1,7 @@
 """One production projector combines retained evidence and frozen offer terms."""
 
 from dataclasses import replace
+from decimal import Decimal
 import json
 from types import SimpleNamespace
 
@@ -75,8 +76,10 @@ def _advance(tmp_path, block=20):
             intake._reserve(store, (), block=block)
 
 
-def test_combined_projection_retains_terms_report_and_restart_history(tmp_path, monkeypatch):
-    schedule, journal, _ = _fixture(tmp_path, monkeypatch, weights=(200_000, 300_000))
+@pytest.mark.parametrize("shared_hotkey", [False, True])
+def test_combined_projection_retains_terms_report_and_restart_history(tmp_path, monkeypatch, shared_hotkey):
+    schedule, journal, _ = _fixture(tmp_path, monkeypatch, shared_hotkey=shared_hotkey,
+                                   weights=(200_000, 300_000))
     _register(tmp_path, schedule, journal)
     with intake._store(tmp_path / "b") as secondary:
         intake._qualified_settlement_candidate(secondary, marker="c", arena_marker="c",
@@ -87,13 +90,27 @@ def test_combined_projection_retains_terms_report_and_restart_history(tmp_path, 
     _advance(tmp_path)
     with intake._store(tmp_path / "a") as primary:
         first = _project(primary, schedule, journal)
-        assert dict(first.weights_ppm) == {"minera": 500_000, "minerd": 100_000,
-                                          "minerc": 300_000, "validator": 100_000}
+        assert dict(first.weights_ppm) == ({"minera": 900_000, "validator": 100_000} if shared_hotkey
+            else {"minera": 500_000, "minerd": 100_000, "minerc": 300_000, "validator": 100_000})
         report = json.loads(reopen_evidence(primary.path.parent / "weight-allocation-evidence",
                                            first.allocation_evidence))
         assert sorted(value[1] for value in report["submission_terms"].values()) == [0, 200_000, 300_000, 1_000_000]
         assert report["arena_weights_ppm"] == {"a": 600_000, "b": 300_000}
         assert report["burned_ppm"] == 100_000
+        assert sorted(report["submission_weights_ppm"].values()) == [0, 100_000, 300_000, 500_000]
+        from dashboard.winners import live_offer_shares
+
+        offer_path = tmp_path / "current_weights.json"
+        offer_path.write_text(json.dumps({"offer": {
+            "projection": first.to_dict(), "projection_digest": first.digest, "lane": "legacy_v1"}}))
+        root = primary.path.parent / "weight-allocation-evidence"
+        summary, shares = live_offer_shares(offer_path, submission_roots=[tmp_path / "absent", root])
+        assert summary["submission_shares_available"]
+        assert {rid: int(share * 1_000_000) for rid, share in shares.items()} == report["submission_weights_ppm"]
+        assert sum(shares.values()) == Decimal("0.9")
+        assert {hotkey: int(share * 1_000_000) for hotkey, share in live_offer_shares(offer_path)[1].items()} == dict(first.weights_ppm)
+        missing, shares = live_offer_shares(offer_path, submission_roots=[tmp_path / "absent"])
+        assert not missing["submission_shares_available"] and not shares
         assert WeightProjection.from_dict(first.to_dict()) == first
         with pytest.raises(IntakeError, match="requires its configured producer"):
             primary.build_weight_projection(policy=intake.POLICY,

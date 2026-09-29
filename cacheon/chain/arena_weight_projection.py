@@ -108,7 +108,7 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
         combined["decay_start_blocks"] = {}
         combined["score_speedups"] = {}
         terms, snapshots, adjustments, seen_reservations = {}, {}, {}, set()
-        bonuses = {}
+        bonuses, reservation_ids, submission_weights = {}, {}, {}
         evidence, standing_count, generation = set(), 0, 0
         cursor_hashes = {context.current_block: context.current_block_hash}
         for key, store in sorted(stores.items()):
@@ -128,7 +128,8 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
             seen_reservations.update(ids)
             reconcile_follower_reward_decay(store, confirmation_journal,
                                            validator_hotkey=context.validator_hotkey)
-            inputs = _reward_projection_inputs(store, include_uncrowned=True)
+            inputs = _reward_projection_inputs(
+                store, include_uncrowned=True, reservation_ids=reservation_ids)
             grandfathered = inputs.pop("grandfathered_runtimes")
             adjustments[key] = inputs.pop("adjustments")
             standing = inputs.pop("standing_claims")
@@ -156,12 +157,15 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
             allocation_burn_hotkey=allocation.burn_hotkey, stall_bonus_terms=bonuses)
         _, shares, paid, burned = allocate_submission_weights(
             projection.standing, terms, context, allocation.burn_hotkey,
+            submission_weights=submission_weights,
             base_credits=arena_base_credits(combined["earning_claims"], policy, context,
                                           combined["decay_start_blocks"], combined["score_speedups"]))
         report = {"schema": "cacheon.static-arena-allocation.v1",
                   "allocation_digest": allocation.digest, "effective_block": context.current_block,
                   "metagraph_digest": context.metagraph_digest, "sources": snapshots,
                   "submission_terms": {key: list(value) for key, value in sorted(terms.items())},
+                  "submission_weights_ppm": {reservation_ids[key]: ppm
+                                             for key, ppm in sorted(submission_weights.items())},
                   "submission_score_speedups_ppm": dict(sorted(combined["score_speedups"].items())),
                   "arena_weights_ppm": {key: shares.get(key, 0) for key in configs}, "burned_ppm": burned,
                   "weights_ppm": projection.weights_by_hotkey,

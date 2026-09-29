@@ -30,7 +30,7 @@ cacheon/settlement.py 1064
 cacheon/target_catalog.py 999
 cacheon/verify.py 988
 cacheon/verify_collective.py 1057
-dashboard/app.py 972
+dashboard/app.py 971
 tests/test_chain_intake.py 2048
 tests/test_crossover_runtime.py 918
 tests/test_device_state.py 1001
