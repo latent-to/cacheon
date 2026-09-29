@@ -749,6 +749,14 @@ an engine load, whose allocator and cache warm-up differs between engines, does 
 decide the verdict, while a slowdown that recurs in every pass remains a cost. The
 attainment gate still applies to every window.
 
+The dashboard reports replay measurements as **seconds per warm turn** (lower is
+better), including each arm's per-window latency and service attainment, the
+operating load, completed window count, workload identity and required gain.
+The displayed improvement comes from the sealed replay scorer (fastest passes in V16);
+dividing the combined mean latencies need not produce that same ratio. Historical
+batch evaluations retain their token-throughput units. Replay evidence does not
+enter the historical token-rate baseline band.
+
 On a speed PASS, the candidate engine closes and the existing entropy provider
 selects source occurrences from the completed B/C trajectories. The still-loaded
 incumbent generates only those selected controls. Canonical input digests bind

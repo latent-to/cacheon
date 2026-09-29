@@ -61,7 +61,7 @@ def reward_visibility_sql(db) -> str:
 
 
 def reward_comparisons(db) -> dict[str, dict]:
-    """Compare each PASS with the best preceding PASS on its measured baseline.
+    """Compare each PASS with the best preceding rewarded PASS on its measured baseline.
 
     Prefix eligibility only says earlier work finished. It does not establish a
     performance record. Recompute this filter for historical and new PASSes so

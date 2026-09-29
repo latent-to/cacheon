@@ -53,6 +53,7 @@
 "tests/test_dashboard_forensics.py": 9,
 "tests/test_dashboard_metrics.py": 101,
 "tests/test_dashboard_receipts.py": 15,
+"tests/test_dashboard_replay.py": 26,
 "tests/test_dashboard_sources.py": 32,
 "tests/test_dashboard_winners.py": 33,
 "tests/test_device_state.py": 92,

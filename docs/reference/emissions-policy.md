@@ -23,17 +23,17 @@ durable evidence remain reopenable from Git history and the reserved schema.
 ## Legacy V1
 
 A distinct registered contribution with a complete audited PASS earns only when
-its conservative credited speedup is at least the best earlier distinct PASS
-speedup multiplied by `1 + min_margin`. The margin comes from its retained
-qualification's sealed resident speed policy; historical pairs use the larger
-margin. A tie or a smaller improvement earns nothing even though evaluation
-remains PASS. The first PASS against a commissioned baseline is eligible.
+its credited speedup clears the sealed eligibility boundary relative to the best
+earlier rewarded PASS. Historical policies require `1 + min_margin`, read from
+retained qualification; pairs use the larger margin. V17 uses both estimates'
+uncertainty. A tie or smaller improvement earns nothing despite an evaluation
+PASS. The first PASS against a commissioned baseline is eligible.
 
 Comparison follows finalized submission order (block, event index, subindex,
 hotkey, content hash), not evaluation completion time. All targets measured
 against the same arena and incumbent stack compete on the credited end-to-end
 score. Different baselines and runtime generations are not compared. Earlier
-PASSes below the reward threshold still contribute to the best preceding score.
+PASSes below the reward threshold do not raise the next miner's hurdle.
 An unresolved earlier submission continues to block new reward eligibility.
 
 Before enabling this rule on an existing deployment, record the sorted unique
@@ -54,7 +54,7 @@ operator commission; a crown alone does not change it.
 Duplicate packaging of the same contribution earns once.
 
 Let `c` be the conservative candidate speedup over its measured baseline and `q`
-the highest conservative speedup among earlier distinct PASSes on that same arena
+the highest conservative speedup among earlier rewarded PASSes on that same arena
 and baseline. Use `q = 1` for the first PASS. The scoring ratio `s` is floored to
 parts per million before applying the credit formula. Grandfathered generations
 keep their original baseline scoring (`q = 1` for every claim).

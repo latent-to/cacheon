@@ -102,7 +102,30 @@ def measured_baseline(speed_reads: list[object], primary: dict[str, Any]) -> dic
     return {
         "baseline_tokens_per_second": round(float(min(rates)), 1) if rates else None,
         "baseline_kind": kind,
+        **({"baseline_mean_warm_latency_s": _warm_latency(speed_reads, "B")}
+           if any(isinstance(s, dict) and s.get("metric") == "warm_turn_latency" for s in speed_reads) else {}),
     }
+
+
+def _warm_latency(speeds: list[object], role: str) -> float | None:
+    """Keep the slower retained attempt's mean; paired scoring remains the scorer's responsibility."""
+    means = []
+    for speed in speeds:
+        if not isinstance(speed, dict) or speed.get("metric") != "warm_turn_latency":
+            continue
+        lanes = [lane for lane in speed["lanes"] if lane["role"] == role]
+        turns = sum(lane["warm_turns"] for lane in lanes)
+        if turns:
+            means.append(sum(lane["mean_warm_latency_s"] * lane["warm_turns"] for lane in lanes) / turns)
+    return max(means) if means else None
+
+
+def candidate_measurement(speeds: list[object]) -> dict[str, float | None]:
+    """Expose the measured unit of the retained qualification, without converting latency to tokens."""
+    if any(isinstance(s, dict) and s.get("metric") == "warm_turn_latency" for s in speeds):
+        return {"tokens_per_second": None, "mean_warm_latency_s": _warm_latency(speeds, "C")}
+    rate = conservative_candidate_tokens_per_second(speeds)
+    return {"tokens_per_second": round(float(rate), 1) if rate is not None else None}
 
 
 def prefill_summary(speed_reads: list[object]) -> dict[str, float | None]:

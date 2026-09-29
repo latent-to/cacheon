@@ -170,7 +170,7 @@ crown history from retained settlement candidates and qualification evidence rat
 than a second reward table.
 
 Credit uses the logarithm of the candidate speedup divided by the best earlier
-PASS speedup on the same arena and baseline, a submission-time stall multiplier,
+rewarded PASS speedup on the same arena and baseline, a submission-time stall multiplier,
 and exponential half-life decay as defined in
 [Legacy V1](../reference/emissions-policy.md#legacy-v1). The existing
 `crowned_block` wire field carries the finalized submission block for compatibility;

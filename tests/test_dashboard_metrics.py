@@ -448,12 +448,12 @@ def test_resolving_earlier_winner_rescores_potential_winners_in_queue_order(
         winners = {row["reservation_id"]: row for row in after["items"]}
         assert after["waiting_items"] == [] and after["waiting_total"] == 0
         assert set(winners) == {candidates[i].reservation_digest for i in (0, 3, 4)}
-        # The best earlier PASS is index 1, even though it missed the reward margin.
-        # Neither the slower immediate predecessor nor the faster later PASS is the reference.
+        # Index 1 missed the reward margin and cannot raise the next miner's hurdle.
+        # The earlier rewarded record, not an unpaid or later PASS, is the reference.
         winner = winners[candidates[3].reservation_digest]
-        relative = Decimal("1.12") / Decimal("1.105")
+        relative = Decimal("1.12") / Decimal("1.1")
         score_ppm = int((relative * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
-        assert winner["previous_best_reservation_id"] == candidates[1].reservation_digest
+        assert winner["previous_best_reservation_id"] == candidates[0].reservation_digest
         assert winner["relative_improvement_pct"] == pytest.approx(float((relative - 1) * 100))
         assert winner["score_improvement_pct"] == (score_ppm - 1_000_000) / 10_000
         claims = {claim.hotkey: claim for claim in inputs["earning_claims"]}
