@@ -410,11 +410,12 @@ declaring dtypes, architectures or eligibility never matches.
 The same content checks run for stock and candidate. Stock checking failures are
 infrastructure failures; they are not attributed to a miner's cache. Storage
 validation is adapter work under this common contract. It recognizes full-attention
-KV, paged sliding-window KV, and the runtime's canonical recurrent checkpoints.
-Encoded recurrent checkpoints, per-request sliding-window rings and paged
-sliding-window index state are explicitly unsupported. A new model does not
-require a new miner contract; an unfamiliar storage layout requires validator
-support before a contribution can use it.
+KV, paged sliding-window KV and its index state, compressed KV and index pages, the
+runtime's canonical recurrent checkpoints, int8-encoded recurrent checkpoints read
+through the pinned codec, and per-request sliding-window rings. A request-local ring
+is never stored in the tree, so a prefix hit that skips its trailing window is
+refused. A new model does not require a new miner contract; an unfamiliar storage
+layout requires validator support before a contribution can use it.
 
 The [GLM and Qwen GPU checks](../results/prefix-cache.md) exercise prefix reuse,
 native host restoration, reset, graph execution, audit import and rejection of

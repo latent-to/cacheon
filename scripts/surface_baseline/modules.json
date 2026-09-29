@@ -152,7 +152,7 @@
  "cacheon.indexer_select_contract": {"all":null,"exceptions":[],"public":["DYNAMIC_INPUTS","SLOT","call_descriptor","invoke_entry","make_inputs","output_bounds","output_spec","reference","slot_spec"]},
  "cacheon.integrations": {"all":null,"exceptions":[],"public":[]},
  "cacheon.integrations.sglang_cache": {"all":null,"exceptions":[],"public":["ADDRESS","admit","install"]},
- "cacheon.integrations.sglang_cache_state": {"all":null,"exceptions":[],"public":["PrefixStateAudit"]},
+ "cacheon.integrations.sglang_cache_state": {"all":null,"exceptions":[],"public":["PrefixStateAudit","compressed_page_buffers"]},
  "cacheon.integrations.sglang_dsa_state": {"all":null,"exceptions":[],"public":["KV_BUFFERS","dsa_state_rows","state_values"]},
  "cacheon.integrations.sglang_nodes": {"all":null,"exceptions":[],"public":["bind","install","is_installed","make_node_dispatcher","node_pattern","uninstall"]},
  "cacheon.integrations.sglang_plugin": {"all":null,"exceptions":[],"public":["register"]},

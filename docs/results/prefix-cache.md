@@ -68,8 +68,9 @@ The GLM checks cover full-attention KV, draft and index state. The Qwen checks
 below add canonical recurrent checkpoints under the same runtime-object factory.
 Paged sliding-window validation is implemented and tested against native SGLang
 cache classes on CPU; no sliding-window model GPU result is claimed here.
-Encoded recurrent checkpoints, per-request sliding-window rings and paged
-sliding-window index state remain explicitly unsupported.
+Validation of encoded recurrent checkpoints, per-request sliding-window rings,
+paged sliding-window index state and compressed KV pages is implemented and
+tested on CPU only; no GPU result is claimed for them.
 
 Target-level preservation through successive cache replacements is separately
 tested through the production stack planner and materializer. The GPU controls
