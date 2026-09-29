@@ -84,14 +84,15 @@ in production.
 
 ## A proposal, worked end to end
 
-Suppose a miner profiles a published arena and finds that
-`activation.silu_and_mul` is on the critical path. They build a source-only bundle for
-that registered singleton target and declare that it applies to BF16 calls on `sm90`.
+Suppose a miner profiles a published arena and finds that the MLP blocks are on the
+critical path. They build a source-only bundle that names `model.layers.*.mlp` under
+the `forward_pass` target and declares that it applies to BF16 calls on `sm90`.
 
-1. Locally, `scan` checks the tree without importing the candidate. `verify` then loads
-   it in a fresh child process, supplies validator-shaped tensors, and compares every
-   applicable result with the trusted slot reference. These are development checks, so
-   even a clean GPU result does not establish priority or a win.
+1. Locally, `scan` checks the tree without importing the candidate, and `verify` imports
+   each entry in a fresh child process and checks its signature. `check`, in the
+   published arena image, binds the node in a real engine and audits every sampled call
+   against the stock module. These are development checks, so even a clean GPU result
+   does not establish priority or a win.
 2. The miner packages the tree. The proposal identity is a SHA-256 over the sorted
    identity-bearing relative paths and bytes, not over gzip timestamps or archive
    compression. They host that archive on public HTTPS and commit the hash and URL with
@@ -127,10 +128,10 @@ is why the last authoritative lifecycle state matters more than the last local c
 
 These terms describe different layers:
 
-- A **slot** is a typed runtime ABI boundary such as `collective.all_reduce`.
-- A **singleton target** assigns economic identity to one slot.
-- An **atomic target** assigns one economic identity to a validator-defined group of
-  regions that must change together.
+- A **slot** is the address a manifest row replaces: a node address such as
+  `model.layers.*.mlp`, or `tree_cache` for the prefix cache.
+- A **target** assigns economic identity: `forward_pass` for model nodes,
+  `prefix_cache` for the cache.
 - A **materialized engine** is the complete content-addressed tree executed for an arm.
 
 The candidate engine can contain the full incumbent stack, but the validator constructs

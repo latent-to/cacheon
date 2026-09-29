@@ -199,6 +199,5 @@ denominator. Do not treat them as qualification evidence.
 | Capture fails | Capability metadata, static allocations, host syncs, dynamic-input contract |
 | Baselines drift | Stop scoring; inspect thermals, clocks, competing processes, device cleanup, and arena conditioning |
 
-Source: [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py),
-[`cacheon/verify.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify.py), and
-[`cacheon/verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py).
+Source: [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py) and
+[`cacheon/miner_check.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/miner_check.py).

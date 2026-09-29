@@ -124,7 +124,6 @@ nav:
       - Submit on-chain: miner-guide/submitting.md
       - Why submissions fail: miner-guide/why-submissions-fail.md
       - Troubleshooting: miner-guide/diagnostics.md
-      - Override points: miner-guide/override-points.md
   - Validator guide:
       - Overview: validator-guide/overview.md
       - Deployment readiness: validator-guide/first-hour.md
@@ -146,7 +145,6 @@ nav:
       - Anti-copy and attribution: security/anti-copy.md
   - Reference:
       - CLI: reference/cli.md
-      - Slot catalog: reference/slots-table.md
       - Target catalog: reference/target-catalog.md
       - Bundle manifest: reference/manifest-schema.md
       - Stack manifests: reference/stack-manifests.md

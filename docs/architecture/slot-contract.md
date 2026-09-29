@@ -1,42 +1,47 @@
 # Slot contract
 
-The slot contract is Cacheon's narrow waist: a stable, validator-owned tensor boundary between untrusted optimization code and a pinned inference engine.
+The slot contract is Cacheon's narrow waist: a validator-owned boundary between
+untrusted optimization code and a pinned inference engine. A bundle replaces
+modules of the served model, named by [node address](#node-addresses), or the
+scheduler's [prefix cache](#the-prefix-cache). Every contribution must satisfy the
+invariants on this page. The executable pieces are the seam table
+[`cacheon/seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py),
+the node binder
+[`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py)
+and the cache seam
+[`sglang_cache.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache.py).
 
-Slots may evolve, SGLang adapters may churn, and correctness policies may be
-recalibrated. Every core slot must still satisfy the four invariants on this
-page. This page is the normative checklist; the executable catalog is
-[`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py),
-while arena-specific shapes and measured correctness floors live in
-[`cacheon/model_profiles.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_profiles.py).
-
-## The four invariants
+## The invariants
 
 ### 1. The validator owns the boundary
 
-The validator owns the call site and allocates every output tensor, including shape, dtype, device, stride, layout, and storage. The candidate entry point only fills the provided output. It does not allocate or return the result consumed by the model.
+The validator owns the call site, the engine, the model and the arguments. A
+node candidate receives the stock arguments of the module it replaces and returns
+what stock returns; the binder checks the result structure before the engine
+consumes it. A cache candidate receives the runtime cache object and returns its
+class or a subclass.
 
-The same typed output contract is used by offline verification and the live engine binding. After execution, the binding revalidates output identity and layout before the engine consumes it.
+### 2. Sampling stays validator-owned
 
-### 2. The slot is strictly upstream of the sampler
+A contribution may replace data-plane computation up to the logits, but it may not
+control sampling, token selection or acceptance. Logits a node returns are audited
+against stock on the same call like any other result.
 
-A slot may replace a bounded data-plane region, but it may not control final logits, logprobs, tokens, or sampling. Its output continues through validator-owned or pinned-runtime computation before the final response exists.
+### 3. Correctness is judged against stock in the running engine
 
-### 3. Correctness uses trusted high-precision ground truth
-
-Per-slot verification compares candidate output with a validator-owned fp32 or dequantized reference, never with the stock kernel as semantic truth. A faster implementation may use different reductions or low-precision arithmetic, so each slot selects an appropriate registered metric:
-
-- `allclose` for elementwise-equivalent results;
-- `matched_ratio` for numerically reordered kernels;
-- `cosine` with an optional norm guard for low-bit outputs;
-- `topk_overlap` for score-derived or direct block selections.
-
-This cheap gate proves that the candidate computes the registered function. It is necessary but not sufficient: production qualification also applies pristine T quality authority to sealed end-to-end trajectories.
+There is no hand-written reference math. On an audited call the stock module
+answers first, an honest twin answers on SGLang's native reference paths, and the
+candidate's result and engine-state rows are graded by relative error against
+stock, within a multiple of the twin's own error. A cache is graded by the bytes
+it serves back for each claimed prefix. This gate is necessary but not
+sufficient: production qualification also applies pristine T quality authority to
+sealed end-to-end trajectories.
 
 ### 4. Miner-reported performance and evidence are not trusted
 
 The host times requests outside the candidate process. The validator owns workloads, role schedules, output storage, reference work, evidence schemas, and verdicts. Candidate logs, self-reported throughput, and self-reported quality cannot mint a score.
 
-A feature that cannot preserve all four invariants is not a core slot. It needs a reviewed catalog or integration change, not a submission.
+A feature that cannot preserve these invariants is not a target. It needs a reviewed catalog or integration change, not a submission.
 
 ### 5. Closure is arena-scoped and never inspects an implementation
 
@@ -46,220 +51,48 @@ closed target without judgement and releases its payment. Closing a target
 closes its standalone lane and nothing else — implementing that computation
 inside any open target's boundary is always legal and can never be a rejection
 reason. A fused kernel is judged solely by the contract of the one target it
-names. This property is pinned by
-`tests/test_chain_validator_loop.py::test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes`.
-
-## Slot kinds
-
-The live catalog supports three kinds. Kind changes the breadth and capability of the boundary, not the trust model.
-
-| Kind | Boundary | Additional requirement |
-|---|---|---|
-| `op` | One fused operation | Standard typed input/output verification |
-| `block` | Several operations behind one bounded tensor contract | Explicit graph-safe behavior and end-to-end qualification |
-| `collective` | A cross-rank operation or block that owns a communication step | Distributed verification, canonical live ABI, terminal all-rank selection, and end-to-end qualification |
-
-## Current catalog
-
-The current API contains **12 slots**.
-
-| Slot | Kind | Entry point | Semantic boundary |
-|---|---|---|---|
-| `activation.silu_and_mul` | `op` | `silu_and_mul` | Gated MLP activation product |
-| `attention.indexer_select` | `block` | `indexer_select` | Query RoPE/quantization, scoring, priority tokens and physical selection; internal atomic member |
-| `attention.sparse_mla` | `block` | `sparse_mla` | Query RoPE/FP8 preparation and sparse attention; internal atomic member |
-| `collective.all_gather_into_tensor` | `collective` | `all_gather_into_tensor` | Equal-size all-gather into a validator-owned output |
-| `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |
-| `collective.dp_output_projection_norm` | `collective` | `prepare` + `project_gather_norm` | Attention-DP output projection, residual-add, RMSNorm, row gather and optional NVFP4 preparation |
-| `collective.reduce_scatter_tensor` | `collective` | `reduce_scatter_tensor` | Equal-size SUM reduce-scatter into a validator-owned output |
-| `linear.dense` | `block` | `prepare` + `dense` | Unquantized GEMM family, including FP32 gates and absorbed BMM; communication stays outside |
-| `moe.fused_experts` | `block` | `prepare` + `fused_experts` | Prepared MoE expert execution |
-| `moe.fused_routed_experts` | `block` | `prepare` + `fused_routed_experts` | Routing, expert execution, and weighted combine |
-| `norm.fused_add_rmsnorm` | `block` | `fused_add_rmsnorm` | Plain or residual-add RMSNorm with optional residual input/output |
-| `norm.rmsnorm` | `op` | `rmsnorm` | RMS normalization; residual addition remains outside |
-
-This table defines cross-arena ABI contracts, not deployment availability. An
-arena seals its own registered target set and the complete closed complement.
-See [current arena availability](../miner-guide/slots.md#current-glm-53-availability).
-GLM's sparse-attention proposal is the atomic `attention.sparse_mla.v1`, which
-requires both attention members. Neither internal member is a standalone GLM
-proposal lane; small computations are owned by the larger family contracts.
-
-Run `cacheon slots` against the installed code for the human-readable live list.
-The command prints multi-line summaries rather than a JSON/structured schema;
-automation should import the typed catalog instead of scraping this page or the
-CLI output. Documentation should not be used to bypass catalog resolution.
-
-## Typed call shape
-
-The DP output-preparation slot accepts rank-local attention output and residual
-rows, a replicated projection weight, normalization parameters, and an optional
-scalar NVFP4 quantization factor. Its four outputs are rank-ordered replicated
-normalized rows, the caller's updated residual rows, packed FP4 bytes, and linear
-16-value block scales. The last two outputs are empty when quantization is absent.
-Projection and residual addition each retain a BF16 rounding point. The reference
-computes the full projection in FP64 and performs a trusted row gather; a bundle
-may instead distribute the projection columns internally.
-
-Its SGLang adapter defers only the bound post-attention projection until the
-communicator supplies the residual. The selected collective owns that complete
-invocation; dense, normalization and exchange adapters retain their other callsites.
-The router and shared expert consume the BF16 result. Routed experts may receive
-the FP4 output through SGLang's existing pre-quantized dispatch interface. Expert
-execution, routing, the trailing MoE reduce-scatter and sampling remain outside
-this slot. The adapter uses stock SGLang 0.5.18 source; the Cacheon revision and
-commissioned target set identify whether this additional interface is available.
-
-Adding this catalog entry does not commission it in an existing arena. A deployment
-must publish its new runtime and target identities explicitly; an old arena's
-sealed identities and historical qualifications remain attached to that old runtime.
-
-`SlotSpec` binds every semantic detail needed by both verifier and live dispatch:
-
-- canonical dotted name and kind;
-- required `entry` callable and optional `prepare` callable;
-- deterministic input generator and registered shapes;
-- output shape or typed `OutputSpec` resolver;
-- trusted reference invocation;
-- candidate invocation adapter;
-- graph-dynamic input names;
-- correctness mode and dtype tolerances;
-- optional slot-specific end-to-end quality threshold;
-- collective reference and invocation hooks when applicable.
-
-The target catalog freezes a stdlib-only projection of each live slot into `TargetContractRef`: input ABI, output ABI, reference, verification profile, binding family, graph inputs, correctness policy, tolerances, and optional quality threshold all contribute to the target specification digest. A target name alone is not enough.
-
-### One call, end to end
-
-For a non-collective contract such as `norm.rmsnorm`, the important sequence is
-shown below:
-
-```mermaid
-sequenceDiagram
-    participant E as Pinned engine adapter
-    participant D as Validator dispatcher
-    participant C as Candidate entry
-    participant R as Trusted reference
-
-    E->>D: Live tensors + canonical call descriptor
-    D->>D: Resolve target/variant and allocate output
-    D->>C: entry(inputs, out=validator_output)
-    C-->>D: Completion, not an authoritative result object
-    D->>D: Revalidate storage/shape/dtype/device/layout
-    D-->>E: Model-facing validator-owned output
-    R-->>D: Separate verification truth for registered tests
-```
-
-Offline `verify` generates registered inputs, allocates the same typed output contract,
-runs the candidate, and compares it with the trusted reference. Live dispatch derives the
-descriptor from real SGLang state and uses the same output rules. Production qualification
-then asks the broader question that per-call verification cannot answer: does the complete
-engine preserve graph behavior and end-to-end quality while improving registered serving
-workloads?
-
-The candidate therefore never gets to say “this is the output,” “this call is eligible,”
-or “this run passed.” It receives a bounded computation opportunity and a buffer; the
-validator owns every surrounding decision.
-
-## Prepare and forward
-
-Layout-sensitive or quantized slots may define a `(prepare, forward)` pair. `prepare` runs once against raw validator-supplied checkpoint state and produces prepared state retained by the engine. `entry` receives that state on each forward call and still fills validator-allocated outputs.
-
-Model-specific quantized profiles must give verification and live preparation the
-same explicit tensor schema; attaching a quantized descriptor to dense verification
-does not establish that a quantized candidate was tested.
-
-This makes weight repacking, scale interleaving, or layout transformation attributable to the same bounded slot without granting a generic engine-wide setup hook. The live layer-to-contract mapping remains validator-owned.
-
-## Collective contract
-
-Collective candidates receive a process group, which is a wider capability. They therefore carry mandatory rules beyond the common invariants.
-
-### Distributed verification
-
-The single-rank `verify_entry` path refuses collective slots. The public
-`cacheon verify` command routes them to `verify_collective`, which spawns the
-requested world size, executes the real collective on every rank, and compares
-every output with a trusted cross-rank fp32 reduction plus any registered
-post-reduce transform.
-
-### One canonical ABI
-
-Offline verification and the SGLang binding derive the same call descriptor and typed output/workspace contract. The binding obtains rank and world size from the actual process group. Unsupported topology, missing fields, or an ineligible candidate route to stock before selection.
-
-### Terminal selection
-
-Candidate selection must agree across all ranks. Once all ranks select the candidate route, a rank-local prepare, allocation, execution, or validation failure aborts the candidate engine. A single-rank stock retry would deadlock or diverge from peers already inside the candidate collective, so fallback is no longer safe after selection.
-
-### End-to-end qualification
-
-Passing the distributed numerical check does not establish model quality or speed. Collective error can compound across layers, and topology controls performance. The candidate must still pass the registered full-engine bracket and pristine-reference quality policy.
-
-The implementation is split between [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py), [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py), and the version-pinned adapters in [`integrations/`](https://github.com/latent-to/cacheon/tree/main/cacheon/integrations).
+names.
 
 ## CUDA graph contract
 
-Production qualification is graphs-on. A candidate cannot earn authority by passing only eager execution when the arena serves captured graphs.
+Production qualification is graphs-on. A candidate cannot earn authority by
+passing only eager execution when the arena serves captured graphs. The binder
+binds each node right after the model loads, so both the prefill runner and the
+decode graph runner capture the bound forward at every width. Model weights and
+prepare-time state are capture-static.
 
-Each slot declares the tensor inputs whose values may change between replays while their addresses and shapes remain stable. The local graph check in `cacheon verify`:
-
-1. captures the candidate route;
-2. mutates every declared dynamic input in place for each replay;
-3. recomputes the trusted reference for the new values;
-4. validates every replay output;
-5. rejects cached-answer, stale-input, or graph-unsafe behavior.
-
-Model weights and prepare-time state are capture-static. Python scalar changes require a different graph bucket unless the slot explicitly tensorizes them. Qualification runs no separate graph stage: its proof is the captured completions of the timed run, the audit, and the pristine quality gate ([Qualification](../validator-guide/qualification.md#gates-and-three-way-decisions)).
+`cacheon check` starts a graphs-on engine after its eager audit passes and
+records whether each claimed address executed inside captured graphs on every
+required rank. Qualification runs no separate graph stage: its proof is the
+captured completions of the timed run, the audit, and the pristine quality gate
+([Qualification](../validator-guide/qualification.md#gates-and-three-way-decisions)).
 
 See [Graph safety](../miner-guide/graph-safety.md) for bundle-facing guidance.
 
 ## Variants and eligibility
 
-A slot may expose several implementation variants for disjoint, validator-observable capability domains such as dtype, shape, compute capability, or topology. Variants do not create new reward units: all rows for one semantic slot resolve to one singleton target.
+A node may carry several implementation variants for disjoint, validator-observable
+capability domains such as dtype or compute capability. Variants do not create new
+reward units: every row resolves to the bundle's one target.
 
-A slot's registered shape set must cover every dispatch mode of its kernel class. Where the expected kernel mode-switches on token count — one-shot for small `T`, two-shot for large — a shape list that samples only one side leaves the other unverified: on 2026-07-07 that exact hole shipped an engine-garbage kernel past `verify`, because engine decode at `T=8` took the one-shot path the slot never exercised.
+Eligibility is evaluated before candidate selection. Unknown capability fields,
+overlapping ambiguous variants, unsupported topology, and missing prerequisites fail
+closed or route to stock according to the registered pre-selection policy. Node rows
+may not constrain token counts, because DP ranks hold different local batch sizes and
+a split selection could desynchronize a collective. The miner cannot introduce a new
+capability vocabulary through manifest extras.
 
-Eligibility is evaluated before candidate selection. Unknown capability fields, overlapping ambiguous variants, unsupported topology, and missing prerequisites fail closed or route to stock according to the registered pre-selection policy. The miner cannot introduce a new capability vocabulary through manifest extras.
+## Adding a target
 
-Runtime-owned tuning phases are also outside candidate eligibility. While FlashInfer is
-profiling autotuner tactics, both the deep MoE producer seam and its fused-epilogue
-consumer use the stock path. Candidate code cannot affect tactic selection, and those
-calls do not establish candidate firing evidence.
-
-## Atomic targets and exclusion
-
-A slot is a semantic ABI; a reward target is an economic identity. Most current targets are one-to-one singleton projections of slots, but the catalog can register an atomic target spanning multiple slots.
-
-`collective.dp_attention_exchange.v1` owns the pair:
-
-- `collective.all_gather_into_tensor`;
-- `collective.reduce_scatter_tensor`.
-
-The catalog explicitly records displacement of the corresponding singleton targets. Wider or conflicting targets cannot coexist at one live boundary: candidate planning removes the incumbent owner before materialization, in either transition direction. Packaging order and runtime first-match behavior never decide overlap or ownership.
-
-See [Product model](product-model.md) and [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
-
-## Slot evolution
-
-Adding or changing a slot is a validator code change. It requires coordinated updates to:
-
-1. `SlotSpec` and its reference/shape/graph contract;
-2. the target catalog's frozen contract projection;
-3. offline and, for collectives, distributed verification;
-4. the live SGLang seam: a hand-written adapter and its row in [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py);
-5. compatibility canaries against the pinned runtime;
-6. graph, failure, fallback, and end-to-end tests;
-7. arena policy and documentation.
-
-The stable waist is the four invariants, not a promise that the catalog's set of slots will never grow.
-
-A boundary that is a module of the served model needs none of the seven: it is a
-[node address](#node-addresses).
+A boundary that is a module of the served model needs no validator change: it is a
+node address. A runtime object that is not a module, as the prefix cache was, needs a
+reviewed change: its row in [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py),
+its adapter, its target and contract in the catalog, compatibility canaries against
+the pinned runtime, and its documentation.
 
 ## Node addresses
 
-A slot name that `cacheon/slots.py` does not define, other than
-[`tree_cache`](#the-prefix-cache), is a node address: a dotted name from
+Every slot name other than [`tree_cache`](#the-prefix-cache) is a node address: a dotted name from
 `named_modules()` of the served model, where `*` stands for exactly one segment. `model.layers.*.mlp` is every MoE block, `model.layers.3` one decoder
 layer, `model` the whole decoder stack. One adapter,
 [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
@@ -473,7 +306,7 @@ unit to the address's audit receipt.
 
 ## Escape hatches
 
-Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; source or dependency patching uses validator-shipped, policy-constrained patchers. Successful work should be resolved into a core slot, an atomic target, or reviewed product source without relabeling changed selected payload bytes under old evidence.
+Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; source or dependency patching uses validator-shipped, policy-constrained patchers. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
 With MTP enabled, contributions still optimize the registered target computation.
 The validator owns the draft model, speculative schedule, sampling and acceptance
@@ -486,12 +319,12 @@ This keeps experimentation possible without widening every ordinary submission's
 
 | Phase | Example | Required behavior |
 |---|---|---|
-| Manifest resolution | Unknown slot, ambiguous variant, stale contract digest | Reject before candidate execution |
+| Manifest resolution | Address outside the roots, overlapping nodes, ambiguous variant, stale contract digest | Reject before candidate execution |
 | Pre-selection live routing | Shape or topology is outside a registered variant | Use the stock path when policy permits; do not count a candidate firing |
-| Selected non-collective call | Candidate raises, corrupts output identity, or violates layout | In strict qualification, invalidate the candidate execution; a silent stock retry cannot produce crown evidence |
-| Selected collective call | One rank fails after all-rank candidate selection | Abort the candidate engine; rank-local fallback is unsafe |
-| Graph replay | Output reflects capture-time input after a declared dynamic tensor changes | Fail local `verify`; in qualification, fail the pristine quality gate |
-| End-to-end quality | Per-slot numerics pass but sealed trajectory regresses | Fail under pristine T quality authority |
+| Selected call | Candidate raises or returns a different result structure | In strict qualification, invalidate the candidate execution; a silent stock retry cannot produce crown evidence |
+| Audit | Results or state rows differ from stock beyond the twin-scaled bound | Candidate `FAIL` |
+| Graph replay | Output reflects capture-time input | Fail the pristine quality gate in qualification |
+| End-to-end quality | Node audits pass but sealed trajectory regresses | Fail under pristine T quality authority |
 | Infrastructure | Worker, device, or evidence authority cannot establish a valid result | `NO_DECISION`, not an attributable candidate loss |
 
 This distinction explains why “fallback exists” and “the candidate qualifies” are
@@ -499,35 +332,26 @@ different statements. Fallback can preserve availability in a non-strict serving
 development context. Crownable evidence must prove that the selected candidate route
 actually fired and completed.
 
-## Slot reviewer checklist
+## Target reviewer checklist
 
-A new or changed slot is ready for a target only when a reviewer can answer yes to all of
-the following:
+A new or changed target is ready only when a reviewer can answer yes to all of the
+following:
 
-- Is the semantic region bounded and strictly upstream of sampling?
-- Are every output and workspace shape, dtype, layout, stride, device, and storage rule
-  validator-owned and machine-checkable?
-- Does the trusted reference express the intended function independently of the stock
-  implementation?
+- Is the boundary a runtime object the engine exposes at one place, and does
+  sampling stay validator-owned?
+- Is truth the stock object in the running engine, graded on the same call?
 - Are capability domains finite, unambiguous, and observable before selection?
-- Are graph-dynamic inputs complete, with capture-and-mutate replay coverage?
-- If communication is owned, do offline and live paths share one distributed ABI and
-  terminal all-rank selection rule?
-- Is there a real pinned-runtime chokepoint, or is the catalog entry explicitly marked as
-  verifier-only until one exists?
-- Do strict-mode receipts and end-to-end qualification prove that the candidate path fired
-  without fallback?
-- Has the target catalog encoded overlap, displacement, requirements, and exclusion
-  rather than relying on bundle order?
+- Is there a real pinned-runtime chokepoint with a compatibility canary?
+- Do strict-mode receipts and end-to-end qualification prove that the candidate path
+  fired without fallback?
+- Are its roots disjoint from every other target's, so no two targets own one region?
 
 Passing a unit test without these properties is not sufficient to extend the narrow waist.
 
 ## Source map
 
 - This page — normative invariants
-- [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) — executable slot catalog
-- [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py) — typed outputs and workspaces
-- [`verify.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify.py) — op/block verification and graph replay
-- [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py) — distributed verification
+- [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) — the engine chokepoints
+- [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py) — node binding and audit
 - [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — economic target projection
 - [`sglang_cache.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache.py) — prefix-cache seam and its claim ledger

@@ -263,7 +263,7 @@ def _qualified_settlement_candidate(
     arena_marker: str = "",
     submission_block: int = 10,
     attempt_payloads: tuple[bytes, bytes] | None = None,
-    target: str = "activation.silu_and_mul",
+    target: str = "forward_pass",
 ) -> SettlementCandidate | str:
     catalog = default_target_catalog()
     arena_digest = _h("arena" + arena_marker)
@@ -1401,7 +1401,7 @@ def test_crown_records_the_target_lineage_tip_and_fences_a_stale_lease(tmp_path)
         )
         forged = replace(
             lease,
-            lineage_tips={"activation.silu_and_mul": forged_tip},
+            lineage_tips={"forward_pass": forged_tip},
         )
         forged_plan = plan_settlement(
             forged.candidates,
@@ -1419,16 +1419,16 @@ def test_crown_records_the_target_lineage_tip_and_fences_a_stale_lease(tmp_path)
 
         assert winner.candidate_manifest is not None
         crowned_artifact = winner.candidate_manifest.entries[
-            "activation.silu_and_mul"
+            "forward_pass"
         ].artifact_digest
         tips = store.target_lineage_tips()
-        tip = tips["activation.silu_and_mul"]
+        tip = tips["forward_pass"]
         assert tip.artifact_digest == crowned_artifact
         assert tip.parent_artifact_digest == ""
         assert tip.winner_speedup == winner.speedup
         row = store._db.execute(
             "SELECT * FROM target_lineage_tips WHERE target_id=?",
-            ("activation.silu_and_mul",),
+            ("forward_pass",),
         ).fetchone()
         assert row["arena_id"] == winner.arena_digest
         assert row["stack_digest"] == winner.candidate_stack_digest
@@ -1447,10 +1447,10 @@ def test_crown_records_the_target_lineage_tip_and_fences_a_stale_lease(tmp_path)
         )
         assert store.target_lineage_tips() == {}
         rebuilt = store.backfill_target_lineage_tips()
-        assert rebuilt["activation.silu_and_mul"] == tip
-        assert store.target_lineage_tips()["activation.silu_and_mul"] == tip
+        assert rebuilt["forward_pass"] == tip
+        assert store.target_lineage_tips()["forward_pass"] == tip
         assert store.backfill_target_lineage_tips()[
-            "activation.silu_and_mul"
+            "forward_pass"
         ] == tip
 
 
@@ -1481,7 +1481,7 @@ def test_faster_pretransition_sibling_replaces_cross_arena_lineage_tip(tmp_path)
         store.commit_settlement(
             first_lease, first_plan, first_evidence, current_block=11
         )
-        first_tip = store.target_lineage_tips()["activation.silu_and_mul"]
+        first_tip = store.target_lineage_tips()["forward_pass"]
         assert first_tip.winner_speedup == first.speedup
 
         sibling_lease = store.lease_settlement_cohort(current_block=12)
@@ -1505,9 +1505,9 @@ def test_faster_pretransition_sibling_replaces_cross_arena_lineage_tip(tmp_path)
 
         assert faster.candidate_manifest is not None
         faster_artifact = faster.candidate_manifest.entries[
-            "activation.silu_and_mul"
+            "forward_pass"
         ].artifact_digest
-        new_tip = store.target_lineage_tips()["activation.silu_and_mul"]
+        new_tip = store.target_lineage_tips()["forward_pass"]
         assert new_tip.artifact_digest == faster_artifact
         assert new_tip.parent_artifact_digest == first_tip.parent_artifact_digest
         assert new_tip.winner_speedup == faster.speedup
@@ -1551,7 +1551,7 @@ def test_backfill_proves_reservation_before_winner_qualification_completed(
             "DELETE FROM target_lineage_pretransition_reservations"
         )
         lineage = store.backfill_target_lineage_tips()[
-            "activation.silu_and_mul"
+            "forward_pass"
         ]
         assert store._db.execute(
             "SELECT 1 FROM target_lineage_pretransition_reservations "

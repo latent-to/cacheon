@@ -106,9 +106,15 @@ def test_manifest_override_point_fields():
     op = m.op_for("model.layers.*.mlp")
     assert op.base_kernel == "nvfp4_moe_megakernel"
     assert op.override_point == "gemm1_epilogue"
-    assert op.is_override
     # base_kernel/override_point are first-class, not swept into extra.
     assert "base_kernel" not in op.extra and "override_point" not in op.extra
+    # Parseable for retained manifests, refused before a fee is spent on one.
+    from cacheon.target_catalog import TargetResolutionError, default_target_catalog
+    try:
+        default_target_catalog().resolve_manifest(m)
+        raise AssertionError("expected TargetResolutionError")
+    except TargetResolutionError as e:
+        assert "override points are retired" in str(e)
 
 
 def test_manifest_override_point_requires_base_kernel():

@@ -33,7 +33,7 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     registered_b300_member_contract_projection,
     registered_b300_profile_resolver_digest,
 )
-from tests.support.b300 import M3_REGISTERED_TARGET_IDS
+from tests.support.b300 import NODE_TARGET_IDS
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.oci_backend import (
     OCIBackendConfig,
@@ -47,7 +47,8 @@ from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
 
 
-TARGET = "activation.silu_and_mul"
+TARGET = "forward_pass"
+NODE = "model.layers.*.mlp"
 
 
 @pytest.fixture
@@ -112,7 +113,7 @@ def _profiles(
     builder_source: str,
     resolvers=None,
     *,
-    registered_target_ids=M3_REGISTERED_TARGET_IDS,
+    registered_target_ids=NODE_TARGET_IDS,
 ):
     by_target = {} if resolvers is None else resolvers
     return tuple(
@@ -137,7 +138,7 @@ def _construction(tmp_path: Path, runtime: ArenaRuntimeIdentity):
     evidence_root = tmp_path / "evidence"
     return deployment.B300QualificationConstructionAuthority(
         catalog=catalog,
-        registered_target_ids=M3_REGISTERED_TARGET_IDS,
+        registered_target_ids=NODE_TARGET_IDS,
         profiles=_profiles(catalog, builder_source),
         incumbent_stack=incumbent,
         incumbent_tree_digest=_h("incumbent-tree"),
@@ -284,7 +285,7 @@ def _bundle(tmp_path: Path, index: int) -> ArenaCandidateBinding:
                 f"bundle_id = 'qualification-{index}'",
                 "abi_version = 'cacheon-op-abi-v0'",
                 "[[ops]]",
-                f"slot = '{TARGET}'",
+                f"slot = '{NODE}'",
                 "source = 'kernels/entry.py'",
                 "entry = 'run'",
                 "dtypes = ['bfloat16']",
@@ -301,7 +302,6 @@ def _bundle(tmp_path: Path, index: int) -> ArenaCandidateBinding:
         tmp_path / "publications",
         content_hash(source),
     )
-    catalog = default_target_catalog()
     reservation = QualificationReservation(
         _h(f"reservation-{index}"),
         publication.digest,
@@ -312,7 +312,7 @@ def _bundle(tmp_path: Path, index: int) -> ArenaCandidateBinding:
         20,
         index,
         0,
-        catalog.require(TARGET).members,
+        (NODE,),
     )
     return ArenaCandidateBinding(reservation, publication, 1)
 
@@ -469,9 +469,10 @@ def test_registered_target_and_canonical_evidence_root_are_fail_closed(
 ) -> None:
     construction = _construction(tmp_path, _runtime())
 
-    assert construction.profile_for("moe.fused_experts").target_id == "moe.fused_experts"
+    assert construction.profile_for(TARGET).target_id == TARGET
+    # A catalog target this arena did not register is as unsupported as an unknown one.
     with pytest.raises(deployment.B300QualificationDeploymentError, match="unsupported"):
-        construction.profile_for("collective.dp_attention_exchange.v1")
+        construction.profile_for("prefix_cache")
     with pytest.raises(deployment.B300QualificationDeploymentError, match="unsupported"):
         construction.profile_for("unknown.registered.target")
     with pytest.raises(
@@ -619,7 +620,7 @@ def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
         )
 
     source = fixtures._candidate_source(tmp_path / "foreign-source")
-    kernel = source / "kernels" / "rmsnorm_stub.py"
+    kernel = source / "kernels" / "mlp_stub.py"
     kernel.write_text(kernel.read_text() + "\n# foreign contribution variant\n")
     publication = fixtures.publish_worker_bundle(
         source,
@@ -639,7 +640,7 @@ def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
             8_775_104,
             155,
             0,
-            catalog.require(fixtures.TARGET).members,
+            catalog.resolve_manifest(inspected.manifest).members,
         ),
         publication,
         1,
@@ -660,14 +661,14 @@ def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
 
 
 @pytest.mark.parametrize("stage", ("primary", "reproduction"))
-def test_deployment_accepts_atomic_registered_plan_on_both_retained_stages(
+def test_deployment_accepts_multi_node_registered_plan_on_both_retained_stages(
     tmp_path: Path,
     stage: str,
 ) -> None:
     fixtures = _registered_fixtures()
     harness = fixtures._harness(tmp_path, fixtures.FUSED)
     cohort = deployment.B300QualificationCohort(harness.cohort.request, stage)
-    secret = b"atomic fused epilogue selection!!"[:32]
+    secret = b"multi-node forward pass selection"[:32]
     value = harness.factory.plan_builder(cohort, secret)
     construction = _registered_construction(harness, value, secret)
     resident = value.resident_speed_plan
@@ -682,12 +683,12 @@ def test_deployment_accepts_atomic_registered_plan_on_both_retained_stages(
     )
 
     assert accepted is value
-    assert cohort.candidate.reservation.target_id == "collective.dp_attention_exchange.v1"
+    assert cohort.candidate.reservation.target_id == "forward_pass"
     assert len(cohort.candidate.reservation.target_members) > 1
 
     authority = accepted.candidates[0]
     relabelled = replace(
-        authority, selected_delta_digest=_h("another-atomic-selected-delta")
+        authority, selected_delta_digest=_h("another-multi-node-selected-delta")
     )
     with pytest.raises(
         deployment.B300QualificationDeploymentError,

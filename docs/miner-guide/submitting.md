@@ -398,8 +398,7 @@ configuration.
 
 ### Follow one proposal through the states
 
-Suppose the revealed content hash is `H` and its target is
-`activation.silu_and_mul`:
+Suppose the revealed content hash is `H` and its target is `forward_pass`:
 
 1. `reserved` means the finalized arrival has a durable intake row. The proposal has not
    been fetched, so local correctness results are not relevant to its current wait.

@@ -20,7 +20,8 @@ from cacheon import bootstrap, receipts, seam
 from cacheon.integrations import sglang_scheduler_gate as gate
 from cacheon.registry import REGISTRY
 
-SILU_BUNDLE = Path(__file__).parent.parent / "examples" / "miner_silu_torch"
+NODE_BUNDLE = Path(__file__).parent.parent / "examples" / "miner_node_identity"
+NODE = "model.layers.*.mlp"
 
 _SCHED_MODULE = "sglang.srt.managers.scheduler"
 _MODEL_RUNNER_MODULE = "sglang.srt.model_executor.model_runner"
@@ -31,7 +32,7 @@ def armed_env(tmp_path, monkeypatch):
     rdir = tmp_path / "receipts"
     monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(rdir))
     monkeypatch.setenv("CACHEON_ACTIVE", "1")
-    monkeypatch.setenv("CACHEON_BUNDLE_PATH", str(SILU_BUNDLE))
+    monkeypatch.setenv("CACHEON_BUNDLE_PATH", str(NODE_BUNDLE))
     monkeypatch.delenv("CACHEON_RELEASE_REQUIRED", raising=False)
     monkeypatch.setattr(receipts, "_ONCE", set())
     monkeypatch.setattr(seam, "_bundle_loaded", False)
@@ -67,10 +68,10 @@ def test_activate_arms_but_never_loads(armed_env):
 def test_load_candidate_bundle_loads_and_receipts(armed_env):
     seam.load_candidate_bundle()
     assert seam._bundle_loaded
-    assert "activation.silu_and_mul" in REGISTRY.slots()
+    assert NODE in REGISTRY.slots()
     active = receipts.collect(armed_env, "active")
     assert len(active) == 1
-    assert "activation.silu_and_mul" in active[0]["slots"]
+    assert NODE in active[0]["slots"]
     # idempotent: a second call must not double-register or double-receipt
     seam.load_candidate_bundle()
     assert len(receipts.collect(armed_env, "active")) == 1
@@ -120,7 +121,7 @@ def test_gate_wraps_scheduler_entry_and_loads(armed_env, fake_scheduler_module):
     assert result == "scheduler-ran"
     assert fake_scheduler_module._calls == [((7,), {"key": "v"})]
     assert seam._bundle_loaded
-    assert "activation.silu_and_mul" in REGISTRY.slots()
+    assert NODE in REGISTRY.slots()
     assert len(receipts.collect(armed_env, "active")) == 1
 
     gate.uninstall()

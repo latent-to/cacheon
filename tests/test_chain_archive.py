@@ -50,13 +50,14 @@ def _bundle(root: Path) -> Path:
         'bundle_id = "archive-test"\n'
         'abi_version = "cacheon-op-abi-v0"\n\n'
         "[[ops]]\n"
-        'slot = "activation.silu_and_mul"\n'
+        'slot = "model.layers.*.mlp"\n'
         'source = "kernels/k.py"\n'
-        'entry = "silu_and_mul"\n'
-        'dtypes = ["float32"]\n'
+        'entry = "forward"\n'
     )
+    # Not the identity body: a copy of a public example is demoted before publication.
     (root / "kernels/k.py").write_text(
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n"
+        "def forward(module, hidden_states, *args, **kwargs):\n"
+        "    return module.forward(hidden_states.contiguous(), *args, **kwargs)\n"
     )
     for directory in (root, root / "kernels"):
         directory.chmod(0o700)

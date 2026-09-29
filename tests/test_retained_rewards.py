@@ -10,12 +10,13 @@ from cacheon.stack_identity import canonical_digest
 from cacheon.target_catalog import TargetCatalog
 from tests import test_chain_intake as intake
 from tests.test_economics import (
-    _catalog, _claim, _global_context, _policy, _project, _sealed_stack, _slot,
+    _catalog, _claim, _global_context, _historical_atomic_snapshot, _policy, _project,
+    _sealed_stack, _slot,
 )
 
 
 def _snapshot(schema=1):
-    snapshot = _catalog().snapshot()
+    snapshot = _historical_atomic_snapshot(_catalog())
     if schema == 1:
         snapshot.update(schema_version=1, policy_version="target-catalog.v1", composition_rules=[])
         for row in snapshot["targets"]:
@@ -107,7 +108,7 @@ def test_historical_active_composition_cannot_be_reinterpreted(failure):
         _project_snapshot(snapshot)
 
 
-def _commissioning_catalog(schema, target_id="activation.silu_and_mul"):
+def _commissioning_catalog(schema, target_id="slot.a"):
     """Construct the same small fixture as a historical v1 or present v2 issuer."""
     target = _slot(target_id)
     target = replace(target, contract_ref=replace(
@@ -131,7 +132,7 @@ def test_mixed_catalogs_reopen_and_pay_through_the_store_without_requalification
     context = intake._context("validator", "minerold", "minernew")
     with intake._store(tmp_path) as store:
         for index, (schema, marker, target) in enumerate((
-            (1, "old", "activation.silu_and_mul"), (2, "new", "norm.rmsnorm"),
+            (1, "old", "slot.a"), (2, "new", "slot.b"),
         )):
             catalog = _commissioning_catalog(schema, target)
             monkeypatch.setattr(intake, "default_target_catalog", lambda: catalog)

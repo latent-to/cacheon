@@ -81,15 +81,16 @@ computed where real Python integers exist.
 Run the bundle checks before submitting. `scan` reports this known source shape,
 but its compilability check is advisory because it cannot tell whether a flagged
 kernel is reachable; it may return exit 2 for dead code that production never
-invokes. Inspect the finding, then actually exercise the declared entry on CUDA:
+invokes. Inspect the finding, then actually exercise the declared entry in the arena image:
 
 ```bash
 python -m cacheon.cli scan path/to/your_bundle
 ```
 
 ```bash
-python -m cacheon.cli verify path/to/your_bundle --device cuda --dtype bfloat16 \
-  --model <registered-model-key>
+python -m cacheon.cli check path/to/your_bundle --model /model \
+  --engine-config /arena/engine-config.json \
+  --requests /arena/development-requests.json --output /work/check-001
 ```
 
 Only the sandboxed production build/execution path can issue an attributable

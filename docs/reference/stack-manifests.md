@@ -37,7 +37,7 @@ Conceptual shape:
   "catalog_digest": "<sha256>",
   "catalog_snapshot": {},
   "entries": {
-    "moe.fused_experts": { "type": "proposal", "...": "..." }
+    "forward_pass": { "type": "proposal", "...": "..." }
   }
 }
 ```
@@ -58,13 +58,12 @@ evidence cannot be reinterpreted through a newer catalog.
 
 ### A marginal transition
 
-Suppose the incumbent already contains a `moe.fused_experts` contribution and a
-new proposal wins `norm.rmsnorm`. C is not a two-file bundle: the validator
-materializes a complete engine equal to the incumbent everywhere except the
-resolved RMSNorm target. After two matching PASS attempts, settlement can
-derive a new evaluation stack by adding that reference and applying any
-catalog-defined displacement. The old manifest remains a content-addressed
-rollback point.
+Suppose the incumbent already contains a `prefix_cache` contribution and a new
+proposal wins `forward_pass`. The candidate is not a two-file bundle: the
+validator materializes a complete engine equal to the incumbent everywhere except
+the resolved `forward_pass` entry. After a complete audited PASS, settlement can
+derive a new evaluation stack by replacing that entry; the cache entry stays
+byte-identical. The old manifest remains a content-addressed rollback point.
 
 That transition changes the stack digest even when runtime, base engine,
 arena, and every unrelated contribution remain fixed.

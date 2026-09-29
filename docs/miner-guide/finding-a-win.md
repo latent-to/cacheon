@@ -65,16 +65,15 @@ where to invest, not evidence the candidate won.
 
 Promising classes include:
 
-- fuse operations already contained in one registered slot;
-- overlap the routing head with expert compute and the weighted combine in
-  `moe.fused_routed_experts`;
+- fuse operations already contained in one module you name;
+- overlap the routing head with expert compute and the weighted combine inside the
+  enclosing MoE block;
 - reduce memory round-trips inside a collective epilogue;
 - specialize a variant for a provably disjoint shape/topology domain;
 - improve a model-specific score or quantized epilogue while retaining the
   validator-owned selection/downstream path;
-- replace repeated layout work with target-approved load-time preparation;
-- use the registered atomic target when one coupled deep delta genuinely owns
-  both of its member seams.
+- replace repeated layout work with load-time `prepare(module)`;
+- name the enclosing module when one coupled change spans several children.
 
 Do not expand the manifest until a desired optimization “fits.” The target
 catalog fixes the smallest allowed delta. If the change needs an unregistered
@@ -140,12 +139,12 @@ Write a small target worksheet before implementation:
 
 | Question | Example answer |
 |---|---|
-| target and active binding | `activation.silu_and_mul` on the operator's published arena generation |
+| target and active binding | `forward_pass`, node `model.layers.*.mlp`, on the operator's published arena generation |
 | critical-path fraction | 8% in graph-on decode at the published concurrency |
 | proposed mechanism | fuse activation/multiply and reduce one global-memory round trip |
 | exact domain | BF16, `sm90`, decode, token counts 1–256 |
 | fallback | incumbent row for every non-matching descriptor |
-| local correctness proof needed | all applicable slot shapes, mutation/output checks, CUDA replays |
+| local correctness proof needed | `cacheon check` audit windows on every claimed address and rank, captured execution |
 | end-to-end falsifier | no throughput change, B/B′ drift, fallback on material calls, or quality regression |
 
 This worksheet requires a causal chain from the measured bottleneck to a selectable

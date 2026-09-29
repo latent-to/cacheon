@@ -1,12 +1,12 @@
 # SGLang seam
 
-The seam connects Cacheon's stable slot ABI to version-pinned SGLang internals. It is intentionally split into two layers:
+The seam connects Cacheon's contribution targets to version-pinned SGLang internals. It is intentionally split into two layers:
 
-- [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) defines the stable miner-facing semantic contract;
+- the [target catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) defines the stable miner-facing contract: node addresses under the model and the prefix cache;
 - [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) defines the SGLang-specific adapter registry that must be reviewed whenever the runtime pin moves;
 - [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py) and the [`scheduler_gate` adapter](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_scheduler_gate.py) enforce activation and scheduler-only candidate loading.
 
-Slots are the narrow waist. Adapters are replaceable glue.
+Targets are the narrow waist. Adapters are replaceable glue.
 
 ## Why the seam exists
 

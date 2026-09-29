@@ -9,7 +9,7 @@ from dashboard.winners import qualified_winners
 from tests.test_chain_intake import _qualified_settlement_candidate, _store
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_only_threshold_records_earn_in_submission_order(tmp_path, target):
     with _store(tmp_path) as store:
         candidates = [
@@ -101,7 +101,7 @@ def test_dashboard_does_not_reinterpret_retained_audit_schemas(tmp_path):
             store.passed_reward_claims()
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_scoring_uses_queue_record_without_rewriting_claims_or_clocks(tmp_path, target):
     from dataclasses import replace
     from decimal import Decimal
@@ -160,8 +160,8 @@ def test_scoring_compares_all_slots_without_advancing_unpaid_or_later_records(tm
         candidates = [_qualified_settlement_candidate(
             store, index=i, marker=str(i), target=target, speedups=(score, score),
         ) for i, (target, score) in enumerate([
-            ("activation.silu_and_mul", "1.1"), ("norm.rmsnorm", "1.105"),
-            ("activation.silu_and_mul", "1.12"), ("norm.rmsnorm", "1.5")])]
+            ("forward_pass", "1.1"), ("prefix_cache", "1.105"),
+            ("forward_pass", "1.12"), ("prefix_cache", "1.5")])]
         store.passed_reward_claims()
         comparisons = reward_comparisons(store._db)
         second, third = (comparisons[c.reservation_digest] for c in candidates[1:3])

@@ -60,38 +60,15 @@ silently makes the candidate N/A cannot create a crown. The execution check is i
 
 ## Local graph diagnostics
 
-On CUDA, `verify` graph-tests every slot whose registered live seam is captured:
+`cacheon check` runs the eager audit engine first and, only when its receipts pass,
+starts a fresh graphs-on engine with the arena's published configuration. The
+graph stage records whether each claimed node address executed inside captured
+graphs on every required rank. Run it on homogeneous GPUs matching the arena
+architecture and topology; a collective inside a node needs the real rank group.
 
-```bash
-python -m cacheon.cli verify my_bundle \
-  --device cuda --dtype bfloat16
-```
-
-For a collective:
-
-```bash
-python -m cacheon.cli verify my_collective \
-  --device cuda --dtype bfloat16 \
-  --world-size 4 --tp-size 4
-```
-
-The collective verifier creates the actual rank group, captures each applicable
-clean-room shape, poisons outputs between replays, and grades every rank. Run it
-on homogeneous GPUs matching the arena architecture.
-
-A CPU `verify` can prove eager numerical behavior, but it cannot produce CUDA
-capture evidence. Likewise, a local CUDA pass is a developer diagnostic—not
-the evidence production qualification retains from its own timed run.
-
-When reading local output:
-
-- `graph=not-required` says this run did not request graph proof; it does not certify an
-  eager-only implementation for an arena that requires graphs;
-- `graph=verified` plus positive `graph_replays` says the local profiles passed capture
-  and checked replay;
-- `NUMERICAL_PASS ... graph=NOT_VERIFIED` means the math passed but the requested graph
-  contract did not; and
-- N/A profiles add no graph evidence because the candidate was not applicable.
+A CPU `verify` cannot produce capture evidence. Likewise, a local graph pass is a
+developer diagnostic, not the evidence production qualification retains from its
+own timed run.
 
 Production takes its proof from the served shapes of its own timed run, so even a local
 `graph=verified` is preparation rather than a qualification receipt.

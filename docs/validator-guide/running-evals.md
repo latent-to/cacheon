@@ -38,37 +38,18 @@ the sandboxed build/execution path.
 
 ## Component verification
 
-CPU smoke:
-
 ```bash
-python -m cacheon.cli verify ./my_bundle --device cpu --dtype float32
+python -m cacheon.cli verify ./my_bundle
+python -m cacheon.cli check --help
 ```
 
-CUDA verification:
-
-```bash
-python -m cacheon.cli verify ./my_bundle \
-  --device cuda --dtype bfloat16 --seed 17 \
-  --model <registered-model-key>
-```
-
-Distributed verification:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 \
-python -m cacheon.cli verify ./my_collective_bundle \
-  --device cuda --world-size 4
-```
-
-Use `--model` when a validator model profile changes activation or low-bit semantics.
-Use `--tp-size` for capability-aware non-collective routing and `--world-size` for the
-actual distributed verifier. Verification rejects ambiguous variant domains before
-loading candidate code and treats a context-inapplicable row as not exercised, not as a
-pass.
-
-CPU verification covers component math only. CUDA verification additionally exercises
-registered graph capture/replay behavior. Neither establishes live SGLang seam coverage,
-end-to-end throughput, pristine reference quality, or production isolation.
+`verify` scans the bundle, then imports each entry in a spawned child and checks
+its signature against the node's stock arguments. It does not fabricate a model
+or run forward math. `check` runs in the published arena image with the arena's
+engine configuration: it binds the bundle's nodes in a real engine, audits every
+sampled call against the stock module on the same call, and captures graphs on
+every required rank. Neither establishes end-to-end throughput, pristine
+reference quality, or production isolation.
 
 ## Performance development
 
@@ -160,7 +141,7 @@ See [Qualification](qualification.md), [Fidelity](fidelity.md), and
 
 - [CLI](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py)
 - [Static scanner](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py)
-- [Typed verifier](https://github.com/latent-to/cacheon/blob/main/cacheon/verify.py)
-- [Distributed verifier](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py)
+- [Miner development check](https://github.com/latent-to/cacheon/blob/main/cacheon/miner_check.py)
+- [Node binder and audit](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py)
 - [Qualification runner](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
 - [Resident crossover runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)

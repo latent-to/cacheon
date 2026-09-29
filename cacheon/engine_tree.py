@@ -1086,15 +1086,9 @@ def _contribution_files(
         )
 
     required_entry_names: dict[str, set[str]] = {}
-    optional_entry_names: dict[str, set[str]] = {}
     for op in inspection.manifest.ops:
         required = required_entry_names.setdefault(op.source, set())
-        optional = optional_entry_names.setdefault(op.source, set())
-        if op.is_override:
-            required.add(op.entry + "_ref")
-            optional.add(op.entry)
-        else:
-            required.add(op.entry)
+        required.add(op.entry)
         if op.prepare is not None:
             required.add(op.prepare)
         if op.setup is not None:
@@ -1103,20 +1097,9 @@ def _contribution_files(
     for relative, required in sorted(required_entry_names.items()):
         output = f"entries/{_generated_name(prefix, relative, suffix='.py')}"
         module_name = module_names[relative]
-        lines = [
-            f"from {module_name} import {name} as {name}\n"
-            for name in sorted(required)
-        ]
-        for name in sorted(optional_entry_names[relative] - required):
-            lines.extend(
-                (
-                    "try:\n",
-                    f"    from {module_name} import {name} as {name}\n",
-                    "except ImportError:\n",
-                    "    pass\n",
-                )
-            )
-        shim = "".join(lines).encode("utf-8")
+        shim = "".join(
+            f"from {module_name} import {name} as {name}\n" for name in sorted(required)
+        ).encode("utf-8")
         try:
             compile(shim, output, "exec", ast.PyCF_ONLY_AST, dont_inherit=True)
         except SyntaxError as exc:  # pragma: no cover - manifest names are validated

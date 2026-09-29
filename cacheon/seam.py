@@ -346,23 +346,9 @@ def _load_bundle_into_registry(bundle: str) -> None:
         module = loaded_by_src.get(src_key)
         if module is None:
             module = loaded_by_src[src_key] = load_module(src)
-        if getattr(op, "override_point", None):
-            # Override submission: compose the miner's epilogue into the validator-owned base
-            # kernel -> a standard (entry, prepare) that flows through the normal dispatcher.
-            from cacheon_kernels.override import build_override
-
-            def _loader(name, _mod=module):
-                fn = getattr(_mod, name, None)
-                return fn if callable(fn) else None  # absent symbol (GPU-only device fn) -> None
-
-            entry, prepare = build_override(op.slot, op.override_point, op.entry, _loader)
-        else:
-            entry = callable_from(module, op.entry)
-            # (prepare, forward) slots: pull the 2nd callable too, so the runtime dispatcher
-            # can run the miner's weight-layout transform once and feed `prepared` to forward.
-            # (Until now prepare was only exercised by CPU `verify`; the block seam needs it
-            # live.) None for forward-only slots.
-            prepare = callable_from(module, op.prepare) if getattr(op, "prepare", None) else None
+        entry = callable_from(module, op.entry)
+        # A node's prepare(module) runs once per bound node and feeds forward.
+        prepare = callable_from(module, op.prepare) if getattr(op, "prepare", None) else None
         REGISTRY.register(
             KernelImpl(
                 slot=op.slot,

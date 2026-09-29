@@ -140,8 +140,8 @@ incumbent advances once, so every other current row is held for a fresh qualific
 against the new stack rather than treated as an independent per-target argmax.
 
 The winning transaction may emit crown, retirement, neutralization, adoption, and stack
-transition events. Atomic targets explicitly displace overlapping singleton targets;
-manifest order and bundle packaging never decide overlap.
+transition events. Targets have disjoint node roots; manifest order and bundle
+packaging never decide overlap.
 
 ## Reward policy follows the activated generation
 
@@ -156,8 +156,7 @@ settlement stores as `crowned_block`; discovery lifetime likewise begins at
 that submission block via `awarded_block`. Qualification or settlement delay
 never resets reward age.
 
-An active atomic target suppresses overlapping singleton families. Packaging,
-integration, and release records do not create additional families. Discovery bounties
+Packaging, integration, and release records do not create additional families. Discovery bounties
 are non-renewable, expire, and share a policy-bounded pool.
 
 The final multi-arena projection is exact integer ppm and is built only after

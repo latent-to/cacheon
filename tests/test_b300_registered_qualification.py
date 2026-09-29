@@ -42,16 +42,17 @@ from cacheon.eval.qualification import ReferenceManifest
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.qualification_runner import SpeedStageDisposition
 from tests.support.b300 import (
-    GLM53_REGISTERED_TARGET_IDS,
-    M3_REGISTERED_TARGET_IDS,
+    NODE_AND_CACHE_TARGET_IDS,
+    NODE_TARGET_IDS,
 )
 from cacheon.eval.scoring import marginal_workload_digest
-from cacheon.target_catalog import SINGLETON_TARGET_IDS, default_target_catalog
+from cacheon.target_catalog import default_target_catalog
 from tests.test_calibration import _observations
 from tests.test_marginal_runtime import FUSED, _case, _local_binding, _native
 
 
-TARGET = "norm.rmsnorm"
+TARGET = "forward_pass"
+NODE = "model.layers.*.mlp"
 
 
 def _h(label: str) -> str:
@@ -71,32 +72,25 @@ def _private_directory(path: Path) -> Path:
 
 def _candidate_source(root: Path) -> Path:
     kernels = root / "kernels"
-    metadata = root / "metadata"
     kernels.mkdir(parents=True)
-    metadata.mkdir()
-    (kernels / "rmsnorm_stub.py").write_text(
-        "def rmsnorm_stub(q, index_k, out=None):\n"
-        "    return q if out is None else out.copy_(q)\n"
-    )
-    (metadata / "rmsnorm_stub.json").write_text(
-        '{"op":"norm.rmsnorm"}\n'
+    (kernels / "mlp_stub.py").write_text(
+        "def mlp_stub(module, *args, **kwargs):\n"
+        "    return module.forward(*args, **kwargs)\n"
     )
     (root / "rebuild.json").write_text('{"steps":[]}\n')
     (root / "manifest.toml").write_text(
         "\n".join(
             (
-                'bundle_id = "ordinary-rmsnorm-stub"',
+                'bundle_id = "ordinary-mlp-stub"',
                 'abi_version = "cacheon-op-abi-v0"',
                 "[competition]",
                 f'target = "{TARGET}"',
                 'mode = "slot"',
                 "[[ops]]",
-                f'slot = "{TARGET}"',
-                'source = "kernels/rmsnorm_stub.py"',
-                'entry = "rmsnorm_stub"',
-                'dtypes = ["bfloat16", "float16"]',
+                f'slot = "{NODE}"',
+                'source = "kernels/mlp_stub.py"',
+                'entry = "mlp_stub"',
                 'architectures = ["sm100", "sm103"]',
-                'metadata = "metadata/rmsnorm_stub.json"',
             )
         )
         + "\n"
@@ -138,7 +132,7 @@ def _candidate(
         8_775_104,
         155,
         0,
-        catalog.require(target_id).members,
+        catalog.resolve_manifest(inspected.manifest).members,
     )
     return ArenaCandidateBinding(reservation, publication, 1)
 
@@ -173,9 +167,9 @@ def _harness(
     catalog = case.catalog
     glm = source_fixture == FUSED
     registered_target_ids = (
-        GLM53_REGISTERED_TARGET_IDS
+        NODE_AND_CACHE_TARGET_IDS
         if glm
-        else M3_REGISTERED_TARGET_IDS
+        else NODE_TARGET_IDS
     )
     model_profile_key = (
         "GLM-5.3-NVFP4" if glm else "MiniMax-M3"
@@ -364,39 +358,25 @@ def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identi
     harness = _harness(tmp_path)
 
     # The B300 arena's registered set is PINNED arena data: it excludes catalog
-    # rows that belong to other arenas (the GLM fat MoE slot) and must not grow
-    # when the cross-arena catalog does.
-    expected = (
-        "activation.silu_and_mul", "collective.all_reduce",
-        "moe.fused_experts", "norm.rmsnorm",
-    )
+    # rows the arena did not open (here the prefix cache) and must not grow when
+    # the cross-arena catalog does.
     snapshot_ids = tuple(
         row["target_id"]
         for row in harness.inputs.catalog.snapshot()["targets"]
     )
-    assert M3_REGISTERED_TARGET_IDS == expected
-    assert set(M3_REGISTERED_TARGET_IDS) <= set(snapshot_ids)
-    assert len(M3_REGISTERED_TARGET_IDS) == 4
+    assert NODE_TARGET_IDS == ("forward_pass",)
+    assert set(NODE_TARGET_IDS) < set(snapshot_ids)
     projection = registered.registered_b300_member_contract_projection(
-        harness.inputs.catalog, M3_REGISTERED_TARGET_IDS
+        harness.inputs.catalog, NODE_TARGET_IDS
     )
     assert tuple(row.target_id for row in harness.factory.profiles) == (
         tuple(row.target_id for row in projection)
     )
-    assert "attention.sparse_mla" not in (*expected, *GLM53_REGISTERED_TARGET_IDS)
-    assert "moe.fused_routed_experts" not in expected
-    assert "norm.rmsnorm" in expected
-    assert "collective.dp_attention_exchange.v1" not in expected
-    assert "collective.moe_finalize_ar_rmsnorm" not in expected
-    glm_targets = ("attention.sparse_mla.v1", *GLM53_REGISTERED_TARGET_IDS)
-    assert len(glm_targets) == 6
-    glm_projection = registered.registered_b300_member_contract_projection(
-        harness.inputs.catalog, glm_targets
+    both = registered.registered_b300_member_contract_projection(
+        harness.inputs.catalog, NODE_AND_CACHE_TARGET_IDS
     )
-    assert tuple(row.target_id for row in glm_projection) == glm_targets
-    assert glm_projection[0].members == (
-        "attention.indexer_select", "attention.sparse_mla"
-    )
+    assert tuple(row.target_id for row in both) == NODE_AND_CACHE_TARGET_IDS
+    assert all(row.members == (row.target_id,) for row in both)
     assert harness.factory.components.profiles == harness.factory.profiles
     assert (
         harness.factory.components.builder_source_digest
@@ -416,7 +396,7 @@ def test_registry_exactly_covers_the_pinned_registered_targets_without_fe_identi
         qualification_deployment.registered_b300_target_ids
     )
     assert TARGET not in factory_source
-    assert "SINGLETON_TARGET_IDS" not in target_id_source
+    assert TARGET not in target_id_source
 
 
 def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatable(
@@ -454,7 +434,7 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
         set(first.resident_speed_plan.baseline.binding.physical_hardware.physical_gpu_ids)
         & set(first.resident_speed_plan.candidate.binding.physical_hardware.physical_gpu_ids)
     )
-    assert first.audit_policies[0].expected_slots == (TARGET,)
+    assert first.audit_policies[0].expected_slots == (NODE,)
     assert first.prepared.candidates[0].arm.transition.target_spec_digest == (
         harness.inputs.catalog.target_spec_digest(TARGET)
     )
@@ -575,7 +555,8 @@ def test_native_candidate_is_planned_on_the_two_process_schedule(
 def test_registry_rejects_unknown_or_stale_authority(
     tmp_path: Path,
 ) -> None:
-    harness = _harness(tmp_path)
+    # Two registered targets, so a reordered projection is observable.
+    harness = _harness(tmp_path, FUSED)
 
     with pytest.raises(registered.B300RegisteredQualificationError, match="unsupported"):
         harness.factory.profile_for("unknown.registered.target")

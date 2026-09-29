@@ -37,7 +37,7 @@ Cacheon uses two different units on purpose.
 | Boundary | Unit | Why it exists |
 |---|---|---|
 | Execution | A complete isolated engine | Candidate Python, native code, engine construction, and serving behavior remain outside the trusted controller. |
-| Attribution | One registered slot or atomic target | A miner proposes only the smallest attributable delta; the validator supplies the incumbent stack around it. |
+| Attribution | One registered target (`forward_pass` nodes or `prefix_cache`) | A miner proposes only the smallest attributable delta; the validator supplies the incumbent stack around it. |
 
 A candidate can therefore improve an incumbent stack without receiving or repackaging the incumbent contributors' bundles. For example, a new 3% delta can be tested on top of an existing 7% improvement while attribution remains attached only to the new delta.
 
@@ -58,8 +58,8 @@ See [Product model](product-model.md) for the authority and lifecycle of each ob
 
 | Area | Responsibility | Principal implementation |
 |---|---|---|
-| Submission ABI | Stable typed replacement boundaries and validator-owned correctness contracts | [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py), [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py) |
-| Economic identity | Registered singleton and atomic targets, displacement, and conflict policy | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
+| Submission ABI | Node addresses and the prefix cache, audited against stock in the running engine | [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py), [`sglang_cache.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache.py) |
+| Economic identity | Registered targets, their node roots, and admitted features | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
 | Runtime integration | Version-pinned SGLang chokepoints, bootstrap, dispatch, and execution evidence | [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py), [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py), [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py) |
 | Stack identity | Content-addressed evaluation manifests, exact marginal substitutions | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py), [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) |
 | Engine construction | Deterministic source closure, namespacing, native build identity, isolated OCI execution | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py), [`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/engine_launch.py), [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py) |
@@ -102,7 +102,7 @@ Normal submissions optimize the inference data plane: kernels, quantized GEMMs, 
 The service control plane remains upstream of the competition boundary: HTTP and API behavior, authentication, tokenization, request admission, fleet orchestration, autoscaling, observability, and operational lifecycle management are not ordinary miner targets.
 
 Work that cannot fit a registered target is not a valid submission. Widening the
-catalog — a new slot or atomic target — is a reviewed validator-side change,
+catalog — a new target — is a reviewed validator-side change,
 followed by fresh qualification and CROWN linkage; there is no separate proposal
 lane. (A fenced "discovery lane" for cross-cutting source patches existed until
 2026-08-19 and was removed without ever admitting a production proposal.)

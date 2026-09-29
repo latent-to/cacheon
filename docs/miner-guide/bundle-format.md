@@ -65,7 +65,7 @@ in a README.
 A bundle can pass the first two and fail the third. For example, `setup = "initialize"`
 is valid manifest syntax, but no current registered target permits that observed feature.
 
-## A competitive singleton bundle
+## A competitive node bundle
 
 For a node arena, the registered target is broad and the bundle declares its
 actual module addresses:
@@ -104,16 +104,16 @@ Each `[[ops]]` row describes one implementation:
 
 | Field | Meaning |
 |---|---|
-| `slot` | semantic slot implemented by this row |
+| `slot` | node address (or `tree_cache`) implemented by this row |
 | `source` | bundle-relative Python source module |
 | `entry` | callable exported by that module |
 | `variant` | explicit implementation identity; required on every row when a slot has more than one row |
 | `dtypes` | allowed runtime dtypes |
 | `architectures` | allowed canonical GPU architectures such as `sm90` or `sm103` |
 | `metadata` | bundle-relative JSON eligibility metadata |
-| `prepare` | optional load-time weight preparation callable for a slot whose ABI permits it |
+| `prepare` | optional `prepare(module)` called once per bound node |
 | `setup` | engine-wide setup hook; currently forbidden by every registered target |
-| `base_kernel`, `override_point` | registered override composition fields |
+| `base_kernel`, `override_point` | retired override composition fields; the loader refuses a row that sets `override_point` |
 | `cuda_sources` | declared inspectable `.cu`/`.cuh` inputs to an approved build step |
 
 `bundle_id` must be a simple non-empty identifier, and newly authored bundles
@@ -180,30 +180,27 @@ Node rows cannot constrain `num_tokens`, `min_num_tokens`, or `max_num_tokens`.
 Keep token-count specialization inside the entry so differing DP batches cannot
 select different collective implementations.
 
-The following example describes retained catalog fixtures. Node eligibility
-follows the commissioned node contract; do not copy catalog token-count gates
-into a collective node implementation.
-Manifest order never chooses a winner.
+Manifest order never chooses a winner. Two variants of one node must cover
+disjoint domains, for example by architecture:
 
 ```toml
 [[ops]]
-slot = "activation.silu_and_mul"
-variant = "small"
-source = "kernels/small.py"
-entry = "silu_small"
-metadata = "metadata/small.json"
+slot = "model.layers.*.mlp"
+variant = "hopper"
+source = "kernels/mlp_sm90.py"
+entry = "forward"
+architectures = ["sm90"]
 
 [[ops]]
-slot = "activation.silu_and_mul"
-variant = "large"
-source = "kernels/large.py"
-entry = "silu_large"
-metadata = "metadata/large.json"
+slot = "model.layers.*.mlp"
+variant = "blackwell"
+source = "kernels/mlp_sm103.py"
+entry = "forward"
+architectures = ["sm103"]
 ```
 
-For example, `small.json` might cap `num_tokens` at 127 while `large.json`
-starts at 128. If overlap exists—or cannot be resolved safely—the registry
-rejects the bundle rather than inventing priority.
+If overlap exists—or cannot be resolved safely—the registry rejects the bundle
+rather than inventing priority.
 
 This matters because variant selection is a semantic decision, not a source-order
 convenience. If two rows match the same call, the validator cannot know which selected
@@ -249,11 +246,11 @@ module. The serving entry receives that state followed by stock's arguments.
 This does not authorize modifying the module's methods or unrelated engine
 behavior. The [node ABI](kernel-abi.md) is the complete interface.
 
-## Atomic bundles
+## Several nodes in one bundle
 
-Retained catalog fixtures can request registered atomic targets. A node bundle
-instead names its modules under `forward_pass`, including multiple disjoint
-addresses when necessary. It does not need a new atomic target for each fusion.
+A node bundle names its modules under `forward_pass`, including multiple
+disjoint addresses when one change spans them. A fusion that crosses module
+boundaries uses the enclosing module.
 
 ## Advanced declarations
 
@@ -262,17 +259,14 @@ corresponding observed feature:
 
 ```toml
 [[ops]]
-slot = "moe.fused_experts"
-source = "kernels/epilogue.py"
-entry = "gemm1_epilogue"
-base_kernel = "nvfp4_moe_megakernel"
-override_point = "gemm1_epilogue"
-cuda_sources = ["kernels/epilogue_sm103.cu"]
+slot = "model.layers.*.mlp"
+source = "kernels/mlp.py"
+entry = "forward"
+cuda_sources = ["kernels/mlp_sm103.cu"]
 ```
 
-Declarations do not bypass policy. Intake independently observes rebuild,
-override, and CUDA-source features and resolves them against the target
-catalog. See [Override points](override-points.md).
+Declarations do not bypass policy. Intake independently observes rebuild and
+CUDA-source features and resolves them against the target catalog.
 
 Next, read the [Kernel ABI](kernel-abi.md), then build the minimal example in
 [Your first kernel](your-first-kernel.md).

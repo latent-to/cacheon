@@ -65,9 +65,7 @@ arena = "<published-arena-id>"
 ```
 
 The manifest requests an existing target; it does not grant new authority. See
-[Slots and targets](slots.md) and [Kernel ABI](kernel-abi.md). Retained catalog
-examples follow their old `SlotSpec` contracts; their signatures are not node
-interfaces.
+[Slots and targets](slots.md) and [Kernel ABI](kernel-abi.md).
 
 For node bundles, `verify` is scanning plus import/signature smoke. Use
 [`check` in the published image](your-first-kernel.md#6-move-to-the-matching-gpu-environment)
@@ -150,8 +148,6 @@ Use the technical guide in this order:
 5. [Finding a win](finding-a-win.md)
 6. [Submitting](submitting.md) — copy-paste chain-submit sequence, including eval-cost
 7. [Diagnostics](diagnostics.md)
-
-Read [Override points](override-points.md) only when the registered target requires one.
 
 At the end of the sequence you should be able to answer, with concrete identities:
 

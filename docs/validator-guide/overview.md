@@ -123,7 +123,7 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 
 | Task | Supported surface |
 |---|---|
-| Inspect slot and SDK compatibility | `cacheon slots`, `cacheon compat`, `cacheon chain-compat` |
+| Inspect SGLang seam and SDK compatibility | `cacheon compat`, `cacheon chain-compat` |
 | Publish and submit a proposal | `cacheon chain-publish`, `cacheon chain-eval-cost`, `cacheon chain-submit` |
 | Inspect chain state | `cacheon chain-status` |
 | Inspect private reservation/miner outcomes | `cacheon chain-reservation-status`, `cacheon chain-miner-report` |

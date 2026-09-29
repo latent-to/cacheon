@@ -45,9 +45,8 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     SeamAdapter("scheduler_gate", "sglang.srt.managers.scheduler",
                 "sglang_scheduler_gate", "run_scheduler_process"),
     # The generic node binder. After the model loads it binds every registered slot
-    # that is a node address (a name outside cacheon.slots, other than the cache's)
-    # to that module of the served model. Which addresses an arena opens is decided
-    # at admission by the target catalog, not here.
+    # other than the cache to that module of the served model. Which addresses an
+    # arena opens is decided at admission by the target catalog, not here.
     SeamAdapter("nodes", "sglang.srt.model_executor.model_runner",
                 "sglang_nodes", "ModelRunner.load_model"),
     # Bind the scheduler's initialized cache after backend selection and wrappers,

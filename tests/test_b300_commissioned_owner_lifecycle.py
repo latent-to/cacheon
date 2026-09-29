@@ -48,12 +48,12 @@ from cacheon.eval.qualification_continuation import (
 )
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.stack_identity import canonical_digest
-from cacheon.target_catalog import default_target_catalog
 
 
-RMSNORM_TARGET = "norm.rmsnorm"
-ALL_REDUCE = "collective.all_reduce"
-FUSED_EXPERTS = "moe.fused_experts"
+TARGET = "forward_pass"
+MLP = "model.layers.*.mlp"
+LOGITS = "logits_processor"
+NORM = "model.norm"
 
 
 def _h(label: str) -> str:
@@ -198,16 +198,15 @@ def _target_candidate(
     tmp_path: Path,
     *,
     index: int,
-    target_id: str,
+    members: tuple[str, ...] = (MLP,),
 ) -> ArenaCandidateBinding:
-    target = default_target_catalog().require(target_id)
     source = tmp_path / "source"
     kernels = source / "kernels"
     kernels.mkdir(parents=True)
     (kernels / "entry.py").write_text(
         "\n".join(
             f"def run_{member_index}(*args):\n    return args[0]"
-            for member_index, _member in enumerate(target.members)
+            for member_index, _member in enumerate(members)
         )
         + "\n",
         encoding="utf-8",
@@ -221,10 +220,10 @@ def _target_candidate(
         "abi_version = 'cacheon-op-abi-v0'",
         "",
         "[competition]",
-        f"target = '{target_id}'",
-        f"mode = '{'atomic' if len(target.members) > 1 else 'slot'}'",
+        f"target = '{TARGET}'",
+        "mode = 'slot'",
     ]
-    for member_index, member in enumerate(target.members):
+    for member_index, member in enumerate(members):
         manifest.extend(
             (
                 "",
@@ -250,16 +249,16 @@ def _target_candidate(
         content_hash(source),
     )
     reservation = QualificationReservation(
-        _h(f"{target_id}-reservation-{index}"),
+        _h(f"{members}-reservation-{index}"),
         publication.digest,
-        target_id,
-        _h(f"{target_id}-delta-{index}"),
+        TARGET,
+        _h(f"{members}-delta-{index}"),
         index,
         f"miner-{index}",
         20,
         index,
         0,
-        target.members,
+        tuple(sorted(members)),
     )
     return ArenaCandidateBinding(
         reservation,
@@ -295,7 +294,6 @@ def test_service_routes_reproduction_to_swapped_lane_owner(
     candidate = _target_candidate(
         tmp_path / "reproduction-candidate",
         index=99,
-        target_id=RMSNORM_TARGET,
     )
     store = QualificationContinuationStore(tmp_path / "reproduction-continuation")
     adapter = owner.service.adapter_for(
@@ -342,7 +340,6 @@ def test_full_owner_plans_qualification_and_closes_once(
     candidate = _target_candidate(
         tmp_path / "planned-candidate",
         index=0,
-        target_id=RMSNORM_TARGET,
     )
     builder = provider_fixtures._FactoryBuilder()
     provider._qualification_capabilities = replace(
@@ -392,7 +389,6 @@ def test_one_owner_routes_heterogeneous_singletons(
     first = _target_candidate(
         tmp_path / "msa",
         index=10,
-        target_id=RMSNORM_TARGET,
     )
     provider = owner.service.worker._provider
 
@@ -415,15 +411,15 @@ def test_one_owner_routes_heterogeneous_singletons(
     )
     products: list[RemoteQualificationProduct] = []
     requests = []
-    targets = (RMSNORM_TARGET, ALL_REDUCE, FUSED_EXPERTS)
-    for index, target_id in enumerate(targets, start=10):
+    nodes = (MLP, LOGITS, NORM)
+    for index, node in enumerate(nodes, start=10):
         candidate = (
             first
-            if target_id == RMSNORM_TARGET
+            if node == MLP
             else _target_candidate(
                 tmp_path / f"target-{index}",
                 index=index,
-                target_id=target_id,
+                members=(node,),
             )
         )
         configured = _configured(
@@ -445,24 +441,18 @@ def test_one_owner_routes_heterogeneous_singletons(
     assert tuple(
         product.authority_manifest.reservations[0].target_id
         for product in products
-    ) == targets
+    ) == (TARGET,) * 3
     assert all(len(request.body["candidates"]) == 1 for request in requests)
     assert all(len(request.members) == 1 for request in requests)
-    assert products[0].authority_manifest.reservations[0].target_members == (
-        RMSNORM_TARGET,
-    )
-    assert products[1].authority_manifest.reservations[0].target_members == (
-        ALL_REDUCE,
-    )
-
-    assert products[2].authority_manifest.reservations[0].target_members == (
-        FUSED_EXPERTS,
-    )
+    assert tuple(
+        product.authority_manifest.reservations[0].target_members
+        for product in products
+    ) == tuple((node,) for node in nodes)
 
     production_source = inspect.getsource(
         qualification_module.B300RemoteQualificationAdapter.run
     ) + inspect.getsource(worker_module.AdapterRuntime.qualification_adapter_for)
-    assert all(target_id not in production_source for target_id in targets)
+    assert all(name not in production_source for name in (TARGET, *nodes))
 
     before_drift = len(calls)
     lane_body = remote_fixtures._body(
@@ -532,7 +522,7 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
     candidate = _target_candidate(
         tmp_path / "delegated-candidate",
         index=30,
-        target_id=ALL_REDUCE,
+        members=(LOGITS,),
     )
     wire = SimpleNamespace(
         body={
@@ -598,7 +588,6 @@ def test_standalone_adapter_closes_only_its_owned_worker_once(
     candidate = _target_candidate(
         tmp_path / "standalone-candidate",
         index=40,
-        target_id=RMSNORM_TARGET,
     )
     standalone = qualification_module.B300RemoteQualificationAdapter(
         owner.deployment,
@@ -689,7 +678,7 @@ def test_injected_commission_runtime_owns_one_full_worker_and_closes_once(
     candidate = _target_candidate(
         tmp_path / "injected-candidate",
         index=41,
-        target_id=ALL_REDUCE,
+        members=(LOGITS,),
     )
     request_adapter = runtime.qualification_adapter_for(
         (candidate.publication,),

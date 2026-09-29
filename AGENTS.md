@@ -82,8 +82,9 @@ AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
 - A miner proposal is hostile input, not production source.
 - The validator owns the model, workload, timing, outputs, references, target
   policy, and verdict.
-- A contribution changes one registered singleton/atomic target; there is no
-  separate proposal lane for unregistered work.
+- A contribution changes one registered target (the model's `forward_pass`
+  nodes or the `prefix_cache`); there is no separate proposal lane for
+  unregistered work.
 - Candidate build and execution remain outside the trusted controller in
   validator-owned, no-egress OCI lifetimes.
 - CUDA graphs are part of the scored contract.
@@ -217,10 +218,8 @@ python -m pytest -q tests
 Contributor bundle checks:
 
 ```bash
-python -m cacheon.cli scan examples/miner_silu_torch
-python -m cacheon.cli verify examples/miner_silu_torch \
-  --device cpu \
-  --dtype float32
+python -m cacheon.cli scan examples/miner_node_identity
+python -m cacheon.cli verify examples/miner_node_identity
 ```
 
 Use `python -m cacheon.cli` for GPU work; SGLang uses spawned processes and the

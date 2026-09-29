@@ -61,9 +61,8 @@ Common failures and fixes:
 |---|---|---|
 | unsupported ABI | `abi_version` is not a supported identifier | author new bundles with the published `cacheon-op-abi-v0` component ABI |
 | unsafe/missing path | absolute path, traversal, symlink, or undeclared file | make every declaration bundle-relative and source-only |
-| competition mode mismatch | `slot`/`atomic` assertion disagrees with catalog | select the exact registered target and mode |
-| target members differ | op rows do not implement the complete registered delta | use the exact singleton member or all atomic members |
-| `node addresses must sit under ...` | a node-address row names a module outside the roots, is malformed, or shares the bundle with a registered slot id | name modules under `model` or `logits_processor`, or the prefix cache `tree_cache`; `*` stands for one whole segment |
+| competition mode mismatch | the mode is not `slot` | use `mode = "slot"` with `forward_pass` or `prefix_cache` |
+| `node addresses must sit under ...` | a node-address row names a module outside the roots, or is malformed | name modules under `model` or `logits_processor`, or the prefix cache `tree_cache`; `*` stands for one whole segment |
 | `tree_cache entry ... must be a function accepting the runtime cache` or `... must be callable with only the runtime cache` | the entry is not a synchronous function in the declared source, or needs other arguments | define `entry(cache)` and return `type(cache)` or a subclass of it; do not supply a constructor or `prepare` |
 | `tree_cache: the cache served a page that does not hold the KV the engine computed for its prefix` | a served prefix's slots held other bytes: a stale or reused slot, a page kept across a flush, a host copy not brought back, or a page from another namespace | serve only slots whose bytes the engine computed for that exact prefix, and drop every page at a flush |
 | `tree_cache: it replaced match_prefix on the instance ...` or `... on its class, which skips the check` | the cache assigned or deleted a protected handoff method after binding | override methods in the subclass returned by the factory |
@@ -74,8 +73,8 @@ Common failures and fixes:
 | duplicate slot requires variants | repeated rows omit explicit unique `variant` | name every variant |
 | overlapping domains | two variants can route the same live call | make capability domains provably disjoint |
 
-A missing `[competition]` may still resolve for a narrow legacy singleton case,
-but do not rely on that for new submissions.
+A missing `[competition]` resolves by node roots, but declare the target
+explicitly for new submissions.
 
 ### Do not collapse every local error into “scan failed”
 
@@ -120,78 +119,39 @@ If every shape is N/A, check:
 Unknown or missing descriptor fields fail closed. A context-applicable variant
 with incomplete shape-domain coverage fails the authoritative graph veto.
 
-## 3. ABI and numerical verification
+## 3. Interface and numerical checks
 
 Run the cheapest relevant check first:
 
 ```bash
-python -m cacheon.cli verify my_bundle --device cpu --dtype float32
-python -m cacheon.cli verify my_bundle --device cuda --dtype bfloat16
+python -m cacheon.cli verify my_bundle
 ```
 
-For collectives, reproduce the real group:
+`verify` scans the bundle and imports each entry in a spawned child. It catches a
+wrong entry name, a signature that cannot take the node's stock arguments, and
+import errors. It runs no forward math: numerical truth is the stock module in the
+running engine.
 
-```bash
-python -m cacheon.cli verify my_bundle \
-  --device cuda --dtype bfloat16 \
-  --world-size <TP> --tp-size <TP>
-```
-
-Typical failures:
+Then run `cacheon check` in the published arena image with the arena's development
+inputs (see [Your first bundle](your-first-kernel.md)). Its table has one row per
+claimed node address and rank: audit windows, violations, the worst passing
+fraction, and captured execution. Typical failures:
 
 - **wrong positional signature:** compare with [Kernel ABI](kernel-abi.md);
-- **input mutated:** clone scratch data instead of modifying validator inputs;
-- **poison remains / partial output:** write every logical output element and
-  honor non-contiguous stride;
-- **large elementwise error:** confirm formula, scale, mask, dtype, and model
-  activation;
-- **matched ratio below policy:** inspect reduction order, quantization layout,
-  routing weights, and uninitialized tails;
-- **top-k overlap below policy:** debug selected block sets, causality, ragged
-  tail blocks, and negative-infinity masking—not just average score error;
+- **violations on every audited call:** the result differs from stock beyond the
+  honest-twin bound; confirm formula, scale, mask, dtype and returned structure;
+- **violations on some calls only:** compare those calls' shapes and phases with
+  your tiling, ragged-tail and stride assumptions;
+- **engine-state rows differ:** a node that writes KV or recurrent state must
+  write the same rows stock writes for that batch;
+- **no audited calls (exit 3):** the claimed address bound nothing the requests
+  exercise, or the inputs are too short; use the arena's real development inputs;
 - **one rank hangs/fails:** ensure all ranks issue collectives in the same order
-  on the supplied group and do not hide an exception before a peer collective;
+  and do not hide an exception before a peer collective;
 - **prepared representation wrong:** keep `prepare` deterministic, input-pure,
   and consistent with the live dtype/quantization binding.
 
-A CPU pass is never a CUDA, distributed, graph, or throughput pass.
-
-### Read a shape result as a sentence
-
-A formatted verifier row combines five facts: applicability, validator-produced shape,
-dtype/context, comparator result, and graph replay count. Start with status and detail;
-do not rank candidates by `max_abs` in isolation.
-
-For all-close contracts, one outlier is enough to fail even if the printed ratio is near
-one. For matched-ratio contracts, the target-owned minimum ratio decides the result. For
-low-bit cosine profiles, direction and any configured norm guard matter more than a
-single maximum element error.
-
-If only one shape fails, first compare that shape's semantic dimensions with your tiling,
-mask, ragged-tail, and stride assumptions. Do not immediately narrow metadata around it.
-A narrower domain is honest only when it represents a real supported algorithmic region
-and still covers material calls; using eligibility to hide an implementation bug will
-either leave a coverage hole or produce no marginal effect.
-
-### What actually reached the device
-
-On CUDA, `verify` reports the kernels each shape launched:
-
-```text
-  ok  shape={'num_tokens': 3, 'd': 1024} max_abs=3.125e-02 max_rel=7.812e-03 graph_replays=3
-      device kernels (1):
-        x1    _silu_and_mul_kernel
-```
-
-The profiler is armed only around your entry, and the validator launches nothing
-inside that window, so everything listed came from your bundle. It works the same
-for a Triton kernel, a compiled `.so`, or plain torch calls, and it is untimed —
-it never runs inside a measured window.
-
-Read it for two things. First, whether your own kernel is there at all: a bundle
-that lists only `at::native::` names is calling torch, whatever its source looks
-like. Second, which internal path ran, when your entry chooses between several —
-each choice launches different kernels, and the list names the one taken.
+A CPU `verify` pass is never a numerical, distributed, graph, or throughput pass.
 
 ## 4. Graph evidence
 
