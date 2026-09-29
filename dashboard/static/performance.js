@@ -7,26 +7,40 @@ function measuredValue(tokensPerSecond, meanLatency) {
 
 function replayPerformance(speed, title) {
   const grade = speed.grading;
+  const fastest = speed.score_basis === "fastest_pass_latency";
+  const gap = Math.max(0, (grade.required_speedup - speed.speedup) * 100);
+  const read = lane => `${lane.role === "B" ? "Incumbent" : "Candidate"} · pass ${metricNumber(lane.window, 0)}`;
   const rows = speed.lanes.map((lane) => `<tr>
-    <td>${lane.role === "B" ? "Incumbent" : "Candidate"} · window ${metricNumber(lane.window, 0)}</td>
+    <td>${read(lane)} ${lane.used_for_score ? '<span class="pill info">scored</span>' : ''}</td>
     <td>${metricNumber(lane.warm_turns, 0)}</td><td>${metricNumber(lane.mean_warm_latency_s, 3)}</td>
     <td>${metricNumber(lane.attainment * 100, 2)}%</td></tr>`);
+  const diagnostics = speed.lanes.map((lane) => `<tr><td>${read(lane)}</td>
+    <td>${metricNumber(lane.mean_ttft_s, 3)}</td><td>${metricNumber(lane.p95_ttft_s, 3)}</td>
+    <td>${metricNumber(lane.median_decode_tps, 1)}</td></tr>`);
   return `<section class="performance">${title}
-    <h4>Agent replay · warm-turn latency</h4>
-    <p>Load ${metricNumber(speed.load, 0)} sessions per lane · ${metricNumber(speed.windows, 0)} paired windows.</p>
+    <h4>Agent replay speedup</h4>
+    <p>This attempt replayed a fixed conversation workload at ${metricNumber(speed.load, 0)} concurrent sessions per lane,
+      with ${metricNumber(speed.windows, 0)} paired passes. The recorded workload determines the measurement, including for earlier submissions.</p>
     <div class="cards">${card(metricGain(speed.speedup), "Scored improvement")}
-      ${card(metricGain(grade.required_speedup), "Required improvement")}</div>
+      ${card(metricGain(grade.required_speedup), "Required improvement")}
+      ${card(metricNumber(gap, 2) + " pp", "Gap to speed threshold")}
+      ${card(metricNumber(speed.speed_stage_seconds / 60, 1) + " min", "Speed stage, including startup")}</div>
     <p>${esc(grade.detail)}.</p>
-    <div class="metrics-table">${table(["Read", "Warm turns", "Mean latency (s)", "Service attainment"], rows)}</div>
+    <div class="metrics-table">${table(["Read", "Warm turns", "Mean turn (s)", "Service attainment"], rows)}</div>
     <p class="metric-note">Lower latency is better. Timing starts at round release; the opening cold-prefill round is excluded.
-      The score uses the sealed replay rule. Ratios of the combined display means may differ.</p>
+      ${fastest ? "The score divides the incumbent’s fastest complete-pass latency by the candidate’s fastest complete-pass latency. The scored passes are marked above."
+        : "The score pools elapsed serving time within each lane orientation and combines both orientations geometrically. Mean request latency is diagnostic."}</p>
+    <details><summary>Latency and service diagnostics</summary>
+    <div class="metrics-table">${table(["Read", "Mean TTFT (s)", "P95 TTFT (s)", "Decode (tok/s)"], diagnostics)}</div>
+    <p class="metric-note">TTFT includes queueing. Decode is the median per-user rate after the first token.
+      Unsuccessful requests across all passes: ${metricNumber(speed.lanes.reduce((n, row) => n + row.unsuccessful_turns, 0), 0)}.</p>
     <p class="metric-note">Service contract: first token within ${metricNumber(speed.contract.ttft_bound_s, 2)} s,
       decode at least ${metricNumber(speed.contract.decode_floor_tps, 1)} tok/s.
       Attainment includes every attempted turn. Candidate attainment less its noise allowance of
       ${metricNumber(grade.attainment_margin * 100, 2)} percentage points must stay within
       ${metricNumber(grade.attainment_tolerance * 100, 2)} percentage points of the incumbent in each window.</p>
-    <p class="metric-note">Calibrated paired-window noise: ${metricNumber(grade.null_noise * 100, 3)}%.
-      Workload <code>${esc(speed.workload_digest)}</code>.</p>
+    <p class="metric-note">Configured noise allowance: ${metricNumber(grade.null_noise * 100, 3)}% · replay policy ${metricNumber(speed.policy_version, 0)}.
+      Workload <code style="overflow-wrap:anywhere">${esc(speed.workload_digest)}</code>.</p></details>
   </section>`;
 }
 

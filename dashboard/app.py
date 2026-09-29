@@ -558,7 +558,7 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
     detail["baseline"] = submission_baseline(con, rid, detail["target_id"])
     measured_attempts = [a for a in detail["qualification_attempts"] if a["decision"] == "PASS"] or detail["qualification_attempts"]
     speed_reads = [a["speed"] for a in measured_attempts if a["speed"]]
-    detail["baseline_measurements"] = measured_baseline(speed_reads, {})
+    detail["baseline_measurements"] = measured_baseline(speed_reads, {}, baseline=detail["baseline"])
     detail.update(candidate_measurement(speed_reads))
 
     detail["leases"] = rows(con, """

@@ -191,14 +191,25 @@ def _replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
         expected = {root: (main, inner) for root, main, inner in reads.expected}
         lanes = []
         for role, windows in (("B", reads.incumbent), ("C", reads.candidate)):
+            arm = []
             for read in windows:
                 work = fixed_work_rate(read, expected)
-                lanes.append({"role": role, "window": read.window, "load": read.load,
-                              "warm_turns": work.turns,
-                              "mean_warm_latency_s": work.elapsed_s / work.turns,
-                              "attainment": attainment(read, policy.contract)})
+                arm.append({"role": role, "window": read.window, "load": read.load,
+                            "warm_turns": work.turns, "request_time_s": work.elapsed_s,
+                            "mean_warm_latency_s": work.elapsed_s / work.turns,
+                            "attainment": attainment(read, policy.contract),
+                            **_replay_diagnostics(read)})
+            if retained.resident_policy.version == 16:
+                best = min(row["mean_warm_latency_s"] for row in arm)
+                for row in arm:
+                    row["used_for_score"] = row["mean_warm_latency_s"] == best
+            lanes.extend(arm)
         speed.update({
             "lanes": lanes, "speedup": float(grade.settled_speedup),
+            "policy_version": retained.resident_policy.version,
+            "score_basis": ("fastest_pass_latency" if retained.resident_policy.version == 16
+                            else "pooled_elapsed_orientation"),
+            "speed_stage_seconds": retained.completed_monotonic_s - retained.started_monotonic_s,
             "workload_digest": retained.workload_digest,
             "load": reads.incumbent[0].load, "windows": len(reads.incumbent),
             "contract": asdict(policy.contract),
@@ -211,6 +222,20 @@ def _replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
     except (RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
         speed["grading_error"] = str(exc)
     return speed
+
+
+def _replay_diagnostics(read) -> dict[str, Any]:
+    """Summarize retained warm requests without exposing prompts or changing their score."""
+    cold = min(row.credit_issued_ns for row in read.records)
+    warm = [row for row in read.records if row.credit_issued_ns != cold]
+    first = sorted(row.ttft_s for row in warm)
+    decode = [row.decode_tps for row in warm if row.decode_tps is not None]
+    return {
+        "mean_ttft_s": statistics.fmean(first),
+        "p95_ttft_s": first[(95 * len(first) - 1) // 100],
+        "median_decode_tps": statistics.median(decode) if decode else None,
+        "unsuccessful_turns": sum(row.status != "ok" for row in read.records),
+    }
 
 
 def _phase_measurements(windows: list[dict[str, Any]]) -> list[dict[str, object]]:

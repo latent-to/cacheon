@@ -93,12 +93,13 @@ def conservative_candidate_tokens_per_second(
     return min(rates) if rates else None
 
 
-def measured_baseline(speed_reads: list[object], primary: dict[str, Any]) -> dict[str, Any]:
+def measured_baseline(speed_reads: list[object], primary: dict[str, Any], *, baseline=None) -> dict[str, Any]:
     """Slowest measured B/B-prime rate; identify stock versus an incumbent stack."""
     rates = [rate for speed in speed_reads for role in ("B", "B_prime")
              if (rate := _lane_tokens_per_second(speed, role)) is not None]
     manifest = primary.get("incumbent_manifest")
-    kind = ("stock" if not manifest.get("entries") else "incumbent") if isinstance(manifest, dict) else "unknown"
+    kind = (("stock" if not manifest.get("entries") else "incumbent") if isinstance(manifest, dict)
+            else (baseline or {}).get("kind", "unknown"))
     return {
         "baseline_tokens_per_second": round(float(min(rates)), 1) if rates else None,
         "baseline_kind": kind,
@@ -108,12 +109,13 @@ def measured_baseline(speed_reads: list[object], primary: dict[str, Any]) -> dic
 
 
 def _warm_latency(speeds: list[object], role: str) -> float | None:
-    """Keep the slower retained attempt's mean; paired scoring remains the scorer's responsibility."""
+    """Use score-selected passes when present; retain the slower independent attempt."""
     means = []
     for speed in speeds:
         if not isinstance(speed, dict) or speed.get("metric") != "warm_turn_latency":
             continue
         lanes = [lane for lane in speed["lanes"] if lane["role"] == role]
+        lanes = [lane for lane in lanes if lane.get("used_for_score")] or lanes
         turns = sum(lane["warm_turns"] for lane in lanes)
         if turns:
             means.append(sum(lane["mean_warm_latency_s"] * lane["warm_turns"] for lane in lanes) / turns)

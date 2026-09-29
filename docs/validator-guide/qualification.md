@@ -752,8 +752,11 @@ attainment gate still applies to every window.
 The dashboard reports replay measurements as **seconds per warm turn** (lower is
 better), including each arm's per-window latency and service attainment, the
 operating load, completed window count, workload identity and required gain.
-The displayed improvement comes from the sealed replay scorer (fastest passes in V16);
-dividing the combined mean latencies need not produce that same ratio. Historical
+V16 marks each engine's fastest complete pass and uses those pass latencies in
+the baseline and candidate summaries. The detail includes mean and P95 TTFT,
+median per-user decode rate, unsuccessful request count and speed-stage duration.
+The attempt's retained workload and policy identify its regime, regardless of
+submission date. V17 uses pooled elapsed cost across lane orientations. Historical
 batch evaluations retain their token-throughput units. Replay evidence does not
 enter the historical token-rate baseline band.
 

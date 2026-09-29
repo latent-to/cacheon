@@ -125,6 +125,7 @@ def submission_baseline(
     entry = (manifest.get("entries") or {}).get(target_id) or {}
     baseline_artifact = entry.get("artifact_digest") or ""
     result: dict[str, Any] = {
+        "kind": "incumbent" if manifest.get("entries") else "stock",
         "checkpoint": checkpoint_for_engine(manifest.get("base_engine_digest") or ""),
         "evaluated": evaluated,
         "assigned": assigned,

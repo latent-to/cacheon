@@ -280,7 +280,7 @@ function baselineSummary(b) {
     ? `<div class="muted small">must beat ${Number(b.threshold_speedup).toFixed(6)}×</div>`
     : "";
   const queued = b.assigned && !b.evaluated
-    ? '<span class="pill info">queued baseline</span> '
+    ? '<span class="pill info">assigned baseline</span> '
     : "";
   return `${queued}<span class="pill ${tone}">${esc(label)}</span><div class="small">${artifact}</div>${threshold}`;
 }
