@@ -20,18 +20,12 @@ prints the recomputed document; carry ``_meta`` forward.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
 
-from cacheon.capabilities import CallDescriptor
-from cacheon.verification_outcomes import (
-    VerificationCaseDescriptor,
-    VerificationCaseKind,
-)
 from tests import test_refactor_d_golden_families as golden_families
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -49,105 +43,6 @@ def _canonical(document: Any) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
-# verification_descriptor: VerificationCaseDescriptor.to_dict()/.digest
-# (cacheon/verification_outcomes.py). Four kinds, one canonicalization path;
-# call order is load-bearing for the sequence kinds.
-# --------------------------------------------------------------------------- #
-
-_CONTEXT = {
-    "dtype": "bfloat16",
-    "architecture": "sm100",
-    "tp_size": 4,
-    "world_size": 4,
-    "graph_mode": "cuda_graph",
-}
-
-
-def _call(**extra: int | str) -> dict[str, bool | int | str]:
-    return {**_CONTEXT, **extra}
-
-
-_DESCRIPTOR_INPUTS: dict[str, dict[str, Any]] = {
-    "ordinary_single": {
-        "slot_id": "activation.silu_and_mul",
-        "variant_id": "golden-a",
-        "case_kind": "ordinary_single",
-        "calls": [_call(num_tokens=64, last_dim=2048)],
-    },
-    "collective_single": {
-        "slot_id": "collective.all_reduce",
-        "variant_id": "golden-b",
-        "case_kind": "collective_single",
-        "calls": [_call(num_tokens=8, hidden=4096)],
-    },
-    "collective_temporal_eager": {
-        "slot_id": "collective.all_reduce",
-        "variant_id": "golden-c",
-        "case_kind": "collective_temporal_eager",
-        "calls": [
-            _call(num_tokens=1, hidden=4096),
-            _call(num_tokens=8, hidden=4096),
-            _call(num_tokens=64, hidden=4096),
-        ],
-    },
-    "collective_graph_sequence": {
-        "slot_id": "collective.all_reduce",
-        "variant_id": "golden-d",
-        "case_kind": "collective_graph_sequence",
-        "calls": [
-            _call(num_tokens=16, hidden=4096),
-            _call(num_tokens=32, hidden=4096),
-        ],
-    },
-}
-
-
-def _build_descriptor(inputs: dict[str, Any]) -> tuple[bytes, str, dict[str, Any]]:
-    descriptor = VerificationCaseDescriptor(
-        slot_id=inputs["slot_id"],
-        variant_id=inputs["variant_id"],
-        case_kind=VerificationCaseKind(inputs["case_kind"]),
-        calls=tuple(CallDescriptor(call) for call in inputs["calls"]),
-    )
-    return _canonical(descriptor.to_dict()), descriptor.digest, {}
-
-
-def test_descriptor_digest_is_sha256_of_its_canonical_bytes() -> None:
-    raw, digest, _ = _build_descriptor(_DESCRIPTOR_INPUTS["ordinary_single"])
-    assert digest == hashlib.sha256(raw).hexdigest()
-    assert json.loads(raw)["domain"] == "cacheon.verification-case-descriptor.v1"
-
-
-def test_descriptor_sequence_order_is_load_bearing() -> None:
-    forward = dict(_DESCRIPTOR_INPUTS["collective_temporal_eager"])
-    rotated = {**forward, "calls": forward["calls"][1:] + forward["calls"][:1]}
-    assert _build_descriptor(forward)[1] != _build_descriptor(rotated)[1]
-
-
-@pytest.mark.parametrize(
-    ("kind", "calls"),
-    [
-        ("ordinary_single", [_call(), _call()]),
-        ("collective_graph_sequence", [_call()]),
-    ],
-)
-def test_descriptor_refuses_call_count_that_disagrees_with_its_kind(kind, calls):
-    with pytest.raises(ValueError, match="disagrees with ordered call count"):
-        _build_descriptor(
-            {"slot_id": "s", "variant_id": "v", "case_kind": kind, "calls": calls}
-        )
-
-
-def test_descriptor_refuses_a_call_missing_sealed_context() -> None:
-    call = dict(_call())
-    del call["architecture"]
-    with pytest.raises(ValueError, match="missing sealed execution context"):
-        _build_descriptor(
-            {"slot_id": "s", "variant_id": "v", "case_kind": "ordinary_single", "calls": [call]}
-        )
-
-
-# --------------------------------------------------------------------------- #
 # Golden document: {family: {case: {"inputs", "canonical", "digest", "extras"}}}
 # Builders return (canonical_bytes, digest, extras); extras hold the family's
 # other pinned values (ids, sibling records, reopen outcomes).
@@ -156,7 +51,6 @@ def test_descriptor_refuses_a_call_missing_sealed_context() -> None:
 Builder = Callable[[dict[str, Any]], tuple[bytes, str, dict[str, Any]]]
 
 _FAMILIES: dict[str, tuple[dict[str, dict[str, Any]], Builder]] = {
-    "verification_descriptor": (_DESCRIPTOR_INPUTS, _build_descriptor),
     **golden_families.FAMILIES,
 }
 

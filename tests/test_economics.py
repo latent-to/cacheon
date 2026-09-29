@@ -56,20 +56,41 @@ def _slot(target_id: str) -> TargetSpec:
 
 
 def _catalog() -> TargetCatalog:
-    return TargetCatalog(
-        (
-            _slot("slot.a"),
-            _slot("slot.b"),
-            TargetSpec(
-                target_id="atomic.ab",
-                kind=TargetKind.ATOMIC,
-                members=("slot.a", "slot.b"),
-                displaces=frozenset({"slot.a", "slot.b"}),
-                allowed_features=frozenset({FEATURE_ENTRY}),
-                atomic_semantics_id="atomic.ab.v1",
+    return TargetCatalog((_slot("slot.a"), _slot("slot.b")))
+
+
+def _historical_atomic_snapshot(catalog: TargetCatalog) -> dict:
+    """``catalog``'s snapshot plus a retired atomic row, in its sealed wire shape.
+
+    Atomic targets left the live catalog, but crowns sealed under them still carry
+    the row, and economics must keep reading its members and ``displaces``.
+    """
+    snapshot = catalog.snapshot()
+    member_digests = [catalog.contract_digest(member) for member in ("slot.a", "slot.b")]
+    snapshot["targets"].append(
+        {
+            "target_id": "atomic.ab",
+            "kind": "atomic",
+            "members": ["slot.a", "slot.b"],
+            "displaces": ["slot.a", "slot.b"],
+            "conflicts_with": [],
+            "requires": [],
+            "allowed_features": [FEATURE_ENTRY],
+            "atomic_semantics_id": "atomic.ab.v1",
+            "member_contract_digests": member_digests,
+            "contract_digest": canonical_digest(
+                "cacheon.atomic-target-contract",
+                {
+                    "schema_version": 1,
+                    "target_id": "atomic.ab",
+                    "atomic_semantics_id": "atomic.ab.v1",
+                    "member_contract_digests": member_digests,
+                },
             ),
-        )
+        }
     )
+    snapshot["targets"].sort(key=lambda row: row["target_id"])
+    return snapshot
 
 
 def _contribution(catalog: TargetCatalog, target: str, char: str, spec_digest=None):
@@ -219,14 +240,15 @@ def test_multiple_families_for_one_hotkey_are_summed_before_normalization() -> N
 
 def test_atomic_target_is_one_family_and_suppresses_singletons() -> None:
     catalog = _catalog()
-    atomic = _stack(catalog, ("atomic.ab",))
+    sealed = _historical_atomic_snapshot(catalog)
+    atomic = _sealed_stack(catalog, sealed, ("atomic.ab",))
     claim = _claim(atomic, "atomic.ab", "alice", 1_250_000)
     result = _project(_policy(), atomic, _global_context(), (claim,))
     assert len(result.standing) == 1
     assert result.standing[0].target_id == "atomic.ab"
     assert result.weights_by_hotkey == {"alice": WEIGHT_PPM}
 
-    overlap = _stack(catalog, ("atomic.ab", "slot.a"))
+    overlap = _sealed_stack(catalog, sealed, ("atomic.ab", "slot.a"))
     with pytest.raises(EconomicsError, match="overlap"):
         _project(
             _policy(),

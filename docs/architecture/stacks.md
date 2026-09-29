@@ -85,37 +85,29 @@ flowchart TB
 
 The target catalog determines the transition:
 
-- a singleton replaces one slot target;
-- an atomic target replaces its registered member set and displaces the overlapping singleton targets;
-- conflicting targets are removed before the candidate tree is materialized;
-- required targets and displacement closures are validated before planning;
-- unregistered work fails resolution rather than being disguised as a singleton.
+- a proposal replaces its own target's entry and nothing else, because targets have
+  disjoint node roots;
+- the other entries stay byte-identical;
+- unregistered work fails resolution rather than being disguised as a target.
 
 The planner records both the old and new contribution references, the selected-delta digest, the exact target specification, and the expected execution order. See [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 
 ### Concrete substitution example
 
-Suppose incumbent manifest `E0` contains targets `activation.silu_and_mul = A` and
-`norm.rmsnorm = R0`. A proposal resolves exactly to the RMSNorm singleton as `R1`.
-Planning produces:
+Suppose incumbent manifest `E0` contains `forward_pass = F0` and `prefix_cache = K`.
+A proposal resolves to `forward_pass` as `F1`. Planning produces:
 
 ```text
-incumbent = materialize(E0)                         # A + R0 on baseline lane
-candidate = materialize(replace(E0, rmsnorm, R1))  # A + R1 on candidate lane
-v10       = B, C, B′ unconditionally (v11: same reads, mixed cells)
+incumbent = materialize(E0)                              # F0 + K on the incumbent lane
+candidate = materialize(replace(E0, forward_pass, F1))  # F1 + K on the candidate lane
+speed     = both lanes replay the sealed session slice in paired windows
 A         = separate eager, untimed candidate audit
-T         = materialize(pristine reference)        # neither proposal is a grading oracle
+T         = materialize(pristine reference)             # neither proposal is a grading oracle
 ```
 
-The validator, not the proposal, performs `replace`. A bundle that also declares an
-activation implementation cannot silently widen this arm: it either fails exact target
-resolution or enters an explicitly registered wider target. If C passes,
-the transition record names `R0 -> R1`; it does not give R1 ownership of A or of the
+The validator, not the proposal, performs `replace`. If the candidate passes, the
+transition record names `F0 -> F1`; it does not give F1 ownership of K or of the
 complete emitted engine tree.
-
-For an atomic target, the same rule applies to the target's entire registered member set.
-The replacement is still one economic transition, but all displaced overlapping entries
-must be validated and recorded together.
 
 ## Cohorts
 
@@ -233,6 +225,6 @@ There is no supported arrow from a mutable miner URL, chain record, evaluation b
 - [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — strict manifest and contribution-reference types
 - [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) — marginal arms, cohorts, and transitions
 - [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic source materialization
-- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — singleton, atomic, displacement, and conflict policy
+- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — registered targets and their node roots
 - [`eval/reference_quality.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_quality.py) — pristine reference quality products
 - [`eval/calibration.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/calibration.py) — calibrated qualification/reference policy

@@ -120,7 +120,7 @@ def test_same_target_crowns_and_rebuilds_independently_across_models(tmp_path):
             store.commit_settlement(lease, plan, evidence, current_block=11)
         glm_tips = store.target_lineage_tips("")
         qwen_tips = store.target_lineage_tips("qwen")
-        assert glm_tips.keys() == qwen_tips.keys() == {"activation.silu_and_mul"}
+        assert glm_tips.keys() == qwen_tips.keys() == {"forward_pass"}
         assert glm_tips != qwen_tips
         store.backfill_target_lineage_tips()
         assert store.target_lineage_tips("") == glm_tips
@@ -153,7 +153,7 @@ def test_pre_namespace_lineage_migrates_without_changing_retained_evidence(tmp_p
 
 
 @pytest.mark.parametrize(("arena", "target"), (
-    ("glm", "activation.silu_and_mul"), ("qwen", "norm.rmsnorm"),
+    ("glm", "forward_pass"), ("qwen", "prefix_cache"),
 ))
 @pytest.mark.parametrize("payment_kind", ("credit", "payment"))
 def test_crown_cutoff_admits_commitments_once_before_qualification(tmp_path, arena, target, payment_kind):

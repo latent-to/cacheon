@@ -4,10 +4,6 @@
 : Validator-owned hardware, workload, policy, and service boundary for one
   qualification domain.
 
-**Atomic target**
-: One reward identity that owns several inseparable slot members and displaces
-  their overlapping singleton identities.
-
 **Artifact provider**
 : A validator-registered, data-only policy that fixes one sealed-artifact kind,
   binding ABI, build phase, load phase, and reviewed implementation. A bundle
@@ -68,7 +64,7 @@
 
 **Target**
 : Smallest registered semantic reward identity. A normal proposal resolves to
-  exactly one singleton or atomic target.
+  exactly one target: `forward_pass` or `prefix_cache`.
 
 **Weight intent**
 : Journaled desired chain publication derived from the pure global emissions

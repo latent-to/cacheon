@@ -33,13 +33,11 @@ evaluation and economic state.
 | Area | Primary source |
 |---|---|
 | Bundle parsing and path rules | [`manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/manifest.py) |
-| Slot ABI and trusted references | [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) |
-| Arena-specific slot shapes and correctness floors | [`model_profiles.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_profiles.py) |
-| Target identity and exclusion | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
-| Typed tensor/output boundary | [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py) |
+| Target identity and node roots | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
+| Node binding and audit against stock | [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py) |
 | Static policy | [`sandbox.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py) |
 | Tracing-JIT admission | [`dsl_jit_policy.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dsl_jit_policy.py) |
-| Local and distributed verification | [`verify.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify.py), [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py) |
+| Local interface smoke and engine check | [`miner_check.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/miner_check.py) |
 | SGLang dispatch | [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py), [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) |
 | Sealed B300 arena-definition parsing and projection | [`b300_arena_definition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_arena_definition.py) |
 | Scheduler-role candidate load | [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py), [`sglang_scheduler_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_scheduler_gate.py) |
@@ -113,9 +111,9 @@ Read in this order:
 
 1. `manifest.py` for exact TOML shape and contained-path rules;
 2. `sandbox.py` for observed source/build features;
-3. `target_catalog.py` for target resolution and admitted features;
-4. `slots.py` and `tensor_spec.py` for callable/output semantics; and
-5. `verify.py` or `verify_collective.py` for executable correctness.
+3. `target_catalog.py` for target resolution and admitted features; and
+4. `miner_check.py` and `integrations/sglang_nodes.py` for the entry interface and
+   the audit against stock.
 
 This ordering separates syntax, capability admission, ABI, and numerical
 failure. They are different diagnoses even when the CLI reports them in one

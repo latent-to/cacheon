@@ -40,11 +40,10 @@ install Cacheon editable without asking pip to replace those packages. Follow
 ## 2. Inspect the contracts
 
 ```bash
-python -m cacheon.cli slots
 pytest -q
 ```
 
-`slots` prints the live ABI catalog. The test suite is the executable behavior
+The test suite is the executable behavior
 contract; a passing CPU suite does not prove a GPU topology or OCI deployment.
 The CPU extras do not install SGLang, so a clean CPU-only environment should not
 run `compat` and expect green output.
@@ -81,14 +80,13 @@ This introspects the SDK methods Cacheon uses. It does not connect to a network.
 ## 3. Verify a known bundle locally
 
 ```bash
-python -m cacheon.cli scan examples/miner_silu_torch
-python -m cacheon.cli verify examples/miner_silu_torch \
-  --device cpu --dtype float32
+python -m cacheon.cli scan examples/miner_node_identity
+python -m cacheon.cli verify examples/miner_node_identity
 ```
 
-CPU verification checks manifest routing and op-level correctness against the validator
-reference. It does not predict GPU speed, CUDA-graph behavior, end-to-end quality, or a
-crown.
+`verify` checks manifest routing, imports and entry signatures. Numerical truth is the
+stock module in the running engine, so `cacheon check` in the published arena image is the
+first numerical check. Neither predicts speed, end-to-end quality, or a crown.
 
 Run diagnostics only on code you are prepared to execute. `verify` loads candidate code
 in spawned workers rather than the trusted CLI process, but the public diagnostic path is

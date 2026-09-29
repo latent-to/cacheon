@@ -114,20 +114,8 @@ policy, never Python registration order.
 
 ## Target resolution fails closed
 
-Malformed addresses, mixed catalog-slot/node bundles, overlapping node claims,
+Malformed addresses, overlapping node claims,
 unknown targets and unavailable arena targets do not become successful stock
 runs. A successful interface smoke also does not establish a live node exists;
 that needs the loaded model.
 
-## Singleton targets
-
-Old catalog fixtures remain addressable by their singleton target IDs for
-reference verification. `cacheon slots` prints this retained catalog, not a
-model's module tree. Do not use that list as node-arena availability.
-
-## The registered atomic targets
-
-Retained atomic targets describe old multi-slot contracts. Their fixtures and
-historical identities remain tied to those contracts. A node bundle declares
-module addresses under `forward_pass`; it does not request a new atomic target
-for each fusion.

@@ -40,14 +40,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[cpu,dev]"
 
-python -m cacheon.cli slots
-python -m cacheon.cli scan examples/miner_silu_torch
-python -m cacheon.cli verify examples/miner_silu_torch \
-  --device cpu \
-  --dtype float32
+python -m cacheon.cli scan examples/miner_node_identity
+python -m cacheon.cli verify examples/miner_node_identity
 ```
 
-`scan` and `verify` are development checks. They do not establish serving
+`scan` and `verify` are development checks; `check` runs the node audit and
+graph checks in the published arena image. They do not establish serving
 throughput, end-to-end quality, settlement eligibility, or a production
 release. Those decisions belong to the validator-owned qualification path
 described in the documentation.

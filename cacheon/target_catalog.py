@@ -18,24 +18,20 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from functools import lru_cache
-from itertools import combinations
 from typing import Iterable, Mapping
 
 from cacheon._strict import NODE_ADDRESS, require_node_members
 from cacheon.manifest import CompetitionEntry, DEFAULT_VARIANT, Manifest
 from cacheon.stack_identity import canonical_digest
-from cacheon.target_contracts import singleton_contracts as _singleton_contracts
 
 # Catalog identities are consensus-bearing and survive the product/package
 # rename. Existing crowns and evaluation stacks bind these exact domains.
 _TARGET_CONTRACT_DOMAIN = "cacheon.target-contract"
 _TARGET_CATALOG_DOMAIN = "cacheon.target-catalog"
-_ATOMIC_TARGET_CONTRACT_DOMAIN = "cacheon.atomic-target-contract"
 _TARGET_SPEC_DOMAIN = "cacheon.target-spec"
 
 class TargetKind(str, Enum):
     SLOT = "slot"
-    ATOMIC = "atomic"
 
 # Feature names are validator vocabulary, never miner-selected permissions.
 # Dynamic/unknown manifest fields and rebuild steps are still observed, but no
@@ -44,6 +40,9 @@ FEATURE_ENTRY = "entry"
 FEATURE_VARIANTS = "variants"
 FEATURE_PREPARE = "prepare"
 FEATURE_SETUP = "setup"
+# Retired with the op slots; no manifest can declare it (resolution refuses override
+# points), but it stays in the admitted sets because forward_pass's target-spec digest
+# binds them.
 FEATURE_OVERRIDE = "override"
 FEATURE_CUDA_SOURCES = "cuda_sources"
 FEATURE_REBUILD_BUILD_CUDA_EXT = "rebuild:build_cuda_ext"
@@ -162,7 +161,7 @@ class ToleranceContractRef:
 
 @dataclass(frozen=True)
 class TargetContractRef:
-    """Stdlib-only, versioned projection of one live ``SlotSpec`` contract."""
+    """Stdlib-only, versioned identity of one target's serving contract."""
 
     schema_version: int
     slot_id: str
@@ -255,26 +254,18 @@ class TargetContractRef:
 class TargetSpec:
     """One validator-owned reward-unit identity.
 
-    ``members`` are canonical semantic slot IDs, not manifest rows; variants of
-    one slot never add members. ``displaces`` is directional ownership by a
-    wider target. ``conflicts_with`` is symmetric non-composable overlap. A
-    candidate transition removes either relation before materialization; live
-    dispatch order never decides which economic target executes.
-
     ``node_roots`` opens node addresses. A manifest whose slots all name modules at
     or under one of these roots of the served model resolves to this target, and its
-    members are the addresses it declared, not ``members``.
+    members are the addresses it declared, not ``members``. Two targets never share
+    a node: overlap inside one bundle is refused by address containment, and the
+    model and the prefix cache have disjoint roots.
     """
 
     target_id: str
     kind: TargetKind
     members: tuple[str, ...]
-    displaces: frozenset[str] = frozenset()
-    conflicts_with: frozenset[str] = frozenset()
-    requires: frozenset[str] = frozenset()
     allowed_features: frozenset[str] = frozenset({FEATURE_ENTRY})
     contract_ref: TargetContractRef | None = None
-    atomic_semantics_id: str | None = None
     node_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -282,12 +273,6 @@ class TargetSpec:
             object.__setattr__(self, "node_roots", tuple(self.node_roots))
         if not isinstance(self.members, str):
             object.__setattr__(self, "members", tuple(self.members))
-        if not isinstance(self.displaces, str):
-            object.__setattr__(self, "displaces", frozenset(self.displaces))
-        if not isinstance(self.conflicts_with, str):
-            object.__setattr__(self, "conflicts_with", frozenset(self.conflicts_with))
-        if not isinstance(self.requires, str):
-            object.__setattr__(self, "requires", frozenset(self.requires))
         if not isinstance(self.allowed_features, str):
             object.__setattr__(self, "allowed_features", frozenset(self.allowed_features))
 
@@ -358,7 +343,9 @@ def manifest_declared_features(manifest: Manifest) -> frozenset[str]:
         if op.setup is not None:
             features.add(FEATURE_SETUP)
         if op.base_kernel is not None or op.override_point is not None:
-            features.add(FEATURE_OVERRIDE)
+            raise TargetResolutionError(
+                f"{op.slot}: override points are retired; submit the node"
+            )
         if op.cuda_sources:
             features.add(FEATURE_CUDA_SOURCES)
         # Unknown op keys are retained by Manifest for forward compatibility.
@@ -405,7 +392,6 @@ class TargetCatalog:
             raise TargetCatalogError("target catalog must not be empty")
 
         by_id: dict[str, TargetSpec] = {}
-        member_sets: dict[frozenset[str], str] = {}
         for index, spec in enumerate(rows):
             if not isinstance(spec, TargetSpec):
                 raise TargetCatalogError(
@@ -414,74 +400,30 @@ class TargetCatalog:
             target_id = _simple_id(spec.target_id, field="target_id")
             if target_id in by_id:
                 raise TargetCatalogError(f"duplicate target ID {target_id!r}")
-            if not isinstance(spec.kind, TargetKind):
+            if spec.kind is not TargetKind.SLOT:
                 raise TargetCatalogError(
                     f"target {target_id!r} kind must be TargetKind"
                 )
-            if isinstance(spec.members, str) or not spec.members:
+            if tuple(spec.members) != (target_id,):
                 raise TargetCatalogError(
-                    f"target {target_id!r} members must be a non-empty sequence"
+                    f"slot target {target_id!r} must have itself as its sole member"
                 )
-            members = tuple(
-                _simple_id(member, field=f"target {target_id!r} member")
-                for member in spec.members
-            )
-            if len(set(members)) != len(members):
+            if not isinstance(spec.contract_ref, TargetContractRef):
                 raise TargetCatalogError(
-                    f"target {target_id!r} has duplicate members {members!r}"
+                    f"slot target {target_id!r} requires a TargetContractRef"
                 )
-            if spec.kind is TargetKind.SLOT:
-                if members != (target_id,):
-                    raise TargetCatalogError(
-                        f"slot target {target_id!r} must have itself as its sole member"
-                    )
-                if not isinstance(spec.contract_ref, TargetContractRef):
-                    raise TargetCatalogError(
-                        f"slot target {target_id!r} requires a TargetContractRef"
-                    )
-                if spec.contract_ref.slot_id != target_id:
-                    raise TargetCatalogError(
-                        f"slot target {target_id!r} contract_ref names "
-                        f"{spec.contract_ref.slot_id!r}"
-                    )
-                if spec.atomic_semantics_id is not None:
-                    raise TargetCatalogError(
-                        f"slot target {target_id!r} may not declare atomic_semantics_id"
-                    )
-                roots = spec.node_roots
-                if roots != tuple(sorted(set(roots))) or any(
-                    "*" in root or NODE_ADDRESS.fullmatch(root) is None for root in roots
-                ):
-                    raise TargetCatalogError(
-                        f"slot target {target_id!r} node_roots must be sorted unique names"
-                    )
-            elif spec.node_roots:
+            if spec.contract_ref.slot_id != target_id:
                 raise TargetCatalogError(
-                    f"atomic target {target_id!r} may not declare node_roots"
+                    f"slot target {target_id!r} contract_ref names "
+                    f"{spec.contract_ref.slot_id!r}"
                 )
-            elif len(members) < 2:
+            roots = spec.node_roots
+            if roots != tuple(sorted(set(roots))) or any(
+                "*" in root or NODE_ADDRESS.fullmatch(root) is None for root in roots
+            ):
                 raise TargetCatalogError(
-                    f"atomic target {target_id!r} requires at least two members"
+                    f"slot target {target_id!r} node_roots must be sorted unique names"
                 )
-            else:
-                if spec.contract_ref is not None:
-                    raise TargetCatalogError(
-                        f"atomic target {target_id!r} may not declare contract_ref"
-                    )
-                _simple_id(
-                    spec.atomic_semantics_id,
-                    field=f"atomic target {target_id!r} atomic_semantics_id",
-                )
-
-            member_set = frozenset(members)
-            previous = member_sets.get(member_set)
-            if previous is not None:
-                raise TargetCatalogError(
-                    "multiple targets register the same exact member set: "
-                    f"{previous!r}, {target_id!r}"
-                )
-            member_sets[member_set] = target_id
-
             if isinstance(spec.allowed_features, str):
                 raise TargetCatalogError(
                     f"target {target_id!r} allowed_features must be a set"
@@ -502,141 +444,8 @@ class TargetCatalog:
                 )
             by_id[target_id] = spec
 
-        for spec in by_id.values():
-            for relation_name, related in (
-                ("displaces", spec.displaces),
-                ("conflicts_with", spec.conflicts_with),
-                ("requires", spec.requires),
-            ):
-                if isinstance(related, str):
-                    raise TargetCatalogError(
-                        f"target {spec.target_id!r} {relation_name} must be a set"
-                    )
-                if spec.target_id in related:
-                    raise TargetCatalogError(
-                        f"target {spec.target_id!r} may not {relation_name} itself"
-                    )
-                unknown = set(related) - set(by_id)
-                if unknown:
-                    raise TargetCatalogError(
-                        f"target {spec.target_id!r} {relation_name} unknown targets "
-                        f"{tuple(sorted(unknown))!r}"
-                    )
-            overlap = spec.displaces & spec.conflicts_with
-            if overlap:
-                raise TargetCatalogError(
-                    f"target {spec.target_id!r} both displaces and conflicts with "
-                    f"{tuple(sorted(overlap))!r}"
-                )
-            impossible_requirements = spec.requires & (
-                spec.displaces | spec.conflicts_with
-            )
-            if impossible_requirements:
-                raise TargetCatalogError(
-                    f"target {spec.target_id!r} requires mutually exclusive targets "
-                    f"{tuple(sorted(impossible_requirements))!r}"
-                )
-
-            if spec.kind is TargetKind.ATOMIC:
-                missing_singletons = [
-                    member
-                    for member in spec.members
-                    if member not in by_id
-                    or by_id[member].kind is not TargetKind.SLOT
-                    or by_id[member].members != (member,)
-                ]
-                if missing_singletons:
-                    raise TargetCatalogError(
-                        f"atomic target {spec.target_id!r} has members without registered "
-                        f"singletons {tuple(missing_singletons)!r}"
-                    )
-                missing_displacement = set(spec.members) - set(spec.displaces)
-                if missing_displacement:
-                    raise TargetCatalogError(
-                        f"atomic target {spec.target_id!r} must explicitly displace "
-                        f"member targets {tuple(sorted(missing_displacement))!r}"
-                    )
-
-        for spec in by_id.values():
-            for other_id in spec.conflicts_with:
-                if spec.target_id not in by_id[other_id].conflicts_with:
-                    raise TargetCatalogError(
-                        "target conflict must be symmetric: "
-                        f"{spec.target_id!r} -> {other_id!r}"
-                    )
-                if (
-                    other_id in spec.displaces
-                    or spec.target_id in by_id[other_id].displaces
-                ):
-                    raise TargetCatalogError(
-                        f"targets {spec.target_id!r} and {other_id!r} cannot be both "
-                        "conflicting and displaced"
-                    )
-
-        for left, right in combinations(by_id.values(), 2):
-            shared = set(left.members) & set(right.members)
-            if not shared:
-                continue
-            related = (
-                right.target_id in left.displaces
-                or left.target_id in right.displaces
-                or right.target_id in left.conflicts_with
-            )
-            if not related:
-                raise TargetCatalogError(
-                    f"targets {left.target_id!r} and {right.target_id!r} share "
-                    f"members {tuple(sorted(shared))!r} without explicit exclusion"
-                )
-
-        self._validate_relation_dag(by_id, relation="displaces")
-        self._validate_relation_dag(by_id, relation="requires")
-
-        def relation_closure(target_id: str, relation: str) -> set[str]:
-            found: set[str] = set()
-            pending = list(getattr(by_id[target_id], relation))
-            while pending:
-                current = pending.pop()
-                if current in found:
-                    continue
-                found.add(current)
-                pending.extend(getattr(by_id[current], relation))
-            return found
-
-        displacement_closures = {
-            target_id: frozenset(relation_closure(target_id, "displaces"))
-            for target_id in by_id
-        }
-        requirement_closures = {
-            target_id: frozenset(relation_closure(target_id, "requires"))
-            for target_id in by_id
-        }
-        for spec in by_id.values():
-            displaced = displacement_closures[spec.target_id]
-            required = requirement_closures[spec.target_id]
-            contradiction = displaced & required
-            if contradiction:
-                raise TargetCatalogError(
-                    f"target {spec.target_id!r} requires its displacement closure "
-                    f"{tuple(sorted(contradiction))!r}"
-                )
-            reverse = {
-                dependency
-                for dependency in required
-                if spec.target_id in displacement_closures[dependency]
-            }
-            if reverse:
-                raise TargetCatalogError(
-                    f"target {spec.target_id!r} requires targets that displace it "
-                    f"{tuple(sorted(reverse))!r}"
-                )
-
         ordered = dict(sorted(by_id.items()))
         self._by_id = ordered
-        self._by_members = {
-            members: ordered[target_id] for members, target_id in member_sets.items()
-        }
-        self._displacement_closures = displacement_closures
-        self._requirement_closures = requirement_closures
         self._target_snapshots = {
             target_id: self._build_target_snapshot(spec)
             for target_id, spec in ordered.items()
@@ -649,61 +458,23 @@ class TargetCatalog:
         self._digest = canonical_digest(_TARGET_CATALOG_DOMAIN, self._snapshot)
 
     @staticmethod
-    def _validate_relation_dag(
-        by_id: Mapping[str, TargetSpec], *, relation: str
-    ) -> None:
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def visit(target_id: str) -> None:
-            if target_id in visiting:
-                raise TargetCatalogError(
-                    f"target {relation} graph contains a cycle at {target_id!r}"
-                )
-            if target_id in visited:
-                return
-            visiting.add(target_id)
-            for child in getattr(by_id[target_id], relation):
-                visit(child)
-            visiting.remove(target_id)
-            visited.add(target_id)
-
-        for target_id in by_id:
-            visit(target_id)
-
-    def _build_target_snapshot(self, spec: TargetSpec) -> dict[str, object]:
+    def _build_target_snapshot(spec: TargetSpec) -> dict[str, object]:
+        # The relation keys are empty since node targets replaced composed slots;
+        # they stay in the identity so retained target-spec digests are unchanged.
         common: dict[str, object] = {
             "target_id": spec.target_id,
             "kind": spec.kind.value,
             "members": list(spec.members),
-            "displaces": sorted(spec.displaces),
-            "conflicts_with": sorted(spec.conflicts_with),
-            "requires": sorted(spec.requires),
+            "displaces": [],
+            "conflicts_with": [],
+            "requires": [],
             "allowed_features": sorted(spec.allowed_features),
         }
         if spec.node_roots:  # absent otherwise: existing targets keep their spec digests
             common["node_roots"] = list(spec.node_roots)
-        if spec.kind is TargetKind.SLOT:
-            assert spec.contract_ref is not None
-            common["contract_ref"] = spec.contract_ref.snapshot()
-            common["contract_digest"] = spec.contract_ref.digest
-        else:
-            assert spec.atomic_semantics_id is not None
-            member_digests = [
-                self._by_id[member].contract_ref.digest  # type: ignore[union-attr]
-                for member in spec.members
-            ]
-            contract_payload = {
-                "schema_version": 1,
-                "target_id": spec.target_id,
-                "atomic_semantics_id": spec.atomic_semantics_id,
-                "member_contract_digests": member_digests,
-            }
-            common["atomic_semantics_id"] = spec.atomic_semantics_id
-            common["member_contract_digests"] = member_digests
-            common["contract_digest"] = canonical_digest(
-                _ATOMIC_TARGET_CONTRACT_DOMAIN, contract_payload
-            )
+        assert spec.contract_ref is not None
+        common["contract_ref"] = spec.contract_ref.snapshot()
+        common["contract_digest"] = spec.contract_ref.digest
         return common
 
     def require(self, target_id: str) -> TargetSpec:
@@ -736,32 +507,12 @@ class TargetCatalog:
         assert isinstance(value, str)
         return value
 
-    def displacement_closure(self, target_id: str) -> frozenset[str]:
-        self.require(target_id)
-        return self._displacement_closures[target_id]
-
-    def requires_closure(self, target_id: str) -> frozenset[str]:
-        self.require(target_id)
-        return self._requirement_closures[target_id]
-
     def admitted_members(self, spec: TargetSpec, declared: Iterable[str]) -> tuple[str, ...]:
-        """Members a manifest may declare for ``spec``, or a resolution error.
+        """The manifest's own node addresses under ``spec``'s roots, or a resolution error."""
 
-        A slot or atomic target admits exactly its registered members; a node target
-        admits the manifest's own addresses under its roots.
-        """
-
-        declared = tuple(declared)
-        if spec.node_roots:
-            return require_node_members(
-                declared, roots=spec.node_roots, error=TargetResolutionError
-            )
-        if frozenset(declared) != frozenset(spec.members):
-            raise TargetResolutionError(
-                f"target {spec.target_id!r} requires exact members {spec.members!r}; "
-                f"manifest declares {declared!r}"
-            )
-        return spec.members
+        return require_node_members(
+            tuple(declared), roots=spec.node_roots, error=TargetResolutionError
+        )
 
     def admits(self, spec: TargetSpec, members: Iterable[str]) -> bool:
         """Whether a finalized reservation's members are this target's canonical form."""
@@ -782,26 +533,6 @@ class TargetCatalog:
             raise TargetResolutionError("active target IDs contain duplicates")
         for target_id in active:
             self.require(target_id)
-        active_set = set(active)
-        for target_id in active:
-            conflicts = self.displacement_closure(target_id) & active_set
-            if conflicts:
-                raise TargetResolutionError(
-                    f"active target {target_id!r} displaces "
-                    f"{tuple(sorted(conflicts))!r}"
-                )
-            conflicts = self.require(target_id).conflicts_with & active_set
-            if conflicts:
-                raise TargetResolutionError(
-                    f"active target {target_id!r} conflicts with "
-                    f"{tuple(sorted(conflicts))!r}"
-                )
-            missing = self.requires_closure(target_id) - active_set
-            if missing:
-                raise TargetResolutionError(
-                    f"active target {target_id!r} requires active contributions "
-                    f"{tuple(sorted(missing))!r}; stock does not satisfy requires"
-                )
         return tuple(sorted(active))
 
     def resolve_manifest(
@@ -853,23 +584,20 @@ class TargetCatalog:
                 features_complete=features_complete,
                 reason=(
                     "legacy competition mode 'system' is unregistered; migrate to "
-                    "a slot/atomic target or the future discovery lane"
+                    "a registered target or the future discovery lane"
                 ),
             )
 
         if request is None:
-            spec = self._by_members.get(member_set)
-            if spec is None and member_set:
-                # No exact member set names a node bundle; its target is the one whose
-                # roots hold every address it declared.
-                rooted = [
-                    row for row in self._by_id.values()
-                    if row.node_roots and all(
-                        any(m == r or m.startswith(r + ".") for r in row.node_roots)
-                        for m in member_set
-                    )
-                ]
-                spec = rooted[0] if len(rooted) == 1 else None
+            # A node bundle's target is the one whose roots hold every address it declared.
+            rooted = [
+                row for row in self._by_id.values()
+                if member_set and row.node_roots and all(
+                    any(m == r or m.startswith(r + ".") for r in row.node_roots)
+                    for m in member_set
+                )
+            ]
+            spec = rooted[0] if len(rooted) == 1 else None
             if spec is None:
                 members = tuple(sorted(member_set))
                 return ResolvedTarget(
@@ -892,11 +620,6 @@ class TargetCatalog:
                     f"unknown competition mode {request.mode!r}"
                 )
             spec = self.require(request.target)
-            if request.mode != spec.kind.value:
-                raise TargetResolutionError(
-                    f"target {spec.target_id!r} is catalog kind {spec.kind.value!r}, "
-                    f"not requested mode {request.mode!r}"
-                )
             implicit = False
 
         members = self.admitted_members(spec, members_in_manifest)
@@ -934,25 +657,8 @@ class TargetCatalog:
         ).require_registered().require_complete_features()
 
 
-# Target IDs are intentionally lightweight policy data.  Importing this module
-# must not import Torch through cacheon.slots; a focused test checks that every
-# live SlotSpec has exactly one singleton target and vice versa.
-SINGLETON_TARGET_IDS = (
-    "activation.silu_and_mul", "attention.indexer_select", "attention.sparse_mla",
-    "collective.all_gather_into_tensor", "collective.all_reduce",
-    "collective.reduce_scatter_tensor",
-    "linear.dense", "moe.fused_experts",
-    "moe.fused_routed_experts", "norm.fused_add_rmsnorm", "norm.rmsnorm",
-    "collective.dp_output_projection_norm",
-)
-
-DP_ATTENTION_EXCHANGE_TARGET = "collective.dp_attention_exchange.v1"
-DP_ATTENTION_EXCHANGE_MEMBERS = (
-    "collective.all_gather_into_tensor",
-    "collective.reduce_scatter_tensor",
-)
-SPARSE_ATTENTION_TARGET = "attention.sparse_mla.v1"
-SPARSE_ATTENTION_MEMBERS = ("attention.indexer_select", "attention.sparse_mla")
+# The model's forward pass and the scheduler's prefix cache are the two targets a
+# bundle may replace; a bundle names the modules or the cache object it swaps in.
 # Model and cache replacements are distinct stack entries. Sharing one target
 # erased the incumbent kernels when a miner submitted only a cache (2026-09-28).
 FORWARD_PASS_TARGET = "forward_pass"
@@ -960,40 +666,45 @@ FORWARD_PASS_ROOTS = ("logits_processor", "model")
 PREFIX_CACHE_TARGET = "prefix_cache"
 
 
+def _node_contract(slot_id: str, **fields: object) -> TargetContractRef:
+    return TargetContractRef(
+        schema_version=1, slot_id=slot_id, kind="block", entry="entry",
+        graph_dynamic_inputs=(), kl_threshold=None, **fields,  # type: ignore[arg-type]
+    )
+
+
 @lru_cache(maxsize=1)
 def default_target_catalog() -> TargetCatalog:
-    contracts = _singleton_contracts()
-    # DP output replaces one post-attention region, not later reduce-scatter,
-    # other dense calls or input norms. Evicting their entire contributions
-    # removed working optimizations in the 2026-09-16 mainnet candidate.
-    displacements = {
-        "moe.fused_routed_experts": frozenset({"moe.fused_experts"}),
-        "norm.fused_add_rmsnorm": frozenset({"norm.rmsnorm"}),
+    contracts = {
+        # The numbers are sglang_nodes' row bar and relative floor; the honest
+        # twin scales the rest.
+        FORWARD_PASS_TARGET: _node_contract(
+            FORWARD_PASS_TARGET, prepare="prepare",
+            input_abi_id="node.stock-forward-arguments.input.v1",
+            output_abi_id="node.stock-forward-result.output.v1",
+            reference_id="node.stock-module-in-engine.reference.v1",
+            verification_profile_id="node.stock-twin-rows.verify.v1",
+            binding_family_id="sglang.named-module.v1",
+            correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.75"),
+            tolerances=(ToleranceContractRef("bfloat16", "0", "0.02"),),
+        ),
+        PREFIX_CACHE_TARGET: _node_contract(
+            PREFIX_CACHE_TARGET, prepare=None,
+            input_abi_id="prefix-cache.runtime-object.input.v1",
+            output_abi_id="prefix-cache.runtime-subclass.output.v1",
+            reference_id="prefix-cache.engine-state.reference.v1",
+            verification_profile_id="prefix-cache.content.verify.v1",
+            binding_family_id="sglang.prefix-cache.v1",
+            correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="1"),
+            tolerances=(),
+        ),
     }
-    specs = [
+    return TargetCatalog(
         TargetSpec(
-            target_id=target_id,
-            kind=TargetKind.SLOT,
-            members=(target_id,),
-            displaces=displacements.get(target_id, frozenset()),
-            allowed_features=_STANDARD_COMPONENT_FEATURES,
-            contract_ref=contracts[target_id],
-        )
-        for target_id in SINGLETON_TARGET_IDS
-    ]
-    for target, members in ((DP_ATTENTION_EXCHANGE_TARGET, DP_ATTENTION_EXCHANGE_MEMBERS),
-                            (SPARSE_ATTENTION_TARGET, SPARSE_ATTENTION_MEMBERS)):
-        specs.append(TargetSpec(
-            target_id=target, kind=TargetKind.ATOMIC, members=members,
-            displaces=frozenset(members),
-            allowed_features=_STANDARD_COMPONENT_FEATURES,
-            atomic_semantics_id=f"{target}.atomic-semantics.v1",
-        ))
-    for target, roots in ((FORWARD_PASS_TARGET, FORWARD_PASS_ROOTS),
-                          (PREFIX_CACHE_TARGET, ("tree_cache",))):
-        specs.append(TargetSpec(
             target_id=target, kind=TargetKind.SLOT, members=(target,),
             allowed_features=_STANDARD_COMPONENT_FEATURES,
             contract_ref=contracts[target], node_roots=roots,
-        ))
-    return TargetCatalog(specs)
+        )
+        for target, roots in ((FORWARD_PASS_TARGET, FORWARD_PASS_ROOTS),
+                              (PREFIX_CACHE_TARGET, ("tree_cache",)))
+    )

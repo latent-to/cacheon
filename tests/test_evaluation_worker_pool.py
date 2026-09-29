@@ -94,7 +94,7 @@ def test_version_two_migration_retains_active_lease_and_recovery_events(tmp_path
         assert store.evaluation_recovery_events(original) == events
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_out_of_order_import_releases_only_completed_arrival_prefix(tmp_path, monkeypatch, target):
     with intake._store(tmp_path) as store:
         pending = []
@@ -131,7 +131,7 @@ def test_held_other_target_blocks_new_rewards_but_not_previous_earnings(tmp_path
         first = intake._qualified_settlement_candidate(store, marker="first", index=0)
         held = intake._reserve_one(store, index=1, hotkey="held")
         store.mark_held(held.reservation_id, "inspection")
-        later = intake._qualified_settlement_candidate(store, marker="later", index=2, target="norm.rmsnorm", speedups=("1.1", "1.1"))
+        later = intake._qualified_settlement_candidate(store, marker="later", index=2, target="prefix_cache", speedups=("1.1", "1.1"))
         assert [claim.hotkey for claim in store.passed_reward_claims()] == [first.hotkey]
         assert [row["hotkey"] for row in qualified_winners(store._db)] == [first.hotkey]
         lease = store.lease_settlement_cohort(current_block=11)

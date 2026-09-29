@@ -363,7 +363,7 @@ def test_winners_api_labels_a_stale_hold_as_a_pass(tmp_path, client, monkeypatch
     assert winners[0]["reward_claim_status"] == "offer_unavailable"
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 @pytest.mark.parametrize("score,earns", [("1.1", True), ("1.045", False)])
 def test_waiting_winners_keep_metrics_without_payouts_until_queue_resolves(
     tmp_path, client, monkeypatch, target, score, earns,
@@ -448,8 +448,8 @@ def test_winners_split_same_hotkey_while_miners_keep_total(tmp_path, client, mon
 
 
 @pytest.mark.parametrize("target,other_target", [
-    ("activation.silu_and_mul", "norm.rmsnorm"),
-    ("norm.rmsnorm", "activation.silu_and_mul"),
+    ("forward_pass", "prefix_cache"),
+    ("prefix_cache", "forward_pass"),
 ])
 def test_resolving_earlier_winner_rescores_potential_winners_in_queue_order(
     tmp_path, client, monkeypatch, target, other_target,

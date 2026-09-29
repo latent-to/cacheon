@@ -205,8 +205,7 @@ retained and reopened.
 
 ## Source anchors
 
-- [Typed slot contracts](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
-- [Tensor output specifications](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py)
+- [Node audit against stock](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py)
 - [Qualification quality model](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py)
 - [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 - [Pristine wire protocol](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_protocol.py)

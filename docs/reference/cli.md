@@ -16,11 +16,10 @@ installed `cacheon` console script resolves to the same parser.
 
 | Command | Audience | Authority | Purpose |
 |---|---|---|---|
-| `slots` | all | read-only | Print the registered slot ABI |
 | `compat` | operator | diagnostic | Check the installed SGLang seam surface against the pin |
 | `chain-compat` | operator | diagnostic | Check the installed Bittensor SDK surface without chain access |
 | `scan` | contributor | local gate | Parse a bundle and apply recursive static policy |
-| `verify` | contributor | local gate | Scan and import/signature smoke for node bundles; retained catalog reference checks |
+| `verify` | contributor | local gate | Scan and import/signature smoke for node bundles |
 | `check` | contributor | GPU diagnostic | Run the production node binder, eager audit and captured execution in the published image |
 | `explain` | all | read-only | Say in plain language what an evaluation product records about a bundle |
 | `chain-package` | contributor | packaging | Build a canonical archive and print its content hash |
@@ -54,15 +53,6 @@ or JSON ledger is not an alternate production interface.
 
 ## Contribution commands
 
-### `slots`
-
-```bash
-python -m cacheon.cli slots
-```
-
-Reads the registered `SLOTS` table without importing contribution code or requiring a
-GPU. See the [slot catalog](slots-table.md).
-
 ### `scan`
 
 ```bash
@@ -91,15 +81,11 @@ finding as an inexpensive reason to inspect or fix the source before submission.
 python -m cacheon.cli verify examples/miner_node_identity
 ```
 
-For node bundles, scanning and a fresh-process import/signature smoke establish
-that declared entry and prepare functions can be resolved. No model, fake
+Scanning and a fresh-process import/signature smoke establish that declared
+entry and prepare functions can be resolved. No model, fake
 module or synthetic forward result is used. Preparation, numerics and CUDA
 graph behavior need `check` in the arena image. A wrong node implementation
 can pass this interface check.
-
-Retained catalog bundles still use the existing reference verifier and its
-`--dtype`, `--device`, `--seed`, `--world-size`, `--tp-size` and `--model`
-options. These options do not synthesize a model for node bundles.
 
 ### `check`
 
@@ -346,7 +332,7 @@ a bounded prefix is never labeled complete.
 A candidate-owned load or invocation error is retained as its own qualification
 failure product. With the corresponding `--evidence-root`, this command prints
 the offending reservation and candidate arm, exact error, and diagnostic
-stream hash. Fresh registered qualification is singleton-bound, so a
+stream hash. Fresh registered qualification binds one target, so a
 proved candidate exception is terminal `FAIL` without a retry or a cohort guess.
 
 The report never derives a decision. A row carrying no typed decision is reported

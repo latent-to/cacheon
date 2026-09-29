@@ -87,7 +87,7 @@ attempts also exchange incumbent and candidate physical-lane roles. There is no
 separate screen; the qualification's first window is the only one.
 
 This separates the **execution unit** (a complete disposable engine) from the
-**economic unit** (one singleton target or atomic target). A new optimization can
+**economic unit** (one registered target). A new optimization can
 build on previous wins without repackaging or
 copying them.
 

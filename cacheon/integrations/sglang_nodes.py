@@ -1,6 +1,6 @@
 """Serve any named node of the served model through one audited call body.
 
-A slot name that ``cacheon.slots`` does not define is a node address: a dotted name
+Every registered slot other than the prefix cache is a node address: a dotted name
 from ``named_modules()`` of the served model, where ``*`` stands for exactly one
 segment (``model.layers.*.mlp``). The candidate is a drop-in for that node's stock
 ``forward``: ``entry(prepared, *args, **kwargs)`` receives the stock arguments and
@@ -56,7 +56,6 @@ from cacheon.integrations.sglang_dsa_state import (
     KV_BUFFERS as _KV_BUFFERS, StateFormat, dsa_state_rows, state_values,
 )
 from cacheon.registry import REGISTRY, KernelRegistry
-from cacheon.slots import SLOTS
 
 _RUNNER = "sglang.srt.model_executor.model_runner"
 _STOCK_LOAD = "_cacheon_stock_load_model"
@@ -582,7 +581,7 @@ def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
 
     named = dict(runner.model.named_modules())
     bound: dict[str, str] = {}
-    for slot in sorted(s for s in registry.slots() if s not in SLOTS and s != _CACHE):
+    for slot in sorted(s for s in registry.slots() if s != _CACHE):
         pattern = node_pattern(slot)
         names = [name for name in named if pattern.match(name)]
         error = None

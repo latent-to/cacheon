@@ -1,13 +1,14 @@
 """Opt-in live proof that a bundle kernel executes in the serving path.
 
 This tier boots a real sglang server three times inside a validator worker
-image — null-armed baseline, armed with the exact-math silu bundle, armed
-with the deliberately broken silu bundle — and compares one temperature-0
+image — null-armed baseline, armed with the node identity control, armed
+with the deliberately wrong node control — and compares one temperature-0
 completion across the boots. Activation is log-silent by design, so the
-behavioral probe is the only honest detector: the exact bundle must leave
-the output byte-identical and the broken bundle must corrupt it. If the
-broken arm matches baseline, bundles are not reaching the serving path at
-all, which is the regression this test exists to catch.
+behavioral probe is the only honest detector: the identity bundle must leave
+the output byte-identical and the wrong bundle must corrupt it. If the
+wrong arm matches baseline, bundles are not reaching the serving path at
+all, which is the regression this test exists to catch. Both controls name
+``model.layers.*.mlp``, so the model must have modules of that name.
 
 The tier never runs by default — not in CI and not on GPU hosts. Arm it
 explicitly:
@@ -80,14 +81,14 @@ def _serve_repo() -> Path:
         # The mounted copy is what actually executes in-container; a stale
         # copy would test the wrong tree. content_hash ignores __pycache__
         # and .git, so this is an exact source-identity comparison.
-        for rel in ("cacheon", "examples/miner_silu_torch",
-                    "examples/miner_silu_broken_torch"):
+        for rel in ("cacheon", "examples/miner_node_identity",
+                    "examples/miner_node_wrong"):
             if content_hash(_REPO_ROOT / rel) != content_hash(repo / rel):
                 pytest.fail(
                     f"CACHEON_SERVE_REPO copy is stale: {rel} differs from "
                     "this checkout; refresh the mountable copy"
                 )
-    for bundle in ("miner_silu_torch", "miner_silu_broken_torch"):
+    for bundle in ("miner_node_identity", "miner_node_wrong"):
         stray = list((repo / "examples" / bundle).rglob("__pycache__"))
         if stray:
             pytest.fail(
@@ -195,11 +196,11 @@ def test_bundle_kernel_executes_in_the_serving_path() -> None:
     modes = (
         ("baseline", {}),
         ("armed_exact", {
-            "CACHEON_BUNDLE_PATH": "/repo/examples/miner_silu_torch",
+            "CACHEON_BUNDLE_PATH": "/repo/examples/miner_node_identity",
             "CACHEON_ACTIVE": "1",
         }),
         ("armed_broken", {
-            "CACHEON_BUNDLE_PATH": "/repo/examples/miner_silu_broken_torch",
+            "CACHEON_BUNDLE_PATH": "/repo/examples/miner_node_wrong",
             "CACHEON_ACTIVE": "1",
         }),
     )
@@ -213,12 +214,12 @@ def test_bundle_kernel_executes_in_the_serving_path() -> None:
             _run(["docker", "rm", "-f", name])
 
     assert outputs["armed_exact"] == outputs["baseline"], (
-        "the exact-math bundle changed temperature-0 output; the seam is "
+        "the identity node bundle changed temperature-0 output; the seam is "
         "altering results it must reproduce byte-identically:\n"
         f"baseline: {outputs['baseline']!r}\n"
         f"armed:    {outputs['armed_exact']!r}"
     )
     assert outputs["armed_broken"] != outputs["baseline"], (
-        "the broken bundle left output unchanged, so bundle kernels are NOT "
+        "the wrong node bundle left output unchanged, so bundle kernels are NOT "
         "executing in the serving path; activation is silently dead"
     )

@@ -21,8 +21,8 @@ from cacheon.chain.eval_cost import (
 from cacheon.chain.payload import MAX_PAYLOAD_BYTES, PayloadError, decode_payload
 from cacheon.chain.submit import submit_bundle
 
-_BUNDLE = Path(__file__).resolve().parent.parent / "examples" / "miner_silu_torch"
-_URL = "https://example.com/bundles/miner-silu-torch.tar"
+_BUNDLE = Path(__file__).resolve().parent.parent / "examples" / "miner_node_identity"
+_URL = "https://example.com/bundles/miner-node-identity.tar"
 
 
 def test_dry_run_builds_the_exact_commitment_without_a_chain() -> None:

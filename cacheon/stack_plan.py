@@ -292,31 +292,10 @@ def _candidate_transition(
 
     active = incumbent.entries
     prior = active.get(target_id)
-    if prior is not None:
-        remove: tuple[str, ...] = ()
-        displaced: tuple[ContributionRef, ...] = ()
-    else:
-        # A candidate arm must not retain any incumbent capable of owning the
-        # candidate's live region. This is symmetric at evaluation time even
-        # when catalog width is directional: a narrow challenger removes a
-        # wide incumbent for the comparison; the validator-owned base engine
-        # supplies computation outside the narrow target.
-        # Otherwise runtime priority can time only the incumbent under the
-        # candidate label.
-        candidate_displaces = catalog.displacement_closure(target_id)
-        target_conflicts = catalog.require(target_id).conflicts_with
-        remove = tuple(
-            sorted(
-                active_id
-                for active_id in active
-                if (
-                    active_id in candidate_displaces
-                    or target_id in catalog.displacement_closure(active_id)
-                    or active_id in target_conflicts
-                )
-            )
-        )
-        displaced = tuple(active[target] for target in remove)
+    # Targets never share a node (disjoint roots), so a transition replaces its
+    # own entry and nothing else; ``displaced`` stays empty on the wire.
+    remove: tuple[str, ...] = ()
+    displaced: tuple[ContributionRef, ...] = ()
 
     transition = TargetTransition(
         target_id=target_id,

@@ -10,7 +10,7 @@ from cacheon.settlement import SettlementCandidate, SettlementEvidence
 from tests.test_chain_intake import _qualified_settlement_candidate, _settlement_plan, _store
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_one_attempt_reaches_settlement_and_rewards_without_reproduction(tmp_path, target):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store, target=target)
@@ -33,7 +33,7 @@ def test_one_attempt_reaches_settlement_and_rewards_without_reproduction(tmp_pat
         assert store._db.execute("SELECT COUNT(*) FROM settlement_qualifications").fetchone()[0] == 1
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_restart_accepts_old_controller_primary_without_repeating_it(tmp_path, target):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store, target=target)

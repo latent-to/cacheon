@@ -59,7 +59,7 @@ BASELINE_DIR = ROOT / "scripts" / "surface_baseline"
 DIFF_KEYS = 20
 DIFF_WIDTH = 400
 THIRD_PARTY = ("bittensor", "numpy", "sglang", "torch")
-STACK_FIXTURES = ("tests/fixtures/stack_norm_singleton",)
+STACK_FIXTURES = ("tests/fixtures/node_singleton",)
 
 sys.path.insert(0, str(ROOT))
 # argparse wraps help to the terminal width; pin it before any format_help.

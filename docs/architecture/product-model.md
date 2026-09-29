@@ -66,8 +66,8 @@ trust domain. C′/B″ are not reads on this substrate; their schedules are del
 
 The **reward unit** is the smallest validator-controlled attributable delta:
 
-- one registered singleton slot;
-- one registered atomic target spanning an explicit set of semantic regions.
+- the modules of the served model a bundle names under `forward_pass`; or
+- the scheduler's prefix cache under `prefix_cache`.
 
 The candidate stack is built by the validator. It equals the incumbent stack except for one selected target transition. The miner does not supply the incumbent entries and does not gain attribution for the whole engine simply because the complete engine is the safe execution envelope.
 
@@ -120,25 +120,21 @@ The evaluation stack is an economic hill-climb state; the reference manifest is 
 
 The validator-owned target catalog defines what can receive ordinary attribution. It records:
 
-- target identity and kind;
-- singleton members or the explicit members of an atomic target;
-- the frozen slot contract digest;
-- permitted contribution features;
-- overlap, displacement, conflicts, and requirements.
+- target identity and its node roots;
+- the frozen contract digest;
+- permitted contribution features.
 
-Miner packaging and manifest row order do not define economic scope. A bundle that explicitly claims a registered target but does not resolve to its exact members and allowed features fails resolution rather than falling through to an unregistered identity.
+Miner packaging and manifest row order do not define economic scope. A bundle that explicitly claims a registered target but declares addresses outside its roots, overlapping nodes, or unadmitted features fails resolution rather than falling through to an unregistered identity.
 
-The registered catalog contains every singleton slot and the atomic
-`collective.dp_attention_exchange.v1` target. The atomic target owns both
-`collective.all_gather_into_tensor` and `collective.reduce_scatter_tensor`, and
-explicitly displaces the corresponding singleton targets while active. The live
-policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
+The registered catalog contains `forward_pass` (node roots `model` and
+`logits_processor`) and `prefix_cache` (`tree_cache`). Their roots are disjoint, so
+one transition never displaces the other entry. The live policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## Unregistered work
 
 Cross-cutting work that cannot be expressed as one registered target is not a
 valid submission. The only path for it is a reviewed validator-side catalog
-change (a new slot or atomic target), followed by fresh qualification and CROWN
+change (a new target), followed by fresh qualification and CROWN
 linkage. A fenced "discovery lane" for such proposals existed until 2026-08-19;
 it never admitted a production proposal and was removed.
 
@@ -193,7 +189,7 @@ The product model is intact only if all six statements hold:
 
 Before extending Cacheon, locate the feature in this model:
 
-1. **What is the reward unit?** Name the exact registered singleton or atomic target.
+1. **What is the reward unit?** Name the exact registered target and the nodes it replaces.
    “The whole engine” is not an acceptable default.
 2. **Who supplies surrounding code?** The validator must assemble the incumbent; a miner
    must not be required to redistribute other contributors' bundles.

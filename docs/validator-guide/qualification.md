@@ -16,7 +16,7 @@ Before a candidate runs, the validator binds:
 
 - finalized reservation and hotkey;
 - arena service and workload;
-- target catalog and exact singleton or atomic target;
+- target catalog and exact registered target;
 - submitted-delta digest;
 - incumbent and candidate `EvaluationStackManifest` digests;
 - materialized engine-tree and launch identities;
@@ -395,7 +395,7 @@ restart/hold handling rather than this typed batch product. Neither mechanism ch
 finalized arrival order.
 
 A typed candidate-worker error is attributable only when rank receipts bind the exact
-registered singleton arm and identity. It publishes a terminal candidate failure product
+registered target arm and identity. It publishes a terminal candidate failure product
 instead of entering the generic retry path. Baseline-lane, shared-controller, audit/T,
 multi-candidate, or untyped worker failures are infrastructure authority failures; they
 are never assigned to a convenient candidate.
@@ -457,7 +457,7 @@ dispatcher recorded inside a CUDA-graph capture count.
 | Observation | Decision |
 |---|---|
 | Ranks do not all activate the same slot set | Launch fails; infrastructure HOLD unless rank receipts record the candidate's own load or invocation failure |
-| No completion at all, or completions only outside a capture | `FAIL` (`candidate_never_executed`) under the singleton attribution rule above |
+| No completion at all, or completions only outside a capture | `FAIL` (`candidate_never_executed`) under the one-target attribution rule above |
 | Some ranks or slots complete and others do not | Infrastructure HOLD / non-verdict |
 | Every rank completes every registered slot | Speed evidence may be graded |
 

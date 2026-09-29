@@ -28,7 +28,7 @@ from cacheon.eval.calibration import CalibrationEvidenceSet, derive_calibration_
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import (
-    M3_REGISTERED_TARGET_IDS,
+    NODE_TARGET_IDS,
     StubHiddenJudge as _Judge,
     gpu as _gpu,
     qualification_capabilities as _capabilities,
@@ -176,22 +176,22 @@ def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> N
             _h(f"resolver:{target_id}"),
             lambda _candidate, _prepared: object(),
         )
-        for target_id in M3_REGISTERED_TARGET_IDS
+        for target_id in NODE_TARGET_IDS
     )
 
     assert tuple(
         commission._require_complete_factory_profiles(
-            profiles, M3_REGISTERED_TARGET_IDS
+            profiles, NODE_TARGET_IDS
         )
     ) == (
-        M3_REGISTERED_TARGET_IDS
+        NODE_TARGET_IDS
     )
     with pytest.raises(
         commission.B300QualificationCommissionError,
         match="full catalog",
     ):
         commission._require_complete_factory_profiles(
-            profiles[:-1], M3_REGISTERED_TARGET_IDS
+            profiles[:-1], NODE_TARGET_IDS
         )
 
 
@@ -546,7 +546,7 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
     from cacheon.eval.reference_quality import retained_support_policy_digest
     from tests import test_b300_deployment as fixtures
     from tests.test_b300_sealed_qualification_commission import _block
-    from tests.support.b300 import GLM53_REGISTERED_TARGET_IDS
+    from tests.support.b300 import NODE_AND_CACHE_TARGET_IDS
 
     paths, gpus, ready = fixtures._case(tmp_path, gpu_model=gpu_model, host_size=2 * tp, lane=tuple(range(tp)))
     for name in ("prompt_authority", "authority_config", "measurement_config"):
@@ -555,7 +555,7 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
     prompt["workload_cell"]["timed_reads"] = 3
     prompt["prompt_batches"].append(["four"])
     if tp == 4:
-        prompt.update(model_profile_key="GLM-5.3-NVFP4", registered_targets=list(GLM53_REGISTERED_TARGET_IDS))
+        prompt.update(model_profile_key="GLM-5.3-NVFP4", registered_targets=list(NODE_AND_CACHE_TARGET_IDS))
         prompt["engine_config"]["engine_kwargs"].update(dp_size=4, enable_dp_attention=True)
     prompt_sha = fixtures._write(paths["prompt_authority"], prompt)
     block = _block()

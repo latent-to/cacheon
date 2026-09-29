@@ -20,20 +20,9 @@ from cacheon.eval.oci_prebuild import OCIPrebuildPolicy
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 
 
-M3_REGISTERED_TARGET_IDS = (
-    "activation.silu_and_mul",
-    "collective.all_reduce",
-    "moe.fused_experts",
-    "norm.rmsnorm",
-)
-
-GLM53_REGISTERED_TARGET_IDS = (
-    "collective.all_reduce",
-    "collective.dp_attention_exchange.v1",
-    "linear.dense",
-    "moe.fused_routed_experts",
-    "norm.fused_add_rmsnorm",
-)
+# What a node arena registers: the model's nodes, and optionally the prefix cache.
+NODE_TARGET_IDS = ("forward_pass",)
+NODE_AND_CACHE_TARGET_IDS = ("forward_pass", "prefix_cache")
 
 
 def sha(label: str) -> str:

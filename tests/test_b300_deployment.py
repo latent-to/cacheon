@@ -18,8 +18,8 @@ from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.oci_backend import runtime_identity_from_preflight
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from tests.support.b300 import (
-    GLM53_REGISTERED_TARGET_IDS,
-    M3_REGISTERED_TARGET_IDS,
+    NODE_AND_CACHE_TARGET_IDS,
+    NODE_TARGET_IDS,
     gpu as _gpu,
 )
 from tests.support.preflight import preflight_receipt
@@ -106,7 +106,7 @@ def _case(
     prompt = tmp_path / "prompt-authority.json"
     prompt_value = {
         "accepted_token_subsequences": [],
-        "registered_targets": list(M3_REGISTERED_TARGET_IDS),
+        "registered_targets": list(NODE_TARGET_IDS),
         "hidden_corpus_commitment": _h("hidden-corpus"),
         "hidden_judge_digest": _h("hidden-judge"),
         "hidden_task_policy_digest": _h("hidden-task-policy"),
@@ -127,7 +127,6 @@ def _case(
     }
     if gpu_model == "h100":
         prompt_value.update(
-            registered_targets=["activation.silu_and_mul", "linear.dense", "moe.fused_experts"],
             model_profile_key="Qwen3.6-35B-A3B-BF16", engine_config=_qwen_engine_config(),
         )
     prompt_value["engine_config"]["tp_size"] = len(lane)
@@ -526,20 +525,20 @@ def test_registered_targets_are_sealed_arena_data() -> None:
 
     catalog = default_target_catalog()
     registered, closed = deployment._target_partition(
-        {"registered_targets": list(M3_REGISTERED_TARGET_IDS)}, catalog
+        {"registered_targets": list(NODE_TARGET_IDS)}, catalog
     )
-    assert registered == M3_REGISTERED_TARGET_IDS
-    assert set(closed).isdisjoint(M3_REGISTERED_TARGET_IDS)
-    assert set(closed) | set(M3_REGISTERED_TARGET_IDS) == set(
+    assert registered == NODE_TARGET_IDS
+    assert set(closed).isdisjoint(NODE_TARGET_IDS)
+    assert set(closed) | set(NODE_TARGET_IDS) == set(
         row["target_id"] for row in catalog.snapshot()["targets"]
     )
 
     glm_registered, glm_closed = deployment._target_partition(
-        {"registered_targets": list(GLM53_REGISTERED_TARGET_IDS)}, catalog
+        {"registered_targets": list(NODE_AND_CACHE_TARGET_IDS)}, catalog
     )
-    assert glm_registered == GLM53_REGISTERED_TARGET_IDS
-    assert set(glm_closed).isdisjoint(GLM53_REGISTERED_TARGET_IDS)
-    assert set(glm_closed) | set(GLM53_REGISTERED_TARGET_IDS) == set(
+    assert glm_registered == NODE_AND_CACHE_TARGET_IDS
+    assert set(glm_closed).isdisjoint(NODE_AND_CACHE_TARGET_IDS)
+    assert set(glm_closed) | set(NODE_AND_CACHE_TARGET_IDS) == set(
         row["target_id"] for row in catalog.snapshot()["targets"]
     )
     with pytest.raises(

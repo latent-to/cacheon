@@ -95,9 +95,9 @@ def test_normalized_source_strips_docstring_and_comments():
 def _delta(**changes):
     values = dict(
         product_kind="component",
-        target_id="activation.silu_and_mul",
+        target_id="forward_pass",
         target_spec_digest="a" * 64,
-        members=("activation.silu_and_mul",),
+        members=("model.layers.*.mlp",),
         exact_payload_digest="b" * 64,
         selected_delta_digest="c" * 64,
         normalized_delta_digest="d" * 64,
@@ -139,8 +139,8 @@ def test_shared_fragment_and_structure_are_advisory_only():
 def test_different_static_targets_do_not_cross_demote():
     original = _delta()
     other = _delta(
-        target_id="norm.rmsnorm",
-        members=("norm.rmsnorm",),
+        target_id="prefix_cache",
+        members=("tree_cache",),
     )
     assert compare_submitted_deltas(original, other).reason == "different_reward_namespace"
 
@@ -164,9 +164,9 @@ def test_structural_advisory_is_not_auto_demote(tmp_path):
     # bob renames every variable and tweaks a constant: exact, normalized, and
     # per-file containment fingerprints ALL differ, but the structural skeleton
     # matches -> surfaced as shared_advisory, never an authoritative demote.
-    alice = _write_bundle(tmp_path / "a", [("activation.silu_and_mul", "kernels/k.py", "silu_and_mul")],
+    alice = _write_bundle(tmp_path / "a", [("model.layers.*.mlp", "kernels/k.py", "silu_and_mul")],
                           {"kernels/k.py": ORIG})
-    bob = _write_bundle(tmp_path / "b", [("activation.silu_and_mul", "kernels/k.py", "silu_and_mul")],
+    bob = _write_bundle(tmp_path / "b", [("model.layers.*.mlp", "kernels/k.py", "silu_and_mul")],
                         {"kernels/k.py": RENAMED_TWEAKED})
     decision = compare_submitted_deltas(
         fingerprint_submitted_delta(alice), fingerprint_submitted_delta(bob)
@@ -196,12 +196,12 @@ def _write_bundle(root: Path, ops: list[tuple[str, str, str]], files: dict[str, 
 def test_submitted_delta_excludes_unselected_bundle_files(tmp_path):
     first = _write_bundle(
         tmp_path / "first",
-        [("activation.silu_and_mul", "kernels/k.py", "silu_and_mul")],
+        [("model.layers.*.mlp", "kernels/k.py", "silu_and_mul")],
         {"kernels/k.py": ORIG},
     )
     padded = _write_bundle(
         tmp_path / "padded",
-        [("activation.silu_and_mul", "kernels/k.py", "silu_and_mul")],
+        [("model.layers.*.mlp", "kernels/k.py", "silu_and_mul")],
         {
             "kernels/k.py": ORIG,
             "kernels/unselected.py": "def unrelated():\n    return 17\n",
@@ -254,12 +254,12 @@ def _containment_decision(earlier: Path, later: Path):
 
 def test_relocated_body_behind_a_reexport_is_still_flagged(tmp_path):
     # alice: the body lives in the DECLARED entry module.
-    a = _write_bundle(tmp_path / "a", [("activation.silu_and_mul", "kernels/silu.py", "silu_and_mul")],
+    a = _write_bundle(tmp_path / "a", [("model.layers.*.mlp", "kernels/silu.py", "silu_and_mul")],
                       {"kernels/silu.py": ORIG})
     # bob: entry is a one-line re-export; alice's body (reflowed) hides in an imported
     # module at a DIFFERENT path — the exact-hash AND per-slot closure fingerprints
     # all differ, so only the per-file containment compare can catch it.
-    b = _write_bundle(tmp_path / "b", [("activation.silu_and_mul", "kernels/silu.py", "silu_and_mul")],
+    b = _write_bundle(tmp_path / "b", [("model.layers.*.mlp", "kernels/silu.py", "silu_and_mul")],
                       {"kernels/silu.py": "from ._impl import silu_and_mul\n",
                        "kernels/_impl.py": REFORMATTED})
     decision = compare_submitted_deltas(
@@ -269,17 +269,18 @@ def test_relocated_body_behind_a_reexport_is_still_flagged(tmp_path):
 
 
 def test_padding_an_extra_op_cannot_even_resolve_a_target(tmp_path):
-    # bob pads the stolen (reflowed, relocated) slot with a second unrelated op so a
-    # whole-bundle identity could never match alice's single-op bundle. On the live
-    # path this evasion is rejected STRUCTURALLY: a submission must resolve to one
-    # registered target, and no target has these members — the padded bundle never
-    # even reaches the copy comparator.
+    # bob pads the stolen (reflowed, relocated) node with an op of another target (the
+    # prefix cache) so a whole-bundle identity could never match alice's single-op
+    # bundle. On the live path this evasion is rejected STRUCTURALLY: a submission
+    # must resolve to one registered target, and no target's roots hold both nodes —
+    # the padded bundle never even reaches the copy comparator. Padding inside the
+    # forward pass is the next test's containment case.
     from cacheon.target_catalog import TargetResolutionError
 
     pad = "import torch\n\ndef rmsnorm(x, w, out, eps):\n    v = (x * x).mean(-1, keepdim=True)\n    out.copy_(x * torch.rsqrt(v + eps) * w)\n"
     b = _write_bundle(tmp_path / "b",
-                      [("activation.silu_and_mul", "kernels/main.py", "silu_and_mul"),
-                       ("norm.rmsnorm", "kernels/rms.py", "rmsnorm")],
+                      [("model.layers.*.mlp", "kernels/main.py", "silu_and_mul"),
+                       ("tree_cache", "kernels/rms.py", "rmsnorm")],
                       {"kernels/main.py": REFORMATTED, "kernels/rms.py": pad})
     with pytest.raises(TargetResolutionError, match="no registered exact target"):
         fingerprint_submitted_delta(b)
@@ -315,9 +316,9 @@ def test_shared_vendored_utility_alone_is_not_a_copy(tmp_path):
     util = ("import torch\n\ndef ceil_div(a, b):\n    return (a + b - 1) // b\n\n"
             "def pad_to(x, m):\n    r = x.shape[-1] % m\n    return x if r == 0 else "
             "torch.nn.functional.pad(x, (0, m - r))\n")
-    a = _write_bundle(tmp_path / "a", [("activation.silu_and_mul", "kernels/k.py", "silu_and_mul")],
+    a = _write_bundle(tmp_path / "a", [("model.layers.*.mlp", "kernels/k.py", "silu_and_mul")],
                       {"kernels/k.py": "from .util import ceil_div\n" + ORIG, "kernels/util.py": util})
-    b = _write_bundle(tmp_path / "b", [("activation.silu_and_mul", "kernels/k.py", "silu_and_mul")],
+    b = _write_bundle(tmp_path / "b", [("model.layers.*.mlp", "kernels/k.py", "silu_and_mul")],
                       {"kernels/k.py": "from .util import ceil_div\n" + DIFFERENT, "kernels/util.py": util})
     decision = compare_submitted_deltas(
         fingerprint_submitted_delta(a), fingerprint_submitted_delta(b)
@@ -327,10 +328,10 @@ def test_shared_vendored_utility_alone_is_not_a_copy(tmp_path):
 
 
 def test_file_fingerprints_skip_boilerplate_and_follow_imports(tmp_path):
-    b = _write_bundle(tmp_path / "b", [("activation.silu_and_mul", "kernels/silu.py", "silu_and_mul")],
+    b = _write_bundle(tmp_path / "b", [("model.layers.*.mlp", "kernels/silu.py", "silu_and_mul")],
                       {"kernels/silu.py": "from ._impl import silu_and_mul\n",
                        "kernels/_impl.py": ORIG})
-    file_fps = bundle_slot_file_fingerprints(b)["activation.silu_and_mul"]
+    file_fps = bundle_slot_file_fingerprints(b)["model.layers.*.mlp"]
     # the one-line re-export shim is boilerplate (below the substantial floor); the
     # imported body is followed and fingerprinted path-independently.
     assert source_fingerprint(ORIG) in file_fps
@@ -339,7 +340,7 @@ def test_file_fingerprints_skip_boilerplate_and_follow_imports(tmp_path):
 # ---- multiple variants of one slot -----------------------------------------
 
 
-_SLOT = "activation.silu_and_mul"
+_SLOT = "model.layers.*.mlp"
 _ROWS = [
     (_SLOT, "small", "kernels/small.py", "silu_and_mul"),
     (_SLOT, "large", "kernels/large.py", "silu_and_mul"),
