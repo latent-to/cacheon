@@ -726,6 +726,14 @@ profile (`hidden_tasks_per_prompt=0`, `hidden_tasks_required=false`), not numeri
 answer tasks. Its reference token maximum equals the largest output budget in
 the selected slice; conditioning generates 16 tokens.
 
+New replay commissions require V17 statistical eligibility. The commissioner
+rejects a legacy fixed-threshold goodput declaration before staging a run;
+V16 remains readable only to reproduce its original evidence. A noise estimate
+for summed request latency cannot calibrate elapsed serving cost. Calibration
+must cover the commissioned workload, arrivals, engine state and lane schedule.
+An error budget is conditional on those noise bounds; merely setting 1% does
+not establish a measured false-positive rate.
+
 Both OCI engines condition and flush before concurrent reads. V17 permits two
 to five paired windows, splitting them between both physical orientations. Costs
 pool within each orientation; the score is the geometric mean of the two pooled
@@ -749,8 +757,10 @@ an engine load, whose allocator and cache warm-up differs between engines, does 
 decide the verdict, while a slowdown that recurs in every pass remains a cost. The
 attainment gate still applies to every window.
 
-The dashboard reports replay measurements as **seconds per warm turn** (lower is
-better), including each arm's per-window latency and service attainment, the
+The dashboard reports V17 replay measurements as elapsed serving seconds and
+**completed warm turns per second**, with lane-balanced rates matching the
+scorer. V16 retains seconds per warm turn (lower is better).
+Both include each arm's per-window latency and service attainment, the
 operating load, completed window count, workload identity and required gain.
 V16 marks each engine's fastest complete pass and uses those pass latencies in
 the baseline and candidate summaries. The detail includes mean and P95 TTFT,
@@ -759,6 +769,17 @@ The attempt's retained workload and policy identify its regime, regardless of
 submission date. V17 uses pooled elapsed cost across lane orientations. Historical
 batch evaluations retain their token-throughput units. Replay evidence does not
 enter the historical token-rate baseline band.
+
+The economic interpretation assumes identical billable work, fixed GPU
+allocation and cost, and demand for the measured capacity. At fixed basket
+value `V`, measured duration `T` and GPU count `g`, revenue capacity per GPU-hour
+is `3600 V / (g T)`. Subtracting the same hourly GPU cost preserves its ordering.
+A positive revenue-capacity gain understates percentage profit gain only when
+the incumbent's profit is positive. It does not guarantee realized profit when
+demand, prices, cache-billing rules or the traffic schedule change. Lockstep
+replay characterizes its declared arrival schedule, not arbitrary continuous
+traffic. Service attainment is a relative non-inferiority check; the retained
+`attainment` target does not certify an absolute SLA or change billable value.
 
 On a speed PASS, the candidate engine closes and the existing entropy provider
 selects source occurrences from the completed B/C trajectories. The still-loaded

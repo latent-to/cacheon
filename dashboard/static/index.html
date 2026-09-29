@@ -522,9 +522,9 @@ async function viewWinners() {
         <div class="muted small">${w.speedup_primary ? w.speedup_primary.toFixed(5) + "× primary" : ""}
         ${w.speedup_reproduction ? "· " + w.speedup_reproduction.toFixed(5) + "× repro" : ""}</div></td>
     <td>${rewardComparison(w)}</td>
-    <td>${measuredValue(w.baseline_tokens_per_second, w.baseline_mean_warm_latency_s)}
+    <td>${measuredValue(w.baseline_tokens_per_second, w.baseline_mean_warm_latency_s, w.baseline_replay_turns_per_second)}
         <div class="muted small">${esc(w.baseline_kind)}</div></td>
-    <td>${measuredValue(w.tokens_per_second, w.mean_warm_latency_s)}
+    <td>${measuredValue(w.tokens_per_second, w.mean_warm_latency_s, w.replay_turns_per_second)}
         </td>
     <td>${w.prefill_speedup != null ? metricGain(w.prefill_speedup) : '<span class="muted">Not measured</span>'}</td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
@@ -759,7 +759,7 @@ window.openDetail = async (rid) => {
           ? `<a href="${esc(checkpoint.url)}" target="_blank" rel="noopener noreferrer">${esc(checkpoint.repo)} ↗</a>`
           : '<span class="muted">No retained checkpoint mapping</span>')}
         ${checkpoint ? kv("Checkpoint revision", `<code class="small">${esc(checkpoint.revision)}</code>`) : ""}
-        ${kv("Measured baseline", measuredValue(baselineTps, (d.baseline_measurements || {}).baseline_mean_warm_latency_s))}
+        ${kv("Measured baseline", measuredValue(baselineTps, (d.baseline_measurements || {}).baseline_mean_warm_latency_s, (d.baseline_measurements || {}).baseline_replay_turns_per_second))}
         ${kv("Baseline submission", baseline.reservation_id ? submissionLink(baseline.reservation_id)
           : baseline.evaluated || baseline.assigned
             ? (baseline.artifact_digest ? "Submission not recorded" : "Base engine — no submission")
@@ -837,7 +837,7 @@ window.openDetail = async (rid) => {
       ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
       ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}
       ${kv("Target", esc(d.target_id || "—") + `<div class="muted small">${esc(d.target_summary)}</div>`)}
-      ${kv("Measured candidate", measuredValue(d.tokens_per_second, d.mean_warm_latency_s))}
+      ${kv("Measured candidate", measuredValue(d.tokens_per_second, d.mean_warm_latency_s, d.replay_turns_per_second))}
       ${kv("Submission source", sourceLink)}
       ${kv("Content hash", `<code class="small">${esc(short(d.content_hash, 26))}</code>`)}
       ${kv("Eval fee", d.payment

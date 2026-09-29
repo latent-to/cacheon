@@ -84,6 +84,14 @@ def test_statistical_replay_reports_its_elapsed_basis_without_fastest_pass_flags
     assert "grading_error" not in speed
     assert speed["policy_version"] == 17 and speed["score_basis"] == "pooled_elapsed_orientation"
     assert all("used_for_score" not in row for row in speed["lanes"])
+    assert speed["metric"] == "fixed_work_rate"
+    assert speed["lanes"][0]["elapsed_s"] == 14
+    assert speed["lanes"][0]["turns_per_second"] == pytest.approx(4 / 14)
+    assert speed["grading"]["standard_error"] > 0
+    assert speed["grading"]["lower_speedup"] == pytest.approx(speed["speedup"] / speed["grading"]["required_speedup"])
+    baseline = measured_baseline([speed], {})["baseline_replay_turns_per_second"]
+    candidate = candidate_measurement([speed])["replay_turns_per_second"]
+    assert candidate / baseline == pytest.approx(speed["speedup"])
 
 
 def test_corrupt_replay_witness_reports_its_original_error():

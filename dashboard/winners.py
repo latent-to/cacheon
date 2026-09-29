@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from statistics import geometric_mean
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,8 @@ def measured_baseline(speed_reads: list[object], primary: dict[str, Any], *, bas
     return {
         "baseline_tokens_per_second": round(float(min(rates)), 1) if rates else None,
         "baseline_kind": kind,
+        **({"baseline_replay_turns_per_second": rate}
+           if (rate := _replay_rate(speed_reads, "B")) is not None else {}),
         **({"baseline_mean_warm_latency_s": _warm_latency(speed_reads, "B")}
            if any(isinstance(s, dict) and s.get("metric") == "warm_turn_latency" for s in speed_reads) else {}),
     }
@@ -125,10 +128,28 @@ def _warm_latency(speeds: list[object], role: str) -> float | None:
 
 def candidate_measurement(speeds: list[object]) -> dict[str, float | None]:
     """Expose the measured unit of the retained qualification, without converting latency to tokens."""
+    if (rate := _replay_rate(speeds, "C")) is not None:
+        return {"tokens_per_second": None, "replay_turns_per_second": rate}
     if any(isinstance(s, dict) and s.get("metric") == "warm_turn_latency" for s in speeds):
         return {"tokens_per_second": None, "mean_warm_latency_s": _warm_latency(speeds, "C")}
     rate = conservative_candidate_tokens_per_second(speeds)
     return {"tokens_per_second": round(float(rate), 1) if rate is not None else None}
+
+
+def _replay_rate(speeds: list[object], role: str) -> float | None:
+    """Match the scorer's pooled costs and equal weighting of physical orientations."""
+    rates = []
+    for speed in speeds:
+        if not isinstance(speed, dict) or speed.get("metric") != "fixed_work_rate":
+            continue
+        lanes = {}
+        for row in speed["lanes"]:
+            if row["role"] == role:
+                turns, seconds = lanes.get(row["physical_lane"], (0, 0))
+                lanes[row["physical_lane"]] = turns + row["warm_turns"], seconds + row["elapsed_s"]
+        if lanes:
+            rates.append(geometric_mean(turns / seconds for turns, seconds in lanes.values()))
+    return min(rates) if rates else None
 
 
 def prefill_summary(speed_reads: list[object]) -> dict[str, float | None]:

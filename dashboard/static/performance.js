@@ -1,6 +1,7 @@
 "use strict";
 
-function measuredValue(tokensPerSecond, meanLatency) {
+function measuredValue(tokensPerSecond, meanLatency, replayRate) {
+  if (replayRate != null) return `<b>${metricNumber(replayRate, 3)}</b> turns/s (lane-balanced)`;
   if (meanLatency != null) return `<b>${metricNumber(meanLatency, 3)}</b> s/warm turn`;
   return tokensPerSecond != null ? `<b>${metricNumber(tokensPerSecond)}</b> tok/s` : '<span class="muted">Unavailable</span>';
 }
@@ -12,7 +13,8 @@ function replayPerformance(speed, title) {
   const read = lane => `${lane.role === "B" ? "Incumbent" : "Candidate"} · pass ${metricNumber(lane.window, 0)}`;
   const rows = speed.lanes.map((lane) => `<tr>
     <td>${read(lane)} ${lane.used_for_score ? '<span class="pill info">scored</span>' : ''}</td>
-    <td>${metricNumber(lane.warm_turns, 0)}</td><td>${metricNumber(lane.mean_warm_latency_s, 3)}</td>
+    <td>${metricNumber(lane.warm_turns, 0)}</td><td>${metricNumber(fastest ? lane.mean_warm_latency_s : lane.elapsed_s, 3)}</td>
+    ${fastest ? '' : `<td>${metricNumber(lane.turns_per_second, 3)}</td>`}
     <td>${metricNumber(lane.attainment * 100, 2)}%</td></tr>`);
   const diagnostics = speed.lanes.map((lane) => `<tr><td>${read(lane)}</td>
     <td>${metricNumber(lane.mean_ttft_s, 3)}</td><td>${metricNumber(lane.p95_ttft_s, 3)}</td>
@@ -23,11 +25,12 @@ function replayPerformance(speed, title) {
       with ${metricNumber(speed.windows, 0)} paired passes. The recorded workload determines the measurement, including for earlier submissions.</p>
     <div class="cards">${card(metricGain(speed.speedup), "Scored improvement")}
       ${card(metricGain(grade.required_speedup), "Required improvement")}
+      ${grade.lower_speedup == null ? '' : card(metricGain(grade.lower_speedup), "Lower gain bound (calibrated model)")}
       ${card(metricNumber(gap, 2) + " pp", "Gap to speed threshold")}
       ${card(metricNumber(speed.speed_stage_seconds / 60, 1) + " min", "Speed stage, including startup")}</div>
     <p>${esc(grade.detail)}.</p>
-    <div class="metrics-table">${table(["Read", "Warm turns", "Mean turn (s)", "Service attainment"], rows)}</div>
-    <p class="metric-note">Lower latency is better. Timing starts at round release; the opening cold-prefill round is excluded.
+    <div class="metrics-table">${table(["Read", "Warm turns", fastest ? "Mean turn (s)" : "Elapsed serving (s)", ...(fastest ? [] : ["Turns/s"]), "Service attainment"], rows)}</div>
+    <p class="metric-note">Timing starts at the first warm release; the opening cold-prefill round is excluded.
       ${fastest ? "The score divides the incumbent’s fastest complete-pass latency by the candidate’s fastest complete-pass latency. The scored passes are marked above."
         : "The score pools elapsed serving time within each lane orientation and combines both orientations geometrically. Mean request latency is diagnostic."}</p>
     <details><summary>Latency and service diagnostics</summary>
@@ -39,7 +42,8 @@ function replayPerformance(speed, title) {
       Attainment includes every attempted turn. Candidate attainment less its noise allowance of
       ${metricNumber(grade.attainment_margin * 100, 2)} percentage points must stay within
       ${metricNumber(grade.attainment_tolerance * 100, 2)} percentage points of the incumbent in each window.</p>
-    <p class="metric-note">Configured noise allowance: ${metricNumber(grade.null_noise * 100, 3)}% · replay policy ${metricNumber(speed.policy_version, 0)}.
+    <p class="metric-note">${fastest ? 'Configured noise allowance' : 'Configured paired window log SD'}: ${metricNumber(grade.null_noise * 100, 3)}% · replay policy ${metricNumber(speed.policy_version, 0)}.
+      ${grade.standard_error == null ? '' : `Final log standard error: ${metricNumber(grade.standard_error * 100, 3)}%; configured paired boot log SD: ${metricNumber(grade.boot_noise * 100, 3)}%. The statistical bound depends on the commissioned calibration.`}
       Workload <code style="overflow-wrap:anywhere">${esc(speed.workload_digest)}</code>.</p></details>
   </section>`;
 }
@@ -58,7 +62,7 @@ function performanceMetrics(attempt) {
     <p>${pill(attempt.decision)} <span class="muted small">${esc(attempt.reason || "")}</span></p>`;
   if (speed?.grading_error && !speed.lanes.length)
     return `<section class="performance">${title}<p class="notice">Retained grading evidence could not be read: ${esc(speed.grading_error)}</p></section>`;
-  if (speed?.metric === "warm_turn_latency") return replayPerformance(speed, title);
+  if (["warm_turn_latency", "fixed_work_rate"].includes(speed?.metric)) return replayPerformance(speed, title);
   if (!speed || !speed.lanes.length)
     return `<section class="performance">${title}<p class="metric-note">Retained measurements are unavailable for this attempt.</p></section>`;
   const output = speed.lanes.filter((lane) => lane.tokens_per_second != null);

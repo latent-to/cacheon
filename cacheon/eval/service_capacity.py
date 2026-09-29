@@ -1,13 +1,9 @@
 """Service rate of one engine on a fixed agent slice, and the paired verdict.
 
-The agent arena scores speed at the service boundary: the fixed-work turn rate
-an engine sustains at the sealed operating load, where the sealed contract
-(decode floor, queue-inclusive TTFT bound) holds for the incumbent. Candidate
-and incumbent replay identical work at that load in paired windows; the
-verdict is the rate ratio, gated by attainment non-inferiority so a candidate
-cannot buy rate by starving turns. Every number here is recomputed from
-per-turn rows stamped by the trusted controller, so a retained run regrades to
-the same verdict. The 2026-09-26 interpolated-capacity design (two bracket
+Candidate and incumbent replay identical work at a sealed load. Controller
+timestamps supply elapsed serving cost and a relative service-attainment gate;
+that gate does not certify an absolute SLA. Historical latency scores retain
+their original meaning. The 2026-09-26 interpolated-capacity design (two bracket
 loads, log-linear crossing) was withdrawn on 2026-09-27: its 8×12 pairings
 carried a 9-15% same-engine spread.
 """
@@ -128,7 +124,7 @@ class LoadRead:
 
 @dataclass(frozen=True)
 class WorkRate:
-    """Timed warm turns, their summed credit-to-end latency, and turns per latency second."""
+    """Warm work and the serving cost selected by the sealed measurement policy."""
 
     turns: int
     elapsed_s: float
@@ -206,10 +202,21 @@ def attainment(read: LoadRead, contract: ServiceContract) -> float:
     return sum(1 for r in read.records if r.meets(contract)) / len(read.records)
 
 
+def _work_shapes(read: LoadRead):
+    cold = min(r.credit_issued_ns for r in read.records)
+    shapes = {(r.root_session_id, r.kind, r.ordinal):
+              (r.prompt_tokens, r.output_tokens, r.status) for r in read.records}
+    if len(shapes) != len(read.records):
+        raise ServiceEvidenceError("replay contains duplicate turn identities")
+    warm = {(r.root_session_id, r.kind, r.ordinal): shapes[r.root_session_id, r.kind, r.ordinal]
+            for r in read.records if r.credit_issued_ns != cold}
+    return shapes, warm
+
+
 @dataclass(frozen=True)
 class ServiceVerdict:
     decision: SpeedStageDecision
-    ratio: float  # candidate's fastest-pass rate / incumbent's fastest-pass rate
+    ratio: float
     required: float
     detail: str
     standard_error: float = 0.0
@@ -225,40 +232,33 @@ def grade(
     required: float,
     attainment_tolerance: float,
     attainment_margin: float,
+    elapsed_time: bool = False,
 ) -> ServiceVerdict:
-    """The paired fixed-load verdict: rate over identical work, attainment as a non-inferiority gate.
+    """Grade paired fixed work with the sealed service-attainment requirement.
 
-    Each window pairs one candidate read with one incumbent read at the same
-    sealed load over the same fixed work, so the warm-turn rates compare like
-    for like. A window is one complete pass over the sealed basket. The score
-    is the candidate's fastest pass over the incumbent's fastest pass and the
-    verdict is PASS at or above ``required``, FAIL below it. Every turn keeps
-    its cost weight, because a pass is never split, and both engines drop
-    their slower passes alike, so a slowdown that recurs in every pass stays a
-    cost; taking the least favorable pairing instead would bias a multi-window
-    read against every honest candidate by the spread itself. The engine's own
-    token stream is not reproducible under batching (2026-09-27: identical
-    prompts changed their decode step counts in 233 of 237 turns; the warm
-    mean-latency ratio of identical code scattered 0.56% per window over four
-    windows), and the first pass after an engine load is not steady state: in
-    six retained runs the incumbent's first window was 3-20% slower than its
-    second, by a different amount than the candidate's. The 2026-09-28 mainnet
-    run averaged the window ratios and passed a slower bundle at 1.0189:
-    allocator retries on a nearly full device stalled the incumbent in its
-    first window (38 retries against the candidate's 3), and summed latency
-    charges one stall to every turn in flight. Fastest passes grade that run
-    0.9853.
+    Elapsed-time scoring pools all warm work and its elapsed occupancy across
+    all scheduled passes. Both lanes must complete identical token work, including
+    identical cold/warm membership. Their allocated device counts are fixed by
+    the commissioned lanes, so the throughput ratio is also the ratio of revenue
+    capacity for any fixed positive price of that basket.
 
-    Attainment is graded on the paired difference A_candidate - A_incumbent.
-    Its one-sided lower bound, the difference less ``attainment_margin`` (the
-    calibrated allowance for the difference's own noise), must stay above
-    -``attainment_tolerance`` (the fixed product tolerance) in every window;
-    otherwise the candidate bought its rate by starving turns below the
-    contract and FAILs before rate is considered. Neither threshold comes from
-    the candidate, and more noise makes the gate harder, never easier. Work
-    that differs from the sealed slice raises: it is invalid evidence, not a
-    verdict.
+    V16's fastest summed-latency pass survives only for historical regrading.
+    Incident history: on 2026-09-27 identical prompts changed MTP step counts
+    in 233/237 turns; latency-ratio scatter was 0.56% across four windows.
+    First windows were 3-20% slower across six runs. On 2026-09-28 allocator
+    retries (38 incumbent, 3 candidate) inflated the mean-ratio verdict to
+    1.0189; fastest-pass latency instead read 0.9853. Neither statistic is
+    elapsed-work throughput, and neither calibrates its uncertainty.
+
+    Attainment difference less the sealed noise margin must be at least
+    minus the fixed product tolerance in every window. Different work is
+    invalid evidence, never a candidate verdict.
     """
+    # V16 is retained for historical evidence. Elapsed accounting charges every
+    # pass's occupancy: overlapping request durations are not GPU time
+    # (2026-09-29: c6790f93 scored +4.80% latency but only +0.63% elapsed work).
+    if type(elapsed_time) is not bool:
+        raise ServiceEvidenceError("elapsed-time scoring selection is not boolean")
     if not _finite_positive(required) or required < 1.0:
         raise ServiceEvidenceError("required ratio must be at least 1.0")
     for name, value in (("attainment_tolerance", attainment_tolerance), ("attainment_margin", attainment_margin)):
@@ -266,16 +266,31 @@ def grade(
             raise ServiceEvidenceError(f"{name} must be in [0, 1)")
     if not candidate or len(candidate) != len(incumbent):
         raise ServiceEvidenceError("paired windows need one read per arm per window")
-    rates_c: list[float] = []
-    rates_i: list[float] = []
+    work_c: list[WorkRate] = []
+    work_i: list[WorkRate] = []
     windows: list[tuple[int, float, float]] = []
+    seen = set()
     for cand, inc in zip(candidate, incumbent, strict=True):
         if (cand.arm, inc.arm) != ("candidate", "incumbent") or (cand.window, cand.load) != (inc.window, inc.load):
             raise ServiceEvidenceError("a window pairs one candidate and one incumbent read at one load")
-        rates_c.append(fixed_work_rate(cand, expected).rate)
-        rates_i.append(fixed_work_rate(inc, expected).rate)
+        if elapsed_time:
+            identity = cand.lane, inc.lane, cand.window
+            if identity in seen:
+                raise ServiceEvidenceError("elapsed-work windows contain a duplicate paired read")
+            seen.add(identity)
+            if _work_shapes(cand) != _work_shapes(inc):
+                raise ServiceEvidenceError("paired replay token work or warm membership differs")
+        work_c.append(fixed_work_rate(cand, expected, wall_time=elapsed_time))
+        work_i.append(fixed_work_rate(inc, expected, wall_time=elapsed_time))
+        if elapsed_time and work_c[-1].turns != work_i[-1].turns:
+            raise ServiceEvidenceError("paired replay warm work differs")
         windows.append((cand.window, attainment(cand, contract), attainment(inc, contract)))
-    ratio = max(rates_c) / max(rates_i)
+    if elapsed_time:
+        candidate_rate = sum(w.turns for w in work_c) / sum(w.elapsed_s for w in work_c)
+        incumbent_rate = sum(w.turns for w in work_i) / sum(w.elapsed_s for w in work_i)
+        ratio = candidate_rate / incumbent_rate
+    else:
+        ratio = max(w.rate for w in work_c) / max(w.rate for w in work_i)
     for window, a_cand, a_inc in windows:
         if a_cand - a_inc - attainment_margin < -attainment_tolerance:
             return ServiceVerdict(
@@ -284,11 +299,12 @@ def grade(
                 f"{a_inc:.4f} is below the non-inferiority bound (tolerance {attainment_tolerance:.4g}, "
                 f"margin {attainment_margin:.4g})",
             )
+    basis = "pooled elapsed fixed-work" if elapsed_time else "fastest-pass fixed-work"
     if ratio >= required:
         return ServiceVerdict(SpeedStageDecision.PASS, ratio, required,
-                              f"fastest-pass fixed-work rate ratio over {len(rates_c)} paired window(s) clears the required ratio")
+                              f"{basis} rate ratio over {len(work_c)} paired window(s) clears the required ratio")
     return ServiceVerdict(SpeedStageDecision.FAIL, ratio, required,
-                          f"fastest-pass fixed-work rate ratio over {len(rates_c)} paired window(s) is below the required ratio")
+                          f"{basis} rate ratio over {len(work_c)} paired window(s) is below the required ratio")
 
 
 def statistical_grade(
@@ -345,7 +361,7 @@ def statistical_grade(
     ratio, required, lower = math.exp(estimate), math.exp(z*se), math.exp(estimate-z*se)
     attainment_check = grade(candidate, incumbent, contract, expected, required=1.0,
                             attainment_tolerance=attainment_tolerance,
-                            attainment_margin=attainment_margin)
+                            attainment_margin=attainment_margin, elapsed_time=True)
     if count == 2 and attainment_check.detail.startswith("service_contract_not_met"):
         return ServiceVerdict(SpeedStageDecision.FAIL, ratio, required,
                               attainment_check.detail, se, lower)

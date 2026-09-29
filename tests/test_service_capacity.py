@@ -34,6 +34,90 @@ FIXTURE = Path(__file__).parent / "fixtures" / "service_capacity_final_pairs.jso
 CONTRACT = ServiceContract(decode_floor_tps=60.0, ttft_bound_s=5.0, attainment=0.8)
 
 
+def _elapsed_read(arm, window, span, *, total=None, jobs=10):
+    durations = [span] + [(total - span) / (jobs - 1)] * (jobs - 1) if total else [span] * jobs
+    cold = _turn("opening", "main", 0, start_s=0, ttft_s=0.1, out=1)
+    rows = [_turn(str(i), "main", 0, start_s=10, ttft_s=0.1, out=100 + i)
+            for i in range(jobs)]
+    rows = [replace(r, request_end_ns=r.credit_issued_ns + round(seconds * 1e9))
+            for r, seconds in zip(rows, durations, strict=True)]
+    return LoadRead(arm, window, arm, jobs, (cold, *rows))
+
+
+def _elapsed_grade(candidate, incumbent, **options):
+    return grade(candidate, incumbent, ServiceContract(0.001, 1e6, 1),
+                 completed_work(incumbent[0]), required=1.015,
+                 attainment_tolerance=0.0, attainment_margin=0.0,
+                 elapsed_time=True, **options)
+
+
+def test_elapsed_grader_rejects_the_retained_false_profit_pass():
+    # c6790f93, 2026-09-29: preserve the measured spans and overlapping-duration
+    # sums. The live V16 rule paid 4.80%, while the completed-work gain was 0.63%.
+    b = [_elapsed_read("incumbent", 1, 645.557754429, total=6035.841713986),
+         _elapsed_read("incumbent", 2, 659.469491238, total=5950.751940639)]
+    c = [_elapsed_read("candidate", 1, 649.154319476, total=6007.318887194),
+         _elapsed_read("candidate", 2, 647.739578912, total=5678.157289785)]
+    result = _elapsed_grade(c, b)
+    assert result.decision is SpeedStageDecision.FAIL
+    assert result.ratio == pytest.approx(1.0062714053085682)
+
+
+@pytest.mark.parametrize("jobs", [2, 24])
+def test_elapsed_score_rewards_uniform_improvement_across_concurrency(jobs):
+    b = [_elapsed_read("incumbent", n, span, jobs=jobs) for n, span in enumerate((10, 13), 1)]
+    c = [_elapsed_read("candidate", n, span / 1.02, jobs=jobs) for n, span in enumerate((10, 13), 1)]
+    result = _elapsed_grade(c, b)
+    assert result.decision is SpeedStageDecision.PASS
+    assert result.ratio == pytest.approx(1.02)
+
+
+def test_elapsed_score_charges_slow_pass_and_tail_even_when_latency_sum_wins():
+    b = [_elapsed_read("incumbent", n, 10) for n in (1, 2)]
+    c = [_elapsed_read("candidate", 1, 9, total=20),
+         _elapsed_read("candidate", 2, 13, total=25)]
+    result = _elapsed_grade(c, b)
+    assert result.decision is SpeedStageDecision.FAIL
+    assert result.ratio == pytest.approx(20 / 22)
+
+
+def test_elapsed_score_refuses_different_token_work_and_duplicate_turns():
+    b = _elapsed_read("incumbent", 1, 10)
+    c = _elapsed_read("candidate", 1, 9)
+    changed = replace(c.records[-1], output_tokens=1)
+    with pytest.raises(ServiceEvidenceError, match="token work"):
+        _elapsed_grade([replace(c, records=(*c.records[:-1], changed))], [b])
+    duplicate = replace(c, records=(*c.records[:-1], c.records[-2]))
+    with pytest.raises(ServiceEvidenceError, match="duplicate turn identities"):
+        _elapsed_grade([duplicate], [b])
+
+
+def test_elapsed_score_refuses_duplicated_windows():
+    b = _elapsed_read("incumbent", 1, 10)
+    c = _elapsed_read("candidate", 1, 9)
+    with pytest.raises(ServiceEvidenceError, match="duplicate paired read"):
+        _elapsed_grade([c, c], [b, b])
+
+
+@pytest.mark.parametrize("price,cost", [(0.01, 1), (4.0, 30), (13.0, 600)])
+@pytest.mark.parametrize("candidate_costs", [(9, 12), (9, 14), (12, 15)])
+def test_elapsed_score_orders_billable_capacity_for_arbitrary_prices_and_costs(price, cost, candidate_costs):
+    # An independent invoice/occupancy calculation: every basket has the same
+    # billable work, and every allocated GPU-second is charged, including tails.
+    baseline_costs = (10, 13)
+    b = [_elapsed_read("incumbent", n, seconds) for n, seconds in enumerate(baseline_costs, 1)]
+    c = [_elapsed_read("candidate", n, seconds) for n, seconds in enumerate(candidate_costs, 1)]
+    ratio = _elapsed_grade(c, b).ratio
+    baseline_revenue = 3600 * len(b) * price / sum(baseline_costs)
+    candidate_revenue = 3600 * len(c) * price / sum(candidate_costs)
+    assert ratio == pytest.approx(candidate_revenue / baseline_revenue)
+    profit_delta = (candidate_revenue - cost) - (baseline_revenue - cost)
+    assert (ratio > 1) == (profit_delta > 0)
+    assert (ratio < 1) == (profit_delta < 0)
+    if baseline_revenue > cost and ratio >= 1:
+        assert (candidate_revenue - cost) / (baseline_revenue - cost) >= ratio
+
+
 @pytest.fixture(scope="module")
 def final_pairs() -> dict[tuple[str, int], LoadRead]:
     names = tuple(field.name for field in fields(TurnRecord))
@@ -241,4 +325,3 @@ def test_record_and_contract_validation():
         TurnRecord("a", "tool", 0, 1, 2, None, 3, 10, 5, "ok")  # unknown kind
     with pytest.raises(ServiceEvidenceError):
         LoadRead("stock", 1, "lane-1", 24, (_turn("a", "main", 0, start_s=0, ttft_s=0.1, out=5),))
-
