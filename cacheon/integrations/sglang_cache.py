@@ -194,12 +194,19 @@ class _Guard:
         pools = tuple(getattr(pool, "full_kv_pool", pool) for pool in pools)
         kinds = [(getattr(pool, name, None), False) for pool in pools for name in names]
         kinds += [(getattr(pool, "index_k_with_scale_buffer", None), True) for pool in pools]
+        from cacheon.integrations.sglang_cache_state import compressed_page_buffers
+
+        paged_kv = []
+        for pool in pools:
+            kv, index = compressed_page_buffers(pool)
+            paged_kv.extend(kv)
+            kinds.extend((buffers, True) for buffers in (*kv, *index))
         chosen = []
         for layers, by_page in kinds:
             layers = [b for b in (layers or ()) if torch.is_tensor(b) and b.shape[0]]
             picks = torch.randperm(len(layers), generator=draws)[:_LAYERS].tolist()
             chosen += [(layers[i], by_page) for i in sorted(picks)]
-        if not any(not by_page for _, by_page in chosen):
+        if not any(not by_page for _, by_page in chosen) and not any(paged_kv):
             if allow_empty and all(getattr(pool, "layer_num", None) == 0 for pool in pools):
                 return []
             raise RuntimeError(f"{ADDRESS}: no KV buffer recognized on {type(pools[0]).__name__}")
