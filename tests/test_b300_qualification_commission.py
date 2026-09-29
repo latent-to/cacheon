@@ -39,6 +39,21 @@ def _h(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
+def test_new_replay_commission_refuses_legacy_latency_scoring_before_staging(monkeypatch):
+    from cacheon.eval.goodput_runtime import GoodputPolicy
+    from cacheon.eval.service_capacity import ServiceContract
+
+    policy = GoodputPolicy(ServiceContract(60, 5, .8), 1.015, .0075, .05, .02)
+    monkeypatch.setattr(commission.b300_deployment, "_commissioned_stock_authority",
+                        lambda *a, **k: (None, None, None, None))
+    with pytest.raises(commission.B300QualificationCommissionError, match="V16 latency scoring"):
+        commission._compose_locked(
+            None, None, None, None, None, None, None,
+            SimpleNamespace(snapshot=lambda: None), None, None, None, "primary", None,
+            {"replay": {}}, {"goodput": policy.to_dict()}, None,
+        )
+
+
 class _DeferredJudge:
     def __init__(self, binding: HiddenJudgeBinding, tokenizer_digest: str) -> None:
         self.binding = binding

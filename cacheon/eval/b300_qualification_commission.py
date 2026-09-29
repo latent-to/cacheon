@@ -502,12 +502,17 @@ def _compose_locked(
         from cacheon.eval.goodput_runtime import GoodputPolicy
         settings = session_block["replay"]
         goodput = GoodputPolicy.from_dict(speed_block["goodput"])
+        if not goodput.error_rate:
+            raise B300QualificationCommissionError(
+                "new replay commissions require elapsed-work statistical eligibility; "
+                "V16 latency scoring is retained only for historical evidence"
+            )
         replay = AgentReplayPlan(
             Path(settings["manifest_path"]), (settings["load"],),
             Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
             inputs.root / "qualification-replays" / screen_lane,
             goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
-            elapsed_cost=bool(goodput.error_rate),
+            elapsed_cost=True,
             max_work_seconds=settings.get("max_work_seconds", 0),
         )
         if replay.slice.digest != settings["slice_digest"]:
@@ -651,7 +656,7 @@ def _compose_locked(
         # New commissions seal one bounded borderline repeat: v13 single-cell,
         # v14 mixed-cell, or v15 with the prefill pass. Existing evidence keeps
         # its original version and arithmetic.
-        version=(17 if goodput.error_rate else 16) if goodput is not None else 15 if prefill_lane is not None else 14 if mixed_cells else 13,
+        version=17 if goodput is not None else 15 if prefill_lane is not None else 14 if mixed_cells else 13,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),

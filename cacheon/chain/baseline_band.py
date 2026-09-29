@@ -101,6 +101,8 @@ def qualification_speed_from_payload(
                 return None
             result = reports[0]
         witness = result["speed_witness"]
+        if isinstance(witness, dict) and witness.get("goodput") is not None:
+            return _replay_measurements(witness)
         rates = witness["rates"]
     except (TypeError, ValueError, KeyError):
         return None
@@ -175,6 +177,77 @@ def qualification_speed_from_payload(
     return speed
 
 
+def _replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
+    """Report the same retained warm-turn measurements and verdict the replay scorer consumes."""
+    from dataclasses import asdict
+    from cacheon.eval.qualification_runner import ResidentSpeedWitness
+    from cacheon.eval.service_capacity import attainment, fixed_work_rate
+
+    speed: dict[str, Any] = {"metric": "warm_turn_latency", "lanes": []}
+    try:
+        retained = ResidentSpeedWitness.from_dict(witness)
+        reads, policy = retained.goodput, retained.resident_policy.goodput
+        grade = reads.grade(policy)
+        if policy.error_rate:
+            speed["metric"] = "fixed_work_rate"
+        expected = {root: (main, inner) for root, main, inner in reads.expected}
+        lanes = []
+        for role, windows in (("B", reads.incumbent), ("C", reads.candidate)):
+            arm = []
+            for read in windows:
+                work = fixed_work_rate(read, expected)
+                elapsed = fixed_work_rate(read, expected, wall_time=True)
+                arm.append({"role": role, "window": read.window, "load": read.load,
+                            "physical_lane": read.lane,
+                            "warm_turns": work.turns, "request_time_s": work.elapsed_s,
+                            "mean_warm_latency_s": work.elapsed_s / work.turns,
+                            "elapsed_s": elapsed.elapsed_s, "turns_per_second": elapsed.rate,
+                            "attainment": attainment(read, policy.contract),
+                            **_replay_diagnostics(read)})
+            if retained.resident_policy.version == 16:
+                best = min(row["mean_warm_latency_s"] for row in arm)
+                for row in arm:
+                    row["used_for_score"] = row["mean_warm_latency_s"] == best
+            lanes.extend(arm)
+        speed.update({
+            "lanes": lanes, "speedup": float(grade.settled_speedup),
+            "policy_version": retained.resident_policy.version,
+            "score_basis": ("fastest_pass_latency" if retained.resident_policy.version == 16
+                            else "pooled_elapsed_orientation"),
+            "speed_stage_seconds": retained.completed_monotonic_s - retained.started_monotonic_s,
+            "workload_digest": retained.workload_digest,
+            "load": reads.incumbent[0].load, "windows": len(reads.incumbent),
+            "contract": asdict(policy.contract),
+            "grading": {"decision": grade.decision.value, "detail": grade.verdict.detail,
+                        "required_speedup": grade.verdict.required,
+                        "null_noise": policy.null_noise,
+                        "standard_error": grade.verdict.noise if policy.error_rate else None,
+                        "lower_speedup": (float(grade.settled_speedup) / grade.verdict.required
+                                          if policy.error_rate else None),
+                        "boot_noise": policy.boot_noise if policy.error_rate else None,
+                        "error_rate": policy.error_rate or None,
+                        "attainment_tolerance": policy.attainment_tolerance,
+                        "attainment_margin": policy.attainment_margin},
+        })
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        speed["grading_error"] = str(exc)
+    return speed
+
+
+def _replay_diagnostics(read) -> dict[str, Any]:
+    """Summarize retained warm requests without exposing prompts or changing their score."""
+    cold = min(row.credit_issued_ns for row in read.records)
+    warm = [row for row in read.records if row.credit_issued_ns != cold]
+    first = sorted(row.ttft_s for row in warm)
+    decode = [row.decode_tps for row in warm if row.decode_tps is not None]
+    return {
+        "mean_ttft_s": statistics.fmean(first),
+        "p95_ttft_s": first[(95 * len(first) - 1) // 100],
+        "median_decode_tps": statistics.median(decode) if decode else None,
+        "unsuccessful_turns": sum(row.status != "ok" for row in read.records),
+    }
+
+
 def _phase_measurements(windows: list[dict[str, Any]]) -> list[dict[str, object]]:
     """Recompute delivery metrics from retained host times, not cached cell summaries."""
     if not any(window.get("prompt_latencies") for window in windows):
@@ -239,7 +312,7 @@ def retained_half_rates(store, roots: tuple[Path, ...]) -> tuple[RetainedHalfRat
     for reservation_id, arena_digest, speedups, refs in store.retained_pass_pairs():
         for index, attempt_ref_json in refs:
             speed = qualification_speed(attempt_ref_json, roots)
-            if speed is None:
+            if speed is None or speed.get("metric") in ("warm_turn_latency", "fixed_work_rate"):
                 continue
             baseline = tuple(
                 Decimal(str(lane["tokens_per_second"]))
