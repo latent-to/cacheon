@@ -69,7 +69,7 @@ Promising classes include:
 - overlap the routing head with expert compute and the weighted combine inside the
   enclosing MoE block;
 - reduce memory round-trips inside a collective epilogue;
-- specialize a variant for a provably disjoint shape/topology domain;
+- specialize variants by dtype or architecture, and shapes inside the entry;
 - improve a model-specific score or quantized epilogue while retaining the
   validator-owned selection/downstream path;
 - replace repeated layout work with load-time `prepare(module)`;
@@ -77,8 +77,21 @@ Promising classes include:
 
 Do not expand the manifest until a desired optimization “fits.” The target
 catalog fixes the smallest allowed delta. If the change needs an unregistered
-engine seam, scheduler behavior, broad source patch, or engine-wide setup, it is
-not submittable until the catalog registers that surface.
+engine seam, batching or other scheduler behavior, a broad source patch, or
+engine-wide setup, it is not submittable until the catalog registers that surface.
+
+## Cache wins
+
+The scheduler's prefix cache is its own target, `prefix_cache`, submitted
+separately from kernels. A cache bundle is measured as the incumbent kernels with
+your cache against the incumbent kernels with the incumbent cache. At the GLM
+arena's sealed load the stock cache already reaches the prefix hit rate the
+workload allows, so more hits are not available. A cache win has to come from
+lower cache overhead on the scheduler's critical path or better behavior under
+memory pressure: eviction, host-tier movement, and what stays resident when the
+pools fill. Faking a hit is not a win: the validator checks the bytes behind every
+served prefix. The Qwen development configuration disables radix caching, so
+cache work applies to the GLM arena. See [the prefix cache](slots.md#the-prefix-cache).
 
 ## Match the workload regime
 
@@ -103,16 +116,21 @@ An active stack can already contain crowned contributions on other targets. The
 marginal baseline is that exact incumbent stack, with its exact engine build
 products, model assets, and launch controls.
 
-The authoritative bracket is:
+The authoritative comparison is:
 
 ```text
 incumbent = exact incumbent engine on the assigned baseline lane
 candidate = same stack with exactly the selected target delta on the disjoint lane
 v17 = incumbent and candidate replay the sealed agent workload concurrently in
-      paired windows, as separate engine processes that exchange lanes once
+      paired windows; halfway through, the lanes swap and both engines boot fresh
 A = registered eager, untimed candidate audit
 T = candidate-free pristine quality reference after candidate teardown
 ```
+
+The V17 score is the geometric mean, over the two lane orientations, of the
+incumbent's pooled elapsed cost divided by the candidate's. A PASS needs the
+statistical lower bound on that gain above one; there is no fixed percentage
+floor, but a gain inside the arena's run-to-run noise does not clear the bound.
 
 Changing a backend, graph flag, prompt mix, topology, or engine option only in C
 does not measure a component delta. Ad hoc developer launches may expose such
@@ -122,15 +140,18 @@ qualification, and reference manifests.
 
 The repository implementations are
 [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py)
-for incumbent/candidate stack construction and
-[`scoring.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/scoring.py)
-for conditioned serving-score calculation.
+for incumbent/candidate stack construction,
+[`goodput_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/goodput_runtime.py)
+for the two lane orientations, and
+[`service_capacity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/service_capacity.py)
+for the statistical grade.
 
 ## Build the narrowest honest capability domain
 
-A specialized variant should state precisely where it wins and remains correct:
-model, architecture, dtype, quantization, phase, topology, and relevant shape
-ranges. Outside that domain the incumbent safely serves the call.
+Node routing sees only the call's dtype, last dimension, GPU architecture and
+graph mode. A variant's domain may use those fields; a row that declares any
+other field never matches, so stock serves the call. Specialize on phase, token
+count or other shapes inside the entry.
 
 Narrowing the domain after seeing failures is legitimate only when it describes
 a real algorithmic boundary and still covers material arena calls. A variant
@@ -143,10 +164,10 @@ Write a small target worksheet before implementation:
 | target and active binding | `forward_pass`, node `model.layers.*.mlp`, on the operator's published arena generation |
 | critical-path fraction | 8% in graph-on decode at the published concurrency |
 | proposed mechanism | fuse activation/multiply and reduce one global-memory round trip |
-| exact domain | BF16, `sm90`, decode, token counts 1–256 |
-| fallback | incumbent row for every non-matching descriptor |
+| exact domain | BF16, `sm90`; decode-only paths selected inside the entry |
+| fallback | stock for every non-matching descriptor |
 | local correctness proof needed | `cacheon check` audit windows on every claimed address and rank, captured execution |
-| end-to-end falsifier | no throughput change, B/B′ drift, fallback on material calls, or quality regression |
+| end-to-end falsifier | no elapsed-cost change, a gain that reverses when lanes swap, fallback on material calls, or quality regression |
 
 This worksheet requires a causal chain from the measured bottleneck to a selectable
 variant. “My kernel is 30% faster” is incomplete until the replaced fraction of the arena
@@ -155,17 +176,16 @@ path and the domain's routing frequency are specified.
 ## Use a disciplined development ladder
 
 1. `scan`: catch structural and static-policy errors.
-2. `verify`: test ABI, numerical behavior, mutation, applicable shapes, and CUDA
-   graph replay where available.
-3. Microbenchmark the exact callable to understand the mechanism, not to claim
+2. `verify`: catch variant registration, import and entry-signature errors.
+3. `check` in the published arena image: audit every claimed address against
+   stock and confirm captured execution on every rank.
+4. Microbenchmark the exact callable to understand the mechanism, not to claim
    end-to-end speedup.
-4. Trace the complete incumbent and candidate developer launches.
-5. Run a matched graph-on whole-engine diagnostic using the
-   [canonical local profiling record](../validator-guide/running-evals.md#performance-development)
-   and inspect B/C/B′ drift.
-6. Run the relevant non-authoritative quality diagnostics.
-7. Repeat across fresh processes, seeds, and conditioning until the effect is
-   larger than normal variance.
+5. Trace the complete incumbent and candidate developer launches.
+6. Run a matched graphs-on whole-engine comparison on the arena workload, pairing
+   windows and swapping lanes with a fresh engine boot, as qualification does.
+7. Repeat across fresh processes until the effect is larger than the window and
+   lane-swap variance.
 
 Steps 1–7 are miner-side diagnostics. Only finalized, isolated, identity-bound,
 complete audited validator qualification can crown the proposal.
@@ -174,23 +194,21 @@ complete audited validator qualification can crown the proposal.
 
 - A faster microkernel with flat end-to-end throughput is not a win; the slot
   was not critical or the gain moved elsewhere.
-- A faster C with disagreeing B/B′ is measurement uncertainty, not a pass.
+- A faster candidate in one lane orientation only is lane variance, not a pass.
 - A speed gain with failed quality is a failed candidate, not a tradeoff score.
 - A graph-off gain is evidence about debugging mode, not the arena.
 - A pass on one topology is not evidence for an undeclared topology.
 - A complete audited production PASS becomes `qualified`; settlement decides the crown.
 
-Also distinguish failure from uncertainty. A consistently slower C or a quality
-regression is a candidate `FAIL`; revise the source and create a new identity.
-Missing evidence or infrastructure faults can be `NO_DECISION`. Current v5+
-production policy retains excessive later-bracket drift, excludes the later
-bracket, and decides from adjacent C/B instead of automatically returning a
-non-answer. None of these outcomes justify changing the math after observing it.
+Also distinguish failure from uncertainty. A gain that does not clear the
+statistical bound by the last sealed window, or a quality regression, is a
+candidate `FAIL`; revise the source and create a new identity. Missing evidence or
+infrastructure faults can be `NO_DECISION`. None of these outcomes justify
+changing the math after observing it.
 
 The [MiniMax-M3 results](../results/minimax-m3.md) show how profiling identified
 fused collective boundaries. Those measurements do not substitute for
-qualification under the current target, stack, evidence, and two-pass
-authority.
+qualification under the current target, stack, and evidence.
 
 Once the mechanism survives this scrutiny, prepare the source-only archive and
 follow [Submitting](submitting.md).

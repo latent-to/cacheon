@@ -66,7 +66,8 @@ Common failures and fixes:
 | `tree_cache entry ... must be a function accepting the runtime cache` or `... must be callable with only the runtime cache` | the entry is not a synchronous function in the declared source, or needs other arguments | define `entry(cache)` and return `type(cache)` or a subclass of it; do not supply a constructor or `prepare` |
 | `tree_cache: the cache served a page that does not hold the KV the engine computed for its prefix` | a served prefix's slots held other bytes: a stale or reused slot, a page kept across a flush, a host copy not brought back, or a page from another namespace | serve only slots whose bytes the engine computed for that exact prefix, and drop every page at a flush |
 | `tree_cache: it replaced match_prefix on the instance ...` or `... on its class, which skips the check` | the cache assigned or deleted a protected handoff method after binding | override methods in the subclass returned by the factory |
-| `tree_cache: state validation is unavailable ...` | the runtime adapter does not yet validate window or recurrent state | this is missing validator coverage, not a failed miner contribution; the current implementation only enables full-attention arenas |
+| `tree_cache: state validation is unavailable for this hybrid pool` | the engine's sliding-window or recurrent pool has a layout the validator does not recognize | this is missing validator coverage, not a failed miner contribution |
+| `tree_cache: this hybrid runtime disables prefix caching` | the arena's engine configuration turns radix caching off, as the Qwen development inputs do | the prefix cache is not a target on that arena; use an arena that serves with prefix caching |
 | `... overlap; claim the wider node alone` | two rows of one bundle name a node and a node inside it | keep the wider address and drop the narrower one |
 | feature not allowed | `setup`, dependency patch, rebuild, override, CUDA source, or unknown extra is outside policy | remove it or use a target/lane that explicitly permits it |
 | incomplete feature evidence | intake could not independently observe the rebuild feature set | use only registered rebuild declarations and complete source inventory |
@@ -84,11 +85,8 @@ The point at which output stops identifies the layer:
 |---|---|---|
 | TOML/path exception before the bundle summary | manifest parsing or declared-path validation stopped | syntax, required fields, identifier spelling, file existence, relative path containment |
 | bundle summary plus `[VIOLATIONS]` | the manifest loaded, but one declared or recursive-tree source policy failed | every printed file/line and any undeclared executable material |
-| clean `scan`, then `invalid or ambiguous variant domain` in `verify` | static source is clean, but metadata/manifest eligibility cannot register deterministically | JSON types, canonical values, manifest/metadata intersection, variant overlap |
-| `[INTERFACE OK]` | node entry imports and accepts the prepared/module argument | run `check` in the published image for numerical and graph diagnostics |
-| every row N/A and `no bundle variant is applicable` | domains registered, but no row matched the selected invariant context | dtype, architecture, model, phase, topology, and required descriptor fields |
-| per-shape `FAIL` | candidate ran for an applicable shape and failed its ABI/comparator | shape-specific math, output ownership, mutation, stride, metric detail |
-| `NUMERICAL_PASS` with `graph=NOT_VERIFIED` | eager math passed but required capture/replay proof did not | graph phase and failure class, not numerical tolerance |
+| clean `scan`, then a variant registration error in `verify` | static source is clean, but the rows cannot register unambiguously | JSON types, manifest/metadata intersection, duplicate or overlapping variants, token-count constraints |
+| `[INTERFACE OK]` | the entry imports and its signature accepts the module, prepared state or runtime cache | run `check` in the published image for the audit and captured execution |
 
 `check` reports `Early stop: gross numerical audit violation` as soon as a valid
 rolling receipt proves a large numerical mismatch. It stops the owned engine
@@ -97,27 +95,28 @@ comparison/reference errors and incomplete receipts do not trigger this early
 stop; they retain their normal terminal handling.
 
 Run `scan` separately even though `verify` repeats recursive policy checks. The separate
-command gives the cheapest no-import result; `verify` then tests domain registration and
-candidate execution. Neither command performs production target feature resolution, so a
-local clean result cannot overrule a later catalog rejection.
+command gives the cheapest no-import result; `verify` then registers the variants and
+imports the entries. Neither command performs production target feature resolution or
+runs candidate math, so a local clean result cannot overrule a later catalog rejection.
 
 ## 2. Capability routing
 
-`verify` prints N/A for shapes outside a declared domain. N/A is neither failure
-nor evidence that the variant works.
+The node binder describes each live call by four fields only: dtype, last
+dimension, GPU architecture and graph mode. A row that constrains any other field,
+such as `model`, `phase`, `head_dim` or `tp_size`, never matches, so stock serves
+every call. Neither `scan` nor `verify` evaluates routing. In `check`, a claimed
+address with no audit windows or no captured execution is the symptom.
 
-If every shape is N/A, check:
+If a claimed address never runs, check:
 
 - canonical architecture spelling (`sm103`, not an informal GPU name);
 - dtype intersection between manifest and metadata;
-- exact model and runtime identifiers;
-- `phase`, `quant`, `graph_mode`, TP/EP/world size;
-- numeric ranges and the distinction between `num_tokens`, `q_len`, and
-  `exp_tokens`;
-- whether the live arena binding actually supplies every constrained field.
+- `last_dim` and `graph_mode` values, if declared;
+- any other declared field, which must be removed.
 
-Unknown or missing descriptor fields fail closed. A context-applicable variant
-with incomplete shape-domain coverage fails the authoritative graph veto.
+Qualification requires every claimed address to complete on every rank, so a row
+that routes to stock cannot pass. The prefix cache is selected once at engine start with an
+empty descriptor; a `tree_cache` row declares no dtypes, architectures or metadata.
 
 ## 3. Interface and numerical checks
 
@@ -167,8 +166,9 @@ three places:
 - a captured kernel that replays a stale answer passes execution and fails the
   pristine quality gate.
 
-A local `cacheon verify` on CUDA runs its own capture and replay and names the
-phase that failed.
+A local `cacheon check` starts a graphs-on engine after its audit passes and
+reports captured execution per address and rank. The prefix cache runs outside
+CUDA graphs, so `tree_cache` needs no captured execution.
 
 Common causes are host synchronization, data-dependent Python branching,
 capture-time compilation/allocation, stale pointers, partial replay writes, or
@@ -218,12 +218,14 @@ the attempt fail; any `NO_DECISION` prevents PASS.
 
 Speed problems:
 
-- the speed bound is still unresolved after the last sealed window: measurement
-  uncertainty, `NO_DECISION`;
+- the paired gain has not cleared the sealed statistical boundary by the last
+  sealed window: candidate FAIL (`speed_threshold_not_met`, or `candidate_slower`
+  when the estimate falls below the mirrored bound). The last window always
+  decides PASS or FAIL;
+- the first lane orientation reads slower than the arena's sealed futility
+  margin: candidate FAIL without the swapped orientation;
 - replay windows or physical-lane identities fail their bound consistency
   checks: authority/infrastructure uncertainty, never a candidate pass;
-- C's paired cost is not measurably lower than B's: candidate FAIL
-  (`speed_threshold_not_met`, or `candidate_slower` below the mirrored bound);
 - C clears the speed bound but misses service attainment: candidate FAIL
   (`service_contract_not_met`);
 - arm identities/resources differ: authority mismatch, never a valid speedup;
@@ -248,25 +250,23 @@ audit, and pristine-quality evidence backs settlement; no mandatory repeat runs.
 Historical paired results retain their original evidence and lower accepted score.
 A crown still requires the separate transactional settlement step.
 
-## 8. Settlement, reward, and release
+## 8. Settlement and reward
 
-`qualified` means the reproduction gate passed; settlement can still wait for
-older overlapping arrivals, a cohort lease, and retained-evidence reopening.
+`qualified` means one complete audited PASS is retained; settlement can still wait
+for older overlapping arrivals, a cohort lease, and retained-evidence reopening.
 Transactional settlement may:
 
 - crown a registered-target candidate;
 - neutralize a non-winning/overlapped candidate;
 - hold a candidate when authority cannot safely advance.
 
-Weight publication is a separate reconciled action. Under V1 a crown receives
-decaying relative standing credit. Under the selected but inactive V2 policy,
-settlement issues bounded principal that can be debited only after exact
-confirmed publication. Neither generation promises a fixed per-slot or token
-payout. See [Incentives](incentives.md).
+Weight publication is a separate reconciled action. Under V1 a PASS earns
+decaying credit when it beats the best earlier rewarded PASS in its reward group
+by the required margin; a crown is not required. V1 promises no fixed per-slot or
+token payout. See [Incentives](incentives.md).
 
-Finally, crown, integration, and release are distinct. Absence from an Engine
-release is not a settlement error: selected-payload preservation, surrounding packaging, review, attribution,
-signing, and release construction happen later under release authority.
+A crown is not integration: adopting crowned source into maintained code is a
+maintainer decision outside this repository.
 
 When reporting a problem, include the content hash, target ID, arena/evaluation
 stack digest, last durable status, decision/reason, and evidence/receipt digest.
@@ -285,6 +285,6 @@ and may finish after the champion changes; settlement does not repeat the cutoff
 A newly commissioned baseline opens its own admission window.
 
 `lost_potential` means evaluation passed, but the completed comparison did not clear
-the required winner threshold. The detail notice distinguishes a reward comparison
-against earlier results from a champion comparison. The PASS and measured throughput
+the required margin. The detail notice distinguishes a reward comparison against the
+best earlier rewarded PASS in the reward group from a champion comparison. The PASS and measured throughput
 remain visible; this is not an execution or correctness failure.

@@ -77,10 +77,9 @@ Scan and import/signature smoke passed. Forward math, preparation and graphs req
 pytest -q
 ```
 
-The `release` extra supplies the cryptographic dependency used by the complete
-release tests. The suite covers much more than the CPU tutorial: manifests, target resolution, stack
+The suite covers much more than the CPU tutorial: manifests, target resolution, stack
 assembly, hostile transport, OCI policy, qualification evidence, settlement, emissions,
-release construction, and compatibility guards. GPU-specific tests skip when their
+and compatibility guards. GPU-specific tests skip when their
 runtime is unavailable.
 
 ## What this did not prove
@@ -93,7 +92,7 @@ The quickstart did not exercise:
 - production qualification (paired replay windows), the registered eager audit,
   and pristine T;
 - audited qualification or settlement; or
-- release construction and serving.
+- integration and serving.
 
 Those boundaries require validator-owned hardware, runtime identities, policies, and
 evidence stores. Developer GPU experiments remain non-authoritative regardless of their

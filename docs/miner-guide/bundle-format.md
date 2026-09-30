@@ -40,7 +40,7 @@ qualification runs.
 |---|---|
 | `manifest.toml` | names the proposal ABI, requested target, implementation rows, and paths; it is parsed as data before candidate import |
 | `kernels/*.py` | candidate source loaded only after structural and static-policy gates, and only inside the appropriate worker boundary |
-| `metadata/*.json` | routing eligibility such as graph declaration, model, phase, dtype, topology, and shape domain; it cannot set correctness tolerances or reward policy |
+| `metadata/*.json` | node routing eligibility on dtype, architecture, last dimension or graph mode; it cannot set correctness tolerances or reward policy |
 | declared `.cu`/`.cuh` | inspectable native inputs to a validator-approved rebuild step; never prebuilt output |
 | declared `.patch`/`.diff` | exact source delta for the narrowly allowed pinned dependency surface |
 | `rebuild.json` | selects registered validator-owned build capabilities; it is not a shell script |
@@ -111,7 +111,7 @@ Each `[[ops]]` row describes one implementation:
 | `dtypes` | allowed runtime dtypes |
 | `architectures` | allowed canonical GPU architectures such as `sm90` or `sm103` |
 | `metadata` | bundle-relative JSON eligibility metadata |
-| `prepare` | optional `prepare(module)` called once per bound node |
+| `prepare` | optional `prepare(module)` called once per bound node; not allowed on `tree_cache` |
 | `setup` | engine-wide setup hook; currently forbidden by every registered target |
 | `base_kernel`, `override_point` | retired override composition fields; the loader refuses a row that sets `override_point` |
 | `cuda_sources` | declared inspectable `.cu`/`.cuh` inputs to an approved build step |
@@ -129,38 +129,33 @@ meaningful or allowed by target policy.
 
 The validator routes a variant only when its entire declared domain matches a
 validator-produced live call descriptor. Missing fields are mismatches, not
-wildcards.
+wildcards. The node binder's descriptor has exactly four fields: `dtype`,
+`last_dim`, `architecture` and `graph_mode` (`cuda_graph` or `eager`). A row that
+constrains any other field, such as `model`, `phase`, `head_dim` or `tp_size`,
+never matches, so stock serves every call and the claimed address never runs.
 
-Use the `capabilities` object for named specialization predicates:
+Use the `capabilities` object for these predicates:
 
 ```json
 {
   "capabilities": {
-    "model": {"exact": "GLM-5.3-NVFP4"},
-    "phase": {"exact": "prefill"},
-    "head_dim": {"exact": 128},
-    "block_size": {"one_of": [64, 128]},
-    "q_len": {"min": 256, "max": 8192},
-    "tp_size": {"exact": 4}
+    "dtype": "bfloat16",
+    "architecture": "sm103",
+    "last_dim": {"min": 1024, "max": 8192}
   }
 }
 ```
 
 A scalar is shorthand for `exact`, and an array is shorthand for `one_of`.
-Numeric fields may use inclusive `min`/`max`. Supported fields currently include:
-
-- context: `architecture`, `dtype`, `graph_mode`, `layout`, `model`, `phase`,
-  `quant`, `runtime`;
-- dimensions/topology: `alignment`, `batch_size`, `block_size`, `ep_size`,
-  `exp_tokens`, `head_dim`, `hidden_dim`, `intermediate_dim`, `kv_len`,
-  `last_dim`, `num_experts`, `num_kv_heads`, `num_q_heads`, `num_tokens`,
-  `page_size`, `q_len`, `top_k`, `tp_size`, `world_size`.
+Numeric fields may use inclusive `min`/`max`. The metadata parser accepts a wider
+vocabulary, defined in `capabilities.py`, but node routing supplies only the four
+fields above. Specialize on phase, token count or other shapes inside the entry.
 
 Unknown capability names fail at metadata load. Manifest `dtypes` and
 `architectures` are real routing constraints and intersect with metadata
-constraints. Legacy metadata keys such as `min_num_tokens`, `max_num_tokens`,
-`max_last_dim`, and `quant` are still interpreted, but new
-specializations should be expressed in `capabilities` where possible.
+constraints. A `tree_cache` row declares no
+dtypes, architectures or metadata: the cache is selected once, at engine start,
+with an empty descriptor.
 
 The canonical vocabulary and normalization rules are in
 [capabilities.py](https://github.com/latent-to/cacheon/blob/main/cacheon/capabilities.py)
@@ -231,13 +226,6 @@ Practical consequences:
 The archive URL is transport, while the content hash is proposal identity. The validator
 may retry transient transport for the same hash, but it must never accept different
 extracted bytes under that identity.
-
-For a direct row, a second canonical identity covers the executable declaration:
-provider, factory, profile inputs, bindings, resources, lifecycle, specialization,
-prelaunch, and the complete device plan. Copy/provenance analysis combines that
-declaration with the normalized transitive Python source closure. Reformatting or
-renaming an unused `entry` does not change direct execution, while any
-execution-bearing declaration change does.
 
 ## Prepare/forward slots
 

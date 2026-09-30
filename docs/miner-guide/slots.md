@@ -1,8 +1,10 @@
 # Slots and contribution targets
 
-For a node arena, an execution slot is an address in the served model's module
-tree. The registered `forward_pass` target admits a bundle's declared addresses.
-The arena still owns its model, workload, evaluation policy and supported nodes.
+An execution slot is either an address in the served model's module tree,
+admitted by the `forward_pass` target, or `tree_cache`, the scheduler's prefix
+cache, admitted by the `prefix_cache` target. A bundle changes one target, so
+kernels and a cache are separate submissions. The arena still owns its model,
+workload, evaluation policy and supported nodes.
 
 ## Current slot catalog
 
@@ -81,16 +83,27 @@ def build(cache):
 An implementation can return a subclass with its own `evict`, `match_prefix` or
 other cache methods. It inherits the runtime cache interface instead of naming a
 particular SGLang cache class. The identity implementation establishes binding,
-not a speed win. A cache bundle is a separate target from model computation, so
-the validator retains the commissioned model-kernel contribution in its candidate.
+not a speed win.
 
-The KV behind every prefix the cache serves is checked against what the engine
-computed for it, whichever slot or host tier the bytes came through. Serving other
-bytes, keeping pages across a flush, moving a request's own slots or claiming more
-tokens than the key stops the engine as the candidate's failure. The address
-currently has validation coverage for full-attention KV; sliding-window and
-recurrent validation remain adapter work under the same contract. See
+A cache bundle is judged as the incumbent kernels with the candidate cache against
+the incumbent kernels with the incumbent cache, which is stock SGLang's until a
+cache is commissioned. The cache runs outside CUDA graphs, so it needs no captured
+execution. The same content check runs on both arms: the KV behind every prefix
+the cache serves is checked against what the engine computed for it, whichever
+slot or host tier the bytes came through. Serving other bytes, keeping pages
+across a flush, moving a request's own slots or claiming more tokens than the key
+stops the engine as the candidate's failure. Validation covers full-attention KV,
+paged sliding-window KV and its index state, compressed KV and index pages,
+recurrent checkpoints, and per-request sliding-window rings. See
 [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
+
+The prefix cache is a target only on arenas that serve with prefix caching. The
+Qwen development configuration disables radix caching, and a cache bundle there
+stops with `this hybrid runtime disables prefix caching`; cache bundles apply to
+the GLM arena. Check the arena's published target availability before submitting.
+At the GLM arena's sealed load, the stock cache already reaches the prefix hit
+rate the workload allows, so a cache win comes from lower overhead or better
+behavior under memory pressure rather than more hits.
 
 Start each iteration from the current winning cache implementation, retaining its
 useful behavior. A later cache version replaces the earlier version; two cache

@@ -45,15 +45,10 @@ the hostile-code referee remain distinct operational surfaces.
 
 ### Cacheon Engine
 
-Cacheon Engine is the chain-independent release contract for serving deployments. A
-completed release must bind a pinned upstream runtime, reviewed Cacheon source, exact
-model identity, native artifacts, a serving specification, provenance, an SBOM, and a
-signature rooted in an external Ed25519 public key. The current revision implements
-construction and verification primitives but does not claim a completed production
-release.
-
-The release contract excludes miner URLs, wallets, chain state, and the live evaluation
-incumbent from the serving dependency graph.
+Cacheon Engine is the chain-independent serving product. Integration into maintained
+source, release signing, and serving are maintainer decisions outside this repository,
+which contains no release tooling. Miner URLs, wallets, chain state, and the live
+evaluation incumbent are not serving dependencies.
 
 ### The subnet and referee
 
@@ -75,7 +70,7 @@ serving release.
 | Object | Trust level | What it establishes |
 |---|---|---|
 | **Proposal** | Hostile input | A miner asks the validator to evaluate one target-scoped delta. |
-| **Crown** | Retained measurement evidence | Two independent qualifications show that the same delta improved one registered arena and target. |
+| **Crown** | Retained measurement evidence | One complete audited qualification shows that the delta improved one registered arena and target. |
 
 Integration into maintained source, release, and serving are separate authorities outside this repository.
 
@@ -103,20 +98,19 @@ the `forward_pass` target and declares that it applies to BF16 calls on `sm90`.
    trusting the manifest to grant itself permissions.
 4. Version-3 qualification measures every candidate with the paired replay:
    speed policy 17 launches separate baseline and candidate engines that replay
-   the same sealed agent workload concurrently on two isolated lanes, and
-   exchanges the lanes once. A registered eager, untimed audit role
+   the same sealed agent workload concurrently on two isolated lanes, then
+   swaps the lanes and boots both engines fresh. A registered eager, untimed audit role
    (**A**) then checks the candidate delta; after candidate teardown, the
    pristine reference (**T**) supplies candidate-free quality evidence.
 5. One complete audited PASS becomes `qualified` and eligible for settlement.
    Settlement reopens its retained evidence and may create the target crown;
    it does not schedule another qualification.
-6. If settlement creates the crown, it also creates the corresponding reward claim
-   for the miner's hotkey. The active incentive policy determines how that claim
+6. Independently of the crown, the PASS earns credit for the miner's hotkey if it
+   beats the best earlier rewarded PASS against the same arena and incumbent by the
+   required margin. The active incentive policy determines how that credit
    contributes to the validator's weight vector, which a separate publisher later
-   submits and confirms on-chain. Product integration remains a separate decision,
-   so production still runs the previous release until maintainers review, integrate,
-   package, sign, and publish a new one. See
-   [How miners earn rewards](../miner-guide/incentives.md).
+   submits and confirms on-chain. Product integration remains a separate maintainer
+   decision. See [How miners earn rewards](../miner-guide/incentives.md).
 
 If the implementation is wrong at step 1, the miner changes the bundle. If its HTTPS
 server times out at step 3, the validator may retry the same identity. If the candidate
@@ -137,9 +131,9 @@ The candidate engine can contain the full incumbent stack, but the validator con
 it. The miner contributes only the selected delta.
 
 The distinction also explains fallback. A narrowly specialized proposal does not replace
-the entire engine. For a live call outside its declared capability domain, the incumbent
-implementation remains selected. That is safe, but an implementation which never routes
-onto material arena calls cannot contribute measurable speedup.
+the entire engine. For a live call outside its declared capability domain, stock SGLang
+serves the call. That is safe, but an implementation which never routes onto material
+arena calls cannot contribute measurable speedup.
 
 ## One stack and a reference
 
@@ -159,7 +153,9 @@ oracle and prevents chain state from leaking into deployment.
 Cacheon exposes contributor diagnostics that do not create crowns:
 
 - `scan` checks static policy without loading a bundle;
-- `verify` compares a slot implementation with its trusted reference; and
+- `verify` imports each entry and checks its signature, without running it;
+- `check`, in the published arena image, audits the bundle against stock in a real
+  engine and checks captured execution; and
 - contributor-controlled matched A/B profiling can investigate full-engine behavior and
   throughput without producing validator evidence.
 

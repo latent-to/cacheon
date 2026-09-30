@@ -387,8 +387,9 @@ The authoritative path is staged:
 8. Weight projection is a separate audited control-plane action.
 
 !!! info "When a reward begins"
-    A distinct retained qualified contribution is eligible for V1 credit.
-    Settlement separately selects the crown and records its standing claim. The validator later combines
+    A distinct retained qualified contribution earns V1 credit when it beats the
+    best earlier rewarded PASS against the same arena and incumbent by the
+    required margin (1.5% under V17). Settlement separately selects the crown. The validator later combines
     eligible claims into a weight vector and publishes it on-chain. See
     [How miners earn rewards](incentives.md).
 
