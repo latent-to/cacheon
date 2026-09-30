@@ -21,11 +21,11 @@ lock file.
 ## Settlement inputs
 
 `SettlementCandidate` accepts one complete audited PASS. The production
-version-3 attempt runs B/C/B′ (v10, v11 for mixed cells, or v12 with its
-prompt pass), then registered eager audit A and pristine T. Every cell is
-warmed before timing, both stock observations remain in the evidence, and the
-faster valid stock rate sets the credited speedup. A v12 prefill-lane admission
-is credited at the sealed fraction of its prompt-pass gain.
+version-3 attempt runs the paired replay of B and C (speed policy 17), then
+registered eager audit A and pristine T. Every window's turn records remain in
+the evidence, and the settled speedup is the pooled, orientation-balanced
+cost ratio the grader computed. Retained batch-cell PASS rows settle on the
+speedup their own policy recorded.
 
 Historical paired candidates remain byte-compatible and use their original
 lower score. A retained complete primary PASS left by an older controller is
@@ -235,21 +235,6 @@ claims enter one normalization, so a catalog change neither orphans old rewards
 nor creates an independently normalized pool for the new arena.
 The v1.1/v1.3/v1.4/v1.5/v1.6 bindings advance to v1.7 only with identical numeric
 policy fields; unrelated policy changes remain refused.
-
-A retained pair's baseline speedup is the lower of its two settled speedups;
-that measurement feeds the queue-relative scoring ratio and depends on the
-baseline lane behind it. When the retained stage-exit
-artifacts show that the credited half read the baseline lane under the arena
-band (the median of every retained baseline-role read in the arena minus five
-percent, over at least six reads), the operator command
-[`chain-reopen-qualification`](../reference/cli.md#chain-reopen-qualification)
-returns the reservation to the qualification queue for a fresh complete
-qualification against the current incumbent and archives the old candidate under
-`settlement_reopenings`. The row stops earning the moment it leaves `qualified`.
-A reopened row binds to the stack whose service claims it again, not the stack
-current at its original arrival, so it never parks the queue behind a retired
-commission. Crowned or
-otherwise settled candidates are lineage and cannot be reopened this way.
 
 ## Dry run
 

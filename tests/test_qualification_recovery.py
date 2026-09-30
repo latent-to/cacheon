@@ -166,21 +166,36 @@ def test_correction_rejects_foreign_or_weaker_evidence(tmp_path, tamper):
 def test_recovery_preserves_parent_and_is_idempotent(tmp_path, monkeypatch, replace_audit):
     from types import SimpleNamespace
     from cacheon.eval import qualification_recovery as recovery
+    from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence
+    from cacheon.eval.oci_process import OCIQuiescenceReceipt
     from cacheon.eval.qualification_continuation import QualificationContinuationStore, AuditContinuation
-    from tests.test_qualification import _lifecycle
+    from cacheon.eval.scoring import SpeedupVerdict, marginal_workload_digest
+    from cacheon.eval.speed_verdict import SpeedStageDecision
+    from tests.test_dashboard_replay import _witness
+    from tests.test_qualification_continuation import _typed_execution
 
     value, authority, execution, audit, old, _payload = _correction(tmp_path)
-    from tests.test_qualification_continuation import _typed_execution
-    lifecycle, _delta, case, _calibration, _policy = _lifecycle(tmp_path / "retained")
-    speed = lifecycle.crossover
-    replacements = {}
-    for name, arm in (("baseline_execution", lifecycle.plan.baseline),
-                      ("candidate_execution", lifecycle.plan.candidate)):
-        typed = _typed_execution(arm.launch, arm.binding, case.mount, arm.session_plan,
-                                 label=name, artifact_root=tmp_path / name)
-        replacements[name] = replace(typed, session=getattr(speed, name).session,
-                                     resource_policy_digest=arm.runtime_resource_policy_digest)
-    speed = replace(speed, **replacements)
+    # The retained policy-17 speed record of this sealed replay plan. `_speed` is
+    # stubbed below, so the record need only be exact durable evidence.
+    plan = value.resident_speed_plan
+    runs = {(name, index): replace(
+        _typed_execution(arm.launch, arm.binding, value.model_mount, arm.session_plan,
+                         label=f"{name}-{index}", artifact_root=tmp_path / name),
+        resource_policy_digest=arm.runtime_resource_policy_digest)
+        for name, arm in (("baseline", plan.baseline), ("candidate", plan.candidate)) for index in (0, 1)}
+    quiet = lambda arm, sequence: OCIQuiescenceReceipt(
+        "cacheon.oci-quiescence.v1", "lane", "a" * 32, arm.executor_namespace_digest,
+        sequence, 5.0 + sequence, (), (), ())
+    verdict = SpeedupVerdict(1.1, 0.01, 1.0, True, True, 2)
+    speed = ResidentCrossoverEvidence(
+        plan.digest, plan.selected_delta_digest, plan.policy,
+        marginal_workload_digest(plan.baseline.session_plan), plan.baseline_lane_digest,
+        plan.candidate_lane_digest, runs["baseline", 1], runs["candidate", 1],
+        quiet(plan.baseline, 1), quiet(plan.candidate, 2), (), verdict, verdict, False,
+        SpeedStageDecision.PASS, "clear_pass", 0.0, 50.0,
+        goodput=_witness(statistical=True).goodput,
+        prior_executions=(runs["baseline", 0], runs["candidate", 0]),
+    )
     execution = replace(execution, device_receipts=tuple(
         replace(row, started_monotonic_s=row.started_monotonic_s + 100,
                 completed_monotonic_s=row.completed_monotonic_s + 100)

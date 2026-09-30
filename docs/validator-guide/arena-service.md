@@ -25,16 +25,18 @@ This check is not remote attestation.
 
 ## Scored workload
 
-Each cell declares engine-observed input tokens, output budget, concurrency and
-timed reads. Sealed prompt batches must match these cells. Context length,
-admission width, graph/eager mode, seam bindings and watchdog settings derive
-from that authority. Qualification rejects inconsistent sessions before launch.
+The scored workload is a sealed agent-replay slice. The commission's
+`session.replay` names the slice manifest and its digest, the operating load and
+the number of paired windows; see
+[Finite agent replay](qualification.md#finite-agent-replay). The arena's declared
+workload cells still describe the engine-conditioning batches. Context length,
+admission width, graph mode and watchdog settings come from the sealed engine
+template. Qualification rejects a session that differs from its sealed authority
+before launch.
 
-Mixed-cell scoring uses timed output tokens over the complete host-observed
-mixture makespan. Optional `resident_speed.prefill_lane` commissions v15 and
-appends a one-token prompt pass after B′; see
-[Qualification](qualification.md#prefill-lane-v12). Evidence retains the version
-and arithmetic under which it was measured.
+A commission that seals no replay — the batch-cell speed policies 8–15, including
+the v15 prefill lane — is refused. Evidence retains the version and arithmetic
+under which it was measured.
 
 The sealed input selects `registered_targets`, `model_profile_key` and engine
 configuration. Commissioning derives `closed_targets` from the shared catalog,
@@ -142,7 +144,7 @@ Commissioning Qwen cannot retire GLM's baseline. Two arenas can qualify
 concurrently. Within one arena, commission disjoint pairs with the same model,
 runtime, workload, incumbent and GPU execution policy. Physical GPU addresses
 belong to each worker's READY, registration and launch binding; equivalent pairs
-share the arena service identity. Calibration and complete B/C/B′, audit and T
+share the arena service identity. Calibration and complete speed, audit and T
 evidence remain specific to each job and physical pair.
 
 Run one supervisor and relay per pair with distinct `owner`, registration, spool,
@@ -204,7 +206,7 @@ injected arena authority and conflicts with `intake_only`.
 ## Operating signals
 
 Monitor queue age/depth, capacity, stage latency, verdicts, holds, restarts,
-B/B′ baseline drift and evidence reopen failures. Label these by service digest,
+speed-stage `NO_DECISION` rates and evidence reopen failures. Label these by service digest,
 runtime/model identity and lane; arena ID alone does not distinguish epochs.
 
 The CPU relay refreshes its heartbeat during request and result copies; this

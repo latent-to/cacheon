@@ -7,7 +7,7 @@ separate canonical manifest types. They are deliberately not interchangeable.
 
 | Manifest | Question | Proposal source? | Arena identity? | Timed? |
 |---|---|---:|---:|---:|
-| `EvaluationStackManifest` | What complete incumbent does this arena evaluate? | allowed | yes | as the policy-required B and optional/required B′ reads |
+| `EvaluationStackManifest` | What complete incumbent does this arena evaluate? | allowed | yes | as the incumbent replay B |
 | `ReferenceManifest` | What pristine candidate-free engine grades sealed trajectories? | rejected | yes, with reference identities | no |
 
 ## Evaluation stack
@@ -76,8 +76,8 @@ runtime, base engine, arena, catalog, controller/worker distributions, exact
 model bytes, logical hardware, workload, tokenizer, hidden corpus commitment,
 hidden judge, and selection policy.
 
-T is untimed. It grades trajectories sealed by the two-process B/C/B′
-schedule only after any registered eager audit A has completed and
+T is untimed. It grades trajectories sealed by the paired replay only after
+any registered eager audit A has completed and
 candidate engines have been destroyed. Neither the incumbent evaluation stack nor a
 candidate's self-reported scores can substitute for this authority.
 

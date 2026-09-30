@@ -159,32 +159,6 @@ def hardware_bindings(
     )
 
 
-def engine_config(
-    template: EngineSessionConfig,
-    cell: WorkloadCell | tuple[WorkloadCell, ...],
-    *,
-    disable_cuda_graph: bool,
-) -> EngineSessionConfig:
-    cells = (cell,) if type(cell) is WorkloadCell else tuple(cell)
-    if not cells or any(type(row) is not WorkloadCell for row in cells):
-        raise B300DeploymentError("engine workload cells are not exact")
-    kwargs = dict(template.engine_kwargs)
-    required_context = max(
-        row.input_tokens + row.output_tokens for row in cells
-    ) + 128
-    kwargs.setdefault("context_length", required_context)
-    if kwargs["context_length"] < required_context:
-        raise B300DeploymentError("declared context does not fit the workload cells")
-    if not disable_cuda_graph:
-        kwargs["watchdog_timeout"] = 1800
-    return replace(
-        template,
-        disable_cuda_graph=disable_cuda_graph,
-        max_running_requests=max(row.concurrency for row in cells),
-        engine_kwargs=kwargs,
-    )
-
-
 def data_parallel_size(config: EngineSessionConfig) -> int:
     value = config.engine_kwargs.get("dp_size", 1)
     if type(value) is not int or not 1 <= value <= config.tp_size:

@@ -93,20 +93,18 @@ before working on an advanced target.
 
 For a registered target, the validator constructs an exact marginal comparison:
 
-- **B**: the opening read from the exact incumbent on the baseline lane;
-- **C**: the read from the one-target-transition candidate on the disjoint
-  candidate lane;
-- **B′**: a mandatory second incumbent read, the quality gate's stock-drift
-  control;
+- **B**: the exact incumbent, replaying the sealed agent workload on one lane;
+- **C**: the one-target-transition candidate, replaying the same workload
+  concurrently on the disjoint lane;
 - **A**: a registered eager, untimed audit role for the candidate delta; and
 - **T**: a candidate-free pristine reference used after candidate teardown.
 
 The candidate does not choose the rest of the stack. The validator materializes
-the exact incumbent and candidate engines on the two-process substrate and
-serializes timed work.
-Bookending detects drift, A supplies the
-registered sampled slot regrade, and T prevents “fast because behavior changed”
-from becoming a win. There is no separate admission screen; the qualification's
+the exact incumbent and candidate engines as separate processes and compares
+them over paired windows, exchanging lanes so a stable lane factor cancels.
+After a speed PASS the incumbent generates the quality gate's stock-drift
+controls, A supplies the registered sampled slot regrade, and T prevents “fast
+because behavior changed” from becoming a win. There is no separate admission screen; the qualification's
 first window is the only one.
 
 One complete audited PASS qualifies a proposal for settlement.

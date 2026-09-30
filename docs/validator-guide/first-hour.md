@@ -252,7 +252,7 @@ result = run_validator(
 ```
 
 Do not substitute a shell command, dynamic import path, or fake provider that declares
-success. A commissioned provider must construct the sealed two-process B/C/B′ speed
+success. A commissioned provider must construct the sealed paired-replay speed
 work, audit, and pristine-T qualification work.
 
 ## 8. Observe one complete reservation lifecycle
@@ -273,9 +273,9 @@ Structural qualification fixtures can validate transitions, independence checks,
 evidence reopening. They cannot satisfy the production-provider, GPU-performance, or
 calibration requirements of this commissioning step.
 
-For resident authority, also confirm that timed GPU work never overlaps between lanes,
-both lanes prove quiescence before audit/T, B′ is read unconditionally, and the
-reproduction exact-swaps the physical baseline and candidate lane roles.
+For resident authority, also confirm that both lanes condition and flush before every
+paired window, both lanes prove quiescence before audit/T, and the second orientation
+exact-swaps the physical baseline and candidate lane roles.
 
 ## 9. Commission the signer separately
 

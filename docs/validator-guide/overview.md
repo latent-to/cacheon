@@ -29,7 +29,7 @@ flowchart LR
     Intake --> Private["Private 0700 fetch tree"]
     Private --> Publication["Immutable worker publication"]
     Publication --> Arena["Injected arena service<br/>trusted provider"]
-    Arena --> OCI["Two-process speed substrate<br/>B/C/B′ (v10, v11 mixed-cell)"]
+    Arena --> OCI["Paired replay speed stage<br/>B and C concurrent (v17)"]
     OCI --> Audit["Audit-only role"]
     Audit --> T["Pristine T reference<br/>candidate-free"]
     T --> Evidence["Content-addressed evidence"]
@@ -79,8 +79,8 @@ The current validator path is deliberately staged:
 6. Admit the publication to its arena's qualification queue at first claim:
    duplicate FAIL replay, closed-target release, and capacity limits apply here.
    The qualification's first window is the only screen.
-7. Qualify admitted candidates under the version-3 protocol: two-process
-   B/C/B′ (v10, or v11 for a mixed-cell workload), then audit and pristine T.
+7. Qualify admitted candidates under the version-3 protocol: a paired replay
+   of B and C (speed policy 17), then audit and pristine T.
 8. Reopen the complete audited PASS and apply target and evaluation-stack changes
    in one settlement transaction.
 9. Reconcile the global reward projection from a separate signer process.
@@ -112,9 +112,9 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 |---|---|---|
 | Chain intake controller | Finalized order, reservations, private fetch, publication, durable state | Network arrival order, miner paths, mutable hosted bytes |
 | Arena service | Runtime/model/topology/workload identity, capacity, qualification-plan construction | Submission-provided module paths or commands |
-| OCI execution controller | Resident lane roles, serialized work, mounts, deadlines, device observations, protocol, teardown | Candidate process, candidate clocks, candidate quality claims |
+| OCI execution controller | Resident lane roles, paired windows, mounts, deadlines, device observations, protocol, teardown | Candidate process, candidate clocks, candidate quality claims |
 | Audit-only role | Exact slot × rank/PID witness graded by the trusted host | Candidate-side audit or framework output |
-| Pristine reference T | Untimed teacher-forced quality evidence | Candidate C or incumbent B′ as grading oracle |
+| Pristine reference T | Untimed teacher-forced quality evidence | Candidate C or the incumbent engine as grading oracle |
 | Settlement store | Paired reproductions, target transitions, reward claims | A single passing report or stale incumbent identity |
 | Weight signer | Wallet, live metagraph, publication journal, chain readback | An SDK “submitted” return value as confirmation |
 | Release authority | Integration review, model seal, release key, deterministic artifacts | A crown as automatic permission to ship |

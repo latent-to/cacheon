@@ -84,16 +84,7 @@ function performanceMetrics(attempt) {
     <p class="workload-label">${metricNumber(cell.input_tokens, 0)} input tokens · ${metricNumber(cell.output_tokens, 0)} output tokens · concurrency ${metricNumber(cell.concurrency, 0)}</p>
     <div class="metrics-table">${table(["Read", "Mean TTFT (ms)", "Mean TPOT (ms)", "Output tok/s", "Batches"], rows)}</div>`).join("");
   const promptGain = speed.prefill;
-  const grade = speed.grading;
   return `<section class="performance">${title}
-    ${speed.grading_error ? `<p class="notice">Retained grading evidence could not be read: ${esc(speed.grading_error)}</p>` : ""}
-    ${grade ? `<h4>Why this result</h4><p>${esc(grade.detail)}.</p>
-      <div class="cards">
-        ${card(metricGain(grade.candidate_vs_before), "Candidate gain vs B")}
-        ${card(metricGain(grade.candidate_vs_after), "Candidate gain vs B′")}
-        ${card(metricNumber(grade.min_margin * 100, 2) + "%", "Minimum speed gain")}
-        ${card(metricGain(grade.required_speedup), "Gain required to pass both baselines")}
-      </div><p class="metric-note">Baseline drift ${metricNumber(grade.baseline_drift * 100, 3)}% · allowed ${metricNumber(grade.max_noise * 100, 2)}%. ${grade.measurement_valid ? "Measurement passed the stability checks." : "Measurement failed the stability checks."}${grade.conditioning_failed ? " Candidate conditioning regressed." : ""}</p>` : ""}
     <h4>Output throughput</h4>
     <div class="metrics-table">${table(["Read", "Output tok/s", "Timed batches (s)"], rateRows(output, "tokens_per_second", 1))}</div>
     <p class="metric-note">Output throughput includes prompt processing and generation across the measured workload.</p>

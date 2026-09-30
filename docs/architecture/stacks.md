@@ -22,13 +22,13 @@ The evaluation stack is arena-specific. A result against one runtime, base engin
 
 `ReferenceManifest` identifies the pristine validator-owned semantic authority used by qualification. It is candidate-free and untimed. It binds the trusted reference engine and the quality policy used to grade sealed candidate trajectories.
 
-The reference does not compete on speed and is not the incumbent B′. This prevents an untrusted incumbent from becoming its own correctness oracle.
+The reference does not compete on speed and is not the incumbent engine. This prevents an untrusted incumbent from becoming its own correctness oracle.
 
 | Property | Evaluation stack | Reference |
 |---|---:|---:|
 | Hostile proposal entries allowed | Yes | No |
 | Bound to one arena | Yes | Quality profile |
-| Timed | Versioned B/C/[B′] speed work | Never |
+| Timed | Versioned paired-replay speed work | Never |
 | Can update after a crown | Transactionally | No |
 | Can be served as product | No | No |
 
@@ -67,7 +67,7 @@ flowchart TB
     E["Frozen EvaluationStackManifest E"]
     I["Materialize exact incumbent engine once"]
     C["Materialize one-target-transition candidate engine once"]
-    L0["Baseline physical lane<br/>B → [B′]"]
+    L0["Baseline physical lane<br/>B replay"]
     L1["Disjoint candidate physical lane<br/>C"]
     A["A: separate eager, untimed candidate audit"]
     T["T: pristine ReferenceManifest"]
@@ -118,7 +118,7 @@ incumbent. Cohorting does not weaken marginal identity:
 - each candidate still changes exactly one registered target;
 - candidate order is derived from committed authority rather than network arrival;
 - each candidate receives a fresh authoritative qualification whose
-  policy-required B and B′ reads are the exact incumbent;
+  baseline replay is the exact incumbent;
 - the retained qualification evidence binds each candidate to its own selected
   delta and physical-lane role assignment;
 - drift and missing authority are handled only by the sealed speed-policy version;
@@ -145,7 +145,7 @@ The resulting tree digest is separate from the stack digest. The stack identifie
 
 Engine launch policy resolves the stack's active contributions to a closed, validator-owned set of seam binding identifiers. Those public identifiers map to fixed environment gates inside the engine. Arbitrary environment variable names do not cross the controller/worker protocol.
 
-This guarantees that B and B′ receive the same incumbent bindings and C receives only the binding change implied by its exact target delta. T has no candidate binding. See [SGLang seam](seam.md).
+This guarantees that every incumbent read receives the same incumbent bindings and C receives only the binding change implied by its exact target delta. T has no candidate binding. See [SGLang seam](seam.md).
 
 ## Build and launch identity
 
@@ -160,9 +160,9 @@ Materialized source is only one part of a running engine. The launch authority a
 - bounded host/worker protocol and evidence keys.
 
 The controller prepares these inputs before timed execution. Production
-qualification binds two isolated physical TP lanes and serializes GPU work
-across them. Current v10 (v11 for mixed cells) uses separate engine processes and
-always takes B/C/B′. Independent reproduction must exchange the physical incumbent and
+qualification binds two isolated physical TP lanes and runs separate incumbent
+and candidate engine processes on them, replaying each paired window
+concurrently. Policy 17's second orientation exchanges the physical incumbent and
 candidate lane roles.
 
 A separate
@@ -206,7 +206,7 @@ If validation, persistence, or readback fails, the old stack remains authoritati
 | Failure | Resulting authority |
 |---|---|
 | Candidate tree cannot be reopened | No valid C arm; qualification does not begin or returns `NO_DECISION` according to stage policy |
-| B and B′ do not reopen the same incumbent | Cohort authority is invalid; no candidate in the affected comparison can be crowned |
+| The incumbent reads do not reopen the same incumbent | Cohort authority is invalid; no candidate in the affected comparison can be crowned |
 | Catalog changed after a qualification | Retained evidence remains historical, but it cannot be replayed as a transition against the new catalog by name alone |
 | Second pass names a different reproduction identity | The pair is not settleable |
 | Current incumbent changed before settlement | Transition is replanned/revalidated; stale evidence does not overwrite the live stack |

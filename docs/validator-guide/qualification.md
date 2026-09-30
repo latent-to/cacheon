@@ -6,8 +6,8 @@ evaluation stack, in one registered arena, at acceptable quality?
 The production answer comes from the version-3 qualification protocol executed
 by a trusted host controller. Every candidate is measured by separate baseline
 and candidate engine processes on two isolated TP lanes under one sealed
-physical-lane authority. Timed GPU work is
-serialized in either case. The answer does not come from a local diagnostic
+physical-lane authority. The two engines replay the same sealed agent workload
+concurrently, one paired window at a time. The answer does not come from a local diagnostic
 launch, candidate-side self-audit, miner report, or arbitrary evaluator command.
 
 ## Identities before execution
@@ -45,100 +45,44 @@ Retained attempts identify the speed policy that created them:
 
 | Version | Timed reads | Purpose |
 |---|---|---|
-| v13/v14/v15 | One full round, then at most one full repeat on a valid threshold crossing | Single-cell / mixed-cell / mixed-cell with prefill; both rounds contribute to a final conservative decision |
-| v10 | B/C/B′, always three | Every cell warmed; both stock reads valid; single-cell median rate |
-| v11 | B/C/B′, always three | Every cell warmed; mixed-cell total tokens / total time |
-| v12 | B/C/B′, then a one-token prompt pass of each lane; always six | v11 decode rule unchanged; the [prefill lane](#prefill-lane-v12) admits a competitive decode miss at a sealed prompt margin |
-| v8/v9 | B/C/B′, always three | Retained historical arithmetic only |
+| v17 | Two to five paired replay windows, split across both lane orientations | New commissions: pooled elapsed serving cost with statistical eligibility |
+| v16 | Paired replay windows on one orientation | Retained: fastest complete pass against a fixed margin |
 
-Versions 1–7 were the MiniMax-M3 era's schedules: the adaptive five-read
-bracket (v1–v5) and the conditional bookend on the standing resident pair
-(v6/v7). Their graders, the legacy `SpeedWitness` lane, and the repeat-quality
-leg were deleted on 2026-09-06 with the pair-native lane. No MiniMax-M3
-product will be re-run or re-graded, so the runtime, evidence readers, and
-settlement refuse a witness below version 8 instead of decoding it. Every
-candidate is now measured by the two-process crossover, which launches its own
-baseline and candidate engines. New commissions bind v13 (v14 for a mixed-cell
-workload, v15 when the commission seals a prefill lane) and reads B′
-unconditionally: the quality gate takes its stock-drift control from the second
-baseline read, and a conditional bookend leaves a clear PASS with no control to
-harvest. Reading it regardless of the outcome also preserves what the
-conditional versions enforced — a read taken regardless of a result cannot be a
-read taken because of one.
+Both are described in [Finite agent replay](#finite-agent-replay). New
+commissions seal v17; v16 remains readable only to reproduce its original
+evidence.
 
-The plan builder stamps the schedule version when the qualification plan is
-built, and the worker executes the version the sealed plan carries, so the plan
-and the execution substrate cannot disagree. Every calibrated threshold is the
-one the provider sealed.
+Versions 8–15 measured batch cells with a B/C/B′ schedule: a timed-batch token
+rate per read, with a bounded borderline repeat (v13–v15) and a one-token prompt
+pass (v12, v15) in later versions. Their graders were removed with the batch-cell
+evaluator. A speed witness below version 16 no longer decodes as qualification
+authority, and a commission that seals no replay is refused. The dashboard shows
+retained batch-cell attempts from their stored JSON — raw lane rates and per-cell
+delivery times — without regrading them. Versions 1–7 were the MiniMax-M3 era's
+schedules, deleted on 2026-09-06.
 
-Retained v10-v12 executions remain one round. New repeat roles use a `_repeat`
-suffix and include a new before-baseline, candidate and after-baseline.
+The commission seals the policy version, and the worker executes the version the
+sealed plan carries, so the plan and the execution substrate cannot disagree.
+Every calibrated threshold is the one the provider sealed.
 
 Fresh execution is resident-only: the runner refuses any other speed-evidence
 policy at entry, and the constructor default is the resident policy — the only
 one a fresh plan can run. A reopen binds the retained evidence's own policy
-explicitly, and retained v8/v9 artifacts regrade byte-for-byte without
+explicitly, and retained v16 artifacts regrade byte-for-byte without
 reinterpretation. Merely changing the policy label does not upgrade old
 evidence.
 
-## Bounded borderline repeat (v13-v15)
+## First-token and delivery timing
 
-A round contains the whole B/C/B′ schedule, including conditioning. Version 15
-also includes the complete prefill B/C/B′ pass. Clear outcomes finish after one
-round. Only a valid measurement whose baseline comparisons straddle the required
-improvement can trigger one repeat. A clear prefill admission already resolves
-the first round; a borderline prefill result can trigger repetition when decode
-has not proved a regression. Invalid measurements and conditioning regressions
-do not earn a repeat.
-
-Both engines remain loaded on their original disjoint lanes. Reads remain
-serialized, and each repeated read performs the full declared conditioning and
-workload. The second round starts after the entire first round; v15 repeats both
-decode and prefill. The existing speed-stage and qualification deadlines still
-bound the work. Commission enough wall time for two complete rounds plus startup
-and later audit/quality; the repeat never silently extends a deadline.
-
-For round i, let `L_i = C_i / max(B_i, B′_i)`. The combined conservative estimate
-is `exp((log(L_1) + log(L_2)) / 2)`. Each round has equal weight, after normalization
-against its own faster baseline. All four baseline observations must satisfy the
-existing within-round drift and matched-window checks; both rounds must cover the
-same workload. The required gain is the larger of the two calibrated per-round
-requirements. No baseline or candidate read can be discarded.
-
-This is a conservative bound from observed baseline brackets, **not a statistical
-confidence interval or a guarantee of certainty**. Equal log weights combine
-paired ratios rather than averaging raw throughput across different baseline
-conditions. A valid combined estimate at or above the bound passes the speed
-stage; otherwise it finishes `FAIL / speed_threshold_not_met` (or
-`candidate_slower` for an established regression). A valid threshold crossing
-cannot remain undecided after the repeat. An invalid repeat stays `NO_DECISION`;
-a timeout is an infrastructure hold, never evidence that the candidate is slow.
-
-Prefill uses the same two-round calculation and its original margin and credit
-weight. It cannot rescue an invalid decode measurement or a decode/conditioning
-regression. A speed PASS still requires the ordinary audit and quality stages.
-
-The trigger, one-repeat limit, aggregation and stopping rule are sealed in the
-new policy identity. Raw regrading reconstructs both rounds and verifies that
-the first authorized the second. Existing commissions and retained v8-v12 results
-are not upgraded or pooled with new-policy runs. Operator-released historical
-holds remain separate attempts; this change neither releases them nor changes fees.
-A fresh commission and exact-stack GPU validation are required before activation.
-
-## Per-cell first-token and decode delivery measurements
-
-A sealed qualification commission can set `session.measure_phase_latency` to
-`true`. Omit the field to retain the existing generation protocol. The commission
-builder carries this choice into both timed lanes and the workload identity;
-the eager audit role and pristine reference remain untimed. Each measured cell
-must generate at least two output tokens per request.
-
-The worker streams the same planned requests and sends a first-token and a
-final-token boundary for each prompt. The controller timestamps their arrival,
-checks their request identity and token IDs against the final evidence, and
-retains the relative host times in each timed window's `prompt_latencies`.
-Worker-supplied timestamps are never accepted. Missing, duplicate, stale or
-inconsistent boundaries are measurement failures, not candidate speed failures.
+Replay requests always stream. The worker sends a first-token and a final-token
+boundary for each request; the controller timestamps their arrival, checks their
+request identity and token IDs against the final evidence, and retains the
+relative host times. Worker-supplied timestamps are never accepted. Missing,
+duplicate, stale or inconsistent boundaries are measurement failures, not
+candidate speed failures. A sealed commission may also set
+`session.measure_phase_latency` to `true` so the engine-conditioning batches
+stream the same boundaries; each streamed request must then generate at least
+two output tokens.
 
 SGLang's intermediate stream rows may share a growing token-ID list with an
 earlier usage-count snapshot. The adapter accepts that documented shape within
@@ -149,14 +93,20 @@ The isolated worker uses SGLang's persistent async engine loop for generation.
 It can accept another disclosed request while an earlier request awaits output;
 complete binary evidence and streaming boundaries retain their original request
 IDs and nonces. Frames remain intact even when responses complete out of order.
-The existing batch controller still submits one batch at a time. Eager audit
+Conditioning batches are still submitted one batch at a time. Eager audit
 requests also remain serial so their rank receipts retain one request boundary;
 resident screening uses the same generation implementation through a serial
-adapter. This transport change alone does not activate an agent replay workload
-or change the qualification score.
+adapter.
 
-The dashboard derives its `cells` table from those retained windows, grouped by
-input tokens, output tokens and request concurrency; derived summaries are not stored again:
+The dashboard's replay detail reports mean and P95 TTFT, the median per-user
+decode rate and unsuccessful requests from the retained turn records. TTFT
+includes queueing, tokenization, prefill, sampling and delivery. These are
+serving latency measurements, not isolated GPU phase durations, and they do
+not change a qualification verdict.
+
+Retained batch-cell attempts keep their per-cell `cells` table, recomputed from
+the host times in their retained timed windows and grouped by input tokens,
+output tokens and request concurrency:
 
 | Field | Definition |
 |---|---|
@@ -165,115 +115,22 @@ input tokens, output tokens and request concurrency; derived summaries are not s
 | `end_to_end_output_tokens_per_second` | Cell output tokens divided by its timed batch spans |
 | `timed_batches` | Number of retained timed batches for this cell |
 
-TTFT includes queueing, tokenization, prefill, sampling and delivery. TPOT measures
-delivery after the first token, including interference from other requests and
-stream buffering. A first chunk may contain several tokens. These are serving
-latency measurements, not isolated GPU phase durations or pure input-token
-throughput. The exact input length and concurrency therefore accompany every
-result. Cells are reported separately rather than averaged together.
-
-The dashboard's submission **Performance** section displays these cells with
-TTFT and TPOT in milliseconds. It shows **Not measured** for evaluations that
-did not collect delivery timings. Output tok/s and the v12 prompt-pass
-comparison remain available independently; prompt passes use **prompts/s**,
-because each request generates one output token. Their batch durations are not
-per-request TTFT. Dashboard display does not enable a measurement mode or
-change a qualification verdict.
-
-This option does not change the v10/v11 qualification or payout rule. A 1.5× TTFT
-improvement is reported as such, not credited as a 1.5× end-to-end speedup. The
-reviewed policy that can qualify a prompt-processing win on its own terms is the
-version-12 [prefill lane](#prefill-lane-v12) below; it grades a separate one-token
-pass, not these delivery timings.
-
-Enabling measurement requires a fresh commission because the consumed source,
-prompt protocol and workload identity change. Drain an active evaluation before
-switching; never change its measurement mode midway through B/C/B′. Stage the
-updated source and commission inputs first, then validate on the exact
-commissioned image, model and TP topology before mainnet activation. The option
-adds no model loads, prompt batches or replayed historical evaluations, but its
-streaming overhead must be measured on that runtime. Existing reports and
-continuations retain their original bytes and remain readable without phase
-fields; their missing phase times cannot be reconstructed from aggregate rates.
-
-## Prefill lane (v12)
-
-Version 12 keeps the v11 decode schedule byte for byte and appends a prompt
-pass to each lane after B′: `B_prefill`, `C_prefill` and `B_prime_prefill`
-replay the same sealed batches with every request budgeted to one generated
-token, so each read measures prompt processing with no decode work to dilute
-it. The decode reads B/C/B′ are taken first, in the same order and with the
-same conditioning as under v11, and the decode verdict is graded first and
-alone. A one-token batch is never streamed for first-token and delivery
-timing; per-batch `prompt_latencies` stay on the decode reads.
-
-The prompt pass is consulted only when the decode floor neither admitted nor
-convicted the candidate:
-
-| Decode grade | Prompt pass | Outcome |
-|---|---|---|
-| `PASS` | anything | `PASS` on the decode lane; the settled speedup is the decode speedup |
-| `FAIL`, candidate slower or conditioning regression | anything | `FAIL` |
-| `FAIL`, bar not cleared | clears `prefill_lane.min_margin` against both stock prompt reads | `PASS` on the prefill lane |
-| `NO_DECISION`, valid measurement at the boundary | clears the prefill margin | `PASS` on the prefill lane |
-| `NO_DECISION`, invalid measurement | anything | `NO_DECISION` |
-| any non-`PASS` | does not clear the prefill margin | the decode grade, unchanged |
-
-A decode bundle therefore sees exactly the v11 outcome, whatever its prompt
-pass measures. A prefill-lane admission settles at a sealed fraction of the
-prompt-pass gain rather than at its raw speedup, because prompt throughput is
-not one-to-one with end-to-end serving throughput:
-
-```text
-prefill speedup = C_prefill / max(B_prefill, B′_prefill)
-settled speedup = 1 + prefill_lane.credit_weight × (prefill speedup − 1)
-```
-
-The prompt reads obey the same bracket-validity and window-stability rules as
-the decode reads. The witness headline (`initial_verdict`, `final_verdict`)
-remains the decode verdict; the settled speedup is what settlement and V1
-credit consume, and every earlier witness regrades unchanged under its own
-version.
-
-A sealed commission enables the lane with an optional block inside
-`resident_speed`:
-
-```json
-"resident_speed": {
-  "max_stage_seconds": 900,
-  "prefill_lane": {"min_margin": "0.02", "credit_weight": "0.5"}
-}
-```
-
-Both values are canonical decimal strings; the margin must lie in (0, 1) and
-the weight in (0, 1]. The block requires a mixed-cell workload, because v12
-extends the v11 makespan rule, and a fresh commission: the version, the read
-order and both thresholds are part of the sealed policy digest. The pass adds
-three prompt-only reads over the sealed batches (two on the baseline lane, one
-on the candidate lane) and no model loads, so the sealed stage and
-qualification wall bounds must cover them. Validate the exact commissioned
-image, model and TP topology before mainnet activation, as for any policy
-change.
-
 ## Current qualification timeline
-
-The commissioned prompt authority includes a warmup for every declared cell,
-with each prompt and its sealed answer expanded together before composition.
-The session and hidden judge consume those same batches. Commissioning checks
-that the warmup covers every cell and that the remaining counts match the
-registered timed reads; it never inserts prompts into only one consumer.
 
 The version-3 protocol binds two non-overlapping physical TP lanes, equivalent
 topology, separate runtime namespaces, lane-specific NUMA policy, exact
-workload, and a total qualification budget. The baseline and candidate
-processes are launched for the request. The controller permits only one lane to
-execute timed GPU work at a time.
+workload, and a total qualification budget. The incumbent and candidate
+processes are launched for the request, one per lane. Both condition and flush
+their caches, then replay the same sealed slice concurrently, one paired window
+at a time. Policy 17 splits its windows between two orientations: after the
+first orientation both engines close and relaunch on the opposite lanes, so a
+stable lane factor cancels out of the score.
 
-Every read's evidence carries the engine-observed prompt token count for each request,
-and the protocol layer rejects any read whose counts differ from the sealed workload
-cell before it can be graded. A nominal host-side token count is never authority, and a
-count mismatch is an infrastructure fault — it can hold the leg, never mint a candidate
-verdict.
+Every replay record carries the engine-observed prompt token count and the
+controller's host timing, and the regrade rejects a window whose records differ
+from its completed host requests. A nominal host-side token count is never
+authority, and a count mismatch is an infrastructure fault — it can hold the
+leg, never mint a candidate verdict.
 
 ```mermaid
 sequenceDiagram
@@ -282,25 +139,30 @@ sequenceDiagram
     participant L1 as Physical lane 1
     participant A as Audit-only role
     participant T as Pristine reference
-    H->>L0: launch/read B
-    L0-->>H: timed rate + witness
-    H->>L1: launch/read C
-    L1-->>H: timed rate + sealed trajectory
-    H->>L0: read B′ unconditionally
-    L0-->>H: timed rate + stock-drift control
+    H->>L0: launch incumbent, condition, flush
+    H->>L1: launch candidate, condition, flush
+    par each paired window
+        H->>L0: replay the sealed slice
+        H->>L1: replay the sealed slice
+    end
+    L0-->>H: turn records + host timing
+    L1-->>H: turn records + host timing
+    H->>H: grade at each sealed look; v17 swaps lanes once
+    H->>L1: on PASS, close the candidate engine
+    H->>H: observe entropy and select quality prompts
+    H->>L0: generate the selected incumbent controls
     H->>H: prove both speed executors quiescent
     H->>A: run sealed audit-only plan
     A-->>H: exact slot × rank witness
-    H->>H: reveal post-commit hidden-work selection
+    H->>H: reveal the selection again; entropy must match
     H->>T: run candidate-free quality authority
     T-->>H: pristine quality evidence
     H->>H: prove final quiescence and regrade
 ```
 
-V10 and v11 always read B/C/B′ because the quality stage requires a second stock
-observation. C′/B″ are unreachable. The candidate cannot request extra reads. The retained
-witness records which reads occurred, lane identities, operational timing, and
-the stage and total budgets.
+The candidate cannot request extra windows; the sealed stopping rule decides
+how many run. The retained witness records every window's turn records, lane
+identities, operational timing, and the stage and total budgets.
 
 Speed is graded before the expensive audit and pristine-reference stages. An ordinary
 speed non-PASS emits a durable stage-exit and does not run audit or T. A separately bound
@@ -309,12 +171,12 @@ diagnostic audit and T evidence, but it cannot crown the candidate.
 
 A speed FAIL names what the round proved, graded with the verdict itself rather than
 derived from the bare decision. A bar of 1 + u can only call a candidate slower once
-its measured speedup falls below the mirrored bound 1 − u, or a conditioning
-regression is measured directly; that failure is `candidate_slower`. A miss inside
-the band is `speed_threshold_not_met`: the bar was not cleared, and the candidate was
-not measurably slower either. Reports settled before this split carry the retained
-coarse code `speed_regression`, which remains valid for them and is never recorded on
-a new verdict.
+its measured speedup falls below the mirrored bound 1 − u; that failure is
+`candidate_slower`. A miss inside the band is `speed_threshold_not_met`: the bar was
+not cleared, and the candidate was not measurably slower either. A candidate that
+clears the bar but fails the service-attainment gate is `service_contract_not_met`.
+Reports settled before this split carry the retained coarse code `speed_regression`,
+which remains valid for them and is never recorded on a new verdict.
 
 The audit-only role is distinct from both timed lanes. Trusted-host grading imports no
 PyTorch and returns `PASS`, `FAIL` (`slot_audit_failed`: compared calls show a wrong
@@ -370,7 +232,7 @@ throughput are ignored.
 ## Cohorts and selection
 
 A service may freeze one incumbent and qualify a chain-ordered cohort `C1..Ck`, sharing
-bookends and one pristine reference lifetime where the policy permits. This is an
+one pristine reference lifetime where the policy permits. This is an
 operational optimization, not a semantic relaxation:
 
 - every C remains one exact marginal delta;
@@ -381,7 +243,7 @@ operational optimization, not a semantic relaxation:
 - retained evidence must still support each candidate independently.
 
 The contract does not require cold model loads for every timed read. It requires resident
-lane identity, serialized execution, read order, audit authority, and pristine-reference
+lane identity, the sealed window schedule, audit authority, and pristine-reference
 authority to remain causally and cryptographically separable.
 
 For registered cohorts, a recognized cohort-level factory, runner, raw-speed,
@@ -407,8 +269,8 @@ Qualification reopens and grades several evidence products:
 1. **Execution:** required roles completed under the expected launch and device state,
    and on a graphs-on run every claimed slot on every rank completed inside a CUDA-graph
    capture, as recorded by the dispatcher.
-2. **Speed:** C beats the policy-required B or B/B′ comparison and
-   noise-derived bar.
+2. **Speed:** C's paired replay cost beats the incumbent's under the sealed
+   eligibility bound, and C passes the service-attainment gate.
 3. **Audit:** the sealed audit-only plan has complete exact slot × rank authority.
 4. **Quality:** pristine T validates sealed trajectories and hidden work under the
    registered calibration.
@@ -438,7 +300,7 @@ The evidence-to-verdict mapping is fail closed:
 |---|---|---|
 | Complete, bound, and green across every required product | `PASS` | C clears calibrated speed bar; audit and pristine quality pass |
 | Complete attributable violation of a frozen candidate requirement | `FAIL` | Wrong output, never invoked inside a capture, or measured quality regression |
-| Authority incomplete, stale, unreopenable, too noisy, timed out, or infrastructurally invalid | `NO_DECISION` | Missing evidence bytes, baseline drift, controller/worker failure |
+| Authority incomplete, stale, unreopenable, too noisy, timed out, or infrastructurally invalid | `NO_DECISION` | Missing evidence bytes, an unresolved speed bound, controller/worker failure |
 
 An unexpected exception is not evidence of candidate guilt. The intake projection turns
 recognized plan, runner, and raw-speed authority failures into typed failure products and
@@ -503,10 +365,10 @@ dispositions; it does not invoke the full causal regrader.
 
 The final report is derived from the serialized attempt, referenced graph/quality
 artifacts, and calibration manifests. Reopen can regrade graph and raw quality evidence.
-Speed regrading uses the retained `ResidentSpeedWitness`, which retains the
-v10/v11 B/C/B′ schedule, physical-lane authority, operational timings, and
-budget. A witness below version 8 is sealed MiniMax-M3 history and is refused
-rather than decoded. Regrading recomputes rates and the frozen
+Speed regrading uses the retained `ResidentSpeedWitness`, which retains every
+paired window's turn records, physical-lane authority, operational timings, and
+budget. A witness below version 16 is batch-cell or MiniMax-M3 history and is
+refused rather than decoded. Regrading recomputes costs and the frozen
 decision from those typed facts; it does not reconstruct them from raw session
 frames. A summary JSON line without these products is not authority.
 
@@ -518,16 +380,15 @@ evidence; the aggregate speed witness; the pristine-T execution
 witness and raw quality artifact/binding; per-candidate reports; and the enclosing attempt
 artifact. Settlement keeps every accepted attempt reference.
 
-The live outer session validates richer per-read protocol frames, lifecycle order, device
-state, and cleanup before constructing that attempt. Those raw frames and per-arm device
-samples are not serialized into `CohortQualificationAttempt`. The aggregate speed witness
-must not be documented as raw batch retention or as proof that a later audit can replay the
-original timing frames.
+The live outer session validates richer per-request protocol frames, lifecycle order,
+device state, and cleanup before constructing that attempt. Those raw frames and per-arm
+device samples are not serialized into `CohortQualificationAttempt`. The witness's turn
+records retain per-request host timing, not the engine frames behind them.
 
 Reopening verifies hashes and expected bindings before grading. If the attempt artifact
 reopens but a referenced graph, calibration, or raw quality product does not, authority is
 still incomplete. Operators must retain every referenced evidence-store object and test
-restores, not merely archive the final report digest. If policy requires raw B/C/B′ frame
+restores, not merely archive the final report digest. If policy requires raw engine-frame
 replay, the attempt schema must first be extended to retain and bind those products.
 
 ## Qualification incident handling
@@ -538,10 +399,10 @@ replay, the attempt schema must first be extended to retain and bind those produ
 | Typed worker failure binds one exact candidate arm | Contain that candidate; retain its attributable outcome and preserve unaffected cohort results |
 | Recognized worker, Docker, GPU, driver, plan, runner, or raw-speed authority failure | HOLD with the original evidence; automatic retry requires authenticated proof that resident execution never began |
 | Evidence-store publication failure | Abort the pass; recovery holds an interrupted `qualifying` row as `controller_restart_during_qualifying` rather than manufacturing a typed `NO_DECISION` |
-| Baseline drift exceeds calibration | `NO_DECISION`; do not increase the candidate's denominator or tune the bar after seeing C |
+| Measurement uncertainty exceeds the sealed calibration | `NO_DECISION`; do not add windows or tune the bar after seeing C |
 | Either resident speed executor survives past its quiescence proof | Abort authority; never launch audit or T into the contaminated lifetime |
 | Audit role misses a slot/rank, reports a violation, or cannot reopen | `FAIL` only for a complete attributable violation; otherwise `NO_DECISION`; never substitute candidate-side audit output |
-| T identity/session mismatch | `NO_DECISION`; T cannot be replaced with B′ or a candidate-side audit |
+| T identity/session mismatch | `NO_DECISION`; T cannot be replaced with an incumbent read or a candidate-side audit |
 | One member poisons a registered cohort | Preserve cohort failure digest and execute the stored bisection groups |
 | Accepted PASS evidence root lost | No settlement; restore exact bytes or hold |
 | Historical reproduction differs in contribution identity or reuses an independence digest | Reject the retained pair; do not reinterpret its original contract |
@@ -585,7 +446,7 @@ digest derived by `retained_support_policy_digest()`. A stale support-policy
 digest fails commissioning before GPU execution; retained quality validation
 checks the same binding again after execution.
 
-The commission measures B against the durable incumbent stack the
+The commission measures the candidate against the durable incumbent stack the
 capabilities factory declares (`incumbent_entries`, resolved through the same
 closed source resolver); at genesis the declaration is empty and the baseline
 is the stock tree. The two-process schedule's baseline process boots the
@@ -596,10 +457,10 @@ audit reference never inherits crowned contributions. A declaration that does no
 durable stack identity fails closed at the dispatcher's incumbent pin and at
 the durable commit.
 
-`eval/crossover_runtime.py` owns qualification planning and scoring for the
-two-process schedule. Deployment-private capability bytes still supply sealed
-identities and must match their configured source digest; they do not create a
-second evaluator.
+`eval/crossover_runtime.py` owns the resident plan and evidence types, and
+`eval/goodput_runtime.py` runs and grades the paired replay. Deployment-private
+capability bytes still supply sealed identities and must match their configured
+source digest; they do not create a second evaluator.
 
 ## Nonclaims
 
@@ -646,10 +507,9 @@ window through the ordinary OCI executor. The plan seals exactly one load, the
 operating load of the paired fixed-work comparison.
 Install the controller's `replay` extra
 and supply a separate AIPerf 0.13.0 virtual environment executable, the local model tokenizer, a
-sealed slice manifest, loads, output directory and service contract. An explicit
-`engine_config.engine_kwargs.context_length` is retained; batch workloads derive
-it from their cells only when absent and reject a declared context that is too
-small. Replay uses the complete sealed engine template. Engine conditioning
+sealed slice manifest, loads, output directory and service contract. Replay uses
+the complete sealed engine template, including its declared
+`engine_config.engine_kwargs.context_length`. Engine conditioning
 runs first with at most the declared session count per conditioning batch and
 16 output tokens per request. The replay plan retains only those conditioning
 rows; AIPerf supplies the measured work. AIPerf starts exactly the declared number
@@ -677,8 +537,7 @@ work rate and attainment. `window.json` retains the workload identity and the
 read. The existing engine-session evidence also carries
 the typed `LoadRead` records, so continuation retains them with the token evidence.
 A window does not by itself provide the paired capacity comparison, quality audit or
-authoritative qualification result. Existing commissions continue to execute
-their sealed workload until recommissioned.
+authoritative qualification result.
 
 Policy v17 retains the lockstep replay schedule: requests are released together
 in session-key order after the preceding round drains. The cold opening round
@@ -715,9 +574,9 @@ retains its separate OCI initialization deadline. `resident_speed.goodput`
 seals the service `contract`
 (`decode_floor_tps`, `ttft_bound_s`, `attainment`), `required` ratio, paired
 `null_noise`, fixed `attainment_tolerance`, and its calibrated one-sided
-`attainment_margin`. These values use canonical decimal strings. The existing
-window-scatter, conditioning-slowdown and minimum-window fields are zero for this
-policy. V17 seals `required=1`, `error_rate=0.01`, paired per-window log-cost
+`attainment_margin`. These values use canonical decimal strings. The
+window-scatter, conditioning-slowdown and minimum-window fields of the retired
+batch-cell policies stay sealed as zero, because the policy digest binds them. V17 seals `required=1`, `error_rate=0.01`, paired per-window log-cost
 standard deviation `null_noise`, and paired boot standard deviation `boot_noise`.
 At least one uncertainty component must be positive. These are calibrated
 uncertainty bounds, not a desired detection threshold. Greedy sampling and zero
@@ -766,9 +625,9 @@ V16 marks each engine's fastest complete pass and uses those pass latencies in
 the baseline and candidate summaries. The detail includes mean and P95 TTFT,
 median per-user decode rate, unsuccessful request count and speed-stage duration.
 The attempt's retained workload and policy identify its regime, regardless of
-submission date. V17 uses pooled elapsed cost across lane orientations. Historical
-batch evaluations retain their token-throughput units. Replay evidence does not
-enter the historical token-rate baseline band.
+submission date. V17 uses pooled elapsed cost across lane orientations. Retained
+batch-cell evaluations keep their token-throughput units and are shown as stored,
+without a regrade.
 
 The economic interpretation assumes identical billable work, fixed GPU
 allocation and cost, and demand for the measured capacity. At fixed basket
@@ -782,7 +641,7 @@ traffic. Service attainment is a relative non-inferiority check; the retained
 `attainment` target does not certify an absolute SLA or change billable value.
 
 On a speed PASS, the candidate engine closes and the existing entropy provider
-selects source occurrences from the completed B/C trajectories. The still-loaded
+selects source occurrences from the completed incumbent and candidate trajectories. The still-loaded
 incumbent generates only those selected controls. Canonical input digests bind
 all three rollouts, and the speed continuation retains the controls before the
 separate eager audit and pristine T run. Reopening selection after the audit must

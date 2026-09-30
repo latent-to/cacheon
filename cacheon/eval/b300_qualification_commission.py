@@ -14,7 +14,6 @@ from cacheon.eval.b300_arena_definition import (
     data_parallel_size as _data_parallel_size,
     device_policy as _device_policy,
     hardware_bindings as _hardware_bindings,
-    scored_cell as _scored_cell,
 )
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_qualification_deployment import (
@@ -370,7 +369,7 @@ def compose_commissioned_qualifications(
             f"sealed qualification policy failed to seal: {exc}"
         ) from None
 
-    _require_cell_conformance(inputs, policy, session_block, speed_block)
+    _require_replay_quality(policy, session_block)
 
     lane_a_policy, lane_b_policy = _lane_policies(inputs)
     lane_a_executor = b300_deployment._build_executor(
@@ -422,48 +421,16 @@ def compose_commissioned_qualifications(
     return (commissions[0], commissions[1]), executors
 
 
-def _require_cell_conformance(inputs, policy, session_block, speed_block) -> None:
-    """The declared workload cell and the consumed session are projections of
-    one sealed authority; any mismatch is a commissioning error, never a
-    runtime surprise.  Batch widths were validated against the cell at parse.
-    A min_windows floor above the cell's timed reads is unsatisfiable by
-    construction and must die here, not forty minutes into a measured run.
+def _require_replay_quality(policy, session_block) -> None:
+    """Replay quality is teacher NLL under greedy decoding; a sealed profile
+    asking for sampled or numeric hidden-task quality must die at commission,
+    not forty minutes into a measured run.
     """
 
-    if "replay" in session_block:
-        if policy.topk_width != 0 or float(session_block["temperature"]) != 0:
-            raise B300QualificationCommissionError("goodput replay requires greedy decoding and teacher-NLL quality")
-        if policy.hidden_tasks_required or policy.hidden_tasks_per_prompt:
-            raise B300QualificationCommissionError("replay prompts require a teacher-only profile without numeric hidden tasks")
-        return
-    quality_cell = _scored_cell(inputs.workload)
-    batch_cells = getattr(
-        inputs,
-        "prompt_batch_cells",
-        (quality_cell.cell_id,) * len(inputs.prompt_batches),
-    )
-    warmup_cells = batch_cells[:session_block["warmup_count"]]
-    expected_counts = {
-        cell.cell_id: cell.timed_reads
-        + warmup_cells.count(cell.cell_id)
-        for cell in inputs.workload.cells
-    }
-    observed_counts = {
-        cell.cell_id: batch_cells.count(cell.cell_id)
-        for cell in inputs.workload.cells
-    }
-    if (
-        policy.tokens_per_prompt != max(cell.output_tokens for cell in inputs.workload.cells)
-        or type(batch_cells) is not tuple
-        or len(batch_cells) != len(inputs.prompt_batches)
-        or observed_counts != expected_counts
-        or set(warmup_cells) != {cell.cell_id for cell in inputs.workload.cells}
-        or speed_block["min_windows"]
-        > sum(cell.timed_reads for cell in inputs.workload.cells)
-    ):
-        raise B300QualificationCommissionError(
-            "sealed session does not conform to the declared workload cell"
-        )
+    if policy.topk_width != 0 or float(session_block["temperature"]) != 0:
+        raise B300QualificationCommissionError("goodput replay requires greedy decoding and teacher-NLL quality")
+    if policy.hidden_tasks_required or policy.hidden_tasks_per_prompt:
+        raise B300QualificationCommissionError("replay prompts require a teacher-only profile without numeric hidden tasks")
 
 
 def _compose_locked(
@@ -495,35 +462,32 @@ def _compose_locked(
             label="pristine reference",
         )
     )
-    replay = None
-    goodput = None
-    if "replay" in session_block:
-        from cacheon.eval.agent_replay import AgentReplayPlan
-        from cacheon.eval.goodput_runtime import GoodputPolicy
-        settings = session_block["replay"]
-        goodput = GoodputPolicy.from_dict(speed_block["goodput"])
-        if not goodput.error_rate:
-            raise B300QualificationCommissionError(
-                "new replay commissions require elapsed-work statistical eligibility; "
-                "V16 latency scoring is retained only for historical evidence"
-            )
-        replay = AgentReplayPlan(
-            Path(settings["manifest_path"]), (settings["load"],),
-            Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
-            inputs.root / "qualification-replays" / screen_lane,
-            goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
-            elapsed_cost=True,
-            max_work_seconds=settings.get("max_work_seconds", 0),
+    from cacheon.eval.agent_replay import AgentReplayPlan
+    from cacheon.eval.goodput_runtime import GoodputPolicy
+    settings = session_block["replay"]
+    goodput = GoodputPolicy.from_dict(speed_block["goodput"])
+    if not goodput.error_rate:
+        raise B300QualificationCommissionError(
+            "new replay commissions require elapsed-work statistical eligibility; "
+            "V16 latency scoring is retained only for historical evidence"
         )
-        if replay.slice.digest != settings["slice_digest"]:
-            raise B300QualificationCommissionError("replay slice differs from its sealed authority")
-        from cacheon.eval.qualification_trajectories import prompt_pool
-        from cacheon.eval.reference_protocol import MAX_TOKENS
-        maximum = max(prompt_pool(replay).values())
-        if policy.tokens_per_prompt != maximum or maximum > MAX_TOKENS:
-            raise B300QualificationCommissionError(
-                "reference token maximum must match the replay slice and fit the reference protocol"
-            )
+    replay = AgentReplayPlan(
+        Path(settings["manifest_path"]), (settings["load"],),
+        Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
+        inputs.root / "qualification-replays" / screen_lane,
+        goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
+        elapsed_cost=True,
+        max_work_seconds=settings.get("max_work_seconds", 0),
+    )
+    if replay.slice.digest != settings["slice_digest"]:
+        raise B300QualificationCommissionError("replay slice differs from its sealed authority")
+    from cacheon.eval.qualification_trajectories import prompt_pool
+    from cacheon.eval.reference_protocol import MAX_TOKENS
+    maximum = max(prompt_pool(replay).values())
+    if policy.tokens_per_prompt != maximum or maximum > MAX_TOKENS:
+        raise B300QualificationCommissionError(
+            "reference token maximum must match the replay slice and fit the reference protocol"
+        )
     incumbent, incumbent_binding, incumbent_arm = commissioned_incumbent_arm(
         inputs, manifest, candidate_executor,
         entries=capabilities.incumbent_entries, resolver=capabilities.source_resolver,
@@ -535,7 +499,6 @@ def _compose_locked(
     engine_config = baseline_session_plan.engine_config
     dp_size = _data_parallel_size(engine_config)
     baseline_physical = incumbent_arm.binding.physical_hardware
-    mixed_cells = len(inputs.workload.cells) > 1
     pristine_native = b300_deployment._native_build(
         stock_tree.tree_digest,
         inputs.preflight,
@@ -641,31 +604,17 @@ def _compose_locked(
         baseline_executor.config.runtime.digest,
         baseline_executor.device_policy.configuration_sha256,
     )
-    prefill_lane = speed_block.get("prefill_lane")
-    if prefill_lane is not None and not mixed_cells:
-        # Version 12 scores the mixed-cell makespan; a single-cell workload
-        # has no such rule to append the prefill pass to.
-        raise B300QualificationCommissionError(
-            "the prefill lane requires a mixed-cell workload"
-        )
     resident_speed_policy = ResidentSpeedPolicy.from_calibration(
         max_stage_seconds=speed_block["max_stage_seconds"],
         max_qualification_seconds=speed_block["max_qualification_seconds"],
         calibration=calibration_manifest,
         context=calibration_context,
-        # New commissions seal one bounded borderline repeat: v13 single-cell,
-        # v14 mixed-cell, or v15 with the prefill pass. Existing evidence keeps
-        # its original version and arithmetic.
-        version=17 if goodput is not None else 15 if prefill_lane is not None else 14 if mixed_cells else 13,
+        # New commissions grade elapsed work statistically (v17); v16 evidence
+        # keeps its fixed-cutoff arithmetic.
+        version=17,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),
-        prefill_min_margin=(
-            float(prefill_lane["min_margin"]) if prefill_lane is not None else 0.0
-        ),
-        prefill_credit_weight=(
-            float(prefill_lane["credit_weight"]) if prefill_lane is not None else 0.0
-        ),
         goodput=goodput,
     )
 

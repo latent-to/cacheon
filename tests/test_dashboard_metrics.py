@@ -11,16 +11,23 @@ from cacheon.chain.baseline_band import qualification_evidence_roots, qualificat
 from cacheon.eval.evidence_store import (
     EvidenceArtifactRef, prepare_evidence_root, publish_canonical_json_evidence, reopen_evidence,
 )
-from cacheon.eval.resident_measurement import TimedWindow
+
+
+def _window(index, tokens, seconds, input_tokens=None, latencies=()):
+    """One timed window exactly as a retained batch-cell stage exit stores it."""
+    row = {"batch_index": index, "seconds": format(seconds, ".17g"), "tokens": tokens}
+    if latencies:
+        row.update(input_tokens=input_tokens,
+                   prompt_latencies=[[format(a, ".17g"), format(b, ".17g")] for a, b in latencies])
+    return row
 
 
 def _rate(role, seconds, tokens, *, phase=False):
-    windows = [TimedWindow(i, n, float(s)).to_dict()
-               for i, (s, n) in enumerate(zip(seconds, tokens))]
+    windows = [_window(i, n, float(s)) for i, (s, n) in enumerate(zip(seconds, tokens))]
     if phase:
         windows = [
-            TimedWindow(0, 8, 2.0, 1024, ((.25, 1.25), (.75, 1.75))).to_dict(),
-            TimedWindow(1, 32, 4.0, 2048, ((1., 3.),) * 4).to_dict(),
+            _window(0, 8, 2.0, 1024, ((.25, 1.25), (.75, 1.75))),
+            _window(1, 32, 4.0, 2048, ((1., 3.),) * 4),
         ]
     return {
         "role": role,
@@ -279,28 +286,6 @@ def test_held_result_retains_metrics_without_a_disposition_and_deduplicates_impo
     damaged = client.get("/api/submissions/example").json()
     assert damaged["qualification_attempts"] == []
     assert "differs from retained result" in damaged["forensics"][0]["qualification_error"]
-
-
-def test_dashboard_explains_valid_boundary_uncertainty_from_the_shared_grader(tmp_path):
-    from cacheon.chain.baseline_band import qualification_speed_from_payload
-    from cacheon.eval.qualification_runner import ResidentSpeedWitness
-    from tests.test_crossover_runtime import _rig, _speed
-    from tests.test_prefill_lane import _policy
-
-    plan, baseline, candidate, mount, _, _ = _rig(
-        tmp_path, (0.994, 0.995), policy=_policy(), timed_batches=5,
-        baseline_durations=(1., 1.006, 1., 1.))
-    result = _speed(plan, baseline, candidate, mount)
-    witness = ResidentSpeedWitness.from_evidence(result, plan)
-    speed = qualification_speed_from_payload(json.dumps({"speed_witness": witness.to_dict()}).encode())
-    grade = speed["grading"]
-    assert grade["decision"] == "NO_DECISION"
-    assert grade["detail"] == "measurement uncertainty crosses the speed decision boundary"
-    assert grade["measurement_valid"] and not grade["conditioning_failed"]
-    assert grade["candidate_vs_before"] < 1.01 < grade["candidate_vs_after"]
-    assert grade["required_speedup"] > grade["candidate_vs_before"]
-    assert grade["baseline_drift"] < grade["max_noise"]
-    assert speed["prefill"]["speedup"] < 1.05
 
 
 @pytest.mark.parametrize("detailed", [False, True])

@@ -1,26 +1,18 @@
-"""Retained lane rates and the arena baseline band behind a re-measurement.
+"""Retained qualification speed measurements, read back for the dashboard.
 
 Every graded qualification half leaves a stage-exit artifact whose speed
-witness records the tokens per second each resident lane produced. The
-verdict itself is a ratio, so a baseline lane that boots into the slow engine
-state (roughly ten percent under its normal rate, seen on every arena since
-the champion baseline began) inflates the candidate's speedup without any
-lane misbehaving. The two-PASS minimum absorbs one slow half; when both halves
-draw it, the retained pair credits a gain the kernel never produced.
-
-This module reads those rates back from retained evidence and states, for one
-retained PASS pair, whether the half that set its credited speedup read the
-baseline lane below the arena's band. The band is the arena's own retained
-baseline population, not a tuned constant: the median of every baseline-role
-read across retained halves in the same arena, with a fixed tolerance.
+witness records what each resident lane measured. This module reopens that
+artifact from whichever local evidence store retains it and reports the lane
+measurements without re-running a grader: replay witnesses report the same
+warm-turn reads and verdict the replay scorer consumed, and retained
+batch-cell witnesses (speed policies 8-15, whose grader is retired) report
+their raw lane rates and per-cell delivery times.
 """
 
 from __future__ import annotations
 
 import json
 import statistics
-from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -29,15 +21,6 @@ from cacheon.eval.evidence_store import (
     EvidenceStoreError,
     reopen_evidence_anywhere,
 )
-
-BASELINE_ROLES = frozenset({"B", "B_prime", "B_double_prime", "B_repeat", "B_prime_repeat"})
-BAND_TOLERANCE = Decimal("0.05")
-MIN_BASELINE_READS = 6
-
-
-class BaselineBandError(ValueError):
-    pass
-
 
 def qualification_evidence_roots(
     state_dir: Path, extra: tuple[Path, ...] = (), connection: Any = None,
@@ -149,31 +132,6 @@ def qualification_speed_from_payload(
                 by_role["B_prefill"], by_role["B_prime_prefill"]),
             "min_margin": policy.get("prefill_min_margin"),
         }
-    if "evidence_digest" in witness:
-        from cacheon.eval.qualification_runner import ResidentSpeedWitness
-        from cacheon.eval.resident_schedule import grade_schedule
-
-        try:
-            retained = ResidentSpeedWitness.from_dict(witness)
-            grade = grade_schedule(retained.resident_policy, retained.rates)
-            if retained.resident_policy.version >= 13:
-                speed["speedup"] = float(grade.settled_speedup)
-                if grade.prefill_verdict is not None:
-                    speed["prefill"]["speedup"] = grade.prefill_verdict.speedup
-            speed["grading"] = {
-                "decision": grade.decision.value,
-                "detail": grade.verdict.detail,
-                "candidate_vs_before": candidate / baseline,
-                "candidate_vs_after": candidate / by_role["B_prime"],
-                "required_speedup": grade.verdict.required,
-                "min_margin": retained.resident_policy.min_margin,
-                "baseline_drift": grade.verdict.noise,
-                "max_noise": retained.resident_policy.max_noise,
-                "measurement_valid": grade.verdict.confident,
-                "conditioning_failed": grade.conditioning_failed,
-            }
-        except (RuntimeError, ValueError, KeyError, TypeError) as exc:
-            speed["grading_error"] = str(exc)
     return speed
 
 
@@ -249,152 +207,39 @@ def _replay_diagnostics(read) -> dict[str, Any]:
 
 
 def _phase_measurements(windows: list[dict[str, Any]]) -> list[dict[str, object]]:
-    """Recompute delivery metrics from retained host times, not cached cell summaries."""
+    """Recompute per-cell delivery metrics from retained host times, not cached cell summaries.
+
+    Cells are keyed by input length, output length and concurrency, so unlike
+    workloads never blend into one mean.
+    """
     if not any(window.get("prompt_latencies") for window in windows):
         return []
-    from cacheon.eval.resident_measurement import TimedWindow, phase_cells
-
-    return phase_cells(tuple(
-        TimedWindow(
-            window["batch_index"], window["tokens"], float(window["seconds"]),
-            window.get("input_tokens"),
-            tuple(tuple(float(t) for t in pair)
-                  for pair in window.get("prompt_latencies", ())),
-        )
-        for window in windows
-    ))
-
-
-@dataclass(frozen=True)
-class RetainedHalfRates:
-    """One retained qualification half: its settled speedup and lane reads."""
-
-    reservation_id: str
-    arena_digest: str
-    index: int
-    speedup: Decimal
-    baseline: tuple[Decimal, ...]
-
-
-@dataclass(frozen=True)
-class RemeasurementEvidence:
-    """Why one retained PASS pair does or does not warrant a fresh pair."""
-
-    reservation_id: str
-    arena_digest: str
-    baseline_reads: int
-    baseline_median: Decimal
-    floor: Decimal
-    credited_index: int
-    credited_speedup: Decimal
-    credited_baseline: tuple[Decimal, ...]
-
-    @property
-    def out_of_band(self) -> bool:
-        return any(read < self.floor for read in self.credited_baseline)
-
-    def describe(self) -> str:
-        reads = ", ".join(str(read) for read in self.credited_baseline)
-        half = "reproduction" if self.credited_index else "primary"
-        return (
-            f"arena {self.arena_digest[:12]}: {self.baseline_reads} retained baseline "
-            f"reads, median {self.baseline_median} tok/s, floor {self.floor} tok/s; "
-            f"credited {half} half speedup {self.credited_speedup} read the baseline "
-            f"lane at {reads} tok/s -> "
-            + ("OUT OF BAND" if self.out_of_band else "inside the band")
-        )
-
-
-def retained_half_rates(store, roots: tuple[Path, ...]) -> tuple[RetainedHalfRates, ...]:
-    """Lane reads for every retained PASS half whose artifact a local store holds."""
-
-    halves: list[RetainedHalfRates] = []
-    for reservation_id, arena_digest, speedups, refs in store.retained_pass_pairs():
-        for index, attempt_ref_json in refs:
-            speed = qualification_speed(attempt_ref_json, roots)
-            if speed is None or speed.get("metric") in ("warm_turn_latency", "fixed_work_rate"):
-                continue
-            baseline = tuple(
-                Decimal(str(lane["tokens_per_second"]))
-                for lane in speed["lanes"]
-                if lane["role"] in BASELINE_ROLES
-            )
-            if not baseline:
-                continue
-            halves.append(
-                RetainedHalfRates(
-                    reservation_id, arena_digest, index,
-                    Decimal(speedups[index]), baseline,
-                )
-            )
-    return tuple(halves)
-
-
-def baseline_band_verdict(
-    halves: tuple[RetainedHalfRates, ...],
-    reservation_id: str,
-    *,
-    tolerance: Decimal = BAND_TOLERANCE,
-    min_reads: int = MIN_BASELINE_READS,
-) -> RemeasurementEvidence:
-    """Judge the half that set a pair's credited speedup against its arena band.
-
-    The credited half is the lower of the two settled speedups, exactly as
-    settlement credits it. The band is the median of every baseline-role read
-    retained in the same arena, and a pair is out of band only when a baseline
-    read of that credited half sits under ``median * (1 - tolerance)``.
-    """
-
-    own = sorted(
-        (half for half in halves if half.reservation_id == reservation_id),
-        key=lambda half: half.index,
-    )
-    if len(own) not in (1, 2) or {half.index for half in own} != set(range(len(own))):
-        raise BaselineBandError(
-            "retained evidence does not hold lane rates for its accepted attempts"
-        )
-    arena_digest = own[0].arena_digest
-    reads = [
-        read
-        for half in halves
-        if half.arena_digest == arena_digest
-        for read in half.baseline
-    ]
-    if len(reads) < min_reads:
-        raise BaselineBandError(
-            f"arena retains {len(reads)} baseline reads; the band needs {min_reads}"
-        )
-    median = Decimal(str(statistics.median(reads)))
-    credited = min(own, key=lambda half: (half.speedup, half.index))
-    return RemeasurementEvidence(
-        reservation_id=reservation_id,
-        arena_digest=arena_digest,
-        baseline_reads=len(reads),
-        baseline_median=median,
-        floor=(median * (Decimal(1) - tolerance)).quantize(Decimal("0.1")),
-        credited_index=credited.index,
-        credited_speedup=credited.speedup,
-        credited_baseline=credited.baseline,
-    )
-
-
-def remeasurement_evidence(
-    store, reservation_id: str, roots: tuple[Path, ...]
-) -> RemeasurementEvidence:
-    """Read retained evidence and judge one pair's credited half."""
-
-    return baseline_band_verdict(retained_half_rates(store, roots), reservation_id)
+    groups: dict[tuple[int, int, int], list[tuple[int, float, list[tuple[float, float]]]]] = {}
+    for window in windows:
+        latencies = [(float(first), float(last)) for first, last in window.get("prompt_latencies", ())]
+        if not latencies:
+            raise ValueError("phase read lacks a timed window's token latencies")
+        tokens = int(window["tokens"])
+        key = int(window["input_tokens"]), tokens // len(latencies), len(latencies)
+        groups.setdefault(key, []).append((tokens, float(window["seconds"]), latencies))
+    rows: list[dict[str, object]] = []
+    for (input_tokens, output_tokens, concurrency), cells in sorted(groups.items()):
+        pairs = [pair for _, _, latencies in cells for pair in latencies]
+        rows.append({
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "concurrency": concurrency,
+            "timed_batches": len(cells),
+            "mean_ttft_seconds": format(sum(first for first, _ in pairs) / len(pairs), ".17g"),
+            "mean_tpot_seconds": format(
+                sum(last - first for first, last in pairs) / (len(pairs) * (output_tokens - 1)), ".17g"),
+            "end_to_end_output_tokens_per_second": format(
+                sum(tokens for tokens, _, _ in cells) / sum(seconds for _, seconds, _ in cells), ".17g"),
+        })
+    return rows
 
 
 __all__ = [
-    "BAND_TOLERANCE",
-    "BaselineBandError",
-    "MIN_BASELINE_READS",
-    "RemeasurementEvidence",
-    "RetainedHalfRates",
-    "baseline_band_verdict",
     "qualification_evidence_roots",
     "qualification_speed",
-    "remeasurement_evidence",
-    "retained_half_rates",
 ]

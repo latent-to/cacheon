@@ -124,10 +124,11 @@ The previous-best scoring comparison also links to that submission's details.
 
 The submission detail renders the signed evaluation records in full. Each
 qualification attempt carries
-`speed` — the lane rates from the retained stage-exit artifact (per-role
-tokens/second, timed windows, window scatter, conditioning ratio, and the
-C/B speedup); `speed` is null when no local evidence store retains that
-attempt's artifact. It also reuses the validator's `worker_log` explanation.
+`speed` — the measurements from the retained stage-exit artifact: the paired
+replay windows and the retained grade for replay attempts, or the stored lane
+rates (per-role tokens/second, timed windows, window scatter, conditioning ratio,
+and the C/B speedup) for retained batch-cell attempts; `speed` is null when no
+local evidence store retains that attempt's artifact. It also reuses the validator's `worker_log` explanation.
 Each request with retained forensics links to
 `/api/submissions/{reservation_id}/forensics/{request_id}.log`. The response is
 built read-only from the hash-verified result and contains the exact
@@ -144,12 +145,13 @@ Each qualification attempt also has a **Performance** section:
   Their measurements and original decision remain separate from the reservation's
   current status, including a later operator rejection. Importing the same
   attempt does not duplicate it in the history.
-- **Why this result:** the shared grader explains the retained policy and reads,
-  including gains against both baselines, required gain and measured baseline
-  drift. A borderline speed result is distinguishable from invalid measurement.
-- **Output throughput:** B/C/B′ output tok/s and total timed batch seconds.
+- **Agent replay speedup:** for replay attempts, the retained grade explains the
+  policy, scored and required gain, the lower gain bound, every paired window's
+  cost and service attainment, and latency diagnostics.
+- **Output throughput:** retained batch-cell attempts show B/C/B′ output tok/s
+  and total timed batch seconds from their stored reads, without a regrade.
   This includes prompt processing and generation; it is not isolated decode time.
-- **Prefill:** v12 prompt-pass throughput in **prompts/s**, total timed batch
+- **Prefill:** retained v12 prompt-pass throughput in **prompts/s**, total timed batch
   seconds, observed candidate gain over the faster baseline read, and the
   retained prefill margin. Each prompt pass generates one output token, so the
   output-token count is a request count, not an input-token throughput measure.

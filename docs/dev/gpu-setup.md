@@ -167,8 +167,8 @@ defines the required inputs and local result record; no repository command mater
 this complete-engine bracket.
 
 Production version-3 qualification materializes the exact incumbent and
-candidate engines through an injected arena service and measures them on the
-two-process B/C/B′ schedule (v10, or v11 for a mixed-cell workload). It then
+candidate engines through an injected arena service and measures them with the
+paired replay (speed policy 17). It then
 runs registered eager audit A, tears down candidate lifetimes, and obtains
 candidate-free pristine T quality evidence. A contributor-controlled model run
 cannot substitute for that authority.

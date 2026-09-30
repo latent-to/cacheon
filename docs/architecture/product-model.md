@@ -56,10 +56,10 @@ Cacheon deliberately separates economic identity from process identity.
 
 The **execution unit** is a complete engine. Production version-3 qualification
 materializes the exact incumbent and one-target-transition candidate engines and
-measures them on the two-process substrate: speed policy v10 launches separate
-baseline and candidate engine processes on two disjoint TP lanes and always
-collects B/C/B′. Mixed-cell arenas use the same two-process B/C/B′ schedule under v11,
-which grades total timed tokens over the complete sealed mixture. The candidate
+measures them with the paired replay: speed policy 17 launches separate
+baseline and candidate engine processes on two disjoint TP lanes, replays the
+same sealed agent workload on both concurrently, and exchanges the lanes once so
+a stable lane factor cancels out of the score. The candidate
 then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
 trust domain. C′/B″ are not reads on this substrate; their schedules are deleted.
@@ -91,7 +91,7 @@ that may add another 3%:
    onto the resident baseline lane.
 2. It materializes the candidate engine from that same stack, replacing only B's
    declared registered target, and loads it once onto the disjoint candidate lane.
-   Timed work is serialized. Every attempt takes B/C/B′ unconditionally.
+   Both engines replay the same sealed workload in paired windows.
 3. B's hosted bundle does not need to contain A. The validator supplies A from the
    incumbent manifest and gives B attribution only for the selected delta introduced by B.
 4. The registered eager audit role checks the candidate delta outside the timed resident

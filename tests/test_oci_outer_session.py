@@ -284,13 +284,6 @@ def test_session_executes_sealed_request_geometry_per_batch() -> None:
     assert [row.token_numerator for row in result.batches] == [4, 8, 8]
     assert plan.quality_tokens_per_prompt == 4
     assert replace(plan, batch_max_new_tokens=(4, 2, 2)).quality_tokens_per_prompt == 4
-    from types import SimpleNamespace
-    from cacheon.eval.qualification_runner import _planned_prompt_digests
-    from cacheon.eval.scoring import planned_prompt_texts
-
-    pool = planned_prompt_texts(plan)
-    assert tuple(pool.values()) == ("a", "b", "c", "d", "e", "f")
-    assert _planned_prompt_digests(SimpleNamespace(baseline_session_plan=plan)) == tuple(sorted(pool))
 
     with pytest.raises(OuterSessionInfrastructureError, match="exactly cover"):
         _plan(

@@ -8,7 +8,7 @@ not provide a local qualification substitute.
 |---|---|---|
 | `scan` | Does the declared bundle tree satisfy the static intake policy? | Local admission diagnostic |
 | `verify` | Do applicable variants satisfy the registered component ABI, reference, and graph checks? | Local component diagnostic |
-| Two-process B/C/B′ (v10, or v11 mixed-cell) + audit/T | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
+| Paired replay (speed policy 17) + audit/T | Does the exact marginal delta clear execution, paired-replay speed, audit, and pristine-quality policy? | One qualification decision |
 | Independent reproduction | Do two separately bound PASS attempts reopen and agree? | Settlement prerequisite |
 
 Unknown bundles still execute code during verification. Run them only inside the minimum
@@ -106,8 +106,8 @@ contributor-controlled run cannot provide
 finalized intake identity, validator-owned materialization, hidden work, frozen
 calibration, no-egress worker authority, or a validator-bound durable attempt with its
 aggregate speed witness and referenced graph/quality/T products. The production attempt
-uses two isolated physical TP lanes, serializes the two-process B/C/B′
-schedule, validates richer raw frames and device state, and runs a distinct
+uses two isolated physical TP lanes, replays the sealed agent workload on both
+concurrently in paired windows, validates richer raw frames and device state, and runs a distinct
 audit-only role before pristine T. Those raw frames are not serialized into
 `CohortQualificationAttempt`. A local run cannot supply the validator-owned qualification authority.
 

@@ -70,21 +70,19 @@ validator-side change.
 Every candidate runs as a complete isolated engine, but it is rewarded only for the
 smallest validator-controlled delta it contributes. Authoritative qualification uses:
 
-- **B** — the exact incumbent evaluation stack;
+- **B** — the exact incumbent evaluation stack, which also generates the
+  quality gate's stock-drift controls after a speed PASS;
 - **C** — the same stack with one registered target replaced;
-- **B′** — a mandatory second incumbent read, the quality gate's stock-drift
-  control;
 - **A** — a separate eager, untimed sampled-audit role when registered; and
 - **T** — a candidate-free pristine reference that grades sealed trajectories after
   candidate destruction.
 
-Every candidate is measured by the two-process schedule: v10 (v11 for a
-mixed-cell workload) launches separate baseline and candidate engines and
-always takes B′; v12 appends a one-token prompt pass of each lane. The earlier
-schedules (v1–v7) are sealed MiniMax-M3 history that
-this tree no longer decodes. Primary and reproduction
-attempts also exchange incumbent and candidate physical-lane roles. There is no
-separate screen; the qualification's first window is the only one.
+Every candidate is measured by the paired replay (speed policy 17): separate
+incumbent and candidate engines replay the same sealed agent workload
+concurrently on two isolated lanes, then exchange lanes so a stable lane factor
+cancels out of the score. The earlier schedules — the batch-cell policies 8–15
+and the MiniMax-M3 era's v1–v7 — are history this tree no longer decodes. There
+is no separate screen; the qualification's first window is the only one.
 
 This separates the **execution unit** (a complete disposable engine) from the
 **economic unit** (one registered target). A new optimization can

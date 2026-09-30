@@ -7,105 +7,62 @@ quality evidence, then reopens that complete audited PASS for settlement.
 ## Marginal comparison
 
 For a registered target, the production version-3 evidence protocol constructs
-one exact marginal comparison and selects its speed subpolicy from candidate
-features:
+one exact marginal comparison:
 
-- B: the exact frozen incumbent stack;
-- C: that same stack with one registered target replaced; and
-- B′: a mandatory second incumbent read.
+- B: the exact frozen incumbent stack; and
+- C: that same stack with one registered target replaced.
 
-Every candidate is measured by v10's separate baseline and candidate engine
-processes (v9 for a mixed-cell workload), which always read B/C/B′ because the
-quality gate consumes the second stock read. C′/B″ do not exist on this
-substrate. During execution, the controller fixes prompt
-batches and token budgets, serializes timed GPU work, validates bounded batch
-frames and token numerators, and records both charged intervals (registered
-conditioning plus timed) and timed windows. The durable resident witness retains
-the actual versioned schedule, physical-lane authority, operational timing, and
-budget. After the speed lifetimes are quiescent, qualification runs registered
-eager audit A when the plan requires it, destroys candidate lifetimes, and then
-runs pristine T.
-Reopen recomputes tokens/second and the frozen decision from typed counts and intervals,
-not from raw session frames. Candidate-reported aggregate throughput is never
-accepted as authority.
+B and C run as separate engine processes on two isolated TP lanes and replay the
+same sealed agent slice concurrently, one paired window at a time (see
+[Finite agent replay](qualification.md#finite-agent-replay)). The controller fixes
+the slice, the operating load and the output budgets, releases requests in
+lockstep rounds, and timestamps every request on the host. The durable resident
+witness retains each window's turn records, physical-lane authority, operational
+timing, and budget. After the speed lifetimes are quiescent, qualification runs
+registered eager audit A when the plan requires it, destroys candidate lifetimes,
+and then runs pristine T. Reopen recomputes the costs and the frozen decision
+from the retained records, not from raw session frames. Candidate-reported
+aggregate throughput is never accepted as authority.
 
-The speed estimate is conceptually:
+The policy-17 speed estimate is conceptually:
 
 ```text
-scored_rate = timed_tokens / timed_seconds
-bookended speedup = C / max(B, B′)
-noise       = relative spread of the baseline scored rates
-bar         = 1 + max(min_margin, noise_multiplier * noise)
+cost(window) = elapsed serving seconds, first warm release to last warm completion
+ratio(o)     = pooled incumbent cost / pooled candidate cost in lane orientation o
+speedup      = exp(mean over both orientations of log ratio(o))
+PASS         = the one-sided lower bound on speedup exceeds 1 at a sealed look
 ```
 
-Version 10 uses the median timed-window rate for a single cell. Version 11
-uses total timed output tokens divided by total timed seconds across all cells,
-so heterogeneous short and long batches are not treated as exchangeable samples.
-The commissioner warms every declared cell before any scored batch in B, C, or B′.
-It reuses the producer-owned prompt batches without changing the scored workload.
-The first read of a resident session pays residual cold-start inside its
-conditioning window while a continuation read does not; a scored rate that
-charges conditioning turns that positional split into apparent baseline noise
-and biases both the measured speedup and the bar. Conditioning therefore stays
-outside the scored rate and remains bounded by the sealed operational timing
-budget, so a candidate cannot hide work in warmup. Version-1 witnesses, which
-graded the charged rate, regrade only under their own sealed arithmetic; the
-policy version is part of the witness digest and cross-version splicing is
-refused.
+Each whole window is one observation; requests sharing a window are not treated
+as independent replications. The standard error combines the calibrated window
+and boot noise with the observed jackknife variance, and at most four looks
+share the sealed 1% error budget. Both orientations must exist before a PASS,
+and the candidate must also pass the service-attainment gate. Policy 16 scores
+the candidate's fastest complete pass against the incumbent's on one orientation
+with a fixed margin; it remains readable only for its retained evidence.
 
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
 Provenance still records the exact controller, but measurement reuse is not
-invalidated by an unrelated controller revision. Both stock brackets must remain inside the sealed drift limit, and matching
-B/B′ windows must satisfy the window stability bound. No stock read is dropped.
-A candidate passes only when it clears the bar against both observations, and
-fails the speed floor only when it misses against both. Invalid measurement or
-a boundary-crossing uncertainty yields `NO_DECISION`, never a fabricated miner
-loss or reward. This validity rule does not replace complete workload warmup.
-V10 and v11 precommit
-B′ on the two-process substrate. Version 12 appends a one-token prompt pass to
-each lane after B′ and grades the decode reads first and alone; the prompt
-pass can admit only a candidate the decode floor neither passed nor convicted,
-at its own sealed margin, and settles at a sealed fraction of the prompt-pass
-gain (see the [prefill lane](qualification.md#prefill-lane-v12)). Retained
-evidence regrades under the version that produced it; evidence sealed below
-version 8 belongs to the MiniMax-M3 era and is refused rather than regraded.
+invalidated by an unrelated controller revision. An unresolved bound after the
+last sealed window, or invalid measurement, yields `NO_DECISION`, never a
+fabricated miner loss or reward. Retained evidence regrades under the version
+that produced it. Evidence sealed below version 16 (the batch-cell B/C/B′
+policies 8–15 and the MiniMax-M3 schedules before them) is refused rather than
+regraded.
 
-Policy version 3 replaces each read's single timed aggregate with the median
-over per-batch timed windows. The window is the timed batch because host
-wall-clock spans at batch boundaries are the only timing the trust model
-accepts; every window recomputes exactly from sealed batch evidence and is
-retained in the witness rows. A version-3 read also carries a sealed
-per-read window-scatter bound (median absolute deviation about the median,
-relative): a read whose own scatter exceeds the bound refuses to produce a
-scored rate at all, in live grading and in every reopen, so an unfit
-measurement cannot be graded anywhere. Version-3 timed reads request no
-log-probability collection (`top_logprobs_num` 0): quality becomes the
-teacher-NLL-only mode, digest-bound by a zero top-k width in the
+Timed replay requests collect no log-probabilities (`top_logprobs_num` 0):
+quality is the teacher-NLL-only mode, digest-bound by a zero top-k width in the
 qualification profile and the raw quality binding. The pristine engine
 teacher-force-scores the exact retained token stream (target NLL and the
-teacher's own argmax per position) and hidden tasks grade the same retained
-outputs — the text the candidate was fast at is the text it is judged on,
-and no candidate code executes during scoring. No candidate distributions
-are retained, so no distribution evidence exists: absence is explicit
-(null, uniformly enforced at every layer), never zeros, and a threshold
-policy naming a distribution metric (`topk_kl`, `argmax_rate`,
+teacher's own argmax per position) — the text the candidate was fast at is the
+text it is judged on, and no candidate code executes during scoring. No
+candidate distributions are retained, so no distribution evidence exists:
+absence is explicit (null, uniformly enforced at every layer), never zeros, and
+a threshold policy naming a distribution metric (`topk_kl`, `argmax_rate`,
 `coverage_dev`) against teacher-NLL-only evidence refuses outright.
 Distribution-level numerics coverage remains with the in-engine slot audit
-stage. Evaluation work never shares the clock with a speed measurement. A version-3 policy also seals a
-conditioning slowdown bound: the conditioning span is the only place a
-candidate's prefill cost is host-visible, so the candidate's conditioning
-seconds must stay within the bound of the baseline's, compared at equal
-warmth position. V10/v11 have no C′ and grade the initial C/B pair.
-Conditioning spans carry warm/cold session structure and positions must never
-be mixed. A violation is a clear
-candidate `FAIL`: a decode win cannot hide a prefill regression, and under v12
-a prompt-pass win cannot hide a decode regression either, because a measured
-decode loss or a conditioning regression is graded before the prompt pass is
-consulted. The check grades numbers already sealed in every read and adds no
-measurement time.
-Version-1 and version-2 witnesses keep their exact historical bytes and
-regrade only under their own sealed arithmetic.
+stage. Evaluation work never shares the clock with a speed measurement.
 
 ## Complete qualification decision
 
@@ -120,8 +77,8 @@ A candidate can pass only when all required products agree:
 | Identity checks | Evidence does not describe the committed arena, stack, target, or delta |
 
 Attributable violations yield `FAIL`. Infrastructure, missing evidence, or stale
-identity yields `NO_DECISION`; current v10/v11 never discard an inconvenient baseline bracket.
-Only complete green evidence yields `PASS`.
+identity yields `NO_DECISION`; no window is ever discarded. Only complete green
+evidence yields `PASS`.
 
 ## One qualification per bundle
 

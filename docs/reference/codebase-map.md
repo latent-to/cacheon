@@ -75,7 +75,7 @@ evaluation and economic state.
 | Bundle and committed-source identity | [`bundle_hash.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bundle_hash.py) |
 | Host audit grading | [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py) |
 | OCI lifecycle and protocol | [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_session_protocol.py) |
-| Current speed substrate | Two-process B/C/B′ (v10, v11 mixed-cell) in [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py) and [`eval/oci_outer_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_outer_session.py) |
+| Current speed substrate | Paired replay (speed policy 17) in [`eval/goodput_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/goodput_runtime.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py) and [`eval/agent_replay.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/agent_replay.py) |
 | Immutable native prebuild | [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
 | Device conditioning/cleanup | [`eval/device_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/device_state.py) |
 
@@ -177,8 +177,8 @@ fixture:
   input and target admission;
 - `test_stack_manifest.py`, stack-planning tests, and `test_engine_tree.py`
   cover canonical composition and integration materialization;
-- qualification, OCI, audit, and reference-protocol tests cover the two-process
-  B/C/B′ schedule, registered eager audit A, and pristine T;
+- qualification, OCI, audit, and reference-protocol tests cover the paired
+  replay, registered eager audit A, and pristine T;
 - chain-intake, settlement, economics, and weight-publication tests cover
   durable economic transitions;
 - `test_chain_publish.py` and `test_chain_archive.py` cover public proposal

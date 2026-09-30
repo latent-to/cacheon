@@ -108,7 +108,8 @@ The authoritative bracket is:
 ```text
 incumbent = exact incumbent engine on the assigned baseline lane
 candidate = same stack with exactly the selected target delta on the disjoint lane
-v10 = B → C → B′ unconditionally, with separate engine processes (v11: mixed cells)
+v17 = incumbent and candidate replay the sealed agent workload concurrently in
+      paired windows, as separate engine processes that exchange lanes once
 A = registered eager, untimed candidate audit
 T = candidate-free pristine quality reference after candidate teardown
 ```

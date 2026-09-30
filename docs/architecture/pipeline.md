@@ -25,7 +25,7 @@ slots -> scan -> verify -> chain-package -> host -> chain-submit -> chain-status
 
 Local measurements are useful for iteration. They do not select a production arena
 authority, reserve a finalized cohort position, retain authenticated resident
-speed evidence under the two-process B/C/B′ schedule, perform
+speed evidence under the sealed paired replay, perform
 the registered eager audit A and pristine-reference T stages, or authorize settlement.
 
 ## Production path at a glance
@@ -36,7 +36,7 @@ flowchart TD
     B --> C["Registered arena and target resolution"]
     C --> D["Qualification queue<br/>admission at first claim"]
     D -->|"copy of a loser or post-crown commitment"| F["Terminal invalid or attributable failure"]
-    D -->|"claimed cohort"| Q["B/C/B′ speed<br/>audit, then pristine T"]
+    D -->|"claimed cohort"| Q["Paired replay speed<br/>audit, then pristine T"]
     Q -->|"FAIL"| F
     Q -->|"NO_DECISION"| N["NO_DECISION / retry"]
     Q -->|"complete audited PASS"| S["Reopen retained evidence"]
@@ -149,17 +149,15 @@ Principal code: [`eval/qualification_intake.py`](https://github.com/latent-to/ca
 ## 6. Version-3 adaptive qualification
 
 The production evidence protocol is version 3. Inside it, every candidate is
-measured on the two-process substrate:
-
-- the plan seals v10 (v11 for a mixed-cell workload): separate baseline and
-  candidate processes always read B/C/B′ because the quality gate consumes the
-  second stock read; and
-- C′/B″ do not exist; the pre-v8 schedules that read them were deleted with
-  the MiniMax-M3 history seal, and their evidence is refused.
+measured by the paired replay: the plan seals speed policy 17, and separate
+incumbent and candidate processes replay the same sealed agent workload
+concurrently on two isolated lanes, exchanging lanes once. The batch-cell
+B/C/B′ policies 8–15 and the MiniMax-M3 schedules before them were deleted,
+and their evidence is refused.
 
 The current subpolicy retains stage and total budgets and the required
 physical-lane role assignment. Evidence reopens under the arithmetic that
-produced it; a label change cannot upgrade it and pre-v8 witnesses are refused.
+produced it; a label change cannot upgrade it and pre-v16 witnesses are refused.
 
 The authoritative work is staged. Speed is decided first; audit and pristine-reference
 quality run only after the speed stage remains eligible, apart from an explicitly
@@ -167,9 +165,8 @@ registered calibration-observation continuation.
 
 | Arm | Stack | Timed? | Purpose |
 |---|---|---:|---|
-| B | Exact frozen incumbent on the assigned baseline lane/process | Yes | Opening performance read |
-| C | Incumbent plus one exact target delta on the disjoint candidate lane/process | Yes | Candidate measurement and sealed trajectory |
-| B′ | The same incumbent authority as B | Yes | Mandatory stock-drift control |
+| B | Exact frozen incumbent on the assigned baseline lane/process | Yes | Incumbent replay; after a speed PASS, the selected stock-drift controls |
+| C | Incumbent plus one exact target delta on the disjoint candidate lane/process | Yes | Candidate replay and sealed trajectory |
 | A | Candidate in a separate eager, untimed role | No | Registered sampled slot audit and typed host regrade |
 | T | Pristine candidate-free reference | No | Teacher-forced semantic quality and hidden tasks |
 
@@ -183,10 +180,10 @@ runtime ranks may validate and load native products but may never compile or
 repair them. Both stages use read-only roots, bounded mounts and protocols, and
 host-owned cleanup; the trusted controller also owns timing.
 
-V10 and v11 precommit all three reads, so B′ is taken regardless of the observed
-B/C result. The candidate cannot request a favorable extra read after seeing an
-outcome. Versions 10/11 warm every cell, validate both stock observations, and
-retain both. Invalid baseline evidence cannot produce a candidate verdict.
+The sealed stopping rule, not the candidate, decides how many paired windows
+run, and the regrade checks that the retained windows stopped exactly where the
+rule stops. Both engines condition and flush before each window, and every
+window is retained. Invalid baseline evidence cannot produce a candidate verdict.
 
 When the registered plan requires sampled slot audit, a separate eager, untimed candidate
 role emits bounded raw facts. The trusted host grades exact slot × TP-rank/process coverage
@@ -200,12 +197,12 @@ trajectory under a separate pristine lifetime. T never contains the candidate an
 not compete on speed. Hidden reference work, quality policy, and selected prompt identity
 are bound into retained evidence.
 
-The host applies the exact versioned policy. Conceptually, every current result
-uses both valid B/B′ observations and the faster baseline:
+The host applies the exact versioned policy. Conceptually, a policy-17 result
+pools elapsed serving cost within each lane orientation:
 
 ```text
-bookended_speedup = C / max(B, B′)
-required_bar      = 1 + max(margin_floor, noise_multiplier × measured_noise)
+speedup  = exp(mean over orientations of log(pooled B cost / pooled C cost))
+eligible = one-sided lower bound on speedup > 1 at a sealed look
 ```
 
 The exact registered policy, not this explanatory formula, is authoritative.
@@ -229,14 +226,14 @@ Complete evidence attributes a policy failure to the candidate under a valid aut
 
 ### `NO_DECISION`
 
-The evaluator cannot make a valid attributable decision. Infrastructure failure, missing evidence, baseline drift, broken cohort invariants, or an invalid reference lifetime must not mint either a crown or a loss. The result retains a failure product and retry policy.
+The evaluator cannot make a valid attributable decision. Infrastructure failure, missing evidence, an unresolved speed bound, broken cohort invariants, or an invalid reference lifetime must not mint either a crown or a loss. The result retains a failure product and retry policy.
 
 The distinction is load-bearing: treating evaluator failure as candidate failure would let infrastructure state rewrite economic truth.
 
 ### Worked lifecycle: qualify and settle
 
 Intake freezes one contribution and its finalized priority. Its first claim
-admits it to a complete B/C/B′ qualification with eager audit and pristine T.
+admits it to a complete paired-replay qualification with eager audit and pristine T.
 One complete audited PASS becomes `qualified`. Settlement reopens
 that attempt's retained evidence and atomically records its result before the
 next ordinary intake continues. Incomplete evidence remains `NO_DECISION` and
@@ -315,8 +312,8 @@ able to reopen, rather than merely observe, each handoff:
   publication;
 - registered arena, target catalog, incumbent manifest, candidate transition, and
   candidate binding (reservation, publication, and qualification attempt);
-- lane identities and a versioned `ResidentSpeedWitness` containing exactly the
-  scheduled rows (v10/v11 B/C/B′), plus
+- lane identities and a versioned `ResidentSpeedWitness` containing every paired
+  window's turn records, plus
   retained graph/quality/pristine-T references and witnesses; richer raw
   session/device frames are validated in-run but are not serialized into the
   attempt;

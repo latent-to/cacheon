@@ -167,7 +167,7 @@ An operator can schedule the command directly, for example:
    and sabotage contributions still fail closed or route to the trusted
    baseline as specified.
 5. **Run real GPU/model qualification controls.** Establish stock stability,
-   B/B′ drift behavior, pristine T grading, worker cleanup, supported topology,
+   paired-replay noise, pristine T grading, worker cleanup, supported topology,
    and known-good/known-bad candidates under the new exact environment.
 6. **Recalibrate the arena.** Freeze new workload, noise, quality, resource, and
    timing policy through the normal reviewed arena process. Do not reuse old
@@ -187,7 +187,7 @@ A pin is ready for authority only after progressively stronger controls:
 3. graph capture/replay observes the registered dynamic inputs and outputs;
 4. collective seams activate and complete on every rank at the real world
    size;
-5. complete stock B/B′ engines remain stable under the arena workload;
+5. two complete stock engines replay the arena workload within the calibrated noise;
 6. candidate C changes only the selected target delta;
 7. pristine T regrades sealed outputs without candidate code present; and
 8. known champions are rebaselined rather than inheriting old speedups.

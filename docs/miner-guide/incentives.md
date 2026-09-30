@@ -78,28 +78,18 @@ for the same or overlapping work. V1 credit includes every distinct retained
 qualified contribution, including a contribution that does not become the crown.
 Evaluation continues against the operator's commissioned baseline after settlement.
 
-The speedup used for settlement is deliberately conservative:
+The speedup used for settlement is the paired replay's point estimate:
 
 ```text
-settled speedup = C / max(B, B′)
+settled speedup = exp(mean over both lane orientations of
+                      log(pooled incumbent cost / pooled candidate cost))
 ```
 
-Both stock observations must be valid. The faster observed stock rate sets the
-comparison, and every workload cell is warmed before timing. Historical paired
-qualifications keep their original lower accepted speedup.
-
-Under speed policy v12 the validator also takes a one-token prompt pass of each
-lane after B′. A candidate that clears the decode bar is credited exactly as
-above. A candidate that misses the decode bar without regressing can still
-qualify on the prompt pass, at its own sealed margin, and is then credited at a
-sealed fraction of the prompt-pass gain rather than at its raw prompt speedup:
-
-```text
-settled speedup = 1 + credit_weight × (C_prefill / max(B_prefill, B′_prefill) − 1)
-```
-
-A measured decode slowdown or a conditioning regression fails whatever the
-prompt pass measures.
+Each cost is the elapsed serving time of one complete pass over the sealed
+agent workload. Qualification passes only when the one-sided lower bound on
+that speedup exceeds 1 and service attainment holds, but credit uses the point
+estimate, not the bound. Historical qualifications, including batch-cell
+B/C/B′ ones, keep the speedup their own policy recorded.
 
 ## What “validator weight” means
 

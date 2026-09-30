@@ -179,7 +179,7 @@ def run_continuation_quality_stage(
             value.commitment, secret=value.selection_secret, entropy=entropy,
             sealed_cohort_trajectory_digest=owner.cohort_trajectory_digest(lifecycle),
         )
-        if lifecycle.crossover.goodput is not None and entropy != lifecycle.crossover.quality_entropy:
+        if entropy != lifecycle.crossover.quality_entropy:
             raise owner.QualificationContinuationError("replay control selection entropy changed after execution")
         request_plan_digest = owner.canonical_digest(
             "cacheon.qualification.reference-request-plan",

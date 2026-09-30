@@ -159,51 +159,11 @@ def create_controls(value, controller, candidate, baseline_directory, candidate_
 
 def trajectory_rows(lifecycle: object):
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
-    from cacheon.eval.oci_session_protocol import PromptEvidence
     from cacheon.eval.scoring import marginal_workload_digest
 
     if type(lifecycle) is not ResidentMarginalLifecycleEvidence:
         raise QualificationError("trajectory lifecycle is not typed")
-    plan = lifecycle.prepared.baseline_session_plan
-    if lifecycle.crossover.goodput is not None:
-        return marginal_workload_digest(plan), selected_frames(lifecycle)
-    batch_sets = tuple(
-        lifecycle.role_batches(role) for role in lifecycle.role_names
-    )
-    workload = marginal_workload_digest(plan)
-    from cacheon.eval.scoring import planned_prompt_texts
-    from cacheon.eval.qualification import _validated_topk_position
-    occurrences = iter(planned_prompt_texts(plan))
-    rows = []
-    for batch_index, prompts in enumerate(plan.prompt_batches):
-        expected_tokens = plan.request_geometry(batch_index)[0]
-        for prompt_index, prompt in enumerate(prompts):
-            occurrence = next(occurrences)
-            frames = []
-            for batches in batch_sets:
-                evidence = batches[batch_index].evidence.prompts[prompt_index]
-                if (
-                    type(evidence) is not PromptEvidence
-                    or len(evidence.output_ids) != expected_tokens
-                    or len(evidence.top_logprobs) != expected_tokens
-                    or any(type(token) is not int or token < 0 for token in evidence.output_ids)
-                    or any(len(position) != plan.top_logprobs_num for position in evidence.top_logprobs)
-                ):
-                    raise QualificationError("trajectory token/top-k coverage differs from workload")
-                # A width-0 plan retains one empty support row per token; the
-                # coverage check above already pins every row to length zero,
-                # and the digest must seal that absence rather than reject it.
-                if plan.top_logprobs_num:
-                    topk = [
-                        _validated_topk_position(position)
-                        for position in evidence.top_logprobs
-                    ]
-                else:
-                    topk = [[] for _ in evidence.top_logprobs]
-                frames.append({"output_ids": list(evidence.output_ids), "top_logprobs": topk})
-            rows.append((occurrence, frames))
-    return workload, tuple(rows)
-
+    return marginal_workload_digest(lifecycle.prepared.baseline_session_plan), selected_frames(lifecycle)
 
 
 def validate_controls(evidence, plan):

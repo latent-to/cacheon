@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,6 +23,7 @@ from cacheon.stack_identity import canonical_digest
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
 from cacheon.engine_tree import inspect_contribution
+from cacheon.eval.agent_replay import AgentReplayPlan
 from cacheon.eval.b300_qualification_deployment import B300QualificationCohort
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationDeploymentError,
@@ -47,6 +49,7 @@ from tests.support.b300 import (
 )
 from cacheon.eval.scoring import marginal_workload_digest
 from cacheon.target_catalog import default_target_catalog
+from tests.support.replay import GOODPUT, replay_plan, replay_session
 from tests.test_calibration import _observations
 from tests.test_marginal_runtime import FUSED, _case, _local_binding, _native
 
@@ -57,6 +60,24 @@ NODE = "model.layers.*.mlp"
 
 def _h(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
+
+
+def _recorded_replay(root: Path, *, out: int = 2) -> AgentReplayPlan:
+    """The shared one-session replay, resealed over recorded turns.
+
+    The shared slice seals an empty trace, but qualification selects its
+    prompts from the recorded turns and their output budgets.
+    """
+
+    replay = replay_plan(root)
+    session = replay.slice.sessions[0]
+    trace = replay.slice.directory / f"000_{session.id}.json"
+    requests = [{"out": out}] * session.main_turns
+    trace.write_text(json.dumps({**json.loads(trace.read_text()), "requests": requests}))
+    manifest = json.loads(replay.manifest_path.read_text())
+    manifest["sha256_of_named_files"] = hashlib.sha256(trace.name.encode() + trace.read_bytes()).hexdigest()
+    replay.manifest_path.write_text(json.dumps(manifest))
+    return replace(replay)
 
 
 class _EmptyResolver:
@@ -164,6 +185,8 @@ def _harness(
     evidence_root: Path | None = None,
 ) -> _Harness:
     case = _case(tmp_path / "runtime")
+    # Replay quality is teacher NLL, so the commissioned profile keeps no top-k.
+    session = replay_session(replace(case.session, top_logprobs_num=0), _recorded_replay(tmp_path / "replay"))
     catalog = case.catalog
     glm = source_fixture == FUSED
     registered_target_ids = (
@@ -186,7 +209,7 @@ def _harness(
         case.incumbent,
         case.launch,
         case.baseline_binding,
-        workload_digest=marginal_workload_digest(case.session),
+        workload_digest=marginal_workload_digest(session),
         tokenizer_digest=_h("tokenizer"),
         hidden_corpus_commitment=_h("hidden-corpus"),
         hidden_judge_digest=_h("hidden-judge"),
@@ -227,12 +250,12 @@ def _harness(
         model_profile_key=model_profile_key,
         verification_policy_digest=verification_policy,
         nll_tail_threshold="20",
-        tokens_per_prompt=case.session.max_new_tokens,
-        topk_width=case.session.top_logprobs_num,
-        hidden_tasks_per_prompt=1,
+        tokens_per_prompt=session.max_new_tokens,
+        topk_width=session.top_logprobs_num,
+        hidden_tasks_per_prompt=0,
         support_policy_digest=retained_support_policy_digest(),
         hidden_task_policy_digest=hidden_policy,
-        hidden_tasks_required=True,
+        hidden_tasks_required=False,
         select_count=2,
         audit_minimum_calls=2,
     )
@@ -256,7 +279,7 @@ def _harness(
         physical_hardware=baseline_physical,
     )
     baseline_plan = replace(
-        case.session,
+        session,
         launch_digest=baseline_launch.digest,
         expected_preflight=expected_runtime_preflight(baseline_launch, case.preflight),
     )
@@ -275,10 +298,8 @@ def _harness(
         max_qualification_seconds=600,
         calibration=calibration,
         context=calibration_context,
-        version=10,
-        min_windows=3,
-        max_window_scatter=0.05,
-        max_conditioning_slowdown=1.5,
+        version=17,
+        goodput=GOODPUT,
     )
 
     def bind_candidate(tree) -> TrustedLaunchBinding:
@@ -297,7 +318,7 @@ def _harness(
         incumbent_stack=case.incumbent,
         incumbent_binding=case.baseline_binding,
         incumbent_launch=case.launch,
-        baseline_session_plan=case.session,
+        baseline_session_plan=session,
         model_mount=case.mount,
         materialization_root=materialization_root,
         source_resolver_digest=_h("incumbent-source-resolver"),
@@ -313,7 +334,7 @@ def _harness(
         pristine_stack=case.incumbent,
         pristine_binding=case.baseline_binding,
         pristine_launch=case.launch,
-        pristine_session_plan=case.session,
+        pristine_session_plan=session,
         resident_baseline_arm=resident_baseline,
         resident_speed_policy=resident_speed,
         candidate_executor_namespace_digest=_h("resident-candidate-namespace"),
@@ -426,7 +447,7 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.resident_audit_plan.launch.digest != (
         first.prepared.candidates[0].launch.digest
     )
-    assert first.resident_speed_plan.policy.version == 10
+    assert first.resident_speed_plan.policy == harness.inputs.resident_speed_policy
     assert first.resident_speed_plan.selected_delta_digest == (
         harness.candidate.reservation.selected_delta_digest
     )
@@ -449,76 +470,13 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.evidence_root == harness.inputs.evidence_root
 
 
-@pytest.mark.parametrize("version", (8, 9, 10, 11, 13, 14))
-def test_registered_plan_measures_every_commissioned_policy_on_two_process(
-    tmp_path: Path, version: int
-) -> None:
-    """The sealed plan always carries the two-process schedule.
-
-    The commission seals the policy's thresholds; the schedule version is
-    fixed by the plan builder because every candidate is measured by the
-    two-process crossover (8, or 9 for a mixed-cell workload), whatever
-    version an older commission block declared.
-    """
-
-    harness = _harness(tmp_path)
-    current = harness.inputs.resident_speed_policy
-    commissioned = ResidentSpeedPolicy.from_calibration(
-        max_stage_seconds=current.max_stage_seconds,
-        max_qualification_seconds=current.max_qualification_seconds,
-        calibration=harness.inputs.calibration_manifest,
-        context=harness.inputs.calibration_context,
-        version=version,
-        min_windows=current.min_windows,
-        max_window_scatter=current.max_window_scatter,
-        max_conditioning_slowdown=current.max_conditioning_slowdown,
-    )
-    inputs = replace(harness.inputs, resident_speed_policy=commissioned)
-    value = registered.build_b300_registered_qualification_factory(
-        inputs
-    ).plan_builder(harness.cohort, b"v" * 32)
-
-    assert value.resident_speed_plan is not None
-    assert value.resident_speed_plan.policy == replace(commissioned, version=13 if version >= 13 else 10)
-
-
-@pytest.mark.parametrize("version", (12, 15))
-def test_a_prefill_commission_needs_a_mixed_cell_workload(tmp_path: Path, version: int) -> None:
-    """The prefill lane rides the mixed-cell makespan rule and is never
-    re-pinned to v10; a single-cell plan cannot carry it."""
-
-    harness = _harness(tmp_path)
-    current = harness.inputs.resident_speed_policy
-    commissioned = ResidentSpeedPolicy.from_calibration(
-        max_stage_seconds=current.max_stage_seconds,
-        max_qualification_seconds=current.max_qualification_seconds,
-        calibration=harness.inputs.calibration_manifest,
-        context=harness.inputs.calibration_context,
-        version=version,
-        min_windows=current.min_windows,
-        max_window_scatter=current.max_window_scatter,
-        max_conditioning_slowdown=current.max_conditioning_slowdown,
-        prefill_min_margin=0.05,
-        prefill_credit_weight=0.5,
-    )
-    inputs = replace(harness.inputs, resident_speed_policy=commissioned)
-    with pytest.raises(
-        registered.B300RegisteredQualificationError, match="mixed-cell"
-    ):
-        registered.build_b300_registered_qualification_factory(
-            inputs
-        ).plan_builder(harness.cohort, b"v" * 32)
-
-
 def test_native_candidate_is_planned_on_the_two_process_schedule(
     tmp_path: Path,
 ) -> None:
-    """A native bundle gets the always-bookend schedule.
+    """A native bundle is measured by the same two-process paired replay.
 
     A CUDA kernel has to be compiled and linked into the engine that runs it,
-    so it is measured by the two-process crossover, whose schedule reads
-    B-prime unconditionally so the quality gate has a stock-drift control to
-    harvest.
+    so it is measured by the two-process crossover under the sealed policy.
     """
 
     native = _candidate_source(tmp_path / "native-source")
@@ -545,11 +503,7 @@ def test_native_candidate_is_planned_on_the_two_process_schedule(
     ).plan_builder(harness.cohort, b"v" * 32)
 
     assert value.resident_speed_plan is not None
-    planned = value.resident_speed_plan.policy
-    assert planned.version == 10
-    # Only the schedule differs. Every calibrated threshold is the sealed one,
-    # so this is a different read order, not a different bar.
-    assert replace(planned, version=sealed.version) == sealed
+    assert value.resident_speed_plan.policy == sealed
 
 
 def test_registry_rejects_unknown_or_stale_authority(

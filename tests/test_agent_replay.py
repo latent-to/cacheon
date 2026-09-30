@@ -14,8 +14,6 @@ from cacheon.eval.service_capacity import ServiceContract, ServiceEvidenceError
 from tests.test_agent_slice import _session, _write_slice
 from tests.test_oci_outer_session import _plan
 from cacheon.eval.scoring import marginal_workload_digest
-from cacheon.arena_service import WorkloadCell
-from cacheon.eval.b300_arena_definition import engine_config, B300DeploymentError
 
 
 def test_chat_input_ids_use_the_tokenizer_ids_not_its_mapping_keys():
@@ -131,17 +129,6 @@ def test_replay_needs_no_dummy_timed_batches_and_binds_conditioning_geometry(tmp
     assert marginal_workload_digest(warmup) != marginal_workload_digest(changed)
     with pytest.raises(OuterSessionInfrastructureError, match="warmup and measured work"):
         replace(warmup, replay=None)
-
-
-@pytest.mark.parametrize('input_tokens,output_tokens', [(8192, 1024), (65536, 4096)])
-def test_declared_context_survives_cell_projection_and_must_fit(input_tokens, output_tokens):
-    cell = WorkloadCell('coding', input_tokens, output_tokens, 2, 1)
-    template = _plan().engine_config
-    declared = replace(template, engine_kwargs={**template.engine_kwargs, 'context_length': 262144})
-    assert engine_config(declared, cell, disable_cuda_graph=False).engine_kwargs['context_length'] == 262144
-    too_short = replace(declared, engine_kwargs={**declared.engine_kwargs, 'context_length': input_tokens})
-    with pytest.raises(B300DeploymentError, match='does not fit'):
-        engine_config(too_short, cell, disable_cuda_graph=False)
 
 
 def test_window_is_one_sealed_load_flushed_before_its_read_and_retained(tmp_path, monkeypatch):

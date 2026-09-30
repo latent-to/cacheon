@@ -27,7 +27,7 @@ The production SQLite state machine currently exposes these statuses:
 | `fetching` | HTTPS fetch/extract/hash/publication work is active |
 | `transport_retry` | transient transport failure is eligible for another fetch attempt |
 | `published` | immutable worker publication and selected-delta identity exist; waiting in the qualification queue |
-| `qualifying` | one authority-bound version-3 attempt—two-process B/C/B′, registered eager audit A, then pristine T—is active |
+| `qualifying` | one authority-bound version-3 attempt—paired replay of B and C, registered eager audit A, then pristine T—is active |
 | `reproduction_pending` | historical transition; a retained complete primary PASS is accepted on restart without another GPU run |
 | `qualified` | one complete audited PASS is retained; settlement is separate |
 | `no_decision` | retryable qualification evidence/failure product was retained |
@@ -213,17 +213,19 @@ and immutable publication in
 
 Qualification aggregates mandatory graph, marginal speed, registered eager
 audit A when required by the plan, and pristine T quality evidence. The current
-speed order is two-process B/C/B′, followed by A and T. Any FAIL makes the
-attempt fail; any `NO_DECISION` prevents PASS.
+speed order is the paired replay of B and C, followed by A and T. Any FAIL makes
+the attempt fail; any `NO_DECISION` prevents PASS.
 
 Speed problems:
 
-- B and B′ disagree beyond calibrated conditioning: infrastructure/noise
-  uncertainty, usually `NO_DECISION`;
-- resident crossover baseline reads or physical-lane identities fail their
-  bound consistency checks: authority/infrastructure uncertainty, never a
-  candidate pass;
-- C is not faster than the calibrated marginal bar: candidate FAIL;
+- the speed bound is still unresolved after the last sealed window: measurement
+  uncertainty, `NO_DECISION`;
+- replay windows or physical-lane identities fail their bound consistency
+  checks: authority/infrastructure uncertainty, never a candidate pass;
+- C's paired cost is not measurably lower than B's: candidate FAIL
+  (`speed_threshold_not_met`, or `candidate_slower` below the mirrored bound);
+- C clears the speed bound but misses service attainment: candidate FAIL
+  (`service_contract_not_met`);
 - arm identities/resources differ: authority mismatch, never a valid speedup;
 - candidate falls back for material calls: no positive marginal effect.
 

@@ -9,7 +9,8 @@ from cacheon.eval.goodput_runtime import GoodputPolicy
 from cacheon.eval.service_capacity import (
     LoadRead, ServiceContract, TurnRecord, statistical_grade,
 )
-from cacheon.eval.speed_verdict import SpeedStageDecision
+from cacheon.eval.scoring import SpeedupVerdict
+from cacheon.eval.speed_verdict import SpeedStageDecision, fail_reason
 
 
 CONTRACT = ServiceContract(0.001, 1000.0, 0.8)
@@ -116,23 +117,11 @@ def test_statistical_policy_roundtrips_without_changing_historical_wire_shape():
 
 @pytest.mark.parametrize("distinct_policies", [False, True])
 def test_lane_swap_rebinds_the_actual_launch_and_preflight(tmp_path, distinct_policies):
-    from pathlib import Path
-    from cacheon.eval.agent_replay import AgentReplayPlan
     from cacheon.eval.goodput_runtime import _orientation_plan
     from cacheon.eval.engine_launch import validate_native_build_spec, validate_runtime_preflight_receipt
-    from tests.test_agent_slice import _session, _write_slice
     from tests.test_crossover_runtime import _rig
 
-    plan, *_ = _rig(tmp_path, (1.0, 1.0, 1.0), distinct_runtime_policies=distinct_policies)
-    manifest = _write_slice(tmp_path, [_session(1, k=3, inner=0)])
-    replay = AgentReplayPlan(manifest, (1,), Path("/aiperf"), Path("/model"), tmp_path / "out",
-                             CONTRACT, "incumbent", 1, "lane", windows=5, elapsed_cost=True)
-    goodput = GoodputPolicy(CONTRACT, 1.0, 0.003, 0.0, 0.0, 0.01, 0.001)
-    policy = replace(plan.policy, version=17, min_margin=0, min_windows=0,
-                     max_window_scatter=0, max_conditioning_slowdown=0, goodput=goodput)
-    plan = replace(plan, policy=policy,
-                   baseline=replace(plan.baseline, session_plan=replace(plan.baseline.session_plan, replay=replay)),
-                   candidate=replace(plan.candidate, session_plan=replace(plan.candidate.session_plan, replay=replay)))
+    plan, *_ = _rig(tmp_path, distinct_runtime_policies=distinct_policies)
     swapped = _orientation_plan(plan, 3, swapped=True)
     for source, lane, actual in ((plan.baseline, plan.candidate, swapped.baseline),
                                   (plan.candidate, plan.baseline, swapped.candidate)):
@@ -143,3 +132,13 @@ def test_lane_swap_rebinds_the_actual_launch_and_preflight(tmp_path, distinct_po
         validate_native_build_spec(actual.launch, actual.binding.native_build_spec)
         validate_runtime_preflight_receipt(actual.launch, actual.binding.runtime_preflight_receipt)
         actual.binding.physical_hardware.validate_against(actual.launch.hardware)
+
+
+def test_fail_reason_splits_the_band_miss_from_the_measured_slowdown():
+    # The retained defect this pins: a 1.003 speedup against a 1.005 bar was
+    # reported as a "regression". Inside the band -- above the mirrored bound
+    # 1-u for a bar of 1+u -- a FAIL proves only that the bar was not cleared.
+    in_band = SpeedupVerdict(1.003, 0.001, 1.005, False, True, 2)
+    slower = SpeedupVerdict(0.9, 0.001, 1.005, False, True, 2)
+    assert fail_reason(in_band) == "speed_threshold_not_met"
+    assert fail_reason(slower) == "candidate_slower"

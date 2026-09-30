@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
@@ -436,28 +436,14 @@ class B300RegisteredQualificationFactory:
             inputs.candidate_runtime_resource_policy_digest,
             inputs.candidate_device_configuration_digest,
         )
-        # Every candidate is measured by the two-process crossover in
-        # `crossover_runtime`, which boots real trees for both arms and reads
-        # its bookend unconditionally because the quality gate's stock-drift
-        # control is harvested from the second baseline read. Versions 13/14
-        # add one bounded borderline repeat; versions 12/15 retain the sealed
-        # prefill lane. Retained 10/11 commissions keep their single round. The worker
-        # routes on the sealed version this plan carries.
-        mixed_cells = bool(prepared_candidate.session_plan.batch_max_new_tokens)
-        speed_policy = inputs.resident_speed_policy
-        if speed_policy.version < 12:
-            speed_policy = replace(speed_policy, version=11 if mixed_cells else 10)
-        elif speed_policy.version in (13, 14):
-            speed_policy = replace(speed_policy, version=14 if mixed_cells else 13)
-        elif speed_policy.version in (12, 15) and not mixed_cells:
-            raise B300RegisteredQualificationError(
-                "the prefill lane requires a mixed-cell workload"
-            )
+        # Every candidate is measured by the paired replay in `goodput_runtime`,
+        # which boots real trees for both arms; after a speed PASS the quality
+        # gate runs in the still-open baseline arm.
         resident_plan = ResidentCrossoverPlan(
             candidate.reservation.selected_delta_digest,
             inputs.resident_baseline_arm,
             candidate_resident_arm,
-            speed_policy,
+            inputs.resident_speed_policy,
         )
         audit_seed = hashlib.sha256(
             AUDIT_SEED_DOMAIN

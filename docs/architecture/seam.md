@@ -97,7 +97,7 @@ binding set; the node adapter is armed by the registered bundle alone.
 
 Normalization rejects unknown, duplicated, or non-canonical identifiers. Engine launch then emits the complete fixed seam environment, preventing stale ambient values from arming additional adapters.
 
-The exact binding set is derived from the materialized stack and retained in launch identity. B and B′ use the same incumbent binding set. C differs only as required by its selected target delta. The pristine T reference has no candidate seam activation.
+The exact binding set is derived from the materialized stack and retained in launch identity. Every incumbent read uses the same incumbent binding set. C differs only as required by its selected target delta. The pristine T reference has no candidate seam activation.
 
 ## Sealed contribution namespaces
 

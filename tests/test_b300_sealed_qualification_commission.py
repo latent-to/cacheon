@@ -33,6 +33,7 @@ from tests.support.b300 import (
     NODE_TARGET_IDS,
     StubHiddenJudge as _Judge,
 )
+from tests.support.replay import GOODPUT
 from cacheon.stack_identity import canonical_json_bytes
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
@@ -51,26 +52,37 @@ def _block() -> dict[str, object]:
         "source_resolver_digest": _h("source-resolver"),
         "support_policy_digest": _h("support-policy"),
         "verification_policy_digest": _h("verification-policy"),
+        # Replay quality is teacher NLL under greedy decoding.
         "policy": {
             "audit_minimum_calls": 4,
-            "hidden_tasks_per_prompt": 2,
-            "hidden_tasks_required": True,
+            "hidden_tasks_per_prompt": 0,
+            "hidden_tasks_required": False,
             "nll_tail_threshold": "0.35",
             "select_count": 8,
             "tokens_per_prompt": 256,
-            "topk_width": 16,
+            "topk_width": 0,
         },
         "session": {
-            "conditioning_count": 2,
+            "conditioning_count": 1,
+            "replay": {
+                "aiperf_binary": "/aiperf",
+                "load": 1,
+                "manifest_path": "/slice/manifest.json",
+                "slice_digest": _h("replay-slice"),
+                "tokenizer_path": "/model",
+                "windows": 5,
+            },
             "temperature": "0",
             "warmup_count": 1,
         },
+        # The batch-cell window and conditioning keys stay sealed at zero.
         "resident_speed": {
-            "max_conditioning_slowdown": "1.35",
+            "goodput": GOODPUT.to_dict(),
+            "max_conditioning_slowdown": "0",
             "max_qualification_seconds": 7200,
             "max_stage_seconds": 900,
-            "max_window_scatter": "0.25",
-            "min_windows": 3,
+            "max_window_scatter": "0",
+            "min_windows": 0,
         },
     }
 
@@ -79,15 +91,6 @@ def test_sealed_commission_block_round_trips() -> None:
     block = _block()
     assert sealed.sealed_qualification_commission(block) is block
     assert canonical_json_bytes(block)
-
-
-def test_sealed_prefill_lane_block_round_trips() -> None:
-    block = _block()
-    block["resident_speed"] = {
-        **block["resident_speed"],
-        "prefill_lane": {"credit_weight": "0.5", "min_margin": "0.05"},
-    }
-    assert sealed.sealed_qualification_commission(block) is block
 
 
 def test_pre_catalog_expansion_commission_schema_is_rejected() -> None:
@@ -137,12 +140,6 @@ def _mutations() -> list[tuple[str, dict[str, object]]]:
     case("open speed block", resident_speed__extra=0)
     case("zero stage budget", resident_speed__max_stage_seconds=0)
     case("noncanonical scatter", resident_speed__max_window_scatter="0.050")
-    case("open prefill lane", resident_speed__prefill_lane={"min_margin": "0.05"})
-    case(
-        "non-decimal prefill weight",
-        resident_speed__prefill_lane={"min_margin": "0.05", "credit_weight": 0.5},
-    )
-    case("prefill lane not a block", resident_speed__prefill_lane="0.05")
     return cases
 
 

@@ -101,11 +101,10 @@ the `forward_pass` target and declares that it applies to BF16 calls on `sm90`.
    recomputes the hash, republishes an immutable tree, and resolves the claimed target
    against the active catalog. It observes the actual proposal features rather than
    trusting the manifest to grant itself permissions.
-4. Version-3 qualification measures every candidate on the two-process
-   substrate: speed policy v10 (v11 for a mixed-cell workload) launches separate
-   baseline and candidate engines and always collects B/C/B′; v12 adds a
-   one-token prompt pass of each lane so a prompt-processing win can qualify
-   on its own sealed terms. A registered eager, untimed audit role
+4. Version-3 qualification measures every candidate with the paired replay:
+   speed policy 17 launches separate baseline and candidate engines that replay
+   the same sealed agent workload concurrently on two isolated lanes, and
+   exchanges the lanes once. A registered eager, untimed audit role
    (**A**) then checks the candidate delta; after candidate teardown, the
    pristine reference (**T**) supplies candidate-free quality evidence.
 5. One complete audited PASS becomes `qualified` and eligible for settlement.

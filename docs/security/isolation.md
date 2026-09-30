@@ -27,12 +27,13 @@ sequenceDiagram
 
     H->>P: Read-only engine tree + lease-scoped staging
     P-->>H: Sealed native publication + inventory
-    H->>L0: launch/read B
-    L0-->>H: Opening timed rate
-    H->>L1: launch/read C
-    L1-->>H: Candidate rate + sealed trajectory
-    H->>L0: read B′ unconditionally
-    L0-->>H: Stock-drift control
+    par each paired window
+        H->>L0: launch/replay B
+        H->>L1: launch/replay C
+    end
+    L0-->>H: Incumbent turn records
+    L1-->>H: Candidate turn records + sealed trajectory
+    H->>L0: On PASS, generate selected stock-drift controls
     H->>H: Prove resident speed lanes quiescent
     H->>A: Run registered eager, untimed audit
     A-->>H: Sampled slot × rank evidence
@@ -116,11 +117,11 @@ Mount roots are required to be pairwise disjoint and cannot expose the controlle
 working directory, referee source, wallet, or other ambient host data.
 
 Production speed qualification uses two isolated physical TP lanes under one
-frozen authority while the controller serializes GPU work. The primary attempt
-fixes incumbent and candidate roles; an eligible reproduction must exchange
-them. Qualification launches separate engine processes for the request and
-always reads B/C/B′. A request-local launch does not relax containment: mount,
-protocol, device, deadline, and evidence identities remain exact.
+frozen authority. The incumbent and candidate replay the sealed workload
+concurrently, one per lane, and policy 17 exchanges their lanes between its two
+orientations. Qualification launches separate engine processes for the request.
+A request-local launch does not relax containment: mount, protocol, device,
+deadline, and evidence identities remain exact.
 
 When a qualification plan requires sampled slot audit, the candidate also runs in a
 separate eager, untimed role. Its bounded facts are host-regraded and cannot be mixed into
@@ -132,8 +133,8 @@ T uses a distinct reference session protocol. Its engine tree must contain no pr
 contributions, and its native publication is control-only. The runtime rejects candidate
 artifacts in the reference session.
 
-This separates quality authority from both candidate C and potentially hostile incumbent
-B′.
+This separates quality authority from both candidate C and the potentially hostile
+incumbent engine.
 
 ## Host-owned execution
 

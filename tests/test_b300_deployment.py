@@ -12,7 +12,7 @@ import pytest
 
 import cacheon.eval.b300_arena_definition as definition
 import cacheon.eval.b300_deployment as deployment
-from cacheon.arena_service import ArenaCapacityPolicy, WorkloadCell
+from cacheon.arena_service import ArenaCapacityPolicy
 from cacheon.eval.b300_arena_provider import B300DeclaredAuthorities
 from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.oci_backend import runtime_identity_from_preflight
@@ -415,23 +415,6 @@ def test_commissioning_seals_only_declared_authority(tmp_path, gpu_model, count)
     assert not (inputs.root / "engine-trees").exists()
 
 
-def test_graph_engine_config_derives_from_the_declared_cell() -> None:
-    cell = WorkloadCell("s8", 8192, 1024, 64, 8)
-    template = deployment._engine_template(
-        {"engine_config": _m3_engine_config()}
-    )
-    eager = definition.engine_config(template, cell, disable_cuda_graph=True)
-    graph = definition.engine_config(template, cell, disable_cuda_graph=False)
-    runtime = deployment._runtime_policy(_preflight())
-    assert "watchdog_timeout" not in eager.engine_kwargs
-    assert (runtime.init_timeout_seconds, runtime.batch_timeout_seconds) == (1800, 1800)
-    assert graph.engine_kwargs["watchdog_timeout"] == runtime.batch_timeout_seconds
-    for config in (eager, graph):
-        assert config.engine_kwargs["context_length"] == 8192 + 1024 + 128
-        assert config.engine_kwargs["disable_radix_cache"] is True
-        assert config.max_running_requests == 64
-
-
 def test_glm_engine_profile_is_data_not_an_evaluator_branch() -> None:
     glm = _m3_engine_config()
     glm.update(
@@ -447,27 +430,14 @@ def test_glm_engine_profile_is_data_not_an_evaluator_branch() -> None:
         mem_fraction_static=0.80,
         moe_runner_backend=None,
     )
-    template = deployment._engine_template({"engine_config": glm})
-    cell = WorkloadCell("l65", 65536, 4096, 24, 3)
-    config = definition.engine_config(template, cell, disable_cuda_graph=False)
+    # The measured arms launch this sealed template with graphs on.
+    config = deployment._engine_template({"engine_config": glm})
 
     assert config.engine_kwargs["enable_dp_attention"] is True
     assert config.engine_kwargs["dp_size"] == 4
     assert config.engine_kwargs["chunked_prefill_size"] == 16384
-    assert config.engine_kwargs["context_length"] == 65536 + 4096 + 128
     assert config.moe_runner_backend is None
     assert definition.data_parallel_size(config) == 4
-
-    mixed = definition.engine_config(
-        template,
-        (
-            WorkloadCell("s8", 8192, 1024, 128, 2),
-            WorkloadCell("l65", 65536, 4096, 24, 3),
-        ),
-        disable_cuda_graph=False,
-    )
-    assert mixed.max_running_requests == 128
-    assert mixed.engine_kwargs["context_length"] == 65536 + 4096 + 128
 
 
 def test_workload_parser_seals_cell_against_batches() -> None:

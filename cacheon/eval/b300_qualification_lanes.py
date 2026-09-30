@@ -219,7 +219,7 @@ class B300QualificationLanePair:
         return canonical_digest(QUALIFICATION_LANE_PAIR_SCHEMA, self.to_dict())
 
 
-def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver, replay=None):
+def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver, replay):
     """Bind the commissioned incumbent to one executor without grading it.
 
     Qualification and a single-lane development replay share this construction.
@@ -229,7 +229,7 @@ def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver,
     from dataclasses import replace
     import cacheon.eval.b300_deployment as b300_deployment
     from cacheon.eval.b300_arena_definition import (
-        data_parallel_size as _data_parallel_size, engine_config as _engine_config,
+        data_parallel_size as _data_parallel_size,
         hardware_bindings as _hardware_bindings, scored_cell as _scored_cell,
     )
     from cacheon.eval.b300_sealed_qualification_commission import B300QualificationCommissionError
@@ -259,12 +259,7 @@ def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver,
             resolver=resolver,
         )
     )
-    engine_config = (
-        replace(inputs.engine_template, disable_cuda_graph=False)
-        if replay is not None else _engine_config(
-            inputs.engine_template, inputs.workload.cells, disable_cuda_graph=False,
-        )
-    )
+    engine_config = replace(inputs.engine_template, disable_cuda_graph=False)
     dp_size = _data_parallel_size(engine_config)
     baseline_hardware, baseline_physical = _hardware_bindings(
         inputs.runtime, executor.device_policy, dp_size=dp_size,
@@ -308,16 +303,11 @@ def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver,
     incumbent_binding = MaterializedArmBinding(incumbent_tree, trusted_baseline)
     quality_cell = _scored_cell(inputs.workload)
     cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
-    batch_cells = inputs.prompt_batch_cells
-    mixed_cells = len(inputs.workload.cells) > 1
-    prompts = inputs.prompt_batches
-    tokens = policy_block["tokens_per_prompt"]
-    if replay is not None:
-        # The old128/24-request conditioning cost229k decode tokens before a
-        # two-session replay. Warm the engine at its declared replay load.
-        prompts = tuple(batch[:max(replay.loads)] for batch in prompts[:session_block["warmup_count"]])
-        batch_cells = batch_cells[:len(prompts)]
-        tokens = 16
+    # The old128/24-request conditioning cost229k decode tokens before a
+    # two-session replay. Warm the engine at its declared replay load.
+    prompts = tuple(batch[:max(replay.loads)] for batch in inputs.prompt_batches[:session_block["warmup_count"]])
+    batch_cells = inputs.prompt_batch_cells[:len(prompts)]
+    warmup_tokens = 16
     baseline_session_plan = SessionExecutionPlan(
         launch_digest=incumbent_launch.digest,
         expected_engine_config_digest=engine_config.digest,
@@ -328,23 +318,14 @@ def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver,
         prompt_batches=prompts,
         warmup_count=session_block["warmup_count"],
         conditioning_count=session_block["conditioning_count"],
-        max_new_tokens=policy_block["tokens_per_prompt"] if replay is not None else tokens,
+        max_new_tokens=policy_block["tokens_per_prompt"],
         top_logprobs_num=policy_block["topk_width"],
         temperature=float(session_block["temperature"]),
         expected_prompt_tokens=quality_cell.input_tokens,
         measure_phase_latency=session_block.get("measure_phase_latency", False),
         replay=replay,
-        batch_max_new_tokens=(
-            tuple(tokens if replay is not None else cells_by_id[cell_id].output_tokens
-                  for cell_id in batch_cells)
-            if mixed_cells or replay is not None
-            else ()
-        ),
-        batch_expected_prompt_tokens=(
-            tuple(cells_by_id[cell_id].input_tokens for cell_id in batch_cells)
-            if mixed_cells or replay is not None
-            else ()
-        ),
+        batch_max_new_tokens=tuple(warmup_tokens for _ in batch_cells),
+        batch_expected_prompt_tokens=tuple(cells_by_id[cell_id].input_tokens for cell_id in batch_cells),
     )
     return incumbent, incumbent_binding, ResidentArmPlan(
         incumbent_launch, trusted_baseline, baseline_session_plan,

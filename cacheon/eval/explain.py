@@ -336,8 +336,9 @@ def _speed_lines(stage_exit: dict, *, baseline: str = _STOCK) -> list[str]:
 def _window_spread(windows: list[dict]) -> float | None:
     """How much the timed runs disagreed; ``None`` when it cannot be computed.
 
-    Deliberately the SAME statistic as ``ResidentSpeedPolicy.read_window_scatter``
-    — median absolute deviation about the median, relative to the median — and
+    Deliberately the SAME statistic as the window-scatter gate of the batch-cell
+    speed policies (8-15), whose retained evidence this page still explains —
+    median absolute deviation about the median, relative to the median — and
     not the max-minus-min it used to be. That difference is not cosmetic: on a
     real crowned run the two read 0.57% and 8.22% on identical evidence, so a
     miner reading this page would have concluded their run was twelve times

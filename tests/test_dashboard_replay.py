@@ -4,11 +4,10 @@ import json
 import sqlite3
 from dataclasses import replace
 from decimal import Decimal
-from types import SimpleNamespace
 
 import pytest
 
-from cacheon.chain.baseline_band import qualification_speed_from_payload, retained_half_rates
+from cacheon.chain.baseline_band import qualification_speed_from_payload
 from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
 from cacheon.eval.qualification_runner import ResidentSpeedWitness, _resident_speed_projection_digest
 from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
@@ -122,9 +121,6 @@ def test_replay_measurements_reach_submission_and_winner_apis(tmp_path, client, 
                     "(reservation_id TEXT,arena_id TEXT,stack_digest TEXT,tree_digest TEXT,stack_json TEXT)")
         con.execute("INSERT INTO reservation_baseline_segments VALUES(?,?,?,?,?)", (
             "example", "arena", "stack", "tree", json.dumps({"entries": {target: {"artifact_digest": "incumbent"}}})))
-    store = SimpleNamespace(retained_pass_pairs=lambda: [
-        ("example", "a" * 64, ["1.03"], [(0, json.dumps(ref.to_dict()))])])
-    assert retained_half_rates(store, (root,)) == ()
     detail = client.get("/api/submissions/example").json()
     assert detail["tokens_per_second"] is None
     assert detail["mean_warm_latency_s"] == pytest.approx(1 / 1.04)

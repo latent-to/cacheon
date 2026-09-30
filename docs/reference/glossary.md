@@ -10,11 +10,11 @@
   selects a provider by ID; it cannot register callbacks or extend the provider
   table.
 
-**B / B′**
-: Complete-engine reads of the frozen incumbent evaluation stack. B opens the
-  comparison. Current v10/v11/v12 always take B′ because pristine-quality control
-  consumes the second stock read; v12 then takes a one-token prompt pass of each
-  lane. Historical policies made B′ conditional or used additional bookends.
+**B**
+: The complete-engine replay of the frozen incumbent evaluation stack, paired
+  window by window with C. After a speed PASS the still-loaded incumbent also
+  generates the selected stock-drift controls for the quality gate. The retired
+  batch-cell policies 8–15 also took a second incumbent read, B′.
 
 **C**
 : A complete isolated candidate engine equal to the incumbent stack except for
@@ -49,7 +49,7 @@
 
 **Qualification**
 : The complete registered evidence procedure: a sealed current speed
-  schedule (two-process B/C/B′, v10 or v11, or v12 with its prompt pass);
+  schedule (the paired replay, speed policy 17);
   registered eager audit A; candidate teardown; pristine T quality grading;
   exact-schema decision; and retained evidence.
 

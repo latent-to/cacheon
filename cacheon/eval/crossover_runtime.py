@@ -1,61 +1,39 @@
 """Bounded production speed stage with two resident TP lanes.
 
-Stock and candidate load once on disjoint lanes. GPU work is serialized because
-simultaneous TP4 reads were measured to distort both lanes. Audit and pristine T
-are later stages and must not run unless this returns PASS.
+Stock and candidate load once on disjoint lanes and replay the sealed session
+slice in paired windows (speed policies 16 and 17; ``goodput_runtime`` runs the
+windows and ``service_capacity`` grades them). Audit and pristine T are later
+stages and must not run unless this returns PASS.
 
-This module is the substrate for every candidate since the pair-native lane
-was deleted on 2026-09-06: CUDA, C++ and PTX bundles whose kernels must be
-compiled and linked into the engine that runs them, and hot-swappable bundles
-alike. It refused every version-6 policy outright between 2026-08-15
-(87944430) and the version-8 change, so those bundles screened clean and then
-never received a speed verdict at all.
-
-Policies v8-v12 retain their original one-round schedules. New commissions use
-v13-v15: one complete round, with one additional complete round only when valid
-measurements cross the acceptance boundary. Both rounds stay in the same sealed
-sessions; the conservative paired ratios combine with equal log weight.
-B-prime is always measured, including for a clear first-round PASS, because
-reference quality consumes its stock-drift control.
+The batch-cell B/C/B-prime schedules (policies 8-15) were deleted with the
+batch evaluator; their retained products stay readable as stored JSON only.
 """
 
 from __future__ import annotations
 
 import math
 import hashlib
+import time
 from dataclasses import dataclass, field as dataclass_field
+from typing import Callable
 
 from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
 from cacheon.eval.goodput_runtime import GoodputPolicy as GoodputPolicy, GoodputReadSet
 from cacheon.eval.reference_protocol import ReferencePromptInput
 from cacheon.eval.qualification import SelectionEntropyReceipt
-from cacheon.eval.resident_measurement import (
-    CrossoverRuntimeError, ResidentReadRate, TimedWindow as TimedWindow, _timed_windows,
-)
 from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
 from cacheon.eval.oci_backend import (
     EngineExecutionEvidence,
     OCIEngineExecutor,
+    TrustedArenaModelMountReceipt,
 )
 from cacheon.eval.oci_outer_session import (
-    BatchExecutionEvidence,
     SessionExecutionEvidence,
     SessionExecutionPlan,
 )
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
-from cacheon.eval.resident_schedule import (
-    planned_schedule,
-    run_resident_crossover_speed,
-    grade_schedule,
-    _rate_from_batches,
-)
-from cacheon.eval.scoring import SpeedupVerdict, marginal_workload_digest
-from cacheon.eval.speed_verdict import (
-    DECODE_ROLES,
-    resident_speed_roles,
-    schedule_roles,
-    SpeedStageDecision,
-)
+from cacheon.eval.scoring import CrossoverRuntimeError, SpeedupVerdict, marginal_workload_digest
+from cacheon.eval.speed_verdict import SpeedStageDecision
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
@@ -133,10 +111,8 @@ class ResidentCrossoverPlan:
         ):
             raise CrossoverRuntimeError("resident crossover plan is inconsistent")
         replay = self.baseline.session_plan.replay
-        if bool(replay) != bool(self.policy.goodput) or (replay is not None and (
-            len(replay.loads) != 1 or replay.contract != self.policy.goodput.contract
-            or replay.elapsed_cost != bool(self.policy.goodput.error_rate)
-        )):
+        if (replay is None or len(replay.loads) != 1 or replay.contract != self.policy.goodput.contract
+                or replay.elapsed_cost != bool(self.policy.goodput.error_rate)):
             raise CrossoverRuntimeError("goodput plan requires one sealed load and its service contract")
         allowed_differences = {
             "stack_digest",
@@ -313,67 +289,6 @@ def _validate_execution_binding(execution: EngineExecutionEvidence, arm: Residen
         raise CrossoverRuntimeError("resident execution changed device authority")
 
 
-def _validate_resident_execution(
-    execution: EngineExecutionEvidence, arm: ResidentArmPlan, *, roles: tuple[str, ...],
-) -> None:
-    _validate_execution_binding(execution, arm)
-    plan = planned_schedule(arm.session_plan, roles)
-    session = execution.session
-    if len(session.batches) != len(plan.prompt_batches):
-        raise CrossoverRuntimeError("resident execution differs from its sealed arm")
-    previous = session.ready_completed_at
-    request_ids: set[str] = set()
-    nonces: set[str] = set()
-    for index, (row, prompts) in enumerate(
-        zip(session.batches, plan.prompt_batches, strict=True)
-    ):
-        budget = plan.request_geometry(index)[0]
-        tokens = len(prompts) * budget
-        if (
-            type(row) is not BatchExecutionEvidence
-            or row.batch_index != index
-            or row.request_id in request_ids
-            or row.nonce in nonces
-            or row.request_started_at < previous
-            or row.response_completed_at <= row.request_started_at
-            or row.token_numerator != tokens
-            or row.evidence.observed_tokens != tokens
-            or row.audit_receipts
-            or bool(row.prompt_latencies) != (plan.measure_phase_latency and budget >= 2)
-        ):
-            raise CrossoverRuntimeError("resident execution batch evidence is malformed")
-        if row.prompt_latencies:
-            _timed_windows((row,))
-            expected_prompt_tokens = plan.request_geometry(index)[1]
-            if expected_prompt_tokens is not None and any(
-                prompt.prompt_tokens != expected_prompt_tokens
-                for prompt in row.evidence.prompts
-            ):
-                raise CrossoverRuntimeError("phase input lengths differ from the sealed cell")
-        request_ids.add(row.request_id)
-        nonces.add(row.nonce)
-        previous = row.response_completed_at
-    if session.session_completed_at < previous:
-        raise CrossoverRuntimeError("resident execution cleanup predates its last batch")
-
-
-def _recomputed_rate(
-    rate: ResidentReadRate,
-    execution: EngineExecutionEvidence,
-    arm: ResidentArmPlan,
-) -> ResidentReadRate:
-    plan = arm.session_plan
-    start = rate.first_batch_index
-    stop = start + len(plan.prompt_batches)
-    if stop > len(execution.session.batches):
-        raise CrossoverRuntimeError("resident rate exceeds its retained session")
-    rows = execution.session.batches[start:stop]
-    if rate.last_batch_index != stop - 1:
-        raise CrossoverRuntimeError("resident rate does not name one complete read")
-    return _rate_from_batches(rate.role, _expected_lane_digest(arm), arm.launch.digest,
-                              execution.session.session_id, start, rows, plan)
-
-
 @dataclass(frozen=True)
 class ResidentCrossoverEvidence:
     plan_digest: str
@@ -386,7 +301,9 @@ class ResidentCrossoverEvidence:
     candidate_execution: EngineExecutionEvidence
     baseline_quiescence: OCIQuiescenceReceipt
     candidate_quiescence: OCIQuiescenceReceipt
-    rates: tuple[ResidentReadRate, ...]
+    # Batch read rows (policies 8-15). Replay evidence seals the empty tuple, and
+    # the field stays so retained continuations decode unchanged.
+    rates: tuple[str, ...]
     initial_verdict: SpeedupVerdict
     final_verdict: SpeedupVerdict
     escalated: bool
@@ -404,23 +321,10 @@ class ResidentCrossoverEvidence:
         version = (
             self.policy.version if type(self.policy) is ResidentSpeedPolicy else 0
         )
-        if version < 8:
-            # Evidence sealed under the adaptive or conditional-bookend
-            # schedules is MiniMax-M3 history and is not decodable here.
-            raise CrossoverRuntimeError(
-                "resident crossover evidence below version 8 is sealed history"
-            )
-        if version not in (16, 17) and (self.prompt_pairs or self.reference_inputs or self.quality_entropy is not None):
-            raise CrossoverRuntimeError("replay quality control requires a replay speed policy")
         if ((version == 17 and (len(self.prior_executions) != 2
                                or any(type(v) is not EngineExecutionEvidence for v in self.prior_executions)))
             or (version != 17 and self.prior_executions)):
             raise CrossoverRuntimeError("swapped replay requires both first-orientation executions")
-        # Only the new policy versions may retain one complete repeated round.
-        roles = () if version in (16, 17) else resident_speed_roles(version, len(self.rates))
-        schedule_valid = (not self.escalated and type(self.goodput) is GoodputReadSet) if version in (16, 17) else (
-            self.goodput is None and self.escalated is (version >= 13 and len(self.rates) > len(schedule_roles(version)))
-        )
         for field in (
             "plan_digest",
             "selected_delta_digest",
@@ -433,7 +337,9 @@ class ResidentCrossoverEvidence:
             except ValueError as exc:
                 raise CrossoverRuntimeError(str(exc)) from None
         if (
-            not schedule_valid
+            self.escalated
+            or type(self.goodput) is not GoodputReadSet
+            or self.rates != ()
             or type(self.policy) is not ResidentSpeedPolicy
             or type(self.baseline_execution) is not EngineExecutionEvidence
             or type(self.candidate_execution) is not EngineExecutionEvidence
@@ -443,7 +349,6 @@ class ResidentCrossoverEvidence:
             or type(self.final_verdict) is not SpeedupVerdict
             or type(self.escalated) is not bool
             or type(self.decision) is not SpeedStageDecision
-            or tuple(row.role for row in self.rates) != roles
             or self.baseline_lane_digest == self.candidate_lane_digest
             or self.exit_reason
             != ("borderline_" if self.escalated else "clear_")
@@ -460,15 +365,9 @@ class ResidentCrossoverEvidence:
             > self.policy.max_stage_seconds
         ):
             raise CrossoverRuntimeError("resident crossover evidence is malformed")
-        if any(
-            bool(row.windows) != (self.policy.version >= 3) for row in self.rates
-        ):
-            raise CrossoverRuntimeError(
-                "resident read window retention differs from the policy version"
-            )
 
     def regrade(self, plan: ResidentCrossoverPlan) -> SpeedupVerdict:
-        """Recompute the adaptive grade only from the sealed plan and raw spans."""
+        """Recompute the grade only from the sealed plan and the retained turn records."""
 
         final_plan = plan
         if plan.policy.version == 17:
@@ -498,37 +397,11 @@ class ResidentCrossoverEvidence:
             )
         ):
             raise CrossoverRuntimeError("resident evidence names another sealed plan")
-        if self.goodput is not None:
-            from cacheon.eval.goodput_runtime import regrade_goodput_execution
-            grade = regrade_goodput_execution(self, plan)
-            if (self.initial_verdict != grade.verdict or self.final_verdict != grade.verdict
-                or self.decision is not grade.decision):
-                raise CrossoverRuntimeError("goodput headline does not regrade")
-            return grade.verdict
-        # __post_init__ has already pinned the exact role tuple for this policy
-        # version, so the read counts follow from the roles themselves and do
-        # not need a second per-version table to fall out of step with.
-        for prefix, execution, arm in (
-            ("B", self.baseline_execution, plan.baseline),
-            ("C", self.candidate_execution, plan.candidate),
-        ):
-            rows = tuple(row for row in self.rates if row.role.startswith(prefix))
-            _validate_resident_execution(
-                execution, arm, roles=tuple(row.role for row in rows)
-            )
-            block = len(arm.session_plan.prompt_batches)
-            if tuple(row.first_batch_index for row in rows) != tuple(
-                range(0, block * len(rows), block)
-            ) or any(_recomputed_rate(row, execution, arm) != row for row in rows):
-                raise CrossoverRuntimeError("resident rate spans do not independently regrade")
-        # The shared grader also verifies that the first round authorized a repeat.
-        grade = grade_schedule(plan.policy, self.rates)
-        if (
-            self.initial_verdict != grade_schedule(plan.policy, self.rates[:len(schedule_roles(plan.policy.version))]).verdict
-            or self.final_verdict != grade.verdict
-            or self.decision is not grade.decision
-        ):
-            raise CrossoverRuntimeError("resident speed headline does not regrade")
+        from cacheon.eval.goodput_runtime import regrade_goodput_execution
+        grade = regrade_goodput_execution(self, plan)
+        if (self.initial_verdict != grade.verdict or self.final_verdict != grade.verdict
+            or self.decision is not grade.decision):
+            raise CrossoverRuntimeError("goodput headline does not regrade")
         return grade.verdict
 
     @property
@@ -555,8 +428,8 @@ class ResidentCrossoverEvidence:
                 "initial": verdict(self.initial_verdict),
                 "policy": self.policy.digest,
                 "plan": self.plan_digest,
-                "rates": [row.to_dict() for row in self.rates],
-                **({"goodput": self.goodput.to_dict()} if self.goodput is not None else {}),
+                "rates": [],
+                "goodput": self.goodput.to_dict(),
                 **({"prior_executions": [_execution_digest(row) for row in self.prior_executions]}
                    if self.prior_executions else {}),
                 **({"prompt_pairs": self.prompt_pairs,
@@ -564,8 +437,7 @@ class ResidentCrossoverEvidence:
                                           "input": hashlib.sha256(row.input_bytes).hexdigest(),
                                           "roles": [[role.output_ids, role.supports] for role in row.roles]}
                                          for row in self.reference_inputs],
-                    "quality_entropy": None if self.quality_entropy is None else self.quality_entropy.digest}
-                   if self.goodput is not None else {}),
+                    "quality_entropy": None if self.quality_entropy is None else self.quality_entropy.digest}),
                 "selected_delta": self.selected_delta_digest,
                 "started": format(self.started_monotonic_s, ".17g"),
                 "workload": self.workload_digest,
@@ -631,7 +503,7 @@ class ResidentMarginalLifecycleEvidence:
 
     @property
     def final_baseline(self) -> EngineExecutionEvidence:
-        """The resident baseline lifetime containing B-prime."""
+        """The resident baseline lifetime that served the last paired window."""
 
         return self.crossover.baseline_execution
 
@@ -644,27 +516,33 @@ class ResidentMarginalLifecycleEvidence:
             }
         )
 
-    @property
-    def role_names(self) -> tuple[str, ...]:
-        # The quality stage harvests from the decode reads only; the v12
-        # prefill pass is speed evidence and never a quality control.
-        return DECODE_ROLES
 
-    def role_batches(self, role: str) -> tuple[BatchExecutionEvidence, ...]:
-        matches = tuple(row for row in self.crossover.rates if row.role == role)
-        if len(matches) != 1 or role not in self.role_names:
-            raise CrossoverRuntimeError("resident quality role is absent or ambiguous")
-        rate = matches[0]
-        execution = (
-            self.crossover.baseline_execution
-            if role.startswith("B")
-            else self.crossover.candidate_execution
-        )
-        return execution.session.batches[
-            rate.first_batch_index : rate.last_batch_index + 1
-        ]
+def run_resident_crossover_speed(
+    plan: ResidentCrossoverPlan,
+    *,
+    baseline_executor: OCIEngineExecutor,
+    candidate_executor: OCIEngineExecutor,
+    model_mount: TrustedArenaModelMountReceipt,
+    deadline: float,
+    clock: Callable[[], float] = time.monotonic,
+    quality_control=None,
+) -> ResidentCrossoverEvidence:
+    """Run the exact production speed stage for one candidate."""
 
+    from cacheon.eval.goodput_runtime import run_goodput_pair
 
+    if (
+        type(plan) is not ResidentCrossoverPlan
+        or type(baseline_executor) is not OCIEngineExecutor
+        or type(candidate_executor) is not OCIEngineExecutor
+        or baseline_executor is candidate_executor
+        or type(model_mount) is not TrustedArenaModelMountReceipt
+    ):
+        raise CrossoverRuntimeError("resident crossover authorities are not exact")
+    return run_goodput_pair(
+        plan, baseline_executor=baseline_executor, candidate_executor=candidate_executor,
+        model_mount=model_mount, deadline=deadline, clock=clock, quality_control=quality_control,
+    )
 
 
 __all__ = [
@@ -673,7 +551,6 @@ __all__ = [
     "ResidentCrossoverEvidence",
     "ResidentCrossoverPlan",
     "ResidentMarginalLifecycleEvidence",
-    "ResidentReadRate",
     "ResidentSpeedPolicy",
     "SpeedStageDecision",
     "run_resident_crossover_speed",

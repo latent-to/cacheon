@@ -6,14 +6,61 @@ import asyncio
 import concurrent.futures
 import hashlib
 import math
+import threading
 from dataclasses import asdict, dataclass, field, replace
 
 from cacheon.eval.continuation_codec import ContinuationCodec
 from cacheon.eval.service_capacity import (
     LoadRead, ServiceContract, ServiceVerdict, continue_windows, fixed_work_rate,
 )
-from cacheon.eval.scoring import SpeedupVerdict
+from cacheon.eval.scoring import CrossoverRuntimeError, SpeedupVerdict
 from cacheon.eval.speed_verdict import SpeedStageDecision
+
+
+class ReadSchedule:
+    """Cross-lane hand-off of the paired reads, keyed by role."""
+
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.values: dict[str, object] = {}
+        self.failure: BaseException | None = None
+
+    def put(self, key: str, value: object = True) -> None:
+        with self.condition:
+            if key in self.values:
+                raise CrossoverRuntimeError(f"resident schedule repeated {key}")
+            self.values[key] = value
+            self.condition.notify_all()
+
+    def fail(self, exc: BaseException) -> None:
+        with self.condition:
+            if self.failure is None:
+                self.failure = exc
+            self.condition.notify_all()
+
+    def get(self, key: str, *, deadline: float, clock) -> object:
+        with self.condition:
+            while key not in self.values:
+                if self.failure is not None:
+                    raise CrossoverRuntimeError(
+                        f"resident peer failed: {self.failure}"
+                    ) from self.failure
+                remaining = deadline - float(clock())
+                if not math.isfinite(remaining) or remaining <= 0:
+                    raise CrossoverRuntimeError(
+                        "resident speed stage exceeded its deadline"
+                    )
+                self.condition.wait(timeout=min(0.1, remaining))
+            return self.values[key]
+
+
+@dataclass(frozen=True)
+class ScheduleGrade:
+    """One grade of the paired windows: the headline verdict and the settled speedup text."""
+
+    verdict: SpeedupVerdict
+    decision: SpeedStageDecision
+    settled_speedup: str
 
 
 @dataclass(frozen=True)
@@ -97,7 +144,6 @@ class GoodputReadSet:
     def grade(self, policy: GoodputPolicy, *, max_windows: int | None = None):
         """Call the data/scoring owner's single grade entrypoint; retain no second estimator."""
         from cacheon.eval import service_capacity
-        from cacheon.eval.resident_schedule import ScheduleGrade
 
         statistic = {} if not policy.error_rate else dict(
             window_noise=policy.null_noise, boot_noise=policy.boot_noise,
@@ -119,8 +165,7 @@ class GoodputReadSet:
             result.ratio, result.standard_error if policy.error_rate else policy.null_noise, result.required, passed, confident,
             len(self.incumbent), result.detail, len(self.candidate),
         )
-        return ScheduleGrade(verdict, result.decision, False, None,
-                             "goodput" if passed else None, format(result.ratio, ".17g"))
+        return ScheduleGrade(verdict, result.decision, format(result.ratio, ".17g"))
 
     def to_dict(self):
         """Retain raw turn stamps through the existing witness codec."""
@@ -203,7 +248,6 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
     """Keep each pair resident through its timed reads and any selected quality controls."""
     from cacheon.eval.agent_replay import run_replay
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
-    from cacheon.eval.resident_schedule import ReadSchedule
     from cacheon.eval.scoring import marginal_workload_digest
     from cacheon.eval import service_capacity
 
@@ -334,7 +378,6 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
 def regrade_goodput_execution(evidence, plan):
     """Verify complete replay records against the sealed workload and host pipe evidence."""
     from cacheon.eval.crossover_runtime import _validate_execution_binding, _expected_lane_digest
-    from cacheon.eval.resident_measurement import CrossoverRuntimeError
 
     replay = plan.baseline.session_plan.replay
     (load,) = replay.loads

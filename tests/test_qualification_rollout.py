@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from cacheon.eval.b300_qualification_commission import (
-    B300QualificationCommissionError, _require_cell_conformance,
+    B300QualificationCommissionError, _require_replay_quality,
 )
 from cacheon.eval.qualification_runner import _rollout
 from cacheon.eval.reference_protocol import ReferenceRoleInput, ReferenceTokenEvidence
@@ -32,12 +32,12 @@ def test_replay_numeric_profile_is_rejected_before_engine_launch(required, count
     policy = SimpleNamespace(topk_width=0, hidden_tasks_required=required,
                              hidden_tasks_per_prompt=count)
     with pytest.raises(B300QualificationCommissionError, match="without numeric hidden tasks"):
-        _require_cell_conformance(None, policy, {"replay": {}, "temperature": "0"}, {})
+        _require_replay_quality(policy, {"temperature": "0"})
 
 
 def test_replay_teacher_only_profile_is_supported():
     policy = SimpleNamespace(topk_width=0, hidden_tasks_required=False, hidden_tasks_per_prompt=0)
-    _require_cell_conformance(None, policy, {"replay": {}, "temperature": "0"}, {})
+    _require_replay_quality(policy, {"temperature": "0"})
 
 
 def test_zero_hidden_tasks_do_not_bind_coding_prompts_to_numeric_judge():

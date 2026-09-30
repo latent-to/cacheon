@@ -27,7 +27,6 @@ def ensure_reward_prefix(store: "FinalizedIntakeStore") -> None:
 
     Preserve previously earned PASSes on migration. A later reopening of an
     earlier submission must not retract other miners' already finalized credit.
-    The remeasurement authority removes only the reopened candidate's record.
     """
     with store._transaction():
         columns = {row["name"] for row in store._db.execute("PRAGMA table_info(settlement_candidates)")}

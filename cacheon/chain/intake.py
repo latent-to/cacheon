@@ -58,10 +58,6 @@ _AUTOMATICALLY_EXPIRABLE = (
 )
 _AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
 _VALIDATOR_DOWNTIME_REQUEUE_REASON = "validator_downtime_requeued"
-# A retained PASS pair may be reopened for a fresh pair only for a registered
-# measurement defect; the operator command that names one must carry the
-# retained evidence for it (cacheon.chain.baseline_band).
-_REMEASUREMENT_REASONS = frozenset({"baseline_out_of_band"})
 # One refresh of the SLA anchor after a prior validator-downtime requeue
 # re-expired (operator/SLA mismatch).  A third attempt still fails closed.
 _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON = "validator_downtime_requeued_refresh"
@@ -1382,8 +1378,8 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         """Enter qualification directly from the published queue.
 
         The claim stamps the arena service identity the row is measured
-        under; that stamp is what FAIL replay, remeasurement rebinding, and the
-        one-shot admission cutoff key on.
+        under; that stamp is what FAIL replay and the one-shot admission cutoff
+        key on.
         """
 
         require_sha256_hex(authority_digest, field="qualification_authority_digest")
@@ -2891,151 +2887,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 (status, reason, attempts, reservation_id),
             )
         return self.get(reservation_id)
-
-    def retained_pass_pairs(self) -> tuple[tuple[str, str, tuple[str, ...], tuple[tuple[int, str], ...]], ...]:
-        """Retained acceptances: id, arena, accepted speedups, and attempt artifact refs."""
-
-        from cacheon.settlement import SettlementCandidate
-
-        pairs = []
-        for row in self._db.execute(
-            "SELECT sc.reservation_id, sc.candidate_json FROM settlement_candidates sc "
-            "JOIN reservations r USING(reservation_id) "
-            "WHERE r.status='qualified' AND r.decision='PASS' "
-            "ORDER BY r.block,r.event_index,r.event_subindex,r.reservation_id"
-        ):
-            candidate = SettlementCandidate.from_dict(json.loads(row["candidate_json"]))
-            refs = tuple(
-                (int(half["reproduction_index"]), half["attempt_ref_json"])
-                for half in self._db.execute(
-                    "SELECT reproduction_index, attempt_ref_json FROM "
-                    "settlement_qualifications WHERE reservation_id=? "
-                    "ORDER BY reproduction_index",
-                    (row["reservation_id"],),
-                )
-            )
-            pairs.append((
-                row["reservation_id"], candidate.arena_digest,
-                tuple(value.speedup for value in candidate.qualifications), refs,
-            ))
-        return tuple(pairs)
-
-    def reopen_for_remeasurement(
-        self, reservation_id: str, *, reason: str
-    ) -> IntakeReservation:
-        """Return one unsettled acceptance to the queue after explicit operator review.
-
-        The retained candidate and its qualification attempts move to
-        ``settlement_reopenings`` (append-only), so the row stops earning the
-        moment it leaves ``qualified`` and re-enters intake like a new
-        submission: a fresh claim under the live service identity, a fresh
-        baseline binding to the live stack, and a fresh complete qualification
-        against the current incumbent. A crowned or otherwise settled candidate
-        is lineage and is refused.
-        """
-
-        if reason not in _REMEASUREMENT_REASONS:
-            raise IntakeError("remeasurement reason is not registered")
-        with self._transaction():
-            self._require_evaluation_mutation_authority(reservation_id)
-            row = self.get(reservation_id)
-            if row.status != "qualified" or row.decision != "PASS":
-                raise IntakeError("only a retained PASS reservation may be reopened")
-            if not row.publication_digest or not row.publication_root:
-                raise IntakeError("reopened reservation has no retained publication")
-            candidate = self._db.execute(
-                "SELECT * FROM settlement_candidates WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()
-            if candidate is None or candidate["status"] != "pending":
-                raise IntakeError("only an unsettled PASS reservation may be reopened")
-            halves = self._db.execute(
-                "SELECT * FROM settlement_qualifications WHERE reservation_id=? "
-                "ORDER BY reproduction_index",
-                (reservation_id,),
-            ).fetchall()
-            accepted = self._settlement_candidate(candidate)
-            if len(halves) != len(accepted.qualifications):
-                raise IntakeError("reopened reservation does not retain its accepted attempts")
-            sequence = self._db.execute(
-                "SELECT COUNT(*) AS n FROM settlement_reopenings WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["n"]
-            encode = lambda rows: json.dumps(  # noqa: E731
-                [{key: item[key] for key in item.keys()} for item in rows],
-                separators=(",", ":"), sort_keys=True,
-            )
-            self._db.execute(
-                "INSERT INTO settlement_reopenings(reservation_id,sequence,reason,"
-                "candidate_json,qualifications_json) VALUES(?,?,?,?,?)",
-                (reservation_id, sequence, reason, encode([candidate]), encode(halves)),
-            )
-            for table in (
-                "settlement_qualifications", "settlement_candidates",
-                "reservation_baseline_segments", "reservation_sla_resets",
-            ):
-                self._db.execute(
-                    f"DELETE FROM {table} WHERE reservation_id=?", (reservation_id,)
-                )
-            # The service digest names the arena that measured the old pair.
-            # Left in place, the queue backfill would bind the row to that
-            # retired stack before its fresh claim could bind the live one.
-            self._db.execute(
-                "UPDATE reservations SET status='published',screen_lane='primary',"
-                "arena_service_digest='',decision='',reason=?,"
-                "retry_group_digest='',retry_position=0,"
-                "qualification_authority_digest='',qualification_authority_json='',"
-                "qualification_evidence_digest='' WHERE reservation_id=?",
-                (f"remeasure:{reason}", reservation_id),
-            )
-        return self.get(reservation_id)
-
-    def remeasurement_pending(self, reservation_id: str) -> bool:
-        """Whether a reopened reservation is still waiting for its fresh pair."""
-
-        row = self.get(reservation_id)
-        return (
-            row.status == "published"
-            and self._db.execute(
-                "SELECT 1 FROM settlement_reopenings WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone() is not None
-            and self._db.execute(
-                "SELECT 1 FROM settlement_candidates WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone() is None
-        )
-
-    def rebind_remeasurement_segment(
-        self, reservation_id: str
-    ) -> EvaluationStackState | None:
-        """Bind a reopened row's baseline segment to the stack that reclaimed it.
-
-        Idempotent repair for a reopened row the queue backfill bound to its
-        retired arrival stack. It runs only while the row still awaits its
-        fresh pair; a claimed row refuses it. The row's stamped service digest,
-        when present, names the stack the row drains under; without one the
-        row is left unbound for the claim to bind.
-        """
-
-        with self._transaction():
-            self._require_evaluation_mutation_authority(reservation_id)
-            if not self.remeasurement_pending(reservation_id):
-                raise IntakeError("only a reopened reservation awaiting its fresh pair may be rebound")
-            row = self.get(reservation_id)
-            self._db.execute(
-                "DELETE FROM reservation_baseline_segments WHERE reservation_id=?",
-                (reservation_id,),
-            )
-            if not row.arena_service_digest:
-                return None
-            state = self._unambiguous_evaluation_stack(row.arena_service_digest)
-            if state is None:
-                raise IntakeError("reopened reservation's claim names no evaluation stack")
-            self._bind_reservation_baseline_segment(
-                reservation_id, state, reason="remeasure_reclaim"
-            )
-        return state
 
 
 class SQLiteWeightPublicationJournal:

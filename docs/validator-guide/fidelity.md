@@ -143,8 +143,8 @@ resident speed executors are quiescent and the required audit stage completes. T
 - runs the registered hidden quality work.
 
 The controller then regrades raw evidence under the frozen metric policy. Candidate C
-does not choose prompts, support tokens, thresholds, or the hidden judge. Incumbent B′ is
-also untrusted and is never substituted for T.
+does not choose prompts, support tokens, thresholds, or the hidden judge. The incumbent
+engine is also untrusted and is never substituted for T.
 
 ## Fixed-stock exact-count profiles
 
