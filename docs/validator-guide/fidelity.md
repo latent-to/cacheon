@@ -8,21 +8,20 @@ oracle.
 
 | Layer | Purpose | Crown authority? |
 |---|---|---|
-| Typed slot verification | Fast ABI, output-layout, numerical, applicability, and graph preflight | No |
+| `verify` and `check` | Interface smoke; audit against stock and captured execution on public requests | No |
 | Contributor-controlled model A/B or in-engine audit | Development feedback and integration diagnosis | No |
+| Prefix-cache content check | Every served cache page holds the KV the engine computed for that prefix | Yes; it runs in every engine that serves the cache |
 | Registered audit-only role | Exact slot × TP-rank live-call evidence graded by the trusted host | Yes, when the arena policy requires it |
-| Registered fixed-stock exact-count gate | Candidate-only hidden-task generation compared with one sealed stock observation | Yes, when the registered profile selects it |
 | Pristine T over sealed timed trajectories | Candidate-free, retained production quality evidence | Yes, as one required part of qualification |
 
-## Slot verification
+## Local checks
 
-Each registered slot owns a typed input/output contract and correctness mode. Depending
-on the slot, verification may use all-close tolerances, matched ratio, cosine similarity,
-or top-k overlap. The verifier jitters eligible dimensions, checks variant routing, and
-requires graph evidence where applicable.
-
-This catches many broken kernels cheaply, but it samples a finite contract. It cannot by
-itself establish end-to-end model behavior or serving quality.
+There is no hand-written reference math and no standalone slot verifier. `verify`
+checks target resolution, imports and entry signatures only. `check` runs the node audit
+described below in a real engine on the arena's public requests, then a graphs-on engine
+that must complete every bound address inside a capture on every rank. Both catch broken
+bundles cheaply, but they sample finite public work and cannot establish end-to-end model
+behavior or serving quality.
 
 ## Development quality evidence
 
@@ -37,6 +36,28 @@ calculation. It is valuable for debugging nondeterministic stacks, but the candi
 process contains the audit machinery and cannot grade a hostile engine. Framework-mode
 token matching has the same limitation. These checks are engineering tools, not a
 registered target or crown authority.
+
+## Prefix-cache content check
+
+A cache contribution does not change the model's arithmetic, but it can fake a hit:
+serve a prefix whose slots do not hold what the engine computed for it, skipping
+prefill and returning wrong tokens quickly. The validator binds a content check around
+the cache's handoff methods in every engine that serves the cache, stock and candidate
+alike, timed or audited. At each handoff it hashes every complete page the request's
+own forward passes computed and records the pair (prefix digest, page hash); it then
+hashes a sample of the pages the request read from the cache and requires each pair to
+have been recorded. A request's own slots must not move between handoffs, and a flush
+forgets every pair. The check is on content, so a host-memory tier that restores the
+exact bytes passes.
+
+Sliding-window KV and recurrent checkpoints can be overwritten within a forward pass,
+so in the untimed audit role the adapter also records that state before the cache
+receives it and checks served device hits and, after the cache submits its loads, host hits. A candidate refusal stops the
+engine and is receipted as the candidate's; a stock refusal is an infrastructure
+failure. SGLang serves the cache outside CUDA graphs, so it is an eager slot whose
+completions count without a capture. Residual: a page is checked after the forward pass
+that read it, so bytes a cache moves into a served slot after that read are not told
+apart from bytes placed before. See [The prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
 ## Registered audit-only role
 
@@ -140,26 +161,11 @@ resident speed executors are quiescent and the required audit stage completes. T
 - receives sealed timed-read prompt and trajectory identities from the trusted controller;
 - teacher-forces those trajectories;
 - emits bounded token-level teacher evidence; and
-- runs the registered hidden quality work.
+- runs any registered hidden quality work (the coding replay profile registers none).
 
 The controller then regrades raw evidence under the frozen metric policy. Candidate C
 does not choose prompts, support tokens, thresholds, or the hidden judge. The incumbent
 engine is also untrusted and is never substituted for T.
-
-## Fixed-stock exact-count profiles
-
-A registered profile may instead bind one retained stock observation and an exact-count
-regression policy. The stock artifact contains every ordered output-token sequence and
-its hidden-judge receipt, but no trusted aggregate score. Commissioning seals the
-artifact reference, observation digest, prompt/generation/admission envelope, and policy;
-runtime reopening rehashes the bytes and rejudges every retained row before comparing it
-with the candidate.
-
-Candidate evaluation uses the already-resident lanes at the profile's sealed admission
-width. It does not rerun stock for each bundle. A missing, foreign, or envelope-mismatched
-stock artifact is infrastructure and stops qualification; a configured historical score
-is not a substitute for reopenable evidence. Only an intact candidate generation whose
-hidden judge runs successfully can produce a quality PASS or FAIL.
 
 ## Calibration
 
@@ -206,6 +212,7 @@ retained and reopened.
 ## Source anchors
 
 - [Node audit against stock](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py)
+- [Prefix-cache content check](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache.py) and [state audit](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache_state.py)
 - [Qualification quality model](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py)
 - [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 - [Pristine wire protocol](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_protocol.py)

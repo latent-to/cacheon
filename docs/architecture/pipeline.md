@@ -10,14 +10,14 @@ The developer commands intentionally reuse parts of the ABI and evaluation machi
 ## Developer path
 
 ```text
-slots -> scan -> verify -> chain-package -> host -> chain-submit -> chain-status
+scan -> verify -> check -> chain-package -> host -> chain-submit -> chain-status
 ```
 
 | Step | Purpose | Authority |
 |---|---|---|
-| `slots` | Inspect the live slot ABI | Informational |
 | `scan` | Run static bundle policy checks | Diagnostic |
-| `verify` | Check a single op/block against its trusted reference; collective slots use distributed verification | Diagnostic |
+| `verify` | Resolve the target, import each entry, and check its signature | Diagnostic |
+| `check` | Audit against stock and captured execution in the published arena image | Diagnostic |
 | `chain-package` | Produce the deterministic hosted archive and content identity | Submission preparation |
 | HTTPS host | Make the immutable archive available for validator fetch | Transport only |
 | `chain-submit` | Commit the proposal through timelock commit-reveal; optional eval-cost `--pay` | Chain intake |
@@ -44,7 +44,6 @@ flowchart TD
     G -->|"selected current registered winner"| T["Transactional settlement and stack update"]
     G -->|"stale or not selected"| H["HOLD / no stack transition"]
     T --> W["Reward projection and journaled weights"]
-    J --> W
     T -. "separate authorities, outside this repository" .-> I["Integration, release, serving"]
 ```
 
@@ -102,15 +101,13 @@ Principal code: [`arena_service.py`](https://github.com/latent-to/cacheon/blob/m
 ## 4. Qualification queue and admission
 
 There is no separate screening stage. A published reservation waits in the arena's
-qualification queue in finalized order, with a pending reproduction ahead of new primary
-work; the qualification's first window is the only screen. The arena's registered
-capacity bounds the work instead: queue depth and age, active qualifications, and cohort
-size.
+qualification queue in finalized order. The arena's registered capacity bounds the
+work instead: queue depth and age, active qualifications, and cohort size.
 
 Admission runs when a queued row is first claimed, before any lease exists:
 
 - an exact copy of bytes that already lost under this arena inherits that `FAIL`; a
-  `PASS` and the reproduction lane are never replayed;
+  `PASS` is never replayed;
 - a reservation for a target the commissioned arena cannot measure is released as
   target-unavailable without a verdict; and
 - a commitment after the first crown on the commissioned baseline is rejected as
@@ -136,10 +133,10 @@ At an evaluation boundary, the validator freezes:
 - workload, prompt, seed, role, topology, calibration, and evidence policy.
 
 Each candidate stack is the frozen incumbent with exactly one registered target delta.
-Production qualification uses two isolated resident TP lanes while serializing GPU work.
-The primary attempt assigns the incumbent and candidate to fixed physical lanes. An
-eligible reproduction must bind the exact opposite physical-lane role assignment. The
-lane swap is part of independence authority; it is not a scheduler preference.
+Production qualification uses two isolated TP lanes while serializing GPU work. One
+attempt runs both lane orientations: the incumbent on lane B and the candidate on lane
+A, then fresh engines with the roles exchanged. The swap is part of the sealed speed
+policy, not a scheduler preference.
 
 Qualification constructs a fresh, candidate-specific authority and retains each speed,
 audit, graph, and T product against that exact delta.
@@ -151,9 +148,9 @@ Principal code: [`eval/qualification_intake.py`](https://github.com/latent-to/ca
 The production evidence protocol is version 3. Inside it, every candidate is
 measured by the paired replay: the plan seals speed policy 17, and separate
 incumbent and candidate processes replay the same sealed agent workload
-concurrently on two isolated lanes, exchanging lanes once. The batch-cell
-B/C/B′ policies 8–15 and the MiniMax-M3 schedules before them were deleted,
-and their evidence is refused.
+concurrently on two isolated lanes, then boot fresh with the lanes exchanged.
+Speed policy 16 is regrade-only, and evidence sealed below version 16 is
+refused.
 
 The current subpolicy retains stage and total budgets and the required
 physical-lane role assignment. Evidence reopens under the arithmetic that
@@ -183,7 +180,9 @@ host-owned cleanup; the trusted controller also owns timing.
 The sealed stopping rule, not the candidate, decides how many paired windows
 run, and the regrade checks that the retained windows stopped exactly where the
 rule stops. Both engines condition and flush before each window, and every
-window is retained. Invalid baseline evidence cannot produce a candidate verdict.
+window is retained. The last sealed window yields PASS or FAIL; a sealed futility
+margin may FAIL the stage after the first orientation. Invalid baseline evidence
+cannot produce a candidate verdict.
 
 When the registered plan requires sampled slot audit, a separate eager, untimed candidate
 role emits bounded raw facts. The trusted host grades exact slot × TP-rank/process coverage
@@ -222,11 +221,11 @@ The candidate clears the registered speed, quality, graph, evidence, and whole-s
 
 ### `FAIL`
 
-Complete evidence attributes a policy failure to the candidate under a valid authority. Examples include incorrect output, a quality regression, or a stable speed result below the registered bar.
+Complete evidence attributes a policy failure to the candidate under a valid authority. Examples include incorrect output, a quality regression, or a speed gain not established by the last sealed window.
 
 ### `NO_DECISION`
 
-The evaluator cannot make a valid attributable decision. Infrastructure failure, missing evidence, an unresolved speed bound, broken cohort invariants, or an invalid reference lifetime must not mint either a crown or a loss. The result retains a failure product and retry policy.
+The evaluator cannot make a valid attributable decision. Infrastructure failure, missing evidence, broken cohort invariants, or an invalid reference lifetime must not mint either a crown or a loss. The result retains a failure product and retry policy.
 
 The distinction is load-bearing: treating evaluator failure as candidate failure would let infrastructure state rewrite economic truth.
 
@@ -273,8 +272,8 @@ beat the champion receives `lost_potential`; an incomparable baseline retains
 `stale_incumbent`. The dashboard also reports `lost_potential` for finalized
 reward comparisons that do not clear the margin, preserving the original PASS.
 
-For the selected winner, the conservative settled speedup is the lower accepted speedup
-from the accepted qualification. The stack transition and settlement evidence are committed
+For the selected winner, the settled speedup is the accepted qualification's speedup
+(the lower of the two for a historical pair). The stack transition and settlement evidence are committed
 transactionally; a partial write cannot expose a half-updated incumbent.
 
 Principal code: [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py).
@@ -288,9 +287,11 @@ explicitly fenced incentive paths:
   an all-uncrowned bootstrap, an operator may provide a registered burn hotkey; the burn
   projection becomes invalid as soon as a crown, claim, or active V2 composition exists.
   `--watch` operates the same journaled reconciler continuously with bounded retry rules.
-- **V2 finite debt** is a retained design whose implementation was extracted from the
-  tree on 2026-08-09 without ever being activated; see
+- **V2 finite debt** is a retained design whose implementation is not in the tree; see
   [Finite-debt V2](../reference/emissions-policy.md#finite-debt-v2).
+
+A qualified PASS is paid only when it beats the best earlier rewarded PASS against the
+same arena and incumbent stack by the reward margin (1.5% for V17).
 
 The publisher persists intent and later readback states. An SDK return value does not
 prove inclusion, and the publisher may not advance economic authority from an
@@ -319,12 +320,13 @@ able to reopen, rather than merely observe, each handoff:
   attempt;
 - frozen calibration and the exact policy that maps the retained witness/evidence products
   to the verdict;
-- the seven digest-distinctness fields across primary and reproduction over one
-  reproduction identity;
+- for a historical pair only, the seven digest-distinctness fields across primary and
+  reproduction over one reproduction identity;
 - transactional settlement events and resulting evaluation-stack digest;
 - reward projection plus publication intent/status/chronology records; later readback
   vectors must be re-observed because the journal does not serialize them; and
-- if shipping is proposed, the separate integration records and signed release identity.
+- if shipping is proposed, the separate integration and release records kept outside
+  this repository.
 
 Console output, a green local benchmark, one `PASS`, or a successful chain SDK return is
 not a substitute for the corresponding reopenable product.

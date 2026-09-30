@@ -100,7 +100,7 @@ A proposal resolves to `forward_pass` as `F1`. Planning produces:
 ```text
 incumbent = materialize(E0)                              # F0 + K on the incumbent lane
 candidate = materialize(replace(E0, forward_pass, F1))  # F1 + K on the candidate lane
-speed     = both lanes replay the sealed session slice in paired windows
+speed     = both lanes replay the sealed session slice in paired windows, then swap lanes
 A         = separate eager, untimed candidate audit
 T         = materialize(pristine reference)             # neither proposal is a grading oracle
 ```
@@ -121,9 +121,8 @@ incumbent. Cohorting does not weaken marginal identity:
   baseline replay is the exact incumbent;
 - the retained qualification evidence binds each candidate to its own selected
   delta and physical-lane role assignment;
-- drift and missing authority are handled only by the sealed speed-policy version;
-  current v5+ later-bracket drift uses the registered exclusion rule, while
-  unauthenticated evidence yields `NO_DECISION`.
+- the sealed speed policy alone decides from the retained windows, and
+  unauthenticated or missing evidence yields `NO_DECISION`.
 
 Cohorting is a scheduling optimization, not an economic change.
 
@@ -162,12 +161,14 @@ Materialized source is only one part of a running engine. The launch authority a
 The controller prepares these inputs before timed execution. Production
 qualification binds two isolated physical TP lanes and runs separate incumbent
 and candidate engine processes on them, replaying each paired window
-concurrently. Policy 17's second orientation exchanges the physical incumbent and
-candidate lane roles.
+concurrently. Policy 17's second orientation boots fresh engines with the
+physical incumbent and candidate lane roles exchanged.
 
 A separate
 no-GPU/no-network prebuild OCI compiles registered native products and publishes
-them for reopening. The disposable runtime worker mounts that publication
+them for reopening into one store shared by both lanes, so the swapped
+orientation reuses the first orientation's builds. The disposable runtime worker
+mounts that publication
 read-only; its scheduler ranks may import sealed candidate Python, validate and
 load native products, construct the engine, and execute, but they must never
 compile or repair native code. Host-side timing and authenticated evidence bind
@@ -208,7 +209,7 @@ If validation, persistence, or readback fails, the old stack remains authoritati
 | Candidate tree cannot be reopened | No valid C arm; qualification does not begin or returns `NO_DECISION` according to stage policy |
 | The incumbent reads do not reopen the same incumbent | Cohort authority is invalid; no candidate in the affected comparison can be crowned |
 | Catalog changed after a qualification | Retained evidence remains historical, but it cannot be replayed as a transition against the new catalog by name alone |
-| Second pass names a different reproduction identity | The pair is not settleable |
+| A historical pair names different reproduction identities | The pair is not settleable |
 | Current incumbent changed before settlement | Transition is replanned/revalidated; stale evidence does not overwrite the live stack |
 | Database transaction or evidence readback fails | The previous stack remains current and reward projection is held |
 

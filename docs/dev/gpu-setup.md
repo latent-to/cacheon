@@ -88,8 +88,8 @@ Before recording a result, capture enough identity to reproduce the execution:
 
 Package names alone are not sufficient. Two hosts can report the same SGLang
 version while loading different Torch/CUDA or native products. For formal
-evaluation and release work, use the typed arena, native-build, model, and
-release identities rather than a pasted `pip freeze` as authority.
+evaluation, use the typed arena, native-build, and model identities rather than a
+pasted `pip freeze` as authority.
 
 ## Preflight
 
@@ -135,8 +135,9 @@ python -m cacheon.cli verify examples/miner_node_identity
 python -m cacheon.cli verify path/to/bundle
 ```
 
-This scans the bundle and checks imports and entry signatures in a child process.
-Run the numerical audit and graph checks in the published arena image, using that
+This scans the bundle, resolves its target, and checks imports and entry signatures
+in a child process. Run the numerical audit and graph checks in the published arena
+image with `check`, using that
 arena's model, engine options, public requests and full tensor-parallel width.
 For GLM, after building the bundle as described in the
 [bundle format](../miner-guide/bundle-format.md):
@@ -158,17 +159,18 @@ paired timing and final quality gate.
 ## Complete-engine performance development
 
 Cacheon deliberately exposes no local qualification command. Contributors may profile
-and A/B the complete serving engine on a disposable host appropriate for candidate code,
-using the published arena contract as the environment specification. Keep the model,
-runtime, topology, graph mode, workload, and charged-work basis fixed; measure the
-candidate between two incumbent runs and distrust a delta smaller than baseline drift.
-The canonical [performance-development procedure](../validator-guide/running-evals.md#performance-development)
-defines the required inputs and local result record; no repository command materializes
-this complete-engine bracket.
+the complete serving engine on a disposable host appropriate for candidate code, using
+the published arena contract as the environment specification. Keep the model, runtime,
+topology, graph mode, cache configuration, and workload fixed; run the incumbent and
+candidate concurrently on two disjoint device sets, swap the sets with fresh engines,
+and distrust a gain smaller than the spread between windows. The canonical
+[performance-development procedure](../validator-guide/running-evals.md#performance-development)
+defines the required inputs and local result record; no repository command runs this
+comparison.
 
 Production version-3 qualification materializes the exact incumbent and
 candidate engines through an injected arena service and measures them with the
-paired replay (speed policy 17). It then
+paired replay in both lane orientations (speed policy 17). It then
 runs registered eager audit A, tears down candidate lifetimes, and obtains
 candidate-free pristine T quality evidence. A contributor-controlled model run
 cannot substitute for that authority.
@@ -179,10 +181,10 @@ Move upward only after the lower layer is green:
 
 | Layer | Required observation | Still does not prove |
 |---|---|---|
-| Component `verify` | Registered reference and graph replay for exercised cases | Model integration or speedup |
-| Local complete-engine A/B | Model can load and the selected delta can improve the matched workload | Validator isolation, hidden quality, crown authority, settlement |
-| Qualification PASS | Exact marginal complete-engine delta clears all registered gates | Crown until settlement |
-| Two matching PASSes | Candidate is eligible for cohort settlement; the current registered cohort winner may be crowned while another valid pair is held | Integration safety or release readiness |
+| `verify` | Target resolution, imports, and entry signatures | Numerical correctness, graph behavior, or speedup |
+| `check` | Audit against stock and captured execution on the public requests at full TP width | Hidden workload behavior, paired speed, or pristine quality |
+| Local paired replay | Model can load and the selected delta can improve the matched workload | Validator isolation, hidden quality, crown authority, settlement |
+| One complete audited qualification PASS | Candidate is `qualified` and eligible for cohort settlement; the current registered cohort winner may be crowned while another is held | Reward eligibility, integration safety, or release readiness |
 
 Keep local A/B results as engineering evidence, labeled with their exact environment and
 denominator. Do not treat them as qualification evidence.
@@ -196,7 +198,7 @@ denominator. Do not treat them as qualification evidence.
 | `compat` reports a moved seam | Confirm exact SGLang pin; follow the bump process rather than patching around it |
 | Scheduler cannot import Cacheon | Install editable package in the same environment and use module invocation |
 | Collective hangs | Rank/world-size agreement, visible devices, topology, and clean prior processes |
-| Capture fails | Capability metadata, static allocations, host syncs, dynamic-input contract |
+| Capture fails | Host synchronization or data-dependent Python decisions on the capture stream; there is no graph metadata to declare |
 | Baselines drift | Stop scoring; inspect thermals, clocks, competing processes, device cleanup, and arena conditioning |
 
 Source: [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py) and

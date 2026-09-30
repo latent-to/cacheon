@@ -113,6 +113,8 @@ cacheon/                    runtime and control-plane package
   integrations/            version-pinned SGLang adapters
 cacheon_kernels/            validator-owned reference kernel library
 examples/                  miner bundles and adversarial controls
+bundles/                   validator-maintained contribution bundles, such as the GLM champion nodes
+dashboard/                 read-only submissions dashboard over the intake database
 tests/                     executable contracts and regressions
 docs/                      canonical documentation site
 scripts/                   repository validation and reproducible studies
@@ -235,11 +237,12 @@ module entry point preserves the required guard.
   vocabulary, and compatibility checks derive from it.
 - A module of the served model is a node address (`model.layers.*.mlp`, `model`), served at
   every width by `cacheon/integrations/sglang_nodes.py` against stock in the running engine.
-  Only a span no module names starts in `cacheon/slots.py` with its own adapter. No parallel registry.
-- Block and collective contributions must satisfy graph capture/replay and
-  declare the required graph metadata.
-- Collective verification binds each process to its CUDA device before process
-  group initialization.
+  The one slot no module names, the scheduler's prefix cache (`tree_cache`), is served by
+  `cacheon/integrations/sglang_cache.py` through its own row in `cacheon/seams.py`. No
+  parallel registry.
+- Node contributions must execute under CUDA-graph capture and replay wherever their
+  seam is captured; there is no graph metadata to declare
+  (`docs/miner-guide/graph-safety.md`). The prefix cache runs outside CUDA graphs.
 - Do not mix measurements across runtime, model, image, topology, workload, or
   policy identities.
 

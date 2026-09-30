@@ -25,7 +25,7 @@ flowchart LR
     C -. "never automatic" .-> R
     Q -->|"transactional target update"| Q
     C -. "reward projection" .-> W["Chain weights"]
-    W -. "never enters serving" .-> E
+    W -. "never enters serving" .-> R
 ```
 
 This split is the primary architectural constraint. It prevents economic state, mutable miner hosting, and unreviewed proposal code from becoming production dependencies.
@@ -69,22 +69,23 @@ See [Product model](product-model.md) for the authority and lifecycle of each ob
 
 ## Trust model
 
-The validator owns policy, identities, workloads, timing, references, output buffers, storage, and state transitions. Candidate code is never trusted to grade itself.
+The validator owns policy, identities, workloads, timing, references, storage, and state transitions. Candidate code is never trusted to grade itself.
 
 The production referee follows these rules:
 
 - the controller never imports candidate Python or native extensions;
 - every timed arm runs as a complete engine in a disposable, no-egress OCI session;
 - the candidate engine cannot choose its incumbent, role, workload, target identity, or evidence schema;
-- B and C replay the same sealed workload under a sealed lane authority, and
-  the sealed stopping rule, not the candidate, decides how many windows run;
+- B and C replay the same sealed workload under a sealed lane authority, in
+  both lane orientations with fresh engines per orientation, and the sealed
+  stopping rule, not the candidate, decides how many windows run;
 - any required sampled audit runs in a separate eager, untimed candidate role
   and is regraded by the trusted host;
 - T is pristine, candidate-free, untimed, and used only for semantic quality;
 - infrastructure failure or cohort drift produces `NO_DECISION`, not a loss or crown;
 - settlement reopens retained evidence and requires the complete audited passing authority.
 
-The slot boundary adds a second layer of defense: the validator allocates the output and keeps every slot strictly upstream of sampling. See [Slot contract](slot-contract.md).
+The slot boundary adds a second layer of defense: a node receives the stock arguments and returns what stock returns, a cache returns a subclass of the runtime cache, and sampling, token selection, and acceptance stay validator-owned. See [Slot contract](slot-contract.md).
 
 ## Stack model
 
@@ -97,15 +98,14 @@ All identities are canonical and content-addressed. A candidate arm is the incum
 
 ## Data plane scope
 
-Normal submissions optimize the inference data plane: kernels, quantized GEMMs, attention, MoE, collectives, communication overlap, KV-cache operations, graphs, fused blocks, and bounded execution-adjacent strategies.
+Submissions optimize the inference data plane through two targets: modules of the served model (`forward_pass`), which may contain kernels, quantized GEMMs, attention, MoE, collectives, and fused blocks; and the scheduler's prefix cache (`prefix_cache`).
 
 The service control plane remains upstream of the competition boundary: HTTP and API behavior, authentication, tokenization, request admission, fleet orchestration, autoscaling, observability, and operational lifecycle management are not ordinary miner targets.
 
 Work that cannot fit a registered target is not a valid submission. Widening the
 catalog — a new target — is a reviewed validator-side change,
 followed by fresh qualification and CROWN linkage; there is no separate proposal
-lane. (A fenced "discovery lane" for cross-cutting source patches existed until
-2026-08-19 and was removed without ever admitting a production proposal.)
+lane.
 
 ## End-to-end flow
 
@@ -113,12 +113,12 @@ The authoritative path is:
 
 1. finalized timelock commit-reveal intake;
 2. hardened fetch, content re-hash, copy disposition, and immutable worker publication;
-3. sealed resident adaptive speed qualification, registered eager audit, and
-   pristine T quality; the qualification's first window is the only screen;
+3. paired-replay speed qualification, registered eager audit, and pristine T
+   quality; there is no separate screen;
 4. evidence reopening, conservative settlement, and transactional stack update;
 5. journaled reward projection and weight publication.
 
-`scan` and `verify` are contributor diagnostics. Matched A/B profiling on
+`scan`, `verify`, and `check` are contributor diagnostics. Paired profiling on
 contributor-controlled hardware may test a performance mechanism, but none of these paths
 can mint production crown authority. See [Evaluation pipeline](pipeline.md) for the
 detailed state machine.

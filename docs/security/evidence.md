@@ -22,7 +22,7 @@ does not guarantee that the complete qualification decision can be regraded.
 
 - chain scope, finalized cursor, and reservations;
 - immutable proposal publication and copy disposition;
-- qualification authority, outcomes, and reproduction state;
+- qualification authority and outcomes;
 - settlement candidates, leases, events, and evaluation stacks;
 - standing and discovery reward claims; and
 - weight projections and publication journal records.
@@ -117,8 +117,9 @@ desired verdict:
 2. Reopen the exact target catalog, stack/tree, launch, model, and native identities.
 3. Authenticate each evidence artifact by domain, schema, size, and digest.
 4. Validate the exact window schedule and stopping point required by the
-   witness version, physical-lane roles, turn records and host timing, then
-   regrade speed under frozen calibration.
+   witness version, both physical-lane orientations (or the single orientation
+   a sealed futility FAIL retains), turn records and host timing, then regrade
+   speed under frozen calibration.
 5. Regrade graph observations against the frozen requirement.
 6. When the registered plan requires slot audit, reopen the bounded raw audit
    facts, verify exact slot × rank/process coverage, and reproduce the
@@ -126,8 +127,9 @@ desired verdict:
 7. Reconstruct selection and verify post-commit entropy and trajectory binding.
 8. Verify T is candidate-free and covers the selected prompts/tasks.
 9. Regrade quality and speed under the exact frozen calibration.
-10. Reconstruct the qualification decision and reproduction identity,
-    including the required physical-lane swap across a settlement pair.
+10. Reconstruct the qualification decision and contribution identity; a
+    historical pair also requires its reproduction identity and lane swap
+    across the two attempts.
 11. Reopen settlement and reward claims before projecting weights.
 
 Missing, changed, ambiguous, or context-mismatched evidence prevents a valid full regrade;
@@ -136,8 +138,8 @@ its recognized authority failures to `NO_DECISION`; a later audit must describe 
 external regrade context as an unavailable proof, not fabricate a new verdict.
 
 Settlement recovery is narrower. It reopens and authenticates the retained attempt bytes,
-checks the stored PASS disposition and seven digest-distinctness fields, and binds the
-settlement transition. It does not call the full causal grader or recover graph/calibration
+checks the stored audited PASS disposition (and, for a historical pair, the seven
+digest-distinctness fields), and binds the settlement transition. It does not call the full causal grader or recover graph/calibration
 references from the attempt. “Reopened for settlement” and “fully regraded” are therefore
 different evidence claims.
 
@@ -188,9 +190,8 @@ a generic process exit into an attributable candidate verdict.
 | Artifact exists but belongs to another arena/stack/attempt context | Context mismatch; it cannot repair this authority |
 | Required attempt/witness or referenced graph/quality evidence is incomplete | No attributable regraded verdict; hold or `NO_DECISION` |
 | Regraded result differs from stored verdict | Preserve both products, stop downstream transition, investigate policy/code/state integrity |
-| Two passes reuse authority or evidence | Reproduction requirement is unsatisfied |
+| A historical pair reuses authority or evidence | The pair is not settleable |
 | Active claim's evidence was deleted | Hold reward projection; do not treat deletion as retirement |
-| Release artifact fails reopen while crown evidence survives | Block that release/publication; historical crown authority is a separate state machine |
 
 ## Retention and recovery
 

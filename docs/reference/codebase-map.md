@@ -35,6 +35,7 @@ evaluation and economic state.
 | Bundle parsing and path rules | [`manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/manifest.py) |
 | Target identity and node roots | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
 | Node binding and audit against stock | [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py) |
+| Prefix-cache binding, content check, and state audit | [`sglang_cache.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache.py), [`sglang_cache_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache_state.py) |
 | Static policy | [`sandbox.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py) |
 | Tracing-JIT admission | [`dsl_jit_policy.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dsl_jit_policy.py) |
 | Local interface smoke and engine check | [`miner_check.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/miner_check.py) |
@@ -76,7 +77,8 @@ evaluation and economic state.
 | Host audit grading | [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py) |
 | OCI lifecycle and protocol | [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_session_protocol.py) |
 | Current speed substrate | Paired replay (speed policy 17) in [`eval/goodput_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/goodput_runtime.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py) and [`eval/agent_replay.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/agent_replay.py) |
-| Immutable native prebuild | [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
+| Statistical speed grade | [`eval/service_capacity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/service_capacity.py) |
+| Immutable native prebuild and the store both lanes share | [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
 | Device conditioning/cleanup | [`eval/device_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/device_state.py) |
 
 ## State, economics, and weights
@@ -85,6 +87,8 @@ evaluation and economic state.
 |---|---|
 | Evaluation stack identities | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) |
 | Transactional settlement state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) |
+| Accepted qualification candidates | [`settlement_acceptance.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement_acceptance.py) |
+| Reward comparison against the previous best PASS | [`chain/evaluation_order.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/evaluation_order.py) |
 | Pure emissions projection | [`economics.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py) |
 | Weight publication reconciliation | [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py) |
 | Copy and attribution evidence | [`copy_fingerprint.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/copy_fingerprint.py) |
@@ -128,9 +132,9 @@ persists evidence references, and invokes transactional settlement. Read
 `eval/qualification_runner.py` alongside `eval/qualification.py`: the runner
 orchestrates work; the schema and regrader define what counts as authority.
 
-The first matching PASS leaves reproduction pending. A second distinct,
-matching PASS may settle the contribution and advance the evaluation stack.
-Console output and evaluator summary text are never the settlement input.
+One complete audited PASS makes the reservation `qualified` and may settle the
+contribution and advance the evaluation stack. Console output and evaluator summary
+text are never the settlement input.
 
 ### “Why did weight publication remain pending?”
 
@@ -146,11 +150,9 @@ different durable states.
 
 Follow `stack_manifest.py` into `engine_tree.py` and `model_provision.py`.
 The selected payload remains bound to its crowned digest; later
-materialization owns deterministic module namespaces and packaging. The
-signed chain-independent release product (`release.py`, `release_runtime.py`,
-`release_host.py`, `release-verify`/`release-context`) was removed on
-2026-08-19: no release has ever been produced or consumed, and the subnet does
-not need it to run.
+materialization owns deterministic module namespaces and packaging. This
+repository contains no release product or release commands; the subnet does not
+need one to run.
 
 ## State and evidence locations
 
@@ -180,10 +182,9 @@ fixture:
 - qualification, OCI, audit, and reference-protocol tests cover the paired
   replay, registered eager audit A, and pristine T;
 - chain-intake, settlement, economics, and weight-publication tests cover
-  durable economic transitions;
+  durable economic transitions; and
 - `test_chain_publish.py` and `test_chain_archive.py` cover public proposal
-  transport and private digest-bound recovery respectively; and
-- release, runtime, registry, and host tests cover the signed serving boundary.
+  transport and private digest-bound recovery respectively.
 
 When learning a type, search for both its successful construction and its
 rejection tests. The negative cases usually reveal which fields are security

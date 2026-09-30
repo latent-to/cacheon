@@ -14,7 +14,9 @@ one exact marginal comparison:
 
 B and C run as separate engine processes on two isolated TP lanes and replay the
 same sealed agent slice concurrently, one paired window at a time (see
-[Finite agent replay](qualification.md#finite-agent-replay)). The controller fixes
+[Finite agent replay](qualification.md#finite-agent-replay)). The first
+orientation runs B on lane B and C on lane A; fresh engines then boot on the
+opposite lanes for the second. The controller fixes
 the slice, the operating load and the output budgets, releases requests in
 lockstep rounds, and timestamps every request on the host. The durable resident
 witness retains each window's turn records, physical-lane authority, operational
@@ -37,19 +39,21 @@ Each whole window is one observation; requests sharing a window are not treated
 as independent replications. The standard error combines the calibrated window
 and boot noise with the observed jackknife variance, and at most four looks
 share the sealed 1% error budget. Both orientations must exist before a PASS,
-and the candidate must also pass the service-attainment gate. Policy 16 scores
+and the candidate must also pass the service-attainment gate. The last sealed
+window yields PASS or FAIL. An optional sealed `futility_margin` fails the stage
+after the first orientation when that orientation's pooled estimate is below
+`log1p(-futility_margin)`; the evidence then retains one orientation. Policy 16 scores
 the candidate's fastest complete pass against the incumbent's on one orientation
 with a fixed margin; it remains readable only for its retained evidence.
 
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
 Provenance still records the exact controller, but measurement reuse is not
-invalidated by an unrelated controller revision. An unresolved bound after the
-last sealed window, or invalid measurement, yields `NO_DECISION`, never a
-fabricated miner loss or reward. Retained evidence regrades under the version
-that produced it. Evidence sealed below version 16 (the batch-cell B/C/B′
-policies 8–15 and the MiniMax-M3 schedules before them) is refused rather than
-regraded.
+invalidated by an unrelated controller revision. Invalid or incomplete
+measurement yields `NO_DECISION`, never a fabricated miner loss or reward.
+Retained evidence regrades under the version that produced it. Evidence sealed
+below version 16 (the batch-cell policies 8–15 and the schedules before them) is
+refused rather than regraded.
 
 Timed replay requests collect no log-probabilities (`top_logprobs_num` 0):
 quality is the teacher-NLL-only mode, digest-bound by a zero top-k width in the
@@ -108,6 +112,12 @@ improvement and age. The normative conversion, decay equation, and integer
 rules live in
 [Legacy V1](../reference/emissions-policy.md#legacy-v1).
 
+A qualified PASS earns reward only when its speedup beats the best earlier
+rewarded PASS against the same arena and incumbent stack by the reward margin:
+1.5% for V17, the sealed `min_margin` for historical policies. The first PASS
+against a commissioned baseline is eligible; see
+[Settlement and weights](settlement-and-weights.md).
+
 Standing-claim age begins at the proposal's finalized submission block, which
 settlement stores as `crowned_block`; discovery lifetime likewise begins at
 that submission block via `awarded_block`. Qualification or settlement delay
@@ -132,8 +142,8 @@ details.
 
 ## What a result means
 
-A crown means: under the registered arena, workload, calibration, and two attempts meeting
-the seven digest-distinctness checks, the exact delta improved the exact incumbent with
+A crown means: under the registered arena, workload, and calibration, one complete
+audited qualification found that the exact delta improved the exact incumbent with
 acceptable measured quality.
 
 It does not mean:
@@ -145,7 +155,8 @@ It does not mean:
 
 ## Source anchors
 
-- [Raw speed recomputation](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/scoring.py)
+- [Speed grade](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/service_capacity.py)
+- [Reward comparison](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/evaluation_order.py)
 - [Frozen calibration](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/calibration.py)
 - [Qualification runner](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
 - [Resident crossover](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)

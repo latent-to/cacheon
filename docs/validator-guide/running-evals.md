@@ -1,15 +1,15 @@
 # Verification and diagnostics
 
-Cacheon exposes two local contribution checks: `scan` and `verify`. Complete-engine
-throughput and quality decisions belong to a registered validator arena; the CLI does
-not provide a local qualification substitute.
+Cacheon exposes three local contribution checks: `scan`, `verify` and `check`.
+Complete-engine speed and quality decisions belong to a registered validator arena;
+the CLI has no local qualification command.
 
 | Check | Question answered | Authority |
 |---|---|---|
 | `scan` | Does the declared bundle tree satisfy the static intake policy? | Local admission diagnostic |
-| `verify` | Do applicable variants satisfy the registered component ABI, reference, and graph checks? | Local component diagnostic |
-| Paired replay (speed policy 17) + audit/T | Does the exact marginal delta clear execution, paired-replay speed, audit, and pristine-quality policy? | One qualification decision |
-| Independent reproduction | Do two separately bound PASS attempts reopen and agree? | Settlement prerequisite |
+| `verify` | Does the bundle scan clean, resolve to a registered target, import, and match each entry signature? | Local interface diagnostic |
+| `check` | In the published arena image, does every bound address pass the audit against stock and complete inside CUDA graphs on every rank? | Local engine diagnostic |
+| Qualification | Does the exact delta clear execution, paired-replay speed (policy 17), audit, and pristine-quality gates? | One decision; one complete audited PASS qualifies for settlement |
 
 Unknown bundles still execute code during verification. Run them only inside the minimum
 [hostile-code isolation boundary](../security/isolation.md#operator-requirements) used for
@@ -36,89 +36,84 @@ live kernel look the same statically. It is useful miner feedback, not economic
 authority. A production compile `FAIL` requires the reachable entry to fail in
 the sandboxed build/execution path.
 
-## Component verification
+## Interface and engine checks
 
 ```bash
 python -m cacheon.cli verify ./my_bundle
-python -m cacheon.cli check --help
+python -m cacheon.cli check ./my_bundle --model <MODEL_DIR> \
+  --engine-config <ENGINE_JSON> --requests <REQUESTS_JSON> --output <NEW_DIR>
 ```
 
-`verify` scans the bundle, then imports each entry in a spawned child and checks
-its signature against the node's stock arguments. It does not fabricate a model
-or run forward math. `check` runs in the published arena image with the arena's
-engine configuration: it binds the bundle's nodes in a real engine, audits every
-sampled call against the stock module on the same call, and captures graphs on
-every required rank. Neither establishes end-to-end throughput, pristine
-reference quality, or production isolation.
+`verify` scans the bundle, resolves it to a registered target, then imports each
+entry in a spawned child and checks its signature. It runs no forward math,
+preparation or graph capture. `check` runs in the published arena image with the
+arena's engine configuration and public requests. A fresh eager engine audits
+its calls against stock on the same call; a second fresh, graphs-on engine
+must complete every bound address inside a capture on every rank (the prefix
+cache, which SGLang serves outside the graphs, counts on any completion). Logs,
+inputs and raw receipts are retained under `--output`. Neither command establishes
+end-to-end speed, pristine quality, or production isolation.
 
 ## Performance development
 
-The repository has no public complete-engine benchmark command and no contributor command
-that materializes a validator's incumbent evaluation stack. Local performance work is
-therefore a contributor-controlled experiment built with external launch and profiling
-tooling. It becomes comparable to a named arena only when the operator has published the
-complete contract and the contributor can reproduce every disclosed input.
+The repository has no public complete-engine benchmark command and no command that
+materializes a validator's incumbent stack. Local performance work is a
+contributor-controlled experiment built with external launch and profiling tooling.
+It is comparable to a named arena only when the operator has published the complete
+contract and the contributor reproduces every disclosed input.
 
-Before launching, freeze these inputs:
+Freeze these inputs first:
 
 | Input class | Required identity or value |
 |---|---|
-| Candidate | Canonical bundle content hash, target ID, selected variant, and the exact source/native publication under test |
-| Comparison stack | Exact incumbent manifest and engine-tree identities; if they are unavailable, identify the substituted stock/reviewed baseline and do not call the result an arena reproduction |
-| Runtime | Container/base digest, SGLang revision, model content identity, launch arguments, environment, dtype, graph mode, and cache policy |
-| Hardware | GPU model, driver/runtime, visible device set, TP/EP/DP degrees, rank mapping, clocks/power policy, and interconnect topology |
-| Workload | Prompt/request corpus identity, batching/concurrency policy, warmup, measured iterations, token/work accounting, and timing boundary |
-| Activation | Evidence that C activates only the selected target delta and that B/B′ use the identical stack without it |
+| Candidate | Canonical bundle content hash, target ID, selected variant, and the exact source/native build under test |
+| Comparison stack | Exact incumbent manifest and engine-tree identities; if unavailable, name the substituted baseline and do not call the result an arena reproduction |
+| Runtime | Container/base digest, SGLang revision, model content identity, launch arguments, environment, dtype, graph mode, and cache configuration |
+| Hardware | GPU model, driver/runtime, device sets, TP/EP/DP degrees, rank mapping, clocks/power policy, and interconnect topology |
+| Workload | Request corpus identity, concurrency and release schedule, warmup, window count, work accounting, and timing boundary |
+| Activation | Evidence that the candidate engine activates only the selected target delta and the incumbent engine runs the identical stack without it |
 
-Use the deployment's ordinary SGLang launcher and profiler only after those identities are
-fixed. For a contributor-controlled diagnostic, materialize a fresh process lifetime for
-each arm; do not present an ad hoc in-process toggle as matched evidence. The bracket is:
+Then mirror the production comparison rather than timing one engine at a time:
 
 ```text
-B  = exact incumbent before the candidate
-C  = the same stack with only the selected target delta replaced
-B′ = the exact incumbent after the candidate
-local_speedup = candidate_rate / mean(baseline_before_rate, baseline_after_rate)
+two disjoint, equally sized device sets, A and B
+orientation 1: incumbent on B, candidate on A; replay the same work concurrently in paired windows
+orientation 2: boot both engines fresh on the opposite sets; replay again
+ratio(o) = pooled incumbent elapsed time / pooled candidate elapsed time in orientation o
+speedup  = geometric mean of ratio(1) and ratio(2)
 ```
 
-For each arm, retain startup/activation evidence, complete warmup, then collect the same
-number of measured samples under the same charged-work definition. Keep CUDA graphs in the
-declared state and reject the bracket when B/B′ drift is comparable to the claimed gain.
-For a prefill target, disable cache behavior that would silently convert repeated inputs
-into cache-hit or decode work. A profiler range may explain a mechanism, but throughput
-must use the declared end-to-end charged boundary rather than a hand-selected kernel span.
+Swapping the device sets cancels a stable per-set speed difference. Keep CUDA graphs
+and the prefix cache as the arena configures them: cache hits, MTP acceptance and
+output generation are part of the measured cost. A gain no larger than the spread
+between windows is unresolved. A profiler range may explain a mechanism, but the
+speed claim uses end-to-end elapsed time for the fixed work.
 
-The local result record should contain:
+Record every frozen identity; raw per-window elapsed time and completed work for both
+engines in both orientations; warmup, ordering and failure history; the formula; the
+activation evidence on every expected rank; and tool versions with an immutable location
+for raw logs. Without these, label the result a profiling observation. Do not
+substitute guesses for the validator's private workload, calibration or incumbent
+identities.
 
-- every frozen identity from the table above;
-- raw per-sample B, C, and B′ work counts, durations, and rates;
-- warmup count, measurement order, failure/retry history, and B/B′ drift;
-- the speedup formula, charged-work denominator, and any exclusion rule;
-- activation/fallback evidence for the selected slot on every expected rank; and
-- tool versions plus an immutable location or digest for the raw logs.
-
-If any required identity, raw sample, or activation signal is missing, label the result a
-profiling observation rather than a matched bracket. Do not substitute the validator's
-private workload, calibration, or incumbent identities with guesses.
-
-This bracket is engineering evidence only. It is not the production resident protocol. A
-contributor-controlled run cannot provide
-finalized intake identity, validator-owned materialization, hidden work, frozen
-calibration, no-egress worker authority, or a validator-bound durable attempt with its
-aggregate speed witness and referenced graph/quality/T products. The production attempt
-uses two isolated physical TP lanes, replays the sealed agent workload on both
-concurrently in paired windows, validates richer raw frames and device state, and runs a distinct
-audit-only role before pristine T. Those raw frames are not serialized into
-`CohortQualificationAttempt`. A local run cannot supply the validator-owned qualification authority.
+This is engineering evidence only. A contributor-controlled run cannot supply finalized
+intake identity, validator-owned materialization, hidden work, frozen calibration,
+no-egress worker authority, the sealed stopping rule, or the audit and pristine-T
+products that a qualification attempt retains.
 
 ## Reading validator outcomes
 
 - `PASS` means one complete attempt cleared every registered gate.
-- `FAIL` requires complete evidence of a candidate-attributable violation.
-- `NO_DECISION` covers infrastructure, drift, missing authority, or incomplete evidence
-  and is eligible only for bounded retry policy.
-- `qualified` means one complete audited PASS is retained.
-- settlement reopens that exact contribution and its retained evidence.
+- `FAIL` requires complete evidence of a candidate-attributable violation. A speed
+  grade that has not established a gain by the last sealed window is `FAIL`, as is a
+  sealed futility stop after the first orientation.
+- `NO_DECISION` covers infrastructure faults, missing authority, or incomplete evidence
+  and is eligible only for bounded retry.
+- `qualified` means one complete audited PASS is retained; settlement reopens that
+  exact contribution and its evidence.
+- A qualified V17 PASS earns reward only when it beats the best earlier rewarded PASS
+  against the same arena and incumbent stack by 1.5%; see
+  [Settlement and weights](settlement-and-weights.md).
 
 Never infer rejection from absence in `chain-status`; that command sees public chain
 state, not the validator's private lifecycle database.
@@ -128,11 +123,10 @@ state, not the validator's private lifecycle database.
 | Evidence | Establishes | Does not establish |
 |---|---|---|
 | Clean scan | Static policy accepted the declared tree | Safety or correctness |
-| CPU verify | Exercised component reference checks | CUDA graphs or performance |
-| CUDA verify | Exercised component and registered graph checks | Model integration or crown authority |
-| Local B/C/B′ bracket | A development performance hypothesis | Registered arena identity or quality authority |
-| One arena PASS | Complete qualification under one authority | Settlement |
-| One reopened complete audited PASS | Settlement eligibility for that exact context | Integration or release readiness |
+| `verify` | Target resolution, imports, and entry signatures | Numerical correctness, graph behavior, or speed |
+| `check` | Audit against stock and captured execution on the public requests | Hidden workload behavior, paired speed, or pristine quality |
+| Local paired replay | A development performance hypothesis | Registered arena identity or quality authority |
+| One complete audited arena PASS | Qualification and settlement eligibility for that exact context | Reward eligibility, integration, or release readiness |
 
 See [Qualification](qualification.md), [Fidelity](fidelity.md), and
 [Evidence and replay](../security/evidence.md).
@@ -143,5 +137,5 @@ See [Qualification](qualification.md), [Fidelity](fidelity.md), and
 - [Static scanner](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py)
 - [Miner development check](https://github.com/latent-to/cacheon/blob/main/cacheon/miner_check.py)
 - [Node binder and audit](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py)
-- [Qualification runner](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
-- [Resident crossover runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)
+- [Paired replay runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/goodput_runtime.py)
+- [Statistical grade](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/service_capacity.py)

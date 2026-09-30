@@ -48,7 +48,7 @@ No step may silently substitute one object for another:
 
 A crown answers an economic question: **did this exact attributable delta improve the frozen evaluation incumbent under the registered arena policy?**
 
-Shipping is a product question this repository does not answer. Whether crowned source can be maintained and safely served is decided outside it, with its own reproduction, correctness, security, license, provenance, compatibility, packaging, and attribution review. Emissions follow crown policy; production deployment follows that separate review.
+Shipping is a product question this repository does not answer. Whether crowned source can be maintained and safely served is decided outside it, with its own reproduction, correctness, security, license, provenance, compatibility, packaging, and attribution review. Emissions follow the reward comparison over qualified PASSes, not the crown; production deployment follows that separate review.
 
 ## Marginal contribution, complete execution
 
@@ -58,11 +58,11 @@ The **execution unit** is a complete engine. Production version-3 qualification
 materializes the exact incumbent and one-target-transition candidate engines and
 measures them with the paired replay: speed policy 17 launches separate
 baseline and candidate engine processes on two disjoint TP lanes, replays the
-same sealed agent workload on both concurrently, and exchanges the lanes once so
-a stable lane factor cancels out of the score. The candidate
+same sealed agent workload on both concurrently, then boots fresh engines with the
+lanes exchanged so a stable lane factor cancels out of the score. The candidate
 then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
-trust domain. C′/B″ are not reads on this substrate; their schedules are deleted.
+trust domain.
 
 The **reward unit** is the smallest validator-controlled attributable delta:
 
@@ -87,11 +87,12 @@ Assume the frozen evaluation stack already contains contribution **A** for one t
 is 7% faster than the original base engine. Miner **B** submits a different target delta
 that may add another 3%:
 
-1. The validator materializes the exact incumbent engine containing A and loads it once
-   onto the resident baseline lane.
+1. The validator materializes the exact incumbent engine containing A and boots it on
+   the baseline lane.
 2. It materializes the candidate engine from that same stack, replacing only B's
-   declared registered target, and loads it once onto the disjoint candidate lane.
-   Both engines replay the same sealed workload in paired windows.
+   declared registered target, and boots it on the disjoint candidate lane. Both
+   engines replay the same sealed workload in paired windows; then fresh engines boot
+   with the lanes exchanged and replay the remaining windows.
 3. B's hosted bundle does not need to contain A. The validator supplies A from the
    incumbent manifest and gives B attribution only for the selected delta introduced by B.
 4. The registered eager audit role checks the candidate delta outside the timed resident
@@ -135,8 +136,7 @@ one transition never displaces the other entry. The live policy is implemented i
 Cross-cutting work that cannot be expressed as one registered target is not a
 valid submission. The only path for it is a reviewed validator-side catalog
 change (a new target), followed by fresh qualification and CROWN
-linkage. A fenced "discovery lane" for such proposals existed until 2026-08-19;
-it never admitted a production proposal and was removed.
+linkage.
 
 Rebuild and dependency-patch capabilities are likewise validator-reviewed. A normal target can only use features explicitly admitted by its target specification, and permanent framework mutation is not a miner-selected permission.
 

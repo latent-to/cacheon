@@ -229,9 +229,8 @@ dry-run or signer-free journal modes.
 
 ## V2 status
 
-The V2 shadow, activation, and debt-publication commands were extracted from
-the tree on 2026-08-09 without ever producing a live activation or
-publication receipt. Legacy V1 `set-weights` is the only publication path.
+The V2 shadow, activation, and debt-publication commands are not in the tree.
+Legacy V1 `set-weights` is the only publication path.
 See [Emissions policy](../reference/emissions-policy.md#finite-debt-v2).
 
 ## Evidence scope
@@ -243,8 +242,7 @@ reopened. Do not infer a stronger boundary from testnet connectivity:
 |---|---|---|
 | Finalized reveal, committed-tree re-hash, immutable publication, and restart reconciliation | Chain intake, proposal identity, and durable cursor behavior | GPU qualification, settlement, or release readiness |
 | Metagraph-backed weight dry run | Projection construction against live chain state without an extrinsic | Signing, submission, inclusion, or confirmation |
-| Structural two-pass fixture | State-machine transitions, independence checks, evidence reopening, and settlement plumbing | Empirical GPU speedup, production calibration, or arena-provider readiness |
-| Builder-authenticated reproducible OCI pair plus release/session-bound serving receipts | Release-image identity and execution through the approved serving seams for that exact session | Qualification authority unless separate resident crossover, audit, and T evidence exists; clean-wheel, native-provider, and effective-policy gates remain separate prerequisites |
+| Structural qualification fixture | State-machine transitions, evidence reopening, and settlement plumbing | Empirical GPU speedup, production calibration, or arena-provider readiness |
 
 Deployment must supply and commission its production arena
 provider independently of the command-line intake path.

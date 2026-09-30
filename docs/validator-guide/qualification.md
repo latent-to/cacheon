@@ -52,14 +52,11 @@ Both are described in [Finite agent replay](#finite-agent-replay). New
 commissions seal v17; v16 remains readable only to reproduce its original
 evidence.
 
-Versions 8–15 measured batch cells with a B/C/B′ schedule: a timed-batch token
-rate per read, with a bounded borderline repeat (v13–v15) and a one-token prompt
-pass (v12, v15) in later versions. Their graders were removed with the batch-cell
-evaluator. A speed witness below version 16 no longer decodes as qualification
-authority, and a commission that seals no replay is refused. The dashboard shows
-retained batch-cell attempts from their stored JSON — raw lane rates and per-cell
-delivery times — without regrading them. Versions 1–7 were the MiniMax-M3 era's
-schedules, deleted on 2026-09-06.
+Versions 8–15 measured batch cells with a B/C/B′ schedule, and versions 1–7
+preceded them. Their graders are not in the tree: a speed witness below version
+16 does not decode as qualification authority, and a commission that seals no
+replay is refused. The dashboard shows retained batch-cell attempts from their
+stored JSON — raw lane rates and per-cell delivery times — without regrading them.
 
 The commission seals the policy version, and the worker executes the version the
 sealed plan carries, so the plan and the execution substrate cannot disagree.
@@ -94,9 +91,7 @@ It can accept another disclosed request while an earlier request awaits output;
 complete binary evidence and streaming boundaries retain their original request
 IDs and nonces. Frames remain intact even when responses complete out of order.
 Conditioning batches are still submitted one batch at a time. Eager audit
-requests also remain serial so their rank receipts retain one request boundary;
-resident screening uses the same generation implementation through a serial
-adapter.
+requests also remain serial so their rank receipts retain one request boundary.
 
 The dashboard's replay detail reports mean and P95 TTFT, the median per-user
 decode rate and unsuccessful requests from the retained turn records. TTFT
@@ -117,14 +112,16 @@ output tokens and request concurrency:
 
 ## Current qualification timeline
 
-The version-3 protocol binds two non-overlapping physical TP lanes, equivalent
-topology, separate runtime namespaces, lane-specific NUMA policy, exact
-workload, and a total qualification budget. The incumbent and candidate
-processes are launched for the request, one per lane. Both condition and flush
-their caches, then replay the same sealed slice concurrently, one paired window
-at a time. Policy 17 splits its windows between two orientations: after the
-first orientation both engines close and relaunch on the opposite lanes, so a
-stable lane factor cancels out of the score.
+The version-3 protocol binds two non-overlapping physical TP lanes, A and B,
+with equivalent topology, separate runtime namespaces, lane-specific NUMA policy,
+exact workload, and a total qualification budget. Policy 17 splits its windows
+between two orientations. The first boots the incumbent on lane B and the
+candidate on lane A; both condition and flush their caches, then replay the same
+sealed slice concurrently, one paired window at a time. Both engines then close,
+and fresh engines boot on the opposite lanes for the second orientation, so a
+stable lane factor cancels out of the score. Both lanes publish native builds to
+one shared store under the commissioned root, so the swapped orientation reuses
+the first orientation's builds.
 
 Every replay record carries the engine-observed prompt token count and the
 controller's host timing, and the regrade rejects a window whose records differ
@@ -135,22 +132,28 @@ leg, never mint a candidate verdict.
 ```mermaid
 sequenceDiagram
     participant H as Trusted host
-    participant L0 as Physical lane 0
-    participant L1 as Physical lane 1
+    participant LA as Lane A
+    participant LB as Lane B
     participant A as Audit-only role
     participant T as Pristine reference
-    H->>L0: launch incumbent, condition, flush
-    H->>L1: launch candidate, condition, flush
+    H->>LB: orientation 1, boot incumbent, condition, flush
+    H->>LA: orientation 1, boot candidate, condition, flush
     par each paired window
-        H->>L0: replay the sealed slice
-        H->>L1: replay the sealed slice
+        H->>LB: replay the sealed slice
+        H->>LA: replay the sealed slice
     end
-    L0-->>H: turn records + host timing
-    L1-->>H: turn records + host timing
-    H->>H: grade at each sealed look; v17 swaps lanes once
-    H->>L1: on PASS, close the candidate engine
-    H->>H: observe entropy and select quality prompts
-    H->>L0: generate the selected incumbent controls
+    H->>H: grade, a sealed futility margin may FAIL here
+    H->>H: close both engines
+    H->>LA: orientation 2, boot incumbent, condition, flush
+    H->>LB: orientation 2, boot candidate, condition, flush
+    par each paired window
+        H->>LA: replay the sealed slice
+        H->>LB: replay the sealed slice
+    end
+    H->>H: grade at each sealed look
+    H->>LB: on PASS, close the candidate engine
+    H->>H: bind entropy to lane B quiescence, select quality prompts
+    H->>LA: generate the selected incumbent controls
     H->>H: prove both speed executors quiescent
     H->>A: run sealed audit-only plan
     A-->>H: exact slot × rank witness
@@ -299,8 +302,8 @@ The evidence-to-verdict mapping is fail closed:
 | Observation | Decision | Example |
 |---|---|---|
 | Complete, bound, and green across every required product | `PASS` | C clears calibrated speed bar; audit and pristine quality pass |
-| Complete attributable violation of a frozen candidate requirement | `FAIL` | Wrong output, never invoked inside a capture, or measured quality regression |
-| Authority incomplete, stale, unreopenable, too noisy, timed out, or infrastructurally invalid | `NO_DECISION` | Missing evidence bytes, an unresolved speed bound, controller/worker failure |
+| Complete attributable violation of a frozen candidate requirement | `FAIL` | Wrong output, never invoked inside a capture, no speed gain established by the last sealed window, or measured quality regression |
+| Authority incomplete, stale, unreopenable, timed out, or infrastructurally invalid | `NO_DECISION` | Missing evidence bytes, controller/worker failure |
 
 An unexpected exception is not evidence of candidate guilt. The intake projection turns
 recognized plan, runner, and raw-speed authority failures into typed failure products and
@@ -399,7 +402,7 @@ replay, the attempt schema must first be extended to retain and bind those produ
 | Typed worker failure binds one exact candidate arm | Contain that candidate; retain its attributable outcome and preserve unaffected cohort results |
 | Recognized worker, Docker, GPU, driver, plan, runner, or raw-speed authority failure | HOLD with the original evidence; automatic retry requires authenticated proof that resident execution never began |
 | Evidence-store publication failure | Abort the pass; recovery holds an interrupted `qualifying` row as `controller_restart_during_qualifying` rather than manufacturing a typed `NO_DECISION` |
-| Measurement uncertainty exceeds the sealed calibration | `NO_DECISION`; do not add windows or tune the bar after seeing C |
+| Speed gain not established by the last sealed window | `FAIL`; do not add windows or tune the bar after seeing C |
 | Either resident speed executor survives past its quiescence proof | Abort authority; never launch audit or T into the contaminated lifetime |
 | Audit role misses a slot/rank, reports a violation, or cannot reopen | `FAIL` only for a complete attributable violation; otherwise `NO_DECISION`; never substitute candidate-side audit output |
 | T identity/session mismatch | `NO_DECISION`; T cannot be replaced with an incumbent read or a candidate-side audit |
@@ -419,9 +422,9 @@ Registered per-target profile authorities are sealed ahead of time; at plan time
 deployment layer independently re-derives the profile authority for the finalized
 reservation and rejects a plan whose authority, marginal arm, secret, pristine
 binding, or resident lane executors differ from the sealed construction inputs. The
-two resident TP4 lanes are carved from the one commissioned eight-B300 pod, and the
-physical lane pair, device identities, and role swap are validated against the READY
-receipt before any engine work.
+two lanes are disjoint, equally sized device sets on the commissioned node, each at
+the arena's TP width, and the physical lane pair, device identities, and role swap
+are validated against the READY receipt before any engine work.
 
 Qualification is the only operation of remote-evaluation protocol v4. It returns
 a sealed `RemoteQualificationProduct` (schema version 2): size-bounded evidence artifacts are
@@ -527,7 +530,7 @@ then requires the exact main/inner turn counts for every root. All scoring
 timestamps use host nanoseconds in the same epoch clock domain, with the
 monotonic-to-epoch anchor retained in `clock.json`.
 
-The engine stays loaded across the window. Before each load, the controller
+Each engine stays loaded across the windows of its orientation. Before each load, the controller
 requires an acknowledged SGLang cache flush covering device radix state and
 the HiCache host pool. Failure stops the window. Each load's fresh output
 directory retains the AIPerf command, log and raw export,
@@ -596,7 +599,8 @@ An error budget is conditional on those noise bounds; merely setting 1% does
 not establish a measured false-positive rate.
 
 Both OCI engines condition and flush before concurrent reads. V17 permits two
-to five paired windows, splitting them between both physical orientations. Costs
+to five paired windows; the first orientation runs half of them, rounded down,
+and the swapped orientation the rest. Costs
 pool within each orientation; the score is the geometric mean of the two pooled
 cost ratios. This cancels a stable multiplicative lane factor without dropping
 slow windows. The standard error retains paired boot variance and the larger of
@@ -605,10 +609,13 @@ Requests sharing a window are not treated as independent replications.
 
 Eligibility requires a positive one-sided log-gain bound. At most four looks
 share the 1% error budget: 5%, 5%, 10%, and 80% of that budget, with unused looks
-unspent. Both orientations must exist before a PASS; a futility FAIL keeps one. This normal-model guarantee
+unspent. Both orientations must exist before a PASS; a futility FAIL keeps one.
+The last sealed window yields `PASS` or `FAIL`, never `NO_DECISION`. This normal-model guarantee
 depends on the sealed noise bounds and independent boot contrasts; it does not
 establish runtime resolution by itself. A fixed 1% gain floor is absent. Reward
-credit uses the point estimate, not a confidence-bound haircut. Regrading checks
+credit uses the point estimate, not a confidence-bound haircut; a later V17 PASS
+is paid only when that estimate beats the best earlier rewarded PASS against the
+same arena and incumbent stack by 1.5%. Regrading checks
 the exact stopping point, all engine identities, host timings, and controls.
 V16 retains its fixed margin on one orientation. Each paired window is one complete
 pass over the sealed basket, and the V16 score is the candidate's fastest pass over
@@ -642,9 +649,11 @@ replay characterizes its declared arrival schedule, not arbitrary continuous
 traffic. Service attainment is a relative non-inferiority check; the retained
 `attainment` target does not certify an absolute SLA or change billable value.
 
-On a speed PASS, the candidate engine closes and the existing entropy provider
-selects source occurrences from the completed incumbent and candidate trajectories. The still-loaded
-incumbent generates only those selected controls. Canonical input digests bind
+On a speed PASS, the swapped orientation's candidate engine closes and lane B
+proves quiescence. The entropy provider binds selection entropy to that
+candidate-lane quiescence receipt and selects source occurrences from the swapped
+orientation's incumbent and candidate trajectories. The incumbent, still loaded on
+lane A, generates only those selected controls. Canonical input digests bind
 all three rollouts, and the speed continuation retains the controls before the
 separate eager audit and pristine T run. Reopening selection after the audit must
 return the same retained entropy. Source identities use trace/outer/inner indices,

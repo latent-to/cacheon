@@ -275,7 +275,7 @@ calibration requirements of this commissioning step.
 
 For resident authority, also confirm that both lanes condition and flush before every
 paired window, both lanes prove quiescence before audit/T, and the second orientation
-exact-swaps the physical baseline and candidate lane roles.
+boots fresh engines that exact-swap the physical baseline and candidate lane roles.
 
 ## 9. Commission the signer separately
 
@@ -292,7 +292,7 @@ the exact recipient set, normalized values within the fixed verifier tolerance,
 and a sufficiently new `last_update` are read back from chain.
 
 Legacy V1 is the only implemented emission lane. The V2 finite-debt surface
-was extracted from the tree on 2026-08-09; see
+is not in the tree; see
 [Emissions policy](../reference/emissions-policy.md) for the retained design
 intent and the reserved durable schema.
 
