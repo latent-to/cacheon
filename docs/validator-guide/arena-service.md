@@ -112,7 +112,9 @@ existing OCI capacity fields: `cpu_millis`, `memory_bytes`, `pids_limit`,
 entry pins that GPU's SGLang scheduler, and the rest join the lane's pool for
 every other engine process. Pins bind the runtime digest; a lane GPU without a
 pin, or an engine whose scheduler ranks do not match the plan, fails the launch.
-Use it on hosts whose vCPUs differ in speed.
+Use it on hosts whose vCPUs differ in speed. Both lanes share one native
+publication store under the commissioned root, so the swapped orientation reuses
+the first build; lanes take turns building and reopening it.
 UID/GID, executable and deadlines retain their existing authorities. Absent
 resource objects preserve prior policy. Both authority and measurement inputs
 must agree; every qualification executor consumes the same values.

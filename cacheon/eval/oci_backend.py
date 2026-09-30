@@ -43,7 +43,6 @@ from cacheon.eval.engine_launch import (
 from cacheon.eval.native_artifact import (
     NativeArtifactLimits,
     NativeArtifactPublication,
-    reopen_native_artifact,
 )
 from cacheon.eval.oci_cpuset import canonical_cpu_pins, lane_cpu_pin_plan, validate_cpuset_pair
 from cacheon.eval.oci_outer_session import (
@@ -58,6 +57,7 @@ from cacheon.eval.oci_prebuild import (
     OCIPrebuildConfig,
     OCIPrebuildResult,
     PREBUILD_RECEIPT,
+    reopen_publication,
     run_oci_prebuild,
 )
 from cacheon.eval.oci_process import (
@@ -1226,7 +1226,7 @@ class OCIEngineExecutor:
             limits=self.config.native_limits,
             deadline=absolute,
         )
-        publication = reopen_native_artifact(
+        publication = reopen_publication(
             prebuild.publication.root,
             expected_build_spec_digest=resolved.native_build_spec.digest,
             expected_publication_digest=prebuild.publication.publication_digest,
@@ -1286,7 +1286,7 @@ class OCIEngineExecutor:
                 )
             resolved = resolve_engine_launch(launch, binding)
             model_root = mount.reopen()
-            publication = reopen_native_artifact(
+            publication = reopen_publication(
                 publication.root,
                 expected_build_spec_digest=resolved.native_build_spec.digest,
                 expected_publication_digest=publication.publication_digest,

@@ -321,7 +321,11 @@ class ResidentCrossoverEvidence:
         version = (
             self.policy.version if type(self.policy) is ResidentSpeedPolicy else 0
         )
-        if ((version == 17 and (len(self.prior_executions) != 2
+        # A sealed futility FAIL retains exactly one orientation and no swapped boot.
+        stopped = (version == 17 and not self.prior_executions and self.decision is SpeedStageDecision.FAIL
+                   and self.policy.goodput.futility_margin > 0 and type(self.goodput) is GoodputReadSet
+                   and len(self.goodput.incumbent) == self.goodput.window_limit // 2)
+        if ((version == 17 and not stopped and (len(self.prior_executions) != 2
                                or any(type(v) is not EngineExecutionEvidence for v in self.prior_executions)))
             or (version != 17 and self.prior_executions)):
             raise CrossoverRuntimeError("swapped replay requires both first-orientation executions")
@@ -370,7 +374,7 @@ class ResidentCrossoverEvidence:
         """Recompute the grade only from the sealed plan and the retained turn records."""
 
         final_plan = plan
-        if plan.policy.version == 17:
+        if plan.policy.version == 17 and self.prior_executions:
             from cacheon.eval.goodput_runtime import _orientation_plan
             windows = plan.baseline.session_plan.replay.windows
             final_plan = _orientation_plan(plan, windows-windows//2, swapped=True)

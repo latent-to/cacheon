@@ -7,7 +7,7 @@
  "qualification_continuation:cacheon.eval.device_state.GPUProcess": ["kind","physical_id","pid","process_name"],
  "qualification_continuation:cacheon.eval.device_state.GPUTelemetry": ["current_graphics_clock_mhz","current_memory_clock_mhz","gpu_utilization_percent","memory_utilization_percent","physical_id","power_draw_mw","pstate","temperature_c","uuid"],
  "qualification_continuation:cacheon.eval.evidence_store.EvidenceArtifactRef": ["domain","media_type","schema","sha256","size"],
- "qualification_continuation:cacheon.eval.goodput_runtime.GoodputPolicy": ["attainment_margin","attainment_tolerance","boot_noise","contract","error_rate","null_noise","required"],
+ "qualification_continuation:cacheon.eval.goodput_runtime.GoodputPolicy": ["attainment_margin","attainment_tolerance","boot_noise","contract","error_rate","futility_margin","null_noise","required"],
  "qualification_continuation:cacheon.eval.goodput_runtime.GoodputReadSet": ["candidate","expected","incumbent","window_limit"],
  "qualification_continuation:cacheon.eval.native_artifact.NativeArtifactFile": ["path","sha256","size"],
  "qualification_continuation:cacheon.eval.native_artifact.NativeArtifactPublication": ["build_spec_digest","directories","files","publication_digest","reused","root"],

@@ -311,13 +311,15 @@ def statistical_grade(
     candidate: Sequence[LoadRead], incumbent: Sequence[LoadRead],
     contract: ServiceContract, expected: dict[str, tuple[int, int]], *,
     window_noise: float, boot_noise: float, error_rate: float, max_windows: int,
-    attainment_tolerance: float, attainment_margin: float,
+    attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
 ) -> ServiceVerdict:
     """Pool fixed-work costs within each orientation and spend one sealed error budget.
 
     Noise parameters bound log-ratio variation: window noise averages within a
     boot; paired boot noise does not. Both physical orientations are necessary
     for eligibility. Unequal numbers of windows retain equal orientation weight.
+    A sealed futility margin fails a complete first orientation that reads that
+    much slower; it can only end a stage early, never pass one.
     """
     if (not candidate or len(candidate) != len(incumbent)
         or not 0 < error_rate < 0.5 or type(max_windows) is not int
@@ -365,7 +367,9 @@ def statistical_grade(
     if count == 2 and attainment_check.detail.startswith("service_contract_not_met"):
         return ServiceVerdict(SpeedStageDecision.FAIL, ratio, required,
                               attainment_check.detail, se, lower)
-    if count < 2:
+    if count < 2 and futility_margin and look == max_windows // 2 and estimate < math.log1p(-futility_margin):
+        decision, detail = SpeedStageDecision.FAIL, "first lane orientation is slower than the sealed futility margin"
+    elif count < 2:
         decision, detail = SpeedStageDecision.NO_DECISION, "both lane orientations are required"
     elif lower > 1:
         decision, detail = SpeedStageDecision.PASS, "positive paired gain clears the sealed statistical boundary"

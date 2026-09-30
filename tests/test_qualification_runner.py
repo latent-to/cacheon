@@ -377,8 +377,7 @@ class _Harness:
         monkeypatch.setattr(runner, "cohort_trajectory_digest", lambda _row: _d("cohort"))
 
         def entropy_provider(commitment, teardown):
-            assert commitment is self.commitment
-            assert teardown is before
+            assert commitment is self.commitment and teardown is getattr(self, "entropy_teardown", before)
             self.calls.append("entropy")
             return self.entropy
 
@@ -583,9 +582,10 @@ def _install_resident_runner_path(
         runner.ATTEMPT_SCHEMA_V3,
     )
 
-    # A replay crossover: paired reads, and the control-selection entropy the
-    # continuation re-derives after teardown and must find unchanged.
+    # A replay crossover: paired reads, the control-selection entropy the continuation must find
+    # unchanged, and the candidate-lane receipt it is bound to (V17 swaps lanes; 2026-09-30).
     crossover = SimpleNamespace(goodput=SimpleNamespace(), quality_entropy=harness.entropy)
+    crossover.candidate_quiescence = harness.entropy_teardown = _quiescence(9, 2.9)
 
     class FakeResidentLifecycle:
         def __init__(self, prepared, plan, observed) -> None:

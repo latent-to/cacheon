@@ -578,6 +578,8 @@ seals the service `contract`
 window-scatter, conditioning-slowdown and minimum-window fields of the retired
 batch-cell policies stay sealed as zero, because the policy digest binds them. V17 seals `required=1`, `error_rate=0.01`, paired per-window log-cost
 standard deviation `null_noise`, and paired boot standard deviation `boot_noise`.
+An optional `futility_margin` fails a stage whose complete first orientation
+reads more than that fraction slower, without booting the swapped orientation.
 At least one uncertainty component must be positive. These are calibrated
 uncertainty bounds, not a desired detection threshold. Greedy sampling and zero
 rollout top-k width are required. Coding replay uses a teacher-only quality
@@ -603,11 +605,11 @@ Requests sharing a window are not treated as independent replications.
 
 Eligibility requires a positive one-sided log-gain bound. At most four looks
 share the 1% error budget: 5%, 5%, 10%, and 80% of that budget, with unused looks
-unspent. Both orientations must exist before a PASS. This normal-model guarantee
+unspent. Both orientations must exist before a PASS; a futility FAIL keeps one. This normal-model guarantee
 depends on the sealed noise bounds and independent boot contrasts; it does not
 establish runtime resolution by itself. A fixed 1% gain floor is absent. Reward
 credit uses the point estimate, not a confidence-bound haircut. Regrading checks
-the exact stopping point, all four engine identities, host timings, and controls.
+the exact stopping point, all engine identities, host timings, and controls.
 V16 retains its fixed margin on one orientation. Each paired window is one complete
 pass over the sealed basket, and the V16 score is the candidate's fastest pass over
 the incumbent's fastest pass. Every turn keeps its cost weight because a pass is

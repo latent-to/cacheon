@@ -550,6 +550,8 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
             assert executor.config.runtime.cpu_millis == 32000
             assert executor.config.runtime.cpu_pins == (("0", (0, 1)),)
             assert executor.config.prebuild.policy.cpu_millis == 16000
+        assert executors[0].config.prebuild.publication_root == executors[1].config.prebuild.publication_root
+        assert executors[0].config.prebuild.recovery_root != executors[1].config.prebuild.recovery_root
         assert all(c.construction.registered_target_ids == tuple(prompt["registered_targets"]) for c in commissions)
     finally:
         for executor in executors:

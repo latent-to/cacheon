@@ -165,7 +165,10 @@ def run_continuation_quality_stage(
             last_post = max(owner._lifecycle_causal_completion(lifecycle), audit_state.audit_last_completed)
             if teardown_before.observed_monotonic_s < last_post:
                 raise owner.QualificationRunnerError("pre-T quiescence predates the final baseline teardown")
-            entropy = entropy_provider(value.commitment, teardown_before)
+            # Replay controls bound this entropy to the candidate's last lane, which V17 swaps away
+            # from this executor (every V17 PASS failed here, 2026-09-30); present that lane's receipt.
+            bound = teardown_before if lifecycle.crossover.goodput is None else lifecycle.crossover.candidate_quiescence
+            entropy = entropy_provider(value.commitment, bound)
             if type(entropy) is not owner.SelectionEntropyReceipt:
                 raise owner.QualificationRunnerError("entropy provider returned an untyped receipt")
             entropy_observed = float(executor.manager.clock())

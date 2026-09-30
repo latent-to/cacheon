@@ -43,7 +43,7 @@ def _read(arm, lane, window, seconds):
     return LoadRead(arm, window, lane, 24, (cold, warm))
 
 
-def _grade(costs, *, window_noise=0.0001, boot_noise=0.0001, max_windows=None):
+def _grade(costs, *, window_noise=0.0001, boot_noise=0.0001, max_windows=None, futility_margin=0.0):
     incumbent, candidate = [], []
     for window, (lane, b, c) in enumerate(costs, 1):
         incumbent.append(_read("incumbent", lane, window, b))
@@ -51,7 +51,7 @@ def _grade(costs, *, window_noise=0.0001, boot_noise=0.0001, max_windows=None):
     return statistical_grade(
         candidate, incumbent, CONTRACT, WORK, window_noise=window_noise,
         boot_noise=boot_noise, error_rate=0.01, max_windows=max_windows or len(costs),
-        attainment_tolerance=0.0, attainment_margin=0.0,
+        attainment_tolerance=0.0, attainment_margin=0.0, futility_margin=futility_margin,
     )
 
 
@@ -96,6 +96,46 @@ def test_one_orientation_cannot_qualify_and_copies_do_not_pass():
     assert copy.lower_ratio < 1
 
 
+def test_only_a_complete_first_orientation_beyond_the_futility_margin_fails_early():
+    slow, near = [("A", 100, 102)] * 2, [("A", 100, 101)] * 2
+    assert _grade(slow, max_windows=4, futility_margin=0.015).decision is SpeedStageDecision.FAIL
+    assert _grade(slow, max_windows=4).decision is SpeedStageDecision.NO_DECISION
+    assert _grade(near, max_windows=4, futility_margin=0.015).decision is SpeedStageDecision.NO_DECISION
+    assert _grade(slow[:1], max_windows=4, futility_margin=0.015).decision is SpeedStageDecision.NO_DECISION
+
+
+def test_a_futility_fail_skips_the_second_boot_and_keeps_orientation_one(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from cacheon.eval import crossover_runtime, goodput_runtime
+
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(
+        AutoTokenizer=SimpleNamespace(from_pretrained=lambda *a, **k: object())))
+    fail = SimpleNamespace(decision=SpeedStageDecision.FAIL, verdict="verdict")
+    calls, built = [], []
+    monkeypatch.setattr(goodput_runtime, "_run_orientation", lambda plan, **k: calls.append(k) or dict(
+        grade=fail, executions=("run-b", "run-c"), workload="w", started=0.0, reads="reads", quality=((), (), None)))
+    monkeypatch.setattr(goodput_runtime, "_orientation_plan", lambda plan, windows, swapped=False: plan)
+    monkeypatch.setattr(crossover_runtime, "_expected_lane_digest", lambda arm: arm.name)
+    monkeypatch.setattr(crossover_runtime, "ResidentCrossoverEvidence", type("Evidence", (), {
+        "__init__": lambda self, *a, **k: built.append((a, k)), "regrade": lambda self, plan: None}))
+    replay = SimpleNamespace(tokenizer_path="/t", windows=4)
+    arm = lambda name: SimpleNamespace(name=name, session_plan=SimpleNamespace(replay=replay))
+    plan = SimpleNamespace(baseline=arm("lane-b"), candidate=arm("lane-c"), digest="p", selected_delta_digest="d",
+                           policy=SimpleNamespace(goodput=SimpleNamespace(error_rate=0.01)))
+    executor = lambda name: SimpleNamespace(prove_quiescent=lambda: name)
+    goodput_runtime.run_goodput_pair(plan, baseline_executor=executor("quiet-b"), candidate_executor=executor("quiet-c"),
+                                     model_mount=None, deadline=100, clock=lambda: 1.0, quality_control=None)
+    assert len(calls) == 1 and "prior" not in calls[0]
+    (args, kwargs), = built
+    assert args[4:10] == ("lane-b", "lane-c", "run-b", "run-c", "quiet-b", "quiet-c") and args[15] == "clear_fail"
+    assert kwargs == {"goodput": "reads"}
+    plan.policy.goodput.error_rate = 0.0
+    with pytest.raises(ValueError, match="V16 replay is regrade-only"):
+        goodput_runtime.run_goodput_pair(plan, baseline_executor=None, candidate_executor=None, model_mount=None,
+                                         deadline=100, clock=lambda: 1.0, quality_control=None)
+
+
 def test_more_windows_do_not_average_away_paired_boot_uncertainty():
     short = _grade([("A", 100, 100/1.003), ("B", 100, 100/1.003)], boot_noise=0.005)
     longer = _grade([("A", 100, 100/1.003)]*2 + [("B", 100, 100/1.003)]*3,
@@ -113,6 +153,11 @@ def test_statistical_policy_roundtrips_without_changing_historical_wire_shape():
     assert GoodputPolicy.from_dict(new.to_dict()) == new
     with pytest.raises(ValueError, match="calibration inputs"):
         replace(new, null_noise=0.0, boot_noise=0.0)
+    stop = replace(new, futility_margin=0.015)
+    assert "futility_margin" not in new.to_dict() and stop.to_dict()["futility_margin"] == format(0.015, ".17g")
+    assert GoodputPolicy.from_dict(stop.to_dict()) == stop
+    with pytest.raises(ValueError, match="calibration inputs"):
+        replace(old, futility_margin=0.015)
 
 
 @pytest.mark.parametrize("distinct_policies", [False, True])

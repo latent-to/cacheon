@@ -74,17 +74,19 @@ class GoodputPolicy:
     attainment_margin: float
     error_rate: float = field(default=0.0, metadata={"wire_optional": True})
     boot_noise: float = field(default=0.0, metadata={"wire_optional": True})
+    # Statistical grades only: a first orientation reading this far slower ends the stage (0 = off).
+    futility_margin: float = field(default=0.0, metadata={"wire_optional": True})
 
     def __post_init__(self):
         values = (self.required, self.null_noise, self.attainment_tolerance, self.attainment_margin,
-                  self.error_rate, self.boot_noise)
+                  self.error_rate, self.boot_noise, self.futility_margin)
         if (type(self.contract) is not ServiceContract
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
             or not (self.required == 1.0 if self.error_rate else 1 < self.required < 2)
             or not 0 <= self.null_noise < 1 or not 0 <= self.boot_noise < 1
             or not 0 <= self.error_rate < 0.5
             or (self.error_rate > 0 and self.null_noise == self.boot_noise == 0)
-            or (self.error_rate == 0 and self.boot_noise != 0)
+            or (self.error_rate == 0 and (self.boot_noise or self.futility_margin)) or not 0 <= self.futility_margin < 1
             or not 0 <= self.attainment_tolerance < 1 or not 0 <= self.attainment_margin < 1):
             raise ValueError("goodput calibration inputs are invalid")
         object.__setattr__(self, "contract", ServiceContract(**{
@@ -98,7 +100,8 @@ class GoodputPolicy:
         """Seal contract and calibration values as canonical decimal strings."""
         return {"contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
                 **{key: format(getattr(self, key), ".17g") for key in self.__dataclass_fields__
-                   if key != "contract" and (self.error_rate or key not in ("error_rate", "boot_noise"))}}
+                   if key != "contract" and (self.error_rate or key not in ("error_rate", "boot_noise"))
+                   and (key != "futility_margin" or self.futility_margin)}}
 
     @classmethod
     def from_dict(cls, value):
@@ -106,6 +109,8 @@ class GoodputPolicy:
         fields = set(cls.__dataclass_fields__)
         if type(value) is dict and "error_rate" not in value:
             fields -= {"error_rate", "boot_noise"}
+        if type(value) is dict and "futility_margin" not in value:
+            fields -= {"futility_margin"}
         if type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict:
             raise ValueError("goodput policy fields differ")
         result = cls(ServiceContract(**{key: float(v) for key, v in value["contract"].items()}),
@@ -148,6 +153,7 @@ class GoodputReadSet:
         statistic = {} if not policy.error_rate else dict(
             window_noise=policy.null_noise, boot_noise=policy.boot_noise,
             error_rate=policy.error_rate, max_windows=max_windows or self.window_limit or len(self.candidate),
+            futility_margin=policy.futility_margin,
         )
         grader = service_capacity.statistical_grade if statistic else service_capacity.grade
         result = grader(
@@ -204,7 +210,7 @@ def _orientation_plan(plan, windows, *, swapped=False):
 
 
 def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount, deadline, clock, quality_control):
-    """Use one execution path for historical pairs and statistically scored lane swaps."""
+    """Run both lane orientations of one statistically graded replay, or only the first on a futility FAIL."""
     from transformers import AutoTokenizer
 
     # Concurrent lazy imports failed after both engines had booted (2026-09-28).
@@ -215,8 +221,7 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
     kwargs = dict(model_mount=model_mount, deadline=deadline, clock=clock,
                   quality_control=quality_control, tokenizers=tokenizers)
     if not plan.policy.goodput.error_rate:
-        return _run_orientation(plan, baseline_executor=baseline_executor,
-                                candidate_executor=candidate_executor, **kwargs)
+        raise ValueError("V16 replay is regrade-only; new runs require the statistical policy")
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _expected_lane_digest
 
     windows = plan.baseline.session_plan.replay.windows
@@ -225,6 +230,19 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
     split = windows // 2
     first = _run_orientation(_orientation_plan(plan, split), baseline_executor=baseline_executor,
                              candidate_executor=candidate_executor, full_plan=plan, **kwargs)
+    if first["grade"].decision is SpeedStageDecision.FAIL:
+        # Only the sealed futility margin fails one orientation; simulated at the live seal, the second
+        # boot would have turned fewer than 1 in 500 of these stops into a PASS.
+        grade = first["grade"]
+        evidence = ResidentCrossoverEvidence(
+            plan.digest, plan.selected_delta_digest, plan.policy, first["workload"],
+            _expected_lane_digest(plan.baseline), _expected_lane_digest(plan.candidate), *first["executions"],
+            baseline_executor.prove_quiescent(), candidate_executor.prove_quiescent(), (),
+            grade.verdict, grade.verdict, False, grade.decision, "clear_fail",
+            first["started"], float(clock()), goodput=first["reads"],
+        )
+        evidence.regrade(plan)
+        return evidence
     swapped = _orientation_plan(plan, windows-split, swapped=True)
     last = _run_orientation(swapped, baseline_executor=candidate_executor,
                             candidate_executor=baseline_executor, full_plan=plan,
@@ -244,10 +262,10 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
 
 
 def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount, deadline, clock,
-                     quality_control, tokenizers, full_plan=None, prior=None):
+                     quality_control, tokenizers, full_plan, prior=None):
     """Keep each pair resident through its timed reads and any selected quality controls."""
     from cacheon.eval.agent_replay import run_replay
-    from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
+    from cacheon.eval.crossover_runtime import _lane_digest
     from cacheon.eval.scoring import marginal_workload_digest
     from cacheon.eval import service_capacity
 
@@ -265,13 +283,12 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
     (load,) = replay.loads
     work = replay.slice.expected_work(load)
     expected = tuple(sorted((root, main, inner) for root, (main, inner) in work.items()))
-    maximum = replay.windows if full_plan is None else full_plan.baseline.session_plan.replay.windows
+    maximum = full_plan.baseline.session_plan.replay.windows
 
     def read_set(baseline, candidate):
         return GoodputReadSet(
             (() if prior is None else prior.incumbent) + tuple(baseline),
-            (() if prior is None else prior.candidate) + tuple(candidate), expected,
-            maximum if plan.policy.goodput.error_rate else 0,
+            (() if prior is None else prior.candidate) + tuple(candidate), expected, maximum,
         )
 
     def execute(index, executor, arm):
@@ -285,30 +302,21 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
                 for _ in range(session_plan.warmup_count):
                     controller.execute_next()
 
-                rates = {"incumbent": [], "candidate": []}
                 completed = {"incumbent": [], "candidate": []}
 
                 async def ready(load, window):
-                    # Both lanes publish the finished window's rate, then decide identically whether
+                    # Both lanes publish the finished window's read, then decide identically whether
                     # the sealed sequential rule wants another; a split decision cannot pair and
                     # times out at the barrier instead of reading on alone.
                     proceed = True
                     if window > 1:
-                        if plan.policy.goodput.error_rate:
-                            completed[prefix].append(controller.replay_reads[-1])
-                            schedule.put(f"{window}:read:{prefix}", completed[prefix][-1])
-                            completed[peer].append(schedule.get(f"{window}:read:{peer}", deadline=deadline, clock=clock))
-                            if prior is not None:
-                                grade = read_set(completed["incumbent"], completed["candidate"]).grade(
-                                    plan.policy.goodput, max_windows=maximum)
-                                proceed = grade.decision is SpeedStageDecision.NO_DECISION
-                        else:
-                            rates[prefix].append(fixed_work_rate(controller.replay_reads[-1], work).rate)
-                            schedule.put(f"{load}:{window - 1}:rate:{prefix}", rates[prefix][-1])
-                            rates[peer].append(schedule.get(f"{load}:{window - 1}:rate:{peer}", deadline=deadline, clock=clock))
-                            ratios = [c / i for c, i in zip(rates["candidate"], rates["incumbent"], strict=True)]
-                            proceed = continue_windows(ratios, required=plan.policy.goodput.required,
-                                                       null_noise=plan.policy.goodput.null_noise, max_windows=replay.windows)
+                        completed[prefix].append(controller.replay_reads[-1])
+                        schedule.put(f"{window}:read:{prefix}", completed[prefix][-1])
+                        completed[peer].append(schedule.get(f"{window}:read:{peer}", deadline=deadline, clock=clock))
+                        if prior is not None:
+                            grade = read_set(completed["incumbent"], completed["candidate"]).grade(
+                                plan.policy.goodput, max_windows=maximum)
+                            proceed = grade.decision is SpeedStageDecision.NO_DECISION
                     key = f"{load}:{window}:{'ready' if proceed else 'stop'}:"
                     schedule.put(key + prefix)
                     schedule.get(key + peer, deadline=deadline, clock=clock)
@@ -360,19 +368,8 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
         raise schedule.failure or errors[0]
     reads, grade = schedule.values["read_set"], schedule.values["grade"]
     pairs, controls, entropy = schedule.values.get("quality", ((), (), None))
-    if full_plan is not None:
-        return dict(reads=reads, grade=grade, executions=executions, quality=(pairs, controls, entropy),
-                    started=started, workload=marginal_workload_digest(full_plan.baseline.session_plan))
-    evidence = ResidentCrossoverEvidence(
-        plan.digest, plan.selected_delta_digest, plan.policy,
-        marginal_workload_digest(plan.baseline.session_plan), *lanes, *executions,
-        baseline_executor.prove_quiescent(), candidate_executor.prove_quiescent(), (),
-        grade.verdict, grade.verdict, False, grade.decision,
-        "clear_" + grade.decision.value.lower(), started, float(clock()), goodput=reads,
-        prompt_pairs=pairs, reference_inputs=controls, quality_entropy=entropy,
-    )
-    evidence.regrade(plan)
-    return evidence
+    return dict(reads=reads, grade=grade, executions=executions, quality=(pairs, controls, entropy),
+                started=started, workload=marginal_workload_digest(full_plan.baseline.session_plan))
 
 
 def regrade_goodput_execution(evidence, plan):
@@ -390,20 +387,26 @@ def regrade_goodput_execution(evidence, plan):
     ]
     if plan.policy.goodput.error_rate:
         split = replay.windows // 2
-        if evidence.goodput.window_limit != replay.windows or len(evidence.goodput.incumbent) <= split:
+        stopped = not evidence.prior_executions
+        if (evidence.goodput.window_limit != replay.windows
+            or (len(evidence.goodput.incumbent) == split) != stopped or len(evidence.goodput.incumbent) < split):
             raise CrossoverRuntimeError("statistical replay lacks its sealed budget or swapped reads")
         first = _orientation_plan(plan, split)
-        last = _orientation_plan(plan, replay.windows-split, swapped=True)
-        sessions = [
-            (evidence.goodput.incumbent[:split], evidence.prior_executions[0], first.baseline, ()),
-            (evidence.goodput.candidate[:split], evidence.prior_executions[1], first.candidate, ()),
-            (evidence.goodput.incumbent[split:], evidence.baseline_execution, last.baseline, evidence.reference_inputs),
-            (evidence.goodput.candidate[split:], evidence.candidate_execution, last.candidate, ()),
-        ]
-        completed = max(row.session.session_completed_at for row in evidence.prior_executions)
-        if completed > min(evidence.baseline_execution.session.ready_completed_at,
-                           evidence.candidate_execution.session.ready_completed_at):
-            raise CrossoverRuntimeError("swapped read predates completion of its first orientation")
+        if stopped:
+            sessions = [(evidence.goodput.incumbent, evidence.baseline_execution, first.baseline, ()),
+                        (evidence.goodput.candidate, evidence.candidate_execution, first.candidate, ())]
+        else:
+            last = _orientation_plan(plan, replay.windows-split, swapped=True)
+            sessions = [
+                (evidence.goodput.incumbent[:split], evidence.prior_executions[0], first.baseline, ()),
+                (evidence.goodput.candidate[:split], evidence.prior_executions[1], first.candidate, ()),
+                (evidence.goodput.incumbent[split:], evidence.baseline_execution, last.baseline, evidence.reference_inputs),
+                (evidence.goodput.candidate[split:], evidence.candidate_execution, last.candidate, ()),
+            ]
+            completed = max(row.session.session_completed_at for row in evidence.prior_executions)
+            if completed > min(evidence.baseline_execution.session.ready_completed_at,
+                               evidence.candidate_execution.session.ready_completed_at):
+                raise CrossoverRuntimeError("swapped read predates completion of its first orientation")
     for reads, execution, arm, controls in sessions:
         _validate_execution_binding(execution, arm)
         session = execution.session

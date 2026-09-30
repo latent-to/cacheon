@@ -380,7 +380,7 @@ def _backend_config(
         OCIPrebuildConfig(
             docker_binary=preflight.docker_binary,
             recovery_root=root / "oci" / executor_id,
-            publication_root=root / "native-publications",
+            publication_root=root.parent / "native-publications",  # one store for both lanes: the swap reuses builds
             seccomp_profile=_seccomp_path(),
             executor_id=executor_id,
             policy=_resource_policy(_prebuild_policy(runtime), capacity.get("prebuild", {})),

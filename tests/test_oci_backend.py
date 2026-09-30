@@ -450,7 +450,7 @@ def _install_execution_fakes(
         lambda launch, binding: _resolved(case, launch),
     )
     monkeypatch.setattr(
-        backend, "reopen_native_artifact", lambda *args, **kwargs: case.publication
+        backend, "reopen_publication", lambda *args, **kwargs: case.publication
     )
     monkeypatch.setattr(backend, "reopen_launch_tree", lambda *args, **kwargs: None)
 
@@ -511,7 +511,7 @@ def test_reference_reopens_control_receipt_then_rejects_added_native_file(
     reopened = iter((control, changed))
     monkeypatch.setattr(
         backend,
-        "reopen_native_artifact",
+        "reopen_publication",
         lambda *args, **kwargs: next(reopened),
     )
 
@@ -538,7 +538,7 @@ def test_reference_runtime_accepts_control_receipt_through_both_reopens(
     )
     monkeypatch.setattr(
         backend,
-        "reopen_native_artifact",
+        "reopen_publication",
         lambda *args, **kwargs: control,
     )
 
