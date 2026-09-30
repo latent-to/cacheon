@@ -1,5 +1,6 @@
 """The completed arrival prefix shared by settlement, rewards and the dashboard."""
 
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -99,11 +100,11 @@ def reward_comparisons(db) -> dict[str, dict]:
         group = (primary["arena_digest"], primary["incumbent_stack_digest"])
         qualifications = tuple(payload[key] for key in ("primary", "reproduction") if key in payload)
         score = min(Decimal(q["speedup"]) for q in qualifications)
-        previous, previous_id, previous_qualifications = best.get(group, (Decimal(1), None, ()))
+        previous, previous_id = best.get(group, (Decimal(1), None))
         relative = score / previous
         margin = Decimal(0)
         if not exempt and previous_id is not None and score > previous:
-            margin = _reward_min_margin(db, qualifications, previous_qualifications)
+            margin = _reward_min_margin(db, qualifications)
         eligible = exempt or previous_id is None or (score > previous and
             score >= previous * (1 + margin))
         comparisons[row["reservation_id"]] = {
@@ -115,7 +116,7 @@ def reward_comparisons(db) -> dict[str, dict]:
             "grandfathered": exempt,
         }
         if eligible and score > previous:
-            best[group] = (score, row["reservation_id"], qualifications)
+            best[group] = (score, row["reservation_id"])
     return comparisons
 
 
@@ -135,43 +136,26 @@ def reward_grandfathered_runtimes(db) -> list[str]:
     return values
 
 
-def _reward_min_margin(db, qualifications, previous=()):
-    """Use the retained statistical contrast for new policies; preserve historical margins."""
-    import math
-    from decimal import Decimal
+# Owner ruling 2026-09-30: a later V17 PASS pays when it beats the previous best by 1.5%. The
+# statistical contrast it replaces (about 3% at the median) paid a truly 3%-better successor ~27%
+# of the time; 1.5% pays it ~81%.
+V17_REWARD_MARGIN = Decimal("0.015")
 
+
+def _reward_min_margin(db, qualifications):
+    """Use the ruled V17 margin for statistical policies; preserve historical sealed margins."""
     from cacheon.chain.intake import IntakeError
-    from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
 
-    reports = _reward_reports(db, qualifications)
-    policies = [report["speed_witness"]["resident_policy"] for report in reports]
+    policies = [report["speed_witness"]["resident_policy"] for report in _reward_reports(db, qualifications)]
     statistical = [policy.get("version") == 17 for policy in policies]
     if any(statistical) and not all(statistical):
         raise IntakeError("reward comparison mixes statistical and historical qualifications")
-    if not any(statistical):
-        margins = [Decimal(str(policy["min_margin"])) for policy in policies]
-        if any(not value.is_finite() or not 0 < value < 1 for value in margins):
-            raise IntakeError("reward comparison margin is invalid")
-        return max(margins)
-
-    def uncertainties(rows):
-        results = []
-        for report in rows:
-            witness = report["speed_witness"]
-            policy = witness["resident_policy"]
-            if policy.get("version") != 17:
-                raise IntakeError("statistical reward predecessor lacks comparable uncertainty")
-            reads = GoodputReadSet.from_dict(witness["goodput"])
-            grade = reads.grade(GoodputPolicy.from_dict(policy["goodput"]))
-            results.append((grade.verdict.noise, math.log(grade.verdict.required)/grade.verdict.noise))
-        return results
-
-    current = uncertainties(reports)
-    predecessor_se = max((row[0] for row in uncertainties(_reward_reports(db, previous))), default=0.0) if previous else 0.0
-    # Separate qualifications have separate boot draws. Eligibility accounts
-    # for both estimates; credit still uses the unshrunken marginal point ratio.
-    margin = max(math.expm1(z*math.hypot(se, predecessor_se)) for se, z in current)
-    return Decimal(str(margin))
+    if any(statistical):
+        return V17_REWARD_MARGIN
+    margins = [Decimal(str(policy["min_margin"])) for policy in policies]
+    if any(not value.is_finite() or not 0 < value < 1 for value in margins):
+        raise IntakeError("reward comparison margin is invalid")
+    return max(margins)
 
 
 def _reward_reports(db, qualifications):

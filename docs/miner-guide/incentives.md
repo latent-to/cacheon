@@ -158,10 +158,8 @@ V1 is relative rather than fixed:
 
 1. A distinct contribution with a complete audited PASS earns V1 credit when it
    beats the best earlier rewarded PASS on the same arena and commissioned baseline by
-   its sealed eligibility boundary. V17 uses the uncertainty of both retained
-   estimates instead of a fixed percentage margin, and an unpaid result does not
-   raise the next miner's hurdle. Historical policies retain their minimum-margin
-   rule. Finalized queue order determines precedence; completion order does not.
+   at least 1.5% (V17). An unpaid result does not raise the next miner's hurdle.
+   Historical policies retain their minimum-margin rule. Finalized queue order determines precedence; completion order does not.
 2. The claim's starting credit uses its conservative speedup divided by that
    best preceding speedup. The first PASS uses a denominator of one. The frozen
    evaluation baseline remains available for later submissions.

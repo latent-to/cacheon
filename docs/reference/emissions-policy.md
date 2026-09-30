@@ -25,8 +25,8 @@ durable evidence remain reopenable from Git history and the reserved schema.
 A distinct registered contribution with a complete audited PASS earns only when
 its credited speedup clears the sealed eligibility boundary relative to the best
 earlier rewarded PASS. Historical policies require `1 + min_margin`, read from
-retained qualification; pairs use the larger margin. V17 uses both estimates'
-uncertainty. A tie or smaller improvement earns nothing despite an evaluation
+retained qualification; pairs use the larger margin. V17 requires 1.5% over the
+best earlier rewarded PASS. A tie or smaller improvement earns nothing despite an evaluation
 PASS. The first PASS against a commissioned baseline is eligible.
 
 Comparison follows finalized submission order (block, event index, subindex,

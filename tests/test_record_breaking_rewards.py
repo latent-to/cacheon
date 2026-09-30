@@ -172,7 +172,7 @@ def test_scoring_compares_all_slots_without_advancing_unpaid_or_later_records(tm
         assert comparisons[candidates[0].reservation_digest]["score_speedup"] == Decimal("1.1")
 
 
-def test_statistical_records_pay_small_gains_without_an_unpaid_ratchet(tmp_path):
+def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(tmp_path):
     from decimal import Decimal
     from cacheon.chain.evaluation_order import reward_comparisons
     from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
@@ -181,7 +181,7 @@ def test_statistical_records_pay_small_gains_without_an_unpaid_ratchet(tmp_path)
     policy = GoodputPolicy(CONTRACT, 1.0, 0.0003, 0.0, 0.0, 0.01, 0.0001)
     with _store(tmp_path) as store:
         candidates = []
-        for index, score in enumerate((1.05, 1.0504, 1.0508)):
+        for index, score in enumerate((1.05, 1.06, 1.07)):
             baseline, candidate = [], []
             for window, lane in enumerate(("A", "A", "B", "B"), 1):
                 baseline.append(_read("incumbent", lane, window, 100))
@@ -201,5 +201,5 @@ def test_statistical_records_pay_small_gains_without_an_unpaid_ratchet(tmp_path)
         first, unpaid, paid = (comparisons[c.reservation_digest] for c in candidates)
         assert first["reward_eligible"] and not unpaid["reward_eligible"] and paid["reward_eligible"]
         assert paid["previous_best_reservation_id"] == candidates[0].reservation_digest
-        assert paid["score_speedup"] == Decimal("1.0508") / Decimal("1.05")
+        assert paid["score_speedup"] == Decimal("1.07") / Decimal("1.05")
         assert {c.hotkey for c in store.passed_reward_claims()} == {candidates[i].hotkey for i in (0, 2)}
