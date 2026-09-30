@@ -143,6 +143,14 @@ async def read_response(
                 request_id = message.get("request_id")
                 request = requests.get(request_id) if type(request_id) is str else None
                 if request is None:
+                    # A scheduler crash (a refused prefix-cache page, 2026-09-30) ends the session outside
+                    # any request; its session error must keep the candidate attribution, not become a
+                    # protocol fault and an infrastructure NO_DECISION.
+                    anchor = next(iter(requests.values()), None) if request_id is None else None
+                    detail = None if anchor is None else parse_error_message(
+                        message, session_id=anchor.session_id, launch_digest=anchor.launch_digest)
+                    if detail is not None:
+                        raise _worker_error(detail, diagnostic_provider=transport._diagnostic_provider())
                     raise OuterSessionProtocolError("worker control has no disclosed request binding")
                 detail = parse_error_message(message, session_id=request.session_id,
                                              launch_digest=request.launch_digest, request=request)
