@@ -219,12 +219,12 @@ def test_lockstep_rounds_release_together_in_session_order_and_fail_a_starved_fi
             order.append(key)
             return stamp, ordinal
 
-        # The first round waits for exactly the sealed openings, then releases them with one stamp in key
-        # order, numbering dispatch in that order (the engine requires batch indices in dispatch order).
-        b = asyncio.create_task(conversation('r-b', 'session-b'))
-        await asyncio.sleep(0.05)
-        assert not b.done() and not rounds.first_released
+        # The first round waits for exactly the sealed openings, then releases them with one stamp in key order,
+        # numbering dispatch (and so rank placement) in that order; the filler sorts last and must not run first.
         a = asyncio.create_task(conversation('r-a', 'session-a'))
+        await asyncio.sleep(0.05)
+        assert not a.done() and not rounds.first_released
+        b = asyncio.create_task(conversation('r-b', 'session-b'))
         (stamp_a, ordinal_a), (stamp_b, ordinal_b) = await asyncio.gather(a, b)
         assert stamp_a == stamp_b and (ordinal_a, ordinal_b) == (0, 1) and order == ['session-a', 'session-b']
         # A request arriving while the round is in flight waits for the engine to drain, then for the

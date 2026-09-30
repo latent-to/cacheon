@@ -193,10 +193,10 @@ class _Rounds:
         if self.inflight or not self.pending:
             return
         loop = asyncio.get_running_loop()
-        if self.first_released:
-            self._timer = loop.call_later(self.settle_s, self._release)
-        elif len(self.pending) >= self.openings:
-            self._release()
+        if self.first_released or len(self.pending) >= self.openings:
+            # Never inline: in the last opening's own hold() its future is already done, so it took
+            # rank 0 before the others woke in session-key order, randomising placement (2026-09-30).
+            self._timer = loop.call_later(self.settle_s if self.first_released else 0, self._release)
         else:
             self._timer = loop.call_later(self.first_wait_s, self._starve)
 
