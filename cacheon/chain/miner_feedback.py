@@ -57,7 +57,7 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
     # recorded every speed FAIL under this one code.
     "speed_regression": (
         "The bundle was correct, compiled, and graph-safe, and was not faster "
-        "than the baseline in the timed bracket.",
+        "than the baseline in the timed windows.",
         "This is an ordinary competitive result, not a defect. The baseline is a "
         "tuned production stack.",
     ),
@@ -66,12 +66,12 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "speedup fell inside the round's noise band: it did not clear the "
         "required threshold, and it was not measurably slower either.",
         "This is an ordinary competitive result, not a regression. The bar "
-        "for the round is 1 + max(min_margin, k*noise); a larger win or "
-        "lower run-to-run variance clears it.",
+        "is statistical: the speedup must exceed the arena's sealed noise "
+        "band across both lane orientations, so a larger win clears it.",
     ),
     "candidate_slower": (
         "The bundle was correct, compiled, and graph-safe, and the timed "
-        "bracket measured it slower than the baseline beyond the round's "
+        "windows measured it slower than the baseline beyond the arena's "
         "noise band.",
         "The baseline is a tuned production stack. Profile the kernel "
         "against the stock implementation before resubmitting.",

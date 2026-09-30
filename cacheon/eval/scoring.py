@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class SpeedupVerdict:
     speedup: float  # robust paired estimate: mean(candidate reads) / mean(baseline reads)
     noise: float  # measured relative spread floor: baselines, and candidates when >= 2 reads
-    required: float  # the bar it had to clear: 1 + max(min_margin, k*noise)
+    required: float  # the bar it had to clear (V17: exp(z*se) from the sealed noise model)
     passed_speedup: bool  # cleared `required` AND the round was trustworthy
     confident: bool  # False -> box too noisy this round; treat as NO-DECISION, never crown
     n_baselines: int
