@@ -656,8 +656,8 @@ rows; AIPerf supplies the measured work. AIPerf starts exactly the declared numb
 of root sessions and drains their turns and children; there is no duration cut
 or request-count truncation. `--ignore-trace-delays` removes recorded user and
 tool waiting; the bridge releases ready requests in lockstep rounds.
-Turn order and child joins remain intact. The loopback chat adapter passes canonical input
-IDs and sticky DP ranks through the same isolated-worker pipes.
+Turn order and child joins remain intact. The loopback chat adapter passes canonical input IDs and
+sticky DP ranks, fixed at each session's first turn in release order, through the isolated-worker pipes.
 
 The slice loader verifies the named files in sealed order. A per-load directory
 contains only the first `load` files. Output budgets come from those traces;
@@ -692,7 +692,7 @@ V16 reads retain lockstep rounds and inverse mean request latency;
 that quantity is not wall-time throughput and is not the v17 score.
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
-cache-buster tokens and DP routing identical between arms and windows. Each
+cache-buster tokens identical between arms and windows. Each
 client retains separate memory-mapped dataset files under its output directory;
 concurrent clients share no writable dataset state. Each client's ZMQ IPC
 sockets live in a short private temporary directory under `/tmp`, because Unix
