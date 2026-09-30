@@ -578,7 +578,7 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
     block["policy"].update(tokens_per_prompt=1024, topk_width=0)
     block["session"]["conditioning_count"] = 1
     authority = json.loads(paths["authority_config"].read_text())
-    authority.update(qualification=block, resources={"runtime": {"cpu_millis": 32000}, "prebuild": {"cpu_millis": 16000}})
+    authority.update(qualification=block, resources={"runtime": {"cpu_millis": 32000, "cpu_pins": {"0": [0, 1]}}, "prebuild": {"cpu_millis": 16000}})
     authority["prompt"]["sha256"] = prompt_sha
     authority["qualification_builder_digest"] = predicted_qualification_builder_digest(
         default_target_catalog(), registered_target_ids=tuple(prompt["registered_targets"]),
@@ -618,6 +618,7 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
         for index, executor in enumerate(executors):
             assert tuple(g.physical_id for g in executor.device_policy.expected_gpus) == tuple(range(index * tp, (index + 1) * tp))
             assert executor.config.runtime.cpu_millis == 32000
+            assert executor.config.runtime.cpu_pins == (("0", (0, 1)),)
             assert executor.config.prebuild.policy.cpu_millis == 16000
         assert all(c.construction.registered_target_ids == tuple(prompt["registered_targets"]) for c in commissions)
     finally:

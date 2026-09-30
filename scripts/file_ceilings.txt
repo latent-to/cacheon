@@ -17,7 +17,7 @@ cacheon/eval/b300_qualification_deployment.py 963
 cacheon/eval/calibration.py 922
 cacheon/eval/device_state.py 1519
 cacheon/eval/native_artifact.py 1220
-cacheon/eval/oci_backend.py 1709
+cacheon/eval/oci_backend.py 1716
 cacheon/eval/oci_outer_session.py 907
 cacheon/eval/oci_process.py 1783
 cacheon/eval/oci_session_protocol.py 1239
@@ -36,7 +36,7 @@ tests/test_crossover_runtime.py 918
 tests/test_device_state.py 1001
 tests/test_engine_tree.py 1175
 tests/test_eval_cost.py 1019
-tests/test_oci_backend.py 1134
+tests/test_oci_backend.py 1140
 tests/test_qualification.py 1000
 tests/test_qualification_continuation.py 915
 tests/test_qualification_runner.py 2031

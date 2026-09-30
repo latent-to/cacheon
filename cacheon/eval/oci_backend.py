@@ -45,7 +45,7 @@ from cacheon.eval.native_artifact import (
     NativeArtifactPublication,
     reopen_native_artifact,
 )
-from cacheon.eval.oci_cpuset import validate_cpuset_pair
+from cacheon.eval.oci_cpuset import canonical_cpu_pins, lane_cpu_pin_plan, validate_cpuset_pair
 from cacheon.eval.oci_outer_session import (
     AttachedSessionTransport,
     OpenedOuterSession,
@@ -507,6 +507,8 @@ class OCIRuntimeResourcePolicy:
     container_python: str
     cpuset_cpus: str | None = None
     cpuset_mems: str | None = None
+    # Physical GPU -> (scheduler vCPU, pool vCPUs...); see oci_cpuset.canonical_cpu_pins.
+    cpu_pins: tuple[tuple[str, tuple[int, ...]], ...] | None = None
 
     def __post_init__(self) -> None:
         bounds = {
@@ -544,6 +546,7 @@ class OCIRuntimeResourcePolicy:
                 self.cpuset_mems,
                 cpu_millis=self.cpu_millis,
             )
+            object.__setattr__(self, "cpu_pins", canonical_cpu_pins(self.cpu_pins))
         except ValueError as exc:
             raise OCIBackendError(f"runtime resource {exc}") from None
         object.__setattr__(self, "cpuset_cpus", cpus)
@@ -576,6 +579,8 @@ class OCIRuntimeResourcePolicy:
         if self.cpuset_cpus is not None:
             payload["cpuset_cpus"] = self.cpuset_cpus
             payload["cpuset_mems"] = self.cpuset_mems
+        if self.cpu_pins is not None:
+            payload["cpu_pins"] = [[gpu, list(cpus)] for gpu, cpus in self.cpu_pins]
         return canonical_digest("cacheon.eval.oci-runtime-resource-policy", payload)
 
 
@@ -750,6 +755,8 @@ def build_runtime_argv(
         "TRITON_HOME": f"{CONTAINER_CACHE}/triton-home",
         "XDG_CACHE_HOME": f"{CONTAINER_CACHE}/xdg",
     }
+    if runtime.cpu_pins is not None:
+        environment["CACHEON_CPU_PINS"] = lane_cpu_pin_plan(runtime.cpu_pins, resolved.physical_hardware.physical_gpu_ids)
     gpu_csv = ",".join(resolved.physical_hardware.physical_gpu_ids)
     # Docker parses --gpus with a CSV decoder. A multi-device request must be one
     # quoted CSV field even though argv is passed directly without a shell;

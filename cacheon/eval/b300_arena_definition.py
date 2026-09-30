@@ -128,11 +128,11 @@ def device_policy(gpus: tuple[GPUConfiguration, ...]) -> DeviceStatePolicy:
 
 
 def resource_policy(policy, overrides: object):
-    """Apply sealed host capacity to the existing OCI policy and its digest."""
+    """Apply sealed host capacity and CPU pins to the existing OCI policy and its digest."""
     row = _mapping(overrides, "OCI resource capacity")
     if set(row) - {"cpu_millis", "memory_bytes", "pids_limit", "nofile_limit",
                    "cache_bytes", "cache_inodes", "tmpfs_bytes", "shm_bytes",
-                   "stage_bytes", "stage_inodes"}:
+                   "stage_bytes", "stage_inodes", "cpu_pins"}:
         raise B300DeploymentError("unknown OCI resource capacity field")
     try:
         return replace(policy, **row)

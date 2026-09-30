@@ -106,6 +106,11 @@ Optional sealed `resources.runtime` and `resources.prebuild` objects override
 existing OCI capacity fields: `cpu_millis`, `memory_bytes`, `pids_limit`,
 `nofile_limit`, `tmpfs_bytes`, `shm_bytes`, `cache_bytes`, `cache_inodes`,
 `stage_bytes`, and `stage_inodes`, where supported by the respective policy.
+`resources.runtime.cpu_pins` maps each physical GPU to a vCPU list: the first
+entry pins that GPU's SGLang scheduler, and the rest join the lane's pool for
+every other engine process. Pins bind the runtime digest; a lane GPU without a
+pin, or an engine whose scheduler ranks do not match the plan, fails the launch.
+Use it on hosts whose vCPUs differ in speed.
 UID/GID, executable and deadlines retain their existing authorities. Absent
 resource objects preserve prior policy. Both authority and measurement inputs
 must agree; every qualification executor consumes the same values.
