@@ -458,3 +458,42 @@ def test_partial_coverage_stays_infrastructure(tmp_path):
         )
     assert type(caught.value) is engine_worker.CandidateExecutionCoverageError
     assert engine_worker.CANDIDATE_NEVER_EXECUTED_MARKER not in str(caught.value)
+
+
+def test_cpu_pins_are_canonical_and_plan_one_lane():
+    from cacheon.eval.oci_cpuset import canonical_cpu_pins, lane_cpu_pin_plan
+
+    pins = canonical_cpu_pins({"4": [60, 61], "0": [0, 1, 120]})
+    assert pins == (("0", (0, 1, 120)), ("4", (60, 61)))
+    assert json.loads(lane_cpu_pin_plan(pins, ("0", "4"))) == {"schedulers": [0, 60], "pool": [1, 61, 120]}
+    assert json.loads(lane_cpu_pin_plan(pins, ("0", "1")))["schedulers"] == [0]
+    for bad in ({}, {"0": [0]}, {"0": [0, 0]}, {"a": [0, 1]}, {"0": [0, 1], "1": [0, 2]},
+                {"0": [0, "1"]}, {"0": [-1, 1]}):
+        with pytest.raises(ValueError, match="cpu_pins is malformed"):
+            canonical_cpu_pins(bad)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="engine pinning walks /proc")
+def test_cpu_pins_put_each_scheduler_on_its_vcpu_and_fail_on_a_rank_mismatch():
+    import subprocess
+
+    allowed = sorted(os.sched_getaffinity(0))
+    child = subprocess.Popen(["bash", "-c", "exec -a sglang::scheduler_DP0_TP0 sleep 60"])
+    try:
+        for _ in range(100):
+            if b"scheduler" in open(f"/proc/{child.pid}/cmdline", "rb").read():
+                break
+            os.sched_yield()
+        plan = json.dumps({"schedulers": [allowed[0]], "pool": allowed})
+        engine_worker._pin_engine_processes(plan, schedulers=1)
+        assert os.sched_getaffinity(child.pid) == {allowed[0]}
+        assert os.sched_getaffinity(0) == set(allowed)
+        with pytest.raises(RuntimeError, match="covers 1 schedulers; the engine runs 2"):
+            engine_worker._pin_engine_processes(plan, schedulers=2)
+        two = json.dumps({"schedulers": allowed[:1] * 2, "pool": allowed})
+        with pytest.raises(RuntimeError, match=r"ranks \[0\]; the engine runs 2"):
+            engine_worker._pin_engine_processes(two, schedulers=2)
+    finally:
+        child.kill()
+        child.wait()
+    engine_worker._pin_engine_processes(None, schedulers=4)

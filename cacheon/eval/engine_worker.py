@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -449,6 +450,43 @@ def _report_running_engine_failures(engine: object) -> None:
     manager.signal_handler_class = ReportingSignalHandler
 
 
+def _pin_engine_processes(plan: str | None, *, schedulers: int) -> None:
+    """Pin each SGLang scheduler (by TP rank) to its sealed vCPU and every other engine process to the pool.
+
+    On the B300 VM, 13 of every 15 vCPUs run single-thread code at half speed, and unpinned schedulers
+    landed on different ones each boot: whole-boot copy offsets up to 6.7% (2026-09-30). A plan that
+    does not match the running engine fails the launch.
+    """
+    if not plan:
+        return
+    spec = json.loads(plan)
+    scheduler_cpus, pool = list(spec["schedulers"]), set(spec["pool"])
+    if len(scheduler_cpus) != schedulers:
+        raise RuntimeError(f"CPU pin plan covers {len(scheduler_cpus)} schedulers; the engine runs {schedulers}")
+    children: dict[int, list[int]] = {}
+    for entry in os.scandir("/proc"):
+        if entry.name.isdigit():
+            with contextlib.suppress(OSError):
+                ppid = int(Path(entry.path, "stat").read_text().rsplit(")", 1)[1].split()[1])
+                children.setdefault(ppid, []).append(int(entry.name))
+    tree, frontier, ranks = [os.getpid()], [os.getpid()], []
+    while frontier:
+        frontier = [child for parent in frontier for child in children.get(parent, [])]
+        tree += frontier
+    for pid in tree:
+        with contextlib.suppress(ProcessLookupError, FileNotFoundError):
+            title = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            rank = re.search(r"^sglang::scheduler\S*_TP(\d+)", title)
+            if rank:
+                ranks.append(int(rank[1]))
+            cpus = {scheduler_cpus[int(rank[1])]} if rank else pool
+            for task in os.listdir(f"/proc/{pid}/task"):
+                with contextlib.suppress(ProcessLookupError):
+                    os.sched_setaffinity(int(task), cpus)
+    if sorted(ranks) != list(range(schedulers)):
+        raise RuntimeError(f"CPU pin plan found scheduler ranks {sorted(ranks)}; the engine runs {schedulers}")
+
+
 @contextlib.contextmanager
 def _environment(**overrides: str) -> Iterator[None]:
     saved = {key: os.environ.get(key) for key in overrides}
@@ -541,6 +579,7 @@ def isolated_engine_session(
             expected_slots: list[str] = []
             expected_members = int(kwargs.get("tp_size", 1) or 1)
             try:
+                _pin_engine_processes(os.environ.get("CACHEON_CPU_PINS"), schedulers=expected_members)
                 _report_running_engine_failures(engine)
                 if active:
                     assert receipts is not None

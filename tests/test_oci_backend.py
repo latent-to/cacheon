@@ -719,6 +719,12 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
     assert "--cpuset-cpus=0-3,8-11" in isolated_argv
     assert "--cpuset-mems=0" in isolated_argv
 
+    pinned = replace(case.runtime, cpu_pins={"1": [15, 16], "0": [0, 1, 120]})
+    pinned_argv = _argv(case, lease, cache, multi_resolved, pinned)
+    assert '--env=CACHEON_CPU_PINS={"schedulers":[0,15],"pool":[1,16,120]}' in pinned_argv
+    assert not any("CACHEON_CPU_PINS" in arg for arg in multi_argv)
+    assert pinned.digest != case.runtime.digest == replace(case.runtime, cpu_pins=None).digest
+
     reference_argv = _argv(
         case, lease, cache, case.resolved, case.runtime, session_protocol="reference"
     )
