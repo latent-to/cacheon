@@ -67,14 +67,13 @@ class ResidentSpeedPolicy:
             # Version 2 scores timed windows, where the hardened stack has
             # demonstrated <=0.8% honest spread; a looser ceiling would let a
             # broken measurement convict or crown instead of NO_DECISION.
-            raise CrossoverRuntimeError(
-                "resident speed policy requires max_noise <= 0.02"
-            )
+            raise CrossoverRuntimeError("resident speed policy requires max_noise <= 0.02")
         if (type(self.goodput) is not GoodputPolicy
             or (self.version == 16 and (
                 self.goodput.error_rate != 0
                 or self.goodput.required != 1 + max(self.min_margin, self.noise_multiplier * self.goodput.null_noise)))
-            or (self.version == 17 and (self.goodput.error_rate != 0.01 or self.goodput.required != 1))
+            # Owner ruling 2026-10-01: 0.125 (90% at the final look); 0.01 stays readable for stages sealed before it.
+            or (self.version == 17 and (self.goodput.error_rate not in (0.01, 0.125) or self.goodput.required != 1))
             or self.goodput.null_noise > self.max_noise
             or self.goodput.boot_noise > self.max_noise
             # The batch-cell thresholds are wire fields only; replay seals them at zero.

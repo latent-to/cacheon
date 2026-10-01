@@ -579,7 +579,7 @@ seals the service `contract`
 `null_noise`, fixed `attainment_tolerance`, and its calibrated one-sided
 `attainment_margin`. These values use canonical decimal strings. The
 window-scatter, conditioning-slowdown and minimum-window fields of the retired
-batch-cell policies stay sealed as zero, because the policy digest binds them. V17 seals `required=1`, `error_rate=0.01`, paired per-window log-cost
+batch-cell policies stay sealed as zero, because the policy digest binds them. V17 seals `required=1`, `error_rate=0.125` (`0.01` in stages sealed before the 2026-10-01 owner ruling), paired per-window log-cost
 standard deviation `null_noise`, and paired boot standard deviation `boot_noise`.
 An optional `futility_margin` fails a stage whose complete first orientation
 reads more than that fraction slower, without booting the swapped orientation.
@@ -595,7 +595,7 @@ rejects a legacy fixed-threshold goodput declaration before staging a run;
 V16 remains readable only to reproduce its original evidence. A noise estimate
 for summed request latency cannot calibrate elapsed serving cost. Calibration
 must cover the commissioned workload, arrivals, engine state and lane schedule.
-An error budget is conditional on those noise bounds; merely setting 1% does
+An error budget is conditional on those noise bounds; merely setting it does
 not establish a measured false-positive rate.
 
 Both OCI engines condition and flush before concurrent reads. V17 permits two
@@ -608,8 +608,8 @@ the calibrated window variance or observed whole-window jackknife variance.
 Requests sharing a window are not treated as independent replications.
 
 Eligibility requires a positive one-sided log-gain bound. At most four looks
-share the 1% error budget: 5%, 5%, 10%, and 80% of that budget, with unused looks
-unspent. Both orientations must exist before a PASS; a futility FAIL keeps one.
+share the sealed error budget: 5%, 5%, 10%, and 80% of it, with unused looks unspent. The 12.5% budget makes the last look a 90% one-sided bound: on stored copy-versus-copy boots a copy passed 7% of the time, a 1% gain 62%, a 2% gain 95% and a 3% gain every time.
+Both orientations must exist before a PASS; a futility FAIL keeps one.
 The last sealed window yields `PASS` or `FAIL`, never `NO_DECISION`. This normal-model guarantee
 depends on the sealed noise bounds and independent boot contrasts; it does not
 establish runtime resolution by itself. A fixed 1% gain floor is absent. Reward

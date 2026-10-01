@@ -343,15 +343,14 @@ def test_batch_cell_policy_fields_stay_on_the_wire_at_zero() -> None:
         ResidentSpeedPolicy.from_dict(
             {key: value for key, value in row.items() if key != "min_windows"}
         )
-    for field in (
-        "min_windows",
-        "max_window_scatter",
-        "max_conditioning_slowdown",
-        "prefill_min_margin",
-        "prefill_credit_weight",
-    ):
+    for field in ("min_windows", "max_window_scatter", "max_conditioning_slowdown", "prefill_min_margin",
+                  "prefill_credit_weight"):
         with pytest.raises(CrossoverRuntimeError, match="frozen calibration"):
             replace(policy, **{field: 1})
+    # Owner ruling 2026-10-01: 90% at the final look; 0.01 is what earlier stages sealed.
+    assert replace(policy, goodput=replace(GOODPUT, error_rate=0.125)).goodput.error_rate == 0.125
+    with pytest.raises(CrossoverRuntimeError, match="frozen calibration"):
+        replace(policy, goodput=replace(GOODPUT, error_rate=0.05))
 
 
 @pytest.mark.parametrize("version", range(1, 16))

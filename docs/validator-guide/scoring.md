@@ -38,7 +38,7 @@ PASS         = the one-sided lower bound on speedup exceeds 1 at a sealed look
 Each whole window is one observation; requests sharing a window are not treated
 as independent replications. The standard error combines the calibrated window
 and boot noise with the observed jackknife variance, and at most four looks
-share the sealed 1% error budget. Both orientations must exist before a PASS,
+share the sealed 12.5% error budget (90% at the last look). Both orientations must exist before a PASS,
 and the candidate must also pass the service-attainment gate. The last sealed
 window yields PASS or FAIL. An optional sealed `futility_margin` fails the stage
 after the first orientation when that orientation's pooled estimate is below
