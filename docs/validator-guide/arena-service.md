@@ -58,8 +58,10 @@ authoritative.
 | `hold` | Retains work when age/depth/cohort limits require intervention |
 
 Admission runs before the first claim: an exact copy of a loser inherits its
-FAIL and closed targets release payment as NO_DECISION. A crown leaves admission
-open against the commissioned baseline; settlement still checks ancestor performance.
+FAIL and closed targets release payment as NO_DECISION. Baselines close after
+14,400 finalized blocks from their first replacement (about 48 hours) or five
+newer crowns, whichever comes first. Admission checks the commitment block and
+preserves payment on return; settlement still checks ancestor performance.
 Candidate-caused qualification failure rejects; provider, baseline, teardown and
 incomplete-evidence failures remain infrastructure failures. Qualification HOLD
 has an explicit recovery path. Monitor held rows and preserve evidence; deleting

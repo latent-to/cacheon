@@ -76,9 +76,12 @@ a recovery mechanism.
 
 ## Deterministic plan
 
-New commitments remain admissible against the commissioned baseline after a crown.
-Admission still enforces closed targets and duplicate-loss replay; completed
-evaluations are not readmitted. An admitted candidate retains its measured
+New commitments remain admissible against the commissioned baseline for 14,400
+finalized blocks after its first replacement (about 48 hours), or until five
+newer crowns, whichever is earlier. An unbeaten baseline remains open. The
+commitment block, not queue wait time, determines eligibility; the cutoff block
+itself is admitted. Closed targets and duplicate-loss replay still apply, and
+completed evaluations are not readmitted. An admitted candidate retains its measured
 baseline. Among eligible registered candidates, the planner chooses the highest
 conservative speedup and uses finalized order as a stable tie-break.
 

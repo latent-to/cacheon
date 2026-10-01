@@ -34,7 +34,7 @@ failure. Plaintext submissions from older clients remain readable.
    separate and idempotent so a crash between publication and copy disposition cannot
    bypass priority.
 8. **Admit and qualify.** If a registered arena service was injected, run admission
-   on the queue (duplicate `FAIL` replay and closed targets), form
+   on the queue (duplicate `FAIL` replay, closed targets and the baseline window), form
    a capacity-bounded cohort, execute authoritative resident qualification, and
    persist outcomes. There is no separate screen stage.
 9. **Settle retained PASSes.** Lease economically unblocked, completely qualified

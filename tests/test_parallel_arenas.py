@@ -222,3 +222,100 @@ def test_crown_keeps_ancestor_admission_open_and_payment_bound(tmp_path, arena, 
                  digest="d" * 64, root=tmp_path / "other")
         assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
         assert store.get(other.reservation_id).status == "published"
+
+
+@pytest.mark.parametrize(("crowns", "commit_block", "closed"), (
+    (0, 20_000, False),       # An unbeaten commission does not expire.
+    (1, 14_411, False),       # The 14,400-block boundary is inclusive.
+    (1, 14_412, True),
+    (4, 16, False),          # Baseline plus four newer winners is still five.
+    (5, 15, False),          # Commitments in the fifth crown's block can drain.
+    (5, 16, True),
+    (5, 14_411, True),       # Five wins can close admission before the time limit.
+    (5, 12, False),          # Later crowns do not punish delayed publication.
+))
+@pytest.mark.parametrize("payment_kind", ("credit", "payment"))
+@pytest.mark.parametrize(("arena", "target"), (
+    ("glm", "forward_pass"), ("qwen", "prefix_cache"),
+))
+def test_baseline_window_uses_the_earlier_bound_and_preserves_fees(
+    tmp_path, crowns, commit_block, closed, payment_kind, arena, target,
+):
+    from cacheon.chain.eval_cost_credit import grant_eval_cost_credit, list_eval_cost_credits
+    from tests.test_chain_intake import _arrival, _bh, _fingerprint, _publish
+
+    service = fixture._h("arena")
+    with _store(tmp_path) as store:
+        store.select_arena(arena, accept_legacy_bundles=False)
+        for index in range(crowns):
+            winner = _qualified_settlement_candidate(
+                store, index=index, marker=f"winner-{index}",
+                speedups=(f"1.{index + 1}", f"1.{index + 1}"),
+                initialize_stack=index == 0,
+            )
+            lease = store.lease_settlement_cohort(current_block=11 + index)
+            plan, evidence = _settlement_plan(store, lease)
+            store.commit_settlement(lease, plan, evidence, current_block=11 + index)
+            assert store.target_lineage_tips()["forward_pass"].nodes[-1].artifact_digest == (
+                winner.candidate_manifest.entries["forward_pass"].artifact_digest
+            )
+        arrival = _arrival(10, hotkey="late", block=commit_block)
+        if payment_kind == "credit":
+            grant_eval_cost_credit(store.path, hotkey="late", amount_tao_rao=25)
+        else:
+            arrival = replace(arrival, payment_block=5, payment_extrinsic_index=7)
+        row = store.reserve_finalized(
+            (arrival,), finalized_block=commit_block, finalized_block_hash=_bh(commit_block),
+            eval_cost_amount_tao_rao=25,
+        )[0]
+        _publish(store, row.reservation_id, _fingerprint(target, target, "f"),
+                 digest="f" * 64, root=tmp_path / "late")
+        # A different commissioned service never inherits these crown counts.
+        assert store.prepare_qualification_queue(service_digest=fixture._h("other-service")) == ()
+        retired = store.prepare_qualification_queue(service_digest=service)
+        assert retired == (((row.reservation_id, "baseline_closed_at_submission"),) if closed else ())
+        result = store.get(row.reservation_id)
+        assert result.status == ("expired" if closed else "published")
+        assert result.decision == ("NO_DECISION" if closed else "")
+        assert not store.active_evaluation_leases()
+        if payment_kind == "credit":
+            credit = list_eval_cost_credits(store.path, hotkey="late")[0]
+            assert credit.reservation_id == ("" if closed else row.reservation_id)
+            if closed:
+                assert credit.spent_block == 0
+        else:
+            payment = store._db.execute("SELECT reservation_id FROM eval_cost_payments "
+                                        "WHERE payment_extrinsic_index=7").fetchone()
+            assert payment is None if closed else payment[0] == row.reservation_id
+
+    with _store(tmp_path) as store:
+        store.select_arena(arena, accept_legacy_bundles=False)
+        assert store.prepare_qualification_queue(service_digest=service) == ()
+        assert store.get(row.reservation_id).status == result.status
+
+
+def test_closed_baseline_keeps_prior_claims_and_other_competitions(tmp_path):
+    from tests.test_chain_intake import _arrival, _bh, _claim, _fingerprint, _publish
+
+    with _store(tmp_path) as store:
+        store.select_arena("glm", accept_legacy_bundles=False)
+        winner = _qualified_settlement_candidate(store)
+        lease = store.lease_settlement_cohort(current_block=11)
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+        for index, arena in enumerate(("glm", "qwen"), start=1):
+            store.select_arena(arena, accept_legacy_bundles=False)
+            row = store.reserve_finalized(
+                (_arrival(index, hotkey=arena, block=20_000),),
+                finalized_block=20_000, finalized_block_hash=_bh(20_000),
+            )[0]
+            _publish(store, row.reservation_id, _fingerprint("forward_pass", "forward_pass", "f"),
+                     digest="f" * 64, root=tmp_path / arena)
+            if arena == "glm":
+                # Work admitted before this policy upgrade retains its first claim.
+                _claim(store, row.reservation_id, service=winner.arena_digest)
+                store.mark_held(row.reservation_id, "worker_unavailable")
+                store.release_hold(row.reservation_id, reason="worker_recovered")
+                assert store.get(row.reservation_id).arena_service_digest == winner.arena_digest
+            assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
+            assert store.get(row.reservation_id).status == "published"

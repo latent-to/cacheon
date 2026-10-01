@@ -406,13 +406,26 @@ class ArenaStateMixin:
         Duplicate FAIL replay follows duplicate_replay; a PASS and the
         reproduction lane are never replayed. Closed targets release payment
         through the existing no-decision transaction, before acquiring a lease.
-        A crown does not close admission against the commissioned baseline;
-        settlement compares ancestor-based results with the current lineage tip.
+        After its first replacement, a commissioned baseline remains open for
+        14,400 finalized blocks (about 48 hours), or until its fifth newer crown,
+        whichever comes first. Compare the finalized commitment block, not queue
+        wait time; work already claimed keeps its admission on recovery.
         """
         from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
         from cacheon.stack_identity import require_sha256_hex
 
         require_sha256_hex(service_digest, field="arena service digest")
+        crowns = self._db.execute(
+            "SELECT crowned_block FROM target_lineage_nodes "
+            "WHERE competition_arena=? AND arena_id=? "
+            "ORDER BY crowned_block,transition_event_id LIMIT 5",
+            (self._competition_arena, service_digest),
+        ).fetchall()
+        cutoff = None
+        if crowns:
+            cutoff = crowns[0]["crowned_block"] + 14_400
+            if len(crowns) == 5:
+                cutoff = min(cutoff, crowns[4]["crowned_block"])
         priors = tuple(
             PriorVerdict(
                 reservation_id=row["reservation_id"],
@@ -433,6 +446,10 @@ class ArenaStateMixin:
             before = len(retired)
             for row in self.claimable(limit=limit):
                 first_claim = row.status == "published" and not row.arena_service_digest
+                if first_claim and cutoff is not None and row.arrival.block > cutoff:
+                    rejected = self._expire_before_claim(row.reservation_id, "baseline_closed_at_submission")
+                    retired.append((row.reservation_id, rejected.reason))
+                    continue
                 if row.target_id in closed_targets and first_claim:
                     parked = self.mark_target_unavailable(row.reservation_id, target_id=row.target_id)
                     retired.append((row.reservation_id, parked.reason))

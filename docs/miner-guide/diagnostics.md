@@ -274,15 +274,25 @@ Do not include wallet secrets, private URLs, or validator filesystem paths.
 
 ### Baseline admission closed
 
-`baseline_closed_at_submission` is a historical admission outcome. The former rule
-returned commitments made after the first crown as `NO_DECISION`, before evaluation,
-preserving the submission credit or cited evaluation payment. Those records retain
-their original message: “This baseline closed before your submission. Your submission
-credit has been preserved.” They are not automatically reopened; submit again using
-the preserved credit or payment.
+`baseline_closed_at_submission` means the commitment arrived after its baseline's
+admission window. An unbeaten commissioned baseline stays open. After its first
+replacement, it remains eligible for **14,400 finalized blocks** (approximately
+48 hours at 12 seconds per block) or until **five newer crowns**, whichever is
+earlier. Four newer winners leave the baseline among the most recent five;
+the fifth closes it. Only crowns in the same competition and commissioned service
+count, including crowns on other targets; a PASS without a crown does not count.
 
-New commitments remain admissible after a crown. They run against the commissioned
-baseline and must still clear the applicable settlement and reward hurdles.
+The cutoff block is inclusive. Commitments in that block or earlier can drain even
+if fetched or evaluated later; already claimed work is not checked again on retry.
+The baseline is assigned by the validator's commission, not selected by the miner.
+An explicit new commission opens the new baseline. Settlement and reward hurdles
+still apply to admitted ancestor-based results.
+
+Later commitments leave as `NO_DECISION` before evaluation, preserving the credit
+or cited payment. The notice says: “This baseline closed before your submission.
+Your submission credit has been preserved.” Resubmit against the current open
+baseline. Older records returned under the former immediate-close rule stay
+terminal; they are not automatically reopened.
 
 `lost_potential` means evaluation passed, but the completed comparison did not clear
 the required margin. The detail notice distinguishes a reward comparison against the
