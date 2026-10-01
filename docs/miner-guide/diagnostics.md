@@ -274,15 +274,15 @@ Do not include wallet secrets, private URLs, or validator filesystem paths.
 
 ### Baseline admission closed
 
-`baseline_closed_at_submission` means the finalized commitment was later than the
-first champion win on the commissioned baseline. It is rejected at admission,
-before its first qualification claim, with `NO_DECISION`, not a failed evaluation.
-Your submission credit is preserved, and a cited evaluation payment remains reusable.
-The message says: “This baseline closed before your submission. Your submission
-credit has been preserved.” Resubmit against the current open baseline.
-Earlier commitments keep their assigned baseline
-and may finish after the champion changes; settlement does not repeat the cutoff.
-A newly commissioned baseline opens its own admission window.
+`baseline_closed_at_submission` is a historical admission outcome. The former rule
+returned commitments made after the first crown as `NO_DECISION`, before evaluation,
+preserving the submission credit or cited evaluation payment. Those records retain
+their original message: “This baseline closed before your submission. Your submission
+credit has been preserved.” They are not automatically reopened; submit again using
+the preserved credit or payment.
+
+New commitments remain admissible after a crown. They run against the commissioned
+baseline and must still clear the applicable settlement and reward hurdles.
 
 `lost_potential` means evaluation passed, but the completed comparison did not clear
 the required margin. The detail notice distinguishes a reward comparison against the

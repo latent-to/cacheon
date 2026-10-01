@@ -156,7 +156,7 @@ def test_pre_namespace_lineage_migrates_without_changing_retained_evidence(tmp_p
     ("glm", "forward_pass"), ("qwen", "prefix_cache"),
 ))
 @pytest.mark.parametrize("payment_kind", ("credit", "payment"))
-def test_crown_cutoff_admits_commitments_once_before_qualification(tmp_path, arena, target, payment_kind):
+def test_crown_keeps_ancestor_admission_open_and_payment_bound(tmp_path, arena, target, payment_kind):
     from cacheon.chain.eval_cost_credit import grant_eval_cost_credit, list_eval_cost_credits
     from tests.test_chain_intake import _arrival, _bh, _fingerprint, _publish
 
@@ -166,8 +166,7 @@ def test_crown_cutoff_admits_commitments_once_before_qualification(tmp_path, are
         lease = store.lease_settlement_cohort(current_block=11)
         plan, evidence = _settlement_plan(store, lease)
         store.commit_settlement(lease, plan, evidence, current_block=11)
-        # Neither commitment was in the transition's reservation snapshot.
-        # Their chain blocks, not fetch/completion order, decide admission.
+        # Both pre-crown and post-crown commitments use the commissioned baseline.
         late_arrival = _arrival(2, hotkey="late", block=12)
         if payment_kind == "credit":
             grant_eval_cost_credit(store.path, hotkey="late", amount_tao_rao=25)
@@ -183,40 +182,37 @@ def test_crown_cutoff_admits_commitments_once_before_qualification(tmp_path, are
         for row, marker in ((early, "a"), (late, "b")):
             _publish(store, row.reservation_id, _fingerprint(target, target, marker),
                      digest=marker * 64, root=tmp_path / marker)
-        rejected = store.prepare_qualification_queue(service_digest=winner.arena_digest)
-        assert rejected == ((late.reservation_id, "baseline_closed_at_submission"),)
+        assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
         assert store.get(early.reservation_id).status == "published"
-        rejected_row = store.get(late.reservation_id)
-        assert rejected_row.status == "expired" and rejected_row.arena_service_digest == ""
-        assert rejected_row.decision == "NO_DECISION"
+        admitted = store.get(late.reservation_id)
+        assert admitted.status == "published" and admitted.arena_service_digest == ""
+        assert admitted.decision == "" and admitted.reason == ""
         assert not store.active_evaluation_leases()
         if payment_kind == "credit":
             credit = list_eval_cost_credits(store.path, hotkey="late")[0]
-            assert (credit.reservation_id, credit.spent_block) == ("", 0)
+            assert credit.reservation_id == late.reservation_id
         else:
             assert store._db.execute("SELECT reservation_id FROM eval_cost_payments "
-                                     "WHERE payment_extrinsic_index=4").fetchone() is None
+                                     "WHERE payment_extrinsic_index=4").fetchone()[0] == late.reservation_id
         assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
         assert store.get(winner.reservation_digest).decision == "PASS"
 
-    # Reopening does not turn an earlier accepted commitment into a late one.
+    # Restarting preserves both admissions and the late submission's payment.
     with _store(tmp_path) as store:
         store.select_arena(arena, accept_legacy_bundles=False)
         assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
         assert store.get(early.reservation_id).status == "published"
-        fresh = store.reserve_finalized(
-            (replace(late_arrival, block=13, block_hash=_bh(13)),),
-            finalized_block=13, finalized_block_hash=_bh(13), eval_cost_amount_tao_rao=25,
-        )[0]
-        assert fresh.status == "reserved" and fresh.reason == ""
+        assert store.get(late.reservation_id).status == "published"
+        assert store.get(late.reservation_id).reason == ""
         if payment_kind == "credit":
-            assert list_eval_cost_credits(store.path, hotkey="late")[0].reservation_id == fresh.reservation_id
-        _publish(store, fresh.reservation_id, _fingerprint(target, target, "b"),
-                 digest="b" * 64, root=tmp_path / "fresh")
-        # A new commissioned service has its own open admission window.
+            assert list_eval_cost_credits(store.path, hotkey="late")[0].reservation_id == late.reservation_id
+        else:
+            assert store._db.execute("SELECT reservation_id FROM eval_cost_payments "
+                                     "WHERE payment_extrinsic_index=4").fetchone()[0] == late.reservation_id
+        # Explicit baseline rotation also keeps unclaimed submissions eligible.
         assert store.prepare_qualification_queue(service_digest=fixture._h("new-commission")) == ()
-        assert store.get(fresh.reservation_id).status == "published"
-        # Another competition does not inherit this arena's crown cutoff.
+        assert store.get(late.reservation_id).status == "published"
+        # Another competition keeps its own admission queue.
         store.select_arena("other", accept_legacy_bundles=False)
         other = store.reserve_finalized(
             (_arrival(4, hotkey="other", block=14),),

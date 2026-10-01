@@ -76,16 +76,10 @@ a recovery mechanism.
 
 ## Deterministic plan
 
-Admission owns the baseline cutoff. The first crown on a commissioned baseline closes
-that baseline to later finalized commitments in the same competition. The
-qualification queue's admission step rejects them as `baseline_closed_at_submission`
-before any qualification lease or candidate execution. A commitment in the finalized
-crown block or earlier remains admissible even if its bundle is fetched later. A new
-commissioned service has its own admission window. Work claimed once never meets a
-second cutoff, and completed evaluations are not readmitted.
-
-Settlement does not repeat the commitment-time check. An admitted candidate retains its
-measured baseline. Among eligible registered candidates, the planner chooses the highest
+New commitments remain admissible against the commissioned baseline after a crown.
+Admission still enforces closed targets and duplicate-loss replay; completed
+evaluations are not readmitted. An admitted candidate retains its measured
+baseline. Among eligible registered candidates, the planner chooses the highest
 conservative speedup and uses finalized order as a stable tie-break.
 
 `target_lineage_tips` records each target's active root-to-tip lineage, parent artifacts,

@@ -58,8 +58,8 @@ authoritative.
 | `hold` | Retains work when age/depth/cohort limits require intervention |
 
 Admission runs before the first claim: an exact copy of a loser inherits its
-FAIL, closed targets release payment as NO_DECISION, and commitments after the first crown on the
-commissioned baseline expire as `baseline_closed_at_submission` (NO_DECISION, payment released).
+FAIL and closed targets release payment as NO_DECISION. A crown leaves admission
+open against the commissioned baseline; settlement still checks ancestor performance.
 Candidate-caused qualification failure rejects; provider, baseline, teardown and
 incomplete-evidence failures remain infrastructure failures. Qualification HOLD
 has an explicit recovery path. Monitor held rows and preserve evidence; deleting
