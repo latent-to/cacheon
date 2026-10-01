@@ -111,7 +111,7 @@ The committed content hash is rederived from the local bundle and later from the
 and extracted tree. Hosting different bytes causes a durable rejection.
 
 Eval-cost defaults off. When the operator enables it, add
-`--eval-cost-tao-rao 1000000000` to `chain-validate` and follow the miner `--pay`
+`--eval-cost-tao-rao 500000000` to `chain-validate` and follow the miner `--pay`
 sequence in [Submitting a proposal](../miner-guide/submitting.md#step-by-step-commands).
 
 ## Inspect chain state

@@ -42,9 +42,7 @@ surface is real. They do not satisfy the current authority model because they
 predate:
 
 - a reviewed injected arena service;
-- persistent routing-only resident screening;
-- adaptive two-lane resident crossover qualification;
-- exact physical-lane role swap for independent reproduction;
+- the two-lane paired replay qualification and its lane-orientation swap;
 - torch-free host audit regrading over exact slot × TP-rank coverage;
 - current-schema evidence reopen and transactional settlement; and
 - the separate integrated release and serving stack.
@@ -82,12 +80,12 @@ Disposable build workers and isolated OCI execution reduce that boundary, while 
 host owns arm assignment, clocks, protocol evidence, teardown, audit grading, and
 the candidate-free reference.
 
-### Reproduction is protocol authority
+### A qualification attempt is protocol authority
 
-Two numbers in a worklog are not two independent qualification attempts. Current
-settlement requires distinct authority and evidence for the second PASS and, for
-resident qualification, an exact swap of the baseline and candidate physical TP
-lanes. Settlement uses the lower reproduced speedup.
+Two numbers in a worklog are not a qualification attempt. Current settlement
+requires one complete audited PASS whose paired replay exchanges the baseline and
+candidate physical TP lanes between its two orientations. Historical reproduction
+pairs retain their lower reproduced speedup.
 
 ## Current interpretation
 

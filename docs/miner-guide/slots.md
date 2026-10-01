@@ -28,10 +28,10 @@ coverage are checked separately.
 ## Current GLM-5.3 availability
 
 The GLM node arena is `glm53-b300-node-v1`, using GLM-5.3 NVFP4 with
-SGLang 0.5.20 on B300, TP4 and attention DP4. Its incumbent is the composed
-champion implementation. Use the [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
-with that model and topology. Arena-specific inputs and supported boundaries
-remain part of the published contract; Qwen checks do not establish GLM coverage.
+SGLang 0.5.20 on B300, TP4 and attention DP4. `forward_pass` and `prefix_cache`
+are both open, and its incumbent is the composed champion implementation. Use the
+[GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
+with that model and topology; Qwen checks do not establish GLM coverage.
 
 ## Arena availability
 
@@ -55,11 +55,11 @@ prepared state as the first argument. See [Kernel ABI](kernel-abi.md).
 ## The prefix cache
 
 `tree_cache` names the scheduler's prefix cache instead of a module. The factory
-`entry(cache)` receives the initialized runtime object and returns a subclass of
-its type. The same interface applies across models. The validator installs those
-methods on the existing object, preserving its components, host tier, allocator
-and request pool. The factory may initialize its own fields on the cache.
-Declare no `prepare`, dtypes, architectures or eligibility metadata for it.
+`entry(cache)` receives the initialized runtime object and returns its type or a
+concrete subclass, on every model. The validator installs those methods on the
+existing object, preserving its components, host tier, allocator and request pool.
+The factory may initialize its own fields on the cache. Declare no `prepare`; a row
+declaring dtypes, architectures or metadata is never selected and the run fails.
 
 ```toml
 [competition]
@@ -91,16 +91,16 @@ cache is commissioned. The cache runs outside CUDA graphs, so it needs no captur
 execution. The same content check runs on both arms: the KV behind every prefix
 the cache serves is checked against what the engine computed for it, whichever
 slot or host tier the bytes came through. Serving other bytes, keeping pages
-across a flush, moving a request's own slots or claiming more tokens than the key
-stops the engine as the candidate's failure. Validation covers full-attention KV,
-paged sliding-window KV and its index state, compressed KV and index pages,
-recurrent checkpoints, and per-request sliding-window rings. See
+across a flush, moving a request's own slots, claiming more tokens than the key, or
+serving or protecting a length that is not whole pages stops the engine as the
+candidate's failure, as does a `match_prefix` result that is not SGLang's `MatchResult`.
+Validation covers full-attention, sliding-window, compressed and recurrent state. See
 [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
 The prefix cache is a target only on arenas that serve with prefix caching. The
 Qwen development configuration disables radix caching, and a cache bundle there
 stops with `this hybrid runtime disables prefix caching`; cache bundles apply to
-the GLM arena. Check the arena's published target availability before submitting.
+the GLM arena. The operator's announcement names each arena's open targets.
 At the GLM arena's sealed load, the stock cache already reaches the prefix hit
 rate the workload allows, so a cache win comes from lower overhead or better
 behavior under memory pressure rather than more hits.

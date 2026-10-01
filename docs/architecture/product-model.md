@@ -138,7 +138,7 @@ valid submission. The only path for it is a reviewed validator-side catalog
 change (a new target), followed by fresh qualification and CROWN
 linkage.
 
-Rebuild and dependency-patch capabilities are likewise validator-reviewed. A normal target can only use features explicitly admitted by its target specification, and permanent framework mutation is not a miner-selected permission.
+Rebuild capabilities are likewise validator-reviewed, and dependency patches are not accepted. A normal target can only use features explicitly admitted by its target specification, and permanent framework mutation is not a miner-selected permission.
 
 ## Product scope
 

@@ -20,8 +20,8 @@ flowchart LR
 ```
 
 `load_manifest()` covers only the first step: required syntax, identifier
-shape, path containment/existence, variant uniqueness, and structural CUDA or
-patch declarations. It does not import source, prove that the requested target
+shape, path containment/existence, variant uniqueness, and structural CUDA
+declarations. It does not import source, prove that the requested target
 exists, or verify numerical behavior. `scan`, target resolution, `verify`, and
 production qualification are separate gates so a structurally valid document
 cannot grant itself authority.
@@ -68,8 +68,8 @@ The canonical bundle hash, not `bundle_id`, is the proposal's content identity.
 The content hash walks the bundle's own regular files in sorted relative-path
 order and hashes length-prefixed path and byte sequences. Git and Python cache
 noise is excluded; symlinks are not part of the hashed file set and the bundle
-loader/scanner rejects unsafe tree structure. Editing source, metadata, a
-patch, or even the manifest produces a new identity. Renaming only the outer
+loader/scanner rejects unsafe tree structure. Editing source, metadata,
+or even the manifest produces a new identity. Renaming only the outer
 directory does not.
 
 `bundle_id` is useful in logs and diagnostics but never proves that two reveals
@@ -106,7 +106,7 @@ An unknown selector stays unclaimed and is subject to the ordinary intake SLA.
 | `dtypes` | no | Declared dtype capability domain; an empty array adds no dtype restriction |
 | `architectures` | no | Declared architecture capability domain; an empty array adds no architecture restriction |
 | `metadata` | no | Eligibility/capability JSON within the bundle |
-| `base_kernel`, `override_point` | no | Retired override composition fields; the loader refuses a row that sets `override_point` |
+| `base_kernel`, `override_point` | no | Retired override composition fields; target resolution refuses a row that sets either |
 | `cuda_sources` | no | Inspectable `.cu`/`.cuh` inputs for a reviewed builder |
 
 Unknown operation fields are retained for observation. They do not grant a
@@ -117,15 +117,14 @@ than its target admits.
 
 The `slot` chooses a validator-owned semantic ABI, not an arbitrary import
 hook. The validator resolves `source` inside the bundle and looks up the named
-Python identifier only after structural and static gates. It allocates outputs
-and passes arguments in the registered slot order. Candidate code fills those
-outputs; it does not redefine shapes, references, tolerances, or the call site.
+Python identifier only after structural and static gates. Candidate code does
+not redefine shapes, references, tolerances, or the call site.
 
-A node-address row is called in place of the named module instead: `entry`
+A node-address row is called in place of the named module: `entry`
 receives the prepared state and then the module's own forward arguments, and
 returns what the module would. Every row of such a bundle is a node address, no
 two rows may overlap, and the bundle resolves to `forward_pass` whether or not
-`[competition]` names it.
+`[competition]` names it. A `tree_cache` row's `entry(cache)` returns the cache class.
 
 For prepare/forward slots, `prepare` names the registered one-time weight
 transformation while `entry` names the runtime call. `setup` is a legacy direct
@@ -190,7 +189,7 @@ A bundle cannot choose:
 | Path error | Absolute path, `..` escape, missing file, unsafe symlink | Keep every declared input as a regular contained file |
 | Duplicate-slot error | Multiple rows without explicit unique variants | Name every variant and make domains disjoint |
 | Competition error | Unknown target, wrong `slot`/`atomic` mode, legacy `system` title | Choose a registered target from validator output |
-| Feature-admission error | CUDA, patch, override, setup, or extra capability outside target policy | Remove the feature or choose the registered lane |
+| Feature-admission error | `setup`, a retired override field, or an extra capability outside target policy | Remove the feature |
 | CUDA-source declaration error | Missing, uncontained, or non-`.cu`/`.cuh` input | Declare contained source paths in `cuda_sources`; build admission remains validator-owned |
 | Static scan error | Forbidden import/operation or uninspectable tree content | Rewrite the source; scanning is not a sandbox exception list |
 | Verification error | Import or entry-signature mismatch (`verify`), or audit violations against stock (`check`) | Match the node's stock arguments and result structure |
@@ -201,8 +200,8 @@ A bundle cannot choose:
 - Choose `forward_pass` (node addresses) or `prefix_cache` (`tree_cache`).
 - Declare `[competition]` explicitly.
 - Keep `bundle_id` descriptive but assume only the content hash is identity.
-- Declare every source, metadata, CUDA, and dependency-patch input with a
-  contained relative path.
+- Declare every source, metadata, and CUDA input with a contained relative
+  path; `.patch`/`.diff` files are refused.
 - Give repeated slot rows unique variants with non-overlapping domains.
 - Avoid `setup`; use only registered `prepare` and entry contracts.
 - Run `scan` and `verify`, then `check` in the published arena image.

@@ -24,8 +24,8 @@ my_bundle/
   LICENSE
 ```
 
-Advanced, target-approved bundles may also contain declared `.cu`/`.cuh`
-sources, unified dependency diffs, or a reviewed `rebuild.json`. Do not include compiled
+Bundles may also contain declared `.cu`/`.cuh` sources and a reviewed
+`rebuild.json`; `.patch`/`.diff` files are refused. Do not include compiled
 objects, CUBINs, wheels, shared libraries, caches, model weights, credentials, or
 absolute machine paths.
 
@@ -42,7 +42,6 @@ qualification runs.
 | `kernels/*.py` | candidate source loaded only after structural and static-policy gates, and only inside the appropriate worker boundary |
 | `metadata/*.json` | node routing eligibility on dtype, architecture, last dimension or graph mode; it cannot set correctness tolerances or reward policy |
 | declared `.cu`/`.cuh` | inspectable native inputs to a validator-approved rebuild step; never prebuilt output |
-| declared `.patch`/`.diff` | exact source delta for the narrowly allowed pinned dependency surface |
 | `rebuild.json` | selects registered validator-owned build capabilities; it is not a shell script |
 | `README*`, `LICENSE*` | human context and licensing; still identity-bearing bytes, so changing them creates a different content hash |
 
@@ -113,7 +112,7 @@ Each `[[ops]]` row describes one implementation:
 | `metadata` | bundle-relative JSON eligibility metadata |
 | `prepare` | optional `prepare(module)` called once per bound node; not allowed on `tree_cache` |
 | `setup` | engine-wide setup hook; currently forbidden by every registered target |
-| `base_kernel`, `override_point` | retired override composition fields; the loader refuses a row that sets `override_point` |
+| `base_kernel`, `override_point` | retired override composition fields; target resolution refuses a row that sets either |
 | `cuda_sources` | declared inspectable `.cu`/`.cuh` inputs to an approved build step |
 
 `bundle_id` must be a simple non-empty identifier, and newly authored bundles

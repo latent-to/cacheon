@@ -54,9 +54,9 @@ authoritative:
 | Symmetric containment of substantial file fingerprints | Later delta is a copy |
 
 Normalization removes cosmetic Python formatting/comments/docstrings, normalizes
-declared CUDA text, follows bundle-local Python imports, includes all explicit variants,
-and includes declared dependency patches. Symmetric containment prevents an extra padding
-operation or fresh sibling variant from hiding a stolen target implementation.
+declared CUDA text, follows bundle-local Python imports, and includes all explicit
+variants. Symmetric containment prevents an extra padding operation or fresh sibling
+variant from hiding a stolen target implementation.
 
 The intake store compares only earlier finalized proposals from another hotkey. Copy
 reconciliation is durable and idempotent. If an earlier fingerprint becomes available

@@ -35,7 +35,8 @@ flowchart TD
     A["Finalized timelock reveal"] --> B["Hardened fetch and immutable publication"]
     B --> C["Registered arena and target resolution"]
     C --> D["Qualification queue<br/>admission at first claim"]
-    D -->|"copy of a loser or post-crown commitment"| F["Terminal invalid or attributable failure"]
+    D -->|"copy of a loser"| F["Terminal invalid or attributable failure"]
+    D -->|"post-crown commitment"| X["Returned unevaluated<br/>NO_DECISION, payment released"]
     D -->|"claimed cohort"| Q["Paired replay speed<br/>audit, then pristine T"]
     Q -->|"FAIL"| F
     Q -->|"NO_DECISION"| N["NO_DECISION / retry"]
@@ -80,7 +81,7 @@ An `ArenaServiceRegistry` maps a public arena identifier to a closed
 
 - runtime, base-engine, validator-overlay, worker, model, architecture, GPU,
   and topology identities;
-- the scored workload cells and prompt-seed scheme;
+- the workload cells and prompt-seed scheme;
 - queue depth and age, active-qualification concurrency, and cohort size;
 - the qualification-policy digest; and
 - the reviewed provider implementation digest.
@@ -255,7 +256,6 @@ verdict. The references may live under the same content-addressed store root. It
 - the retained authority, attempt, report, and selection identities match the candidate;
 - the measured baseline belongs to the active target lineage and an ancestor-based
   result beats the composed improvement to the current tip;
-- target displacement, conflicts, and requirements remain valid;
 - the requested stack update matches the measured candidate.
 
 The submission cutoff is enforced during admission before the first qualification claim:

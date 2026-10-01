@@ -145,11 +145,11 @@ engine as the candidate's failure. See
 
 ## Identical bytes are not re-evaluated
 
-If the validator has already produced a terminal verdict for exactly your
-publication bytes, under exactly the same arena, that verdict is replayed
-instead of re-running the evaluation. Resubmitting an unchanged bundle
-therefore changes nothing. Change one byte and you get a new content identity
-and a fresh evaluation.
+If the validator has already failed exactly your publication bytes under exactly
+the same commissioned arena service, that `FAIL` is replayed instead of re-running
+the evaluation. Resubmitting an unchanged failed bundle therefore changes nothing;
+a new commissioned baseline measures it fresh. A `PASS` is never replayed, and
+resubmitting a passed bundle earns nothing new: reward skips a duplicate contribution.
 
 A retained report reopens under its original authority. A complete audited
 `PASS` is sufficient for qualification. Reopening its retained bytes verifies
@@ -161,9 +161,9 @@ The commissioned arena workload may be unable to measure some registered
 target families. A submission for one is parked at intake with reason
 `target_unavailable:<target>` before any evaluation runs. This is not a
 judgement on the bundle and it is not charged — the cited eval-cost payment
-stays spendable — and because the disposition is `NO_DECISION`, the identical
-bytes get a fresh evaluation when the family reopens. The arena manifest
-lists the currently closed targets.
+stays spendable. The submission closes as `NO_DECISION` and is not re-queued:
+resubmit the same bytes when the family reopens. The operator's announcement
+names the open targets; see [GLM availability](slots.md#current-glm-53-availability).
 
 ## Things that are not valid submissions
 

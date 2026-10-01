@@ -628,9 +628,9 @@ Recovery is intentionally conservative:
 A hold is not self-healing. Diagnose the retained `reason`, repair the authority, and use
 the reviewed release/requeue API appropriate to the deployment. The store's
 `release_hold(...)` appends an operator reason and chooses the lane from retained
-publication and reproduction evidence; it does not erase prior attempts. No public CLI
-wraps reservation-hold release, so deployment tooling must expose it under its
-own access controls and audit trail.
+publication and reproduction evidence; it does not erase prior attempts.
+[`cacheon chain-release-hold`](../reference/cli.md#chain-release-hold) wraps it and
+requires a stated `--reason`.
 
 ### Archive an exact schema-3 migration hold
 

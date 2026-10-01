@@ -118,11 +118,11 @@ requires compared calls; an audit that compared too little says nothing about th
 | `FAIL` | `slot_audit_failed` | A compared call scored more than `0.03` under its recorded bar, near misses exceed one compared call in 100 for a slot and rank, or a candidate output could not be compared. Terminal for the bundle. |
 | `NO_DECISION` | `audit_not_covered` | Receipts are missing, malformed, or under the per-member minimum. The audit role's shortfall; the bundle takes the ordinary requeue path and is not failed. |
 
-A near miss is a compared call under its bar by at most `0.03`. Recorded honest receipts
-sit within `0.004` of a `0.985` bar; recorded wrong kernels scored `0.18` or lower. Kernel
-faults are graded before coverage, so a wrong kernel on a thinly covered run still fails.
-The timed role has already proved the candidate executes, which is why an under-covered
-audit is attributed to the audit role rather than to the bundle.
+A near miss is a compared call under its bar by at most `0.03`. Node rows record a `0.75`
+bar; under the retired per-operation audit, honest receipts sat within `0.004` of a `0.985`
+bar and wrong kernels scored `0.18` or lower. Kernel faults are graded before coverage, so
+a wrong kernel on a thinly covered run still fails. The timed role has already proved the
+candidate executes, which is why an under-covered audit is attributed to the audit role.
 
 A stock baseline that raises inside the audit is counted as `baseline_refused`, not as a
 comparison error: no candidate output was compared, so it can reduce coverage but cannot

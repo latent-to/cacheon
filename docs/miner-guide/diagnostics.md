@@ -69,7 +69,7 @@ Common failures and fixes:
 | `tree_cache: state validation is unavailable for this hybrid pool` | the engine's sliding-window or recurrent pool has a layout the validator does not recognize | this is missing validator coverage, not a failed miner contribution |
 | `tree_cache: this hybrid runtime disables prefix caching` | the arena's engine configuration turns radix caching off, as the Qwen development inputs do | the prefix cache is not a target on that arena; use an arena that serves with prefix caching |
 | `... overlap; claim the wider node alone` | two rows of one bundle name a node and a node inside it | keep the wider address and drop the narrower one |
-| feature not allowed | `setup`, dependency patch, rebuild, override, CUDA source, or unknown extra is outside policy | remove it or use a target/lane that explicitly permits it |
+| feature not allowed | `setup` or an unknown extra is outside policy; `override points are retired` names a row that sets `base_kernel` or `override_point` | remove it; both targets admit declared CUDA sources and the registered rebuild |
 | incomplete feature evidence | intake could not independently observe the rebuild feature set | use only registered rebuild declarations and complete source inventory |
 | duplicate slot requires variants | repeated rows omit explicit unique `variant` | name every variant |
 | overlapping domains | two variants can route the same live call | make capability domains provably disjoint |

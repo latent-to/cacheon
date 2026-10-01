@@ -140,11 +140,9 @@ Cohorting is a scheduling optimization, not an economic change.
 
 The resulting tree digest is separate from the stack digest. The stack identifies semantic composition; the tree identifies the exact emitted filesystem used to build and launch it. Both are retained.
 
-## Seam bindings are part of execution identity
+## Seam activation is part of execution identity
 
-Engine launch policy resolves the stack's active contributions to a closed, validator-owned set of seam binding identifiers. Those public identifiers map to fixed environment gates inside the engine. Arbitrary environment variable names do not cross the controller/worker protocol.
-
-This guarantees that every incumbent read receives the same incumbent bindings and C receives only the binding change implied by its exact target delta. T has no candidate binding. See [SGLang seam](seam.md).
+The engine arms its adapters from the contributions registered in the materialized tree; arbitrary environment variable names do not cross the controller/worker protocol. Every incumbent read therefore loads the same incumbent contributions, C adds only its exact target delta, and T has no candidate activation. See [SGLang seam](seam.md).
 
 ## Build and launch identity
 

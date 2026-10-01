@@ -59,9 +59,9 @@ python -m cacheon.cli scan path/to/bundle
 ```
 
 Loads `manifest.toml` as data and recursively applies the Python policy to declared and
-vendored `.py` files. Manifest-declared CUDA sources and dependency patches are admitted
-as separate reviewed-build tiers; undeclared executable files, binaries, and symlinks are
-rejected. Static scanning is defense in depth; a clean result does not make contribution
+vendored `.py` files. Manifest-declared CUDA sources are admitted as a separate
+reviewed-build tier; `.patch`/`.diff` files, undeclared executable files, binaries, and symlinks
+are rejected. Static scanning is defense in depth; a clean result does not make contribution
 code trusted.
 
 `scan` also runs a separate Triton compilability heuristic over each declared
@@ -679,8 +679,6 @@ python -m cacheon.cli follow-weights \
 HTTP-PUTs it. It never opens a weight-signing wallet or calls `set_weights`. Credentials resolve from
 `--push-credentials`, else `CACHEON_WEIGHT_PUSH_CREDENTIALS` (JSON path), else
 `CACHEON_WEIGHT_PUSH_KEY` (+ optional `CACHEON_WEIGHT_PUSH_CREDENTIAL_ID`).
-The corresponding `CACHEON_WEIGHT_PUSH_*` names remain last-precedence transition
-aliases. Cacheon variables win when both forms are present.
 `serve-weights` exposes `GET /v1/current-weights` (permit + hotkey signature)
 and optional `PUT /v1/current-weights` (same credential resolution). A
 credentialed PUT stores an HMAC-authenticated envelope, and a push-enabled
@@ -690,11 +688,8 @@ timestamp, credential, offer, and projection digests; an HTTP intermediary
 cannot manufacture success without the push secret. Server-side
 storage/transport failures remain retryable.
 
-Cacheon verifies both the complete legacy `X-Cacheon-*`/`cacheon.*` transport
-dialect and the distinct `X-Cacheon-*`/`cacheon.*` dialect. Headers, schemas,
-HMAC domains, offer bytes, and acknowledgements must all select the same
-dialect; mixed forms fail closed. Existing authenticated objects are reopened
-without rewriting their bytes.
+Push and serve use one `X-Cacheon-*`/`cacheon.*` transport format for headers,
+schemas, HMAC domains, offer bytes, and acknowledgements.
 
 `follow-weights` rebinds the offer to the follower hotkey and publishes through
 `reconcile_weight_publication` / commit-reveal. A fresh follower accepts an
@@ -719,8 +714,7 @@ stdout.
 Provider swap is config-only via `--object-store-provider` /
 `CACHEON_OBJECT_STORE_*`; an environment-only
 `CACHEON_OBJECT_STORE_PROVIDER` is sufficient, while explicit flags take
-precedence over environment values. Corresponding `CACHEON_OBJECT_STORE_*`
-variables are accepted only as last-precedence transition aliases. The optional
+precedence over environment values. The optional
 S3-compatible dependency is
 `pip install -e ".[object-store]"` (boto3, Apache-2.0). See
 [Settlement and weights](../validator-guide/settlement-and-weights.md#shared-current-weights-endpoint).

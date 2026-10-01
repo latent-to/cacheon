@@ -23,8 +23,8 @@ python -m cacheon.cli scan ./my_bundle
 ```
 
 The command parses the manifest, applies the Python policy to every declared and vendored
-`.py` file, recognizes only manifest-declared CUDA sources and dependency patches, and
-rejects symlinks, binary artifacts, undeclared executable material, and files outside the
+`.py` file, recognizes manifest-declared CUDA sources, and rejects `.patch`/`.diff`
+files, symlinks, binary artifacts, undeclared executable material, and files outside the
 benign metadata allowlist. It scans an extracted bundle tree, not a transport archive.
 Archive extraction and resource limits belong to finalized intake. A clean result is
 defense in depth, not a sandbox or a correctness proof.
@@ -105,8 +105,8 @@ products that a qualification attempt retains.
 
 - `PASS` means one complete attempt cleared every registered gate.
 - `FAIL` requires complete evidence of a candidate-attributable violation. A speed
-  grade that has not established a gain by the last sealed window is `FAIL`, as is a
-  sealed futility stop after the first orientation.
+  grade that has not established a gain by the last sealed window is `FAIL`, as is a sealed futility stop after the
+  first orientation, or a measurably slower or attainment-missing read once both orientations exist.
 - `NO_DECISION` covers infrastructure faults, missing authority, or incomplete evidence
   and is eligible only for bounded retry.
 - `qualified` means one complete audited PASS is retained; settlement reopens that

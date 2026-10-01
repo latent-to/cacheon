@@ -188,9 +188,9 @@ fails as infrastructure authority; it must not become a candidate `PASS` or `FAI
 ## Static scanning and Python subprocesses
 
 Source scanning remains useful defense in depth. It applies the Python AST policy to every
-declared and vendored `.py` file. Manifest-declared CUDA sources and dependency patches are
-recognized as separate reviewed-build tiers; they are not Python-AST scanned. The tree
-guard rejects undeclared executable files, binary artifacts, and symlinks. None of these
+declared and vendored `.py` file. Manifest-declared CUDA sources are recognized as a
+separate reviewed-build tier; they are not Python-AST scanned. The tree guard rejects
+`.patch`/`.diff` files, undeclared executable files, binary artifacts, and symlinks. None of these
 checks proves arbitrary code safe, especially generated native code.
 
 The scanner admits the required CuTe DSL form `cute.compile(...)` only

@@ -115,7 +115,7 @@ The hash-chained event journal can contain:
 | `HOLD` | Candidate cannot advance against this incumbent or lost a conflict |
 | `CROWN` | Passing marginal contribution is recognized |
 | `RETIREMENT` | Previous contribution at the target is superseded |
-| `NEUTRALIZATION` | An overlapping target is displaced by explicit catalog policy |
+| `NEUTRALIZATION` | An overlapping target is displaced by explicit catalog policy; the current catalog declares no overlap |
 | `ADOPTION` | New contribution is inserted into the evaluation stack |
 | `STACK_TRANSITION` | Incumbent stack/tree advances atomically |
 | `DISCOVERY_BOUNTY` | Qualified discovery receives bounded bounty treatment only |
@@ -146,9 +146,9 @@ event, candidate pair, evidence receipt, and resulting stack state as one author
 
 ## Legacy V1 CROWN rewards
 
-One complete audited PASS makes a contribution eligible for settlement; it
-do not make it an earning claim. Only the settlement `CROWN` earns. When that
-transition advances the incumbent, existing reservations keep their durable queue
+One complete audited PASS makes a contribution eligible for settlement. It earns when
+it clears the reward comparison below, crowned or not; the `CROWN` advances the lineage.
+When that transition advances the incumbent, existing reservations keep their durable queue
 baseline. Qualification drains the contiguous old-baseline segment in finalized
 arrival order under the still-resident commission. Settlement may use the
 ancestor performance comparison above, but it never erases a completed evaluation just

@@ -37,9 +37,8 @@ flowchart LR
 `SEAM_ADAPTERS` is the single source of truth for:
 
 - modules watched by the startup bootstrap;
-- integration modules installed by `seam.activate()`;
-- compatibility canaries run against the pinned SGLang revision;
-- public binding identifiers and their fixed environment gates.
+- integration modules installed by `seam.activate()`; and
+- compatibility canaries run against the pinned SGLang revision.
 
 Adding an adapter is one table change plus its implementation and tests. Bootstrap, activation, and compatibility derive their vocabulary from that table rather than maintaining parallel lists.
 
@@ -89,15 +88,9 @@ Principal code: [`bootstrap.py`](https://github.com/latent-to/cacheon/blob/main/
 
 ## Closed activation vocabulary
 
-The controller does not send arbitrary environment variable names across the worker protocol. It selects a sorted, duplicate-free set of public binding identifiers from the closed `SEAM_BINDINGS` vocabulary.
+The controller does not send arbitrary environment variable names across the worker protocol. Adapter rows carry no binding identifiers: the node and cache adapters are armed by the registered bundle alone.
 
-Inside the engine, each binding maps to one fixed gate. No current adapter row
-declares a binding, so the vocabulary is empty and every session carries an empty
-binding set; the node adapter is armed by the registered bundle alone.
-
-Normalization rejects unknown, duplicated, or non-canonical identifiers. Engine launch then emits the complete fixed seam environment, preventing stale ambient values from arming additional adapters.
-
-The exact binding set is derived from the materialized stack and retained in launch identity. Every incumbent read uses the same incumbent binding set. C differs only as required by its selected target delta. The pristine T reference has no candidate seam activation.
+Engine launch emits the complete fixed seam environment, preventing stale ambient values from arming additional adapters. Activation follows the materialized stack retained in launch identity: every incumbent read loads the same incumbent contributions, C differs only by its selected target delta, and the pristine T reference has no candidate seam activation.
 
 ## Sealed contribution namespaces
 
@@ -141,8 +134,8 @@ scheduler:    positive process entry, sealed contribution loaded, registry enabl
 
 In an evaluation engine, one successful candidate-backed call crosses the seam in this order:
 
-1. The trusted launcher fixes the engine tree, model, native publication, command, and
-   binding set before starting SGLang in the OCI worker.
+1. The trusted launcher fixes the engine tree, model, native publication, and command
+   before starting SGLang in the OCI worker.
 2. The startup bootstrap arms import hooks in each spawned interpreter without importing a
    contribution.
 3. Spawned interpreters import watched SGLang modules. Original modules load first, then
@@ -279,7 +272,7 @@ separate quality and performance gates.
 
 ## Source map
 
-- [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) — adapter and binding source of truth
+- [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) — adapter source of truth
 - [`bootstrap.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bootstrap.py) — startup/import hook
 - [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py) — activation and sealed contribution loading
 - [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py) — capture, tracing and tuning probes the dispatcher reads

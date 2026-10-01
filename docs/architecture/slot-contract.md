@@ -237,8 +237,8 @@ host tier and transfer counters before the factory runs. The replacement keeps
 the engine's KV allocator and request pool, through which the scheduler allocates
 and evicts the validator's KV memory. It must preserve the runtime object's
 interfaces and state guarantees; returning a subclass is not correctness proof.
-The choice is made once, at engine start, with an empty call descriptor: an op
-declaring dtypes, architectures or eligibility never matches.
+The choice is made once, at engine start, with an empty call descriptor: an op declaring
+dtypes, architectures or eligibility never matches, and the run fails as `candidate_never_executed`.
 
 The same content checks run for stock and candidate. Stock checking failures are
 infrastructure failures; they are not attributed to a miner's cache. Storage
@@ -279,7 +279,9 @@ buffer kind in the target and draft pools, the DSA indexer's included. The pairs
 live in a 16 MB table on the device, and a flush forgets them. After the cache
 handles an unfinished request, the request's own slots beyond what the cache now
 protects must be unmoved, and the row the next forward pass reads must agree with
-the prefix left on the request. A match may claim no more tokens than its key.
+the prefix left on the request. A match is SGLang's `MatchResult` and claims no more
+tokens than its key. Served and protected lengths are whole pages, and the class the
+factory returns must be concrete.
 
 The check runs on the scheduler's stream behind the forward pass that wrote the
 bytes; the host reads each verdict at a later handoff, and only a flush or an
@@ -306,7 +308,7 @@ unit to the address's audit receipt.
 
 ## Escape hatches
 
-Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; source or dependency patching uses validator-shipped, policy-constrained patchers. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
+Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; dependency patches are refused, and native builds use the validator-shipped, policy-constrained build step. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
 With MTP enabled, contributions still optimize the registered target computation.
 The validator owns the draft model, speculative schedule, sampling and acceptance

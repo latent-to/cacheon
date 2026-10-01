@@ -1,6 +1,6 @@
 # Threat model
 
-Cacheon evaluates attacker-supplied Python, patches, and native GPU code. The production
+Cacheon evaluates attacker-supplied Python and native GPU code. The production
 design assumes the candidate engine is fully hostile. Static scanning, typed manifests,
 and correctness tests reduce exposure; they are not the primary containment boundary.
 
@@ -62,7 +62,7 @@ proves registered measurement, not safe production source.
 | Hostile URL, SSRF, redirect, or archive | HTTPS only; TLS 1.2 minimum; globally routable DNS answers; pinned reviewed IP with SNI/hostname verification; every redirect revalidated; bounded raw gzip/tar preflight including PAX/GNU extension payloads; strict member/size/path rules; committed hash rederived | CA/DNS/origin compromise can affect availability; network stack and TLS library remain trusted |
 | Proposal changes after commit | Content hash is checked after extraction and again across immutable publication | Hash does not establish authorship, license, or safety |
 | Candidate imports or patches trusted controller | Controller parses candidate as data and never imports candidate Python/native; complete engine runs in a separate OCI worker | A container/kernel/runtime escape can cross the boundary |
-| Candidate exfiltrates model/evidence | Runtime has no network, read-only root, exact read-only mounts, private cache tmpfs, bounded protocol; prebuild has no model/GPU/network/home/wallet | GPU/driver side channels, co-tenancy, host compromise, and undiscovered runtime flaws remain possible |
+| Candidate exfiltrates model/evidence | Runtime has no network, a disposable writable root, exact read-only validator mounts, a private writable cache, bounded protocol; prebuild has no model/GPU/network/home/wallet | GPU/driver side channels, co-tenancy, host compromise, and undiscovered runtime flaws remain possible |
 | Candidate tampers with timer or role | Host assigns physical lanes and the exact incumbent/candidate roles, owns clocks, validates every replay request's host timing and token counts, observes device state, and controls teardown; policy 17 exchanges lane roles between orientations | Host clocks, firmware, driver, and provider scheduling must be trustworthy and calibrated |
 | Candidate fakes quality | Any required audit is collected in a separate eager/untimed role and host-regraded; candidate speed lifetimes are destroyed before candidate-free pristine T teacher-forces sealed trajectories | Reference bugs, audit sampling limits, and finite hidden-work coverage remain possible |
 | Candidate behaves only on known shapes/prompts | Post-commit selection, hidden work, typed graph requirements, and registered decode/long-prefill mixture | Workload overfitting cannot be eliminated; corpora and regimes need ongoing governance |
@@ -89,9 +89,9 @@ Production uses two candidate stages:
    reopened native publication, selected GPUs, private runtime cache, and bounded session
    protocol.
 
-Both use a digest-pinned local image, read-only root, dropped capabilities,
-no-new-privileges, reviewed seccomp, non-root UID/GID, resource bounds, private `/tmp`,
-and no network. See [Isolation](isolation.md).
+Both use a digest-pinned local image, dropped capabilities, no-new-privileges, reviewed
+seccomp, non-root UID/GID, resource bounds, private `/tmp`, and no network. The prebuild
+root is read-only; the runtime root is a disposable writable overlay. See [Isolation](isolation.md).
 
 ## Abuse stories
 

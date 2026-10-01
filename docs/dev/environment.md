@@ -10,7 +10,7 @@ level.
 | Question | Minimum environment | What a green result means |
 |---|---|---|
 | Does the manifest parse and resolve to one target? | CPU contributor environment | Structure and registered capability policy are coherent |
-| Does an entry satisfy its tensor contract? | CPU for CPU-capable examples; otherwise GPU | The component matches the trusted reference for the exercised cases |
+| Does an entry import and match its node's interface? | CPU contributor environment (`verify`) | Import and signature only; numerical agreement comes from `check` against stock in the arena image |
 | Is a CUDA implementation graph-safe and dispatchable? | Exact GPU, Torch, CUDA, and pinned SGLang environment | The registered component and seam gates passed on that topology |
 | Does a proposal improve serving without quality loss? | Validator-owned arena and isolated complete engines | One qualification attempt produced reopenable evidence |
 
@@ -112,7 +112,6 @@ hardware campaign.
 |---|---|---|
 | Manifest or bundle hashing | static/manifest and target-catalog tests | example bundles and full suite |
 | Slot ABI or verification | slot, tensor, and verifier tests | graph replay and the supported GPU matrix |
-| Target displacement/conflict | target catalog and stack planning | settlement and emissions projection |
 | Intake or retry state | chain intake and validator-loop tests | restart, evidence, and weight reconciliation |
 | Integration or Engine tree | stack manifest and Engine-tree tests | materialization and reopen verification |
 
