@@ -181,14 +181,24 @@ class RemoteOnlyArenaProvider:
 
 
 @dataclass(frozen=True)
-class DispatcherConfig:
+class IntakeSourceConfig:
+    """Intake view of a retained dispatcher authority, without worker execution."""
+
     raw: dict[str, Any]
     intake_db: Path
+    scope: IntakeScope
+    policy: IntakePolicy
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(CONFIG_DOMAIN, self.raw)
+
+
+@dataclass(frozen=True)
+class DispatcherConfig(IntakeSourceConfig):
     spool_root: Path
     registration_path: Path
     credential_path: Path
-    scope: IntakeScope
-    policy: IntakePolicy
     manifest: ArenaServiceManifest
     readiness: WorkerReadiness
     owner: str
@@ -206,13 +216,12 @@ class DispatcherConfig:
     transport_identity_digest: str
     credential_digest: str
 
-    @property
-    def digest(self) -> str:
-        return canonical_digest(CONFIG_DOMAIN, self.raw)
+def load_intake_config(path: str | os.PathLike[str]) -> IntakeSourceConfig:
+    """Reopen reward-store authority while retaining its entire original digest.
 
-
-def load_config(path: str | os.PathLike[str]) -> DispatcherConfig:
-    """Strictly reopen one immutable deployment authority file."""
+    Rewards outlive the worker manifest and credentials that dispatched them.
+    Only load_config may turn this retained authority into a live dispatcher.
+    """
 
     config_path = _absolute_path(os.fspath(path), "config path")
     _authority_file(config_path, "config")
@@ -227,15 +236,6 @@ def load_config(path: str | os.PathLike[str]) -> DispatcherConfig:
         raise MainnetScreenDispatcherError("dispatcher config schema is unsupported")
 
     intake_db = _absolute_path(row["intake_db"], "intake_db")
-    spool_root = _absolute_path(row["spool_root"], "spool_root")
-    registration_path = _absolute_path(
-        row["registration_path"], "registration_path"
-    )
-    credential_path = _absolute_path(row["credential_path"], "credential_path")
-    _authority_file(registration_path, "registration")
-    _authority_file(credential_path, "credential", secret=True)
-    _private_directory(spool_root, "spool_root")
-
     scope_raw = _closed(row["intake_scope"], _SCOPE_FIELDS, "intake scope")
     scope = IntakeScope(**scope_raw)
     if scope.to_dict() != scope_raw:
@@ -244,6 +244,20 @@ def load_config(path: str | os.PathLike[str]) -> DispatcherConfig:
     policy = IntakePolicy(**policy_raw)
     if {name: getattr(policy, name) for name in policy.__dataclass_fields__} != policy_raw:
         raise MainnetScreenDispatcherError("intake policy did not reopen exactly")
+    return IntakeSourceConfig(dict(row), intake_db, scope, policy)
+
+
+def load_config(path: str | os.PathLike[str]) -> DispatcherConfig:
+    """Strictly reopen one immutable deployment authority file for execution."""
+
+    intake = load_intake_config(path)
+    row = intake.raw
+    spool_root = _absolute_path(row["spool_root"], "spool_root")
+    registration_path = _absolute_path(row["registration_path"], "registration_path")
+    credential_path = _absolute_path(row["credential_path"], "credential_path")
+    _authority_file(registration_path, "registration")
+    _authority_file(credential_path, "credential", secret=True)
+    _private_directory(spool_root, "spool_root")
 
     manifest = _manifest_from_dict(row["arena_service_manifest"])
     readiness_raw = _closed(
@@ -264,7 +278,7 @@ def load_config(path: str | os.PathLike[str]) -> DispatcherConfig:
         raise MainnetScreenDispatcherError("evaluation owner is malformed")
 
     lease_blocks = _positive_int(row["lease_blocks"], "lease_blocks")
-    if lease_blocks > policy.expiry_blocks:
+    if lease_blocks > intake.policy.expiry_blocks:
         raise MainnetScreenDispatcherError("lease exceeds the intake expiry policy")
     heartbeat_interval_ms = _positive_int(
         row["heartbeat_interval_ms"], "heartbeat_interval_ms", maximum=3_600_000
@@ -304,12 +318,12 @@ def load_config(path: str | os.PathLike[str]) -> DispatcherConfig:
 
     return DispatcherConfig(
         raw=dict(row),
-        intake_db=intake_db,
+        intake_db=intake.intake_db,
         spool_root=spool_root,
         registration_path=registration_path,
         credential_path=credential_path,
-        scope=scope,
-        policy=policy,
+        scope=intake.scope,
+        policy=intake.policy,
         manifest=manifest,
         readiness=readiness,
         owner=owner,

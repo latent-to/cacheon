@@ -193,6 +193,14 @@ promotion, integration, or release cannot renew the same bounty.
 
 ## Legacy V1 global projection
 
+The weight-offer service and static arena allocation reopen each retained
+dispatcher authority for its intake database, scope, and policy. They preserve
+the digest of the entire original configuration, including retired worker
+fields, so changing that authority still invalidates the allocation binding.
+Historical reward publication does not require the retired worker's credentials
+or its manifest to satisfy today's execution schema. Starting a live dispatcher
+still validates the complete execution configuration and credentials.
+
 The reward builder reopens retained PASS evidence and pays only records that beat
 the preceding rewarded v17 record against the same baseline by at least 1.5%
 (`V17_REWARD_MARGIN`); credit remains the unshrunken marginal logarithmic reward. An

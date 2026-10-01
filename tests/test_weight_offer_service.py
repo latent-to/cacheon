@@ -105,6 +105,26 @@ def test_offer_service_config_reopens_exactly(tmp_path: Path) -> None:
     assert config.weights_stage.confirmation_journal == config_path.parent / "signer.sqlite3"
 
 
+def test_offer_composes_from_retired_dispatcher_authority(tmp_path, monkeypatch):
+    from cacheon.chain import weight_offer_service as service
+    from tests.test_mainnet_screen_dispatcher import _setup_authority
+
+    authority_path, authority = _setup_authority(tmp_path)
+    authority["arena_service_manifest"]["screens"] = []
+    _rewrite(authority_path, authority)
+    config_path, raw = _setup(tmp_path)
+    raw["screen_dispatcher_config"] = str(authority_path)
+    _rewrite(config_path, raw)
+    monkeypatch.setattr(service, "compose_weight_offer_push",
+                        lambda stage, store_factory, scope: store_factory)
+    publish = service.build_offer_publisher(load_offer_service_config(config_path),
+        store_factory=lambda path, policy, scope: (path, policy, scope))
+    path, policy, scope = publish()
+    assert str(path) == authority["intake_db"]
+    assert vars(policy) == authority["intake_policy"]
+    assert scope.to_dict() == authority["intake_scope"]
+
+
 def test_the_retired_v1_weights_config_is_refused(tmp_path: Path) -> None:
     config_path, raw = _setup(tmp_path)
     weights_path = Path(raw["weights_stage_config"])

@@ -165,13 +165,13 @@ def build_offer_publisher(
     """Compose the supervisor's weights stage against the sealed authorities."""
 
     from cacheon.chain.intake import IntakeError, is_lock_collision
-    from cacheon.chain.mainnet_screen_dispatcher import load_config
+    from cacheon.chain.mainnet_screen_dispatcher import load_intake_config
     from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 
     if type(config) is not WeightOfferServiceConfig:
         raise WeightOfferServiceError("weight offer service config is not typed")
 
-    screen_config = load_config(config.screen_dispatcher_config)
+    screen_config = load_intake_config(config.screen_dispatcher_config)
     resolved: Callable[..., Any] = (
         RecoverableFinalizedIntakeStore if store_factory is None else store_factory
     )

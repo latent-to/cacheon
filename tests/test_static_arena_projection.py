@@ -38,7 +38,7 @@ def _fixture(tmp_path, monkeypatch, *, shared_hotkey=False, weights=(600_000, 40
             )
     with FinalizedIntakeStore(tmp_path / "signer" / "intake.sqlite3", intake.IntakePolicy(), scope=intake.SCOPE) as signer:
         journal = signer.path
-    monkeypatch.setattr(allocation, "load_config", lambda path: configs[path])
+    monkeypatch.setattr(allocation, "load_intake_config", lambda path: configs[path])
     schedule = ArenaAllocation.from_dict({
         "activation_block": 20, "burn_hotkey": "validator",
         "sources": {name: f"/configs/{name}.json" for name in ("a", "b")},
@@ -74,6 +74,50 @@ def _advance(tmp_path, block=20):
     for name in ("a", "b"):
         with intake._store(tmp_path / name) as store:
             intake._reserve(store, (), block=block)
+
+
+@pytest.mark.parametrize("changed_source", ["a", "b"])
+def test_retired_worker_fields_preserve_reward_source_identity(tmp_path, monkeypatch, changed_source):
+    from cacheon.chain import mainnet_screen_dispatcher as dispatcher
+    from tests.test_mainnet_screen_dispatcher import _setup_authority
+
+    schedule, journal, configs = _fixture(tmp_path, monkeypatch)
+    raw = schedule.to_dict()
+    originals = {}
+    for name in ("a", "b"):
+        root = tmp_path / f"authority-{name}"
+        root.mkdir()
+        path, row = _setup_authority(root)
+        source = configs[f"/configs/{name}.json"]
+        row.update(intake_db=str(source.intake_db), intake_scope=source.scope.to_dict(),
+                   intake_policy=vars(source.policy))
+        row["arena_service_manifest"]["screens"] = []
+        path.chmod(0o600)
+        path.write_text(json.dumps(row))
+        with pytest.raises(dispatcher.MainnetScreenDispatcherError, match="manifest fields"):
+            dispatcher.load_config(path)
+        retained = dispatcher.load_intake_config(path)
+        assert retained.digest == dispatcher.canonical_digest(dispatcher.CONFIG_DOMAIN, row)
+        assert retained.raw == row
+        # Paying historical results must not require the retired worker's secret.
+        from pathlib import Path
+
+        Path(row["credential_path"]).unlink()
+        originals[name] = (path, row)
+        raw["sources"][name] = str(path)
+    monkeypatch.setattr(allocation, "load_intake_config", dispatcher.load_intake_config)
+    schedule = ArenaAllocation.from_dict(raw)
+    _register(tmp_path, schedule, journal)
+    _advance(tmp_path)
+    with intake._store(tmp_path / "a") as primary:
+        result = _project(primary, schedule, journal)
+        assert dict(result.weights_ppm) == {"minera": 1_000_000}
+        assert _project(primary, schedule, journal) == result
+        path, row = originals[changed_source]
+        row["arena_service_manifest"]["screens"].append({"changed": True})
+        path.write_text(json.dumps(row))
+        with pytest.raises(IntakeError, match="source authority changed"):
+            _project(primary, schedule, journal)
 
 
 @pytest.mark.parametrize("shared_hotkey", [False, True])

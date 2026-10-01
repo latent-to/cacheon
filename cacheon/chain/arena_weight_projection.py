@@ -6,7 +6,7 @@ from pathlib import Path
 
 from cacheon.arena_allocation import ArenaAllocation, allocate_submission_weights, arena_base_credits
 from cacheon.chain.intake import IntakeError, is_lock_collision
-from cacheon.chain.mainnet_screen_dispatcher import load_config
+from cacheon.chain.mainnet_screen_dispatcher import load_intake_config
 from cacheon.chain.qualification_settlement import (
     _reward_projection_inputs, reconcile_follower_reward_decay,
 )
@@ -63,7 +63,7 @@ def _bind_schedule(store, allocation, source_digests, block):
 def build_static_projection(primary, *, allocation, policy, context, netuid,
                             confirmation_journal, max_lag_blocks):
     """Reopen all configured authorities before one offer; never sign or push here."""
-    configs = {key: load_config(path) for key, path in allocation.sources}
+    configs = {key: load_intake_config(path) for key, path in allocation.sources}
     paths = [config.intake_db.resolve() for config in configs.values()]
     matches = [key for key, config in configs.items() if config.intake_db.resolve() == primary.path]
     if len(set(paths)) != len(paths) or len(matches) != 1:
