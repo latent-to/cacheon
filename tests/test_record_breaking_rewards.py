@@ -9,7 +9,7 @@ from dashboard.winners import qualified_winners
 from tests.test_chain_intake import _qualified_settlement_candidate, _store
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_only_threshold_records_earn_in_submission_order(tmp_path, target):
     with _store(tmp_path) as store:
         candidates = [
@@ -101,7 +101,7 @@ def test_dashboard_does_not_reinterpret_retained_audit_schemas(tmp_path):
             store.passed_reward_claims()
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_scoring_uses_queue_record_without_rewriting_claims_or_clocks(tmp_path, target):
     from dataclasses import replace
     from decimal import Decimal
@@ -152,7 +152,7 @@ def test_scoring_uses_queue_record_without_rewriting_claims_or_clocks(tmp_path, 
         assert _reward_projection_inputs(store)["score_speedups"] == scores
 
 
-def test_scoring_compares_all_slots_and_subthreshold_records_but_not_later_rows(tmp_path):
+def test_scoring_compares_all_slots_without_advancing_unpaid_or_later_records(tmp_path):
     from decimal import Decimal
     from cacheon.chain.evaluation_order import reward_comparisons
 
@@ -160,13 +160,46 @@ def test_scoring_compares_all_slots_and_subthreshold_records_but_not_later_rows(
         candidates = [_qualified_settlement_candidate(
             store, index=i, marker=str(i), target=target, speedups=(score, score),
         ) for i, (target, score) in enumerate([
-            ("activation.silu_and_mul", "1.1"), ("norm.rmsnorm", "1.105"),
-            ("activation.silu_and_mul", "1.12"), ("norm.rmsnorm", "1.5")])]
+            ("forward_pass", "1.1"), ("prefix_cache", "1.105"),
+            ("forward_pass", "1.12"), ("prefix_cache", "1.5")])]
         store.passed_reward_claims()
         comparisons = reward_comparisons(store._db)
         second, third = (comparisons[c.reservation_digest] for c in candidates[1:3])
         assert not second["reward_eligible"]
-        assert third["previous_best_reservation_id"] == candidates[1].reservation_digest
-        assert third["score_speedup"] == Decimal("1.12") / Decimal("1.105")
+        assert third["previous_best_reservation_id"] == candidates[0].reservation_digest
+        assert third["score_speedup"] == Decimal("1.12") / Decimal("1.1")
         assert third["reward_eligible"]
         assert comparisons[candidates[0].reservation_digest]["score_speedup"] == Decimal("1.1")
+
+
+def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(tmp_path):
+    from decimal import Decimal
+    from cacheon.chain.evaluation_order import reward_comparisons
+    from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
+    from tests.test_service_statistics import CONTRACT, WORK, _read
+
+    policy = GoodputPolicy(CONTRACT, 1.0, 0.0003, 0.0, 0.0, 0.01, 0.0001)
+    with _store(tmp_path) as store:
+        candidates = []
+        for index, score in enumerate((1.05, 1.06, 1.07)):
+            baseline, candidate = [], []
+            for window, lane in enumerate(("A", "A", "B", "B"), 1):
+                baseline.append(_read("incumbent", lane, window, 100))
+                candidate.append(_read("candidate", "B" if lane == "A" else "A", window, 100/score))
+            reads = GoodputReadSet(tuple(baseline), tuple(candidate),
+                                   tuple((root, *counts) for root, counts in WORK.items()), 4)
+            payload = json.dumps({"speed_witness": {
+                "resident_policy": {"version": 17, "goodput": policy.to_dict()},
+                "goodput": reads.to_dict(),
+            }}).encode()
+            candidates.append(_qualified_settlement_candidate(
+                store, index=index, marker=str(index), speedups=(str(score), str(score)),
+                attempt_payloads=(payload, payload),
+            ))
+        store.passed_reward_claims()
+        comparisons = reward_comparisons(store._db)
+        first, unpaid, paid = (comparisons[c.reservation_digest] for c in candidates)
+        assert first["reward_eligible"] and not unpaid["reward_eligible"] and paid["reward_eligible"]
+        assert paid["previous_best_reservation_id"] == candidates[0].reservation_digest
+        assert paid["score_speedup"] == Decimal("1.07") / Decimal("1.05")
+        assert {c.hotkey for c in store.passed_reward_claims()} == {candidates[i].hotkey for i in (0, 2)}

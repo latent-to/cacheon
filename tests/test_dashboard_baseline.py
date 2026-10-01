@@ -8,6 +8,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 from dashboard.app import submission_baseline  # noqa: E402
+from dashboard.winners import reward_bars, reward_exclusion_notice  # noqa: E402
 
 
 TARGET = "moe.fused_experts"
@@ -34,10 +35,6 @@ def _db() -> sqlite3.Connection:
             tree_digest TEXT NOT NULL,
             stack_json TEXT NOT NULL
         );
-        CREATE TABLE target_lineage_tips(
-            target_id TEXT PRIMARY KEY,
-            artifact_digest TEXT NOT NULL
-        );
         CREATE TABLE target_lineage_nodes(
             target_id TEXT NOT NULL,
             artifact_digest TEXT NOT NULL,
@@ -58,7 +55,6 @@ def _db() -> sqlite3.Connection:
             (TARGET, "C", "B", "1.1", "crown-c"),
         ),
     )
-    con.execute("INSERT INTO target_lineage_tips VALUES(?,?)", (TARGET, "C"))
     con.executemany("INSERT INTO settlement_events VALUES(?,?)",
                     (("crown-b", "submission-b"), ("crown-c", "submission-c")))
     return con
@@ -86,35 +82,33 @@ def _candidate(con: sqlite3.Connection, reservation: str, baseline: str) -> None
     )
 
 
-def test_submission_baseline_shows_composed_ancestor_threshold() -> None:
+BEST = {("arena", "stack"): {"speedup": 1.21, "reservation_id": "best"}}
+
+
+def test_submission_baseline_reports_the_best_retained_pass_on_its_own_baseline() -> None:
     con = _db()
     _candidate(con, "uncle", "A")
 
-    baseline = submission_baseline(con, "uncle", TARGET)
+    baseline = submission_baseline(con, "uncle", TARGET, bars=BEST)
 
-    assert baseline["relationship"] == "ancestor"
-    assert baseline["evaluated"] is True
-    assert baseline["assigned"] is False
-    assert baseline["artifact_digest"] == "A"
-    assert baseline["current_tip_artifact_digest"] == "C"
-    assert baseline["threshold_speedup"] == pytest.approx(1.21)
-    assert baseline["stack_digest"] == "stack"
-    assert baseline["tree_digest"] == "tree"
+    assert baseline["reward_bar"] == {"speedup": 1.21, "reservation_id": "best"}
+    assert (baseline["evaluated"], baseline["assigned"], baseline["artifact_digest"]) == (True, False, "A")
+    assert (baseline["arena_digest"], baseline["stack_digest"], baseline["tree_digest"]) == ("arena", "stack", "tree")
     assert baseline["reservation_id"] is None
+    # The crown lineage (B then C, 1.21x over A) no longer sets any bar: pay never follows it.
+    assert "threshold_speedup" not in baseline and "relationship" not in baseline
+    assert submission_baseline(con, "uncle", TARGET, bars={("arena", "other"): BEST["arena", "stack"]})["reward_bar"] is None
 
 
-def test_baseline_link_uses_evaluated_artifact_not_current_tip() -> None:
+def test_baseline_link_uses_the_evaluated_artifact() -> None:
     con = _db()
     _candidate(con, "candidate", "B")
-    assert submission_baseline(con, "candidate", TARGET)["reservation_id"] == "submission-b"
-    con.execute("DELETE FROM target_lineage_tips")
-    assert submission_baseline(con, "candidate", TARGET)["reservation_id"] == "submission-b"
+    assert submission_baseline(con, "candidate", TARGET, bars={})["reservation_id"] == "submission-b"
 
 
 def test_baseline_link_stays_in_submission_arena() -> None:
     con = _db()
     con.executescript("""
-        ALTER TABLE target_lineage_tips ADD COLUMN competition_arena TEXT DEFAULT 'one';
         ALTER TABLE target_lineage_nodes ADD COLUMN competition_arena TEXT DEFAULT 'one';
         CREATE TABLE reservations(reservation_id TEXT, competition_arena TEXT);
         INSERT INTO reservations VALUES('candidate', 'two');
@@ -122,49 +116,58 @@ def test_baseline_link_stays_in_submission_arena() -> None:
         INSERT INTO settlement_events VALUES('crown-two','submission-two');
     """)
     _candidate(con, "candidate", "B")
-    assert submission_baseline(con, "candidate", TARGET)["reservation_id"] == "submission-two"
+    assert submission_baseline(con, "candidate", TARGET, bars={})["reservation_id"] == "submission-two"
 
 
-def test_base_engine_has_no_submission_link() -> None:
+def test_base_engine_and_unmeasured_submissions_have_no_baseline_link() -> None:
     con = _db()
     _candidate(con, "stock", "")
-    assert submission_baseline(con, "stock", TARGET)["reservation_id"] is None
-
-
-def test_submission_baseline_distinguishes_tip_side_branch_and_unmeasured() -> None:
-    con = _db()
-    _candidate(con, "current", "C")
-    _candidate(con, "side", "X")
-
-    assert submission_baseline(con, "current", TARGET)["relationship"] == "current_tip"
-    assert (
-        submission_baseline(con, "side", TARGET)["relationship"]
-        == "outside_active_lineage"
-    )
-    assert submission_baseline(con, "new", TARGET) == {
-        "evaluated": False,
-        "assigned": False,
-        "relationship": "not_evaluated",
-        "artifact_digest": "",
-        "current_tip_artifact_digest": "",
-        "threshold_speedup": None,
-    }
+    stock = submission_baseline(con, "stock", TARGET, bars={})
+    assert (stock["kind"], stock["reservation_id"], stock["reward_bar"]) == ("stock", None, None)
+    assert submission_baseline(con, "new", TARGET, bars=BEST) == {
+        "evaluated": False, "assigned": False, "artifact_digest": "", "reward_bar": None}
 
 
 def test_submission_baseline_shows_queued_assignment_before_measurement() -> None:
     con = _db()
-    manifest = {
-        "arena_digest": "arena",
-        "entries": {TARGET: {"artifact_digest": "A"}},
-    }
-    con.execute(
-        "INSERT INTO reservation_baseline_segments VALUES(?,?,?,?,?)",
-        ("queued", "arena", "stack", "tree", json.dumps(manifest)),
-    )
+    manifest = {"arena_digest": "arena", "entries": {TARGET: {"artifact_digest": "A"}}}
+    con.execute("INSERT INTO reservation_baseline_segments VALUES(?,?,?,?,?)",
+                ("queued", "arena", "stack", "tree", json.dumps(manifest)))
 
-    baseline = submission_baseline(con, "queued", TARGET)
+    baseline = submission_baseline(con, "queued", TARGET, bars=BEST)
 
-    assert baseline["assigned"] is True
-    assert baseline["evaluated"] is False
-    assert baseline["relationship"] == "ancestor"
-    assert baseline["threshold_speedup"] == pytest.approx(1.21)
+    assert (baseline["assigned"], baseline["evaluated"], baseline["kind"]) == (True, False, "incumbent")
+    assert baseline["reward_bar"]["reservation_id"] == "best"
+
+
+def test_reward_bars_keep_the_best_eligible_pass_per_baseline(monkeypatch, tmp_path) -> None:
+    from decimal import Decimal
+
+    con = _db()
+    for reservation in ("first", "better", "unpaid"):
+        _candidate(con, reservation, "A")
+    row = {"previous_best_speedup": Decimal("1.02"), "relative_speedup": Decimal("1.03"), "reward_eligible": True}
+    monkeypatch.setattr("dashboard.winners.reward_comparisons", lambda con: {
+        "first": row | {"previous_best_speedup": Decimal(1), "relative_speedup": Decimal("1.02")},
+        "better": row, "unpaid": row | {"relative_speedup": Decimal("1.2"), "reward_eligible": False}})
+    assert reward_bars(con) == {("arena", "stack"): {"speedup": pytest.approx(1.0506), "reservation_id": "better"}}
+    assert submission_baseline(con, "unpaid", TARGET)["reward_bar"]["reservation_id"] == "better"
+    (tmp_path / "rule.json").write_text(json.dumps({"claims": [{"reservation_id": "better", "reason": "grader defect"}]}))
+    monkeypatch.setenv("CACHEON_DASH_EXCLUSIONS", str(tmp_path / "rule.json"))
+    assert reward_bars(con)[("arena", "stack")]["reservation_id"] == "first"
+
+
+def test_operator_notice_names_a_zero_priced_pass_and_an_unpaid_excluded_hotkey(tmp_path, monkeypatch) -> None:
+    offer, rule = tmp_path / "offer.json", tmp_path / "exclusions.json"
+    offer.write_text(json.dumps({"offer": {"projection": {"effective_block": 7, "weights_ppm": [["paid", 5]]}}}))
+    rule.write_text(json.dumps({
+        "claims": [{"reservation_id": "zeroed", "reason": "grader defect, not miner misconduct"}],
+        "records": [{"hotkey": "copier", "evidence": "same bytes"}, {"hotkey": "paid"}]}))
+    assert reward_exclusion_notice("copier", offer, "zeroed") is None  # no rule file is configured
+    monkeypatch.setenv("CACHEON_DASH_EXCLUSIONS", str(rule))
+    claim = reward_exclusion_notice("anyone", offer, "zeroed")
+    assert (claim["reason"], claim["message"], claim["offer_block"]) == (
+        "operator_claim_exclusion", "grader defect, not miner misconduct", 7)
+    assert reward_exclusion_notice("copier", offer, "other")["evidence"] == "same bytes"
+    assert reward_exclusion_notice("paid", offer, "other") is None
+    assert reward_exclusion_notice("stranger", offer, "other") is None

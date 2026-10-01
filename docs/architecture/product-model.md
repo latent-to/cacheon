@@ -48,7 +48,7 @@ No step may silently substitute one object for another:
 
 A crown answers an economic question: **did this exact attributable delta improve the frozen evaluation incumbent under the registered arena policy?**
 
-Shipping is a product question this repository does not answer. Whether crowned source can be maintained and safely served is decided outside it, with its own reproduction, correctness, security, license, provenance, compatibility, packaging, and attribution review. Emissions follow crown policy; production deployment follows that separate review.
+Shipping is a product question this repository does not answer. Whether crowned source can be maintained and safely served is decided outside it, with its own reproduction, correctness, security, license, provenance, compatibility, packaging, and attribution review. Emissions follow the reward comparison over qualified PASSes, not the crown; production deployment follows that separate review.
 
 ## Marginal contribution, complete execution
 
@@ -56,18 +56,18 @@ Cacheon deliberately separates economic identity from process identity.
 
 The **execution unit** is a complete engine. Production version-3 qualification
 materializes the exact incumbent and one-target-transition candidate engines and
-measures them on the two-process substrate: speed policy v10 launches separate
-baseline and candidate engine processes on two disjoint TP lanes and always
-collects B/C/B′. Mixed-cell arenas use the same two-process B/C/B′ schedule under v11,
-which grades total timed tokens over the complete sealed mixture. The candidate
+measures them with the paired replay: speed policy 17 launches separate
+baseline and candidate engine processes on two disjoint TP lanes, replays the
+same sealed agent workload on both concurrently, then boots fresh engines with the
+lanes exchanged so a stable lane factor cancels out of the score. The candidate
 then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
-trust domain. C′/B″ are not reads on this substrate; their schedules are deleted.
+trust domain.
 
 The **reward unit** is the smallest validator-controlled attributable delta:
 
-- one registered singleton slot;
-- one registered atomic target spanning an explicit set of semantic regions.
+- the modules of the served model a bundle names under `forward_pass`; or
+- the scheduler's prefix cache under `prefix_cache`.
 
 The candidate stack is built by the validator. It equals the incumbent stack except for one selected target transition. The miner does not supply the incumbent entries and does not gain attribution for the whole engine simply because the complete engine is the safe execution envelope.
 
@@ -76,8 +76,8 @@ record a new crown while qualification continues against that same baseline;
 changing the measured incumbent requires an explicit operator commission. The first
 crown on a commissioned baseline closes admission to later commitments against
 that baseline. Admission checks finalized commitment blocks before the first
-screen; accepted work keeps its baseline and is not checked against the cutoff
-again at settlement.
+qualification claim; accepted work keeps its baseline and is not checked against
+the cutoff again at settlement.
 
 This is the core composability property: later work can be evaluated on top of earlier wins without copying earlier contributors' artifacts and without collapsing attribution into winner-take-all engine ownership.
 
@@ -87,11 +87,12 @@ Assume the frozen evaluation stack already contains contribution **A** for one t
 is 7% faster than the original base engine. Miner **B** submits a different target delta
 that may add another 3%:
 
-1. The validator materializes the exact incumbent engine containing A and loads it once
-   onto the resident baseline lane.
+1. The validator materializes the exact incumbent engine containing A and boots it on
+   the baseline lane.
 2. It materializes the candidate engine from that same stack, replacing only B's
-   declared registered target, and loads it once onto the disjoint candidate lane.
-   Timed work is serialized. Every attempt takes B/C/B′ unconditionally.
+   declared registered target, and boots it on the disjoint candidate lane. Both
+   engines replay the same sealed workload in paired windows; then fresh engines boot
+   with the lanes exchanged and replay the remaining windows.
 3. B's hosted bundle does not need to contain A. The validator supplies A from the
    incumbent manifest and gives B attribution only for the selected delta introduced by B.
 4. The registered eager audit role checks the candidate delta outside the timed resident
@@ -120,29 +121,24 @@ The evaluation stack is an economic hill-climb state; the reference manifest is 
 
 The validator-owned target catalog defines what can receive ordinary attribution. It records:
 
-- target identity and kind;
-- singleton members or the explicit members of an atomic target;
-- the frozen slot contract digest;
-- permitted contribution features;
-- overlap, displacement, conflicts, and requirements.
+- target identity and its node roots;
+- the frozen contract digest;
+- permitted contribution features.
 
-Miner packaging and manifest row order do not define economic scope. A bundle that explicitly claims a registered target but does not resolve to its exact members and allowed features fails resolution rather than falling through to an unregistered identity.
+Miner packaging and manifest row order do not define economic scope. A bundle that explicitly claims a registered target but declares addresses outside its roots, overlapping nodes, or unadmitted features fails resolution rather than falling through to an unregistered identity.
 
-The registered catalog contains every singleton slot and the atomic
-`collective.dp_attention_exchange.v1` target. The atomic target owns both
-`collective.all_gather_into_tensor` and `collective.reduce_scatter_tensor`, and
-explicitly displaces the corresponding singleton targets while active. The live
-policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
+The registered catalog contains `forward_pass` (node roots `model` and
+`logits_processor`) and `prefix_cache` (`tree_cache`). Their roots are disjoint, so
+one transition never displaces the other entry. The live policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## Unregistered work
 
 Cross-cutting work that cannot be expressed as one registered target is not a
 valid submission. The only path for it is a reviewed validator-side catalog
-change (a new slot or atomic target), followed by fresh qualification and CROWN
-linkage. A fenced "discovery lane" for such proposals existed until 2026-08-19;
-it never admitted a production proposal and was removed.
+change (a new target), followed by fresh qualification and CROWN
+linkage.
 
-Rebuild and dependency-patch capabilities are likewise validator-reviewed. A normal target can only use features explicitly admitted by its target specification, and permanent framework mutation is not a miner-selected permission.
+Rebuild capabilities are likewise validator-reviewed, and dependency patches are not accepted. A normal target can only use features explicitly admitted by its target specification, and permanent framework mutation is not a miner-selected permission.
 
 ## Product scope
 
@@ -193,7 +189,7 @@ The product model is intact only if all six statements hold:
 
 Before extending Cacheon, locate the feature in this model:
 
-1. **What is the reward unit?** Name the exact registered singleton or atomic target.
+1. **What is the reward unit?** Name the exact registered target and the nodes it replaces.
    “The whole engine” is not an acceptable default.
 2. **Who supplies surrounding code?** The validator must assemble the incumbent; a miner
    must not be required to redistribute other contributors' bundles.

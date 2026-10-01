@@ -1,6 +1,0 @@
-{
-  "architectures": ["sm103"],
-  "dtypes": ["bfloat16"],
-  "notes": "Faithful graph-safe GLM residual-add plus RMSNorm control; not performance evidence.",
-  "op": "norm.fused_add_rmsnorm"
-}

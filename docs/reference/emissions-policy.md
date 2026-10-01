@@ -23,17 +23,17 @@ durable evidence remain reopenable from Git history and the reserved schema.
 ## Legacy V1
 
 A distinct registered contribution with a complete audited PASS earns only when
-its conservative credited speedup is at least the best earlier distinct PASS
-speedup multiplied by `1 + min_margin`. The margin comes from its retained
-qualification's sealed resident speed policy; historical pairs use the larger
-margin. A tie or a smaller improvement earns nothing even though evaluation
-remains PASS. The first PASS against a commissioned baseline is eligible.
+its credited speedup clears the sealed eligibility boundary relative to the best
+earlier rewarded PASS. Historical policies require `1 + min_margin`, read from
+retained qualification; pairs use the larger margin. V17 requires 1.5% over the
+best earlier rewarded PASS. A tie or smaller improvement earns nothing despite an evaluation
+PASS. The first PASS against a commissioned baseline is eligible.
 
 Comparison follows finalized submission order (block, event index, subindex,
 hotkey, content hash), not evaluation completion time. All targets measured
 against the same arena and incumbent stack compete on the credited end-to-end
 score. Different baselines and runtime generations are not compared. Earlier
-PASSes below the reward threshold still contribute to the best preceding score.
+PASSes below the reward threshold do not raise the next miner's hurdle.
 An unresolved earlier submission continues to block new reward eligibility.
 
 Before enabling this rule on an existing deployment, record the sorted unique
@@ -54,7 +54,7 @@ operator commission; a crown alone does not change it.
 Duplicate packaging of the same contribution earns once.
 
 Let `c` be the conservative candidate speedup over its measured baseline and `q`
-the highest conservative speedup among earlier distinct PASSes on that same arena
+the highest conservative speedup among earlier rewarded PASSes on that same arena
 and baseline. Use `q = 1` for the first PASS. The scoring ratio `s` is floored to
 parts per million before applying the credit formula. Grandfathered generations
 keep their original baseline scoring (`q = 1` for every claim).
@@ -90,7 +90,10 @@ and static-arena credit calculations, extending v1.6's threshold record rule.
 Existing v1.1/v1.3/v1.4/v1.5/v1.6 bindings move forward only when all numeric
 policy fields match. Scoring ratios are projection inputs keyed by unchanged
 claim digests; they do not replace retained baseline measurements or decay keys.
-Static allocation evidence includes `submission_score_speedups_ppm`.
+Static allocation evidence includes `submission_score_speedups_ppm` and
+`submission_weights_ppm`, the latter keyed by reservation ID with each
+submission's rounded share of the served vector. Winners displays these
+submission shares; Miners continues to display the combined hotkey shares.
 
 The active standing claim validates its evaluation stack against that stack's
 sealed catalog and target-spec bytes. Historical v1 composition and v2 exclusion

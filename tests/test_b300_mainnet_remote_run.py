@@ -78,9 +78,7 @@ def _ref(label: str) -> EvidenceArtifactRef:
 class _Case:
     worker: B300MainnetWorker
     authorities: object
-    resident: object
     candidate: object
-    receipt: object
     lease: EvaluationLease
     continuation: QualificationContinuationStore
     plan: object
@@ -95,16 +93,12 @@ def _case(
     *,
     source_fixture: Path | None = None,
 ) -> _Case:
-    authorities, resident, _builder = mainnet_fixtures._authorities(
-        tmp_path / "worker",
-        executor_factory,
-    )
+    authorities, _builder = mainnet_fixtures._authorities(executor_factory)
     manifest = mainnet_fixtures._manifest(authorities)
     readiness = mainnet_fixtures._readiness(manifest, authorities)
     harness, plan, authority = _plan(tmp_path / "plan", source_fixture=source_fixture)
     factory = _factory(harness, plan)
     candidate = harness.candidate
-    receipt = mainnet_fixtures._promoted_receipt(manifest, candidate)
     lease = EvaluationLease(
         _h("remote-run-lease:" + candidate.reservation.reservation_digest),
         1,
@@ -113,7 +107,7 @@ def _case(
         (
             EvaluationLeaseMember(
                 candidate.reservation.reservation_digest,
-                "promoted",
+                "published",
             ),
         ),
         20,
@@ -133,9 +127,7 @@ def _case(
     return _Case(
         worker,
         authorities,
-        resident,
         candidate,
-        receipt,
         lease,
         QualificationContinuationStore(tmp_path / "continuation"),
         plan,
@@ -148,13 +140,12 @@ def _case(
 def _install_plan(
     case: _Case,
     monkeypatch: pytest.MonkeyPatch,
-) -> list[tuple[object, object, object]]:
-    calls: list[tuple[object, object, object]] = []
+) -> list[tuple[object, object]]:
+    calls: list[tuple[object, object]] = []
 
-    def plan(candidates, receipts, *, state=None):
-        calls.append((candidates, receipts, state))
+    def plan(candidates, *, state=None):
+        calls.append((candidates, state))
         assert candidates == (case.candidate,)
-        assert receipts == (case.receipt,)
         return case.work
 
     monkeypatch.setattr(case.worker.service, "plan_qualification", plan)
@@ -165,7 +156,6 @@ def _run(case: _Case):
     return case.worker.run_remote_qualification(
         case.lease,
         (case.candidate,),
-        (case.receipt,),
         screen_lane="primary",
         continuation_store=case.continuation,
         request_digest=_h("authenticated-worker-remote-request"),
@@ -197,7 +187,6 @@ def test_remote_run_reuses_one_plan_callback_and_exact_factory(
     assert intake_calls[0][0] is case.factory
     assert intake_calls[0][1]["prebuilt_plan"] is case.plan
     assert result.supporting_evidence_refs == ()
-    assert case.resident.created == 0
 
 
 def test_native_rebuild_uses_dedicated_candidate_launch(

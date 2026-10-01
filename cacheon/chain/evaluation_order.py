@@ -1,5 +1,6 @@
 """The completed arrival prefix shared by settlement, rewards and the dashboard."""
 
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,7 +28,6 @@ def ensure_reward_prefix(store: "FinalizedIntakeStore") -> None:
 
     Preserve previously earned PASSes on migration. A later reopening of an
     earlier submission must not retract other miners' already finalized credit.
-    The remeasurement authority removes only the reopened candidate's record.
     """
     with store._transaction():
         columns = {row["name"] for row in store._db.execute("PRAGMA table_info(settlement_candidates)")}
@@ -61,7 +61,7 @@ def reward_visibility_sql(db) -> str:
 
 
 def reward_comparisons(db) -> dict[str, dict]:
-    """Compare each PASS with the best preceding PASS on its measured baseline.
+    """Compare each PASS with the best preceding rewarded PASS on its measured baseline.
 
     Prefix eligibility only says earlier work finished. It does not establish a
     performance record. Recompute this filter for historical and new PASSes so
@@ -102,8 +102,11 @@ def reward_comparisons(db) -> dict[str, dict]:
         score = min(Decimal(q["speedup"]) for q in qualifications)
         previous, previous_id = best.get(group, (Decimal(1), None))
         relative = score / previous
+        margin = Decimal(0)
+        if not exempt and previous_id is not None and score > previous:
+            margin = _reward_min_margin(db, qualifications)
         eligible = exempt or previous_id is None or (score > previous and
-            score >= previous * (1 + _reward_min_margin(db, qualifications)))
+            score >= previous * (1 + margin))
         comparisons[row["reservation_id"]] = {
             "previous_best_reservation_id": previous_id,
             "previous_best_speedup": previous,
@@ -112,7 +115,7 @@ def reward_comparisons(db) -> dict[str, dict]:
             "reward_eligible": eligible,
             "grandfathered": exempt,
         }
-        if score > previous:
+        if eligible and score > previous:
             best[group] = (score, row["reservation_id"])
     return comparisons
 
@@ -133,16 +136,37 @@ def reward_grandfathered_runtimes(db) -> list[str]:
     return values
 
 
+# Owner ruling 2026-09-30: a later V17 PASS pays when it beats the previous best by 1.5%. The
+# statistical contrast it replaces (about 3% at the median) paid a truly 3%-better successor ~27%
+# of the time; 1.5% pays it ~81%.
+V17_REWARD_MARGIN = Decimal("0.015")
+
+
 def _reward_min_margin(db, qualifications):
-    """Read the configured margin from the same retained attempts as the score."""
+    """Use the ruled V17 margin for statistical policies; preserve historical sealed margins."""
+    from cacheon.chain.intake import IntakeError
+
+    policies = [report["speed_witness"]["resident_policy"] for report in _reward_reports(db, qualifications)]
+    statistical = [policy.get("version") == 17 for policy in policies]
+    if any(statistical) and not all(statistical):
+        raise IntakeError("reward comparison mixes statistical and historical qualifications")
+    if any(statistical):
+        return V17_REWARD_MARGIN
+    margins = [Decimal(str(policy["min_margin"])) for policy in policies]
+    if any(not value.is_finite() or not 0 < value < 1 for value in margins):
+        raise IntakeError("reward comparison margin is invalid")
+    return max(margins)
+
+
+def _reward_reports(db, qualifications):
+    """Reopen the existing attempt authority without introducing another reward record."""
     import json
-    from decimal import Decimal
     from pathlib import Path
 
     from cacheon.chain.intake import IntakeError
     from cacheon.eval.evidence_store import EvidenceArtifactRef, reopen_evidence
 
-    margins = []
+    result = []
     rows = db.execute(
         "SELECT attempt_ref_json,evidence_root FROM settlement_qualifications "
         "WHERE reservation_id=? ORDER BY reproduction_index",
@@ -162,10 +186,10 @@ def _reward_min_margin(db, qualifications):
                            if report["selected_delta_digest"] == qualification["selected_delta_digest"]]
             if len(reports) != 1:
                 raise ValueError("reward comparison report is ambiguous")
-            margin = Decimal(str(reports[0]["speed_witness"]["resident_policy"]["min_margin"]))
-            if not margin.is_finite() or not 0 < margin < 1:
-                raise ValueError("reward comparison margin is invalid")
+            policy = reports[0]["speed_witness"]["resident_policy"]
+            if policy.get("version") != 17:
+                policy["min_margin"]
+            result.append(reports[0])
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise IntakeError(f"reward comparison cannot read retained margin: {exc}") from None
-        margins.append(margin)
-    return max(margins)
+    return result

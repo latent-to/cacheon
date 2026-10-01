@@ -25,6 +25,7 @@ from cacheon.chain.audit_log import (
     append_chain_audit,
     fault_audit_record,
     pass_audit_record,
+    validate_chain_audit_record,
 )
 from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
 from cacheon.chain.payload import encode_payload
@@ -49,13 +50,14 @@ def _bundle(root: Path) -> Path:
         'bundle_id = "archive-test"\n'
         'abi_version = "cacheon-op-abi-v0"\n\n'
         "[[ops]]\n"
-        'slot = "activation.silu_and_mul"\n'
+        'slot = "model.layers.*.mlp"\n'
         'source = "kernels/k.py"\n'
-        'entry = "silu_and_mul"\n'
-        'dtypes = ["float32"]\n'
+        'entry = "forward"\n'
     )
+    # Not the identity body: a copy of a public example is demoted before publication.
     (root / "kernels/k.py").write_text(
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n"
+        "def forward(module, hidden_states, *args, **kwargs):\n"
+        "    return module.forward(hidden_states.contiguous(), *args, **kwargs)\n"
     )
     for directory in (root, root / "kernels"):
         directory.chmod(0o700)
@@ -129,37 +131,35 @@ def test_redacted_chain_audit_is_append_only_and_excludes_messages(tmp_path):
             path,
             {
                 "event": "pass",
-                "schema": "cacheon.chain-audit.v1",
+                "schema": "cacheon.chain-audit.v2",
                 "url": "https://must-not-be-retained.example",
             },
         )
 
 
-def test_chain_audit_maps_arena_screen_dispositions_to_audit_grades():
-    result = loop.PassResult(BLOCK, BLOCK_HASH)
-    result.screens = {
-        "a" * 64: "promote",
-        "b" * 64: "reject",
-        "c" * 64: "retry",
-        "d" * 64: "hold",
+def test_chain_audit_writes_v2_without_screens_and_still_reads_v1_screens():
+    record = pass_audit_record(loop.PassResult(BLOCK, BLOCK_HASH), timestamp_ns=1)
+    assert record["schema"] == "cacheon.chain-audit.v2"
+    assert "screens" not in record
+    with pytest.raises(ChainAuditLogError, match="not closed"):
+        validate_chain_audit_record({**record, "screens": {}})
+
+    legacy = {
+        **record,
+        "schema": "cacheon.chain-audit.v1",
+        "screens": {"a" * 64: "pass", "b" * 64: "hold"},
     }
-
-    record = pass_audit_record(result, timestamp_ns=1)
-
-    assert record["screens"] == {
-        "a" * 64: "pass",
-        "b" * 64: "fail",
-        "c" * 64: "no_decision",
-        "d" * 64: "hold",
-    }
+    validate_chain_audit_record(legacy)
 
 
-def test_chain_audit_refuses_unknown_arena_screen_disposition():
-    result = loop.PassResult(BLOCK, BLOCK_HASH)
-    result.screens = {"a" * 64: "untyped"}
+def test_chain_audit_refuses_unknown_grade_in_a_v1_screen_record():
+    record = pass_audit_record(loop.PassResult(BLOCK, BLOCK_HASH), timestamp_ns=1)
+    legacy = {**record, "schema": "cacheon.chain-audit.v1"}
 
-    with pytest.raises(ChainAuditLogError, match="screen disposition is unsupported"):
-        pass_audit_record(result, timestamp_ns=1)
+    with pytest.raises(ChainAuditLogError, match="screens value is malformed"):
+        validate_chain_audit_record({**legacy, "screens": {"a" * 64: "promote"}})
+    with pytest.raises(ChainAuditLogError, match="not closed"):
+        validate_chain_audit_record(legacy)
 
 
 def test_chain_audit_heals_wrong_mode_on_owned_parent_directory(tmp_path):

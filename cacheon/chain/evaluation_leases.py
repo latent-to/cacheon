@@ -13,10 +13,8 @@ _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _LEASE_DOMAIN = "cacheon.chain.evaluation-lease.v1"
 _EVENT_DOMAIN = "cacheon.chain.evaluation-lease-event.v1"
 
-EVALUATION_STAGES = frozenset({"screen", "qualification"})
-EVALUATION_PRIOR_STATUSES = frozenset(
-    {"published", "reproduction_pending", "promoted"}
-)
+EVALUATION_STAGES = frozenset({"qualification"})
+EVALUATION_PRIOR_STATUSES = frozenset({"published", "reproduction_pending"})
 EVALUATION_LEASE_EVENTS = frozenset(
     {"claimed", "heartbeat", "expired", "released", "completed"}
 )
@@ -65,7 +63,7 @@ class EvaluationLeaseMember:
 
 @dataclass(frozen=True)
 class EvaluationLease:
-    """One durable finalized-block-bounded screen or qualification cohort."""
+    """One durable finalized-block-bounded qualification cohort."""
 
     lease_id: str
     generation: int
@@ -93,18 +91,6 @@ class EvaluationLease:
             or self.initial_expires_block <= self.claimed_block
             or type(self.expires_block) is not int
             or self.expires_block < self.initial_expires_block
-            or (
-                self.stage == "screen"
-                and (
-                    len(members) != 1
-                    or members[0].prior_status
-                    not in {"published", "reproduction_pending"}
-                )
-            )
-            or (
-                self.stage == "qualification"
-                and any(row.prior_status != "promoted" for row in members)
-            )
         ):
             raise EvaluationLeaseError("evaluation lease bounds are malformed")
         object.__setattr__(self, "members", members)

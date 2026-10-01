@@ -1,0 +1,1287 @@
+"""Commission the sealed B300/TP4 qualification worker from pod-owned authorities."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import stat
+import time
+from dataclasses import dataclass, fields
+from pathlib import Path, PurePosixPath
+from typing import Callable, Sequence
+
+from cacheon.arena_service import (
+    ArenaCapacityPolicy,
+    ArenaRuntimeIdentity,
+    ArenaService,
+    ArenaServiceManifest,
+    Workload,
+    WorkloadCell,
+)
+from cacheon.chain.evaluation_coordinator import WorkerReadiness
+from cacheon.engine_tree import (
+    materialize_engine_tree,
+    reopen_materialized_engine_tree,
+)
+from cacheon.eval.b300_arena_provider import (
+    B300ArenaServiceProvider,
+    B300DeclaredAuthorities,
+    B300DeclaredQualificationAuthorities,
+    B300QualificationLanePair,
+    B300QualificationLanePolicy,
+    b300_arena_provider_digest,
+)
+from cacheon.eval.b300_arena_definition import (
+    B300DeploymentError,
+    device_policy as _device_policy,
+    engine_template as _engine_template,
+    prompt_batch_cells as _prompt_batch_cells,
+    ready_lane as _ready_lane,
+    ready_lanes as _ready_lanes,
+    resource_policy as _resource_policy,
+    string_rows as _string_rows,
+    target_partition as _target_partition,
+    workload as _workload,
+)
+from cacheon.eval.device_state import (
+    DeviceStatePolicy,
+    GPUConfiguration,
+    provision_gpu_configurations,
+)
+from cacheon.eval.engine_launch import (
+    NativeBuildSpec,
+    native_compiler_policy_digest,
+    native_patcher_digest,
+    native_toolchain_digest,
+)
+from cacheon.eval.native_artifact import NativeArtifactLimits
+from cacheon.eval.oci_backend import (
+    OCIBackendConfig,
+    OCIEngineExecutor,
+    OCIRuntimeResourcePolicy,
+    runtime_identity_from_preflight,
+)
+from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
+from cacheon.eval.oci_process import OCIProcessManager
+from cacheon.eval.oci_session_protocol import EngineSessionConfig
+from cacheon.eval.b300_qualification_declaration import (
+    B300QualificationDeclarationError,
+    derive_b300_qualification_declaration,
+)
+from cacheon.eval.runtime_preflight import (
+    HOST_RECEIPT_SCHEMA,
+    RuntimePreflightReceipt,
+)
+from cacheon.stack_identity import canonical_json_bytes
+from cacheon.stack_manifest import (
+    EvaluationStackContext,
+    EvaluationStackManifest,
+)
+from cacheon.target_catalog import TargetCatalog, default_target_catalog
+from cacheon._strict import require_digest
+
+
+DEPLOYMENT_SCHEMA = "cacheon-b300-deployment-v3"
+DEPLOYMENT_FILE = "deployment.json"
+MANIFEST_FILE = "arena-service-manifest.json"
+READINESS_FILE = "worker-readiness.json"
+MATERIALIZATION_SCHEMA = "cacheon-b300-materialization-v2"
+DEFAULT_OUTPUT_ROOT = Path("/data/cacheon-b300/remote-worker/commissioned")
+def _digest(value: object, field: str) -> str:
+    return require_digest(value, field=field, error=B300DeploymentError)
+
+
+def _canonical_bytes(value: object) -> bytes:
+    try:
+        return canonical_json_bytes(value) + b"\n"
+    except (TypeError, ValueError) as exc:
+        raise B300DeploymentError(
+            f"deployment authority is not canonical JSON data: {exc}"
+        ) from None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(4 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stable_json(path_value: str | os.PathLike[str], field: str) -> tuple[Path, dict[str, object], str]:
+    path = Path(path_value)
+    if not path.is_absolute() or path.is_symlink():
+        raise B300DeploymentError(f"{field} must be an absolute non-symlink file")
+    try:
+        before = path.stat()
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise B300DeploymentError(
+                f"{field} must be a single-linked regular file"
+            )
+        raw = path.read_bytes()
+        after = path.stat()
+    except B300DeploymentError:
+        raise
+    except OSError as exc:
+        raise B300DeploymentError(f"cannot read {field}: {exc}") from None
+    stable = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
+    if any(getattr(before, name) != getattr(after, name) for name in stable):
+        raise B300DeploymentError(f"{field} changed while being read")
+    # 256MiB: these are validator-sealed, sha-bound inputs (never miner
+    # bytes); the sealed S8 prompt authority embeds 16x128 8k-token prompts
+    # (~77MB), which the old 64MiB bound predated.
+    if not raw or len(raw) > 256 << 20:
+        raise B300DeploymentError(f"{field} is empty or exceeds its byte bound")
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_no_duplicate_pairs,
+            parse_constant=lambda item: (_ for _ in ()).throw(
+                ValueError(f"invalid number {item}")
+            ),
+        )
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise B300DeploymentError(f"{field} is malformed JSON: {exc}") from None
+    if type(value) is not dict:
+        raise B300DeploymentError(f"{field} must be a JSON object")
+    return path.resolve(strict=True), value, hashlib.sha256(raw).hexdigest()
+
+
+def _no_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, child in pairs:
+        if key in value:
+            raise ValueError(f"duplicate key {key!r}")
+        value[key] = child
+    return value
+
+
+def _mapping(value: object, field: str) -> dict[str, object]:
+    if type(value) is not dict:
+        raise B300DeploymentError(f"{field} must be a JSON object")
+    return value
+
+
+def _text(value: object, field: str, *, maximum: int = 512) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value) > maximum
+        or any(character in value for character in "\x00\r\n")
+    ):
+        raise B300DeploymentError(f"{field} is not canonical text")
+    return value
+
+
+def _integer(value: object, field: str, *, minimum: int = 0) -> int:
+    if type(value) is not int or value < minimum:
+        raise B300DeploymentError(f"{field} is not a bounded integer")
+    return value
+
+
+def _absolute_path(value: object, field: str) -> Path:
+    raw = _text(value, field, maximum=4096)
+    path = PurePosixPath(raw)
+    if not path.is_absolute() or ".." in path.parts or "." in path.parts or str(path) != raw:
+        raise B300DeploymentError(f"{field} is not a canonical absolute path")
+    return Path(raw)
+
+
+def _authority_ref(path: Path, digest: str) -> dict[str, str]:
+    return {"path": str(path), "sha256": _digest(digest, "authority SHA-256")}
+
+
+def _prepare_private_root(path: Path) -> Path:
+    if not path.is_absolute() or path.is_symlink():
+        raise B300DeploymentError("output root must be absolute and not a symlink")
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root = path.resolve(strict=True)
+    info = root.stat()
+    if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+        raise B300DeploymentError("output root must be a private directory")
+    return root
+
+
+def _atomic_canonical(path: Path, value: object) -> None:
+    raw = _canonical_bytes(value)
+    if path.exists():
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != raw:
+            raise B300DeploymentError(
+                f"refusing to replace differing commissioned artifact {path.name}"
+            )
+        return
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(temporary, flags, 0o400)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise B300DeploymentError(
+            f"cannot publish commissioned artifact {path.name}: {exc}"
+        ) from None
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _find_preflight(value: object) -> dict[str, object]:
+    """Find the sole canonical host preflight inside a sealed authority receipt."""
+
+    found: list[dict[str, object]] = []
+
+    def visit(item: object, depth: int) -> None:
+        if depth > 16:
+            raise B300DeploymentError("device authority nesting exceeds policy")
+        if type(item) is dict:
+            if item.get("schema") == HOST_RECEIPT_SCHEMA:
+                found.append(item)
+            for child in item.values():
+                visit(child, depth + 1)
+        elif type(item) is list:
+            for child in item:
+                visit(child, depth + 1)
+
+    visit(value, 0)
+    unique = {json.dumps(row, sort_keys=True, separators=(",", ":")): row for row in found}
+    if len(unique) != 1:
+        raise B300DeploymentError(
+            "device execution authority must contain one canonical runtime preflight"
+        )
+    return next(iter(unique.values()))
+
+
+def _runtime_preflight(row_value: object) -> RuntimePreflightReceipt:
+    row = _mapping(row_value, "runtime preflight")
+    worker = _mapping(row.get("worker"), "runtime preflight worker")
+    python = _mapping(row.get("python"), "runtime preflight python")
+    packages = _mapping(row.get("packages"), "runtime preflight packages")
+    cuda = _mapping(row.get("cuda"), "runtime preflight cuda")
+    try:
+        receipt = RuntimePreflightReceipt(
+            schema=row["schema"],
+            requested_image=row["requested_image"],
+            image_digest=row["image_digest"],
+            local_image_id=row["local_image_id"],
+            repo_digests=tuple(row["repo_digests"]),
+            oci_platform=row["oci_platform"],
+            platform_digest=row["platform_digest"],
+            docker_binary=row["docker_binary"],
+            uid=row["uid"],
+            gid=row["gid"],
+            sglang_version=row["sglang_version"],
+            worker_distribution=worker["distribution"],
+            worker_version=worker["version"],
+            worker_distribution_digest=worker["digest"],
+            worker_file_count=worker["file_count"],
+            worker_total_bytes=worker["total_bytes"],
+            python_implementation=python["implementation"],
+            python_executable=python["executable"],
+            python_version=python["version"],
+            python_abi=python["abi"],
+            python_platform=python["platform"],
+            machine=python["machine"],
+            package_versions=tuple(sorted(packages.items())),
+            cudart_library=cuda["cudart_library"],
+            cuda_visible_devices=cuda["cuda_visible_devices"],
+            nvidia_visible_devices=cuda["nvidia_visible_devices"],
+            security_argv_sha256=row["security_argv_sha256"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise B300DeploymentError(
+            f"runtime preflight authority is malformed: {type(exc).__name__}"
+        ) from None
+    if receipt.schema != HOST_RECEIPT_SCHEMA:
+        raise B300DeploymentError("runtime preflight schema differs")
+    return receipt
+
+
+def _gpu_from_dict(row_value: object) -> GPUConfiguration:
+    row = _mapping(row_value, "GPU configuration")
+    expected = {field.name for field in fields(GPUConfiguration)}
+    if set(row) != expected:
+        raise B300DeploymentError("GPU configuration fields differ")
+    try:
+        return GPUConfiguration(**row)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise B300DeploymentError(
+            f"GPU configuration is invalid: {exc}"
+        ) from None
+
+
+def _runtime_policy(preflight: RuntimePreflightReceipt) -> OCIRuntimeResourcePolicy:
+    return OCIRuntimeResourcePolicy(
+        uid=preflight.uid,
+        gid=preflight.gid,
+        cpu_millis=96_000,
+        memory_bytes=1 << 40,
+        pids_limit=65_536,
+        nofile_limit=262_144,
+        cache_bytes=64 << 30,
+        cache_inodes=1_000_000,
+        tmpfs_bytes=16 << 30,
+        shm_bytes=128 << 30,
+        init_timeout_seconds=1_800.0,
+        batch_timeout_seconds=1_800.0,
+        container_python=preflight.python_executable,
+    )
+
+
+def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
+    return OCIPrebuildPolicy(
+        uid=runtime.uid,
+        gid=runtime.gid,
+        cpu_millis=96_000,
+        memory_bytes=512 << 30,
+        pids_limit=16_384,
+        tmpfs_bytes=256 << 30,
+        stage_bytes=16 << 30,
+        stage_inodes=500_000,
+        timeout_seconds=7_200.0,
+        native_compile_timeout_seconds=6_000,
+        container_python=runtime.container_python,
+        build_path=("/usr/local/cuda/bin", "/usr/local/bin", "/usr/bin", "/bin"),
+        build_tmpdir="/tmp",
+        pinned_build_roots=("/usr",),
+        runtime_policy_digest=runtime.digest,
+    )
+
+
+def _seccomp_path() -> Path:
+    from cacheon.eval import oci_backend
+
+    path = Path(oci_backend.__file__).with_name("seccomp_moby_v0_2_1.json")
+    if path.is_symlink() or not path.is_file():
+        raise B300DeploymentError("fixed seccomp profile is unavailable")
+    return path.resolve(strict=True)
+
+
+def _backend_config(
+    root: Path,
+    preflight: RuntimePreflightReceipt,
+    *,
+    executor_id: str,
+    runtime_seed_root: Path | None = None,
+    resources: dict | None = None,
+) -> OCIBackendConfig:
+    capacity = {} if resources is None else _mapping(resources, "OCI resources")
+    if set(capacity) - {"runtime", "prebuild"}:
+        raise B300DeploymentError("unknown OCI resource policy")
+    runtime = _resource_policy(_runtime_policy(preflight), capacity.get("runtime", {}))
+    return OCIBackendConfig(
+        OCIPrebuildConfig(
+            docker_binary=preflight.docker_binary,
+            recovery_root=root / "oci" / executor_id,
+            publication_root=root.parent / "native-publications",  # one store for both lanes: the swap reuses builds
+            seccomp_profile=_seccomp_path(),
+            executor_id=executor_id,
+            policy=_resource_policy(_prebuild_policy(runtime), capacity.get("prebuild", {})),
+            runtime_seed_root=runtime_seed_root,
+        ),
+        runtime,
+        NativeArtifactLimits(),
+    )
+
+
+def _build_executor(
+    root: Path,
+    preflight: RuntimePreflightReceipt,
+    device_policy: DeviceStatePolicy,
+    *,
+    executor_id: str,
+    runtime_seed_root: Path | None = None,
+    resources: dict | None = None,
+) -> OCIEngineExecutor:
+    config = _backend_config(
+        root,
+        preflight,
+        executor_id=executor_id,
+        runtime_seed_root=runtime_seed_root, resources=resources,
+    )
+    manager = OCIProcessManager(
+        docker_binary=config.prebuild.docker_binary,
+        recovery_root=config.prebuild.recovery_root,
+        executor_id=config.prebuild.executor_id,
+    )
+    return OCIEngineExecutor(config, device_policy, manager=manager)
+
+
+def _catalog_specs(catalog: TargetCatalog) -> dict[str, str]:
+    rows = catalog.snapshot().get("targets")
+    if not isinstance(rows, list):  # pragma: no cover - validator table invariant
+        raise B300DeploymentError("target catalog snapshot is malformed")
+    return {
+        str(row["target_id"]): catalog.target_spec_digest(str(row["target_id"]))
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("target_id"), str)
+    }
+
+
+def _commissioned_stock_authority(
+    inputs: "_CommissionedInputs",
+    manifest: ArenaServiceManifest,
+    catalog: TargetCatalog,
+    snapshot: dict,
+    *,
+    error: type[Exception],
+    label: str,
+    entries: object = None,
+    resolver: object = None,
+):
+    """Target members plus one commissioned incumbent tree, from one catalog.
+
+    With no ``entries`` this is the empty-stack stock identity the commission
+    and pristine-reference paths share — same context, same empty manifest, same
+    on-disk ``resident-stock-{digest}`` tree (name kept for pod tree-cache
+    continuity). A qualification commission passes the durable incumbent's
+    ``entries`` plus the capabilities source resolver and gets the current
+    crowned baseline instead; the CPU dispatcher's pin check enforces that the
+    declared entries reproduce the durable stack digest exactly.
+    ``error``/``label`` keep each commission's fail-closed error class and
+    wording exactly as before.
+    """
+
+    rows = snapshot.get("targets")
+    if not isinstance(rows, list):
+        raise error("target catalog snapshot is malformed")
+    target_members = tuple(
+        sorted(
+            {
+                member
+                for row in rows
+                if isinstance(row, dict)
+                for member in row.get("members", ())
+                if isinstance(member, str)
+            }
+        )
+    )
+    if not target_members:
+        raise error(f"{label} target member set is empty")
+    context = EvaluationStackContext(
+        runtime_digest=inputs.runtime.runtime_digest,
+        base_engine_digest=inputs.runtime.base_engine_digest,
+        arena_digest=manifest.digest,
+        catalog_snapshot=snapshot,
+        catalog_digest=catalog.digest,
+        target_spec_digests=_catalog_specs(catalog),
+    )
+    stack = EvaluationStackManifest(
+        runtime_digest=context.runtime_digest,
+        base_engine_digest=context.base_engine_digest,
+        arena_digest=context.arena_digest,
+        catalog_snapshot=snapshot,
+        catalog_digest=catalog.digest,
+        entries=dict(entries) if entries else {},
+    )
+    trees_root = inputs.root / "engine-trees"
+    trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    destination = trees_root / f"resident-stock-{stack.digest}"
+    if destination.exists():
+        tree = reopen_materialized_engine_tree(destination)
+    else:
+        tree = materialize_engine_tree(
+            stack,
+            context=context,
+            catalog=catalog,
+            resolver=resolver if resolver is not None else {},
+            destination=destination,
+        )
+    if tree.stack_digest != stack.digest or (
+        tree.runtime_manifest is not None
+    ) != bool(entries):
+        raise error(f"{label} tree differs from the commissioned incumbent stack")
+    return target_members, context, stack, tree
+
+
+def _native_build(
+    tree_digest: str,
+    preflight: RuntimePreflightReceipt,
+    policy: OCIPrebuildPolicy,
+    architecture: str,
+) -> NativeBuildSpec:
+    return NativeBuildSpec(
+        tree_digest=tree_digest,
+        image_digest=preflight.image_digest,
+        platform_digest=preflight.platform_digest,
+        worker_distribution_digest=preflight.worker_distribution_digest,
+        toolchain_digest=native_toolchain_digest(
+            image_digest=preflight.image_digest,
+            platform_digest=preflight.platform_digest,
+        ),
+        patcher_digest=native_patcher_digest(
+            worker_distribution_digest=preflight.worker_distribution_digest
+        ),
+        compiler_flags_digest=native_compiler_policy_digest(
+            image_digest=preflight.image_digest,
+            worker_distribution_digest=preflight.worker_distribution_digest,
+            dependency_policy_digest=policy.dependency_policy_digest,
+            target_architecture=architecture,
+        ),
+        target_architecture=architecture,
+        dependency_policy_digest=policy.dependency_policy_digest,
+    )
+
+
+@dataclass(frozen=True)
+class _CommissionedInputs:
+    root: Path
+    ready: dict[str, object]
+    authority: dict[str, object]
+    authority_refs: dict[str, dict[str, str]]
+    preflight: RuntimePreflightReceipt
+    gpus: tuple[GPUConfiguration, ...]
+    qualification_gpus: tuple[GPUConfiguration, ...]
+    device_policy: DeviceStatePolicy
+    qualification_lane_pair: B300QualificationLanePair
+    runtime: ArenaRuntimeIdentity
+    topology_digest: str
+    controller_distribution_digest: str
+    model_root: Path
+    prompt_batches: tuple[tuple[str, ...], ...]
+    prompt_batch_cells: tuple[str, ...]
+    prompt_identity: dict[str, str]
+    workload: Workload
+    model_profile_key: str
+    engine_template: EngineSessionConfig
+    registered_target_ids: tuple[str, ...]
+    closed_targets: tuple[str, ...]
+    declared_qualification: B300DeclaredQualificationAuthorities
+    qualification_commission: dict[str, object] | None
+    runtime_seed_root: Path | None = None
+
+
+@dataclass(frozen=True)
+class _Composition:
+    """The sealed service identity: the public manifest and its declared authorities."""
+
+    manifest: ArenaServiceManifest
+    authorities: B300DeclaredAuthorities
+
+
+def _compose(inputs: _CommissionedInputs) -> _Composition:
+    authorities = B300DeclaredAuthorities(
+        runtime_identity=inputs.runtime,
+        qualification=inputs.declared_qualification,
+    )
+    manifest = ArenaServiceManifest(
+        runtime=inputs.runtime,
+        workload=inputs.workload,
+        capacity=ArenaCapacityPolicy(32, 64, 4, 4),
+        qualification_policy_digest=(
+            inputs.declared_qualification.qualification_policy_digest
+        ),
+        provider_digest=b300_arena_provider_digest(authorities),
+        closed_targets=inputs.closed_targets,
+    )
+    return _Composition(manifest, authorities)
+
+
+def _prompt_batches(value: object) -> tuple[tuple[str, ...], ...]:
+    prompt = _mapping(value, "prompt authority")
+    raw = prompt.get("prompt_batches")
+    if type(raw) is not list:
+        raise B300DeploymentError("prompt authority has no prompt batches")
+    try:
+        batches = tuple(tuple(batch) for batch in raw)
+    except TypeError:
+        raise B300DeploymentError("prompt batches are not nested arrays") from None
+    if (
+        len(batches) < 3
+        or any(not batch for batch in batches)
+        or any(
+            not isinstance(item, str)
+            or not item
+            or len(item) > 2_000_000
+            or "\x00" in item
+            for batch in batches
+            for item in batch
+        )
+    ):
+        raise B300DeploymentError(
+            "prompt authority must contain at least three bounded nonempty batches"
+        )
+    return batches
+
+
+def _prompt_identity(prompt: dict[str, object], sha256: str) -> dict[str, str]:
+    return {
+        "hidden_corpus_commitment": _digest(
+            prompt.get("hidden_corpus_commitment"), "hidden corpus commitment"
+        ),
+        "hidden_judge_digest": _digest(
+            prompt.get("hidden_judge_digest"), "hidden judge digest"
+        ),
+        "hidden_task_policy_digest": _digest(
+            prompt.get("hidden_task_policy_digest"), "hidden task policy digest"
+        ),
+        "selection_policy_digest": _digest(
+            prompt.get("selection_policy_digest"), "selection policy digest"
+        ),
+        "sha256": _digest(sha256, "prompt authority SHA-256"),
+        "tokenizer_digest": _digest(
+            prompt.get("tokenizer_digest"), "tokenizer digest"
+        ),
+    }
+
+
+def _same_authority_identity(
+    authority: dict[str, object],
+    measurement: dict[str, object],
+) -> None:
+    for field in ("arena_id", "qualification_builder_digest", "resources"):
+        if authority.get(field) != measurement.get(field):
+            raise B300DeploymentError(
+                f"authority and measurement differ at {field}"
+            )
+    for section, names in (
+        ("topology", ("architecture", "gpu_count", "lane", "lane_digest", "tensor_parallel_size", "topology_class")),
+        ("model", ("content_digest", "manifest_digest", "revision_digest", "root")),
+        ("worker", ("base_engine_digest", "image", "local_image_id", "runtime_digest", "validator_overlay_digest", "worker_distribution_digest")),
+        ("prompt", ("sha256",)),
+        ("device_execution", ("sha256",)),
+    ):
+        left = _mapping(authority.get(section), f"authority {section}")
+        right = _mapping(measurement.get(section), f"measurement {section}")
+        if any(left.get(name) != right.get(name) for name in names):
+            raise B300DeploymentError(
+                f"authority and measurement differ at {section}"
+            )
+
+
+def _validate_ready_inventory(
+    ready: dict[str, object],
+    gpus: tuple[GPUConfiguration, ...],
+) -> None:
+    gpu = _mapping(ready.get("gpu"), "READY GPU inventory")
+    inventory = gpu.get("inventory")
+    allocated = tuple(sorted(index for lane in _ready_lanes(ready) for index in lane))
+    if tuple(gpu.physical_id for gpu in gpus) != allocated:
+        raise B300DeploymentError(
+            "provisioned GPU set differs from the commissioned lane pair"
+        )
+    for configured in gpus:
+        try:
+            row = next(
+                _mapping(value, "READY GPU row")
+                for value in inventory  # type: ignore[union-attr]
+                if _mapping(value, "READY GPU row").get("index")
+                == configured.physical_id
+            )
+        except StopIteration:
+            raise B300DeploymentError("READY GPU row is missing") from None
+        if (
+            row.get("index") != configured.physical_id
+            or row.get("uuid") != configured.uuid
+            or str(row.get("pci_bus_id", "")).lower() != configured.pci_bus_id
+            or row.get("name") != configured.name
+            or row.get("memory_mib") != configured.memory_total_mib
+        ):
+            raise B300DeploymentError(
+                "provisioned GPU configuration differs from READY inventory"
+            )
+
+
+def _derive_inputs(
+    *,
+    root: Path,
+    ready: dict[str, object],
+    authority: dict[str, object],
+    measurement: dict[str, object],
+    prompt: dict[str, object],
+    authority_refs: dict[str, dict[str, str]],
+    preflight: RuntimePreflightReceipt,
+    gpus: tuple[GPUConfiguration, ...],
+) -> _CommissionedInputs:
+    _same_authority_identity(authority, measurement)
+    selected, complement_ids = _ready_lanes(ready)
+    _validate_ready_inventory(ready, gpus)
+    if len({(gpu.name, gpu.memory_total_mib) for gpu in gpus}) != 1:
+        raise B300DeploymentError("qualification lanes require the same GPU model and memory capacity")
+    by_id = {gpu.physical_id: gpu for gpu in gpus}
+    try:
+        selected_gpus = tuple(by_id[physical_id] for physical_id in selected)
+    except KeyError:
+        raise B300DeploymentError(
+            "commissioned lane is absent from the allocated pair"
+        ) from None
+    complement_gpus = tuple(by_id[physical_id] for physical_id in complement_ids)
+    device_policy = _device_policy(selected_gpus)
+    physical_lanes = sorted(
+        (selected_gpus, complement_gpus),
+        key=lambda lane: tuple(gpu.physical_id for gpu in lane),
+    )
+    lane_a_policy = _device_policy(physical_lanes[0])
+    lane_b_policy = _device_policy(physical_lanes[1])
+    qualification_lane_pair = B300QualificationLanePair(
+        B300QualificationLanePolicy.from_device_policy("A", lane_a_policy),
+        B300QualificationLanePolicy.from_device_policy("B", lane_b_policy),
+    )
+
+    topology = _mapping(authority.get("topology"), "topology authority")
+    raw_lane = topology.get("lane")
+    try:
+        authority_lane = tuple(int(row) for row in raw_lane)  # type: ignore[union-attr]
+    except (TypeError, ValueError):
+        raise B300DeploymentError("topology authority lane is malformed") from None
+    if (
+        topology.get("gpu_count") != len(selected)
+        or topology.get("tensor_parallel_size") != len(selected)
+        or authority_lane != selected
+    ):
+        raise B300DeploymentError(
+            "sealed topology differs from the commissioned TP lane"
+        )
+    authority_lane_digest = _digest(
+        topology.get("lane_digest"), "topology authority lane digest"
+    )
+    topology_class = _text(topology.get("topology_class"), "topology class")
+    # ``RuntimePreflightFacts.topology_digest`` is measured inside the OCI
+    # lifetime from the visible TP lane's canonical ``nvidia-smi topo -m``
+    # matrix.  The sealed authority's lane digest is that same-domain value.
+    # Do not wrap it in a second deployment-identity domain: doing so makes an
+    # otherwise exact live lane impossible to compare with the host policy.
+    # READY's independently bound lane/inventory identity remains retained in
+    # the deployment payload below and in the device execution policy.
+    ready_lane = _mapping(ready.get("lane"), "READY lane")
+    _digest(ready_lane.get("lane_digest"), "READY lane digest")
+    topology_digest = authority_lane_digest
+
+    worker = _mapping(authority.get("worker"), "worker authority")
+    image = _text(worker.get("image"), "worker image")
+    identity = runtime_identity_from_preflight(preflight)
+    ready_worker_image = _text(ready.get("worker_image"), "READY worker image")
+    if (
+        image != ready_worker_image
+        or image != preflight.requested_image
+        or worker.get("local_image_id") != preflight.local_image_id
+        or worker.get("runtime_digest") != identity.runtime_digest
+        or worker.get("base_engine_digest") != identity.base_engine_digest
+        or worker.get("validator_overlay_digest")
+        != identity.validator_overlay_digest
+        or worker.get("worker_distribution_digest")
+        != preflight.worker_distribution_digest
+    ):
+        raise B300DeploymentError(
+            "sealed worker authority differs from runtime preflight or READY"
+        )
+    model = _mapping(authority.get("model"), "model authority")
+    ready_model = _mapping(ready.get("model"), "READY model")
+    model_root = _absolute_path(model.get("root"), "model authority root")
+    if (
+        _absolute_path(ready_model.get("path"), "READY model root") != model_root
+        or ready_model.get("content_digest") != model.get("content_digest")
+        or ready_model.get("readonly_inventory_verified") is not True
+    ):
+        raise B300DeploymentError(
+            "sealed model authority differs from commissioned READY model"
+        )
+    if model_root.is_symlink() or not model_root.is_dir():
+        raise B300DeploymentError("commissioned model root is unavailable")
+
+    source = _mapping(ready.get("source"), "READY source")
+    runtime_root = _mapping(ready.get("runtime"), "READY runtime")
+    # Current-pod commissions bind the exact runtime seed as runtime.path.
+    # The earlier Lium bootstrap schema carried the same path in a structured
+    # runtime_seed field, so accept that representation when replaying one.
+    seed_value = ready.get("runtime_seed")
+    if seed_value is None:
+        seed_value = runtime_root.get("path")
+    elif type(seed_value) is dict:
+        seed_value = seed_value.get("path")
+    runtime_seed_root = _absolute_path(seed_value, "READY runtime seed")
+    controller_distribution_digest = _digest(
+        source.get("tree_digest"), "READY source tree digest"
+    )
+    runtime = ArenaRuntimeIdentity(
+        arena_id=_text(authority.get("arena_id"), "arena id"),
+        runtime_digest=identity.runtime_digest,
+        base_engine_digest=identity.base_engine_digest,
+        validator_overlay_digest=identity.validator_overlay_digest,
+        worker_distribution_digest=preflight.worker_distribution_digest,
+        model_revision_digest=_digest(
+            model.get("revision_digest"), "model revision digest"
+        ),
+        model_manifest_digest=_digest(
+            model.get("manifest_digest"), "model manifest digest"
+        ),
+        model_content_digest=_digest(
+            model.get("content_digest"), "model content digest"
+        ),
+        target_architecture=_text(topology.get("architecture"), "target architecture"),
+        topology_class=topology_class,
+        topology_digest=topology_digest,
+        gpu_count=len(selected),
+        tensor_parallel_size=len(selected),
+    )
+    prompt_identity = _prompt_identity(
+        prompt, authority_refs["prompt_authority"]["sha256"]
+    )
+    batches = _prompt_batches(prompt)
+    workload = _workload(prompt, batches, prompt_identity["sha256"])
+    prompt_batch_cells = _prompt_batch_cells(prompt, batches, workload)
+    model_profile_key = _text(prompt.get("model_profile_key"), "model profile key")
+    engine_template = _engine_template(prompt)
+    if engine_template.tp_size != runtime.tensor_parallel_size:
+        raise B300DeploymentError(
+            "arena engine tensor parallel size differs from READY runtime"
+        )
+    catalog = default_target_catalog()
+    registered_target_ids, closed_targets = _target_partition(prompt, catalog)
+    try:
+        declared, qualification_commission = derive_b300_qualification_declaration(
+            authority=authority,
+            prompt_identity=prompt_identity,
+            catalog=catalog,
+            registered_target_ids=registered_target_ids,
+            lane_pair=qualification_lane_pair,
+            backend_config_factory=lambda executor_id: _backend_config(
+                root, preflight, executor_id=executor_id, resources=authority.get("resources")
+            ),
+        )
+    except B300QualificationDeclarationError as exc:
+        raise B300DeploymentError(str(exc)) from None
+    return _CommissionedInputs(
+        root=root,
+        ready=ready,
+        authority=authority,
+        authority_refs=authority_refs,
+        preflight=preflight,
+        gpus=selected_gpus,
+        qualification_gpus=gpus,
+        device_policy=device_policy,
+        qualification_lane_pair=qualification_lane_pair,
+        runtime=runtime,
+        topology_digest=topology_digest,
+        controller_distribution_digest=controller_distribution_digest,
+        model_root=model_root,
+        prompt_batches=batches,
+        prompt_batch_cells=prompt_batch_cells,
+        prompt_identity=prompt_identity,
+        workload=workload,
+        model_profile_key=model_profile_key,
+        engine_template=engine_template,
+        registered_target_ids=registered_target_ids,
+        closed_targets=closed_targets,
+        declared_qualification=declared,
+        qualification_commission=qualification_commission,
+        runtime_seed_root=runtime_seed_root,
+    )
+
+
+def _authority_inputs(
+    *,
+    ready_receipt: str | os.PathLike[str],
+    authority_config: str | os.PathLike[str],
+    measurement_config: str | os.PathLike[str],
+    calibration_package: str | os.PathLike[str],
+    calibration_projection_receipt: str | os.PathLike[str],
+    prompt_authority: str | os.PathLike[str],
+    output_root: str | os.PathLike[str],
+    provisioner: Callable[..., tuple[GPUConfiguration, ...]] | None,
+    provisioned_gpus: tuple[GPUConfiguration, ...] | None = None,
+) -> _CommissionedInputs:
+    root = _prepare_private_root(Path(output_root))
+    ready_path, ready, ready_sha = _stable_json(ready_receipt, "READY receipt")
+    authority_path, authority, authority_sha = _stable_json(
+        authority_config, "authority config"
+    )
+    measurement_path, measurement, measurement_sha = _stable_json(
+        measurement_config, "measurement config"
+    )
+    calibration_path, _calibration, calibration_sha = _stable_json(
+        calibration_package, "calibration package"
+    )
+    projection_path, _projection, projection_sha = _stable_json(
+        calibration_projection_receipt, "calibration projection receipt"
+    )
+    prompt_path, prompt, prompt_sha = _stable_json(
+        prompt_authority, "prompt authority"
+    )
+
+    prompt_ref = _mapping(authority.get("prompt"), "prompt binding")
+    device_ref = _mapping(authority.get("device_execution"), "device binding")
+    calibration_ref = _mapping(authority.get("calibration"), "calibration binding")
+    device_path_value = _absolute_path(
+        device_ref.get("path"), "device execution path"
+    )
+    device_path, device_execution, device_sha = _stable_json(
+        device_path_value, "device execution receipt"
+    )
+    if (
+        prompt_path != _absolute_path(prompt_ref.get("path"), "prompt binding path").resolve(strict=True)
+        or prompt_sha != _digest(prompt_ref.get("sha256"), "prompt binding SHA-256")
+        or device_path
+        != _absolute_path(device_ref.get("path"), "device binding path").resolve(strict=True)
+        or device_sha
+        != _digest(device_ref.get("sha256"), "device binding SHA-256")
+        or calibration_path
+        != _absolute_path(
+            calibration_ref.get("package"), "calibration binding path"
+        ).resolve(strict=True)
+        or calibration_sha
+        != _digest(
+            calibration_ref.get("package_sha256"),
+            "calibration binding SHA-256",
+        )
+    ):
+        raise B300DeploymentError(
+            "explicit sealed authority paths or SHA-256 values differ from config"
+        )
+    preflight = _runtime_preflight(_find_preflight(device_execution))
+    selected = tuple(sorted(index for lane in _ready_lanes(ready) for index in lane))
+    if (provisioner is None) == (provisioned_gpus is None):
+        raise B300DeploymentError(
+            "GPU configuration requires exactly one provisioner or sealed inventory"
+        )
+    if provisioner is not None:
+        try:
+            gpus = provisioner(
+                selected,
+                deadline=time.monotonic() + 60.0,
+            )
+        except Exception as exc:
+            raise B300DeploymentError(
+                f"fixed GPU provisioning failed: {type(exc).__name__}"
+            ) from None
+    else:
+        assert provisioned_gpus is not None
+        gpus = provisioned_gpus
+    if type(gpus) is not tuple or any(type(row) is not GPUConfiguration for row in gpus):
+        raise B300DeploymentError(
+            "GPU provisioner did not return exact immutable configurations"
+        )
+    refs = {
+        "authority_config": _authority_ref(authority_path, authority_sha),
+        "calibration_package": _authority_ref(calibration_path, calibration_sha),
+        "calibration_projection_receipt": _authority_ref(
+            projection_path, projection_sha
+        ),
+        "device_execution": _authority_ref(device_path, device_sha),
+        "measurement_config": _authority_ref(measurement_path, measurement_sha),
+        "prompt_authority": _authority_ref(prompt_path, prompt_sha),
+        "ready_receipt": _authority_ref(ready_path, ready_sha),
+    }
+    return _derive_inputs(
+        root=root,
+        ready=ready,
+        authority=authority,
+        measurement=measurement,
+        prompt=prompt,
+        authority_refs=refs,
+        preflight=preflight,
+        gpus=gpus,
+    )
+
+
+def _deployment_payload(inputs: _CommissionedInputs) -> dict[str, object]:
+    ready_lane = _mapping(inputs.ready.get("lane"), "READY lane")
+    return {
+        "authorities": {
+            key: dict(value) for key, value in sorted(inputs.authority_refs.items())
+        },
+        "controller_distribution_digest": inputs.controller_distribution_digest,
+        "declared_qualification": inputs.declared_qualification.to_dict(),
+        "device_configuration_digest": (
+            inputs.device_policy.configuration_sha256
+        ),
+        "device_policy_digest": inputs.device_policy.policy_sha256,
+        "gpu_configurations": [
+            gpu.canonical_dict() for gpu in inputs.qualification_gpus
+        ],
+        "preflight_sha256": inputs.preflight.sha256,
+        "prompt_identity": dict(inputs.prompt_identity),
+        "ready": {
+            "lane_devices": list(_ready_lane(inputs.ready)),
+            "lane_digest": _digest(
+                ready_lane.get("lane_digest"), "READY lane digest"
+            ),
+            "receipt_digest": _digest(
+                inputs.ready.get("receipt_digest"), "READY receipt digest"
+            ),
+            "worker_epoch": _text(
+                inputs.ready.get("worker_epoch"), "READY worker epoch"
+            ),
+        },
+        "runtime": inputs.runtime.to_dict(),
+        "schema": DEPLOYMENT_SCHEMA,
+        "topology_digest": inputs.topology_digest,
+    }
+
+
+def materialize_b300_identities(
+    *,
+    ready_receipt: str | os.PathLike[str],
+    authority_config: str | os.PathLike[str],
+    measurement_config: str | os.PathLike[str],
+    calibration_package: str | os.PathLike[str],
+    calibration_projection_receipt: str | os.PathLike[str],
+    prompt_authority: str | os.PathLike[str],
+    output_root: str | os.PathLike[str] = DEFAULT_OUTPUT_ROOT,
+    gpu_provisioner: Callable[..., tuple[GPUConfiguration, ...]] = (
+        provision_gpu_configurations
+    ),
+) -> dict[str, object]:
+    """Provision and emit the fixed path-free service identities.
+
+    This command performs the one permitted read-only GPU inventory query.  It
+    does not start an engine, import candidate code, execute a candidate, or
+    contact chain/network services.
+    """
+
+    inputs = _authority_inputs(
+        ready_receipt=ready_receipt,
+        authority_config=authority_config,
+        measurement_config=measurement_config,
+        calibration_package=calibration_package,
+        calibration_projection_receipt=calibration_projection_receipt,
+        prompt_authority=prompt_authority,
+        output_root=output_root,
+        provisioner=gpu_provisioner,
+    )
+    composition = _compose(inputs)
+    service = ArenaService(
+        composition.manifest,
+        B300ArenaServiceProvider(composition.manifest, composition.authorities),
+    )
+    epoch = _text(inputs.ready.get("worker_epoch"), "READY worker epoch")
+    if len(epoch) != 32 or any(character not in "0123456789abcdef" for character in epoch):
+        raise B300DeploymentError("READY worker epoch is not 128-bit hex")
+    readiness = WorkerReadiness.for_service(
+        service,
+        ready_receipt_digest=_digest(
+            inputs.ready.get("receipt_digest"), "READY receipt digest"
+        ),
+        ready_epoch=int(epoch, 16),
+    )
+    deployment = _deployment_payload(inputs)
+    _atomic_canonical(inputs.root / DEPLOYMENT_FILE, deployment)
+    _atomic_canonical(inputs.root / MANIFEST_FILE, composition.manifest.to_dict())
+    _atomic_canonical(inputs.root / READINESS_FILE, readiness.to_dict())
+    return {
+        "arena_service_manifest": str(inputs.root / MANIFEST_FILE),
+        "arena_service_manifest_sha256": _file_sha256(
+            inputs.root / MANIFEST_FILE
+        ),
+        "deployment": str(inputs.root / DEPLOYMENT_FILE),
+        "deployment_sha256": _file_sha256(inputs.root / DEPLOYMENT_FILE),
+        "provider_digest": composition.manifest.provider_digest,
+        "schema": MATERIALIZATION_SCHEMA,
+        "service_digest": composition.manifest.digest,
+        "worker_readiness": str(inputs.root / READINESS_FILE),
+        "worker_readiness_digest": readiness.digest,
+        "worker_readiness_sha256": _file_sha256(
+            inputs.root / READINESS_FILE
+        ),
+    }
+
+
+def _runtime_from_dict(value: object) -> ArenaRuntimeIdentity:
+    row = _mapping(value, "arena runtime identity")
+    try:
+        return ArenaRuntimeIdentity(**row)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise B300DeploymentError(f"runtime identity is invalid: {exc}") from None
+
+
+def _manifest_from_dict(value: object) -> ArenaServiceManifest:
+    row = _mapping(value, "arena service manifest")
+    workload_row = _mapping(row.get("workload"), "workload")
+    raw_cells = workload_row.get("cells")
+    if type(raw_cells) is not list:
+        raise B300DeploymentError("workload cells are malformed")
+    try:
+        return ArenaServiceManifest(
+            runtime=_runtime_from_dict(row["runtime"]),
+            workload=Workload(
+                workload_row["prompt_corpus_digest"],  # type: ignore[arg-type]
+                workload_row["prompt_seed_scheme"],  # type: ignore[arg-type]
+                tuple(
+                    WorkloadCell(**_mapping(cell, "workload cell"))
+                    for cell in raw_cells
+                ),
+            ),
+            capacity=ArenaCapacityPolicy(**_mapping(row["capacity"], "capacity")),
+            qualification_policy_digest=row["qualification_policy_digest"],  # type: ignore[arg-type]
+            provider_digest=row["provider_digest"],  # type: ignore[arg-type]
+            closed_targets=tuple(_string_rows(row["closed_targets"], "closed targets")),
+            schema_version=row["schema_version"],  # type: ignore[arg-type]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise B300DeploymentError(
+            f"arena service manifest is invalid: {type(exc).__name__}"
+        ) from None
+
+
+def _ref_path(refs: dict[str, object], name: str) -> Path:
+    row = _mapping(refs.get(name), f"deployment authority {name}")
+    path = _absolute_path(row.get("path"), f"deployment authority {name} path")
+    expected = _digest(
+        row.get("sha256"), f"deployment authority {name} SHA-256"
+    )
+    if _file_sha256(path) != expected:
+        raise B300DeploymentError(
+            f"deployment authority {name} changed after materialization"
+        )
+    return path
+
+
+def _canonical_artifact(path: Path, field: str) -> dict[str, object]:
+    resolved, value, _sha = _stable_json(path, field)
+    if resolved != path.resolve(strict=True) or path.read_bytes() != _canonical_bytes(value):
+        raise B300DeploymentError(f"{field} is not canonical JSON")
+    return value
+
+
+def replay_commissioned_composition(
+    registration: dict[str, object],
+    ready_receipt: dict[str, object],
+    *, commissioned_root: Path | None = None,
+) -> tuple[_CommissionedInputs, _Composition, WorkerReadiness]:
+    """Replay the fixed commissioned artifacts into one live composition.
+
+    ``registration`` and ``ready_receipt`` come from the fixed authenticated
+    transport codec.  They select no local paths: this function reopens only
+    the three fixed commissioned filenames and the SHA-bound authority refs
+    inside the commissioned deployment artifact.
+    """
+
+    if type(registration) is not dict or type(ready_receipt) is not dict:
+        raise B300DeploymentError(
+            "commissioned worker inputs must be exact JSON objects"
+        )
+    root = _prepare_private_root(DEFAULT_OUTPUT_ROOT if commissioned_root is None else commissioned_root)
+    deployment_path = root / DEPLOYMENT_FILE
+    manifest_path = root / MANIFEST_FILE
+    readiness_path = root / READINESS_FILE
+    deployment = _canonical_artifact(deployment_path, "deployment")
+    if deployment.get("schema") != DEPLOYMENT_SCHEMA:
+        raise B300DeploymentError("deployment schema differs")
+    refs = _mapping(deployment.get("authorities"), "deployment authorities")
+    required_refs = {
+        "authority_config",
+        "calibration_package",
+        "calibration_projection_receipt",
+        "device_execution",
+        "measurement_config",
+        "prompt_authority",
+        "ready_receipt",
+    }
+    if set(refs) != required_refs:
+        raise B300DeploymentError("deployment authority inventory differs")
+    gpu_rows = deployment.get("gpu_configurations")
+    if type(gpu_rows) is not list:
+        raise B300DeploymentError("deployment GPU inventory is malformed")
+    gpus = tuple(_gpu_from_dict(row) for row in gpu_rows)
+    inputs = _authority_inputs(
+        ready_receipt=_ref_path(refs, "ready_receipt"),
+        authority_config=_ref_path(refs, "authority_config"),
+        measurement_config=_ref_path(refs, "measurement_config"),
+        calibration_package=_ref_path(refs, "calibration_package"),
+        calibration_projection_receipt=_ref_path(
+            refs, "calibration_projection_receipt"
+        ),
+        prompt_authority=_ref_path(refs, "prompt_authority"),
+        output_root=root,
+        provisioner=None,
+        provisioned_gpus=gpus,
+    )
+    if inputs.ready != ready_receipt or _deployment_payload(inputs) != deployment:
+        raise B300DeploymentError(
+            "commissioned deployment did not replay from sealed authorities"
+        )
+    stored_manifest = _manifest_from_dict(
+        _canonical_artifact(manifest_path, "arena service manifest")
+    )
+    readiness_row = _canonical_artifact(readiness_path, "worker readiness")
+    try:
+        readiness = WorkerReadiness(**readiness_row)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise B300DeploymentError(
+            f"worker readiness is invalid: {exc}"
+        ) from None
+    composition = _compose(inputs)
+    if composition.manifest != stored_manifest:
+        raise B300DeploymentError(
+            "arena service manifest did not replay from deployment"
+        )
+    service = ArenaService(
+        composition.manifest,
+        B300ArenaServiceProvider(composition.manifest, composition.authorities),
+    )
+    readiness.validate(service)
+    lane_devices = registration.get("lane_devices")
+    if (
+        registration.get("ready_receipt_digest")
+        != ready_receipt.get("receipt_digest")
+        or registration.get("worker_epoch")
+        != ready_receipt.get("worker_epoch")
+        or registration.get("service_identity")
+        != composition.manifest.service_id
+        or registration.get("worker_readiness") != readiness.to_dict()
+        or registration.get("worker_readiness_digest") != readiness.digest
+        or type(lane_devices) is not list
+        or tuple(lane_devices) != _ready_lane(ready_receipt)
+    ):
+        raise B300DeploymentError(
+            "registration differs from commissioned service, READY, or TP4 lane"
+        )
+    return inputs, composition, readiness
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m cacheon.eval.b300_deployment"
+    )
+    subparsers = parser.add_subparsers(dest="operation", required=True)
+    materialize = subparsers.add_parser("materialize")
+    materialize.add_argument("--ready-receipt", required=True)
+    materialize.add_argument("--authority-config", required=True)
+    materialize.add_argument("--measurement-config", required=True)
+    materialize.add_argument("--calibration-package", required=True)
+    materialize.add_argument("--calibration-projection-receipt", required=True)
+    materialize.add_argument("--prompt-authority", required=True)
+    materialize.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    if args.operation != "materialize":  # pragma: no cover - argparse is closed
+        raise B300DeploymentError("unsupported deployment operation")
+    result = materialize_b300_identities(
+        ready_receipt=args.ready_receipt,
+        authority_config=args.authority_config,
+        measurement_config=args.measurement_config,
+        calibration_package=args.calibration_package,
+        calibration_projection_receipt=args.calibration_projection_receipt,
+        prompt_authority=args.prompt_authority,
+        output_root=args.output_root,
+    )
+    print(_canonical_bytes(result).decode("utf-8"), end="")
+    return 0
+
+
+__all__ = [
+    "B300DeploymentError",
+    "DEFAULT_OUTPUT_ROOT",
+    "DEPLOYMENT_FILE",
+    "DEPLOYMENT_SCHEMA",
+    "MANIFEST_FILE",
+    "MATERIALIZATION_SCHEMA",
+    "READINESS_FILE",
+    "main",
+    "materialize_b300_identities",
+    "replay_commissioned_composition",
+]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

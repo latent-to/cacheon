@@ -32,7 +32,6 @@ from cacheon.chain.operator_status import (
     _qualification_dispositions,
     _readonly_connection,
     _reason,
-    _screen_dispositions,
 )
 
 
@@ -44,8 +43,8 @@ SCHEMA = "cacheon.miner.submission-report.v1"
 _GUIDANCE: dict[str, tuple[str, str]] = {
     "qualified": (
         "The bundle beat its baseline and passed qualification.",
-        "A first PASS is reproduction_pending: settlement needs an independently "
-        "bound second PASS before a crown is awarded.",
+        "One audited PASS qualifies. It earns reward credit when it is the first "
+        "PASS on its baseline or beats the previous best PASS by 1.5%.",
     ),
     "candidate_kernel_does_not_compile": (
         "A @triton.jit kernel in the bundle cannot be traced, so it never "
@@ -58,7 +57,7 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
     # recorded every speed FAIL under this one code.
     "speed_regression": (
         "The bundle was correct, compiled, and graph-safe, and was not faster "
-        "than the baseline in the timed bracket.",
+        "than the baseline in the timed windows.",
         "This is an ordinary competitive result, not a defect. The baseline is a "
         "tuned production stack.",
     ),
@@ -67,12 +66,12 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "speedup fell inside the round's noise band: it did not clear the "
         "required threshold, and it was not measurably slower either.",
         "This is an ordinary competitive result, not a regression. The bar "
-        "for the round is 1 + max(min_margin, k*noise); a larger win or "
-        "lower run-to-run variance clears it.",
+        "is statistical: the speedup must exceed the arena's sealed noise "
+        "band across both lane orientations, so a larger win clears it.",
     ),
     "candidate_slower": (
         "The bundle was correct, compiled, and graph-safe, and the timed "
-        "bracket measured it slower than the baseline beyond the round's "
+        "windows measured it slower than the baseline beyond the arena's "
         "noise band.",
         "The baseline is a tuned production stack. Profile the kernel "
         "against the stock implementation before resubmitting.",
@@ -87,12 +86,24 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "The bundle failed in eager execution before graph capture.",
         "Reproduce locally with `cacheon.cli verify` before submitting.",
     ),
+    # Retired with the routing screen on 2026-09-27. Durable rows written before
+    # that day still carry these reasons, so each keeps an explanation.
     "screen_rejected": (
-        "The bundle was rejected by one of the arena screen stages and did "
-        "not enter qualification.",
-        "Read the failed stage below. Abbreviated serving is a timed stock/"
-        "candidate bracket; earlier stages cover static scan, build, ABI, "
-        "and graph behavior.",
+        "The bundle was rejected by one of the retired arena screen stages "
+        "(static scan, build, ABI, graph behavior, or a timed stock/candidate "
+        "serving bracket) and did not enter qualification.",
+        "Read the failed stage below. A new submission goes straight to "
+        "qualification; the screen no longer runs.",
+    ),
+    "screen_receipt_service_rotated": (
+        "The arena service identity changed between the retired screen and "
+        "its use, so the screen receipt no longer described the running service.",
+        "This was validator-side and not attributed to the bundle.",
+    ),
+    "screen_promoted": (
+        "Every non-crown screen passed and the submission was waiting to enter "
+        "qualification.",
+        "No action is needed. This was a queue position, not a verdict.",
     ),
     "copy_of": (
         "The bundle was detected as a copy of an earlier submission or of the "
@@ -104,6 +115,11 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "Byte-identical content was already submitted.",
         "A FAIL verdict replays onto identical bytes. Change the kernel, not the "
         "packaging.",
+    ),
+    "baseline_closed_at_submission": (
+        "This baseline closed before your submission.",
+        "Your submission credit has been preserved. Resubmit against the current "
+        "open baseline; any cited evaluation payment remains reusable.",
     ),
     "target_unavailable": (
         "The commissioned arena workload cannot currently measure this "
@@ -134,17 +150,6 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "so it was never queued for evaluation.",
         "This is NOT a judgement on the bundle; nothing about it was measured. "
         "Each evaluation needs its own payment bound to the submission.",
-    ),
-    "screen_receipt_service_rotated": (
-        "The arena service identity changed between the screen and its use, so "
-        "the screen receipt no longer described the running service.",
-        "This is validator-side and not attributed to the bundle. It is "
-        "re-screened against the current service rather than failed.",
-    ),
-    "screen_promoted": (
-        "Every non-crown screen passed and the submission is waiting to enter "
-        "qualification.",
-        "No action is needed. This is a queue position, not a verdict.",
     ),
 }
 
@@ -367,8 +372,8 @@ def _submission(
         "decision": row["decision"] or None,
         "attribution": _attribution(row),
         "reason": reason,
-        "guidance": _guidance(reason.get("code")),
-        "screens": _screen_dispositions(db, row["reservation_id"]),
+        "guidance": (None if reason.get("code") == "baseline_closed_at_submission"
+                     and row["decision"] != "NO_DECISION" else _guidance(reason.get("code"))),
         "qualification_dispositions": qualifications,
         "evaluation_leases": leases,
     }
@@ -470,18 +475,6 @@ def format_miner_submissions(value: dict[str, Any]) -> str:
         finding = record.get("static_finding")
         if finding:
             lines.append(f"  static finding: {finding}")
-        for screen in record["screens"]:
-            failed = [
-                stage for stage in screen["stages"] if stage["grade"] != "pass"
-            ]
-            if failed:
-                lines.append(
-                    f"  screen[{screen['attempt_index']}] {screen['decision']}: "
-                    f"failed at {', '.join(stage['stage'] for stage in failed)}"
-                )
-            for stage in failed:
-                if stage.get("reason"):
-                    lines.append(f"    {stage['stage']}: {stage['reason']}")
         for attempt in record.get("attempt_evidence") or ():
             lines.append(f"  attempt[{attempt['attempt_index']}] evidence:")
             if attempt["retained"]:

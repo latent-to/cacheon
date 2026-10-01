@@ -21,11 +21,11 @@ lock file.
 ## Settlement inputs
 
 `SettlementCandidate` accepts one complete audited PASS. The production
-version-3 attempt runs B/C/B′ (v10, v11 for mixed cells, or v12 with its
-prompt pass), then registered eager audit A and pristine T. Every cell is
-warmed before timing, both stock observations remain in the evidence, and the
-faster valid stock rate sets the credited speedup. A v12 prefill-lane admission
-is credited at the sealed fraction of its prompt-pass gain.
+version-3 attempt runs the paired replay of B and C (speed policy 17), then
+registered eager audit A and pristine T. Every window's turn records remain in
+the evidence, and the settled speedup is the pooled, orientation-balanced
+cost ratio the grader computed. Retained batch-cell PASS rows settle on the
+speedup their own policy recorded.
 
 Historical paired candidates remain byte-compatible and use their original
 lower score. A retained complete primary PASS left by an older controller is
@@ -77,11 +77,12 @@ a recovery mechanism.
 ## Deterministic plan
 
 Admission owns the baseline cutoff. The first crown on a commissioned baseline closes
-that baseline to later finalized commitments in the same competition. The routed
-admission step rejects them as `baseline_closed_at_submission` before any screen lease
-or candidate execution. A commitment in the finalized crown block or earlier remains
-admissible even if its bundle is fetched later. A new commissioned service has its own
-admission window. Screening retries and completed evaluations are not readmitted.
+that baseline to later finalized commitments in the same competition. The
+qualification queue's admission step rejects them as `baseline_closed_at_submission`
+before any qualification lease or candidate execution. A commitment in the finalized
+crown block or earlier remains admissible even if its bundle is fetched later. A new
+commissioned service has its own admission window. Work claimed once never meets a
+second cutoff, and completed evaluations are not readmitted.
 
 Settlement does not repeat the commitment-time check. An admitted candidate retains its
 measured baseline. Among eligible registered candidates, the planner chooses the highest
@@ -114,7 +115,7 @@ The hash-chained event journal can contain:
 | `HOLD` | Candidate cannot advance against this incumbent or lost a conflict |
 | `CROWN` | Passing marginal contribution is recognized |
 | `RETIREMENT` | Previous contribution at the target is superseded |
-| `NEUTRALIZATION` | An overlapping target is displaced by explicit catalog policy |
+| `NEUTRALIZATION` | An overlapping target is displaced by explicit catalog policy; the current catalog declares no overlap |
 | `ADOPTION` | New contribution is inserted into the evaluation stack |
 | `STACK_TRANSITION` | Incumbent stack/tree advances atomically |
 | `DISCOVERY_BOUNTY` | Qualified discovery receives bounded bounty treatment only |
@@ -145,9 +146,9 @@ event, candidate pair, evidence receipt, and resulting stack state as one author
 
 ## Legacy V1 CROWN rewards
 
-One complete audited PASS makes a contribution eligible for settlement; it
-do not make it an earning claim. Only the settlement `CROWN` earns. When that
-transition advances the incumbent, existing reservations keep their durable queue
+One complete audited PASS makes a contribution eligible for settlement. It earns when
+it clears the reward comparison below, crowned or not; the `CROWN` advances the lineage.
+When that transition advances the incumbent, existing reservations keep their durable queue
 baseline. Qualification drains the contiguous old-baseline segment in finalized
 arrival order under the still-resident commission. Settlement may use the
 ancestor performance comparison above, but it never erases a completed evaluation just
@@ -155,15 +156,12 @@ because the tip changed.
 
 The evaluator requests recommission only when the oldest active queue segment is
 bound to a different stack of the live arena. The boundary is checked before a
-qualification lease, request publication, or GPU action. Screening can continue
-because it is not baseline-relative. After recommissioning, the next segment runs
-against its own persisted stack; one qualification cohort can never mix stack
-segments. A segment that names a retired arena, left behind when the validator
-redeployed on new worker bytes, is not a boundary: before the check, every
-evidence-free row on it (published, in transport retry, screening, or promoted)
-is rebound to the live durable stack, and a promoted row whose screen receipt
-came from the retired identity is re-screened under the live one by the
-screen-identity rotation rule. Rows holding a lease or a PASS half keep their
+qualification lease, request publication, or GPU action. After recommissioning,
+the next segment runs against its own persisted stack; one qualification cohort
+can never mix stack segments. A segment that names a retired arena, left behind
+when the validator redeployed on new worker bytes, is not a boundary: before the
+check, every evidence-free row on it (published or in transport retry) is rebound
+to the live durable stack. Rows holding a lease or a PASS half keep their
 segment, so that boundary stays visible to the operator. A completed
 remote product that differs from the baseline assigned to its own lease is still
 released through a digest-bound stale-incumbent recovery event because that is an
@@ -172,7 +170,7 @@ crown history from retained settlement candidates and qualification evidence rat
 than a second reward table.
 
 Credit uses the logarithm of the candidate speedup divided by the best earlier
-PASS speedup on the same arena and baseline, a submission-time stall multiplier,
+rewarded PASS speedup on the same arena and baseline, a submission-time stall multiplier,
 and exponential half-life decay as defined in
 [Legacy V1](../reference/emissions-policy.md#legacy-v1). The existing
 `crowned_block` wire field carries the finalized submission block for compatibility;
@@ -196,7 +194,10 @@ promotion, integration, or release cannot renew the same bounty.
 ## Legacy V1 global projection
 
 The reward builder reopens retained PASS evidence and pays only records that beat
-the best earlier PASS against the same baseline by the configured minimum margin.
+the preceding rewarded v17 record against the same baseline by at least 1.5%
+(`V17_REWARD_MARGIN`); credit remains the unshrunken marginal logarithmic reward. An
+unpaid estimate does not advance the reward record. Historical policies retain
+their configured minimum margin against the preceding rewarded record.
 Pre-policy runtime generations retain their existing eligibility. See
 [emissions policy](../reference/emissions-policy.md) for grandfathering and ordering.
 The builder also reopens the active stacks
@@ -233,20 +234,6 @@ claims enter one normalization, so a catalog change neither orphans old rewards
 nor creates an independently normalized pool for the new arena.
 The v1.1/v1.3/v1.4/v1.5/v1.6 bindings advance to v1.7 only with identical numeric
 policy fields; unrelated policy changes remain refused.
-
-A retained pair's baseline speedup is the lower of its two settled speedups;
-that measurement feeds the queue-relative scoring ratio and depends on the
-baseline lane behind it. When the retained stage-exit
-artifacts show that the credited half read the baseline lane under the arena
-band (the median of every retained baseline-role read in the arena minus five
-percent, over at least six reads), the operator command
-[`chain-reopen-qualification`](../reference/cli.md#chain-reopen-qualification)
-returns the pair to the screen queue for a fresh independent pair against the
-current incumbent and archives the old candidate under `settlement_reopenings`.
-The pair stops earning the moment it leaves `qualified`. A reopened row binds
-to the stack whose service re-screens it, not the stack current at its original
-arrival, so it never parks the queue behind a retired commission. Crowned or
-otherwise settled candidates are lineage and cannot be reopened this way.
 
 ## Dry run
 
@@ -445,8 +432,9 @@ Offer production must survive an evaluation pause: `follow-weights` refuses a
 projection older than its refresh window, so an offer that stops being re-minted
 while the standing supervisor is down freezes the chain vector. The standalone
 producer, `python -m cacheon.chain.weight_offer_service --config <sealed offer
-config>`, composes the supervisor's weights stage against the same sealed screen
-and weights authorities on a loop, pushes to `serve-weights`, and never signs.
+config>`, composes the supervisor's weights stage against the same sealed dispatcher
+(`screen_dispatcher_config`) and weights authorities on a loop, pushes to
+`serve-weights`, and never signs.
 Exactly one producer runs per intake database: while it is armed, the standing
 supervisor's `enable_weights` stays false.
 

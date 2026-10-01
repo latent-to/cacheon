@@ -27,12 +27,13 @@ sequenceDiagram
 
     H->>P: Read-only engine tree + lease-scoped staging
     P-->>H: Sealed native publication + inventory
-    H->>L0: launch/read B
-    L0-->>H: Opening timed rate
-    H->>L1: launch/read C
-    L1-->>H: Candidate rate + sealed trajectory
-    H->>L0: read B′ unconditionally
-    L0-->>H: Stock-drift control
+    par each paired window
+        H->>L0: launch/replay B
+        H->>L1: launch/replay C
+    end
+    L0-->>H: Incumbent turn records
+    L1-->>H: Candidate turn records + sealed trajectory
+    H->>L0: On PASS, generate selected stock-drift controls
     H->>H: Prove resident speed lanes quiescent
     H->>A: Run registered eager, untimed audit
     A-->>H: Sampled slot × rank evidence
@@ -116,17 +117,11 @@ Mount roots are required to be pairwise disjoint and cannot expose the controlle
 working directory, referee source, wallet, or other ambient host data.
 
 Production speed qualification uses two isolated physical TP lanes under one
-frozen authority while the controller serializes GPU work. The primary attempt
-fixes incumbent and candidate roles; an eligible reproduction must exchange
-them. Qualification launches separate engine processes for the request and
-always reads B/C/B′. A request-local launch does not relax containment: mount,
-protocol, device, deadline, and evidence identities remain exact.
-
-The earlier resident **screen** is a different lifetime and authority. Its hot-swap
-control directory exists only in the routing tier, admits only safely swappable bundles,
-and cannot produce crown evidence. Direct AOT, dependency-patched, native-rebuild, and
-setup-hook contributions bypass that screen through an explicit waiver and still receive
-the full isolated qualification path.
+frozen authority. The incumbent and candidate replay the sealed workload
+concurrently, one per lane, and policy 17 exchanges their lanes between its two
+orientations. Qualification launches separate engine processes for the request.
+A request-local launch does not relax containment: mount, protocol, device,
+deadline, and evidence identities remain exact.
 
 When a qualification plan requires sampled slot audit, the candidate also runs in a
 separate eager, untimed role. Its bounded facts are host-regraded and cannot be mixed into
@@ -138,8 +133,8 @@ T uses a distinct reference session protocol. Its engine tree must contain no pr
 contributions, and its native publication is control-only. The runtime rejects candidate
 artifacts in the reference session.
 
-This separates quality authority from both candidate C and potentially hostile incumbent
-B′.
+This separates quality authority from both candidate C and the potentially hostile
+incumbent engine.
 
 ## Host-owned execution
 
@@ -166,6 +161,14 @@ process manager verifies ownership before removal, performs cleanup after succes
 failure, and repeats removal checks to close client/container races. Startup recovery
 releases stale leases and orphan resources in the executor's own namespace.
 
+If the first bounded removal is still pending, cleanup requires a successful absence
+check after the foreground client is reaped. Docker acknowledges a forced removal
+before it destroys the container, and a multi-GPU engine container can take well over
+a minute to die, so each absence check waits up to five minutes for the daemon's
+destroy event before it reports the lease as still present. That final check can
+resolve the pending removal; it cannot erase an ownership, client, or stream error.
+Cleanup exceptions retain their original cause alongside the worker diagnostics.
+
 If cleanup, unmount, device drain, or absence proof cannot be established, qualification
 fails as infrastructure authority; it must not become a candidate `PASS` or `FAIL`.
 
@@ -185,9 +188,9 @@ fails as infrastructure authority; it must not become a candidate `PASS` or `FAI
 ## Static scanning and Python subprocesses
 
 Source scanning remains useful defense in depth. It applies the Python AST policy to every
-declared and vendored `.py` file. Manifest-declared CUDA sources and dependency patches are
-recognized as separate reviewed-build tiers; they are not Python-AST scanned. The tree
-guard rejects undeclared executable files, binary artifacts, and symlinks. None of these
+declared and vendored `.py` file. Manifest-declared CUDA sources are recognized as a
+separate reviewed-build tier; they are not Python-AST scanned. The tree guard rejects
+`.patch`/`.diff` files, undeclared executable files, binary artifacts, and symlinks. None of these
 checks proves arbitrary code safe, especially generated native code.
 
 The scanner admits the required CuTe DSL form `cute.compile(...)` only

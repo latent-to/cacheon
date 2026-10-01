@@ -10,14 +10,13 @@ from cacheon.settlement import SettlementCandidate, SettlementEvidence
 from tests.test_chain_intake import _qualified_settlement_candidate, _settlement_plan, _store
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_one_attempt_reaches_settlement_and_rewards_without_reproduction(tmp_path, target):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store, target=target)
         assert candidate.reproduction is None
         assert candidate.speedup == candidate.primary.speedup
         assert store.get(candidate.reservation_digest).status == "qualified"
-        assert store.preview_evaluation_claim(stage="screen", max_members=1) == ()
         assert store.preview_evaluation_claim(stage="qualification", max_members=1) == ()
         assert store._db.execute("SELECT COUNT(*) FROM qualification_dispositions").fetchone()[0] == 1
         receipt = store.reopen_settlement_evidence(candidate)
@@ -34,7 +33,7 @@ def test_one_attempt_reaches_settlement_and_rewards_without_reproduction(tmp_pat
         assert store._db.execute("SELECT COUNT(*) FROM settlement_qualifications").fetchone()[0] == 1
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_restart_accepts_old_controller_primary_without_repeating_it(tmp_path, target):
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store, target=target)

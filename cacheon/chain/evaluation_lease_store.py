@@ -358,11 +358,8 @@ class EvaluationLeaseStoreMixin:
             or type(bound) is not int
             or bound <= 0
             or bound > self.policy.max_cohort
-            or (stage == "screen" and bound != 1 and max_members is not None)
         ):
             raise _intake_error("evaluation lease preview bounds are malformed")
-        if stage == "screen":
-            bound = 1
         return tuple(
             row["reservation_id"] for row in self._select_evaluation_rows(stage, bound)
         )
@@ -377,7 +374,7 @@ class EvaluationLeaseStoreMixin:
         max_members: int | None = None,
         max_active: int | None = None,
     ) -> EvaluationLease | None:
-        """Atomically claim one oldest eligible screen or qualification cohort.
+        """Atomically claim one oldest eligible qualification cohort.
 
         Reproduction retains priority and retry groups remain indivisible.
         Capacity and worker availability are checked inside the claim transaction;
@@ -397,11 +394,8 @@ class EvaluationLeaseStoreMixin:
             or type(bound) is not int
             or bound <= 0
             or bound > self.policy.max_cohort
-            or (stage == "screen" and bound != 1 and max_members is not None)
         ):
             raise _intake_error("evaluation lease claim bounds are malformed")
-        if stage == "screen":
-            bound = 1
         self._require_evaluation_clock(current_block)
         with self._transaction():
             self._expire_evaluation_leases(current_block)
@@ -432,9 +426,7 @@ class EvaluationLeaseStoreMixin:
                 claimed_block=current_block,
                 initial_expires_block=expires,
             )
-            recovery_enabled = (
-                self._evaluation_recovery_enabled and stage == "qualification"
-            )
+            recovery_enabled = self._evaluation_recovery_enabled
             authority = (
                 self._evaluation_recovery_mutation(lease_id)
                 if recovery_enabled
@@ -575,52 +567,6 @@ class EvaluationLeaseStoreMixin:
                 raise _intake_error("evaluation lease event stream continued after terminal")
         return events
 
-    def heartbeat_evaluation_lease(
-        self,
-        lease: EvaluationLease,
-        *,
-        current_block: int,
-        lease_blocks: int = 30,
-    ) -> EvaluationLease:
-        """CAS-extend an active lease; every older lease object becomes stale."""
-
-        if (
-            type(lease) is not EvaluationLease
-            or type(lease_blocks) is not int
-            or lease_blocks <= 0
-            or lease_blocks > self.policy.expiry_blocks
-        ):
-            raise _intake_error("evaluation lease heartbeat bounds are malformed")
-        if self._evaluation_recovery_enabled:
-            self._generic_lease_operation_allowed(lease, "heartbeat")
-        self._require_evaluation_clock(current_block)
-        if self._durably_expire_exact_evaluation_lease_if_due(
-            lease, current_block
-        ):
-            raise _intake_error("evaluation lease expired before heartbeat")
-        with self._transaction():
-            self._active_evaluation_lease_row(lease)
-            expires = current_block + lease_blocks
-            if expires <= lease.expires_block:
-                raise _intake_error("evaluation heartbeat does not extend the deadline")
-            cursor = self._db.execute(
-                "UPDATE evaluation_leases SET expires_block=? WHERE lease_id=? "
-                "AND state='active' AND expires_block=?",
-                (expires, lease.lease_id, lease.expires_block),
-            )
-            if cursor.rowcount != 1:
-                raise _intake_error("evaluation lease changed during heartbeat")
-            retained = self._db.execute(
-                "SELECT * FROM evaluation_leases WHERE lease_id=?", (lease.lease_id,)
-            ).fetchone()
-            if retained is None:
-                raise _intake_error("evaluation lease disappeared during heartbeat")
-            extended = self._evaluation_lease(retained)
-            self._append_evaluation_lease_event(
-                extended, "heartbeat", finalized_block=current_block
-            )
-        return extended
-
     def expire_evaluation_leases(
         self, *, current_block: int
     ) -> tuple[EvaluationLease, ...]:
@@ -646,89 +592,22 @@ class EvaluationLeaseStoreMixin:
                 raise _intake_error("due evaluation lease was not expired")
         return True
 
-    def release_evaluation_lease(
-        self,
-        lease: EvaluationLease,
-        *,
-        current_block: int,
-        reason: str,
-        result_digest: str = "",
-    ) -> EvaluationLease:
-        """CAS-release infrastructure work without consuming a candidate attempt."""
-
-        if (
-            type(lease) is not EvaluationLease
-            or not isinstance(reason, str)
-            or not reason
-            or reason.strip() != reason
-            or len(reason) > 2_048
-            or any(ord(char) < 32 or ord(char) == 127 for char in reason)
-            or (result_digest and _HASH.fullmatch(result_digest) is None)
-        ):
-            raise _intake_error("evaluation lease release is malformed")
-        if self._evaluation_recovery_enabled:
-            self._generic_lease_operation_allowed(lease, "release")
-        self._require_evaluation_clock(current_block)
-        if self._durably_expire_exact_evaluation_lease_if_due(
-            lease, current_block
-        ):
-            raise _intake_error("evaluation lease expired before release")
-        with self._transaction():
-            self._active_evaluation_lease_row(lease)
-            if any(
-                self.get(member.reservation_id).status != member.prior_status
-                for member in lease.members
-            ):
-                raise _intake_error("evaluation lease no longer has its exact queue state")
-            cursor = self._db.execute(
-                "UPDATE evaluation_leases SET state='released',completed_block=?,"
-                "reason=?,result_digest=? WHERE lease_id=? AND state='active' "
-                "AND expires_block=?",
-                (
-                    current_block,
-                    reason,
-                    result_digest,
-                    lease.lease_id,
-                    lease.expires_block,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise _intake_error("evaluation lease changed during release")
-            members = self._db.execute(
-                "UPDATE evaluation_lease_members SET active=0 WHERE lease_id=? "
-                "AND active=1",
-                (lease.lease_id,),
-            )
-            if members.rowcount != len(lease.members):
-                raise _intake_error("evaluation lease members changed during release")
-            self._append_evaluation_lease_event(
-                lease,
-                "released",
-                finalized_block=current_block,
-                reason=reason,
-                result_digest=result_digest,
-            )
-            if not reason.startswith(self._CAP_EXEMPT_RELEASE_PREFIXES):
-                self._cap_infrastructure_releases(lease)
-        return lease
-
     _SYSTEMIC_RELEASE_CAP = 3
-    # Deliberate operator actions and pre-dispatch claim races never indicate
-    # a poisoned row.  Every other release class counts toward the cap: the
-    # old opt-in ``systemic%`` count let the screen catch-all reason retry one
-    # FIFO head row through 31 lease generations (2026-08-25..28) and another
-    # 30+ on 2026-08-29, starving the whole screen queue both times.
-    _CAP_EXEMPT_RELEASE_PREFIXES = ("operator", "screen_claim_")
+    # Deliberate operator actions never indicate a poisoned row.  Every other
+    # release class counts toward the cap: the old opt-in ``systemic%`` count
+    # let the retired screen stage's catch-all reason retry one FIFO head row
+    # through 31 lease generations (2026-08-25..28) and another 30+ on
+    # 2026-08-29, starving the whole queue both times.
+    _CAP_EXEMPT_RELEASE_PREFIXES = ("operator",)
 
     def _cap_infrastructure_releases(self, lease: EvaluationLease) -> None:
-        """Hold interrupted screens without repeating potentially paid work.
+        """Hold interrupted cohorts without repeating potentially paid work.
 
         An infrastructure release deliberately consumes no candidate attempt --
         infrastructure failure never becomes a candidate verdict.  Unbounded,
         that honesty is a free loop: the same reservation is reclaimed and
         released forever (observed 2026-08-10: one reservation claimed 16
-        times against a dead worker). Screens now stop at the first release
-        (owner's 2026-09-14 no-paid-retry rule). Qualification's authenticated
+        times against a dead worker). Qualification's authenticated
         pre-resident retries retain a consecutive cap, reset by completion.
         Holding is not a verdict; explicit ``release_hold`` preserves history.
         """
@@ -750,7 +629,7 @@ class EvaluationLeaseStoreMixin:
                 "WHERE m2.reservation_id=? AND e2.event_type='completed'), 0)",
                 (member.reservation_id, member.reservation_id),
             ).fetchone()[0]
-            if count < (1 if lease.stage == "screen" else self._SYSTEMIC_RELEASE_CAP):
+            if count < self._SYSTEMIC_RELEASE_CAP:
                 continue
             self._db.execute(
                 "UPDATE reservations SET status='held',decision='',"
@@ -772,23 +651,22 @@ class EvaluationLeaseStoreMixin:
     ) -> Iterator[tuple[IntakeReservation, ...]]:
         """Atomically apply one retained worker result under an exact live lease.
 
-        The caller performs only the existing durable screen or qualification
-        transition or exact qualification batch inside this context.  A crash
-        or exception rolls back both
-        that transition and lease completion.  Completion requires exactly one
+        The caller performs only the existing durable qualification transition
+        or exact qualification batch inside this context.  A crash or
+        exception rolls back both that transition and lease completion.
+        Completion requires exactly one
         new stage disposition for every ordered member and no dispositions for
         rows outside the cohort, so acknowledging an empty, partial, or widened
-        result is impossible. A completion may win after its deadline only
-        while its exact lease remains active; expiry or reclaim wins its CAS.
+        result is impossible. A completion never wins at or after its deadline:
+        the recovery branch requires a renewal first, and the plain branch lets
+        expiry take the CAS.
         """
 
         if type(lease) is not EvaluationLease:
             raise _intake_error("evaluation result lease is not exactly typed")
         require_sha256_hex(result_digest, field="evaluation result digest")
         self._require_evaluation_clock(current_block)
-        recovery_enabled = (
-            self._evaluation_recovery_enabled and lease.stage == "qualification"
-        )
+        recovery_enabled = self._evaluation_recovery_enabled
         if recovery_enabled:
             recovery = self._active_qualification_recovery(lease)
             if recovery.phase.value != "evidence_imported":
@@ -799,9 +677,7 @@ class EvaluationLeaseStoreMixin:
                 raise _intake_error(
                     "protected evaluation result requires recovery renewal"
                 )
-        elif lease.stage != "screen" and self._durably_expire_exact_evaluation_lease_if_due(
-            lease, current_block
-        ):
+        elif self._durably_expire_exact_evaluation_lease_if_due(lease, current_block):
             raise _intake_error("evaluation result arrived after lease expiry")
         with self._transaction():
             self._active_evaluation_lease_row(lease)
@@ -818,11 +694,7 @@ class EvaluationLeaseStoreMixin:
                 for row, member in zip(reservations, lease.members, strict=True)
             ):
                 raise _intake_error("evaluation lease no longer has its exact queue state")
-            table = (
-                "arena_screen_dispositions"
-                if lease.stage == "screen"
-                else "qualification_dispositions"
-            )
+            table = "qualification_dispositions"
             before_total = self._db.execute(
                 f"SELECT COUNT(*) AS n FROM {table}"
             ).fetchone()["n"]
@@ -850,8 +722,7 @@ class EvaluationLeaseStoreMixin:
                     (member.reservation_id,),
                 ).fetchone()["n"]
                 == before[member.reservation_id] + 1
-                and self.get(member.reservation_id).status
-                not in {"screening", "qualifying"}
+                and self.get(member.reservation_id).status != "qualifying"
                 for member in lease.members
             )
             if not complete or after_total != before_total + len(lease.members):

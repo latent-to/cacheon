@@ -8,7 +8,6 @@ is necessary for later qualification, never sufficient.
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
@@ -523,90 +522,13 @@ class SelectionReceipt(_Canonical):
         )
 
 
-def _validated_topk_position(position: object) -> list[list[object]]:
-    """Validate one retained distribution while accepting legitimate ties.
-
-    Quantized inference can emit bit-identical log-probabilities for more than
-    one token. A tie is valid evidence. Preserve runtime order because its first
-    entry is the rollout's observed top-one identity.
-    """
-
-    if not isinstance(position, (tuple, list)) or not position:
-        raise QualificationError("trajectory top-k position is malformed")
-    entries: list[tuple[float, int]] = []
-    for entry in position:
-        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
-            raise QualificationError("trajectory top-k entry is malformed")
-        logprob, token_id = entry
-        if (
-            isinstance(logprob, bool)
-            or not isinstance(logprob, (int, float))
-            or not math.isfinite(float(logprob))
-            or type(token_id) is not int
-            or token_id < 0
-        ):
-            raise QualificationError("trajectory top-k entry is invalid")
-        entries.append((float(logprob), token_id))
-    if len({token_id for _logprob, token_id in entries}) != len(entries):
-        raise QualificationError("trajectory top-k contains duplicate tokens")
-    if any(left[0] < right[0] for left, right in zip(entries, entries[1:])):
-        raise QualificationError("trajectory top-k order is invalid")
-    return [[format(logprob, ".17g"), token_id] for logprob, token_id in entries]
-
-
 def _trajectory_rows(lifecycle: object):
-    from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
-    from cacheon.eval.oci_session_protocol import PromptEvidence
-    from cacheon.eval.scoring import marginal_workload_digest
-
-    if type(lifecycle) is not ResidentMarginalLifecycleEvidence:
-        raise QualificationError("trajectory lifecycle is not typed")
-    plan = lifecycle.prepared.baseline_session_plan
-    batch_sets = tuple(
-        lifecycle.role_batches(role) for role in lifecycle.role_names
-    )
-    workload = marginal_workload_digest(plan)
-    rows = []
-    for batch_index, prompts in enumerate(plan.prompt_batches):
-        expected_tokens = plan.request_geometry(batch_index)[0]
-        for prompt_index, prompt in enumerate(prompts):
-            occurrence = canonical_digest(
-                "cacheon.qualification.prompt-occurrence",
-                {
-                    "batch_index": batch_index,
-                    "prompt_index": prompt_index,
-                    "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-                    "workload_digest": workload,
-                },
-            )
-            frames = []
-            for batches in batch_sets:
-                evidence = batches[batch_index].evidence.prompts[prompt_index]
-                if (
-                    type(evidence) is not PromptEvidence
-                    or len(evidence.output_ids) != expected_tokens
-                    or len(evidence.top_logprobs) != expected_tokens
-                    or any(type(token) is not int or token < 0 for token in evidence.output_ids)
-                    or any(len(position) != plan.top_logprobs_num for position in evidence.top_logprobs)
-                ):
-                    raise QualificationError("trajectory token/top-k coverage differs from workload")
-                # A width-0 plan retains one empty support row per token; the
-                # coverage check above already pins every row to length zero,
-                # and the digest must seal that absence rather than reject it.
-                if plan.top_logprobs_num:
-                    topk = [
-                        _validated_topk_position(position)
-                        for position in evidence.top_logprobs
-                    ]
-                else:
-                    topk = [[] for _ in evidence.top_logprobs]
-                frames.append({"output_ids": list(evidence.output_ids), "top_logprobs": topk})
-            rows.append((occurrence, frames))
-    return workload, tuple(rows)
+    from cacheon.eval.qualification_trajectories import trajectory_rows
+    return trajectory_rows(lifecycle)
 
 
 def _resident_lifecycle(lifecycle: object):
-    """Return the exact B/C/B-prime lifecycle, refusing anything untyped."""
+    """Return the exact paired-replay lifecycle, refusing anything untyped."""
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
 
@@ -618,25 +540,24 @@ def _resident_lifecycle(lifecycle: object):
 def lifecycle_prompt_digests(lifecycle: object) -> tuple[str, ...]:
     """Canonical prompt-occurrence pool fixed before any quality selection."""
 
-    from cacheon.eval.scoring import planned_prompt_texts
+    from cacheon.eval.qualification_trajectories import prompt_pool
 
     plan = lifecycle.prepared.baseline_session_plan
-    _workload, rows = _trajectory_rows(lifecycle)
-    eligible = set(planned_prompt_texts(plan))
-    observed = {row[0] for row in rows}
-    if not eligible or not eligible <= observed:
-        raise QualificationError("quality prompt geometry is absent from trajectories")
-    return tuple(sorted(eligible))
+    if plan.replay is None:
+        raise QualificationError("quality prompts come from a sealed session replay")
+    return tuple(sorted(prompt_pool(plan.replay)))
 
 
 def cohort_trajectory_digest(lifecycle: object) -> str:
     """Bind every retained token/top-k frame in complete execution order."""
 
-    workload, rows = _trajectory_rows(lifecycle)
-    return canonical_digest(
-        "cacheon.qualification.cohort-trajectories",
-        {"workload_digest": workload, "prompts": [[key, frames] for key, frames in rows]},
-    )
+    from cacheon.eval.qualification_trajectories import trajectory_digest
+    from cacheon.eval.scoring import marginal_workload_digest
+
+    crossover = lifecycle.crossover
+    return trajectory_digest(marginal_workload_digest(lifecycle.prepared.baseline_session_plan),
+                             crossover.prompt_pairs, crossover.baseline_execution.session.batches,
+                             crossover.candidate_execution.session.batches)
 
 
 def candidate_lifecycle_digest(
@@ -828,10 +749,8 @@ def derived_hidden_task_plan_digest(
     return canonical_digest("cacheon.qualification.hidden-task-plan", rows)
 
 
-def _selected_prompt_texts(lifecycle: object) -> dict[str, str]:
-    from cacheon.eval.scoring import planned_prompt_texts
-
-    return planned_prompt_texts(lifecycle.prepared.baseline_session_plan)
+def _selected_prompt_texts(lifecycle: object) -> dict[str, str | tuple[int, ...]]:
+    return {row.prompt_digest: row.input_ids for row in lifecycle.crossover.reference_inputs}
 
 
 def _validate_teacher_source(
@@ -874,7 +793,7 @@ def _validate_teacher_source(
         raise QualificationError("pristine T prompt coverage differs from selection")
     for prompt in raw.prompts:
         request, evidence = by_prompt[prompt.prompt_digest]
-        if request.prompt != expected_text.get(prompt.prompt_digest):
+        if (request.input_ids or request.prompt) != expected_text.get(prompt.prompt_digest):
             raise QualificationError("pristine T prompt text differs from lifecycle")
         for rollout, role_input, role_evidence in zip(
             (prompt.baseline, prompt.candidate, prompt.stock_control),

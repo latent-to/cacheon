@@ -35,11 +35,6 @@ from cacheon.chain.execution_disposition import (
 from cacheon.chain.baseline_segments import commission_boundary
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
-from cacheon.chain.screen_identity_rotation import (
-    ScreenIdentityRotationError,
-    release_rotated_cohort,
-    rotated_reservation_ids,
-)
 from cacheon.chain.remote_evaluation_dispatcher import (
     AuthenticatedRemoteEvaluationResponse,
     RemoteEvaluationDispatcherError,
@@ -351,6 +346,14 @@ class RecoverableQualificationDispatcher:
         store, point = self._open_store()
         try:
             recovery = store.pending_qualification_recovery(owner=self.coordinator.owner)
+            if recovery is None:
+                # Admission runs before the first claim: an exact copy of a
+                # loser inherits its FAIL, and closed targets or post-crown
+                # arrivals are released (duplicate_replay, arena_state).
+                store.prepare_qualification_queue(
+                    service_digest=self.coordinator.service.identity,
+                    closed_targets=self.coordinator.service.manifest.closed_targets,
+                )
             if recovery is None or recovery.phase is RecoveryPhase.CLAIMED:
                 boundary = self._bind_commissioned_incumbent(store)
                 if boundary is not None:
@@ -375,18 +378,16 @@ class RecoverableQualificationDispatcher:
                 store.get(reservation_id)
                 for reservation_id in recovery.lease.reservation_ids
             )
-            receipts = tuple(
-                store.latest_promoted_screen(row.reservation_id)
+            # The attempt number is sealed into the candidate binding, so a
+            # reconstructed claim must derive it exactly as the first claim
+            # did. Dispositions are written only at commit, which closes this
+            # lease, so the count is stable for the lease's whole lifetime.
+            attempts = tuple(
+                store.qualification_attempts(row.reservation_id) + 1
                 for row in reservations
-            )
-            rotated = rotated_reservation_ids(
-                reservations, receipts, self.coordinator.service.identity
             )
         finally:
             store.close()
-        if rotated:
-            self._rescreen_rotated(recovery, rotated)
-            return None
         try:
             publications = tuple(
                 reopen_worker_bundle(
@@ -398,9 +399,9 @@ class RecoverableQualificationDispatcher:
             )
             authority = _qualification_reservations(reservations, publications)
             candidates = tuple(
-                ArenaCandidateBinding(item, publication, row.screen_attempts)
-                for row, publication, item in zip(
-                    reservations, publications, authority, strict=True
+                ArenaCandidateBinding(item, publication, attempt)
+                for publication, item, attempt in zip(
+                    publications, authority, attempts, strict=True
                 )
             )
             claim = ClaimedQualificationEvaluation(
@@ -408,7 +409,6 @@ class RecoverableQualificationDispatcher:
                 reservations,
                 publications,
                 candidates,
-                receipts,
             )
         except Exception as exc:
             self._hold(recovery, "claim_reopen_failed")
@@ -416,26 +416,6 @@ class RecoverableQualificationDispatcher:
                 "qualification claim could not be reconstructed"
             ) from exc
         return _RecoveryClaim(recovery, claim)
-
-    def _rescreen_rotated(
-        self, recovery: EvaluationRecovery, rotated: tuple[str, ...]
-    ) -> None:
-        """Return a cohort screened by a retired identity to the screen queue."""
-
-        store, point, current = self._current_recovery(recovery.recovery_id)
-        try:
-            release_rotated_cohort(
-                store,
-                current,
-                current_block=point[0],
-                reservation_ids=rotated,
-            )
-        except (IntakeError, ScreenIdentityRotationError) as exc:
-            raise RecoverableQualificationDispatcherError(
-                f"rotated screen cohort could not be requeued: {exc}"
-            ) from exc
-        finally:
-            store.close()
 
     def _hold(
         self, recovery: EvaluationRecovery, reason: str

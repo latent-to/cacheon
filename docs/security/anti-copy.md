@@ -54,9 +54,9 @@ authoritative:
 | Symmetric containment of substantial file fingerprints | Later delta is a copy |
 
 Normalization removes cosmetic Python formatting/comments/docstrings, normalizes
-declared CUDA text, follows bundle-local Python imports, includes all explicit variants,
-and includes declared dependency patches. Symmetric containment prevents an extra padding
-operation or fresh sibling variant from hiding a stolen target implementation.
+declared CUDA text, follows bundle-local Python imports, and includes all explicit
+variants. Symmetric containment prevents an extra padding operation or fresh sibling
+variant from hiding a stolen target implementation.
 
 The intake store compares only earlier finalized proposals from another hotkey. Copy
 reconciliation is durable and idempotent. If an earlier fingerprint becomes available
@@ -97,8 +97,8 @@ parser. Renaming CUDA identifiers and changing constants can evade that advisory
   near-copy.
 - It cannot distinguish independent convergence when two deltas normalize identically;
   finalized priority is the deterministic policy in that case.
-- It does not award a crown. Non-copy candidates still need screens, two qualifications,
-  and transactional settlement.
+- It does not award a crown. Non-copy candidates still need a complete audited
+  qualification and transactional settlement.
 - It does not create reward by splitting one implementation across identities; rewards
   attach to active target contributions, not raw submission count.
 

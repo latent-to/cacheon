@@ -84,8 +84,7 @@ def test_unknown_abi_spelling_is_refused(tmp_path: Path) -> None:
         load_manifest(bundle)
 
 
-def test_screen_consumers_use_the_single_compatibility_reader() -> None:
-    from cacheon.eval import b300_screen_stages, resident_screen_lane
+def test_qualification_consumer_uses_the_single_compatibility_reader() -> None:
+    from cacheon.eval import b300_registered_qualification
 
-    assert b300_screen_stages.load_manifest is load_manifest
-    assert resident_screen_lane.load_manifest is load_manifest
+    assert b300_registered_qualification.load_manifest is load_manifest

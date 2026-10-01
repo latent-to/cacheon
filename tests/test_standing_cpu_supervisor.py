@@ -15,7 +15,6 @@ from cacheon.chain.recoverable_qualification_dispatcher import (
     RecoverableQualificationHold,
     RecoverableQualificationRequeue,
 )
-from cacheon.chain.remote_qualification_evidence import RemoteEvaluationReleased
 from cacheon.chain.standing_cpu_supervisor import (
     StandingCpuSupervisor,
     StandingCpuSupervisorError,
@@ -44,7 +43,7 @@ class _Clock:
         self.value += seconds
 
 
-def test_tick_prefers_qualification_resume_before_new_screen_claim() -> None:
+def test_tick_returns_on_qualification_progress_before_later_stages() -> None:
     calls: list[str] = []
 
     def qualification():
@@ -60,13 +59,13 @@ def test_tick_prefers_qualification_resume_before_new_screen_claim() -> None:
             checkpoint_age_s=12.5,
         )
 
-    def screen():
-        calls.append("screen")
-        raise AssertionError("screen must not run while qualification has work")
+    def weights():
+        calls.append("weights")
+        raise AssertionError("weights must not run while qualification progresses")
 
     supervisor = StandingCpuSupervisor(
-        screen_once=screen,
         qualification_once=qualification,
+        weights_once=weights,
         clock=_Clock(),
     )
     status = supervisor.tick()
@@ -80,31 +79,30 @@ def test_tick_prefers_qualification_resume_before_new_screen_claim() -> None:
     assert status.to_dict()["schema"].endswith("status-v1")
 
 
-def test_tick_runs_screen_when_qualification_is_idle() -> None:
+def test_tick_runs_later_stages_when_qualification_is_idle() -> None:
     calls: list[str] = []
 
     def qualification():
         calls.append("qualification")
         return None
 
-    def screen():
-        calls.append("screen")
+    def weights():
+        calls.append("weights")
         return SupervisorStageResult(
-            stage="screen",
+            stage="weights",
             progressed=True,
-            disposition="completed",
-            lease_id=_d("screen-lease"),
-            lane_assignment="reproduction",
+            disposition="confirmed",
+            request_id=_d("projection"),
         )
 
     status = StandingCpuSupervisor(
-        screen_once=screen,
         qualification_once=qualification,
+        weights_once=weights,
         clock=_Clock(),
     ).tick()
-    assert calls == ["qualification", "screen"]
-    assert status.phase is SupervisorPhase.SCREEN
-    assert status.lease_id == _d("screen-lease")
+    assert calls == ["qualification", "weights"]
+    assert status.phase is SupervisorPhase.WEIGHTS
+    assert status.request_id == _d("projection")
 
 
 def test_hold_and_requeue_products_are_visible_without_inventing_retry() -> None:
@@ -115,7 +113,6 @@ def test_hold_and_requeue_products_are_visible_without_inventing_retry() -> None
         reason="marker_present",
     )
     status = StandingCpuSupervisor(
-        screen_once=lambda: None,
         qualification_once=lambda: hold,
         clock=_Clock(),
     ).tick()
@@ -133,7 +130,6 @@ def test_hold_and_requeue_products_are_visible_without_inventing_retry() -> None
         ),
     )
     status = StandingCpuSupervisor(
-        screen_once=lambda: None,
         qualification_once=lambda: requeue,
         clock=_Clock(),
     ).tick()
@@ -146,7 +142,6 @@ def test_hold_and_requeue_products_are_visible_without_inventing_retry() -> None
 def test_stall_becomes_visible_hold_not_idle_wait() -> None:
     clock = _Clock()
     supervisor = StandingCpuSupervisor(
-        screen_once=lambda: None,
         qualification_once=lambda: None,
         clock=clock,
         stall_timeout_s=30.0,
@@ -160,7 +155,6 @@ def test_stall_becomes_visible_hold_not_idle_wait() -> None:
 
 def test_exception_fails_closed_without_mapping_to_requeue() -> None:
     supervisor = StandingCpuSupervisor(
-        screen_once=lambda: None,
         qualification_once=lambda: (_ for _ in ()).throw(TimeoutError("boom")),
         clock=_Clock(),
     )
@@ -168,28 +162,6 @@ def test_exception_fails_closed_without_mapping_to_requeue() -> None:
         supervisor.tick()
     assert supervisor.status().phase is SupervisorPhase.FAILED
     assert supervisor.status().last_disposition == "stage_error"
-
-
-def test_committed_infrastructure_release_is_recorded_and_the_loop_continues() -> None:
-    """A lease the dispatcher already released is a disposition, not a crash."""
-
-    lease_id = _d("released-lease")
-    calls: list[str] = []
-
-    def screen():
-        calls.append("screen")
-        if len(calls) == 1:
-            raise RemoteEvaluationReleased(lease_id, "remote_screen_infrastructure")
-        return None
-
-    supervisor = StandingCpuSupervisor(
-        screen_once=screen, qualification_once=None, clock=_Clock()
-    )
-    status = supervisor.tick()
-    assert status.phase is SupervisorPhase.SCREEN
-    assert (status.last_disposition, status.lease_id) == ("released", lease_id)
-    assert supervisor.tick().phase is SupervisorPhase.IDLE
-    assert calls == ["screen", "screen"]
 
 
 def test_run_forever_resumes_same_request_across_restart() -> None:
@@ -213,27 +185,27 @@ def test_run_forever_resumes_same_request_across_restart() -> None:
             lease_id=_d("same-lease"),
         )
 
-    screen_calls = {"n": 0}
+    weights_calls = {"n": 0}
 
-    def screen():
-        screen_calls["n"] += 1
+    def weights():
+        weights_calls["n"] += 1
         return None
 
     # First process: crash on first tick.
     first = StandingCpuSupervisor(
-        screen_once=screen,
         qualification_once=qualification,
+        weights_once=weights,
         clock=_Clock(),
     )
     with pytest.raises(StandingCpuSupervisorError, match="simulated supervisor"):
         first.tick()
     assert requests == [_d("same-request")]
-    assert screen_calls["n"] == 0
+    assert weights_calls["n"] == 0
 
     # Second process: same injectable stages resume the same request id.
     second = StandingCpuSupervisor(
-        screen_once=screen,
         qualification_once=qualification,
+        weights_once=weights,
         clock=_Clock(),
     )
     status = second.tick()
@@ -241,13 +213,12 @@ def test_run_forever_resumes_same_request_across_restart() -> None:
     assert status.lease_id == _d("same-lease")
     assert requests == [_d("same-request"), _d("same-request")]
     assert state["qual_calls"] == 2
-    assert screen_calls["n"] == 0
+    assert weights_calls["n"] == 0
 
 
 def test_run_forever_idle_poll_and_stop() -> None:
     clock = _Clock()
     supervisor = StandingCpuSupervisor(
-        screen_once=lambda: None,
         qualification_once=lambda: None,
         clock=clock,
         stall_timeout_s=10_000.0,
@@ -273,7 +244,6 @@ def test_run_forever_idle_poll_and_stop() -> None:
 def test_run_forever_prints_exact_stage_error(capsys) -> None:
     stop = threading.Event()
     supervisor = StandingCpuSupervisor(
-        screen_once=lambda: None,
         qualification_once=lambda: (_ for _ in ()).throw(TimeoutError("exact boom")),
         clock=_Clock(),
     )
@@ -288,16 +258,16 @@ def test_run_forever_prints_exact_stage_error(capsys) -> None:
 
 
 @pytest.mark.parametrize("disposition", ["hold", "requeue", "waiting"])
-def test_run_forever_backs_off_typed_no_progress_after_screening(
+def test_run_forever_backs_off_typed_no_progress_after_later_stages(
     disposition: str,
 ) -> None:
-    # A held or requeued qualification is not a unit of work: the screen stage
-    # still runs on the same tick (2026-08-10 mainnet: one durably held
+    # A held or requeued qualification is not a unit of work: later stages
+    # still run on the same tick (2026-08-10 mainnet: one durably held
     # recovery starved the entire screen FIFO). Backoff engages only once no
     # stage anywhere progresses, and holds never advance the progress clock.
     clock = _Clock()
     stop = threading.Event()
-    calls = {"qualification": 0, "screen": 0}
+    calls = {"qualification": 0, "weights": 0}
     waits: list[float] = []
     products = {
         "waiting": SupervisorStageResult(stage="qualification", progressed=False, disposition="waiting"),
@@ -324,8 +294,8 @@ def test_run_forever_backs_off_typed_no_progress_after_screening(
             return products["hold"]
         return products[disposition]
 
-    def screen():
-        calls["screen"] += 1
+    def weights():
+        calls["weights"] += 1
         return None
 
     def wait(seconds: float) -> bool:
@@ -337,8 +307,8 @@ def test_run_forever_backs_off_typed_no_progress_after_screening(
         return False
 
     supervisor = StandingCpuSupervisor(
-        screen_once=screen,
         qualification_once=qualification,
+        weights_once=weights,
         clock=clock,
     )
     initial_progress = supervisor.status().last_progress_unix
@@ -351,7 +321,7 @@ def test_run_forever_backs_off_typed_no_progress_after_screening(
         restart_max_backoff_s=8.0,
     )
 
-    assert calls == {"qualification": 3 if disposition == "waiting" else 2, "screen": 2}
+    assert calls == {"qualification": 3 if disposition == "waiting" else 2, "weights": 2}
     assert waits == [2.0, 4.0]
     assert supervisor.status().last_progress_unix == initial_progress
     assert supervisor.status().last_disposition == ("hold" if disposition == "waiting" else disposition)
@@ -373,7 +343,6 @@ def test_stop_drains_same_request_without_claiming_more(terminal: str) -> None:
         )
 
     supervisor = StandingCpuSupervisor(
-        screen_once=lambda: pytest.fail("draining worker claimed a new screen"),
         qualification_once=qualification,
         weights_once=lambda: pytest.fail("draining worker started another stage"),
     )
@@ -386,49 +355,48 @@ def test_stop_between_idle_stages_prevents_new_claim() -> None:
     stop = threading.Event()
     supervisor = StandingCpuSupervisor(
         qualification_once=stop.set,
-        screen_once=lambda: pytest.fail("stopped worker claimed a screen"),
+        weights_once=lambda: pytest.fail("stopped worker started another stage"),
     )
     run_forever(supervisor, stop)
     assert supervisor.status().phase is SupervisorPhase.IDLE
 
 
-def test_held_qualification_does_not_starve_screen_progress() -> None:
+def test_held_qualification_does_not_starve_later_stage_progress() -> None:
     # The regression observed live on 2026-08-10: qualification durably HELD,
     # screens never claimed again, published count frozen. A progressing
-    # screen must win the tick over a non-progressing qualification hold.
+    # later stage must win the tick over a non-progressing qualification hold.
     hold = RecoverableQualificationHold(
         recovery_id=_d("held-recovery"),
         phase=RecoveryPhase.HELD,
         request_id=_d("held-request"),
         reason="transport_hold:worker_infrastructure_result",
     )
-    screens: list[str] = []
+    published: list[str] = []
 
-    def screen():
-        screens.append("claimed")
+    def weights():
+        published.append("confirmed")
         return SupervisorStageResult(
-            stage="screen",
+            stage="weights",
             progressed=True,
-            disposition="completed",
-            lease_id=_d("screen-lease"),
-            lane_assignment="primary",
+            disposition="confirmed",
+            request_id=_d("projection"),
         )
 
     supervisor = StandingCpuSupervisor(
-        screen_once=screen,
         qualification_once=lambda: hold,
+        weights_once=weights,
         clock=_Clock(),
     )
     for _ in range(3):
         status = supervisor.tick()
-        assert status.phase is SupervisorPhase.SCREEN
-        assert status.last_disposition == "completed"
-    assert screens == ["claimed"] * 3
+        assert status.phase is SupervisorPhase.WEIGHTS
+        assert status.last_disposition == "confirmed"
+    assert published == ["confirmed"] * 3
 
-    # When the screen queue empties, the standing hold becomes visible again.
+    # When nothing else progresses, the standing hold becomes visible again.
     supervisor_idle = StandingCpuSupervisor(
-        screen_once=lambda: None,
         qualification_once=lambda: hold,
+        weights_once=lambda: None,
         clock=_Clock(),
     )
     status = supervisor_idle.tick()
@@ -454,9 +422,9 @@ def test_settlement_runs_before_draining_qualification_without_forcing_commissio
         )
 
     status = StandingCpuSupervisor(
-        screen_once=lambda: order.append("screen") or None,
         qualification_once=lambda: order.append("qualification") or None,
         settle_once=settle,
+        weights_once=lambda: order.append("weights") or None,
         clock=_Clock(),
     )
     assert status.tick().phase is SupervisorPhase.SETTLEMENT
@@ -464,7 +432,7 @@ def test_settlement_runs_before_draining_qualification_without_forcing_commissio
     drained = status.tick()
     assert drained.phase is SupervisorPhase.IDLE
     assert drained.hold_reason is None
-    assert order == ["settlement", "settlement", "qualification", "screen"]
+    assert order == ["settlement", "settlement", "qualification", "weights"]
 
 
 def test_qualification_queue_boundary_requires_commission() -> None:
@@ -475,23 +443,23 @@ def test_qualification_queue_boundary_requires_commission() -> None:
         _d("new-tree"),
     )
     status = StandingCpuSupervisor(
-        screen_once=lambda: order.append("screen") or None,
         qualification_once=lambda: order.append("qualification") or boundary,
         settle_once=lambda: order.append("settlement") or None,
+        weights_once=lambda: order.append("weights") or None,
         clock=_Clock(),
     ).tick()
 
     assert status.phase is SupervisorPhase.HOLD
     assert status.last_disposition == "commission_required"
     assert status.hold_reason == "baseline_commission_required"
-    assert order == ["settlement", "qualification", "screen"]
+    assert order == ["settlement", "qualification", "weights"]
 
 
 def test_untyped_stage_product_is_rejected() -> None:
     with pytest.raises(StandingCpuSupervisorError, match="untyped product"):
         StandingCpuSupervisor(
-            screen_once=lambda: SimpleNamespace(disposition="completed"),
             qualification_once=lambda: None,
+            weights_once=lambda: SimpleNamespace(disposition="completed"),
             clock=_Clock(),
         ).tick()
 
@@ -516,7 +484,6 @@ def test_settlement_and_weights_stages_wire_into_supervisor() -> None:
             finalized_block_provider=lambda: 100,
         )
         status = StandingCpuSupervisor(
-            screen_once=lambda: None,
             qualification_once=lambda: None,
             settle_once=settle,
             clock=_Clock(),

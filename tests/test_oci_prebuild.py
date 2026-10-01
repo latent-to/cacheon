@@ -414,6 +414,34 @@ def test_exact_prebuild_argv_has_only_two_mounts_no_gpu_no_egress_no_caps(
     )
 
 
+def test_lanes_sharing_a_store_take_turns_to_build_and_reopen(tmp_path: Path, monkeypatch) -> None:
+    import threading
+    from cacheon.eval import oci_prebuild
+
+    store = tmp_path / "store"
+    lock = oci_prebuild._store_lock(store)
+    assert oci_prebuild._store_lock(str(store)) is lock and oci_prebuild._store_lock(tmp_path) is not lock
+    peer = []
+
+    def held(*args, **kwargs):
+        def probe():
+            peer.append(lock.acquire(blocking=False))
+            if peer[-1]:
+                lock.release()  # a regression must fail the assertion, not strand the lock and hang
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join()
+        return "done"
+
+    monkeypatch.setattr(oci_prebuild, "reopen_native_artifact", held)
+    monkeypatch.setattr(oci_prebuild, "_run_oci_prebuild", held)
+    config = object.__new__(oci_prebuild.OCIPrebuildConfig)
+    object.__setattr__(config, "publication_root", store)
+    assert oci_prebuild.reopen_publication(store / "ab" / "entry", expected_build_spec_digest="x") == "done"
+    assert oci_prebuild.run_oci_prebuild(None, None, config) == "done"
+    assert peer == [False, False]
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="production publication uses Linux renameat2")
 def test_run_builds_publishes_reopens_and_then_reuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

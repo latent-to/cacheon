@@ -1,10 +1,10 @@
-"""Validator-owned arena admission, screening, and qualification planning.
+"""Validator-owned arena admission and qualification planning.
 
 An arena service is the trusted bridge between finalized publications and the
 crownable qualification authority.  It binds the exact runtime/model/topology,
-scored serving workload, resource budgets, and reviewed provider identity.  Its
-screens are deliberately non-economic: they may reject, retry, or promote a
-candidate to qualification, but cannot produce a score or a crown.
+scored serving workload, resource budgets, and reviewed provider identity.  A
+published candidate enters qualification directly; the qualification's first
+window is the only screen.
 
 The provider is an in-process validator object supplied by deployment code.  No
 module path, entry point, or other miner-controlled dynamic import participates in
@@ -28,8 +28,7 @@ from cacheon.stack_identity import canonical_digest
 from cacheon._strict import require_digest, require_identifier
 
 
-SERVICE_SCHEMA_VERSION = 2
-SCREEN_STAGES = ("static", "build", "abi", "graph", "abbreviated_serving")
+SERVICE_SCHEMA_VERSION = 3
 _IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,255}\Z")
 _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 
@@ -54,7 +53,7 @@ def _positive(value: object, field: str) -> int:
 
 @dataclass(frozen=True)
 class ArenaRuntimeIdentity:
-    """Path-free serving identity shared by screening and qualification."""
+    """Path-free serving identity of the qualification engine."""
 
     arena_id: str
     runtime_digest: str
@@ -192,12 +191,8 @@ class Workload:
 class ArenaCapacityPolicy:
     max_queue_depth: int
     max_queue_age_blocks: int
-    max_active_screens: int
     max_active_qualifications: int
     max_cohort_size: int
-    screen_retry_limit: int
-    qualification_retry_limit: int
-    infrastructure_retry_limit: int
 
     def __post_init__(self) -> None:
         for field in self.__dataclass_fields__:
@@ -210,44 +205,10 @@ class ArenaCapacityPolicy:
 
 
 @dataclass(frozen=True)
-class ScreenStagePolicy:
-    stage: str
-    timeout_ms: int
-
-    def __post_init__(self) -> None:
-        if self.stage not in SCREEN_STAGES:
-            raise ArenaServiceError("screen stage is unsupported")
-        object.__setattr__(self, "timeout_ms", _positive(self.timeout_ms, "timeout_ms"))
-
-    def to_dict(self) -> dict[str, object]:
-        return {"stage": self.stage, "timeout_ms": self.timeout_ms}
-
-
-@dataclass(frozen=True)
-class NonCrownScreenPolicy:
-    stages: tuple[ScreenStagePolicy, ...]
-
-    def __post_init__(self) -> None:
-        stages = tuple(self.stages)
-        if any(type(row) is not ScreenStagePolicy for row in stages) or tuple(
-            row.stage for row in stages
-        ) != SCREEN_STAGES:
-            raise ArenaServiceError("non-crown screen stages or order differ")
-        object.__setattr__(self, "stages", stages)
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "crownable": False,
-            "stages": [row.to_dict() for row in self.stages],
-        }
-
-
-@dataclass(frozen=True)
 class ArenaServiceManifest:
     runtime: ArenaRuntimeIdentity
     workload: Workload
     capacity: ArenaCapacityPolicy
-    screens: NonCrownScreenPolicy
     qualification_policy_digest: str
     provider_digest: str
     # Registered families this commissioned workload cannot measure. A
@@ -261,7 +222,6 @@ class ArenaServiceManifest:
             type(self.runtime) is not ArenaRuntimeIdentity
             or type(self.workload) is not Workload
             or type(self.capacity) is not ArenaCapacityPolicy
-            or type(self.screens) is not NonCrownScreenPolicy
             or type(self.schema_version) is not int
             or self.schema_version != SERVICE_SCHEMA_VERSION
         ):
@@ -302,7 +262,6 @@ class ArenaServiceManifest:
             "qualification_policy_digest": self.qualification_policy_digest,
             "runtime": self.runtime.to_dict(),
             "schema_version": self.schema_version,
-            "screens": self.screens.to_dict(),
             "workload": self.workload.to_dict(),
         }
 
@@ -311,7 +270,6 @@ class ArenaServiceManifest:
 class ArenaQueueSnapshot:
     queued: int
     oldest_age_blocks: int
-    active_screens: int
     active_qualifications: int
 
     def __post_init__(self) -> None:
@@ -327,26 +285,17 @@ class AdmissionDecision(str, Enum):
     HOLD = "hold"
 
 
-class ScreenGrade(str, Enum):
-    PASS = "pass"
-    FAIL = "fail"
-    NO_DECISION = "no_decision"
-
-
-class PromotionDecision(str, Enum):
-    PROMOTE = "promote"
-    REJECT = "reject"
-    RETRY = "retry"
-    HOLD = "hold"
-
-
 @dataclass(frozen=True)
 class ArenaCandidateBinding:
-    """Trusted local binding whose digest excludes the validator host path."""
+    """Trusted local binding whose digest excludes the validator host path.
+
+    ``attempt`` is the one-based qualification attempt of this finalized
+    candidate; a retry after an infrastructure hold is a new binding.
+    """
 
     reservation: QualificationReservation
     publication: WorkerBundlePublication
-    screen_attempt: int
+    attempt: int
 
     def __post_init__(self) -> None:
         if (
@@ -354,145 +303,25 @@ class ArenaCandidateBinding:
             or type(self.publication) is not WorkerBundlePublication
         ):
             raise ArenaServiceError("candidate binding is not exactly typed")
-        object.__setattr__(
-            self, "screen_attempt", _positive(self.screen_attempt, "screen_attempt")
-        )
+        object.__setattr__(self, "attempt", _positive(self.attempt, "attempt"))
         if self.reservation.submission_digest != self.publication.digest:
             raise ArenaServiceError("candidate publication differs from reservation")
 
     @property
     def digest(self) -> str:
         reservation = self.reservation.to_dict()
-        # Cohort position is assigned only after independent non-crown screens
-        # finish.  It cannot make the same finalized candidate acquire a new
-        # screen identity when a neighbor is rejected before qualification.
+        # Cohort position is assigned at claim time.  It cannot make the same
+        # finalized candidate acquire a new identity when a neighbor leaves the
+        # cohort before qualification.
         reservation.pop("arrival_order")
         return canonical_digest(
             "cacheon.arena.candidate-binding",
             {
+                "attempt": self.attempt,
                 "publication_digest": self.publication.digest,
                 "reservation": reservation,
-                "screen_attempt": self.screen_attempt,
             },
         )
-
-
-@dataclass(frozen=True)
-class ScreenStageResult:
-    stage: str
-    grade: ScreenGrade
-    evidence_digest: str
-    elapsed_ms: int
-    # Why the stage graded as it did, in the stage's own closed vocabulary
-    # ("static_policy (_CandidateStaticFailure)"). It travels in the signed
-    # receipt so the validator that stores the disposition and the miner who
-    # reads it see the same word the grader used. Empty means the stage did not
-    # say; it is then left out of the bytes, so every receipt written before
-    # the field existed keeps its digest.
-    reason: str = ""
-
-    def __post_init__(self) -> None:
-        if self.stage not in SCREEN_STAGES or type(self.grade) is not ScreenGrade:
-            raise ArenaServiceError("screen result stage or grade is invalid")
-        object.__setattr__(
-            self, "evidence_digest", _digest(self.evidence_digest, "screen evidence")
-        )
-        object.__setattr__(self, "elapsed_ms", _positive(self.elapsed_ms, "elapsed_ms"))
-        if (
-            type(self.reason) is not str
-            or len(self.reason) > MAX_SCREEN_REASON_CHARS
-            or _REASON.fullmatch(self.reason) is None
-        ):
-            raise ArenaServiceError("screen result reason is invalid")
-
-    def to_dict(self) -> dict[str, object]:
-        row: dict[str, object] = {
-            "elapsed_ms": self.elapsed_ms,
-            "evidence_digest": self.evidence_digest,
-            "grade": self.grade.value,
-            "stage": self.stage,
-        }
-        if self.reason:
-            row["reason"] = self.reason
-        return row
-
-    @classmethod
-    def from_dict(cls, value: object) -> "ScreenStageResult":
-        """Rebuild one retained stage row; a missing reason is an older receipt."""
-
-        if type(value) is not dict or not _STAGE_ROW_FIELDS <= set(value) <= (
-            _STAGE_ROW_FIELDS | {"reason"}
-        ):
-            raise ArenaServiceError("screen stage row fields are not closed")
-        try:
-            return cls(
-                value["stage"],
-                ScreenGrade(value["grade"]),
-                value["evidence_digest"],
-                value["elapsed_ms"],
-                value.get("reason", ""),
-            )
-        except (TypeError, ValueError) as exc:
-            raise ArenaServiceError(f"screen stage row is invalid: {exc}") from None
-
-
-#: One bounded printable line. Candidate text is diagnostic evidence only; it
-#: cannot select a grade, stage, policy, or authority.
-MAX_SCREEN_REASON_CHARS = 4_096
-_REASON = re.compile(r"[ -~]*\Z")
-_STAGE_ROW_FIELDS = frozenset({"elapsed_ms", "evidence_digest", "grade", "stage"})
-
-
-@dataclass(frozen=True)
-class ArenaScreenReceipt:
-    service_digest: str
-    candidate_digest: str
-    screen_attempt: int
-    results: tuple[ScreenStageResult, ...]
-    decision: PromotionDecision
-
-    def __post_init__(self) -> None:
-        for field in ("service_digest", "candidate_digest"):
-            object.__setattr__(self, field, _digest(getattr(self, field), field))
-        object.__setattr__(
-            self, "screen_attempt", _positive(self.screen_attempt, "screen_attempt")
-        )
-        results = tuple(self.results)
-        grades = tuple(row.grade for row in results)
-        if (
-            not results
-            or any(type(row) is not ScreenStageResult for row in results)
-            or tuple(row.stage for row in results) != SCREEN_STAGES[: len(results)]
-            or type(self.decision) is not PromotionDecision
-            or any(grade is not ScreenGrade.PASS for grade in grades[:-1])
-        ):
-            raise ArenaServiceError("screen receipt results are not a canonical prefix")
-        terminal = grades[-1]
-        if (
-            (self.decision is PromotionDecision.PROMOTE
-             and (len(results) != len(SCREEN_STAGES)
-                  or terminal not in {ScreenGrade.PASS, ScreenGrade.NO_DECISION}))
-            or (self.decision is PromotionDecision.REJECT and terminal is not ScreenGrade.FAIL)
-            or (
-                self.decision in {PromotionDecision.RETRY, PromotionDecision.HOLD}
-                and terminal is not ScreenGrade.NO_DECISION
-            )
-        ):
-            raise ArenaServiceError("screen decision is not derived from stage evidence")
-        object.__setattr__(self, "results", results)
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest("cacheon.arena.screen-receipt", self.to_dict())
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "candidate_digest": self.candidate_digest,
-            "decision": self.decision.value,
-            "results": [row.to_dict() for row in self.results],
-            "screen_attempt": self.screen_attempt,
-            "service_digest": self.service_digest,
-        }
 
 
 @dataclass(frozen=True)
@@ -500,7 +329,6 @@ class ArenaQualificationRequest:
     service_digest: str
     qualification_policy_digest: str
     candidates: tuple[ArenaCandidateBinding, ...]
-    screen_receipts: tuple[ArenaScreenReceipt, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -512,23 +340,11 @@ class ArenaQualificationRequest:
             _digest(self.qualification_policy_digest, "qualification_policy_digest"),
         )
         candidates = tuple(self.candidates)
-        receipts = tuple(self.screen_receipts)
-        if (
-            not candidates
-            or any(type(row) is not ArenaCandidateBinding for row in candidates)
-            or any(type(row) is not ArenaScreenReceipt for row in receipts)
-            or len(candidates) != len(receipts)
-            or tuple(row.candidate_digest for row in receipts)
-            != tuple(row.digest for row in candidates)
-            or any(
-                row.service_digest != self.service_digest
-                or row.decision is not PromotionDecision.PROMOTE
-                for row in receipts
-            )
+        if not candidates or any(
+            type(row) is not ArenaCandidateBinding for row in candidates
         ):
-            raise ArenaServiceError("qualification request lacks exact promoted coverage")
+            raise ArenaServiceError("qualification request has no exact candidates")
         object.__setattr__(self, "candidates", candidates)
-        object.__setattr__(self, "screen_receipts", receipts)
 
 
 @dataclass(frozen=True)
@@ -565,13 +381,6 @@ class ArenaServiceProvider(Protocol):
 
     provider_digest: str
 
-    def run_screen(
-        self,
-        manifest: ArenaServiceManifest,
-        stage: ScreenStagePolicy,
-        candidate: ArenaCandidateBinding,
-    ) -> ScreenStageResult: ...
-
     def build_qualification(
         self, request: ArenaQualificationRequest, state: object | None = None
     ) -> ArenaQualificationWork: ...
@@ -587,9 +396,7 @@ class ArenaService:
             manifest.provider_digest
         ):
             raise ArenaServiceError("provider implementation identity differs")
-        if not callable(getattr(provider, "run_screen", None)) or not callable(
-            getattr(provider, "build_qualification", None)
-        ):
+        if not callable(getattr(provider, "build_qualification", None)):
             raise ArenaServiceError("provider does not implement the trusted interface")
         self.manifest = manifest
         self._provider = provider
@@ -597,19 +404,6 @@ class ArenaService:
     @property
     def identity(self) -> str:
         return self.manifest.digest
-
-    def admit(self, state: ArenaQueueSnapshot) -> AdmissionDecision:
-        if type(state) is not ArenaQueueSnapshot:
-            raise ArenaServiceError("queue state is not exactly typed")
-        policy = self.manifest.capacity
-        if (
-            state.queued >= policy.max_queue_depth
-            or state.oldest_age_blocks >= policy.max_queue_age_blocks
-        ):
-            return AdmissionDecision.HOLD
-        if state.active_screens >= policy.max_active_screens:
-            return AdmissionDecision.QUEUE
-        return AdmissionDecision.ADMIT
 
     def admit_qualification(
         self, state: ArenaQueueSnapshot, *, cohort_size: int
@@ -629,68 +423,9 @@ class ArenaService:
             return AdmissionDecision.QUEUE
         return AdmissionDecision.ADMIT
 
-    def retry_disposition(
-        self, lane: str, *, attempt: int
-    ) -> PromotionDecision:
-        current = _positive(attempt, "attempt")
-        budgets = {
-            "screen": self.manifest.capacity.screen_retry_limit,
-            "qualification": self.manifest.capacity.qualification_retry_limit,
-            "infrastructure": self.manifest.capacity.infrastructure_retry_limit,
-        }
-        if lane not in budgets:
-            raise ArenaServiceError("retry lane is unsupported")
-        return (
-            PromotionDecision.RETRY
-            if current < budgets[lane]
-            else PromotionDecision.HOLD
-        )
-
-    def screen(self, candidate: ArenaCandidateBinding) -> ArenaScreenReceipt:
-        if type(candidate) is not ArenaCandidateBinding:
-            raise ArenaServiceError("screen candidate is not exactly typed")
-        results: list[ScreenStageResult] = []
-        decision = PromotionDecision.PROMOTE
-        for stage in self.manifest.screens.stages:
-            result = self._provider.run_screen(self.manifest, stage, candidate)
-            if type(result) is not ScreenStageResult or result.stage != stage.stage:
-                raise ArenaServiceError("provider changed the requested screen stage")
-            if result.elapsed_ms > stage.timeout_ms:
-                # Past its bound is not a decision either: the stage never
-                # finished the check the contract asked for.
-                result = ScreenStageResult(
-                    result.stage,
-                    ScreenGrade.NO_DECISION,
-                    result.evidence_digest,
-                    result.elapsed_ms,
-                    f"stage_timeout ({result.elapsed_ms} ms > {stage.timeout_ms} ms)",
-                )
-            results.append(result)
-            if result.grade is ScreenGrade.FAIL:
-                decision = PromotionDecision.REJECT
-                break
-            if result.grade is ScreenGrade.NO_DECISION:
-                decision = self.retry_disposition(
-                    "screen", attempt=candidate.screen_attempt
-                )
-                if (
-                    decision is PromotionDecision.HOLD
-                    and result.stage == SCREEN_STAGES[-1]
-                ):
-                    decision = PromotionDecision.PROMOTE
-                break
-        return ArenaScreenReceipt(
-            self.identity,
-            candidate.digest,
-            candidate.screen_attempt,
-            tuple(results),
-            decision,
-        )
-
     def plan_qualification(
         self,
         candidates: tuple[ArenaCandidateBinding, ...],
-        screen_receipts: tuple[ArenaScreenReceipt, ...],
         *,
         state: object | None = None,
     ) -> ArenaQualificationWork:
@@ -700,7 +435,6 @@ class ArenaService:
             self.identity,
             self.manifest.qualification_policy_digest,
             tuple(candidates),
-            tuple(screen_receipts),
         )
         work = self._provider.build_qualification(request, state)
         if type(work) is not ArenaQualificationWork:
@@ -760,18 +494,11 @@ __all__ = [
     "ArenaQualificationWork",
     "ArenaQueueSnapshot",
     "ArenaRuntimeIdentity",
-    "ArenaScreenReceipt",
     "ArenaService",
     "ArenaServiceError",
     "ArenaServiceManifest",
     "ArenaServiceProvider",
     "ArenaServiceRegistry",
-    "NonCrownScreenPolicy",
-    "PromotionDecision",
-    "SCREEN_STAGES",
-    "ScreenGrade",
-    "ScreenStagePolicy",
-    "ScreenStageResult",
     "Workload",
     "WorkloadCell",
 ]

@@ -209,7 +209,9 @@ def arm(registry: object) -> None:
 
         for slot in registry.slots():  # type: ignore[attr-defined]
             for impl in registry.variants(slot):  # type: ignore[attr-defined]
-                if getattr(impl.entry, "_cacheon_traced", False):
+                # A class entry is built once, not launched per call, and a traced
+                # function in its place would hide the class its seam checks.
+                if getattr(impl.entry, "_cacheon_traced", False) or isinstance(impl.entry, type):
                     continue
                 wrapped = _traced(slot, impl.entry, receipts)
                 wrapped._cacheon_traced = True  # type: ignore[attr-defined]

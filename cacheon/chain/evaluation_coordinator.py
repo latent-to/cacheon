@@ -1,8 +1,9 @@
-"""CPU-owned durable dispatch for screening and qualification.
+"""CPU-owned durable commit authority for qualification.
 
-The coordinator claims and commits leases under the intake store's lock, then
-closes the store before opening publications or calling a worker. Its bounded
-heartbeat briefly reopens the store without sharing it with worker code.
+The coordinator opens the intake store at its durable cursor and CAS-commits
+worker results under the store's lock, closing it before any publication is
+opened or a worker is called. The recoverable dispatcher renews leases through
+the same bounded reopen without sharing the store with worker code.
 ``advance_finalized_cursor`` returns a durable (block, hash) after intake work;
 SQLite must agree before dispatch. Settlement and signing remain separate.
 """
@@ -16,11 +17,10 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, NoReturn
+from typing import Callable
 
 from cacheon.arena_service import (
     ArenaCandidateBinding,
-    ArenaScreenReceipt,
     ArenaService,
 )
 from cacheon.chain.evaluation_leases import (
@@ -38,7 +38,6 @@ from cacheon.chain.intake import (
 )
 from cacheon.chain.publication import (
     WorkerBundlePublication,
-    reopen_worker_bundle,
 )
 from cacheon.eval.evidence_store import (
     EvidenceArtifactRef,
@@ -269,8 +268,6 @@ def qualification_batch_payload_digest(batch: QualificationIntakeBatch) -> str:
 
 
 def _typed_payload(payload: object) -> tuple[str, str]:
-    if type(payload) is ArenaScreenReceipt:
-        return "arena_screen_receipt", payload.digest
     if type(payload) is QualificationIntakeBatch:
         return "qualification_intake_batch", qualification_batch_payload_digest(payload)
     raise EvaluationCoordinatorError("evaluation result payload is not exactly typed")
@@ -309,7 +306,7 @@ class EvaluationResultEnvelope:
         if (
             type(self.generation) is not int
             or self.generation <= 0
-            or self.stage not in {"screen", "qualification"}
+            or self.stage != "qualification"
             or not members
             or any(type(row) is not EvaluationLeaseMember for row in members)
             or len({row.reservation_id for row in members}) != len(members)
@@ -317,12 +314,9 @@ class EvaluationResultEnvelope:
             or self.ready_epoch < 0
             or not isinstance(self.service_identity, str)
             or not self.service_identity
-            or self.payload_kind
-            not in {"arena_screen_receipt", "qualification_intake_batch"}
+            or self.payload_kind != "qualification_intake_batch"
             or type(self.schema_version) is not int
             or self.schema_version != _RESULT_SCHEMA_VERSION
-            or (self.stage == "screen")
-            != (self.payload_kind == "arena_screen_receipt")
         ):
             raise EvaluationCoordinatorError("evaluation result envelope is malformed")
         object.__setattr__(self, "members", members)
@@ -429,42 +423,16 @@ def _qualification_reservations(
 
 
 @dataclass(frozen=True)
-class ClaimedScreenEvaluation:
-    lease: EvaluationLease
-    reservation: IntakeReservation
-    publication: WorkerBundlePublication
-    candidate: ArenaCandidateBinding
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.lease) is not EvaluationLease
-            or self.lease.stage != "screen"
-            or len(self.lease.members) != 1
-            or type(self.reservation) is not IntakeReservation
-            or type(self.publication) is not WorkerBundlePublication
-            or type(self.candidate) is not ArenaCandidateBinding
-            or self.lease.reservation_ids != (self.reservation.reservation_id,)
-            or self.candidate.reservation.reservation_digest
-            != self.reservation.reservation_id
-            or self.candidate.publication != self.publication
-            or self.candidate.screen_attempt != self.reservation.screen_attempts + 1
-        ):
-            raise EvaluationCoordinatorError("claimed screen work is inconsistent")
-
-
-@dataclass(frozen=True)
 class ClaimedQualificationEvaluation:
     lease: EvaluationLease
     reservations: tuple[IntakeReservation, ...]
     publications: tuple[WorkerBundlePublication, ...]
     candidates: tuple[ArenaCandidateBinding, ...]
-    screen_receipts: tuple[ArenaScreenReceipt, ...]
 
     def __post_init__(self) -> None:
         reservations = tuple(self.reservations)
         publications = tuple(self.publications)
         candidates = tuple(self.candidates)
-        receipts = tuple(self.screen_receipts)
         lanes = {row.screen_lane for row in reservations}
         if (
             type(self.lease) is not EvaluationLease
@@ -473,20 +441,12 @@ class ClaimedQualificationEvaluation:
             or any(type(row) is not IntakeReservation for row in reservations)
             or any(type(row) is not WorkerBundlePublication for row in publications)
             or any(type(row) is not ArenaCandidateBinding for row in candidates)
-            or any(type(row) is not ArenaScreenReceipt for row in receipts)
-            or not (
-                len(reservations)
-                == len(publications)
-                == len(candidates)
-                == len(receipts)
-            )
+            or not (len(reservations) == len(publications) == len(candidates))
             or self.lease.reservation_ids
             != tuple(row.reservation_id for row in reservations)
             or tuple(row.publication for row in candidates) != publications
             or tuple(row.reservation.reservation_digest for row in candidates)
             != self.lease.reservation_ids
-            or tuple(row.candidate_digest for row in receipts)
-            != tuple(row.digest for row in candidates)
             or lanes not in ({"primary"}, {"reproduction"})
             or (lanes == {"reproduction"} and len(reservations) != 1)
         ):
@@ -494,7 +454,6 @@ class ClaimedQualificationEvaluation:
         object.__setattr__(self, "reservations", reservations)
         object.__setattr__(self, "publications", publications)
         object.__setattr__(self, "candidates", candidates)
-        object.__setattr__(self, "screen_receipts", receipts)
 
     @property
     def screen_lane(self) -> str:
@@ -509,14 +468,14 @@ class EvaluationRun:
 
     lease: EvaluationLease
     envelope: EvaluationResultEnvelope
-    payload: ArenaScreenReceipt | QualificationIntakeBatch
+    payload: QualificationIntakeBatch
     disposition: str
 
     def __post_init__(self) -> None:
         if (
             type(self.lease) is not EvaluationLease
             or type(self.envelope) is not EvaluationResultEnvelope
-            or type(self.payload) not in {ArenaScreenReceipt, QualificationIntakeBatch}
+            or type(self.payload) is not QualificationIntakeBatch
             or self.disposition not in {"completed", "released"}
         ):
             raise EvaluationCoordinatorError("evaluation run result is malformed")
@@ -524,68 +483,6 @@ class EvaluationRun:
 
 class _HeartbeatCancelled(RuntimeError):
     pass
-
-
-class _LeaseHeartbeat:
-    """Serial CAS heartbeat owner for one synchronous provider invocation."""
-
-    def __init__(self, coordinator: "EvaluationCoordinator", lease: EvaluationLease):
-        self._coordinator = coordinator
-        self._lease = lease
-        self._error: BaseException | None = None
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f"cacheon-{lease.stage}-heartbeat-{lease.lease_id[:12]}",
-            daemon=True,
-        )
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def _run(self) -> None:
-        interval = self._coordinator.heartbeat_interval_s
-        while not self._stop.wait(interval):
-            with self._lock:
-                lease = self._lease
-            try:
-                extended = self._coordinator._heartbeat_once(lease, self._stop)
-            except _HeartbeatCancelled:
-                return
-            except _TransientCoordinatorOwnership:
-                # The independently running intake controller legitimately owns
-                # the flock during a pass.  A single collision must not
-                # permanently kill a multi-minute lease heartbeat; retry promptly
-                # until ownership becomes available or the remote call ends.
-                # Expired/stale/CAS failures still surface below as fatal errors.
-                interval = min(
-                    self._coordinator.heartbeat_interval_s,
-                    max(0.05, self._coordinator.lock_retry_delay_s),
-                )
-                continue
-            except EvaluationCoordinatorError as exc:
-                with self._lock:
-                    self._error = exc
-                return
-            except BaseException as exc:
-                with self._lock:
-                    self._error = exc
-                return
-            interval = self._coordinator.heartbeat_interval_s
-            with self._lock:
-                self._lease = extended
-
-    def stop(self) -> tuple[EvaluationLease, BaseException | None]:
-        self._stop.set()
-        self._thread.join(self._coordinator.heartbeat_join_timeout_s)
-        with self._lock:
-            lease, error = self._lease, self._error
-        if self._thread.is_alive() and error is None:
-            error = EvaluationCoordinatorError(
-                "evaluation heartbeat did not stop within its bounded join"
-            )
-        return lease, error
 
 
 class EvaluationCoordinator:
@@ -726,178 +623,6 @@ class EvaluationCoordinator:
             _TRANSIENT_COORDINATOR_OWNERSHIP_MESSAGE
         ) from last_error
 
-    def _heartbeat_once(
-        self,
-        lease: EvaluationLease,
-        cancel: threading.Event,
-    ) -> EvaluationLease:
-        store, point = self._open_at_durable_cursor(cancel)
-        try:
-            if cancel.is_set():
-                raise _HeartbeatCancelled()
-            if point[0] + self.lease_blocks <= lease.expires_block:
-                return lease
-            return store.heartbeat_evaluation_lease(
-                lease,
-                current_block=point[0],
-                lease_blocks=self.lease_blocks,
-            )
-        except IntakeError as exc:
-            raise EvaluationCoordinatorError(
-                f"evaluation heartbeat failed closed: {exc}"
-            ) from exc
-        finally:
-            store.close()
-
-    def _release(
-        self,
-        lease: EvaluationLease,
-        *,
-        reason: str,
-        result_digest: str = "",
-    ) -> None:
-        store, point = self._open_at_durable_cursor()
-        try:
-            store.release_evaluation_lease(
-                lease,
-                current_block=point[0],
-                reason=reason,
-                result_digest=result_digest,
-            )
-        except IntakeError as exc:
-            raise EvaluationCoordinatorError(
-                f"evaluation lease could not be safely released: {exc}"
-            ) from exc
-        finally:
-            store.close()
-
-    def _release_after_error(
-        self,
-        lease: EvaluationLease,
-        *,
-        reason: str,
-        cause: BaseException,
-        result_digest: str = "",
-    ) -> NoReturn:
-        try:
-            self._release(lease, reason=reason, result_digest=result_digest)
-        except BaseException as release_error:
-            raise EvaluationCoordinatorError(
-                f"{reason}; lease release also failed closed: {release_error}"
-            ) from cause
-        raise EvaluationCoordinatorError(reason) from cause
-
-    def claim_screen(self) -> ClaimedScreenEvaluation | None:
-        """Claim the exact oldest screen singleton, then reopen bytes unlocked."""
-        self.readiness.validate(self.service)
-        store, point = self._open_at_durable_cursor()
-        lease: EvaluationLease | None = None
-        claim_error: IntakeError | None = None
-        try:
-            # Identical bytes that already lost under this exact arena inherit
-            # that FAIL before any lease exists, so a resubmission costs neither
-            # a screen nor a qualification; a PASS is never replayed
-            # (cacheon.chain.duplicate_replay).
-            store.prepare_screen_queue(service_digest=self.service.identity,
-                                       closed_targets=self.service.manifest.closed_targets)
-            lease = store.claim_evaluation_lease(
-                stage="screen",
-                owner=self.owner,
-                current_block=point[0],
-                lease_blocks=self.lease_blocks,
-                max_active=self.service.manifest.capacity.max_active_screens,
-            )
-            if lease is None:
-                return None
-            reservation = store.get(lease.reservation_ids[0])
-        except IntakeError as exc:
-            if lease is None:
-                raise EvaluationCoordinatorError(f"screen claim failed: {exc}") from exc
-            claim_error = exc
-        finally:
-            store.close()
-        if claim_error is not None:
-            self._release_after_error(
-                lease,
-                reason="screen_claim_snapshot",
-                cause=claim_error,
-            )
-        try:
-            publication = reopen_worker_bundle(
-                reservation.publication_root,
-                reservation.arrival.content_hash,
-                expected_receipt_digest=reservation.publication_digest,
-            )
-            authority = _qualification_reservations((reservation,), (publication,))[0]
-            candidate = ArenaCandidateBinding(
-                authority,
-                publication,
-                reservation.screen_attempts + 1,
-            )
-            return ClaimedScreenEvaluation(
-                lease,
-                reservation,
-                publication,
-                candidate,
-            )
-        except BaseException as exc:
-            self._release_after_error(
-                lease,
-                reason="screen_claim_materialization",
-                cause=exc,
-            )
-
-    def commit_screen_result(
-        self,
-        claim: ClaimedScreenEvaluation,
-        receipt: ArenaScreenReceipt,
-        envelope: EvaluationResultEnvelope,
-    ) -> IntakeReservation:
-        """CAS-commit only begin-screen plus the exact typed screen receipt."""
-
-        if type(claim) is not ClaimedScreenEvaluation:
-            raise EvaluationCoordinatorError("screen claim is not exactly typed")
-        if type(receipt) is not ArenaScreenReceipt:
-            raise EvaluationCoordinatorError("screen receipt is not exactly typed")
-        envelope.verify(claim.lease, self.readiness, self.service, receipt)
-        if (
-            receipt.service_digest != self.service.identity
-            or receipt.candidate_digest != claim.candidate.digest
-            or receipt.screen_attempt != claim.candidate.screen_attempt
-        ):
-            raise EvaluationCoordinatorError("screen result changed claimed authority")
-        store, point = self._open_at_durable_cursor()
-        try:
-            with store.accept_evaluation_result(
-                claim.lease,
-                current_block=point[0],
-                result_digest=envelope.digest,
-            ) as rows:
-                if rows != (claim.reservation,):
-                    raise EvaluationCoordinatorError(
-                        "screen queue row changed before result commit"
-                    )
-                active = store.begin_screen(
-                    claim.reservation.reservation_id,
-                    service_digest=self.service.identity,
-                )
-                if active.screen_attempts != claim.candidate.screen_attempt:
-                    raise EvaluationCoordinatorError(
-                        "screen attempt changed before result commit"
-                    )
-                result = store.apply_screen_receipt(
-                    active.reservation_id,
-                    candidate_digest=claim.candidate.digest,
-                    receipt=receipt,
-                )
-            return result
-        except IntakeError as exc:
-            raise EvaluationCoordinatorError(
-                f"screen result was rejected by the durable lease: {exc}"
-            ) from exc
-        finally:
-            store.close()
-
     def commit_remote_qualification_result(
         self,
         claim: ClaimedQualificationEvaluation,
@@ -1010,6 +735,7 @@ class EvaluationCoordinator:
                         row.reservation_id,
                         authority_digest,
                         authority_value,
+                        service_digest=self.service.identity,
                     )
                 result = store.apply_qualification_batch(
                     batch,
@@ -1027,7 +753,6 @@ class EvaluationCoordinator:
 
 __all__ = [
     "ClaimedQualificationEvaluation",
-    "ClaimedScreenEvaluation",
     "EvaluationCoordinator",
     "EvaluationCoordinatorError",
     "EvaluationResultEnvelope",

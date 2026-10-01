@@ -109,11 +109,13 @@ def arena_base_credits(claims, policy, context, decay_start_blocks, score_speedu
     ) for claim in claims}
 
 
-def allocate_submission_weights(credits, terms, context, burn_hotkey, *, base_credits):
+def allocate_submission_weights(credits, terms, context, burn_hotkey, *, base_credits,
+                                submission_weights=None):
     """Price arena pools without stall, then split each pool with stall credit.
 
     Zero-offer submissions neither earn nor dilute later paid submissions.
     Frozen terms survive new-winner dilution in the existing shared weight pool.
+    Optional attribution records each claim's rounded portion of the served vector.
     """
     from cacheon.economics import EconomicsError, _allocate_pool
 
@@ -149,10 +151,14 @@ def allocate_submission_weights(credits, terms, context, burn_hotkey, *, base_cr
         by_hotkey[hotkey] = by_hotkey.get(hotkey, Fraction(0)) + share
     weights = _allocate_pool(by_hotkey, PPM)
     arena_shares, rewarded, burned = {}, [], 0
+    if submission_weights is not None:
+        submission_weights.update(dict.fromkeys(terms, 0))
     for hotkey, weight in weights.items():
         parts = {key: share for key, share in requested.items() if recipients[key] == hotkey}
         for key, ppm in _allocate_pool(parts, weight).items():
             if key:
+                if submission_weights is not None:
+                    submission_weights[key] = ppm
                 source = owners[key]
                 arena_shares[source] = arena_shares.get(source, 0) + ppm
                 if ppm:

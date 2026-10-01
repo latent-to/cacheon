@@ -26,13 +26,12 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _BLOCK_HASH = re.compile(r"^0x[0-9a-f]{64}$")
 _ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _MAX_PASS_ITEMS = 65_536
-_SCREEN_AUDIT_DISPOSITIONS = {
-    "promote": "pass",
-    "reject": "fail",
-    "retry": "no_decision",
-    "hold": "hold",
-}
 MAX_AUDIT_RECORD_BYTES = 8 << 20
+_SCHEMA = "cacheon.chain-audit.v2"
+# Version-1 pass records carried the routing screen's per-reservation outcome.
+# The log is append-only and outlives that stage, so restore and status reads
+# still accept them.
+_LEGACY_SCHEMA = "cacheon.chain-audit.v1"
 _PASS_FIELDS = {
     "copies",
     "decisions",
@@ -44,11 +43,11 @@ _PASS_FIELDS = {
     "rejected",
     "reserved",
     "schema",
-    "screens",
     "seen",
     "settlements",
     "timestamp_ns",
 }
+_LEGACY_PASS_FIELDS = _PASS_FIELDS | {"screens"}
 _FAULT_FIELDS = {
     "consecutive_failures",
     "error_type",
@@ -117,8 +116,9 @@ def _reason_map(value: object) -> None:
 def validate_chain_audit_record(record: object) -> None:
     """Validate the closed redacted record schema used on append and restore."""
 
-    if type(record) is not dict or record.get("schema") != "cacheon.chain-audit.v1":
+    if type(record) is not dict or record.get("schema") not in {_SCHEMA, _LEGACY_SCHEMA}:
         raise ChainAuditLogError("chain audit record schema is malformed")
+    legacy = record["schema"] == _LEGACY_SCHEMA
     event = record.get("event")
     if event == "validator_fault":
         if (
@@ -132,7 +132,7 @@ def validate_chain_audit_record(record: object) -> None:
         ):
             raise ChainAuditLogError("chain fault audit record is malformed")
         return
-    if event != "pass" or set(record) != _PASS_FIELDS:
+    if event != "pass" or set(record) != (_LEGACY_PASS_FIELDS if legacy else _PASS_FIELDS):
         raise ChainAuditLogError("chain pass audit record is not closed")
     if (
         type(record.get("timestamp_ns")) is not int
@@ -155,11 +155,12 @@ def validate_chain_audit_record(record: object) -> None:
         field="decisions",
         allowed_values=frozenset({"PASS", "FAIL", "NO_DECISION"}),
     )
-    _digest_map(
-        record["screens"],
-        field="screens",
-        allowed_values=frozenset({"pass", "fail", "no_decision", "hold"}),
-    )
+    if legacy:
+        _digest_map(
+            record["screens"],
+            field="screens",
+            allowed_values=frozenset({"pass", "fail", "no_decision", "hold"}),
+        )
     _reason_map(record["rejected"])
 
 
@@ -173,15 +174,6 @@ def pass_audit_record(result, *, timestamp_ns: int | None = None) -> dict[str, o
     observed_ns = time.time_ns() if timestamp_ns is None else timestamp_ns
     if type(observed_ns) is not int or observed_ns < 0:
         raise ChainAuditLogError("chain pass audit timestamp is malformed")
-    try:
-        screens = {
-            reservation: _SCREEN_AUDIT_DISPOSITIONS[decision]
-            for reservation, decision in sorted(result.screens.items())
-        }
-    except KeyError as exc:
-        raise ChainAuditLogError(
-            f"chain audit screen disposition is unsupported: {exc.args[0]}"
-        ) from None
     record = {
         "copies": dict(sorted(result.copies.items())),
         "decisions": dict(sorted(result.decisions.items())),
@@ -195,8 +187,7 @@ def pass_audit_record(result, *, timestamp_ns: int | None = None) -> dict[str, o
             for reservation, reason in sorted(result.rejected.items())
         },
         "reserved": list(result.reserved),
-        "schema": "cacheon.chain-audit.v1",
-        "screens": screens,
+        "schema": _SCHEMA,
         "seen": result.seen,
         "settlements": dict(sorted(result.settlements.items())),
         "timestamp_ns": observed_ns,
@@ -225,7 +216,7 @@ def fault_audit_record(
         "consecutive_failures": consecutive_failures,
         "error_type": type(exc).__name__[:128],
         "event": "validator_fault",
-        "schema": "cacheon.chain-audit.v1",
+        "schema": _SCHEMA,
         "timestamp_ns": observed_ns,
     }
     validate_chain_audit_record(record)

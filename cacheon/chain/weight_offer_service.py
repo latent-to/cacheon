@@ -9,7 +9,7 @@ past the window and the signer failed closed on a stale projection while the
 chain vector silently froze (2026-09-01, offer 8972660 against tip 8973560).
 
 This service composes exactly the supervisor's weights stage against the same
-sealed screen and weights authorities, and nothing else. It never signs. It
+sealed dispatcher and weights authorities, and nothing else. It never signs. It
 projects from the intake store and HTTP-pushes to serve-weights; follow-weights
 still owns every chain write.
 
@@ -256,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             "absolute path to a closed weight-offer-service config naming the "
-            "sealed screen and weights-stage authorities to compose"
+            "sealed dispatcher and weights-stage authorities to compose"
         ),
     )
     parser.add_argument(

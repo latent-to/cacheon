@@ -1,13 +1,17 @@
 {
   "dtype": "bfloat16",
-  "mem_fraction_static": 0.8,
+  "mem_fraction_static": 0.75,
   "random_seed": 7,
   "log_level": "error",
   "attention_backend": "dsa",
   "tp_size": 4,
   "moe_runner_backend": "flashinfer_trtllm",
   "chunked_prefill_size": 16384,
-  "disable_radix_cache": true,
+  "disable_radix_cache": false,
+  "enable_hierarchical_cache": true,
+  "hicache_size": 120,
+  "context_length": 262144,
+  "max_running_requests": 24,
   "dp_size": 4,
   "enable_dp_attention": true,
   "kv_cache_dtype": "fp8_e4m3",
@@ -16,7 +20,7 @@
   "quantization": "modelopt_fp4",
   "trust_remote_code": true,
   "speculative_algorithm": "EAGLE",
-  "speculative_num_steps": 1,
+  "speculative_num_steps": 3,
   "speculative_eagle_topk": 1,
-  "speculative_num_draft_tokens": 2
+  "speculative_num_draft_tokens": 4
 }

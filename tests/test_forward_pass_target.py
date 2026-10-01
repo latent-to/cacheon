@@ -10,14 +10,13 @@ from cacheon._strict import members_overlap
 from cacheon.manifest import load_manifest
 from cacheon.settlement import SettlementError, SettlementQualification
 from cacheon.target_catalog import (
-    SINGLETON_TARGET_IDS,
     TargetCatalog,
     TargetCatalogError,
     TargetResolutionError,
     default_target_catalog,
 )
-from tests.test_settlement import ROUTED, _audit_policy, _candidate, _ref, _stack
-from tests.test_target_catalog import SILU, _bundle, _competition, _slot_spec
+from tests.test_settlement import _audit_policy, _candidate, _ref, _stack
+from tests.test_target_catalog import CACHE_NODE, _bundle, _competition, _slot_spec
 
 
 def _node_rows(*addresses: str) -> tuple[dict[str, object], ...]:
@@ -45,7 +44,9 @@ def test_a_node_bundle_resolves_to_the_forward_pass_with_its_own_addresses(tmp_p
     spec = catalog.require("forward_pass")
     assert catalog.admits(spec, implicit.members)
     assert not catalog.admits(spec, ("forward_pass",))
-    assert catalog.admits(catalog.require(SILU), (SILU,))
+    cache = catalog.require("prefix_cache")
+    assert catalog.admits(cache, (CACHE_NODE,))
+    assert not catalog.admits(cache, implicit.members)
 
 
 @pytest.mark.parametrize(
@@ -55,7 +56,7 @@ def test_a_node_bundle_resolves_to_the_forward_pass_with_its_own_addresses(tmp_p
         (("model", "model.norm"), "overlap"),
         (("lm_head",), "must sit under"),
         (("model.layers.**.mlp",), "must sit under"),
-        (("model.layers.*.mlp", SILU), "must sit under"),
+        (("model.layers.*.mlp", CACHE_NODE), "must sit under"),
     ],
 )
 def test_a_node_bundle_outside_the_roots_or_claiming_a_node_twice_is_refused(
@@ -71,15 +72,15 @@ def test_a_node_bundle_outside_the_roots_or_claiming_a_node_twice_is_refused(
 
 def test_without_node_roots_the_same_bundle_names_no_registered_target(tmp_path):
     manifest = load_manifest(_bundle(tmp_path, rows=_node_rows("model.layers.*.mlp")))
-    closed = TargetCatalog([_slot_spec(SILU)])
+    closed = TargetCatalog([_slot_spec("slot.a")])
     assert not closed.resolve_manifest(manifest).registered
     with pytest.raises(TargetCatalogError, match="node_roots"):
-        TargetCatalog([replace(_slot_spec(SILU), node_roots=("model", "logits_processor"))])
+        TargetCatalog([replace(_slot_spec("slot.a"), node_roots=("model", "logits_processor"))])
 
 
 def test_node_address_members_settle_and_a_malformed_member_does_not():
     catalog = default_target_catalog()
-    primary = _candidate(_stack(catalog), _ref(catalog, ROUTED, "a"), catalog, label="a").primary
+    primary = _candidate(_stack(catalog), _ref(catalog, "forward_pass", "a"), catalog, label="a").primary
     nodes = ("logits_processor", "model.layers.*.mlp")
     audit = _audit_policy("nodes", nodes)
     wide = replace(
@@ -90,12 +91,17 @@ def test_node_address_members_settle_and_a_malformed_member_does_not():
         replace(wide, members=("model.layers.**.mlp",))
 
 
-def test_overlap_is_containment_for_nodes_and_equality_for_slot_ids():
+def test_overlap_is_containment_for_nodes_and_equality_for_target_ids():
     assert members_overlap(("model.layers.*",), ("model.layers.7.mlp.experts",))
     assert members_overlap(("model.layers.3.mlp",), ("model.layers.*.mlp",))
     assert not members_overlap(("model.layers.*.mlp",), ("model.layers.*.attn", "logits_processor"))
-    # No slot id is a dotted prefix of another, so legacy reservations keep blocking
-    # exactly the rows that set intersection blocked.
-    for left in SINGLETON_TARGET_IDS:
-        for right in SINGLETON_TARGET_IDS:
+    # No registered target id is a dotted prefix of another, and two targets never
+    # share a node: the model's roots and the prefix cache's are disjoint.
+    catalog = default_target_catalog()
+    targets = [row["target_id"] for row in catalog.snapshot()["targets"]]
+    for left in targets:
+        for right in targets:
             assert members_overlap((left,), (right,)) == (left == right)
+            assert members_overlap(
+                catalog.require(left).node_roots, catalog.require(right).node_roots
+            ) == (left == right)

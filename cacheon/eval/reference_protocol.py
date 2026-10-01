@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import math
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 
 from cacheon.stack_identity import sha256_hex
 from cacheon._strict import require_digest, require_int
@@ -19,6 +20,7 @@ from cacheon._strict import require_digest, require_int
 REQUEST_MAGIC = b"ORQ1"
 EVIDENCE_MAGIC = b"ORE1"
 MIXED_REQUEST_MAGIC = b"ORQ2"
+TOKEN_REQUEST_MAGIC = b"ORQ3"
 MIXED_EVIDENCE_MAGIC = b"ORE2"
 FRAME_HEADER_BYTES = 8
 MAX_REQUEST_BYTES = 128 * 1024 * 1024
@@ -122,21 +124,38 @@ class ReferenceRoleInput:
 
 @dataclass(frozen=True)
 class ReferencePromptInput:
+    """One prompt's three rollouts, using text or the replay's exact input IDs."""
+
     prompt_digest: str
     prompt: str
     roles: tuple[ReferenceRoleInput, ReferenceRoleInput, ReferenceRoleInput]
+    input_ids: tuple[int, ...] = field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "prompt_digest", _digest(self.prompt_digest, "prompt digest"))
-        if not isinstance(self.prompt, str) or not self.prompt or "\x00" in self.prompt:
-            raise ReferenceProtocolError("reference prompt must be nonempty text without NUL")
-        try:
-            encoded = self.prompt.encode("utf-8", errors="strict")
-        except UnicodeError as exc:
-            raise ReferenceProtocolError(f"reference prompt is not UTF-8: {exc}") from None
+        ids = _tuple(self.input_ids, "canonical input IDs")
+        object.__setattr__(self, "input_ids", ids)
+        if ids:
+            if self.prompt != "" or len(ids) > MAX_PROMPT_BYTES // _U32.size:
+                raise ReferenceProtocolError("canonical prompt is ambiguous or outside its bound")
+            for token in ids:
+                _integer(token, "prompt token ID", 0, MAX_TOKEN_ID)
+            encoded = self.input_bytes
+        else:
+            if not isinstance(self.prompt, str) or not self.prompt or "\x00" in self.prompt:
+                raise ReferenceProtocolError("reference prompt must be nonempty text without NUL")
+            try:
+                encoded = self.prompt.encode("utf-8", errors="strict")
+            except UnicodeError as exc:
+                raise ReferenceProtocolError(f"reference prompt is not UTF-8: {exc}") from None
         if len(encoded) > MAX_PROMPT_BYTES:
             raise ReferenceProtocolError("reference prompt exceeds its byte bound")
         object.__setattr__(self, "roles", _roles(self.roles, ReferenceRoleInput, "prompt roles"))
+
+    @property
+    def input_bytes(self) -> bytes:
+        """Wire input bytes: canonical IDs stay integers, text stays UTF-8."""
+        return struct.pack(f">{len(self.input_ids)}I", *self.input_ids) if self.input_ids else self.prompt.encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -168,7 +187,9 @@ class ReferenceRequest:
         keys = tuple(row.prompt_digest for row in prompts)
         if keys != tuple(sorted(set(keys))):
             raise ReferenceProtocolError("reference prompts must be unique and digest-sorted")
-        total_text = sum(len(row.prompt.encode("utf-8")) for row in prompts)
+        if len({bool(row.input_ids) for row in prompts}) != 1:
+            raise ReferenceProtocolError("reference request mixes text and canonical inputs")
+        total_text = sum(len(row.input_bytes) for row in prompts)
         if total_text > MAX_TOTAL_PROMPT_BYTES:
             raise ReferenceProtocolError("reference prompt bytes exceed the aggregate bound")
         if max(self.token_counts) != self.tokens_per_prompt:
@@ -197,11 +218,13 @@ class ReferenceRequest:
 
     @property
     def request_magic(self) -> bytes:
+        if bool(self.prompts[0].input_ids):
+            return TOKEN_REQUEST_MAGIC
         return MIXED_REQUEST_MAGIC if len(set(self.token_counts)) > 1 else REQUEST_MAGIC
 
     @property
     def evidence_magic(self) -> bytes:
-        return MIXED_EVIDENCE_MAGIC if self.request_magic == MIXED_REQUEST_MAGIC else EVIDENCE_MAGIC
+        return MIXED_EVIDENCE_MAGIC if self.request_magic != REQUEST_MAGIC else EVIDENCE_MAGIC
 
 
 @dataclass(frozen=True)
@@ -273,8 +296,8 @@ def _request_payload_size(request: ReferenceRequest) -> int:
     total = _REQUEST_HEADER.size
     for prompt, count in zip(request.prompts, request.token_counts, strict=True):
         geometry = _ROLE_COUNT * count * (1 + request.support_width) * _U32.size
-        total += (_PROMPT_HEADER.size + len(prompt.prompt.encode("utf-8")) + geometry
-                  + (_U32.size if request.request_magic == MIXED_REQUEST_MAGIC else 0))
+        total += (_PROMPT_HEADER.size + len(prompt.input_bytes) + geometry
+                  + (_U32.size if request.request_magic != REQUEST_MAGIC else 0))
     if total > MAX_REQUEST_BYTES:
         raise ReferenceProtocolError("reference request exceeds its hard byte bound")
     return total
@@ -307,9 +330,9 @@ def encode_reference_request(request: ReferenceRequest) -> bytes:
         request.tokens_per_prompt, request.support_width,
     ))
     for prompt, count in zip(request.prompts, request.token_counts, strict=True):
-        text = prompt.prompt.encode("utf-8")
+        text = prompt.input_bytes
         payload.extend(_PROMPT_HEADER.pack(bytes.fromhex(prompt.prompt_digest), len(text)))
-        if request.request_magic == MIXED_REQUEST_MAGIC:
+        if request.request_magic != REQUEST_MAGIC:
             payload.extend(_U32.pack(count))
         payload.extend(text)
         for role in prompt.roles:
@@ -324,7 +347,7 @@ def encode_reference_request(request: ReferenceRequest) -> bytes:
 
 
 def decode_reference_request(frame: bytes) -> ReferenceRequest:
-    magic = MIXED_REQUEST_MAGIC if isinstance(frame, bytes) and frame[:4] == MIXED_REQUEST_MAGIC else REQUEST_MAGIC
+    magic = frame[:4] if isinstance(frame, bytes) and frame[:4] in (MIXED_REQUEST_MAGIC, TOKEN_REQUEST_MAGIC) else REQUEST_MAGIC
     payload = _payload(frame, magic, MAX_REQUEST_BYTES, "reference request")
     if len(payload) < _REQUEST_HEADER.size:
         raise ReferenceProtocolError("reference request binding is truncated")
@@ -348,14 +371,20 @@ def decode_reference_request(frame: bytes) -> ReferenceRequest:
     prompts = []
     for _ in range(prompt_count):
         prompt_digest, text_size = _PROMPT_HEADER.unpack(take(_PROMPT_HEADER.size))
-        count = _U32.unpack(take(_U32.size))[0] if magic == MIXED_REQUEST_MAGIC else token_count
+        count = _U32.unpack(take(_U32.size))[0] if magic != REQUEST_MAGIC else token_count
         _integer(count, "prompt token count", 1, token_count)
         if text_size > MAX_PROMPT_BYTES:
             raise ReferenceProtocolError("reference prompt exceeds its byte bound")
-        try:
-            text = take(text_size).decode("utf-8", errors="strict")
-        except UnicodeError as exc:
-            raise ReferenceProtocolError(f"reference prompt is not UTF-8: {exc}") from None
+        raw = take(text_size)
+        if magic == TOKEN_REQUEST_MAGIC:
+            if text_size % _U32.size:
+                raise ReferenceProtocolError("canonical input bytes are not aligned token IDs")
+            text = tuple(row[0] for row in struct.iter_unpack(">I", raw))
+        else:
+            try:
+                text = raw.decode("utf-8", errors="strict")
+            except UnicodeError as exc:
+                raise ReferenceProtocolError(f"reference prompt is not UTF-8: {exc}") from None
         roles = []
         for _role in range(_ROLE_COUNT):
             outputs = tuple(_U32.unpack(take(_U32.size))[0] for _ in range(count))
@@ -363,7 +392,8 @@ def decode_reference_request(frame: bytes) -> ReferenceRequest:
                 _U32.unpack(take(_U32.size))[0] for _ in range(support_width)
             ) for _ in range(count))
             roles.append(ReferenceRoleInput(outputs, supports))
-        prompts.append(ReferencePromptInput(prompt_digest.hex(), text, tuple(roles)))
+        prompts.append(ReferencePromptInput(prompt_digest.hex(), "" if magic == TOKEN_REQUEST_MAGIC else text,
+                                           tuple(roles), text if magic == TOKEN_REQUEST_MAGIC else ()))
     if offset != len(payload):
         raise ReferenceProtocolError("reference request contains trailing bytes")
     result = ReferenceRequest(
@@ -377,6 +407,17 @@ def decode_reference_request(frame: bytes) -> ReferenceRequest:
 
 def request_sha256(request: ReferenceRequest) -> str:
     return sha256_hex(encode_reference_request(request))
+
+
+def read_reference_request(read: Callable[[int], bytes]) -> ReferenceRequest:
+    """Bound the frame before reading its payload from the worker's exact reader."""
+    header = read(FRAME_HEADER_BYTES)
+    if header[:4] not in (REQUEST_MAGIC, MIXED_REQUEST_MAGIC, TOKEN_REQUEST_MAGIC):
+        raise ReferenceProtocolError("reference request frame magic/version mismatch")
+    size = _U32.unpack(header[4:])[0]
+    if size > MAX_REQUEST_BYTES:
+        raise ReferenceProtocolError("reference request exceeds its hard byte bound")
+    return decode_reference_request(header + read(size))
 
 
 def expected_evidence_payload_bytes(request: ReferenceRequest) -> int:
@@ -407,7 +448,12 @@ def _bind_evidence(evidence: ReferenceEvidence, request: ReferenceRequest) -> No
         row.prompt_digest for row in request.prompts
     ):
         raise ReferenceProtocolError("reference evidence prompt order differs from request")
-    for prompt, count in zip(evidence.prompts, request.token_counts, strict=True):
+    for prompt, expected_prompt, count in zip(evidence.prompts, request.prompts, request.token_counts, strict=True):
+        if bool(expected_prompt.input_ids) and (
+            prompt.prompt_token_count != len(expected_prompt.input_ids)
+            or prompt.prompt_token_sha256 != sha256_hex(expected_prompt.input_bytes)
+        ):
+            raise ReferenceProtocolError("reference evidence changed the canonical input IDs")
         for role in prompt.roles:
             if len(role.tokens) != count or any(
                 len(token.support_logprobs) != request.support_width for token in role.tokens
@@ -492,11 +538,11 @@ def decode_reference_evidence(frame: bytes, request: ReferenceRequest) -> Refere
 __all__ = [
     "EVIDENCE_MAGIC", "FRAME_HEADER_BYTES", "MAX_EVIDENCE_BYTES",
     "MAX_DERIVED_LOGPROBS", "MAX_REQUEST_BYTES", "MAX_SUPPORT_UNION",
-    "REQUEST_MAGIC", "MIXED_REQUEST_MAGIC", "MIXED_EVIDENCE_MAGIC", "ROLE_NAMES", "ReferenceEvidence",
+    "REQUEST_MAGIC", "MIXED_REQUEST_MAGIC", "TOKEN_REQUEST_MAGIC", "MIXED_EVIDENCE_MAGIC", "ROLE_NAMES", "ReferenceEvidence",
     "ReferencePromptEvidence",
     "ReferencePromptInput", "ReferenceProtocolError", "ReferenceRequest",
     "ReferenceRoleEvidence", "ReferenceRoleInput", "ReferenceTokenEvidence",
     "decode_reference_evidence", "decode_reference_request",
     "encode_reference_evidence", "encode_reference_request",
-    "expected_evidence_payload_bytes", "request_sha256",
+    "expected_evidence_payload_bytes", "request_sha256", "read_reference_request",
 ]

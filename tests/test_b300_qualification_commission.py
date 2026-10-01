@@ -9,8 +9,6 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from cacheon.arena_service import Workload, WorkloadCell
-
 import pytest
 import tests.test_calibration as calibration_fixtures
 import tests.test_oci_backend as oci_backend_fixtures
@@ -28,7 +26,7 @@ from cacheon.eval.calibration import CalibrationEvidenceSet, derive_calibration_
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import (
-    M3_REGISTERED_TARGET_IDS,
+    NODE_TARGET_IDS,
     StubHiddenJudge as _Judge,
     gpu as _gpu,
     qualification_capabilities as _capabilities,
@@ -37,6 +35,21 @@ from tests.support.b300 import (
 
 def _h(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def test_new_replay_commission_refuses_legacy_latency_scoring_before_staging(monkeypatch):
+    from cacheon.eval.goodput_runtime import GoodputPolicy
+    from cacheon.eval.service_capacity import ServiceContract
+
+    policy = GoodputPolicy(ServiceContract(60, 5, .8), 1.015, .0075, .05, .02)
+    monkeypatch.setattr(commission.b300_deployment, "_commissioned_stock_authority",
+                        lambda *a, **k: (None, None, None, None))
+    with pytest.raises(commission.B300QualificationCommissionError, match="V16 latency scoring"):
+        commission._compose_locked(
+            None, None, None, None, None, None, None,
+            SimpleNamespace(snapshot=lambda: None), None, None, None, "primary", None,
+            {"replay": {}}, {"goodput": policy.to_dict()}, None,
+        )
 
 
 class _DeferredJudge:
@@ -176,29 +189,29 @@ def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> N
             _h(f"resolver:{target_id}"),
             lambda _candidate, _prepared: object(),
         )
-        for target_id in M3_REGISTERED_TARGET_IDS
+        for target_id in NODE_TARGET_IDS
     )
 
     assert tuple(
         commission._require_complete_factory_profiles(
-            profiles, M3_REGISTERED_TARGET_IDS
+            profiles, NODE_TARGET_IDS
         )
     ) == (
-        M3_REGISTERED_TARGET_IDS
+        NODE_TARGET_IDS
     )
     with pytest.raises(
         commission.B300QualificationCommissionError,
         match="full catalog",
     ):
         commission._require_complete_factory_profiles(
-            profiles[:-1], M3_REGISTERED_TARGET_IDS
+            profiles[:-1], NODE_TARGET_IDS
         )
 
 
 def test_lane_policies_reopen_exact_canonical_pair() -> None:
     eight = tuple(_gpu(index) for index in range(8))
-    policy_a = commission.screen_deployment._device_policy(eight[:4])
-    policy_b = commission.screen_deployment._device_policy(eight[4:])
+    policy_a = commission.b300_deployment._device_policy(eight[:4])
+    policy_b = commission.b300_deployment._device_policy(eight[4:])
     lanes = B300QualificationLanePair(
         B300QualificationLanePolicy.from_device_policy("A", policy_a),
         B300QualificationLanePolicy.from_device_policy("B", policy_b),
@@ -419,75 +432,6 @@ def test_compose_requires_a_sealed_commission_block() -> None:
         )
 
 
-def test_compose_rejects_a_session_that_differs_from_the_declared_cell() -> None:
-    workload = Workload(
-        _h("corpus"), "seed-v1", (WorkloadCell("s8", 8192, 1024, 2, 2),)
-    )
-    inputs = SimpleNamespace(workload=workload, prompt_batches=(("p", "p"),) * 3)
-    session = {"warmup_count": 1}
-    speed = {"min_windows": 2}
-    policy = SimpleNamespace(tokens_per_prompt=1024)
-    commission._require_cell_conformance(inputs, policy, session, speed)
-
-    with pytest.raises(
-        commission.B300QualificationCommissionError, match="conform"
-    ):
-        commission._require_cell_conformance(
-            inputs, SimpleNamespace(tokens_per_prompt=256), session, speed
-        )
-    with pytest.raises(
-        commission.B300QualificationCommissionError, match="conform"
-    ):
-        commission._require_cell_conformance(
-            inputs, policy, {"warmup_count": 2}, speed
-        )
-    # A floor above the cell's timed reads can never be satisfied by any run;
-    # it must die at commissioning (the 2026-08-21 min_windows=12 vs 6 failure).
-    with pytest.raises(
-        commission.B300QualificationCommissionError, match="conform"
-    ):
-        commission._require_cell_conformance(
-            inputs, policy, session, {"min_windows": 3}
-        )
-
-    mixed = Workload(
-        _h("mixed"),
-        "seed-v1",
-        (
-            WorkloadCell("s8", 8192, 1024, 2, 2),
-            WorkloadCell("l65", 65536, 4096, 1, 3),
-        ),
-    )
-    mixed_inputs = SimpleNamespace(
-        workload=mixed,
-        prompt_batches=(("a", "b"), ("c", "d"), ("e",), ("f",), ("g",), ("h",)),
-        prompt_batch_cells=("s8", "s8", "s8", "l65", "l65", "l65"),
-    )
-    mixed_policy = SimpleNamespace(tokens_per_prompt=4096)
-    with pytest.raises(commission.B300QualificationCommissionError, match="conform"):
-        commission._require_cell_conformance(
-            mixed_inputs, mixed_policy, {"warmup_count": 1}, {"min_windows": 5}
-        )
-    # The producer seals the extra prompt AND its answer before composition;
-    # inserting it only in the runtime plan would shift hidden-judge identities.
-    warm = SimpleNamespace(
-        workload=mixed,
-        prompt_batches=(mixed_inputs.prompt_batches[0], mixed_inputs.prompt_batches[3],
-                        *mixed_inputs.prompt_batches[1:]),
-        prompt_batch_cells=("s8", "l65", *mixed_inputs.prompt_batch_cells[1:]),
-    )
-    commission._require_cell_conformance(
-        warm, mixed_policy, {"warmup_count": 2}, {"min_windows": 5}
-    )
-    assert warm.prompt_batches[2:] == mixed_inputs.prompt_batches[1:]
-    assert warm.prompt_batch_cells[2:].count("s8") == 2
-    assert warm.prompt_batch_cells[2:].count("l65") == 3
-    with pytest.raises(commission.B300QualificationCommissionError, match="conform"):
-        commission._require_cell_conformance(
-            warm, mixed_policy, {"warmup_count": 3}, {"min_windows": 5}
-        )
-
-
 def test_commissioned_authority_materializes_the_declared_incumbent(
     tmp_path: Path,
 ) -> None:
@@ -495,7 +439,7 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     # manifest.toml, which the genesis-only reject condition treated as
     # "differs from the commissioned incumbent stack".
     import tests.test_engine_tree as engine_tree_fixtures
-    from cacheon.eval import b300_screen_deployment as screen_deployment
+    from cacheon.eval import b300_deployment
 
     source = engine_tree_fixtures._copy(tmp_path)
     catalog, _, ref, _ = engine_tree_fixtures._arranged(source)
@@ -508,7 +452,7 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     )
     manifest = SimpleNamespace(digest=_h("arena"))
 
-    members, _, stock, stock_tree = screen_deployment._commissioned_stock_authority(
+    members, _, stock, stock_tree = b300_deployment._commissioned_stock_authority(
         inputs,
         manifest,
         catalog,
@@ -520,7 +464,7 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     assert stock.entries == {}
     assert stock_tree.runtime_manifest is None
 
-    _, _, incumbent, incumbent_tree = screen_deployment._commissioned_stock_authority(
+    _, _, incumbent, incumbent_tree = b300_deployment._commissioned_stock_authority(
         inputs,
         manifest,
         catalog,
@@ -540,43 +484,44 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
 def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, monkeypatch, gpu_model, tp):
     from cacheon.arena_service import ArenaService
     from cacheon.chain.evaluation_coordinator import WorkerReadiness
-    from cacheon.eval import b300_screen_deployment as screen
+    from cacheon.eval import b300_deployment as deployment
     from cacheon.eval.b300_arena_provider import B300ArenaServiceProvider
     from cacheon.eval.b300_sealed_qualification_commission import predicted_qualification_builder_digest
     from cacheon.eval.reference_quality import retained_support_policy_digest
-    from tests import test_b300_screen_deployment as fixtures
+    from tests import test_b300_deployment as fixtures
+    from tests.test_b300_registered_qualification import _recorded_replay
     from tests.test_b300_sealed_qualification_commission import _block
-    from tests.support.b300 import GLM53_REGISTERED_TARGET_IDS
+    from tests.support.b300 import NODE_AND_CACHE_TARGET_IDS
 
     paths, gpus, ready = fixtures._case(tmp_path, gpu_model=gpu_model, host_size=2 * tp, lane=tuple(range(tp)))
     for name in ("prompt_authority", "authority_config", "measurement_config"):
         paths[name].chmod(0o600)
     prompt = json.loads(paths["prompt_authority"].read_text())
-    prompt["workload_cell"]["timed_reads"] = 3
-    prompt["prompt_batches"].append(["four"])
     if tp == 4:
-        prompt.update(model_profile_key="GLM-5.3-NVFP4", registered_targets=list(GLM53_REGISTERED_TARGET_IDS))
+        prompt.update(model_profile_key="GLM-5.3-NVFP4", registered_targets=list(NODE_AND_CACHE_TARGET_IDS))
         prompt["engine_config"]["engine_kwargs"].update(dp_size=4, enable_dp_attention=True)
     prompt_sha = fixtures._write(paths["prompt_authority"], prompt)
+    # The reference token maximum is the sealed slice's largest recorded output budget.
+    replay = _recorded_replay(tmp_path / "replay", out=1024)
     block = _block()
     block["support_policy_digest"] = retained_support_policy_digest()
-    block["policy"].update(tokens_per_prompt=1024, topk_width=0)
-    block["session"]["conditioning_count"] = 1
+    block["policy"]["tokens_per_prompt"] = 1024
+    block["session"]["replay"].update(manifest_path=str(replay.manifest_path), slice_digest=replay.slice.digest)
     authority = json.loads(paths["authority_config"].read_text())
-    authority.update(qualification=block, resources={"runtime": {"cpu_millis": 32000}, "prebuild": {"cpu_millis": 16000}})
+    authority.update(qualification=block, resources={"runtime": {"cpu_millis": 32000, "cpu_pins": {"0": [0, 1]}}, "prebuild": {"cpu_millis": 16000}})
     authority["prompt"]["sha256"] = prompt_sha
     authority["qualification_builder_digest"] = predicted_qualification_builder_digest(
         default_target_catalog(), registered_target_ids=tuple(prompt["registered_targets"]),
         builder_source_digest=block["builder_source_digest"], selection_store_digest=block["selection_store_digest"])
     for name in ("authority_config", "measurement_config"):
         fixtures._write(paths[name], authority)
-    inputs = screen._authority_inputs(**paths, provisioner=None, provisioned_gpus=gpus)
-    composition = screen._compose(inputs)
+    inputs = deployment._authority_inputs(**paths, provisioner=None, provisioned_gpus=gpus)
+    composition = deployment._compose(inputs)
     judge = _Judge()
     judge.binding = HiddenJudgeBinding(*(inputs.prompt_identity[key] for key in
         ("hidden_corpus_commitment", "hidden_judge_digest", "hidden_task_policy_digest")))
     contexts, native_arches = [], []
-    native_build = screen._native_build
+    native_build = deployment._native_build
 
     def tracked_native(*args):
         built = native_build(*args)
@@ -590,7 +535,7 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
         evidence = CalibrationEvidenceSet.create(threshold, calibration_fixtures._observations())
         return threshold, derive_calibration_manifest(threshold, evidence.observations), evidence
 
-    monkeypatch.setattr(screen, "_native_build", tracked_native)
+    monkeypatch.setattr(deployment, "_native_build", tracked_native)
     executors = ()
     try:
         service = ArenaService(composition.manifest, B300ArenaServiceProvider(composition.manifest, composition.authorities))
@@ -603,9 +548,11 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
         for index, executor in enumerate(executors):
             assert tuple(g.physical_id for g in executor.device_policy.expected_gpus) == tuple(range(index * tp, (index + 1) * tp))
             assert executor.config.runtime.cpu_millis == 32000
+            assert executor.config.runtime.cpu_pins == (("0", (0, 1)),)
             assert executor.config.prebuild.policy.cpu_millis == 16000
+        assert executors[0].config.prebuild.publication_root == executors[1].config.prebuild.publication_root
+        assert executors[0].config.prebuild.recovery_root != executors[1].config.prebuild.recovery_root
         assert all(c.construction.registered_target_ids == tuple(prompt["registered_targets"]) for c in commissions)
     finally:
         for executor in executors:
             executor.manager.close()
-        composition.close()

@@ -1,6 +1,6 @@
 # Threat model
 
-Cacheon evaluates attacker-supplied Python, patches, and native GPU code. The production
+Cacheon evaluates attacker-supplied Python and native GPU code. The production
 design assumes the candidate engine is fully hostile. Static scanning, typed manifests,
 and correctness tests reduce exposure; they are not the primary containment boundary.
 
@@ -62,11 +62,11 @@ proves registered measurement, not safe production source.
 | Hostile URL, SSRF, redirect, or archive | HTTPS only; TLS 1.2 minimum; globally routable DNS answers; pinned reviewed IP with SNI/hostname verification; every redirect revalidated; bounded raw gzip/tar preflight including PAX/GNU extension payloads; strict member/size/path rules; committed hash rederived | CA/DNS/origin compromise can affect availability; network stack and TLS library remain trusted |
 | Proposal changes after commit | Content hash is checked after extraction and again across immutable publication | Hash does not establish authorship, license, or safety |
 | Candidate imports or patches trusted controller | Controller parses candidate as data and never imports candidate Python/native; complete engine runs in a separate OCI worker | A container/kernel/runtime escape can cross the boundary |
-| Candidate exfiltrates model/evidence | Runtime has no network, read-only root, exact read-only mounts, private cache tmpfs, bounded protocol; prebuild has no model/GPU/network/home/wallet | GPU/driver side channels, co-tenancy, host compromise, and undiscovered runtime flaws remain possible |
-| Candidate tampers with timer or role | Host assigns physical lanes and the exact B/C/B′ roles, owns clocks, validates bounded raw batches/token counts, observes device state, and controls teardown; a reproduction must exchange lane roles | Host clocks, firmware, driver, and provider scheduling must be trustworthy and calibrated |
+| Candidate exfiltrates model/evidence | Runtime has no network, a disposable writable root, exact read-only validator mounts, a private writable cache, bounded protocol; prebuild has no model/GPU/network/home/wallet | GPU/driver side channels, co-tenancy, host compromise, and undiscovered runtime flaws remain possible |
+| Candidate tampers with timer or role | Host assigns physical lanes and the exact incumbent/candidate roles, owns clocks, validates every replay request's host timing and token counts, observes device state, and controls teardown; policy 17 exchanges lane roles between orientations | Host clocks, firmware, driver, and provider scheduling must be trustworthy and calibrated |
 | Candidate fakes quality | Any required audit is collected in a separate eager/untimed role and host-regraded; candidate speed lifetimes are destroyed before candidate-free pristine T teacher-forces sealed trajectories | Reference bugs, audit sampling limits, and finite hidden-work coverage remain possible |
 | Candidate behaves only on known shapes/prompts | Post-commit selection, hidden work, typed graph requirements, and registered decode/long-prefill mixture | Workload overfitting cannot be eliminated; corpora and regimes need ongoing governance |
-| Candidate exploits noise | Precommitted v10/v11 B/C/B′, every workload cell warmed, both baseline observations validated and retained, faster-baseline credit, and complete per-rank execution evidence before grading | Hardware drift, boot-state outliers, cross-validator variance, and candidate-process receipt forgery remain operational concerns |
+| Candidate exploits noise | Sealed paired-window replay from flushed caches, both lane orientations, a calibrated one-sided error budget over at most four looks, every window retained, and complete per-rank execution evidence before grading | Hardware drift, boot-state outliers, cross-validator variance, and candidate-process receipt forgery remain operational concerns |
 | Candidate hangs or exhausts resources | Stage deadlines, CPU/memory/PID/file/shm/tmpfs bounds, cohort admission, retry budgets, forced container cleanup, durable leases | A GPU/driver hang may require host reset; sustained spam can still consume bounded capacity |
 | Unpaid or replayed intake spam | Optional eval-cost gate (`eval_cost_tao_rao`, default off): one `transfer_keep_alive` to the subnet owner coldkey, remarked to one hotkey + content hash + netuid, consume-once on reserved or deferred admission; a private operator may grant one audited artificial credit for one unpaid reveal | The gate does not meter GPU work after admission. A stolen miner hotkey can spend that hotkey's unused pointer. There is no refund. A credit is a privileged local bypass and must be audited; it is hotkey-scoped, oldest-first, consumed only on admission, and never rescues an invalid payment pointer |
 | Candidate persists into later work | Ephemeral containers, read-only mounts, private tmpfs/cache, lease-scoped resources, restart recovery, post-run quiescence checks | Host/container-runtime compromise can persist beyond these controls |
@@ -89,9 +89,9 @@ Production uses two candidate stages:
    reopened native publication, selected GPUs, private runtime cache, and bounded session
    protocol.
 
-Both use a digest-pinned local image, read-only root, dropped capabilities,
-no-new-privileges, reviewed seccomp, non-root UID/GID, resource bounds, private `/tmp`,
-and no network. See [Isolation](isolation.md).
+Both use a digest-pinned local image, dropped capabilities, no-new-privileges, reviewed
+seccomp, non-root UID/GID, resource bounds, private `/tmp`, and no network. The prebuild
+root is read-only; the runtime root is a disposable writable overlay. See [Isolation](isolation.md).
 
 ## Abuse stories
 
@@ -101,10 +101,9 @@ Concrete attacker stories help reviewers test the composition of controls:
 
 The candidate tries to remain ineligible or fail and rely on fallback while the server
 still answers. Pre-selection stock routing is allowed for ordinary availability.
-One-shot qualification requires positive execution coverage and treats
-selected-path fallback as invalid evidence. Execution counts are minted per
-generation, and current source holds a leg unless every expected rank fired
-and completed the candidate under that activation generation. These receipts close
+Qualification requires positive execution coverage and treats
+selected-path fallback as invalid evidence: every scheduler rank must complete
+every registered slot, inside a CUDA-graph capture on a graphs-on run. These receipts close
 accidental non-invocation but not deliberate in-process forgery. End-to-end host timing
 is bound to the exact candidate launch identity.
 

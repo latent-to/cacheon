@@ -450,7 +450,7 @@ def _install_execution_fakes(
         lambda launch, binding: _resolved(case, launch),
     )
     monkeypatch.setattr(
-        backend, "reopen_native_artifact", lambda *args, **kwargs: case.publication
+        backend, "reopen_publication", lambda *args, **kwargs: case.publication
     )
     monkeypatch.setattr(backend, "reopen_launch_tree", lambda *args, **kwargs: None)
 
@@ -511,7 +511,7 @@ def test_reference_reopens_control_receipt_then_rejects_added_native_file(
     reopened = iter((control, changed))
     monkeypatch.setattr(
         backend,
-        "reopen_native_artifact",
+        "reopen_publication",
         lambda *args, **kwargs: next(reopened),
     )
 
@@ -538,7 +538,7 @@ def test_reference_runtime_accepts_control_receipt_through_both_reopens(
     )
     monkeypatch.setattr(
         backend,
-        "reopen_native_artifact",
+        "reopen_publication",
         lambda *args, **kwargs: control,
     )
 
@@ -718,6 +718,12 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
     isolated_argv = _argv(case, lease, cache, case.resolved, isolated_runtime)
     assert "--cpuset-cpus=0-3,8-11" in isolated_argv
     assert "--cpuset-mems=0" in isolated_argv
+
+    pinned = replace(case.runtime, cpu_pins={"1": [15, 16], "0": [0, 1, 120]})
+    pinned_argv = _argv(case, lease, cache, multi_resolved, pinned)
+    assert '--env=CACHEON_CPU_PINS={"schedulers":[0,15],"pool":[1,16,120]}' in pinned_argv
+    assert not any("CACHEON_CPU_PINS" in arg for arg in multi_argv)
+    assert pinned.digest != case.runtime.digest == replace(case.runtime, cpu_pins=None).digest
 
     reference_argv = _argv(
         case, lease, cache, case.resolved, case.runtime, session_protocol="reference"

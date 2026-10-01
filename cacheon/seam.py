@@ -98,7 +98,6 @@ def mark_driver() -> None:
 # Bundle is loaded once per process even though activate() may run many times
 # (once per watched module import) and load_candidate_bundle() is re-entrant.
 _bundle_loaded = False
-_resident_bundle: str | None = None
 
 
 def activate() -> None:
@@ -190,59 +189,6 @@ def load_candidate_bundle() -> None:
     _load_candidate_bundle_locked(bundle, REGISTRY, release_required)
 
 
-def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
-    """Replace the live source/JIT bundle, or clear it for stock recapture.
-
-    Native artifacts, dependency overlays, and setup hooks remain non-swappable.
-    The caller must immediately recapture before serving another batch.
-    """
-
-    global _bundle_loaded, _resident_bundle
-    import time
-
-    from cacheon.registry import REGISTRY
-
-    started = time.perf_counter()
-    reuse = bundle is not None and bundle == _resident_bundle
-    REGISTRY.disable()
-    _bundle_loaded = False
-    if bundle and not reuse:
-        REGISTRY.clear()
-        _resident_bundle = None
-        # A different miner with the same source stem must get a fresh module.
-        for name in [k for k in list(sys.modules) if k.startswith("cacheon_kernel_")]:
-            sys.modules.pop(name, None)
-    result: dict[str, object] = {"bundle": bundle or "", "slots": []}
-    if bundle:
-        from cacheon.manifest import load_manifest
-
-        manifest = load_manifest(bundle)
-        if any(op.cuda_sources for op in manifest.ops):
-            raise RuntimeError(
-                "native-rebuild bundles are not swappable in the screen tier"
-            )
-        if any(op.setup is not None for op in manifest.ops):
-            raise RuntimeError(
-                "engine-setup bundles are not swappable in the screen tier"
-            )
-        from cacheon.target_catalog import SINGLETON_TARGET_IDS
-
-        if any(op.slot not in SINGLETON_TARGET_IDS for op in manifest.ops):
-            # sglang_nodes.bind runs only inside ModelRunner.load_model.
-            raise RuntimeError(
-                "node-address bundles are not swappable in the screen tier"
-            )
-        os.environ["CACHEON_BUNDLE_PATH"] = bundle
-        os.environ["CACHEON_ACTIVE"] = "1"
-        result["slots"] = _enable_loaded_bundle(bundle, reuse=reuse)
-        _resident_bundle = bundle
-    else:
-        os.environ.pop("CACHEON_BUNDLE_PATH", None)
-        logger.info("cacheon: resident swap -> stock dispatch")
-    result["load_seconds"] = time.perf_counter() - started
-    return result
-
-
 def _load_candidate_bundle_locked(
     bundle,
     REGISTRY,
@@ -289,7 +235,7 @@ def _load_candidate_bundle_locked(
         raise
 
 
-def _enable_loaded_bundle(bundle: str, *, reuse: bool = False) -> list[str]:
+def _enable_loaded_bundle(bundle: str) -> list[str]:
     """Load and enable one bundle, recording what happened. Returns its slots.
 
     The only path allowed to bring a bundle live. There used to be two, and the
@@ -306,8 +252,7 @@ def _enable_loaded_bundle(bundle: str, *, reuse: bool = False) -> list[str]:
     # the spawn-safe seam is installed.
     from cacheon.registry import REGISTRY
 
-    if not reuse:
-        _load_bundle_into_registry(bundle)
+    _load_bundle_into_registry(bundle)
     REGISTRY.enable()
     _bundle_loaded = True
     # Between enable and first dispatch is the only window where every entry is
@@ -401,23 +346,9 @@ def _load_bundle_into_registry(bundle: str) -> None:
         module = loaded_by_src.get(src_key)
         if module is None:
             module = loaded_by_src[src_key] = load_module(src)
-        if getattr(op, "override_point", None):
-            # Override submission: compose the miner's epilogue into the validator-owned base
-            # kernel -> a standard (entry, prepare) that flows through the normal dispatcher.
-            from cacheon_kernels.override import build_override
-
-            def _loader(name, _mod=module):
-                fn = getattr(_mod, name, None)
-                return fn if callable(fn) else None  # absent symbol (GPU-only device fn) -> None
-
-            entry, prepare = build_override(op.slot, op.override_point, op.entry, _loader)
-        else:
-            entry = callable_from(module, op.entry)
-            # (prepare, forward) slots: pull the 2nd callable too, so the runtime dispatcher
-            # can run the miner's weight-layout transform once and feed `prepared` to forward.
-            # (Until now prepare was only exercised by CPU `verify`; the block seam needs it
-            # live.) None for forward-only slots.
-            prepare = callable_from(module, op.prepare) if getattr(op, "prepare", None) else None
+        entry = callable_from(module, op.entry)
+        # A node's prepare(module) runs once per bound node and feeds forward.
+        prepare = callable_from(module, op.prepare) if getattr(op, "prepare", None) else None
         REGISTRY.register(
             KernelImpl(
                 slot=op.slot,

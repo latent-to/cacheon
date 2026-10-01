@@ -374,10 +374,10 @@ The authoritative path is staged:
    extracts it, and verifies the committed content hash.
 3. It republishes an immutable worker-readable tree and fingerprints the
    selected delta.
-4. Target resolution and the `static → build → ABI → graph → abbreviated
-   serving` non-crown screens run through a registered arena service.
-5. A promoted candidate receives a complete isolated version-3 qualification
-   attempt: two-process B/C/B′,
+4. The proposal waits in the registered arena's qualification queue in finalized
+   order. Admission runs at its first claim; there is no separate screen.
+5. The claimed candidate receives a complete isolated version-3 qualification
+   attempt: a paired replay of the incumbent and the candidate,
    registered eager audit A, then pristine T.
 6. One complete audited PASS moves the proposal to `qualified` and retains its
    speedup and evidence for settlement. No second qualification is scheduled.
@@ -387,8 +387,9 @@ The authoritative path is staged:
 8. Weight projection is a separate audited control-plane action.
 
 !!! info "When a reward begins"
-    A distinct retained qualified contribution is eligible for V1 credit.
-    Settlement separately selects the crown and records its standing claim. The validator later combines
+    A distinct retained qualified contribution earns V1 credit when it beats the
+    best earlier rewarded PASS against the same arena and incumbent by the
+    required margin (1.5% under V17). Settlement separately selects the crown. The validator later combines
     eligible claims into a weight vector and publishes it on-chain. See
     [How miners earn rewards](incentives.md).
 
@@ -398,26 +399,23 @@ configuration.
 
 ### Follow one proposal through the states
 
-Suppose the revealed content hash is `H` and its target is
-`activation.silu_and_mul`:
+Suppose the revealed content hash is `H` and its target is `forward_pass`:
 
 1. `reserved` means the finalized arrival has a durable intake row. The proposal has not
    been fetched, so local correctness results are not relevant to its current wait.
 2. `fetching` either produces an authenticated private tree or a transport result. A
    timeout may become `transport_retry` for the same `H`; a hash mismatch is a terminal
    candidate problem because the bytes at the URL are not `H`.
-3. `published` means an immutable worker tree and selected-delta identity exist. It does
-   not mean candidate Python has passed any screen.
-4. `screening` records the ordered stage receipts. If ABI fails, changing a local file
-   cannot repair `H`; fix the source, package a new hash, and submit it as a new proposal.
-   A validator storage fault should instead produce uncertainty for operator retry, not a
+3. `published` means an immutable worker tree and selected-delta identity exist and the
+   proposal is waiting in the qualification queue. Candidate Python has not run.
+4. `qualifying` means the sealed paired replay, registered eager audit A,
+   then pristine T are running. If the candidate fails, changing a local file cannot
+   repair `H`; fix the source, package a new hash, and submit it as a new proposal. A
+   validator storage fault should instead produce uncertainty for operator retry, not a
    fabricated candidate failure.
-5. `promoted` means all five non-crown screens passed and capacity may now be
-   spent on the sealed two-process B/C/B′ schedule, registered eager
-   audit A, then pristine T. It carries no speed score and no reward.
-6. `qualified` means one complete audited PASS exists. Settlement still reopens evidence and
+5. `qualified` means one complete audited PASS exists. Settlement still reopens evidence and
    considers priority/overlap before creating a crown.
-7. A settlement crown is an economic record for this target and stack authority. It is
+6. A settlement crown is an economic record for this target and stack authority. It is
    still not an Engine release.
 
 At each step, ask whether the next action changes proposal identity. Retrying fetch,

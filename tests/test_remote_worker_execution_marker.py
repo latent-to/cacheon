@@ -16,11 +16,11 @@ from cacheon.chain.remote_worker_execution_marker import (
     reopen_resident_entry,
 )
 from cacheon.chain.remote_worker_spool import load_json, spool_canonical_json
-from tests.test_remote_worker_spool import _screen_authority
+from tests.test_remote_worker_spool import _qualification_authority
 
 
 def _request(tmp_path: Path) -> dict[str, object]:
-    authority = _screen_authority(tmp_path)
+    authority = _qualification_authority(tmp_path)
     return load_json(authority[-1] / "request.json")
 
 
@@ -45,27 +45,27 @@ def test_marker_publishes_canonically_and_reopens_exact_request(
     payload = next(
         row["sha256"]
         for row in request["artifacts"]
-        if row["role"] == "screen_payload"
+        if row["role"] == "qualification_payload"
     )
     assert published["remote_request_sha256"] == payload
-    assert published["stage"] == "screen"
+    assert published["stage"] == "qualification"
 
     with pytest.raises(RemoteWorkerExecutionMarkerError, match="cannot publish"):
         publish_resident_entry(result, request)
 
 
-def test_marker_derivation_supports_qualification_without_target_constants(
+def test_marker_derivation_is_qualification_only_without_target_constants(
     tmp_path: Path,
 ) -> None:
-    request = copy.deepcopy(_request(tmp_path))
-    request["lease"]["stage"] = "qualification"
-    request["lease"]["members"][0]["prior_status"] = "promoted"
-    for artifact in request["artifacts"]:
-        if artifact["role"] == "screen_payload":
-            artifact["role"] = "qualification_payload"
+    request = _request(tmp_path)
     marker = marker_for_request(request)
     assert marker["stage"] == "qualification"
     assert marker["lease_id"] == request["lease"]["lease_id"]
+
+    retired = copy.deepcopy(request)
+    retired["lease"]["stage"] = "screen"
+    with pytest.raises(RemoteWorkerExecutionMarkerError, match="lease projection"):
+        marker_for_request(retired)
 
 
 def test_marker_rejects_request_or_file_identity_drift(tmp_path: Path) -> None:

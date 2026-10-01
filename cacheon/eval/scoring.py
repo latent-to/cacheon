@@ -1,16 +1,13 @@
-"""Recompute calibrated B/C/B-prime speed evidence from sealed lifecycle rows."""
+"""The speed verdict record and the replay workload identity it is graded against."""
 from __future__ import annotations
 
-import hashlib
-import math
-import statistics
 from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class SpeedupVerdict:
     speedup: float  # robust paired estimate: mean(candidate reads) / mean(baseline reads)
     noise: float  # measured relative spread floor: baselines, and candidates when >= 2 reads
-    required: float  # the bar it had to clear: 1 + max(min_margin, k*noise)
+    required: float  # the bar it had to clear (V17: exp(z*se) from the sealed noise model)
     passed_speedup: bool  # cleared `required` AND the round was trustworthy
     confident: bool  # False -> box too noisy this round; treat as NO-DECISION, never crown
     n_baselines: int
@@ -20,21 +17,14 @@ class SpeedupVerdict:
 class RawSpeedEvidenceError(ValueError):
     pass
 
-def _finite_time(value: object, *, field: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-    ):
-        raise RawSpeedEvidenceError(f"{field} must be finite")
-    return float(value)
+
+class CrossoverRuntimeError(RuntimeError):
+    """Resident execution or retained measurement violates its sealed plan."""
 
 
-def _positive_number(value: object, *, field: str) -> float:
-    result = _finite_time(value, field=field)
-    if result <= 0:
-        raise RawSpeedEvidenceError(f"{field} must be positive")
-    return result
+# Existing continuation records bind this public type name.
+CrossoverRuntimeError.__module__ = "cacheon.eval.crossover_runtime"
+
 
 def marginal_workload_digest(plan: object) -> str:
     from cacheon.eval.oci_outer_session import SessionExecutionPlan
@@ -53,126 +43,17 @@ def marginal_workload_digest(plan: object) -> str:
     }
     if plan.measure_phase_latency:
         payload["measure_phase_latency"] = True
-    if not plan.batch_max_new_tokens:
-        # Retained one-shape evidence keeps its exact v2 identity.
-        return canonical_digest(
-            "cacheon.qualification.marginal-workload.v2", payload
-        )
-    return canonical_digest(
-        "cacheon.qualification.marginal-workload.v3",
-        {
-            **payload,
-            "batch_request_geometry": [
-                [tokens, prompt_tokens]
-                for tokens, prompt_tokens in zip(
-                    plan.batch_max_new_tokens,
-                    plan.batch_expected_prompt_tokens,
-                    strict=True,
-                )
-            ],
-        },
-    )
+    if plan.batch_max_new_tokens:
+        payload["batch_request_geometry"] = [
+            [tokens, prompt_tokens]
+            for tokens, prompt_tokens in zip(
+                plan.batch_max_new_tokens, plan.batch_expected_prompt_tokens, strict=True,
+            )
+        ]
+    if plan.replay is None:
+        # The batch-cell workloads (v2/v3 digests) left with speed policies 8-15.
+        raise RawSpeedEvidenceError("speed workloads are sealed session replays")
+    return canonical_digest("cacheon.qualification.agent-workload.v1", {
+        **payload, "replay": plan.replay.workload_identity(),
+    })
 
-
-def planned_prompt_texts(plan: object) -> dict[str, str]:
-    """Bind every sealed prompt occurrence, including each mixed-workload cell."""
-    from cacheon.stack_identity import canonical_digest
-
-    workload = marginal_workload_digest(plan)
-    return {
-        canonical_digest("cacheon.qualification.prompt-occurrence", {
-            "batch_index": batch_index,
-            "prompt_index": prompt_index,
-            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-            "workload_digest": workload,
-        }): prompt
-        for batch_index, prompts in enumerate(plan.prompt_batches)
-        for prompt_index, prompt in enumerate(prompts)
-    }
-
-
-def relative_spread(samples: list[float]) -> float:
-    vals = [_positive_number(sample, field="baseline throughput") for sample in samples]
-    if len(vals) < 2:
-        return float("inf")
-    mean = statistics.fmean(vals)
-    if not math.isfinite(mean) or mean <= 0:
-        raise RawSpeedEvidenceError("baseline mean is not finite and positive")
-    if len(vals) == 2:
-        return (max(vals) - min(vals)) / mean
-    return statistics.pstdev(vals) / mean
-
-
-def score_speedup(
-    baseline_reads: list[float],
-    candidate_read: float | list[float],
-    *,
-    min_margin: float = 0.005,
-    k: float = 2.0,
-    max_noise: float = 0.10,
-) -> SpeedupVerdict:
-    margin = _finite_time(min_margin, field="min_margin")
-    multiplier = _finite_time(k, field="noise multiplier")
-    noise_ceiling = _finite_time(max_noise, field="max_noise")
-    if not 0 < margin < 1 or multiplier <= 0 or not 0 <= noise_ceiling < 1:
-        raise RawSpeedEvidenceError("speed policy is outside its allowed range")
-    reads = [
-        _positive_number(sample, field="baseline throughput")
-        for sample in baseline_reads
-    ]
-    raw_candidates = (
-        list(candidate_read) if isinstance(candidate_read, (list, tuple)) else [candidate_read]
-    )
-    candidate_reads = [
-        _positive_number(sample, field="candidate throughput")
-        for sample in raw_candidates
-    ]
-    if not reads or not candidate_reads:
-        return SpeedupVerdict(0.0, 0.0, 1.0 + margin, False, False,
-                              len(reads), "missing/zero throughput sample",
-                              n_candidates=len(candidate_reads))
-    base = statistics.fmean(reads)
-    candidate = statistics.fmean(candidate_reads)
-    baseline_noise = relative_spread(reads)
-    # A single candidate read (the historical B/C/B' shape) leaves the candidate's own
-    # spread unmeasured and keeps the verdict identical to the legacy behavior. With
-    # repeated candidate reads (B C B' C' B''), the candidate draw is measured too and
-    # a noisy candidate is as disqualifying as a noisy baseline: 2026-07-16 forensics
-    # measured 7.2% spread between two honest candidate legs, so a single-C verdict at
-    # small margins crowns or kills on a per-boot draw.
-    candidate_noise = relative_spread(candidate_reads) if len(candidate_reads) >= 2 else 0.0
-    # An unmeasured single-baseline spread is not measured infinite noise.
-    # Confidence and detail retain that distinction; keep the durable numeric
-    # witness finite so a NO-DECISION continuation can be reopened.
-    noise = (
-        max(baseline_noise, candidate_noise)
-        if math.isfinite(baseline_noise)
-        else 0.0
-    )
-    speedup = candidate / base
-    required = 1.0 + max(margin, multiplier * (noise if math.isfinite(noise) else 0.0))
-    if not math.isfinite(speedup) or not math.isfinite(required):
-        raise RawSpeedEvidenceError("derived speed verdict is non-finite")
-    confident = len(reads) >= 2 and noise <= noise_ceiling
-    passed = confident and speedup >= required
-    spread_note = (
-        f"noise {noise:.1%}"
-        if len(candidate_reads) < 2
-        else f"noise {noise:.1%} (baseline {baseline_noise:.1%}, candidate {candidate_noise:.1%})"
-    )
-    if not confident:
-        if len(reads) < 2:
-            detail = "single baseline read -> noise unmeasured; cannot crown (bookend the baseline)"
-        elif candidate_noise > noise_ceiling >= baseline_noise:
-            detail = f"candidate drift {candidate_noise:.1%} > max_noise {noise_ceiling:.0%}; NO-DECISION (re-queue)"
-        else:
-            detail = f"baseline drift {baseline_noise:.1%} > max_noise {noise_ceiling:.0%}; NO-DECISION (re-queue)"
-    elif passed:
-        detail = f"speedup {speedup:.3f} >= required {required:.3f} ({spread_note})"
-    else:
-        detail = f"speedup {speedup:.3f} < required {required:.3f} ({spread_note})"
-    return SpeedupVerdict(
-        speedup=speedup, noise=noise, required=required,
-        passed_speedup=passed, confident=confident, n_baselines=len(reads), detail=detail,
-        n_candidates=len(candidate_reads),
-    )

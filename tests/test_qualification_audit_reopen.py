@@ -7,17 +7,17 @@ import pytest
 from cacheon.eval import qualification_runner as runner
 from cacheon.eval.evidence_store import publish_evidence
 from cacheon.eval.qualification import QualificationDecision
-from tests.test_qualification import _lifecycle
 from tests.test_qualification_runner import (
     _REAL_PUBLISH_CAUSAL, _REAL_REOPEN_CAUSAL, _quality_verdict,
-    _resident_case, _run_resident_harness,
+    _resident_case, _run_resident_harness, _typed_resident_qualification_input,
 )
 
 
 @pytest.mark.parametrize("decision", tuple(QualificationDecision))
 def test_causal_reopen_preserves_audit_decision(monkeypatch, tmp_path, decision):
+    # A real sealed replay plan, built before the harness stubs the authority type.
+    plan = _typed_resident_qualification_input(tmp_path / "resident-fixture").resident_speed_plan
     harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
-    plan = _lifecycle(tmp_path / "resident-fixture")[0].plan
     harness.value.resident_speed_plan = plan
     harness.value.prepared.candidates[0].launch.digest = plan.candidate.launch.digest
     harness.value.expected_runtime_resource_policy_digest = plan.candidate.runtime_resource_policy_digest

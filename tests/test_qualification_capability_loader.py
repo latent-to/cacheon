@@ -417,25 +417,6 @@ def _required_adapter_argv(tmp_path: Path) -> list[str]:
     ]
 
 
-def test_screen_only_cli_does_not_probe_capability_loader(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def forbidden_loader(*_args, **_kwargs):
-        raise AssertionError("screen-only startup must not probe capabilities")
-
-    monkeypatch.setattr(adapter, "_load_qualification_capabilities", forbidden_loader)
-    observed: list[object] = []
-
-    def serve(_paths, capabilities):
-        observed.append(capabilities)
-        return 17
-
-    monkeypatch.setattr(adapter, "_serve", serve)
-    assert adapter.main(["--serve", *_required_adapter_argv(tmp_path)]) == 17
-    assert observed == [None]
-
-
 @pytest.mark.parametrize(
     "qualification_argv",
     (

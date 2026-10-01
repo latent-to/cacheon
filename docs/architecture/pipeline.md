@@ -10,14 +10,14 @@ The developer commands intentionally reuse parts of the ABI and evaluation machi
 ## Developer path
 
 ```text
-slots -> scan -> verify -> chain-package -> host -> chain-submit -> chain-status
+scan -> verify -> check -> chain-package -> host -> chain-submit -> chain-status
 ```
 
 | Step | Purpose | Authority |
 |---|---|---|
-| `slots` | Inspect the live slot ABI | Informational |
 | `scan` | Run static bundle policy checks | Diagnostic |
-| `verify` | Check a single op/block against its trusted reference; collective slots use distributed verification | Diagnostic |
+| `verify` | Resolve the target, import each entry, and check its signature | Diagnostic |
+| `check` | Audit against stock and captured execution in the published arena image | Diagnostic |
 | `chain-package` | Produce the deterministic hosted archive and content identity | Submission preparation |
 | HTTPS host | Make the immutable archive available for validator fetch | Transport only |
 | `chain-submit` | Commit the proposal through timelock commit-reveal; optional eval-cost `--pay` | Chain intake |
@@ -25,7 +25,7 @@ slots -> scan -> verify -> chain-package -> host -> chain-submit -> chain-status
 
 Local measurements are useful for iteration. They do not select a production arena
 authority, reserve a finalized cohort position, retain authenticated resident
-speed evidence under the two-process B/C/B′ schedule, perform
+speed evidence under the sealed paired replay, perform
 the registered eager audit A and pristine-reference T stages, or authorize settlement.
 
 ## Production path at a glance
@@ -34,18 +34,17 @@ the registered eager audit A and pristine-reference T stages, or authorize settl
 flowchart TD
     A["Finalized timelock reveal"] --> B["Hardened fetch and immutable publication"]
     B --> C["Registered arena and target resolution"]
-    C --> D["Non-crown screens and routing"]
-    D -->|"reject"| F["Terminal invalid or attributable failure"]
-    D -->|"promote or waive"| Q["B/C/B′ speed<br/>audit, then pristine T"]
-    D -->|"infrastructure or ambiguous"| N["NO_DECISION / retry"]
+    C --> D["Qualification queue<br/>admission at first claim"]
+    D -->|"copy of a loser"| F["Terminal invalid or attributable failure"]
+    D -->|"post-crown commitment"| X["Returned unevaluated<br/>NO_DECISION, payment released"]
+    D -->|"claimed cohort"| Q["Paired replay speed<br/>audit, then pristine T"]
     Q -->|"FAIL"| F
-    Q -->|"NO_DECISION"| N
+    Q -->|"NO_DECISION"| N["NO_DECISION / retry"]
     Q -->|"complete audited PASS"| S["Reopen retained evidence"]
     S --> G["Same-authority cohort planning"]
     G -->|"selected current registered winner"| T["Transactional settlement and stack update"]
     G -->|"stale or not selected"| H["HOLD / no stack transition"]
     T --> W["Reward projection and journaled weights"]
-    J --> W
     T -. "separate authorities, outside this repository" .-> I["Integration, release, serving"]
 ```
 
@@ -53,7 +52,7 @@ flowchart TD
 
 Submissions enter through native timelock commit-reveal. The validator acts only on finalized chain order. Finalized block position and commitment identity establish priority; evaluator network arrival does not.
 
-`FinalizedIntakeStore` persists production authority in SQLite. It records finalized observations, fetch state, copy disposition, screen receipts, cohort reservations, qualification attempts, evidence roots, reproduction state, stack transitions, settlement, and weight-publication state.
+`FinalizedIntakeStore` persists production authority in SQLite. It records finalized observations, fetch state, copy disposition, cohort reservations, qualification attempts, evidence roots, reproduction state, stack transitions, settlement, and weight-publication state.
 
 State transitions are typed and transactional. The validator does not reconstruct production authority from console output, mutable directories, or a legacy JSON ledger.
 
@@ -69,7 +68,7 @@ The submitted URL is transport, not identity. The fetch path:
 4. compares it with committed identity;
 5. derives the copy/provenance disposition;
 6. publishes the complete artifact into an immutable, hash-addressed worker namespace;
-7. reopens the publication before any screen or launch consumes it.
+7. reopens the publication before any qualification launch consumes it.
 
 Partial downloads, path tricks, changed content, duplicate/malformed archives, and publication mismatches fail closed. Candidate workers receive only immutable publications; they do not fetch miner URLs themselves.
 
@@ -82,15 +81,14 @@ An `ArenaServiceRegistry` maps a public arena identifier to a closed
 
 - runtime, base-engine, validator-overlay, worker, model, architecture, GPU,
   and topology identities;
-- the scored workload cells and prompt-seed scheme;
-- non-crown screen policy;
-- queue depth/age, cohort size, screen/qualification concurrency, and retry policy;
+- the workload cells and prompt-seed scheme;
+- queue depth and age, active-qualification concurrency, and cohort size;
 - the qualification-policy digest; and
 - the reviewed provider implementation digest.
 
 The target catalog, incumbent and candidate stacks, graph/engine settings,
 calibration, reference, evidence, and quality identities are closed later by
-the promoted candidate bindings and the provider-created typed qualification
+the claimed candidate bindings and the provider-created typed qualification
 plan. `ArenaService` checks the plan's policy digest and finalized reservation
 order; it does not pretend all of that authority is a field of the service
 manifest itself.
@@ -101,44 +99,29 @@ The command-line `chain-validate` loop can perform intake alone. Full production
 
 Principal code: [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py), [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py), and [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 
-## 4. Non-crown screens and routing
+## 4. Qualification queue and admission
 
-Expensive full-engine qualification is reserved for plausible candidates. The registered
-arena applies a fixed sequence of non-crownable screens:
+There is no separate screening stage. A published reservation waits in the arena's
+qualification queue in finalized order. The arena's registered capacity bounds the
+work instead: queue depth and age, active qualifications, and cohort size.
 
-1. static policy and manifest resolution;
-2. deterministic source closure and build planning;
-3. typed ABI correctness, including distributed verification for collectives;
-4. graphs-on capture and dynamic-input replay; and
-5. abbreviated serving on a small registered workload, implemented by the
-   calibrated resident lane when the contribution is safely hot-swappable.
+Admission runs when a queued row is first claimed, before any lease exists:
 
-The resident screen keeps one stock engine alive, swaps candidate bundles into a separate
-resident session, recaptures graphs, and evaluates a bounded queue against shared stock
-brackets and canaries. Every batch is bound to its swap generation. The screen exists only
-to route work: a promising result advances to qualification and a clearly uncompetitive,
-stable result may be rejected under the registered screen policy. It cannot create a
-qualification PASS, crown, settlement speedup, or reward claim.
+- an exact copy of bytes that already lost under this arena inherits that `FAIL`; a
+  `PASS` is never replayed;
+- a reservation for a target the commissioned arena cannot measure is released as
+  target-unavailable without a verdict; and
+- a commitment after the first crown on the commissioned baseline is rejected as
+  `baseline_closed_at_submission`.
 
-The ordered ABI and graph screen rows are carrier deferrals: the build product is reopened
-in those positions, while the subsequent resident swap acknowledgement and read perform the
-actual all-rank registration and graph recapture without unloading the stock model. The
-earlier per-candidate eager/graph engine mode for those rows was deleted on 2026-09-02.
-Those deferrals must never be interpreted as qualification correctness evidence. The
-isolated qualification audit and numerical judge remain mandatory before a PASS or crown.
+The first claim stamps the arena service identity the row is measured under, and a row
+claimed once never meets a second admission cutoff. Infrastructure errors release the
+lease without consuming a qualification attempt; three consecutive infrastructure
+releases hold the row instead of converting it into a loss.
 
-Some contribution classes cannot satisfy the hot-swap contract. Direct AOT artifacts,
-dependency patches, native rebuilds, and setup hooks receive an explicit screen waiver
-and proceed to authoritative qualification. A waiver means “not screenable,” not “screen
-passed.” The arena caps a promoted screen cohort by both its registered policy and the
-provider's current capacity.
-
-Infrastructure errors and measurements too ambiguous for an attributable rejection remain
-retryable rather than being converted into a loss.
-
-Principal code: [`eval/oci_resident_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_resident_session.py),
-[`eval/resident_queue.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_queue.py),
-and [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py).
+Principal code: [`chain/arena_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/arena_state.py),
+[`chain/duplicate_replay.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/duplicate_replay.py),
+and [`chain/evaluation_lease_store.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/evaluation_lease_store.py).
 
 ## 5. Cohort authority
 
@@ -151,32 +134,28 @@ At an evaluation boundary, the validator freezes:
 - workload, prompt, seed, role, topology, calibration, and evidence policy.
 
 Each candidate stack is the frozen incumbent with exactly one registered target delta.
-Production qualification uses two isolated resident TP lanes while serializing GPU work.
-The primary attempt assigns the incumbent and candidate to fixed physical lanes. An
-eligible reproduction must bind the exact opposite physical-lane role assignment. The
-lane swap is part of independence authority; it is not a scheduler preference.
+Production qualification uses two isolated TP lanes while serializing GPU work. One
+attempt runs both lane orientations: the incumbent on lane B and the candidate on lane
+A, then fresh engines with the roles exchanged. The swap is part of the sealed speed
+policy, not a scheduler preference.
 
-The routing screen may amortize a stock engine and shared brackets across candidates.
-Authoritative qualification does not inherit those measurements. It constructs a fresh,
-candidate-specific authority and retains each speed, audit, graph, and T product against
-that exact delta.
+Qualification constructs a fresh, candidate-specific authority and retains each speed,
+audit, graph, and T product against that exact delta.
 
 Principal code: [`eval/qualification_intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py) and [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 
 ## 6. Version-3 adaptive qualification
 
 The production evidence protocol is version 3. Inside it, every candidate is
-measured on the two-process substrate:
-
-- the plan seals v10 (v11 for a mixed-cell workload): separate baseline and
-  candidate processes always read B/C/B′ because the quality gate consumes the
-  second stock read; and
-- C′/B″ do not exist; the pre-v8 schedules that read them were deleted with
-  the MiniMax-M3 history seal, and their evidence is refused.
+measured by the paired replay: the plan seals speed policy 17, and separate
+incumbent and candidate processes replay the same sealed agent workload
+concurrently on two isolated lanes, then boot fresh with the lanes exchanged.
+Speed policy 16 is regrade-only, and evidence sealed below version 16 is
+refused.
 
 The current subpolicy retains stage and total budgets and the required
 physical-lane role assignment. Evidence reopens under the arithmetic that
-produced it; a label change cannot upgrade it and pre-v8 witnesses are refused.
+produced it; a label change cannot upgrade it and pre-v16 witnesses are refused.
 
 The authoritative work is staged. Speed is decided first; audit and pristine-reference
 quality run only after the speed stage remains eligible, apart from an explicitly
@@ -184,9 +163,8 @@ registered calibration-observation continuation.
 
 | Arm | Stack | Timed? | Purpose |
 |---|---|---:|---|
-| B | Exact frozen incumbent on the assigned baseline lane/process | Yes | Opening performance read |
-| C | Incumbent plus one exact target delta on the disjoint candidate lane/process | Yes | Candidate measurement and sealed trajectory |
-| B′ | The same incumbent authority as B | Yes | Mandatory stock-drift control |
+| B | Exact frozen incumbent on the assigned baseline lane/process | Yes | Incumbent replay; after a speed PASS, the selected stock-drift controls |
+| C | Incumbent plus one exact target delta on the disjoint candidate lane/process | Yes | Candidate replay and sealed trajectory |
 | A | Candidate in a separate eager, untimed role | No | Registered sampled slot audit and typed host regrade |
 | T | Pristine candidate-free reference | No | Teacher-forced semantic quality and hidden tasks |
 
@@ -200,10 +178,12 @@ runtime ranks may validate and load native products but may never compile or
 repair them. Both stages use read-only roots, bounded mounts and protocols, and
 host-owned cleanup; the trusted controller also owns timing.
 
-V10 and v11 precommit all three reads, so B′ is taken regardless of the observed
-B/C result. The candidate cannot request a favorable extra read after seeing an
-outcome. Versions 10/11 warm every cell, validate both stock observations, and
-retain both. Invalid baseline evidence cannot produce a candidate verdict.
+The sealed stopping rule, not the candidate, decides how many paired windows
+run, and the regrade checks that the retained windows stopped exactly where the
+rule stops. Both engines condition and flush before each window, and every
+window is retained. The last sealed window yields PASS or FAIL; a sealed futility
+margin may FAIL the stage after the first orientation. Invalid baseline evidence
+cannot produce a candidate verdict.
 
 When the registered plan requires sampled slot audit, a separate eager, untimed candidate
 role emits bounded raw facts. The trusted host grades exact slot × TP-rank/process coverage
@@ -217,12 +197,12 @@ trajectory under a separate pristine lifetime. T never contains the candidate an
 not compete on speed. Hidden reference work, quality policy, and selected prompt identity
 are bound into retained evidence.
 
-The host applies the exact versioned policy. Conceptually, every current result
-uses both valid B/B′ observations and the faster baseline:
+The host applies the exact versioned policy. Conceptually, a policy-17 result
+pools elapsed serving cost within each lane orientation:
 
 ```text
-bookended_speedup = C / max(B, B′)
-required_bar      = 1 + max(margin_floor, noise_multiplier × measured_noise)
+speedup  = exp(mean over orientations of log(pooled B cost / pooled C cost))
+eligible = one-sided lower bound on speedup > 1 at a sealed look
 ```
 
 The exact registered policy, not this explanatory formula, is authoritative.
@@ -242,19 +222,19 @@ The candidate clears the registered speed, quality, graph, evidence, and whole-s
 
 ### `FAIL`
 
-Complete evidence attributes a policy failure to the candidate under a valid authority. Examples include incorrect output, a quality regression, or a stable speed result below the registered bar.
+Complete evidence attributes a policy failure to the candidate under a valid authority. Examples include incorrect output, a quality regression, or a speed gain not established by the last sealed window.
 
 ### `NO_DECISION`
 
-The evaluator cannot make a valid attributable decision. Infrastructure failure, missing evidence, baseline drift, broken cohort invariants, or an invalid reference lifetime must not mint either a crown or a loss. The result retains a failure product and retry policy.
+The evaluator cannot make a valid attributable decision. Infrastructure failure, missing evidence, broken cohort invariants, or an invalid reference lifetime must not mint either a crown or a loss. The result retains a failure product and retry policy.
 
 The distinction is load-bearing: treating evaluator failure as candidate failure would let infrastructure state rewrite economic truth.
 
 ### Worked lifecycle: qualify and settle
 
-Intake freezes one contribution and its finalized priority. The registered
-screen promotes it to a complete B/C/B′ qualification with eager audit and
-pristine T. One complete audited PASS becomes `qualified`. Settlement reopens
+Intake freezes one contribution and its finalized priority. Its first claim
+admits it to a complete paired-replay qualification with eager audit and pristine T.
+One complete audited PASS becomes `qualified`. Settlement reopens
 that attempt's retained evidence and atomically records its result before the
 next ordinary intake continues. Incomplete evidence remains `NO_DECISION` and
 cannot create a miner loss or reward.
@@ -276,10 +256,9 @@ verdict. The references may live under the same content-addressed store root. It
 - the retained authority, attempt, report, and selection identities match the candidate;
 - the measured baseline belongs to the active target lineage and an ancestor-based
   result beats the composed improvement to the current tip;
-- target displacement, conflicts, and requirements remain valid;
 - the requested stack update matches the measured candidate.
 
-The submission cutoff is enforced during routed admission before the first screen:
+The submission cutoff is enforced during admission before the first qualification claim:
 commitments after the first crown on that commissioned baseline are rejected as
 `baseline_closed_at_submission`. Commitments in the finalized crown block or earlier
 can drain, including delayed fetches. A new commission has its own admission window.
@@ -293,8 +272,8 @@ beat the champion receives `lost_potential`; an incomparable baseline retains
 `stale_incumbent`. The dashboard also reports `lost_potential` for finalized
 reward comparisons that do not clear the margin, preserving the original PASS.
 
-For the selected winner, the conservative settled speedup is the lower accepted speedup
-from the accepted qualification. The stack transition and settlement evidence are committed
+For the selected winner, the settled speedup is the accepted qualification's speedup
+(the lower of the two for a historical pair). The stack transition and settlement evidence are committed
 transactionally; a partial write cannot expose a half-updated incumbent.
 
 Principal code: [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py).
@@ -308,9 +287,11 @@ explicitly fenced incentive paths:
   an all-uncrowned bootstrap, an operator may provide a registered burn hotkey; the burn
   projection becomes invalid as soon as a crown, claim, or active V2 composition exists.
   `--watch` operates the same journaled reconciler continuously with bounded retry rules.
-- **V2 finite debt** is a retained design whose implementation was extracted from the
-  tree on 2026-08-09 without ever being activated; see
+- **V2 finite debt** is a retained design whose implementation is not in the tree; see
   [Finite-debt V2](../reference/emissions-policy.md#finite-debt-v2).
+
+A qualified PASS is paid only when it beats the best earlier rewarded PASS against the
+same arena and incumbent stack by the reward margin (1.5% for V17).
 
 The publisher persists intent and later readback states. An SDK return value does not
 prove inclusion, and the publisher may not advance economic authority from an
@@ -330,21 +311,22 @@ able to reopen, rather than merely observe, each handoff:
 
 - finalized chain position, commitment, fetched content identity, and immutable worker
   publication;
-- registered arena, target catalog, incumbent manifest, candidate transition, and screen
-  receipt;
-- lane identities and a versioned `ResidentSpeedWitness` containing exactly the
-  scheduled rows (v10/v11 B/C/B′), plus
+- registered arena, target catalog, incumbent manifest, candidate transition, and
+  candidate binding (reservation, publication, and qualification attempt);
+- lane identities and a versioned `ResidentSpeedWitness` containing every paired
+  window's turn records, plus
   retained graph/quality/pristine-T references and witnesses; richer raw
   session/device frames are validated in-run but are not serialized into the
   attempt;
 - frozen calibration and the exact policy that maps the retained witness/evidence products
   to the verdict;
-- the seven digest-distinctness fields across primary and reproduction over one
-  reproduction identity;
+- for a historical pair only, the seven digest-distinctness fields across primary and
+  reproduction over one reproduction identity;
 - transactional settlement events and resulting evaluation-stack digest;
 - reward projection plus publication intent/status/chronology records; later readback
   vectors must be re-observed because the journal does not serialize them; and
-- if shipping is proposed, the separate integration records and signed release identity.
+- if shipping is proposed, the separate integration and release records kept outside
+  this repository.
 
 Console output, a green local benchmark, one `PASS`, or a successful chain SDK return is
 not a substitute for the corresponding reopenable product.

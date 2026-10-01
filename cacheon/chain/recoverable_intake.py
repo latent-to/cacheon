@@ -2,9 +2,8 @@
 
 The base :class:`FinalizedIntakeStore` remains the version-1 authority for
 databases without recovery schema. Once recovery triggers are commissioned,
-every mutating evaluator connection—including screen dispatch—must use this
-exact store type so the connection-local SQL capabilities and recovery mixin
-reopen together.
+every mutating evaluator connection must use this exact store type so the
+connection-local SQL capabilities and recovery mixin reopen together.
 """
 
 from __future__ import annotations

@@ -34,10 +34,11 @@ from cacheon.stack_plan import plan_candidate_stack, plan_marginal_arm
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
-ROOT = Path(__file__).parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
-SINGLETON = FIXTURES / "stack_norm_singleton"
-FUSED = ROOT / "examples" / "miner_dp_attention_exchange_torch"
+SINGLETON = FIXTURES / "node_singleton"
+# Two non-overlapping nodes (model.layers.*.mlp, model.norm) in one forward_pass bundle.
+FUSED = FIXTURES / "node_multi"
+NODE = "model.layers.*.mlp"
 
 
 def _digest(label: str) -> str:
@@ -98,7 +99,9 @@ def _evaluation_stack(
     )
 
 
-def _write_moe_fixture(root: Path, target: str, entry: str) -> Path:
+def _write_native_fixture(
+    root: Path, slot: str, entry: str, target: str = "forward_pass"
+) -> Path:
     (root / "kernels").mkdir(parents=True)
     (root / "kernels" / "fused_epilogue.py").write_text(
         "from kernels.helper import marker\n"
@@ -108,7 +111,7 @@ def _write_moe_fixture(root: Path, target: str, entry: str) -> Path:
         f"def {entry}(*args):\n"
         "    return native, marker\n"
     )
-    (root / "kernels" / "helper.py").write_text(f"marker = {target!r}\n")
+    (root / "kernels" / "helper.py").write_text(f"marker = {slot!r}\n")
     (root / "kernels" / "fused_epilogue_sm103.cu").write_text(
         "#include <torch/extension.h>\n"
         "PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {}\n"
@@ -123,7 +126,7 @@ def _write_moe_fixture(root: Path, target: str, entry: str) -> Path:
         f'target = "{target}"\n'
         'mode = "slot"\n\n'
         "[[ops]]\n"
-        f'slot = "{target}"\n'
+        f'slot = "{slot}"\n'
         'source = "kernels/fused_epilogue.py"\n'
         f'entry = "{entry}"\n'
         'prepare = "prepare"\n'
@@ -135,9 +138,7 @@ def _write_moe_fixture(root: Path, target: str, entry: str) -> Path:
 
 
 def _native_fixture(tmp_path: Path) -> Path:
-    return _write_moe_fixture(
-        tmp_path / "source", "moe.fused_experts", "fused_experts"
-    )
+    return _write_native_fixture(tmp_path / "source", NODE, "fused_experts")
 
 
 def _materialize(stack, context, catalog, resolver, destination, **kwargs):
@@ -193,7 +194,9 @@ def test_singleton_materialization_projects_metadata_and_reopens(tmp_path: Path)
     manifest = load_manifest(result.root)
     assert manifest.bundle_id == "cacheon-materialized-v1"
     assert manifest.competition is None
-    assert [op.slot for op in manifest.ops] == [ref.target_id]
+    # The runtime manifest keeps the node the bundle named, not its target.
+    assert ref.target_id == "forward_pass"
+    assert [op.slot for op in manifest.ops] == [NODE]
     metadata = json.loads((result.root / manifest.ops[0].metadata).read_text())
     assert "notes" not in metadata
     assert "regime" not in metadata
@@ -236,7 +239,7 @@ def test_multiple_variants_share_selected_source_without_order_authority(
     with (source / "manifest.toml").open("a") as manifest:
         manifest.write(
             "\n[[ops]]\n"
-            'slot = "norm.rmsnorm"\n'
+            f'slot = "{NODE}"\n'
             'variant = "wide"\n'
             'source = "kernels/blockscore.py"\n'
             'entry = "blockscore"\n'
@@ -256,7 +259,7 @@ def test_overlapping_variant_domains_reject_before_ref_identity(tmp_path: Path) 
     with (source / "manifest.toml").open("a") as manifest:
         manifest.write(
             "\n[[ops]]\n"
-            'slot = "norm.rmsnorm"\n'
+            f'slot = "{NODE}"\n'
             'variant = "overlap"\n'
             'source = "kernels/blockscore.py"\n'
             'entry = "blockscore"\n'
@@ -268,7 +271,7 @@ def test_overlapping_variant_domains_reject_before_ref_identity(tmp_path: Path) 
         inspect_contribution(source, catalog=default_target_catalog())
 
 
-def test_atomic_materialization_namespaces_both_members(tmp_path: Path) -> None:
+def test_multi_node_materialization_namespaces_both_members(tmp_path: Path) -> None:
     source_hash = content_hash(FUSED)
     source_modes = {
         path.relative_to(FUSED): path.stat().st_mode
@@ -280,10 +283,7 @@ def test_atomic_materialization_namespaces_both_members(tmp_path: Path) -> None:
     result = _materialize(stack, context, catalog, _sources((ref, FUSED)), tmp_path / "engine")
 
     manifest = load_manifest(result.root)
-    assert {op.slot for op in manifest.ops} == {
-        "collective.all_gather_into_tensor",
-        "collective.reduce_scatter_tensor",
-    }
+    assert {op.slot for op in manifest.ops} == {NODE, "model.norm"}
     assert all(op.source.startswith("entries/cacheon_c_") for op in manifest.ops)
     source = (result.root / manifest.ops[0].source).read_text()
     assert "from cacheon_c_" in source
@@ -311,31 +311,26 @@ def test_stock_only_stack_has_no_runtime_bundle(tmp_path: Path) -> None:
 def test_independent_contributions_compose_without_source_name_collisions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    experts = _write_moe_fixture(
-        tmp_path / "experts", "moe.fused_experts", "fused_experts"
-    )
-    dense = _write_moe_fixture(
-        tmp_path / "dense", "linear.dense", "dense"
-    )
+    # One entry per registered target: a model node and the prefix cache, with
+    # identically named source files.
+    model = _write_native_fixture(tmp_path / "model", NODE, "forward")
+    cache = _write_native_fixture(tmp_path / "cache", "tree_cache", "factory", "prefix_cache")
     catalog = default_target_catalog()
     context = _evaluation_context(catalog)
-    experts_ref = _proposal_ref(experts, catalog)
-    dense_ref = _proposal_ref(dense, catalog)
-    stack = _evaluation_stack(catalog, context, experts_ref, dense_ref)
+    model_ref = _proposal_ref(model, catalog)
+    cache_ref = _proposal_ref(cache, catalog)
+    stack = _evaluation_stack(catalog, context, model_ref, cache_ref)
 
     result = _materialize(
         stack,
         context,
         catalog,
-        _sources((experts_ref, experts), (dense_ref, dense)),
+        _sources((model_ref, model), (cache_ref, cache)),
         tmp_path / "engine",
     )
 
     manifest = load_manifest(result.root)
-    assert [op.slot for op in manifest.ops] == [
-        "linear.dense",
-        "moe.fused_experts",
-    ]
+    assert [op.slot for op in manifest.ops] == [NODE, "tree_cache"]
     assert manifest.ops[0].source != manifest.ops[1].source
     assert Path(manifest.ops[0].source).stem != Path(manifest.ops[1].source).stem
     assert len(set(result.root.glob("cacheon_c_*/kernels/fused_epilogue.py"))) == 2
@@ -372,101 +367,6 @@ def test_independent_contributions_compose_without_source_name_collisions(
         assert getattr(loaded[0], manifest.ops[0].entry).__module__ != getattr(
             loaded[1], manifest.ops[1].entry
         ).__module__
-    finally:
-        for name in set(sys.modules) - before_modules:
-            if name.startswith(("cacheon_c_", "cacheon_kernel_cacheon_c_")):
-                sys.modules.pop(name, None)
-
-
-def test_plain_experts_candidate_cannot_retain_shadowing_routed_route(
-    tmp_path: Path,
-) -> None:
-    experts = _write_moe_fixture(
-        tmp_path / "experts", "moe.fused_experts", "fused_experts"
-    )
-    routed = _write_moe_fixture(
-        tmp_path / "routed", "moe.fused_routed_experts", "fused_routed_experts"
-    )
-    catalog = default_target_catalog()
-    context = _evaluation_context(catalog)
-    experts_ref = _proposal_ref(experts, catalog)
-    routed_ref = _proposal_ref(routed, catalog)
-    incumbent = _evaluation_stack(catalog, context, routed_ref)
-
-    candidate = plan_candidate_stack(
-        incumbent,
-        experts_ref,
-        catalog=catalog,
-        expected_context=context,
-    )
-    arm = plan_marginal_arm(
-        incumbent,
-        experts_ref,
-        catalog=catalog,
-        incumbent_tree_digest=_digest("incumbent-tree"),
-        candidate_tree_digest=_digest("candidate-tree"),
-        expected_context=context,
-    )
-    materialized = _materialize(
-        candidate,
-        context,
-        catalog,
-        _sources((experts_ref, experts), (routed_ref, routed)),
-        tmp_path / "candidate-engine",
-    )
-    manifest = load_manifest(materialized.root)
-
-    assert tuple(incumbent.entries) == ("moe.fused_routed_experts",)
-    assert tuple(candidate.entries) == ("moe.fused_experts",)
-    assert tuple(ref.target_id for ref in arm.transition.displaced) == (
-        "moe.fused_routed_experts",
-    )
-    assert [op.slot for op in manifest.ops] == ["moe.fused_experts"]
-    assert all("fused_routed_experts" not in row.path for row in materialized.files)
-
-
-def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    override = tmp_path / "override"
-    (override / "kernels").mkdir(parents=True)
-    (override / "kernels" / "epilogue.py").write_text(
-        "def gemm1_epilogue_ref(gate, up):\n    return gate\n"
-    )
-    (override / "manifest.toml").write_text(
-        'bundle_id = "override-fixture"\nabi_version = "cacheon-op-abi-v0"\n'
-        '[[ops]]\nslot = "moe.fused_experts"\nsource = "kernels/epilogue.py"\n'
-        'entry = "gemm1_epilogue"\nbase_kernel = "nvfp4_moe_megakernel"\n'
-        'override_point = "gemm1_epilogue"\ndtypes = ["bfloat16"]\n'
-    )
-    catalog, context, ref, stack = _arranged(override)
-    result = _materialize(stack, context, catalog, _sources((ref, override)), tmp_path / "engine")
-    op = load_manifest(result.root).ops[0]
-    shim = (result.root / op.source).read_text()
-    assert f"import {op.entry}_ref as {op.entry}_ref" in shim
-    assert "try:" in shim and f"import {op.entry} as {op.entry}" in shim
-
-    monkeypatch.syspath_prepend(str(result.root))
-    monkeypatch.setattr(sys, "dont_write_bytecode", True)
-    # The SGLang/CUDA validation image installs CuTeDSL even when no GPU is
-    # exposed. Make this specifically the portable-reference branch that the
-    # test names, independent of ambient toolchain packages.
-    monkeypatch.setitem(sys.modules, "cutlass", None)
-    monkeypatch.setitem(sys.modules, "cutlass.cute", None)
-    before_modules = set(sys.modules)
-    try:
-        module = load_module(result.root / op.source)
-        assert callable(getattr(module, op.entry + "_ref"))
-        assert getattr(module, op.entry, None) is None
-        from cacheon_kernels.override import build_override
-
-        entry, prepare = build_override(
-            op.slot,
-            op.override_point,
-            op.entry,
-            lambda name: getattr(module, name, None),
-        )
-        assert callable(entry) and callable(prepare)
     finally:
         for name in set(sys.modules) - before_modules:
             if name.startswith(("cacheon_c_", "cacheon_kernel_cacheon_c_")):
@@ -571,14 +471,6 @@ def test_cute_dsl_compile_alias_is_admitted(tmp_path: Path, source_text: str) ->
     (source / "kernels" / "blockscore.py").write_text(source_text)
     inspected = inspect_contribution(source, catalog=default_target_catalog())
     assert "kernels/blockscore.py" in inspected.python_files
-
-
-def test_runtime_toml_omits_only_inline_table_null_fields() -> None:
-    from cacheon.engine_tree import _toml_value
-
-    assert _toml_value({"active": 7, "inactive": None}) == '{ "active" = 7 }'
-    with pytest.raises(EngineTreeError, match="unsupported TOML value"):
-        _toml_value([None])
 
 
 @pytest.mark.parametrize(
@@ -944,7 +836,7 @@ def test_packaging_order_ids_and_json_whitespace_do_not_choose_namespace(
     prefix, first_op, second_op = manifest.read_text().split("[[ops]]")
     manifest.write_text(
         (prefix + "[[ops]]" + second_op + "[[ops]]" + first_op)
-        .replace("fixture-dp-exchange-atomic", "ignored-packaging-id")
+        .replace("fixture-node-multi", "ignored-packaging-id")
     )
     for metadata_path in (reordered / "metadata").glob("*.json"):
         metadata = json.loads(metadata_path.read_text())
@@ -973,19 +865,15 @@ def test_every_selected_executable_input_class_rotates_delta(
     if input_class == "op":
         manifest = source / "manifest.toml"
         manifest.write_text(
-            manifest.read_text().replace(
-                'entry = "all_gather_into_tensor"',
-                'entry = "all_gather_into_tensor_v2"',
-                1,
-            )
+            manifest.read_text().replace('entry = "mlp"', 'entry = "mlp_v2"', 1)
         )
     elif input_class == "metadata":
-        path = source / "metadata" / "all_gather.json"
+        path = source / "metadata" / "mlp.json"
         metadata = json.loads(path.read_text())
         metadata["architectures"].append("sm100")
         path.write_text(json.dumps(metadata))
     else:
-        path = source / "kernels" / "exchange.py"
+        path = source / "kernels" / "nodes.py"
         path.write_text(path.read_text() + "\n# selected source revision\n")
 
     after = inspect_contribution(source, catalog=default_target_catalog())
@@ -1076,7 +964,7 @@ def test_failed_preinstall_verification_leaves_no_destination(
 
 
 
-@pytest.mark.parametrize("fixture", [SINGLETON, FUSED], ids=["norm-singleton", "atomic-dp"])
+@pytest.mark.parametrize("fixture", [SINGLETON, FUSED], ids=["node-singleton", "multi-node"])
 def test_fixture_materialization_binds_marginal_arm_and_exact_rollback(
     tmp_path: Path, fixture: Path,
 ) -> None:

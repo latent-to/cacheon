@@ -15,12 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from cacheon.arena_service import (
-    ArenaScreenReceipt,
-    ArenaServiceError,
-    PromotionDecision,
-    ScreenStageResult,
-)
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.evidence_store import (
@@ -54,19 +48,6 @@ _MAX_REMOTE_QUALIFICATION_EVIDENCE_BYTES = 32 << 20
 
 class RemoteEvaluationDispatcherError(RuntimeError):
     """Remote work cannot be authenticated, reopened, released, or committed."""
-
-
-class RemoteEvaluationReleased(RemoteEvaluationDispatcherError):
-    """The durable lease was released with a typed reason after a remote failure.
-
-    Raised only once the release is committed, so a supervisor can record the
-    disposition and keep serving instead of failing closed.
-    """
-
-    def __init__(self, lease_id: str, reason: str) -> None:
-        super().__init__(reason)
-        self.lease_id = lease_id
-        self.reason = reason
 
 
 def _digest(value: object, field_name: str) -> str:
@@ -468,28 +449,6 @@ def import_remote_qualification_evidence(
                 "candidate failure product differs from its qualification outcomes"
             )
     return result
-
-
-def _screen_receipt_from_dict(value: object) -> ArenaScreenReceipt:
-    fields = {"candidate_digest", "decision", "results", "screen_attempt", "service_digest"}
-    if type(value) is not dict or set(value) != fields or type(value["results"]) is not list:
-        raise RemoteEvaluationDispatcherError("screen response fields are not closed")
-    try:
-        results = [ScreenStageResult.from_dict(row) for row in value["results"]]
-    except ArenaServiceError as exc:
-        raise RemoteEvaluationDispatcherError(
-            f"screen stage response is invalid: {exc}"
-        ) from None
-    try:
-        return ArenaScreenReceipt(
-            value["service_digest"],  # type: ignore[arg-type]
-            value["candidate_digest"],  # type: ignore[arg-type]
-            value["screen_attempt"],  # type: ignore[arg-type]
-            tuple(results),
-            PromotionDecision(value["decision"]),
-        )
-    except (TypeError, ValueError) as exc:
-        raise RemoteEvaluationDispatcherError("screen response is invalid") from exc
 
 
 def qualification_batch_to_dict(batch: QualificationIntakeBatch) -> dict[str, object]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import os
@@ -25,6 +26,7 @@ from cacheon.eval.oci_outer_session import (
 from cacheon.eval.oci_process import (
     STDERR_ARTIFACT_SCHEMA,
     OCIAttachedDiagnostic,
+    OCIProcessError,
     OCIStderrArtifactReceipt,
 )
 from cacheon.eval.oci_session_protocol import (
@@ -220,6 +222,18 @@ class _FakeTransport:
         self._advance(self.batch_read_s, deadline, "batch-read")
         return _batch_evidence(request)
 
+    async def awrite_frame(self, frame, *, deadline):
+        self.write_frame(frame, deadline=deadline)
+
+    async def aread_control(self, *, max_bytes, deadline):
+        return self.read_control(max_bytes=max_bytes, deadline=deadline)
+
+    async def aread_response(self, requests, *, deadline, on_progress=None):
+        request = self.requests[-1]
+        assert requests[request.request_id] == request
+        progress = {"on_progress": on_progress} if request.measure_phase_latency else {}
+        return request, self.read_evidence(request, deadline=deadline, **progress)
+
     def finalize(self) -> None:
         self.finalized = True
         self.clock.advance(0.25)
@@ -270,13 +284,6 @@ def test_session_executes_sealed_request_geometry_per_batch() -> None:
     assert [row.token_numerator for row in result.batches] == [4, 8, 8]
     assert plan.quality_tokens_per_prompt == 4
     assert replace(plan, batch_max_new_tokens=(4, 2, 2)).quality_tokens_per_prompt == 4
-    from types import SimpleNamespace
-    from cacheon.eval.qualification_runner import _planned_prompt_digests
-    from cacheon.eval.scoring import planned_prompt_texts
-
-    pool = planned_prompt_texts(plan)
-    assert tuple(pool.values()) == ("a", "b", "c", "d", "e", "f")
-    assert _planned_prompt_digests(SimpleNamespace(baseline_session_plan=plan)) == tuple(sorted(pool))
 
     with pytest.raises(OuterSessionInfrastructureError, match="exactly cover"):
         _plan(
@@ -663,6 +670,24 @@ def test_attached_transport_is_nonblocking_and_manager_owns_both_teardown_paths(
         client.close()
 
 
+@pytest.mark.parametrize("operation", ["finalize", "abort"])
+def test_cleanup_preserves_the_manager_failure_chain(monkeypatch, operation):
+    transport, client = _attached(OCIAttachedDiagnostic(b"worker log", False, True))
+    cause = OCIProcessError("original lease-removal failure")
+
+    def fail():
+        raise OCIProcessError("attached OCI cleanup could not prove removal") from cause
+
+    monkeypatch.setattr(client, operation, fail)
+    try:
+        with pytest.raises(OuterSessionInfrastructureError) as raised:
+            getattr(transport, operation)()
+        assert raised.value.__cause__.__cause__ is cause
+        assert raised.value.diagnostic.stderr_tail == b"worker log"
+    finally:
+        client.close()
+
+
 def test_attached_transport_rejects_partial_wrong_magic_oversized_and_timeout() -> None:
     cases = (
         (b"OES1", OuterSessionProcessError, "complete"),
@@ -772,7 +797,7 @@ def test_worker_error_attaches_private_artifact_receipt_path_and_digest(
             frame_message(error, max_bytes=MAX_CONTROL_BYTES),
         )
         with pytest.raises(OuterSessionWorkerError) as raised:
-            transport.read_evidence(current, deadline=time.monotonic() + 1)
+            asyncio.run(transport.aread_response({current.request_id: current}, deadline=time.monotonic() + 1))[1]
         assert raised.value.diagnostic == diagnostic
         rendered = str(raised.value)
         assert repr(str(receipt.artifact_path)) in rendered
@@ -791,7 +816,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
     try:
         os.write(client.response_write, evidence_frame(_batch_evidence(stale), request=stale))
         with pytest.raises(OuterSessionProtocolError, match="binding"):
-            transport.read_evidence(current, deadline=time.monotonic() + 1)
+            asyncio.run(transport.aread_response({current.request_id: current}, deadline=time.monotonic() + 1))[1]
     finally:
         transport.abort()
         client.close()
@@ -807,7 +832,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
         )
         os.write(client.response_write, frame_message(error, max_bytes=MAX_CONTROL_BYTES))
         with pytest.raises(OuterSessionWorkerError, match="failed"):
-            transport.read_evidence(current, deadline=time.monotonic() + 1)
+            asyncio.run(transport.aread_response({current.request_id: current}, deadline=time.monotonic() + 1))[1]
     finally:
         transport.abort()
         client.close()
@@ -816,7 +841,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
     try:
         frame = evidence_frame(_batch_evidence(current), request=current)
         os.write(client.response_write, frame + b"x")
-        assert transport.read_evidence(current, deadline=time.monotonic() + 1)
+        assert asyncio.run(transport.aread_response({current.request_id: current}, deadline=time.monotonic() + 1))[1]
         assert transport.has_pending_output()
     finally:
         transport.abort()

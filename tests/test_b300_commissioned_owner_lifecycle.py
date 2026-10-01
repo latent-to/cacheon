@@ -1,4 +1,4 @@
-"""One full-authority B300 owner spans screen and FIFO qualification work."""
+"""One commissioned B300 owner serves FIFO qualification in both lane orientations."""
 
 from __future__ import annotations
 
@@ -15,13 +15,7 @@ import tests.test_b300_arena_provider as provider_fixtures
 import tests.test_b300_qualification_deployment as deployment_fixtures
 import tests.test_b300_remote_qualification_adapter as remote_fixtures
 import tests.test_b300_remote_worker_adapter as worker_fixtures
-from cacheon.arena_service import (
-    ArenaCandidateBinding,
-    ArenaQualificationWork,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStageResult,
-)
+from cacheon.arena_service import ArenaCandidateBinding, ArenaQualificationWork
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.execution_disposition import (
     ExecutionDisposition,
@@ -36,32 +30,30 @@ from cacheon.eval import b300_remote_worker_adapter as worker_module
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
     B300DeploymentAuthorities,
-    B300ResidentScreenFactory,
 )
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_qualification_commission import (
     CommissionedB300QualificationService,
 )
+from cacheon.eval.b300_qualification_declaration import QUALIFICATION_EXECUTOR_ID
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
     B300QualificationDeployment,
     compose_b300_qualification_deployment,
 )
-from cacheon.eval.b300_screen_qualification_bridge import QUALIFICATION_EXECUTOR_ID
 from cacheon.eval.evidence_store import publish_evidence
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
     QualificationContinuationStore,
 )
 from cacheon.eval.qualification_intake import QualificationReservation
-from cacheon.eval.resident_screen_lane import ResidentServingScreenStage
 from cacheon.stack_identity import canonical_digest
-from cacheon.target_catalog import default_target_catalog
 
 
-RMSNORM_TARGET = "norm.rmsnorm"
-ALL_REDUCE = "collective.all_reduce"
-FUSED_EXPERTS = "moe.fused_experts"
+TARGET = "forward_pass"
+MLP = "model.layers.*.mlp"
+LOGITS = "logits_processor"
+NORM = "model.norm"
 
 
 def _h(label: str) -> str:
@@ -69,25 +61,15 @@ def _h(label: str) -> str:
 
 
 @dataclass
-class _CompositionReceipt:
-    close_calls: int = 0
-
-    def close(self) -> None:
-        self.close_calls += 1
-
-
-@dataclass
 class _OwnerHarness:
     service: CommissionedB300QualificationService
     deployment: B300QualificationDeployment
     construction: B300QualificationConstructionAuthority
-    resident: provider_fixtures._ResidentFactory
-    composition: _CompositionReceipt
     worker_init_calls: list[tuple[object, object, object]]
     provider_init_calls: list[tuple[object, object]]
 
 
-def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _deployment(tmp_path: Path):
     construction = remote_fixtures._construction(tmp_path)
     candidate_executor = remote_fixtures._executor(
         tmp_path,
@@ -103,26 +85,17 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         candidate_executor,
         baseline_executor,
     )
-    screen = deployment_fixtures._screen_authorities(
+    declared = deployment_fixtures._declared_authorities(
         construction,
         candidate_executor,
         baseline_executor,
         lane_pair,
     )
-    resident = provider_fixtures._ResidentFactory(tmp_path / "resident-screen")
-    screen = replace(
-        screen,
-        resident_screen_factory=B300ResidentScreenFactory(
-            screen.resident_screen_factory.identity_digest,
-            screen.resident_screen_factory.resource_ids,
-            resident,
-        ),
-    )
-    manifest = deployment_fixtures._manifest(screen)
+    manifest = deployment_fixtures._manifest(declared)
     construction = remote_fixtures._bind_construction(construction, manifest)
     deployment = compose_b300_qualification_deployment(
         manifest=manifest,
-        screen_authorities=screen,
+        declared=declared,
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
@@ -130,7 +103,7 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     reproduction_deployment = compose_b300_qualification_deployment(
         manifest=manifest,
-        screen_authorities=screen,
+        declared=declared,
         construction=construction,
         candidate_executor=baseline_executor,
         resident_baseline_executor=candidate_executor,
@@ -154,7 +127,6 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         commission,
         reproduction_commission,
         (candidate_executor, baseline_executor),
-        resident,
     )
 
 
@@ -170,9 +142,8 @@ def owner(
         commission,
         reproduction_commission,
         executors,
-        resident,
-    ) = _deployment(tmp_path, monkeypatch)
-    composition = _CompositionReceipt()
+    ) = _deployment(tmp_path)
+    composition = object()
     init_calls: list[tuple[object, object, object]] = []
     provider_calls: list[tuple[object, object]] = []
     original_init = B300MainnetWorker.__init__
@@ -193,8 +164,8 @@ def owner(
         counted_provider_init,
     )
     monkeypatch.setattr(
-        commission_module.screen_deployment,
-        "replay_commissioned_screen_composition",
+        commission_module.b300_deployment,
+        "replay_commissioned_composition",
         lambda _registration, _ready, **_kwargs: (object(), composition, readiness),
     )
     monkeypatch.setattr(
@@ -216,8 +187,6 @@ def owner(
         service,
         deployment,
         construction,
-        resident,
-        composition,
         init_calls,
         provider_calls,
     )
@@ -229,16 +198,15 @@ def _target_candidate(
     tmp_path: Path,
     *,
     index: int,
-    target_id: str,
+    members: tuple[str, ...] = (MLP,),
 ) -> ArenaCandidateBinding:
-    target = default_target_catalog().require(target_id)
     source = tmp_path / "source"
     kernels = source / "kernels"
     kernels.mkdir(parents=True)
     (kernels / "entry.py").write_text(
         "\n".join(
             f"def run_{member_index}(*args):\n    return args[0]"
-            for member_index, _member in enumerate(target.members)
+            for member_index, _member in enumerate(members)
         )
         + "\n",
         encoding="utf-8",
@@ -252,10 +220,10 @@ def _target_candidate(
         "abi_version = 'cacheon-op-abi-v0'",
         "",
         "[competition]",
-        f"target = '{target_id}'",
-        f"mode = '{'atomic' if len(target.members) > 1 else 'slot'}'",
+        f"target = '{TARGET}'",
+        "mode = 'slot'",
     ]
-    for member_index, member in enumerate(target.members):
+    for member_index, member in enumerate(members):
         manifest.extend(
             (
                 "",
@@ -281,16 +249,16 @@ def _target_candidate(
         content_hash(source),
     )
     reservation = QualificationReservation(
-        _h(f"{target_id}-reservation-{index}"),
+        _h(f"{members}-reservation-{index}"),
         publication.digest,
-        target_id,
-        _h(f"{target_id}-delta-{index}"),
+        TARGET,
+        _h(f"{members}-delta-{index}"),
         index,
         f"miner-{index}",
         20,
         index,
         0,
-        target.members,
+        tuple(sorted(members)),
     )
     return ArenaCandidateBinding(
         reservation,
@@ -304,10 +272,6 @@ def _configured(
     candidate: ArenaCandidateBinding,
     continuation_root: Path,
 ) -> remote_fixtures._Configured:
-    receipt = deployment_fixtures._receipt(
-        owner.deployment.manifest.digest,
-        candidate,
-    )
     adapter = owner.service.adapter_for(
         (candidate.publication,),
         QualificationContinuationStore(continuation_root),
@@ -318,24 +282,8 @@ def _configured(
         owner.construction,
         owner.service.commission.readiness,
         candidate,
-        receipt,
         adapter,
         (),
-    )
-
-
-def _passing_resident_screen(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        ResidentServingScreenStage,
-        "run_screen",
-        lambda _stage, _candidate: ScreenStageResult(
-            "abbreviated_serving",
-            ScreenGrade.PASS,
-            _h("resident-screen-pass"),
-            1,
-        ),
     )
 
 
@@ -346,7 +294,6 @@ def test_service_routes_reproduction_to_swapped_lane_owner(
     candidate = _target_candidate(
         tmp_path / "reproduction-candidate",
         index=99,
-        target_id=RMSNORM_TARGET,
     )
     store = QualificationContinuationStore(tmp_path / "reproduction-continuation")
     adapter = owner.service.adapter_for(
@@ -370,7 +317,7 @@ def test_service_routes_reproduction_to_swapped_lane_owner(
     ).worker is worker
 
 
-def test_full_owner_releases_its_screen_resident_and_closes_once(
+def test_full_owner_plans_qualification_and_closes_once(
     owner: _OwnerHarness,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -390,27 +337,19 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
     assert provider._authorities is owner.deployment.authorities
     assert worker._remote_qualification_lane == "primary"
 
-    _passing_resident_screen(monkeypatch)
     candidate = _target_candidate(
-        tmp_path / "screen-candidate",
+        tmp_path / "planned-candidate",
         index=0,
-        target_id=RMSNORM_TARGET,
     )
-    receipt = worker.service.screen(candidate)
-    assert owner.resident.created == 1
-    assert owner.resident.closed == 0
-    assert worker.service._provider is provider
-
     builder = provider_fixtures._FactoryBuilder()
     provider._qualification_capabilities = replace(
         owner.deployment.authorities,
         qualification_factory_builder=builder,
         deadline_provider=lambda _request, _state: time.monotonic() + 60.0,
     )
-    work = worker.service.plan_qualification((candidate,), (receipt,))
+    work = worker.service.plan_qualification((candidate,))
     assert type(work) is ArenaQualificationWork
     assert builder.calls[0][0].candidates == (candidate,)
-    assert owner.resident.closed == 1
     assert worker.service._provider is provider
 
     worker_close = worker.close
@@ -439,7 +378,6 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
     owner.service.close()
     owner.service.close()
     assert worker_close_calls == [provider]
-    assert owner.composition.close_calls == 1
     assert set(manager_calls.values()) == {1}
 
 
@@ -448,15 +386,11 @@ def test_one_owner_routes_heterogeneous_singletons(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _passing_resident_screen(monkeypatch)
     first = _target_candidate(
-        tmp_path / "msa-screen",
+        tmp_path / "msa",
         index=10,
-        target_id=RMSNORM_TARGET,
     )
-    owner.service.worker.service.screen(first)
     provider = owner.service.worker._provider
-    assert owner.resident.created == 1
 
     reference = publish_evidence(
         owner.construction.evidence_root,
@@ -477,15 +411,15 @@ def test_one_owner_routes_heterogeneous_singletons(
     )
     products: list[RemoteQualificationProduct] = []
     requests = []
-    targets = (RMSNORM_TARGET, ALL_REDUCE, FUSED_EXPERTS)
-    for index, target_id in enumerate(targets, start=10):
+    nodes = (MLP, LOGITS, NORM)
+    for index, node in enumerate(nodes, start=10):
         candidate = (
             first
-            if target_id == RMSNORM_TARGET
+            if node == MLP
             else _target_candidate(
                 tmp_path / f"target-{index}",
                 index=index,
-                target_id=target_id,
+                members=(node,),
             )
         )
         configured = _configured(
@@ -507,24 +441,18 @@ def test_one_owner_routes_heterogeneous_singletons(
     assert tuple(
         product.authority_manifest.reservations[0].target_id
         for product in products
-    ) == targets
+    ) == (TARGET,) * 3
     assert all(len(request.body["candidates"]) == 1 for request in requests)
     assert all(len(request.members) == 1 for request in requests)
-    assert products[0].authority_manifest.reservations[0].target_members == (
-        RMSNORM_TARGET,
-    )
-    assert products[1].authority_manifest.reservations[0].target_members == (
-        ALL_REDUCE,
-    )
-
-    assert products[2].authority_manifest.reservations[0].target_members == (
-        FUSED_EXPERTS,
-    )
+    assert tuple(
+        product.authority_manifest.reservations[0].target_members
+        for product in products
+    ) == tuple((node,) for node in nodes)
 
     production_source = inspect.getsource(
         qualification_module.B300RemoteQualificationAdapter.run
     ) + inspect.getsource(worker_module.AdapterRuntime.qualification_adapter_for)
-    assert all(target_id not in production_source for target_id in targets)
+    assert all(name not in production_source for name in (TARGET, *nodes))
 
     before_drift = len(calls)
     lane_body = remote_fixtures._body(
@@ -594,12 +522,8 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
     candidate = _target_candidate(
         tmp_path / "delegated-candidate",
         index=30,
-        target_id=ALL_REDUCE,
+        members=(LOGITS,),
     )
-    _passing_resident_screen(monkeypatch)
-    receipt = runtime.worker.service.screen(candidate)
-    assert receipt.decision is PromotionDecision.PROMOTE
-    assert owner.resident.closed == 0
     wire = SimpleNamespace(
         body={
             "candidates": [{"publication": candidate.publication.to_dict()}],
@@ -623,7 +547,6 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
     def fail_after_entry(self, observed_wire):
         assert observed_wire is wire
         assert self.worker is owner.service._reproduction_worker
-        assert owner.resident.closed == 1
         delegated.append(self.worker)
         raise QualificationContinuationError("durable continuation is ambiguous")
 
@@ -665,7 +588,6 @@ def test_standalone_adapter_closes_only_its_owned_worker_once(
     candidate = _target_candidate(
         tmp_path / "standalone-candidate",
         index=40,
-        target_id=RMSNORM_TARGET,
     )
     standalone = qualification_module.B300RemoteQualificationAdapter(
         owner.deployment,
@@ -756,7 +678,7 @@ def test_injected_commission_runtime_owns_one_full_worker_and_closes_once(
     candidate = _target_candidate(
         tmp_path / "injected-candidate",
         index=41,
-        target_id=ALL_REDUCE,
+        members=(LOGITS,),
     )
     request_adapter = runtime.qualification_adapter_for(
         (candidate.publication,),

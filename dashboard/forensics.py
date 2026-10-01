@@ -131,6 +131,24 @@ def _retained_qualification(
     }
 
 
+_SPEEDS: dict[tuple, dict[str, object]] = {}
+
+
+def retained_speed(attempt_ref_json: object, roots: tuple[Path, ...], target_id: str) -> dict[str, object] | None:
+    """Reopen one graded attempt once; callers share the result and must not change it.
+
+    A replay artifact is a megabyte of turn records and the list reads fifty rows every
+    refresh. It is content-addressed, so a hit never goes stale; a miss is read again,
+    so an artifact that lands after its row is still found.
+    """
+    key = (attempt_ref_json, roots, target_id)
+    if key not in _SPEEDS and (speed := qualification_speed(*key)) is not None:
+        if len(_SPEEDS) >= 2048:
+            _SPEEDS.pop(next(iter(_SPEEDS)), None)
+        _SPEEDS[key] = speed
+    return _SPEEDS.get(key)
+
+
 def submission_qualifications(
     connection: sqlite3.Connection, reservation_id: str, target_id: str,
     evidence_roots: tuple[Path, ...], forensics: list[dict[str, object]],
@@ -140,7 +158,7 @@ def submission_qualifications(
         {"attempt": row["attempt_index"], "decision": row["decision"],
          "reason": row["reason"],
          "artifact_sha256": json.loads(row["attempt_ref_json"] or "{}").get("sha256"),
-         "speed": qualification_speed(row["attempt_ref_json"], evidence_roots, target_id)}
+         "speed": retained_speed(row["attempt_ref_json"], evidence_roots, target_id)}
         for row in connection.execute(
             "SELECT attempt_index, decision, reason, attempt_ref_json "
             "FROM qualification_dispositions WHERE reservation_id=? ORDER BY attempt_index",
@@ -194,6 +212,7 @@ __all__ = [
     "ForensicsNotFound",
     "ForensicsUnavailable",
     "forensics_log",
+    "retained_speed",
     "submission_forensics",
     "submission_qualifications",
 ]

@@ -8,6 +8,7 @@ process creation and cleanup remain exclusively manager-owned.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import secrets
@@ -25,11 +26,8 @@ from cacheon.eval.oci_process import (
     OCIProcessManager,
 )
 from cacheon.eval.oci_session_protocol import (
-    CONTROL_MAGIC,
-    EVIDENCE_MAGIC,
     FRAME_HEADER_BYTES,
     MAX_BATCH_REQUEST_BYTES,
-    MAX_BATCH_RESPONSE_BYTES,
     MAX_CONTROL_BYTES,
     MAX_INIT_BYTES,
     AuditReceiptFacts,
@@ -39,10 +37,6 @@ from cacheon.eval.oci_session_protocol import (
     RuntimePreflightFacts,
     SessionProtocolError,
     SlotAuditPolicy,
-    batch_request,
-    decode_evidence_payload,
-    decode_message,
-    expected_evidence_payload_bytes,
     frame_message,
     make_init,
     parse_error_message,
@@ -51,6 +45,7 @@ from cacheon.eval.oci_session_protocol import (
     validate_ready,
 )
 from cacheon.stack_identity import require_sha256_hex
+from cacheon.eval.service_capacity import LoadRead
 
 
 class OuterSessionError(RuntimeError):
@@ -135,7 +130,9 @@ class SessionTransport(Protocol):
     def has_pending_output(self) -> bool: ...
     def write_frame(self, frame: bytes, *, deadline: float) -> None: ...
     def read_control(self, *, max_bytes: int, deadline: float) -> dict: ...
-    def read_evidence(self, request: BatchRequest, *, deadline: float, on_progress=None) -> BatchEvidence: ...
+    async def awrite_frame(self, frame: bytes, *, deadline: float) -> None: ...
+    async def aread_response(self, requests, *, deadline: float, on_progress=None): ...
+    async def aread_control(self, *, max_bytes: int, deadline: float) -> dict: ...
     def finalize(self) -> None: ...
     def abort(self) -> None: ...
 
@@ -231,111 +228,30 @@ class AttachedSessionTransport:
         return bool(readable)
 
     def write_frame(self, frame: bytes, *, deadline: float) -> None:
-        self._require_client()
-        if not isinstance(frame, bytes) or not frame:
-            raise OuterSessionInfrastructureError("session request frame is invalid")
-        view = memoryview(frame)
-        offset = 0
-        while offset < len(view):
-            try:
-                _, writable, _ = select.select(
-                    [], [self._stdin_fd], [], self._remaining(deadline)
-                )
-                if not writable:
-                    raise OuterSessionTimeoutError("session request write timed out")
-                count = os.write(self._stdin_fd, view[offset:])
-            except (BlockingIOError, InterruptedError):
-                continue
-            except BrokenPipeError:
-                raise self._process_error("session closed its request pipe") from None
-            except OSError as exc:
-                raise self._process_error(
-                    f"session request write failed: {exc}"
-                ) from None
-            if count <= 0:
-                raise self._process_error("session request write made no progress")
-            offset += count
+        asyncio.run(self.awrite_frame(frame, deadline=deadline))
+
+    async def awrite_frame(self, frame: bytes, *, deadline: float) -> None:
+        from cacheon.eval.oci_request_exchange import write_frame
+        await write_frame(self, frame, deadline=deadline)
 
     def _read_exact(self, size: int, *, deadline: float) -> bytes:
-        self._require_client()
-        remaining = size
-        chunks: list[bytes] = []
-        while remaining:
-            try:
-                readable, _, _ = select.select(
-                    [self._stdout_fd], [], [], self._remaining(deadline)
-                )
-                if not readable:
-                    raise OuterSessionTimeoutError("session response read timed out")
-                chunk = os.read(self._stdout_fd, min(remaining, 1 << 20))
-            except (BlockingIOError, InterruptedError):
-                continue
-            except OSError as exc:
-                raise self._process_error(
-                    f"session response read failed: {exc}"
-                ) from None
-            if not chunk:
-                # Never poll/wait here: only the manager may reap the process group.
-                raise self._process_error(
-                    "session ended before a complete response"
-                )
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        return b"".join(chunks)
+        from cacheon.eval.oci_request_exchange import read_exact
+        return asyncio.run(read_exact(self, size, deadline=deadline))
 
     def _header(self, *, deadline: float) -> tuple[bytes, int]:
         header = self._read_exact(FRAME_HEADER_BYTES, deadline=deadline)
         return header[:4], struct.unpack(">I", header[4:])[0]
 
     def read_control(self, *, max_bytes: int, deadline: float) -> dict:
-        magic, size = self._header(deadline=deadline)
-        if magic != CONTROL_MAGIC:
-            raise OuterSessionProtocolError("worker emitted wrong control-frame magic")
-        if size > max_bytes:
-            raise OuterSessionProtocolError("worker declared an oversized control frame")
-        try:
-            return decode_message(self._read_exact(size, deadline=deadline), max_bytes=max_bytes)
-        except SessionProtocolError as exc:
-            raise OuterSessionProtocolError(str(exc)) from None
+        return asyncio.run(self.aread_control(max_bytes=max_bytes, deadline=deadline))
 
-    def read_evidence(self, request: BatchRequest, *, deadline: float, on_progress=None) -> BatchEvidence:
-        magic, size = self._header(deadline=deadline)
-        while magic == CONTROL_MAGIC:
-            if size > MAX_CONTROL_BYTES:
-                raise OuterSessionProtocolError("worker declared an oversized error frame")
-            try:
-                message = decode_message(
-                    self._read_exact(size, deadline=deadline), max_bytes=MAX_CONTROL_BYTES
-                )
-                detail = parse_error_message(
-                    message,
-                    session_id=request.session_id,
-                    launch_digest=request.launch_digest,
-                    request=request,
-                )
-            except SessionProtocolError as exc:
-                raise OuterSessionProtocolError(str(exc)) from None
-            if detail is not None:
-                raise _worker_error(
-                    detail, diagnostic_provider=self._diagnostic_provider()
-                )
-            if on_progress is None or not request.measure_phase_latency:
-                raise OuterSessionProtocolError("worker emitted an early control frame")
-            try:
-                on_progress(message)
-            except SessionProtocolError as exc:
-                raise OuterSessionProtocolError(str(exc)) from None
-            magic, size = self._header(deadline=deadline)
-        if magic != EVIDENCE_MAGIC:
-            raise OuterSessionProtocolError("worker emitted wrong evidence-frame magic")
-        exact = expected_evidence_payload_bytes(request)
-        if size != exact or size > MAX_BATCH_RESPONSE_BYTES:
-            raise OuterSessionProtocolError("worker evidence frame has the wrong exact size")
-        try:
-            payload = self._read_exact(size, deadline=deadline)
-            return decode_evidence_payload(payload, request=request)
-        except SessionProtocolError as exc:
-            raise OuterSessionProtocolError(str(exc)) from None
+    async def aread_control(self, *, max_bytes: int, deadline: float) -> dict:
+        from cacheon.eval.oci_request_exchange import read_control
+        return await read_control(self, max_bytes=max_bytes, deadline=deadline)
+
+    async def aread_response(self, requests, *, deadline: float, on_progress=None):
+        from cacheon.eval.oci_request_exchange import read_response
+        return await read_response(self, requests, deadline=deadline, on_progress=on_progress)
 
     def finalize(self) -> None:
         if self.client is None:
@@ -345,7 +261,7 @@ class AttachedSessionTransport:
         except OCIProcessError as exc:
             raise self._diagnostic_error(
                 OuterSessionInfrastructureError, f"session cleanup failed: {exc}"
-            ) from None
+            ) from exc
 
     def abort(self) -> None:
         if self.client is None or self.client.closed:
@@ -355,12 +271,12 @@ class AttachedSessionTransport:
         except OCIProcessError as exc:
             raise self._diagnostic_error(
                 OuterSessionInfrastructureError, f"session cleanup failed: {exc}"
-            ) from None
+            ) from exc
 
 
 @dataclass(frozen=True)
 class SessionExecutionPlan:
-    """Host-only session inputs; only one prompt batch crosses at a time."""
+    """Validator-owned engine inputs and either a batch workload or a finite replay."""
 
     launch_digest: str
     expected_engine_config_digest: str
@@ -378,8 +294,13 @@ class SessionExecutionPlan:
     batch_max_new_tokens: tuple[int, ...] = ()
     batch_expected_prompt_tokens: tuple[int | None, ...] = ()
     measure_phase_latency: bool = False
+    replay: object | None = None
 
     def __post_init__(self) -> None:
+        if self.replay is not None:
+            from cacheon.eval.agent_replay import AgentReplayPlan
+            if type(self.replay) is not AgentReplayPlan or self.audit_policy is not None:
+                raise OuterSessionInfrastructureError("replay plan is untyped or overlaps eager audit")
         if not isinstance(self.engine_config, EngineSessionConfig):
             raise OuterSessionInfrastructureError("engine_config is not typed")
         if self.audit_policy is not None and (
@@ -420,8 +341,8 @@ class SessionExecutionPlan:
             batches = tuple(tuple(batch) for batch in self.prompt_batches)
         except TypeError:
             raise OuterSessionInfrastructureError("each prompt batch must be a sequence") from None
-        if not batches or type(self.warmup_count) is not int or not 1 <= self.warmup_count < len(batches):
-            raise OuterSessionInfrastructureError("session requires warmup and timed batches")
+        if not batches or type(self.warmup_count) is not int or not 1 <= self.warmup_count <= len(batches) - (self.replay is None):
+            raise OuterSessionInfrastructureError("session requires warmup and measured work")
         if type(self.conditioning_count) is not int or not 1 <= self.conditioning_count <= self.warmup_count:
             raise OuterSessionInfrastructureError("conditioning_count must be in 1..warmup_count")
         object.__setattr__(self, "prompt_batches", batches)
@@ -464,19 +385,9 @@ class SessionExecutionPlan:
         for index, prompts in enumerate(batches):
             max_new_tokens, expected_prompt_tokens = self.request_geometry(index)
             try:
-                message = batch_request(
-                    session_id="1" * 32,
-                    launch_digest=self.launch_digest,
-                    request_id="2" * 32,
-                    nonce="3" * 32,
-                    batch_index=index,
-                    prompts=prompts,
-                    max_new_tokens=max_new_tokens,
-                    top_logprobs_num=self.top_logprobs_num,
-                    temperature=self.temperature,
-                    expected_prompt_tokens=expected_prompt_tokens,
-                    measure_phase_latency=self.measure_phase_latency and max_new_tokens >= 2,
-                )
+                message = self.request(
+                    index, session_id="1" * 32, request_id="2" * 32, nonce="3" * 32,
+                ).to_dict()
                 frame_message(message, max_bytes=MAX_BATCH_REQUEST_BYTES)
             except SessionProtocolError as exc:
                 raise OuterSessionInfrastructureError(
@@ -495,10 +406,21 @@ class SessionExecutionPlan:
             )
         return self.max_new_tokens, self.expected_prompt_tokens
 
+    def request(self, index: int, *, session_id: str, request_id: str, nonce: str) -> BatchRequest:
+        """Bind the sealed geometry once for both preflight and live disclosure."""
+        tokens, prompt_tokens = self.request_geometry(index)
+        return BatchRequest(
+            session_id, self.launch_digest, request_id, nonce, index,
+            self.prompt_batches[index], tokens, self.top_logprobs_num, self.temperature,
+            prompt_tokens,
+            # A one-token legacy prefill read has no decode-delivery interval.
+            self.measure_phase_latency and tokens >= 2,
+        )
+
     @property
     def quality_tokens_per_prompt(self) -> int:
         """Maximum teacher work per selected prompt, derived from sealed geometry."""
-        return max(self.batch_max_new_tokens or (self.max_new_tokens,))
+        return self.max_new_tokens if self.replay is not None else max(self.batch_max_new_tokens or (self.max_new_tokens,))
 
 
 @dataclass(frozen=True)
@@ -512,6 +434,7 @@ class BatchExecutionEvidence:
     evidence: BatchEvidence
     audit_receipts: tuple[AuditReceiptFacts, ...] = ()
     prompt_latencies: tuple[tuple[float, float], ...] = field(default=(), metadata={"wire_optional": True})
+    input_ids_sha256: tuple[str, ...] = field(default=(), metadata={"wire_optional": True})
 
     @property
     def elapsed_seconds(self) -> float:
@@ -532,6 +455,7 @@ class SessionExecutionEvidence:
     conditioning_token_numerator: int
     session_completed_at: float
     audit_policy_digest: str | None = None
+    replay_reads: tuple[LoadRead, ...] = field(default=(), metadata={"wire_optional": True})
 
     @property
     def audit_receipts(self) -> tuple[AuditReceiptFacts, ...]:
@@ -766,6 +690,7 @@ class OpenedOuterSession:
         self.seen: set[str] = set()
         self.session_id = _fresh_id(self.seen)
         self.batch_rows: list[BatchExecutionEvidence] = []
+        self.replay_reads: list[LoadRead] = []
         self.conditioning_start_index = plan.warmup_count - plan.conditioning_count
         self.conditioning_started_at: float | None = None
         self.first_timed_completed_at: float | None = None
@@ -822,17 +747,64 @@ class OpenedOuterSession:
         except BaseException as exc:
             self._fail(exc)
 
+    def exchange(self, *, deadline: float | None = None):
+        """Use the same request exchange for a serial batch or concurrent replay window."""
+        from cacheon.eval.oci_request_exchange import RequestExchange
+        return RequestExchange(
+            self.transport, clock=self.clock,
+            deadline=self.deadline if deadline is None else min(deadline, self.deadline),
+            audit_policy=self.plan.audit_policy, next_index=self.next_batch_index,
+        )
+
     def execute_next(self) -> BatchExecutionEvidence:
-        from cacheon.eval.oci_batch_execution import execute_batch
-        return execute_batch(self)
+        """Retain serial batch/audit callers on the shared request exchange."""
+        if not self.started or self.closed:
+            raise OuterSessionInfrastructureError("session is not open")
+        index = self.next_batch_index
+        if index >= len(self.plan.prompt_batches):
+            raise OuterSessionInfrastructureError("session has no remaining planned batch")
+        try:
+            request = self.plan.request(
+                index, session_id=self.session_id,
+                request_id=_fresh_id(self.seen), nonce=_fresh_id(self.seen),
+            )
+            final_warmup = index == self.plan.warmup_count - 1
+            first_timed = index == self.plan.warmup_count
+            if self.boundary_callback is not None:
+                if final_warmup:
+                    self.boundary_callback("before_final_warmup", index, self.deadline)
+                if first_timed:
+                    self.boundary_callback("before_first_timed", index, self.deadline)
+            if self.transport.has_pending_output():
+                raise OuterSessionProtocolError("worker emitted early or duplicate output")
+            deadline = self._phase_deadline(self.batch_timeout_s)
+
+            async def exchange():
+                async with self.exchange(deadline=deadline) as channel:
+                    return await channel.execute(request, deadline=deadline)
+
+            row = asyncio.run(exchange())
+            self.batch_rows.append(row)
+            self.last_host_time = row.response_completed_at
+            if index + 1 == self.conditioning_start_index:
+                self.conditioning_started_at = row.response_completed_at
+            if final_warmup and self.boundary_callback is not None:
+                self.boundary_callback("after_final_warmup", index, self.deadline)
+            if first_timed:
+                self.first_timed_completed_at = row.response_completed_at
+            if self.transport.has_pending_output():
+                raise OuterSessionProtocolError("worker emitted trailing or duplicate output")
+            return row
+        except BaseException as exc:
+            self._fail(exc)
 
     def finish(self, *, require_all: bool = True) -> SessionExecutionEvidence:
         if type(require_all) is not bool or not self.started or self.closed:
             raise OuterSessionInfrastructureError("session finish order is invalid")
         minimum = self.plan.warmup_count + 1
-        if len(self.batch_rows) < minimum or (
-            require_all and len(self.batch_rows) != len(self.plan.prompt_batches)
-        ):
+        expected = (len(self.plan.prompt_batches) if self.plan.replay is None else
+                    self.plan.warmup_count + sum(self.plan.replay.slice.turns(load) for load in self.plan.replay.loads))
+        if len(self.batch_rows) < minimum or (require_all and len(self.batch_rows) != expected):
             raise OuterSessionInfrastructureError(
                 "session lacks the required planned batch coverage"
             )
@@ -845,7 +817,7 @@ class OpenedOuterSession:
                 raise OuterSessionTimeoutError("session deadline expired before cleanup")
             self.transport.finalize()
             session_completed_at = _now(
-                self.clock, previous=self.batch_rows[-1].response_completed_at
+                self.clock, previous=self.last_host_time
             )
             if session_completed_at > self.deadline:
                 raise OuterSessionTimeoutError(
@@ -887,6 +859,7 @@ class OpenedOuterSession:
             audit_policy_digest=(
                 None if self.plan.audit_policy is None else self.plan.audit_policy.digest
             ),
+            replay_reads=tuple(self.replay_reads),
         )
 
     def abort(self) -> None:
@@ -908,7 +881,7 @@ def run_outer_session(
     clock: Callable[[], float] = time.monotonic,
     boundary_callback: BoundaryCallback | None = None,
 ) -> SessionExecutionEvidence:
-    """Execute every planned batch and destroy the engine (legacy wrapper)."""
+    """Execute the commissioned workload through one engine lifetime."""
 
     session = OpenedOuterSession(
         plan,
@@ -920,6 +893,15 @@ def run_outer_session(
         boundary_callback=boundary_callback,
     )
     session.start()
-    while session.next_batch_index < len(plan.prompt_batches):
-        session.execute_next()
-    return session.finish()
+    try:
+        for _ in range(plan.warmup_count):
+            session.execute_next()
+        if plan.replay is None:
+            while session.next_batch_index < len(plan.prompt_batches):
+                session.execute_next()
+        else:
+            from cacheon.eval.agent_replay import run_replay
+            asyncio.run(run_replay(session, plan.replay))
+        return session.finish()
+    except BaseException as exc:
+        session._fail(exc)

@@ -12,14 +12,14 @@ and final decision.
 ## Why participate
 
 A miner has an opportunity to earn a share of validator weight by becoming the
-independently verified performance frontier for one target in one published
-evaluation arena. Submission itself earns nothing. If one complete validator
-qualification proves the improvement and settlement crowns it, settlement records the
-reward claim in the same transaction. The validator later combines eligible claims
-into a weight vector and publishes it on-chain.
+independently verified performance frontier in one published evaluation arena.
+Submission itself earns nothing. A proposal earns credit when one complete audited
+qualification passes and its speedup beats the best earlier rewarded PASS against
+the same arena and incumbent by the required margin. The validator later combines
+eligible credit into a weight vector and publishes it on-chain.
 
 ```text
-proposal -> one complete audited PASS -> settlement crown -> reward claim -> confirmed weights
+proposal -> one complete audited PASS -> reward comparison -> credit -> confirmed weights
 ```
 
 [Read how miner rewards work in plain English →](incentives.md)
@@ -44,18 +44,31 @@ That sentence contains the whole discipline:
 
 ## Choose your path before writing code
 
-For a node arena, name one supported module or several disjoint modules in the
-served model. The bundle replaces each module's `forward`, accepts its stock
-arguments and returns its result structure. Use an enclosing module when the
-optimization crosses internal calls. Scheduler policy and unrelated serving
-configuration remain outside the contribution.
+A bundle changes exactly one of two targets. Kernels and the cache are separate
+submissions.
+
+- **Model kernels (`forward_pass`).** Name one supported module or several
+  disjoint modules in the served model. The bundle replaces each module's
+  `forward`, accepts its stock arguments and returns its result structure. Use an
+  enclosing module when the optimization crosses internal calls.
+- **Prefix cache (`prefix_cache`).** Name `tree_cache`, the scheduler's prefix
+  cache. The factory `entry(cache)` returns a subclass of the runtime cache's type.
+  The candidate runs the incumbent kernels with your cache against the incumbent
+  kernels with the incumbent cache (stock SGLang's until a cache is commissioned),
+  and the validator checks the bytes behind every served prefix on both arms. The
+  cache runs outside CUDA graphs. It applies only to arenas that serve with prefix
+  caching; the Qwen development configuration disables it. See
+  [the prefix cache](slots.md#the-prefix-cache).
+
+Batching, sampling and unrelated serving configuration remain outside the
+contribution.
 
 ## The three identities to keep separate
 
-The **arena** identifies the commissioned model/runtime and workload. A **node
-address** identifies an execution boundary such as `model.layers.*.mlp`. The
-registered **target** admits the bundle's declared node addresses and ties them
-to evaluation and reward policy.
+The **arena** identifies the commissioned model/runtime and workload. A **slot**
+identifies an execution boundary: a node address such as `model.layers.*.mlp`, or
+`tree_cache`. The registered **target** admits the bundle's declared slots and ties
+them to evaluation and reward policy.
 
 ```toml
 [competition]
@@ -65,11 +78,9 @@ arena = "<published-arena-id>"
 ```
 
 The manifest requests an existing target; it does not grant new authority. See
-[Slots and targets](slots.md) and [Kernel ABI](kernel-abi.md). Retained catalog
-examples follow their old `SlotSpec` contracts; their signatures are not node
-interfaces.
+[Slots and targets](slots.md) and [Kernel ABI](kernel-abi.md).
 
-For node bundles, `verify` is scanning plus import/signature smoke. Use
+`verify` is scanning plus import/signature smoke. Use
 [`check` in the published image](your-first-kernel.md#6-move-to-the-matching-gpu-environment)
 for the live model binder, audit and captured execution.
 
@@ -80,8 +91,8 @@ Cacheon keeps two objects distinct, and keeps both away from serving:
 1. A **proposal** is the source archive you publish and commit on-chain. It is
    untrusted input, not an engine dependency.
 2. A **crown** is a fully qualified marginal win for one registered
-   target in one evaluation stack. It can receive standing reward under the
-   active emissions policy.
+   target in one evaluation stack. It is measurement evidence; reward credit
+   comes from the PASS's reward comparison, and a crown is not required for it.
 
 Nothing after a crown is automatic. Integrating crowned source into maintained code and
 any release are maintainer decisions outside this repository; a crown is not permission to
@@ -95,25 +106,32 @@ before working on an advanced target.
 
 For a registered target, the validator constructs an exact marginal comparison:
 
-- **B**: the opening read from the exact incumbent on the baseline lane;
-- **C**: the read from the one-target-transition candidate on the disjoint
-  candidate lane;
-- **B′**: a mandatory second incumbent read, the quality gate's stock-drift
-  control;
+- **B**: the exact incumbent, replaying the sealed agent workload on one lane;
+- **C**: the one-target-transition candidate, replaying the same workload
+  concurrently on the disjoint lane;
 - **A**: a registered eager, untimed audit role for the candidate delta; and
 - **T**: a candidate-free pristine reference used after candidate teardown.
 
-The candidate does not choose the rest of the stack. The validator materializes
-the exact incumbent and candidate engines on the two-process substrate and
-serializes timed work.
-Bookending detects drift, A supplies the
-registered sampled slot regrade, and T prevents “fast because behavior changed”
-from becoming a win. Static, build, ABI, graph, and abbreviated-serving checks
-are admission screens only; they cannot crown a proposal.
+The candidate does not choose the rest of the stack. The validator boots the
+exact incumbent and candidate engines as separate processes on two lanes and
+replays the sealed workload through both in paired windows. The windows are split
+between two lane orientations: after the first half, the lanes swap and both
+engines boot fresh, so a stable lane factor cancels. Costs pool within each
+orientation, and the score is the geometric mean of the two pooled
+elapsed-work ratios against the incumbent. The candidate passes only when the
+statistical lower bound on that gain exceeds one and service attainment holds;
+the last sealed window always yields PASS or FAIL. An arena may seal a futility
+margin (the GLM arena seals 1.5%): a first orientation that reads more than that
+much slower fails without running the second. There is no separate admission
+screen.
 
-One complete audited PASS qualifies a promoted proposal for settlement.
-The crown records the accepted qualification speedup. After the complete audited attempt,
-the durable intake state is `qualified`; settlement and confirmed weights remain separate.
+After a speed PASS the incumbent generates the quality gate's stock-drift
+controls, A supplies the registered sampled slot regrade, and T prevents “fast
+because behavior changed” from becoming a win.
+
+One complete audited PASS qualifies a proposal for settlement; no reproduction
+run is scheduled. After the complete audited attempt, the durable intake state is
+`qualified`; settlement and confirmed weights remain separate.
 
 The evaluation design and evidence objects live in
 [qualification.py](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py),
@@ -134,8 +152,10 @@ python -m cacheon.cli scan my_bundle
 python -m cacheon.cli verify my_bundle
 ```
 
-These commands find manifest, static-policy, ABI, correctness, routing, and graph
-problems. Profile and bracket serving performance in an environment matching the
+`scan` finds manifest and static-policy problems; `verify` adds variant
+registration, import and entry-signature checks. Neither runs candidate math.
+`cacheon check` in the published arena image runs the audit against stock and a
+graphs-on engine. Profile serving performance in an environment matching the
 published arena contract. Neither the CLI checks nor a contributor-controlled A/B run
 reproduces crown authority: local work does not possess the finalized intake record,
 validator stack manifest, hidden inputs, calibrated policies, immutable publications,
@@ -151,14 +171,13 @@ Use the technical guide in this order:
 6. [Submitting](submitting.md) — copy-paste chain-submit sequence, including eval-cost
 7. [Diagnostics](diagnostics.md)
 
-Read [Override points](override-points.md) only when the registered target requires one.
-
 At the end of the sequence you should be able to answer, with concrete identities:
 
-1. Which arena, stack generation, target, model, architecture, topology, phase, and dtype
+1. Which arena, stack generation, target, model, architecture, topology, and dtype
    does the proposal address?
 2. Which exact files and capability domain form the selected delta?
-3. Which verifier shapes and graph replays exercised every applicable variant?
+3. Which `check` audit windows and captured executions covered every claimed
+   address and rank?
 4. Why can this slot-level mechanism move end-to-end critical-path time?
 5. Which local result is diagnostic, and which operator receipt is the last
    authoritative state?
