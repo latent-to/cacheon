@@ -80,8 +80,9 @@ for the same or overlapping work. V1 credit includes every distinct retained
 qualified contribution that beats the best earlier rewarded PASS in its reward
 group by the margin, including one that does not become the crown. A reward group
 is one arena and one incumbent stack, so kernel and cache PASSes against the same
-baseline compete with each other. Bundles committed before a baseline's first crown
-still run against it; later ones are returned until a new baseline is commissioned.
+baseline compete with each other. After a crown, new bundles remain admissible
+within the [baseline window](diagnostics.md#baseline-admission-closed): about 48 hours
+after replacement or five newer crowns, whichever comes first.
 
 The speedup used for settlement is the paired replay's point estimate:
 
@@ -165,8 +166,8 @@ V1 is relative rather than fixed:
    at least 1.5% (V17). An unpaid result does not raise the next miner's hurdle.
    Historical policies retain their minimum-margin rule. Finalized queue order determines precedence; completion order does not.
 2. The claim's starting credit uses its settled speedup divided by that
-   best preceding speedup. The first PASS uses a denominator of one. After a baseline's first crown,
-   later commitments are [returned unevaluated](diagnostics.md#baseline-admission-closed), fee preserved.
+   best preceding speedup. The first PASS uses a denominator of one. A crown does
+   not reset that reward hurdle; admission has its separate baseline window.
 3. New credit starts decaying after its first qualifying confirmed weight
    publication. Finalized submission time determines the waiting bonus and
    applicable arena terms. Retained historical decay clocks stay unchanged.

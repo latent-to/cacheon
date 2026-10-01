@@ -36,7 +36,8 @@ flowchart TD
     B --> C["Registered arena and target resolution"]
     C --> D["Qualification queue<br/>admission at first claim"]
     D -->|"copy of a loser"| F["Terminal invalid or attributable failure"]
-    D -->|"post-crown commitment"| X["Returned unevaluated<br/>NO_DECISION, payment released"]
+    D -->|"closed target"| X["Returned unevaluated<br/>NO_DECISION, payment released"]
+    D -->|"baseline window closed"| X
     D -->|"claimed cohort"| Q["Paired replay speed<br/>audit, then pristine T"]
     Q -->|"FAIL"| F
     Q -->|"NO_DECISION"| N["NO_DECISION / retry"]
@@ -110,12 +111,13 @@ Admission runs when a queued row is first claimed, before any lease exists:
 - an exact copy of bytes that already lost under this arena inherits that `FAIL`; a
   `PASS` is never replayed;
 - a reservation for a target the commissioned arena cannot measure is released as
-  target-unavailable without a verdict; and
-- a commitment after the first crown on the commissioned baseline is rejected as
-  `baseline_closed_at_submission`.
+  target-unavailable without a verdict;
+- a commitment outside the [baseline window](../miner-guide/diagnostics.md#baseline-admission-closed)
+  is returned as `NO_DECISION`, preserving its payment or credit.
 
-The first claim stamps the arena service identity the row is measured under, and a row
-claimed once never meets a second admission cutoff. Infrastructure errors release the
+The first claim stamps the arena service identity the row is measured under.
+Admission uses the commitment block, so waiting in the queue does not age out a
+timely submission. Infrastructure errors release the
 lease without consuming a qualification attempt; three consecutive infrastructure
 releases hold the row instead of converting it into a loss.
 
@@ -258,11 +260,11 @@ verdict. The references may live under the same content-addressed store root. It
   result beats the composed improvement to the current tip;
 - the requested stack update matches the measured candidate.
 
-The submission cutoff is enforced during admission before the first qualification claim:
-commitments after the first crown on that commissioned baseline are rejected as
-`baseline_closed_at_submission`. Commitments in the finalized crown block or earlier
-can drain, including delayed fetches. A new commission has its own admission window.
-Settlement never repeats this arrival-time check.
+Commitments after a crown remain admissible within the baseline window: 14,400
+finalized blocks after its first replacement (about 48 hours) or until five newer
+crowns, whichever is earlier. Qualification uses the operator's commissioned
+baseline until an explicit commission changes it. Settlement applies the ancestor
+comparison above without repeating admission.
 
 The planner leases one cohort whose rows share qualification authority and incumbent
 state. Incomparable or insufficient ancestor results are held, and one registered winner is selected across

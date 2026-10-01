@@ -73,11 +73,12 @@ The candidate stack is built by the validator. It equals the incumbent stack exc
 
 The measurement incumbent is pinned by the operator's commission. Settlement can
 record a new crown while qualification continues against that same baseline;
-changing the measured incumbent requires an explicit operator commission. The first
-crown on a commissioned baseline closes admission to later commitments against
-that baseline. Admission checks finalized commitment blocks before the first
-qualification claim; accepted work keeps its baseline and is not checked against
-the cutoff again at settlement.
+changing the measured incumbent requires an explicit operator commission. After
+the first crown replaces it, that baseline stays open for 14,400 finalized blocks
+(about 48 hours at 12 seconds per block) or until five newer crowns exist,
+whichever is earlier. An unbeaten baseline stays open. Admission compares the
+commitment block, not evaluation time. An ancestor-based result must still beat
+the composed improvement to the current lineage tip to become the crown.
 
 This is the core composability property: later work can be evaluated on top of earlier wins without copying earlier contributors' artifacts and without collapsing attribution into winner-take-all engine ownership.
 

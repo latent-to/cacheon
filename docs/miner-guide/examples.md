@@ -24,6 +24,11 @@ measured check times and routing lines. It does not change the qualification wor
 
 ## GLM baseline
 
+The [October 1 GLM baseline source release](https://github.com/latent-to/cacheon/releases/tag/glm-baseline-20261001)
+contains the crowned bundle used by the operator's new commission, with its content
+hash and archive checksum. Start from those sources for the `glm53-b300-node-v1`
+arena, then follow [Submitting](submitting.md) with your own checked improvements.
+
 The [GLM champion node bundle](https://github.com/latent-to/cacheon/tree/main/bundles/glm53_champion_nodes)
 packages the four retained GLM implementations behind decoder-layer and final-norm
 nodes. Its README specifies the B300 topology and checker inputs; its provenance
