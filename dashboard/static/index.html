@@ -370,6 +370,16 @@ async function viewOverview() {
     </div>`;
 }
 
+function evalFee(s, detailed = false) {
+  if (s.payment) return detailed
+    ? `<a href="${esc(s.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(s.payment.ref)}</a> · ${fmtTime(s.payment)}`
+    : '<span class="pill ok">fee paid</span>';
+  if (s.fee_credit) return detailed
+    ? `Covered by evaluation credit (${esc(s.fee_credit.amount_tao)} τ)`
+    : '<span class="pill ok">fee covered by credit</span>';
+  return detailed ? "unpaid / pre-fee" : '<span class="pill mute">unpaid</span>';
+}
+
 async function viewQueue() {
   const q = await api("/api/queue");
   const active = (q.active_leases || []).map((l) => `<tr>
@@ -387,7 +397,7 @@ async function viewQueue() {
     <td>${esc(s.target_id || "—")}<div class="small"><span class="pill info">${esc(s.competition)}</span></div></td>
     <td>${key(s.hotkey, s.hotkey_links)}</td>
     <td>${fmtTime(s.submitted)}<div class="muted small">waiting ${dur(s.waiting_seconds)}</div></td>
-    <td>${s.payment ? '<span class="pill ok">fee paid</span>' : '<span class="pill mute">unpaid</span>'}</td>
+    <td>${evalFee(s)}</td>
     <td class="small muted">${esc(short(s.reason, 46))}</td></tr>`);
   const gpu = (q.gpu_requests || []).map((r) => `<tr>
     <td><code>${esc(r.request_id)}</code></td>
@@ -441,7 +451,7 @@ async function viewSubmissions() {
     <td>${baselineSummary(s.baseline)}</td>
     <td>${s.payment
         ? `<a href="${esc(s.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(s.payment.ref)}</a>`
-        : '<span class="muted">—</span>'}</td>
+        : evalFee(s)}</td>
   </tr>`);
   const statuses = ["", "published", "qualifying", "reproduction_pending", "held",
     "qualified", "failed", "expired", "reserved", "deferred"];
@@ -462,7 +472,7 @@ async function viewSubmissions() {
       <button class="btn" ${subFilters.offset + 50 < d.total ? "" : "disabled"}
         onclick="subFilters.offset+=50;refresh();">Next ›</button>
     </div>
-    ${table(["Reservation","Status","Hotkey","Submitted","Target","Result","Reward","Baseline","Fee tx"],
+    ${table(["Reservation","Status","Hotkey","Submitted","Target","Result","Reward","Baseline","Eval fee"],
       rows, "No submissions match.")}`;
 }
 
@@ -840,9 +850,7 @@ window.openDetail = async (rid) => {
       ${d.tokens_per_second != null ? kv("Measured candidate", measuredValue(d.tokens_per_second)) : ""}
       ${kv("Submission source", sourceLink)}
       ${kv("Content hash", `<code class="small">${esc(short(d.content_hash, 26))}</code>`)}
-      ${kv("Eval fee", d.payment
-          ? `<a href="${esc(d.payment.links.tao_app)}" target="_blank" rel="noopener">${esc(d.payment.ref)}</a> · ${fmtTime(d.payment)}`
-          : "unpaid / pre-fee")}
+      ${kv("Eval fee", evalFee(d, true))}
       ${kv("Qualification lane", esc(d.screen_lane || "—"))}
       ${kv("Transport attempts", d.transport_attempts)}
       ${kv("Competition", d.competition)}

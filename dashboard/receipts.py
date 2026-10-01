@@ -1,10 +1,20 @@
-"""Dashboard link from an operator-recorded payment recovery to its live evaluation."""
+"""Read retained fee credits and operator-recorded evaluation recovery links."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 from typing import Any
+
+
+def evaluation_credit(con: sqlite3.Connection, submission: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the credit spent on this submission, not the hotkey's available balance."""
+    row = con.execute(
+        "SELECT credit_id, amount_tao_rao, spent_block FROM eval_cost_credits "
+        "WHERE reservation_id=? AND hotkey=? AND spent_block>0",
+        (submission["reservation_id"], submission["hotkey"]),
+    ).fetchone()
+    return {"credit_id": row[0], "amount_tao": row[1] / 1e9, "spent_block": row[2]} if row else None
 
 
 def evaluation_recovery(con: sqlite3.Connection, submission: dict[str, Any]) -> dict[str, Any] | None:
@@ -41,4 +51,4 @@ def evaluation_recovery(con: sqlite3.Connection, submission: dict[str, Any]) -> 
     return recovery
 
 
-__all__ = ["evaluation_recovery"]
+__all__ = ["evaluation_credit", "evaluation_recovery"]

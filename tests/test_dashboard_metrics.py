@@ -102,7 +102,10 @@ def test_rotated_evidence_and_target_selection_preserve_historical_reads(tmp_pat
 
 
 def _dashboard_db(path, reference, root, target):
+    from cacheon.chain.eval_cost_credit import EVAL_COST_CREDITS_DDL
+
     con = sqlite3.connect(path)
+    con.executescript(EVAL_COST_CREDITS_DDL)
     con.executescript("""
         CREATE TABLE metadata(key TEXT);
         CREATE TABLE reservations(reservation_id TEXT, status TEXT, decision TEXT,
@@ -528,10 +531,13 @@ def test_lost_potential_notice_waits_for_finalized_reward_comparison(eligible):
 def test_baseline_cutoff_notice_confirms_credit_only_for_no_charge_disposal(decision):
     from dashboard.app import submission_row
     from cacheon.chain.miner_feedback import _guidance
+    from cacheon.chain.eval_cost_credit import EVAL_COST_CREDITS_DDL
 
-    row = submission_row(dict(reservation_id="late", status="expired", decision=decision,
-        reason="baseline_closed_at_submission", hotkey="miner", content_hash="bundle",
-        block=9009700, event_index=0, admission_epoch=1))
+    with sqlite3.connect(":memory:") as con:
+        con.executescript(EVAL_COST_CREDITS_DDL)
+        row = submission_row(dict(reservation_id="late", status="expired", decision=decision,
+            reason="baseline_closed_at_submission", hotkey="miner", content_hash="bundle",
+            block=9009700, event_index=0, admission_epoch=1), con)
     notice = row["admission_notice"]
     if decision == "NO_DECISION":
         assert notice == _guidance("baseline_closed_at_submission")
