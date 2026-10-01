@@ -33,23 +33,26 @@ def test_chat_input_ids_use_the_tokenizer_ids_not_its_mapping_keys():
     assert all(type(token) is int for token in ids)
 
 
-def _inputs(tmp_path):
-    session = _session(1, k=1, inner=1)
+def _inputs(tmp_path, turns=(('main', 0, ''), ('inner', 1, '::sub:000'))):
+    """One request per (kind, round, conversation suffix), sent by the client in the order listed."""
+    session = _session(1, k=sum(kind == 'main' for kind, _, _ in turns),
+                       inner=sum(kind == 'inner' for kind, _, _ in turns))
     manifest = _write_slice(tmp_path, [session])
     plan = AgentReplayPlan(manifest, (1,), Path('/bin/aiperf'), Path('/model'), tmp_path / 'out',
                            ServiceContract(20, 2, .8), 'candidate', 1, 'second')
     export = plan.output_directory / 'aiperf'
     export.mkdir(parents=True)
     rows, stamps, metadata = {}, {}, []
-    for i, kind in enumerate(('main', 'inner')):
+    for i, (kind, round_, suffix) in enumerate(turns):
         request_id = f'{i + 1:032x}'
-        stamps[request_id] = 1_000_000_000 + i * 1_000_000_000
+        stamps[request_id] = 1_000_000_000 + round_ * 1_000_000_000
         rows[request_id] = BatchExecutionEvidence(
-            i, request_id, 'a' * 32, 1.1 + i, 1.5 + i, 4,
-            BatchEvidence((PromptEvidence((1, 2, 3, 4), ((),) * 4, 64),)), (), ((.1, .39),),
+            i, request_id, 'a' * 32, 1.1 + round_, 1.5 + round_, 4,
+            BatchEvidence((PromptEvidence((1, 2, 3, 4), ((),) * 4, 64 + len(suffix)),)), (), ((.1, .39),),
         )
         metadata.append({'metadata': {
             'x_request_id': request_id, 'source_trace_id': session['id'],
+            'conversation_id': session['id'] + suffix, 'turn_index': 0,
             'source_inner_idx': None if kind == 'main' else 0,
             # Main nonextending requests also carry weka_flat: source_kind is
             # not the distinction between a root turn and a child request.
@@ -77,6 +80,14 @@ def test_join_keeps_source_kind_clock_and_exact_work(tmp_path):
     # The first round is the untimed cold prefill; the warm inner turn is 0.5 s from its release.
     assert summary['turns'] == 1 and summary['elapsed_s'] == 0.5
     assert len((plan.output_directory / 'turns.jsonl').read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize('sent', [('::aux:001', '::fa:000'), ('::fa:000', '::aux:001')])
+def test_two_conversations_of_one_root_keep_their_ordinals_whichever_the_client_sends_first(tmp_path, sent):
+    # 2026-10-01, off-chain request 959338a5: one lane's client sent the forked conversation 1 ms
+    # before the auxiliary one, the other lane's after; send-time ordinals made that different work.
+    plan, bridge, _ = _inputs(tmp_path, (('main', 0, ''), ('main', 1, sent[0]), ('main', 1, sent[1])))
+    assert {r.ordinal: r.prompt_tokens for r in collect_read(plan, bridge).records} == {0: 64, 1: 73, 2: 72}
 
 
 @pytest.mark.parametrize('fault', ['duplicate', 'missing', 'wrong-root', 'credit-clock'])

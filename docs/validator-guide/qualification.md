@@ -525,10 +525,10 @@ sticky DP ranks, fixed at each session's first turn in release order, through th
 The slice loader verifies the named files in sealed order. A per-load directory
 contains only the first `load` files. Output budgets come from those traces;
 context overflow or an incomplete export fails the read. The client preserves
-`X-Request-ID`; the collector joins it to source trace and child coordinates,
-then requires the exact main/inner turn counts for every root. All scoring
-timestamps use host nanoseconds in the same epoch clock domain, with the
-monotonic-to-epoch anchor retained in `clock.json`.
+`X-Request-ID`; the collector joins it to source trace and child coordinates, numbers each root's
+turns by release round and conversation coordinate (never by client send time), then requires the
+exact main/inner turn counts for every root. All scoring timestamps use host nanoseconds in the
+same epoch clock domain, with the monotonic-to-epoch anchor retained in `clock.json`.
 
 Each engine stays loaded across the windows of its orientation. Before each load, the controller
 requires an acknowledged SGLang cache flush covering device radix state and

@@ -342,11 +342,17 @@ class ReplayBridge:
 
 
 def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
-    """Join client credits and source coordinates to host-observed pipe evidence."""
+    """Join client credits and source coordinates to host-observed pipe evidence.
+
+    Ordinals follow the round and the client's conversation coordinate, not its send time: two
+    conversations of one root leave 1 ms apart in either order, which swapped ordinals on one lane
+    and voided a complete read as different work (2026-10-01, off-chain request 959338a5).
+    """
     records, seen, ordinals = [], set(), defaultdict(int)
     metadata = [json.loads(line)["metadata"] for line in
                 (plan.output_directory / "aiperf" / "profile_export.jsonl").read_text().splitlines()]
-    for meta in sorted(metadata, key=lambda r: r["request_start_ns"]):
+    for meta in sorted(metadata, key=lambda r: (bridge.stamps.get(r["x_request_id"], 0),
+                                                r["conversation_id"], r["turn_index"])):
         external_id = meta["x_request_id"]
         if external_id in seen or external_id not in bridge.rows:
             raise ServiceEvidenceError("AIPerf/bridge request join is not one-to-one")
