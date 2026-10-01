@@ -27,7 +27,7 @@ cacheon/eval/qualification_runner.py 2596
 cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1205
 cacheon/settlement.py 1064
-dashboard/app.py 971
+dashboard/app.py 963
 tests/test_chain_intake.py 1851
 tests/test_device_state.py 1001
 tests/test_engine_tree.py 1063

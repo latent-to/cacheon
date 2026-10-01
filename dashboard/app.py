@@ -40,7 +40,7 @@ from dashboard.winners import (
     measured_baseline,
     prefill_summary,
     settlement_hold_notice, settlement_label,
-    reward_exclusion_notice,
+    reward_bars, reward_exclusion_notice,
     live_offer_shares, winner_reward,
 )
 
@@ -491,18 +491,10 @@ def submissions(
         LIMIT ? OFFSET ?
     """, (*args, limit, offset))
     shaped = [submission_row(r) for r in data]
-    lineage_tables = con.execute(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN "
-        "('target_lineage_tips','target_lineage_nodes')"
-    ).fetchone()[0] == 2
+    bars = reward_bars(con)
     for item in shaped:
         item["evaluation_recovery"] = evaluation_recovery(con, item)
-        item["baseline"] = submission_baseline(
-            con,
-            item["reservation_id"],
-            item["target_id"],
-            lineage_tables_available=lineage_tables,
-        )
+        item["baseline"] = submission_baseline(con, item["reservation_id"], item["target_id"], bars=bars)
     con.close()
     return {
         "total": total, "limit": limit, "offset": offset,
@@ -555,7 +547,7 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
         }
         from dashboard.winners import submission_reward_comparison
         detail["settlement"].update(submission_reward_comparison(con, rid))
-    detail["reward_notice"] = reward_exclusion_notice(r["hotkey"], OFFER_PATH)
+    detail["reward_notice"] = reward_exclusion_notice(r["hotkey"], OFFER_PATH, rid)
     detail["hold_notice"] = settlement_hold_notice(con, rid, detail.get("settlement", {}))
     detail["baseline"] = submission_baseline(con, rid, detail["target_id"])
     measured_attempts = [a for a in detail["qualification_attempts"] if a["decision"] == "PASS"] or detail["qualification_attempts"]

@@ -43,7 +43,7 @@
 "tests/test_crossover_runtime.py": 24,
 "tests/test_cuda_ext_cache.py": 65,
 "tests/test_cuda_source_scan.py": 32,
-"tests/test_dashboard_baseline.py": 20,
+"tests/test_dashboard_baseline.py": 19,
 "tests/test_dashboard_disclosure.py": 29,
 "tests/test_dashboard_enrichment.py": 13,
 "tests/test_dashboard_forensics.py": 9,

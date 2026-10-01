@@ -266,23 +266,14 @@ const pill = (s) => `<span class="pill ${STATUS_TONE[s] || "mute"}">${esc(s || "
 function baselineSummary(b) {
   if (!b || (!b.evaluated && !b.assigned))
     return '<span class="pill mute">not assigned</span>';
-  const labels = {
-    current_tip: ["current tip", "ok"],
-    ancestor: ["ancestor", "warn"],
-    outside_active_lineage: ["side branch", "bad"],
-    no_active_tip: ["no active tip", "mute"],
-  };
-  const [label, tone] = labels[b.relationship] || [b.relationship || "unknown", "mute"];
   const artifact = b.artifact_digest
     ? `<code title="${esc(b.artifact_digest)}">${esc(short(b.artifact_digest, 10))}</code>`
     : '<code>base engine</code>';
-  const threshold = b.relationship === "ancestor" && b.threshold_speedup != null
-    ? `<div class="muted small">must beat ${Number(b.threshold_speedup).toFixed(6)}×</div>`
-    : "";
   const queued = b.assigned && !b.evaluated
     ? '<span class="pill info">assigned baseline</span> '
     : "";
-  return `${queued}<span class="pill ${tone}">${esc(label)}</span><div class="small">${artifact}</div>${threshold}`;
+  return `${queued}<div class="small">${artifact}</div><div class="muted small">${b.reward_bar
+    ? "best result so far " + metricGain(b.reward_bar.speedup) : "no PASS on it yet"}</div>`;
 }
 
 function recoveryLink(recovery) {
@@ -365,7 +356,7 @@ async function viewOverview() {
       <b style="color:var(--fg)">Eval running now:</b>
       ${pill(lease.stage)} <code>${esc(short(lease.reservation_id, 12))}</code>
       on <b>${esc(lease.target_id || "—")}</b> (${esc(lease.target_summary)}) ·
-      running ${dur(lease.running_seconds)} · lease expires in ${dur(lease.remaining_seconds)}
+      running ${dur(lease.running_seconds)} · ${lease.remaining_seconds < 0 ? "lease expired, awaiting recovery" : "lease renews while it runs"}
     </div>` : `<div class="callout">No evaluation lease active right now.</div>`}
     <h2>Submissions per day (UTC)</h2>
     <div class="spark">${spark || '<span class="muted">no data yet</span>'}</div>
@@ -387,7 +378,7 @@ async function viewQueue() {
     <td>${esc(l.target_id || "—")}<div class="muted small">${esc(l.target_summary)}</div></td>
     <td>${key(l.hotkey, { tao_app: "https://www.tao.app/portfolio/" + l.hotkey })}</td>
     <td>${fmtTime(l.claimed)}<div class="muted small">running ${dur(l.running_seconds)}</div></td>
-    <td>${l.remaining_blocks ?? "—"} blk<div class="muted small">≈ ${dur(l.remaining_seconds)}</div></td>
+    <td>${l.remaining_blocks < 0 ? '<span class="pill warn">expired</span>' : `${l.remaining_blocks ?? "—"} blk`}<div class="muted small">${l.remaining_blocks < 0 ? "awaiting recovery" : "renews while it runs"}</div></td>
     <td>gen ${l.generation} ${pill(l.reservation_status)}</td></tr>`);
   const pending = (q.pending || []).map((s) => `<tr class="clickable" onclick="openDetail('${s.reservation_id}')">
     <td>${s.queue_position}</td>
@@ -396,7 +387,7 @@ async function viewQueue() {
     <td>${esc(s.target_id || "—")}<div class="small"><span class="pill info">${esc(s.competition)}</span></div></td>
     <td>${key(s.hotkey, s.hotkey_links)}</td>
     <td>${fmtTime(s.submitted)}<div class="muted small">waiting ${dur(s.waiting_seconds)}</div></td>
-    <td>${s.payment ? '<span class="pill ok">1 τ paid</span>' : '<span class="pill mute">unpaid</span>'}</td>
+    <td>${s.payment ? '<span class="pill ok">fee paid</span>' : '<span class="pill mute">unpaid</span>'}</td>
     <td class="small muted">${esc(short(s.reason, 46))}</td></tr>`);
   const gpu = (q.gpu_requests || []).map((r) => `<tr>
     <td><code>${esc(r.request_id)}</code></td>
@@ -498,7 +489,7 @@ async function viewPayments() {
     <td>${c.spent ? '<span class="pill mute">spent</span>' : '<span class="pill ok">available</span>'}</td>
     <td class="small muted">${esc(c.note || "—")}</td></tr>`);
   return `
-    <div class="callout">Each admitted submission costs <b style="color:var(--fg)">1 τ</b>, paid by the miner's
+    <div class="callout">Each admitted submission costs <b style="color:var(--fg)">${Number(d.eval_cost_tao)} τ</b>, paid by the miner's
       coldkey to the subnet owner ${d.destination_coldkey
         ? key(d.destination_coldkey, d.destination_links, 12) : ""} via
       <code>Balances.transfer_keep_alive</code> + remark in a <code>Utility.batch_all</code>.
@@ -762,27 +753,25 @@ window.openDetail = async (rid) => {
         ${kv("Measured baseline", measuredValue(baselineTps, (d.baseline_measurements || {}).baseline_mean_warm_latency_s, (d.baseline_measurements || {}).baseline_replay_turns_per_second))}
         ${kv("Baseline submission", baseline.reservation_id ? submissionLink(baseline.reservation_id)
           : baseline.evaluated || baseline.assigned
-            ? (baseline.artifact_digest ? "Submission not recorded" : "Base engine — no submission")
+            ? (baseline.artifact_digest ? "Sealed by the validator — no submission link retained" : "Base engine — no submission")
             : "Not assigned yet")}
-        ${kv("Relationship", baselineSummary(baseline))}
+        ${kv("To earn on this baseline", baseline.reward_bar
+          ? baseline.reward_bar.reservation_id === d.reservation_id ? `This is the best retained PASS on this baseline, ${metricGain(baseline.reward_bar.speedup)}.`
+          : `Beat the best retained PASS, ${metricGain(baseline.reward_bar.speedup)} by ${submissionLink(baseline.reward_bar.reservation_id)}, by the reward margin (1.5% for replay evaluations).`
+          : baseline.evaluated || baseline.assigned ? "No PASS is retained on this baseline yet: the first complete PASS earns." : "—")}
         ${kv(baseline.evaluated ? "Evaluated artifact" : "Assigned artifact",
           baseline.evaluated || baseline.assigned
           ? (baseline.artifact_digest
               ? `<code>${esc(baseline.artifact_digest)}</code>`
               : "<code>base engine</code>")
           : '<span class="muted">Not assigned yet</span>')}
-        ${kv("Current tip", baseline.current_tip_artifact_digest
-          ? `<code>${esc(baseline.current_tip_artifact_digest)}</code>`
-          : "—")}
-        ${kv("Winning threshold", baseline.relationship === "ancestor" && baseline.threshold_speedup != null
-          ? `>${Number(baseline.threshold_speedup).toFixed(9)}× from this ancestor`
-          : baseline.relationship === "current_tip" ? "ordinary marginal threshold" : "—")}
         ${kv("Stack", baseline.stack_digest ? `<code>${esc(baseline.stack_digest)}</code>` : "—")}
         ${kv("Tree", baseline.tree_digest ? `<code>${esc(baseline.tree_digest)}</code>` : "—")}
         ${kv("Arena", baseline.arena_digest ? `<code>${esc(baseline.arena_digest)}</code>` : "—")}
       </dl>
     </div>`;
   const performance = (d.qualification_attempts || []).map(performanceMetrics).join("");
+  const stopCause = (d.qualification_attempts || []).at(-1)?.speed?.grading?.detail;
   const leases = (d.leases || []).map((l) =>
     `<tr><td>${pill(l.stage)}</td><td>${pill(l.state)}</td><td>${fmtTime(l.claimed)}</td>
      <td class="small muted">${esc(short(l.reason, 40))}</td></tr>`);
@@ -832,7 +821,7 @@ window.openDetail = async (rid) => {
     </div>` : ""}
     <dl class="kv">
       ${kv("Status", pill(d.status) + (d.decision ? " " + pill(d.decision) : ""))}
-      ${kv("Reason", esc(d.reason || d.invalid_reason || "—") + recoveryLink(d.evaluation_recovery))}
+      ${kv("Reason", esc(d.reason || d.invalid_reason || "—") + (d.decision === "FAIL" && stopCause ? `<div class="muted small">${esc(stopCause)}</div>` : "") + recoveryLink(d.evaluation_recovery))}
       ${d.admission_notice ? kv("Admission", esc(d.admission_notice.cause + " " + d.admission_notice.next_step)) : ""}
       ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
       ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}

@@ -6,7 +6,7 @@
 bundles 2985
 cacheon 90340
 cacheon_kernels 936
-dashboard 3809
+dashboard 3730
 docs 12499
 examples 535
 scripts 1894

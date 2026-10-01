@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from statistics import geometric_mean
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -61,6 +62,26 @@ def reward_comparison_summary(comparison: dict) -> dict:
 def submission_reward_comparison(con, reservation_id: str) -> dict:
     """Use the same ordered comparison as the weight producer for submission details."""
     return reward_comparison_summary(reward_comparisons(con).get(reservation_id, {}))
+
+
+def reward_bars(con) -> dict[tuple[str, str], dict[str, Any]]:
+    """Best paid PASS per (arena, baseline stack): what a later PASS on that baseline must beat.
+
+    On 2026-10-01 every GLM row read "must beat 1.048008x": the crown lineage of an operator-excluded
+    result. Lineage adoption has not decided pay since previous-paid-winner scoring replaced it.
+    """
+    bars: dict[tuple[str, str], dict[str, Any]] = {}
+    comparisons = reward_comparisons(con)
+    for row in con.execute("SELECT reservation_id, candidate_json FROM settlement_candidates"):
+        comparison = comparisons.get(row["reservation_id"])
+        if not comparison or not comparison["reward_eligible"]:
+            continue
+        primary = json.loads(row["candidate_json"])["primary"]
+        group = primary.get("arena_digest"), primary.get("incumbent_stack_digest")
+        score = float(comparison["previous_best_speedup"] * comparison["relative_speedup"])
+        if score > bars.get(group, {"speedup": 0.0})["speedup"]:
+            bars[group] = {"speedup": score, "reservation_id": row["reservation_id"]}
+    return bars
 
 
 def _lane_tokens_per_second(speed: object, role: str) -> Decimal | None:
@@ -277,17 +298,20 @@ def settlement_hold_notice(connection: Any, reservation_id: str,
             "event_sequence": sequence}
 
 
-def reward_exclusion_notice(hotkey: str, offer_path: object) -> dict[str, Any] | None:
-    """Report only operator exclusions referenced by the currently served offer."""
-    from pathlib import Path
-    from cacheon.stack_identity import canonical_digest
+def reward_exclusion_notice(hotkey: str, offer_path: object, reservation_id: str = "") -> dict[str, Any] | None:
+    """Report the operator decision the weight producer applies to this PASS or this hotkey.
 
+    ``CACHEON_DASH_EXCLUSIONS`` names the producer's own rule file. The served offer no longer carries
+    a digest this reader can recompute, so a hotkey record shows only while that offer pays it nothing.
+    """
     try:
-        rule = json.loads(Path("/root/cacheon-ops/weight-controls/20260908/exclusions.json").read_text())
+        rule = json.loads(Path(os.environ["CACHEON_DASH_EXCLUSIONS"]).read_text())
         projection = json.loads(Path(offer_path).read_text())["offer"]["projection"]
-        decision = canonical_digest("cacheon.operator.source-copy-exclusion.v1", rule)
-        if decision not in projection["evidence_digests"]:
-            return None
+        claim = next((r for r in rule.get("claims", ()) if r["reservation_id"] == reservation_id), None)
+        if claim is not None:
+            return {"title": "This PASS is priced at zero — operator decision", "message": claim["reason"],
+                    "reason": "operator_claim_exclusion", "evidence": "", "source_reservation": "",
+                    "decision_time": rule.get("created_at") or "", "offer_block": projection["effective_block"]}
         record = next((r for r in rule["records"] if r["hotkey"] == hotkey), None)
         if record is None or dict(projection["weights_ppm"]).get(hotkey, 0) > 0:
             return None

@@ -10,7 +10,11 @@ function replayPerformance(speed, title) {
   const grade = speed.grading;
   const fastest = speed.score_basis === "fastest_pass_latency";
   const gap = Math.max(0, (grade.required_speedup - speed.speedup) * 100);
-  const read = lane => `${lane.role === "B" ? "Incumbent" : "Candidate"} · pass ${metricNumber(lane.window, 0)}`;
+  // Both lane orientations number their passes from 1; on 2026-10-01 every row of a swapped run read "pass 1".
+  const swaps = {B: [], C: []};
+  for (const lane of speed.lanes) if (!swaps[lane.role].includes(lane.physical_lane)) swaps[lane.role].push(lane.physical_lane);
+  const read = lane => `${lane.role === "B" ? "Incumbent" : "Candidate"} · orientation ${swaps[lane.role].indexOf(lane.physical_lane) + 1} · pass ${metricNumber(lane.window, 0)}`;
+  const early = speed.window_limit > speed.windows;
   const rows = speed.lanes.map((lane) => `<tr>
     <td>${read(lane)} ${lane.used_for_score ? '<span class="pill info">scored</span>' : ''}</td>
     <td>${metricNumber(lane.warm_turns, 0)}</td><td>${metricNumber(fastest ? lane.mean_warm_latency_s : lane.elapsed_s, 3)}</td>
@@ -22,13 +26,14 @@ function replayPerformance(speed, title) {
   return `<section class="performance">${title}
     <h4>Agent replay speedup</h4>
     <p>This attempt replayed a fixed conversation workload at ${metricNumber(speed.load, 0)} concurrent sessions per lane,
-      with ${metricNumber(speed.windows, 0)} paired passes. The recorded workload determines the measurement, including for earlier submissions.</p>
+      with ${metricNumber(speed.windows, 0)} paired passes${early ? ` of a possible ${metricNumber(speed.window_limit, 0)}; it stopped early` : ""}. The recorded workload determines the measurement, including for earlier submissions.</p>
     <div class="cards">${card(metricGain(speed.speedup), "Scored improvement")}
-      ${card(metricGain(grade.required_speedup), "Required improvement")}
+      ${card(metricGain(grade.required_speedup), early ? `Bar at this look (${metricNumber(speed.windows, 0)} of ${metricNumber(speed.window_limit, 0)} passes)` : "Required improvement")}
       ${grade.lower_speedup == null ? '' : card(metricGain(grade.lower_speedup), "Lower gain bound (calibrated model)")}
-      ${card(metricNumber(gap, 2) + " pp", "Gap to speed threshold")}
+      ${card(metricNumber(gap, 2) + " pp", early ? "Gap to this look's bar" : "Gap to speed threshold")}
       ${card(metricNumber(speed.speed_stage_seconds / 60, 1) + " min", "Speed stage, including startup")}</div>
-    <p>${esc(grade.detail)}.</p>
+    <p>${esc(grade.detail)}.${early ? " The bar tightens as passes accumulate, so a complete run needs less than the bar shown for this look." : ""}
+      ${grade.futility_margin ? `A first orientation reading more than ${metricNumber(grade.futility_margin * 100, 2)}% slower than the incumbent ends the run early.` : ""}</p>
     <div class="metrics-table">${table(["Read", "Warm turns", fastest ? "Mean turn (s)" : "Elapsed serving (s)", ...(fastest ? [] : ["Turns/s"]), "Service attainment"], rows)}</div>
     <p class="metric-note">Timing starts at the first warm release; the opening cold-prefill round is excluded.
       ${fastest ? "The score divides the incumbent’s fastest complete-pass latency by the candidate’s fastest complete-pass latency. The scored passes are marked above."

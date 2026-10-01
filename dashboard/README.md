@@ -40,7 +40,7 @@ Once queue eligibility is finalized, qualifying winners appear normally on the
 next refresh; PASSes below the winning threshold do not enter retained rewards.
 Resolution uses the shared reward comparison from the weight producer: scoring
 gain is relative to the best earlier PASS in queue order within the same arena
-and measured baseline, including an earlier PASS that missed the reward margin.
+and measured baseline that itself earned.
 Later submissions never change an earlier submission's reference. Retained
 baseline measurements and PASS evidence are unchanged.
 Already finalized rewards retain their existing eligibility if earlier work is reopened.
@@ -80,6 +80,7 @@ separate from finalized `items` / `pass_total`. Waiting rows have
 | `MALLOC_ARENA_MAX` | `2` in `run.sh`; limits glibc allocator arenas for concurrent reads, trading allocator concurrency for lower retained memory. Direct Python launches must set it before starting Python. |
 | `CACHEON_DASH_OFFER` | `/var/lib/cacheon/current_weights.json` (the file the weight-offer service serves) |
 | `CACHEON_DASH_FOLLOW_JOURNAL` | unset; the follower journal SQLite named by the follow-weights lane's `--journal-db`. When unset the Timeline says so instead of showing a stale journal. |
+| `CACHEON_DASH_EXCLUSIONS` | unset; the `exclusions.json` the running weight producer applies. A submission named in its `claims`, or a hotkey in its `records` that the served offer pays nothing, shows the operator's recorded decision. When unset no decision is shown. |
 
 ## API
 
@@ -120,6 +121,9 @@ remain readable by intake and cannot be made confidential retroactively.
 The evaluation baseline card links to the submission recorded by the evaluated
 artifact's lineage transition, preserving the selected arena. A base-engine
 baseline has no submission; missing historical links are labelled explicitly.
+The card and the Submissions list also name the best retained PASS on that same
+arena and baseline stack: the result a later PASS must beat by the reward margin
+to earn. The crown lineage decides adoption, not pay, and is not shown.
 The previous-best scoring comparison also links to that submission's details.
 
 The submission detail renders the signed evaluation records in full. Each

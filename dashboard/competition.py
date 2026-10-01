@@ -1,6 +1,5 @@
 """Display the selected competition and its retained evaluation history."""
 
-from decimal import Decimal
 from functools import lru_cache
 import json
 from pathlib import Path
@@ -62,156 +61,64 @@ def _legacy_checkpoint_for_engine(engine: str) -> dict | None:
     return None
 
 
-def submission_baseline(
-    con: sqlite3.Connection,
-    reservation_id: str,
-    target_id: str,
-    *,
-    lineage_tables_available: bool | None = None,
-) -> dict[str, Any]:
-    """Describe the baseline used and its relationship to the active tip."""
+def submission_baseline(con: sqlite3.Connection, reservation_id: str, target_id: str, *, bars=None) -> dict[str, Any]:
+    """Describe the baseline a submission is measured on and the best retained result on it."""
+    from dashboard.winners import reward_bars
 
     candidate = con.execute(
-        "SELECT candidate_json FROM settlement_candidates "
-        "WHERE reservation_id=?",
-        (reservation_id,),
-    ).fetchone()
+        "SELECT candidate_json FROM settlement_candidates WHERE reservation_id=?", (reservation_id,)).fetchone()
     raw: dict[str, Any] = {}
-    evaluated = False
-    assigned = False
+    evaluated = assigned = False
     if candidate is not None:
         doc = json.loads(candidate["candidate_json"] or "{}")
-        raw = doc.get("primary") or doc
-        evaluated = True
+        raw, evaluated = doc.get("primary") or doc, True
     else:
         qualification = con.execute(
             "SELECT qualification_json FROM settlement_qualifications "
-            "WHERE reservation_id=? ORDER BY reproduction_index LIMIT 1",
-            (reservation_id,),
-        ).fetchone()
+            "WHERE reservation_id=? ORDER BY reproduction_index LIMIT 1", (reservation_id,)).fetchone()
         if qualification is not None:
-            raw = json.loads(qualification["qualification_json"] or "{}")
-            evaluated = True
-        elif con.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' "
-            "AND name='reservation_baseline_segments'"
-        ).fetchone() is not None:
+            raw, evaluated = json.loads(qualification["qualification_json"] or "{}"), True
+        elif _has_table(con, "reservation_baseline_segments"):
             segment = con.execute(
                 "SELECT arena_id,stack_digest,tree_digest,stack_json "
-                "FROM reservation_baseline_segments WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()
+                "FROM reservation_baseline_segments WHERE reservation_id=?", (reservation_id,)).fetchone()
             if segment is not None:
-                manifest = json.loads(segment["stack_json"])
-                raw = {
-                    "arena_digest": segment["arena_id"],
-                    "incumbent_manifest": manifest,
-                    "incumbent_stack_digest": segment["stack_digest"],
-                    "incumbent_tree_digest": segment["tree_digest"],
-                }
+                raw = {"arena_digest": segment["arena_id"], "incumbent_manifest": json.loads(segment["stack_json"]),
+                       "incumbent_stack_digest": segment["stack_digest"],
+                       "incumbent_tree_digest": segment["tree_digest"]}
                 assigned = True
-
     if not raw:
-        return {
-            "evaluated": False,
-            "assigned": False,
-            "relationship": "not_evaluated",
-            "artifact_digest": "",
-            "current_tip_artifact_digest": "",
-            "threshold_speedup": None,
-        }
+        return {"evaluated": False, "assigned": False, "artifact_digest": "", "reward_bar": None}
 
     manifest = raw.get("incumbent_manifest") or {}
-    entry = (manifest.get("entries") or {}).get(target_id) or {}
-    baseline_artifact = entry.get("artifact_digest") or ""
+    artifact = ((manifest.get("entries") or {}).get(target_id) or {}).get("artifact_digest") or ""
+    stack = raw.get("incumbent_stack_digest") or manifest.get("digest") or ""
+    arena = raw.get("arena_digest") or manifest.get("arena_digest") or ""
     result: dict[str, Any] = {
         "kind": "incumbent" if manifest.get("entries") else "stock",
         "checkpoint": checkpoint_for_engine(manifest.get("base_engine_digest") or ""),
-        "evaluated": evaluated,
-        "assigned": assigned,
-        "relationship": "no_active_tip",
-        "artifact_digest": baseline_artifact,
-        "reservation_id": None,
-        "stack_digest": raw.get("incumbent_stack_digest") or manifest.get("digest") or "",
-        "tree_digest": raw.get("incumbent_tree_digest") or "",
-        "arena_digest": raw.get("arena_digest") or manifest.get("arena_digest") or "",
-        "current_tip_artifact_digest": "",
-        "threshold_speedup": None,
+        "evaluated": evaluated, "assigned": assigned, "artifact_digest": artifact, "reservation_id": None,
+        "stack_digest": stack, "tree_digest": raw.get("incumbent_tree_digest") or "", "arena_digest": arena,
+        # Pay compares a PASS with the best retained PASS on its own baseline, never with the crown lineage.
+        "reward_bar": (reward_bars(con) if bars is None else bars).get((arena, stack)),
     }
-    if lineage_tables_available is None:
-        tables = {
-            row["name"]
-            for row in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                "('target_lineage_tips','target_lineage_nodes')"
-            )
-        }
-        lineage_tables_available = tables == {
-            "target_lineage_tips",
-            "target_lineage_nodes",
-        }
-    if not lineage_tables_available:
-        return result
-    scoped = "competition_arena" in {r["name"] for r in con.execute("PRAGMA table_info(target_lineage_tips)")}
-    scope = ()
-    predicate = ""
-    if scoped:
-        reservation = con.execute("SELECT competition_arena FROM reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
-        scope = (reservation["competition_arena"],)
-        predicate = " AND competition_arena=?"
-    if baseline_artifact:
+    if artifact and _has_table(con, "target_lineage_nodes"):
+        scope, predicate = (), ""
+        if "competition_arena" in {r["name"] for r in con.execute("PRAGMA table_info(target_lineage_nodes)")}:
+            reservation = con.execute(
+                "SELECT competition_arena FROM reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
+            scope, predicate = (reservation["competition_arena"],), " AND n.competition_arena=?"
         origin = con.execute(
             "SELECT e.reservation_id FROM target_lineage_nodes n "
             "JOIN settlement_events e ON e.event_id=n.transition_event_id "
-            "WHERE n.target_id=? AND n.artifact_digest=?" + predicate,
-            (target_id, baseline_artifact, *scope),
-        ).fetchone()
+            "WHERE n.target_id=? AND n.artifact_digest=?" + predicate, (target_id, artifact, *scope)).fetchone()
         if origin is not None:
             result["reservation_id"] = origin["reservation_id"]
-    tip = con.execute(
-        "SELECT artifact_digest FROM target_lineage_tips WHERE target_id=?" + predicate,
-        (target_id, *scope),
-    ).fetchone()
-    if tip is None:
-        return result
-    tip_artifact = str(tip["artifact_digest"])
-    result["current_tip_artifact_digest"] = tip_artifact
-    if baseline_artifact == tip_artifact:
-        result["relationship"] = "current_tip"
-        result["threshold_speedup"] = 1.0
-        return result
-
-    nodes: list[dict[str, Any]] = []
-    artifact = tip_artifact
-    seen: set[str] = set()
-    while artifact and artifact not in seen:
-        seen.add(artifact)
-        node = con.execute(
-            "SELECT artifact_digest,parent_artifact_digest,winner_speedup "
-            "FROM target_lineage_nodes WHERE target_id=? AND artifact_digest=?" + predicate,
-            (target_id, artifact, *scope),
-        ).fetchone()
-        if node is None:
-            break
-        nodes.append(dict(node))
-        artifact = str(node["parent_artifact_digest"])
-    nodes.reverse()
-    start = next(
-        (
-            index for index, node in enumerate(nodes)
-            if node["parent_artifact_digest"] == baseline_artifact
-        ),
-        None,
-    )
-    if start is None:
-        result["relationship"] = "outside_active_lineage"
-        return result
-    threshold = Decimal(1)
-    for node in nodes[start:]:
-        threshold *= Decimal(str(node["winner_speedup"]))
-    result["relationship"] = "ancestor"
-    result["threshold_speedup"] = float(threshold)
     return result
+
+
+def _has_table(con: sqlite3.Connection, name: str) -> bool:
+    return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
 
 
 # Short human descriptions of the optimization targets ("which op they improved").
