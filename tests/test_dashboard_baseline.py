@@ -140,7 +140,7 @@ def test_submission_baseline_shows_queued_assignment_before_measurement() -> Non
     assert baseline["reward_bar"]["reservation_id"] == "best"
 
 
-def test_reward_bars_keep_the_best_eligible_pass_per_baseline(monkeypatch) -> None:
+def test_reward_bars_keep_the_best_eligible_pass_per_baseline(monkeypatch, tmp_path) -> None:
     from decimal import Decimal
 
     con = _db()
@@ -152,6 +152,9 @@ def test_reward_bars_keep_the_best_eligible_pass_per_baseline(monkeypatch) -> No
         "better": row, "unpaid": row | {"relative_speedup": Decimal("1.2"), "reward_eligible": False}})
     assert reward_bars(con) == {("arena", "stack"): {"speedup": pytest.approx(1.0506), "reservation_id": "better"}}
     assert submission_baseline(con, "unpaid", TARGET)["reward_bar"]["reservation_id"] == "better"
+    (tmp_path / "rule.json").write_text(json.dumps({"claims": [{"reservation_id": "better", "reason": "grader defect"}]}))
+    monkeypatch.setenv("CACHEON_DASH_EXCLUSIONS", str(tmp_path / "rule.json"))
+    assert reward_bars(con)[("arena", "stack")]["reservation_id"] == "first"
 
 
 def test_operator_notice_names_a_zero_priced_pass_and_an_unpaid_excluded_hotkey(tmp_path, monkeypatch) -> None:

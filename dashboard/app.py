@@ -24,14 +24,14 @@ from fastapi.staticfiles import StaticFiles
 
 from dashboard.forensics import (
     DashboardForensicsError,
-    submission_forensics,
+    retained_speed, submission_forensics,
     submission_qualifications,
 )
 from dashboard.enrichment import Enrichment
 from dashboard.sources import selected, value, install_sources, process_matches, scope_reservations
 from dashboard.disclosure import disclose_bundle, install_disclosure_routes
 from dashboard.competition import competition_label, submission_baseline, target_summary
-from cacheon.chain.baseline_band import qualification_evidence_roots, qualification_speed
+from cacheon.chain.baseline_band import qualification_evidence_roots
 from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
 from cacheon.chain.miner_feedback import _guidance
 from dashboard.receipts import evaluation_recovery
@@ -40,8 +40,8 @@ from dashboard.winners import (
     measured_baseline,
     prefill_summary,
     settlement_hold_notice, settlement_label,
-    reward_bars, reward_exclusion_notice,
-    live_offer_shares, winner_reward,
+    list_results, result_summary, reward_exclusion_notice, submission_reward_comparison,
+    live_offer_shares, qualified_winners, winner_lists, winner_reward,
 )
 
 MISSION = Path(os.environ.get(
@@ -301,6 +301,12 @@ def submission_row(r: dict[str, Any]) -> dict[str, Any]:
     return sub
 
 
+def evidence_roots(con: sqlite3.Connection) -> tuple[Path, ...]:
+    """Evidence stores of the selected arena source."""
+    return qualification_evidence_roots(
+        value("QUAL_EVIDENCE_STATE", QUAL_EVIDENCE_STATE), value("QUAL_EVIDENCE_EXTRA", QUAL_EVIDENCE_EXTRA), con, stage_dir=value("STAGE_ROOT", LOG_ROOT.parent / "stage"))
+
+
 def safe_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -491,7 +497,7 @@ def submissions(
         LIMIT ? OFFSET ?
     """, (*args, limit, offset))
     shaped = [submission_row(r) for r in data]
-    bars = reward_bars(con)
+    bars = list_results(con, shaped, evidence_roots(con), *current_offer(submissions=True))
     for item in shaped:
         item["evaluation_recovery"] = evaluation_recovery(con, item)
         item["baseline"] = submission_baseline(con, item["reservation_id"], item["target_id"], bars=bars)
@@ -520,15 +526,13 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
     detail["publication_digest"] = r.get("publication_digest") or ""
     detail["block_hash"] = r.get("block_hash") or ""
 
-    evidence_roots = qualification_evidence_roots(
-        value("QUAL_EVIDENCE_STATE", QUAL_EVIDENCE_STATE), value("QUAL_EVIDENCE_EXTRA", QUAL_EVIDENCE_EXTRA), con, stage_dir=value("STAGE_ROOT", LOG_ROOT.parent / "stage"))
     try:
         detail["forensics"] = submission_forensics(value("SPOOL", SPOOL), rid, target_id=detail["target_id"])
     except DashboardForensicsError as exc:
         detail["forensics"] = []
         detail["forensics_error"] = str(exc)
     detail["qualification_attempts"] = submission_qualifications(
-        con, rid, detail["target_id"], evidence_roots, detail["forensics"])
+        con, rid, detail["target_id"], evidence_roots(con), detail["forensics"])
 
     cand = con.execute(
         "SELECT status, reason, candidate_json FROM settlement_candidates"
@@ -542,18 +546,15 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
             "reason": cand["reason"],
             "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
-            "lane": cj.get("lane"),
-            "crowned": with_time(int(cj.get("finalized_block") or 0)),
         }
-        from dashboard.winners import submission_reward_comparison
-        detail["settlement"].update(submission_reward_comparison(con, rid))
+        detail["settlement"].update(submission_reward_comparison(con, rid, *current_offer(submissions=True)))
     detail["reward_notice"] = reward_exclusion_notice(r["hotkey"], OFFER_PATH, rid)
     detail["hold_notice"] = settlement_hold_notice(con, rid, detail.get("settlement", {}))
     detail["baseline"] = submission_baseline(con, rid, detail["target_id"])
     measured_attempts = [a for a in detail["qualification_attempts"] if a["decision"] == "PASS"] or detail["qualification_attempts"]
     speed_reads = [a["speed"] for a in measured_attempts if a["speed"]]
     detail["baseline_measurements"] = measured_baseline(speed_reads, {}, baseline=detail["baseline"])
-    detail.update(candidate_measurement(speed_reads))
+    detail.update(candidate_measurement(speed_reads), result=result_summary((speed_reads or [None])[-1]))
 
     detail["leases"] = rows(con, """
         SELECT el.lease_id, el.stage, el.state, el.generation, el.claimed_block,
@@ -725,13 +726,11 @@ def payments() -> dict[str, Any]:
 
 @app.get("/api/winners")
 def winners() -> dict[str, Any]:
-    from dashboard.winners import qualified_winners, winner_lists
     con = intake_conn()
     passed = qualified_winners(con, include_waiting=True)
-    evidence_roots = qualification_evidence_roots(
-        value("QUAL_EVIDENCE_STATE", QUAL_EVIDENCE_STATE), value("QUAL_EVIDENCE_EXTRA", QUAL_EVIDENCE_EXTRA), con, stage_dir=value("STAGE_ROOT", LOG_ROOT.parent / "stage"))
     speeds_by_reservation: dict[str, list[object]] = {}
     if passed:
+        roots = evidence_roots(con)
         marks = ",".join("?" for _ in passed)
         for disposition in rows(con, f"""
             SELECT d.reservation_id, d.attempt_ref_json, r.target_id
@@ -740,8 +739,7 @@ def winners() -> dict[str, Any]:
             WHERE d.decision='PASS' AND d.reservation_id IN ({marks})
             ORDER BY d.reservation_id, d.attempt_index
         """, tuple(row["reservation_id"] for row in passed)):
-            speed = qualification_speed(
-                disposition["attempt_ref_json"], evidence_roots, disposition["target_id"])
+            speed = retained_speed(disposition["attempt_ref_json"], roots, disposition["target_id"])
             if speed is None:
                 continue
             speeds_by_reservation.setdefault(
@@ -781,6 +779,7 @@ def winners() -> dict[str, Any]:
             "competition": competition_label(row["submission_block"], row.get("competition_arena", "")),
             **measured_baseline(speeds_by_reservation.get(row["reservation_id"], []), primary),
             **prefill_summary(speeds_by_reservation.get(row["reservation_id"], [])),
+            "result": result_summary((speeds_by_reservation.get(row["reservation_id"]) or [None])[-1]),
             **winner_reward(row, offer, shares),
             "settlement_status": labels[row["reservation_id"]],
             "hotkey_chain": {
@@ -860,7 +859,8 @@ def events(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
     con = intake_conn()
     cutoff = cutoff_block(con)
     data = rows(con, """
-        SELECT e.sequence, e.event_type, e.reservation_id, e.target_id, e.event_json
+        SELECT e.sequence, e.event_type, e.reservation_id, e.target_id, e.event_json,
+               (SELECT max(retained_block) FROM settlement_qualifications q WHERE q.reservation_id=e.reservation_id) AS retained_block
         FROM settlement_events e
         LEFT JOIN reservations r ON r.reservation_id = e.reservation_id
         WHERE r.reservation_id IS NULL OR r.block >= ?
@@ -870,7 +870,7 @@ def events(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
     items = []
     for e in data:
         ej = json.loads(e["event_json"] or "{}")
-        block = int(ej.get("finalized_block") or ej.get("crowned_block") or 0)
+        block = int(ej.get("finalized_block") or ej.get("crowned_block") or e["retained_block"] or 0)  # events carry no block
         items.append({
             "sequence": e["sequence"],
             "event_type": e["event_type"],

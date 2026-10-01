@@ -197,11 +197,13 @@ def _replay_diagnostics(read) -> dict[str, Any]:
     cold = min(row.credit_issued_ns for row in read.records)
     warm = [row for row in read.records if row.credit_issued_ns != cold]
     first = sorted(row.ttft_s for row in warm)
-    decode = [row.decode_tps for row in warm if row.decode_tps is not None]
+    streamed = [row for row in warm if row.decode_tps is not None]
     return {
         "mean_ttft_s": statistics.fmean(first),
         "p95_ttft_s": first[(95 * len(first) - 1) // 100],
-        "median_decode_tps": statistics.median(decode) if decode else None,
+        # Pooled over the arm, not a median: on 2026-10-01 a +3.2% decode gain read -1.5% in one pass's median.
+        "decode_tps": (sum(row.output_tokens - 1 for row in streamed) * 1e9
+                       / sum(row.request_end_ns - row.first_token_ns for row in streamed) if streamed else None),
         "unsuccessful_turns": sum(row.status != "ok" for row in read.records),
     }
 
