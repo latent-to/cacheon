@@ -10,7 +10,7 @@ cacheon/chain/remote_worker_pod_service.py 1106
 cacheon/chain/remote_worker_request_plan.py 940
 cacheon/chain/remote_worker_spool.py 994
 cacheon/chain/weight_share.py 1528
-cacheon/cli.py 2922
+cacheon/cli.py 2898
 cacheon/engine_tree.py 1566
 cacheon/eval/b300_deployment.py 1287
 cacheon/eval/b300_qualification_deployment.py 963

@@ -61,7 +61,7 @@ def _bind_schedule(store, allocation, source_digests, block):
 
 
 def build_static_projection(primary, *, allocation, policy, context, netuid,
-                            confirmation_journal, max_lag_blocks):
+                            confirmation_journal, capture=None):
     """Reopen all configured authorities before one offer; never sign or push here."""
     configs = {key: load_config(path) for key, path in allocation.sources}
     paths = [config.intake_db.resolve() for config in configs.values()]
@@ -83,7 +83,9 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
         if active:
             for key, config in sorted(configs.items()):
                 if not config.intake_db.is_file():
-                    raise IntakeError("configured reward store is absent")
+                    from cacheon.chain.reward_checkpoint import RewardSourceUnavailable
+
+                    raise RewardSourceUnavailable("configured reward store is absent")
                 if key != primary_key:
                     try:
                         stores[key] = lifetime.enter_context(RecoverableFinalizedIntakeStore(
@@ -102,9 +104,13 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
         if not active:
             reconcile_follower_reward_decay(primary, confirmation_journal,
                                            validator_hotkey=context.validator_hotkey)
-            return primary.build_weight_projection(policy=policy, context=context, netuid=netuid)
+            from cacheon.chain.qualification_settlement import build_weight_projection
 
-        combined = {key: [] for key in ("arenas", "earning_claims", "discovery_claims", "earned_contributions")}
+            return build_weight_projection(primary, policy=policy, context=context,
+                                           netuid=netuid, capture=capture)
+
+        combined = {key: [] for key in ("arenas", "earning_claims", "validated_claims",
+                                        "discovery_claims", "earned_contributions")}
         combined["decay_start_blocks"] = {}
         combined["score_speedups"] = {}
         terms, snapshots, adjustments, seen_reservations = {}, {}, {}, set()
@@ -113,9 +119,11 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
         cursor_hashes = {context.current_block: context.current_block_hash}
         for key, store in sorted(stores.items()):
             cursor = store.finalized_cursor()
-            if (cursor is None or not 0 <= context.current_block - cursor[0] <= max_lag_blocks
+            # Intake progress is not reward freshness: a stopped listener must
+            # not prevent projecting retained rewards at the live chain block.
+            if (cursor is None or cursor[0] > context.current_block
                     or cursor_hashes.setdefault(cursor[0], cursor[1]) != cursor[1]):
-                raise IntakeError("reward store snapshot is absent, stale, ahead, or inconsistent")
+                raise IntakeError("reward store snapshot is absent, ahead, or inconsistent")
             # A second chain listener can reject the same arrival before admission;
             # that payment failure carries no publication or evaluation ownership.
             # Every arena's listener also admits every paid reveal and leaves the
@@ -179,7 +187,7 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
         evidence.add(ref.sha256)
         rewarded = tuple(sorted({claim.retained_evidence_digest for claim in combined["earning_claims"]
                                  if claim.digest in paid}))
-        return WeightProjection(
+        result = WeightProjection(
             context.chain_scope_digest, netuid, context.validator_hotkey,
             canonical_digest("cacheon.static-arena-policy.v1", {
                 "base_policy": policy.digest, "allocation": allocation.digest,
@@ -191,3 +199,9 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
             generation, context.current_block,
             standing_count, tuple(sorted(evidence)),
             tuple(sorted(projection.weights_by_hotkey.items())), ref, rewarded)
+        if capture is not None:
+            capture(result, {**combined, "allocation_terms": terms,
+                            "allocation_burn_hotkey": allocation.burn_hotkey,
+                            "stall_bonus_terms": bonuses},
+                    {"report": report, "root": str(root), "reservation_ids": reservation_ids})
+        return result

@@ -9,6 +9,75 @@ from dashboard.winners import qualified_winners
 from tests.test_chain_intake import _qualified_settlement_candidate, _store
 
 
+@pytest.mark.parametrize("static", [False, True])
+def test_unpaid_crown_keeps_pass_authority_without_blocking_rewards(tmp_path, monkeypatch, static):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from cacheon.arena_allocation import ArenaAllocation
+    from cacheon.chain import arena_weight_projection as allocation
+    from cacheon.chain.qualification_settlement import build_weight_projection
+    from cacheon.chain.reward_checkpoint import RewardCheckpoint
+    from tests.test_chain_intake import POLICY, SCOPE, _context, _settlement_plan
+
+    context = _context("validator", "minerpaid", "minerunpaid")
+    schedule = ArenaAllocation.from_dict({
+        "activation_block": 12, "burn_hotkey": "validator",
+        "sources": {"only": "/configs/only.json"},
+        "history": [{"from_block": block, "weights_ppm": {"only": 1_000_000}}
+                    for block in (0, 12)],
+    })
+    stage = SimpleNamespace(attribution_hotkey="validator", burn_hotkey="validator",
+                            arena_allocation_path=tmp_path / "allocation.json" if static else None,
+                            confirmation_journal=None)
+    monkeypatch.setattr(allocation, "load_allocation", lambda path: schedule)
+    with _store(tmp_path / "signer") as signer:
+        journal = signer.path
+    stage.confirmation_journal = journal
+    checkpoint = RewardCheckpoint(tmp_path / "rewards.json", policy=POLICY, scope=SCOPE, stage=stage)
+    with _store(tmp_path) as store:
+        paid = _qualified_settlement_candidate(store, marker="paid", speedups=("1.1", "1.1"))
+        unpaid = _qualified_settlement_candidate(store, marker="unpaid", index=1,
+                    initialize_stack=False, speedups=("1.105", "1.105"))
+        lease = store.lease_settlement_cohort(current_block=11)
+        plan, evidence = _settlement_plan(store, lease)
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+        assert store.active_reward_claims()[0][0].hotkey == unpaid.hotkey
+        assert {c.hotkey for c in store.passed_reward_claims()} == {paid.hotkey}
+        monkeypatch.setattr(allocation, "load_config", lambda path: SimpleNamespace(
+            intake_db=store.path, policy=store.policy, scope=store.scope, digest="a" * 64))
+        if static:
+            allocation.build_static_projection(store, allocation=schedule, policy=POLICY,
+                context=replace(context, current_block=11), netuid=SCOPE.netuid,
+                confirmation_journal=journal)
+        def project(capture=None):
+            if static:
+                return allocation.build_static_projection(store, allocation=schedule, policy=POLICY,
+                    context=context, netuid=SCOPE.netuid, confirmation_journal=journal, capture=capture)
+            return build_weight_projection(store, policy=POLICY, context=context,
+                                           netuid=SCOPE.netuid, capture=capture)
+        result = project(checkpoint.capture)
+        checkpoint.save()
+        assert dict(result.weights_ppm) == {paid.hotkey: 1_000_000}
+        assert result.crown_count == 1
+        # Missing actual PASS authority still fails, even though the crown is unpaid.
+        store._db.execute("UPDATE reservations SET decision='FAIL' WHERE reservation_id=?",
+                          (unpaid.reservation_digest,))
+        with pytest.raises(IntakeError, match="no longer has standing authority"):
+            project()
+        store._db.execute("UPDATE reservations SET decision='PASS' WHERE reservation_id=?",
+                          (unpaid.reservation_digest,))
+        # An unpaid PASS is still reopened, rather than trusted from the crown row.
+        store._db.execute("UPDATE settlement_candidates SET settlement_evidence_digest=? WHERE reservation_id=?",
+                          ("0" * 64, unpaid.reservation_digest))
+        with pytest.raises(IntakeError, match="retained evidence"):
+            project()
+    # Recovery reloads the same validation/payment separation without an intake store.
+    checkpoint = RewardCheckpoint(checkpoint.path, policy=POLICY, scope=SCOPE, stage=stage)
+    retained = checkpoint.project(replace(context, current_block=100))
+    assert dict(retained.weights_ppm) == {paid.hotkey: 1_000_000}
+    assert retained.crown_count == 1
+
+
 @pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 def test_only_threshold_records_earn_in_submission_order(tmp_path, target):
     with _store(tmp_path) as store:

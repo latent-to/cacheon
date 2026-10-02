@@ -406,7 +406,7 @@ absolute path to a second sealed, closed, owner-controlled file with schema
 which starts each reward's decay), `attribution_hotkey`, `half_life_blocks`,
 `discovery_lifetime_blocks`, `discovery_pool_ppm`, `refresh_blocks`, and
 `burn_hotkey`. The retired v1 file, which had no journal, is refused. Every
-`refresh_blocks` the stage reads the finalized head and metagraph, reopens the
+`max(1, refresh_blocks // 2)` blocks the stage reads the finalized head and metagraph, reopens the
 intake store, and pushes the current V1 offer: the real projection whenever an
 active reward claim, a crowned arena, or an activated composition exists;
 otherwise the full-pool burn offer to `burn_hotkey` when that field is set, or
@@ -414,6 +414,13 @@ the builder's crownless refusal as a stage error when it is empty. The stage
 never signs; the serve-weights lane owns readback and the follow-weights
 signer decides what reaches the chain. Naming `weights_stage_config` while
 `enable_weights` is false is refused, as is the reverse.
+
+The producer keeps an atomic `.rewards.json` checkpoint beside this config
+(replace the config filename's final suffix). The directory must be writable
+by the service user. A missing or busy intake database uses the saved reward
+inputs and the live block to recompute decay; corrupt evidence still fails the
+live pass. The checkpoint and follower's 12-hour last-seen/burn policy are
+described in [Shared current weights](settlement-and-weights.md#shared-current-weights-endpoint).
 
 ### Static allocation configuration
 
@@ -454,9 +461,12 @@ Register the file with a successful projection before `activation_block` and
 before intake has reached that block. The block-zero row preserves the primary
 store at 100% and other sources at zero. Before activation the primary's existing
 projection is preserved. After activation, all sources must be present, share
-the chain scope, and have consistent finalized cursors within `refresh_blocks`
-of the metagraph. Missing or corrupt evidence prevents an offer. A busy source
-uses the service's existing skipped-pass behavior.
+the chain scope, and have consistent finalized cursors no later than the
+metagraph. Intake may stop advancing: retained rewards are still projected at
+the current finalized block, including their publication-based decay. Missing
+or corrupt evidence prevents a live projection. A busy or missing source uses
+the producer's last complete reward checkpoint when one exists; before the first
+checkpoint a busy source skips the pass.
 
 To change percentages or waiting-bonus strength, atomically replace the file with the complete history
 plus a new row whose `from_block` is later than both current intake and projection
