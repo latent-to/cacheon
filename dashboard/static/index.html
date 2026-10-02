@@ -205,7 +205,8 @@ const TABS = [
 ];
 let tab = location.hash.replace("#", "") || "overview";
 if (!TABS.some(([id]) => id === tab)) tab = "overview";
-let arena = new URL(location.href).searchParams.get("arena") || "";
+let arena = decodeURIComponent(location.pathname.replace(/^\/+|\/+$/g, ""))
+  || new URL(location.href).searchParams.get("arena") || "";
 let arenas = [];
 let allArenaEvents = false;
 let detailRequest = 0;
@@ -674,7 +675,9 @@ async function viewSystem() {
 
 function submissionURL(rid) {
   const url = new URL(location.href);
-  if (arena) url.searchParams.set("arena", arena);
+  const slug = arenas.find(s => s.key === arena)?.slug || arena;
+  url.pathname = slug ? "/" + encodeURIComponent(slug) : "/";
+  url.searchParams.delete("arena");
   if (rid) url.searchParams.set("submission", rid);
   else url.searchParams.delete("submission");
   return url;
@@ -890,6 +893,7 @@ async function refresh() {
 async function loadArenas() {
   const data = await api("/api/arenas");
   arenas = data.items;
+  arena = arenas.find(s => s.slug === arena)?.key || arena;
   if (!arena) arena = data.default || "";
   $("#arena-select").innerHTML = arenas.length ? arenas.map(s =>
     `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}</option>`).join("") : '<option>Current arena</option>';
@@ -910,18 +914,16 @@ $("#arena-select").onchange = async e => {
   arena = e.target.value;
   closeDetail();
   subFilters.offset = 0;
-  const url = new URL(location.href);
-  url.searchParams.set("arena", arena);
-  history.replaceState(null, "", url);
   await loadArenas();
   refresh();
 };
 async function start() {
   await loadArenas();
+  const linkedSubmission = new URL(location.href).searchParams.get("submission");
+  history.replaceState(null, "", submissionURL(linkedSubmission));
   renderTabs();
   refresh();
-  const linkedSubmission = new URL(location.href).searchParams.get("submission");
-if (linkedSubmission) openDetail(linkedSubmission);
+  if (linkedSubmission) openDetail(linkedSubmission);
 }
 start().catch(err => { $("#view").textContent = "Failed to load arenas: " + err.message; });
 </script>
