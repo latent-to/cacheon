@@ -471,6 +471,7 @@ def cpu_serve(
                 return
             try:
                 heartbeat = remote_heartbeat(registration, site, max_heartbeat_age)
+                atomic_json(state_root / "worker-heartbeat.json", heartbeat)
                 worker_hold_state = _observe_worker_hold(
                     worker_hold_state, heartbeat, spool_root, registration
                 )

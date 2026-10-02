@@ -213,7 +213,10 @@ runtime/model identity and lane; arena ID alone does not distinguish epochs.
 
 The CPU relay refreshes its heartbeat during request and result copies; this
 reports dispatcher liveness, while the pod heartbeat and request deadlines
-retain their separate checks. An adapter timeout closes and reaps that adapter
+retain their separate checks. After a successful verified SSH heartbeat read,
+the relay saves the original payload as `state/worker-heartbeat.json` for dashboard
+observation. Failed reads leave that worker timestamp unchanged; the relay's own
+`state/heartbeat.json` remains independent. An adapter timeout closes and reaps that adapter
 before another request can use it. The existing cooldown then permits one fresh
 boot; the timed-out request retains its infrastructure outcome and diagnostics.
 Reopening retained qualification evidence preserves the audit's PASS, FAIL or
