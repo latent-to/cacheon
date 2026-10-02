@@ -280,7 +280,18 @@ The dashboard reads current WAL contents and reports an unreadable DB; it does
 not substitute an immutable snapshot. Config changes take effect after restart.
 
 The page's arena selector scopes every data tab, detail link, and delayed
-bundle/log download. API clients pass `?arena=<key>`; omission selects `default`.
+bundle/log download. Share a competition at `/<key>#<tab>`, for example
+`/qwen3.6#winners` or `/glm-5.3#winners`. Submission links use
+`/qwen3.6?submission=<id>#winners`. Only the versioned paths are accepted;
+`/qwen` and `/glm` return 404. Query parameters accept both the versioned
+names and the existing `?arena=qwen` / `?arena=glm` keys.
+The root page selects the configured default; `?arena=<key>` page
+links also work and become path links in the address bar without losing the
+tab or submission. A path takes precedence over an `arena` query parameter.
+Unknown arena paths return 404. The reverse proxy must forward these paths to
+the dashboard app, as it does `/`; domain configuration is unchanged.
+API clients continue to pass `?arena=<key>` (or the versioned name); omission
+selects `default`. `/api/arenas` exposes each source's URL `slug` alongside its key.
 Unknown keys return 404 and unavailable selected databases 503. Each source uses
 its registered arena namespace; empty-namespace history remains visible through
 the database's legacy arena alias. An unpublished legacy observation is hidden

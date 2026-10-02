@@ -16,6 +16,29 @@ from dashboard import sources as source_module
 from dashboard.disclosure import bundle_visibility
 
 
+@pytest.mark.parametrize("key", ["qwen3.6", "glm-5.3"])
+def test_competition_paths_serve_dashboard_without_shadowing_routes(monkeypatch, planes, key):
+    monkeypatch.setattr(dashboard.app.state, "dashboard_sources", planes[1])
+    client = TestClient(dashboard.app)
+    root = client.get("/")
+    response = client.get(f"/{key}?submission=example#winners")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.content == root.content
+    assert client.get(f"/{key}/").content == root.content
+    assert client.get("/unknown-arena").status_code == 404
+    for old in ("qwen", "glm"):
+        assert client.get(f"/{old}").status_code == 404
+    assert client.get(f"/{key}/extra").status_code == 404
+    for path in ("/docs", "/openapi.json", "/favicon.ico", "/static/performance.js"):
+        assert client.get(path).status_code == 200
+    assert client.get("/api/queue?arena=unknown-arena").status_code == 404
+    api_client, sources = planes
+    old = "qwen" if key == "qwen3.6" else "glm"
+    assert api_client.get(f"/api/queue?arena={key}").json() == api_client.get(f"/api/queue?arena={old}").json()
+    assert sources[old].public()["slug"] == key
+
+
 @pytest.mark.parametrize("case,state,fresh", [
     ("current", "running", True), ("boundary", "running", True),
     ("stale", "stale", False), ("missing", "unknown", False),
