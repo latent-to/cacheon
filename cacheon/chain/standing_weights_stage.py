@@ -198,13 +198,16 @@ def compose_weight_offer_push(
         stage.discovery_pool_ppm,
     )
     last_push_block = 0
+    # Leave room for polling, intake lock contention and HTTP delivery before
+    # followers reach their freshness limit, even when the vector is unchanged.
+    offer_refresh_blocks = max(1, stage.refresh_blocks // 2)
     netuid = int(scope.netuid)
 
     def publish() -> Any:
         nonlocal last_push_block
         try:
             current_block, _ = chain.read_finalized_head(subtensor)
-            if last_push_block and current_block - last_push_block < stage.refresh_blocks:
+            if last_push_block and current_block - last_push_block < offer_refresh_blocks:
                 return None
             metagraph = chain.fetch_metagraph(subtensor, netuid)
             context = GlobalRewardProjectionContext(
@@ -229,7 +232,6 @@ def compose_weight_offer_push(
                         store, allocation=load_allocation(stage.arena_allocation_path),
                         policy=policy, context=context, netuid=netuid,
                         confirmation_journal=stage.confirmation_journal,
-                        max_lag_blocks=stage.refresh_blocks,
                     )
                 else:
                     require_legacy_projection(store, context.current_block)

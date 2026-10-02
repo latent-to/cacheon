@@ -393,7 +393,8 @@ def test_weights_stage_chooses_burn_or_real_projection_from_store_state(
     )
 
     monkeypatch.setattr(chain, "connect", lambda network, **_kw: object())
-    monkeypatch.setattr(chain, "read_finalized_head", lambda _st: (100, "0x" + "0" * 64))
+    head = [100]
+    monkeypatch.setattr(chain, "read_finalized_head", lambda _st: (head[0], "0x" + "0" * 64))
     monkeypatch.setattr(
         chain,
         "fetch_metagraph",
@@ -468,6 +469,12 @@ def test_weights_stage_chooses_burn_or_real_projection_from_store_state(
     assert built == [expected_builder]
     assert result.disposition == "accepted"
     assert result.request_id == "d" * 64
+    assert publish() is None
+    head[0] = 399
+    assert publish() is None
+    head[0] = 400  # Half the freshness window, with no new intake or rewards.
+    assert publish().disposition == "accepted"
+    assert built == [expected_builder, expected_builder]
 
 
 def test_disabled_qualification_gates_the_stage(

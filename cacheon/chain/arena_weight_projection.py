@@ -61,7 +61,7 @@ def _bind_schedule(store, allocation, source_digests, block):
 
 
 def build_static_projection(primary, *, allocation, policy, context, netuid,
-                            confirmation_journal, max_lag_blocks):
+                            confirmation_journal):
     """Reopen all configured authorities before one offer; never sign or push here."""
     configs = {key: load_config(path) for key, path in allocation.sources}
     paths = [config.intake_db.resolve() for config in configs.values()]
@@ -113,9 +113,11 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
         cursor_hashes = {context.current_block: context.current_block_hash}
         for key, store in sorted(stores.items()):
             cursor = store.finalized_cursor()
-            if (cursor is None or not 0 <= context.current_block - cursor[0] <= max_lag_blocks
+            # Intake progress is not reward freshness: a stopped listener must
+            # not prevent projecting retained rewards at the live chain block.
+            if (cursor is None or cursor[0] > context.current_block
                     or cursor_hashes.setdefault(cursor[0], cursor[1]) != cursor[1]):
-                raise IntakeError("reward store snapshot is absent, stale, ahead, or inconsistent")
+                raise IntakeError("reward store snapshot is absent, ahead, or inconsistent")
             # A second chain listener can reject the same arrival before admission;
             # that payment failure carries no publication or evaluation ownership.
             # Every arena's listener also admits every paid reveal and leaves the

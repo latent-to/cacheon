@@ -438,6 +438,15 @@ config>`, composes the supervisor's weights stage against the same sealed dispat
 Exactly one producer runs per intake database: while it is armed, the standing
 supervisor's `enable_weights` stays false.
 
+Intake progress is not a prerequisite for refreshing retained rewards. The
+producer uses the live finalized metagraph even when one or all intake cursors
+have stopped advancing. It refreshes every `max(1, refresh_blocks // 2)` blocks
+to leave delivery margin before followers' freshness deadline; configure its
+poll interval well below that margin. This refresh does not require a new
+submission or a changed weight vector. Keep the producer supervised separately
+from intake and evaluation. It still needs accessible reward databases, retained
+evidence, chain RPC and the gateway; a held database lock delays a pass.
+
 Weights-stage config `cacheon-standing-weights-config-v2` adds the absolute
 `confirmation_journal` path to the existing signer's SQLite journal. The file
 must be owner-controlled. Before projecting, the producer reconciles confirmed
