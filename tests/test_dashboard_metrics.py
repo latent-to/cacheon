@@ -545,3 +545,32 @@ def test_baseline_cutoff_notice_confirms_credit_only_for_no_charge_disposal(deci
         assert "Your submission credit has been preserved." in notice["next_step"]
     else:
         assert notice is None
+
+
+@pytest.mark.parametrize("age,state", [(None, "unknown"), (121, "stale"), (9, "running")])
+def test_health_and_queue_use_worker_observation_not_cpu_pulse(tmp_path, client, monkeypatch, age, state):
+    import time
+    from dashboard import app
+    from tests.test_chain_intake import _store
+
+    with _store(tmp_path) as store:
+        monkeypatch.setattr(app, "DB_PATH", store.path)
+    registration = {"worker_epoch": "epoch", "ready_receipt_digest": "ready", "worker_readiness_digest": "worker"}
+    registration_path, heartbeat_path = tmp_path / "registration.json", tmp_path / "heartbeat.json"
+    registration_path.write_text(json.dumps(registration))
+    now = int(time.time())
+    relay = {**registration, "time_unix": now, "state": "running", "active_request_id": "stale-request"}
+    heartbeat_path.write_text(json.dumps(relay))
+    if age is not None:
+        heartbeat_path.with_name("worker-heartbeat.json").write_text(json.dumps({**relay, "time_unix": now - age}))
+    monkeypatch.setattr(app, "REGISTRATION_PATH", registration_path)
+    monkeypatch.setattr(app, "HEARTBEAT_PATH", heartbeat_path)
+    for route in ("/api/health", "/api/queue"):
+        response = client.get(route)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["relay_heartbeat"]["fresh"]
+        worker = payload["gpu_heartbeat"]
+        assert worker["state"] == state
+        assert worker["fresh"] is (state == "running")
+        assert worker["active_request_id"] == ("stale-request" if state == "running" else None)

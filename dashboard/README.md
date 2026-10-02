@@ -295,9 +295,17 @@ block, using source and local sequence only for ties, and names unavailable
 sources. The Timeline offers an all-arena toggle.
 
 Process health matches command arguments plus a configured source path, rather
-than global module substrings. A missing heartbeat is unknown, one older than
-120 seconds is stale, and an epoch mismatch is explicit. A fresh relay heartbeat
-alone is not a GPU acceptance proof. Public health omits operator paths.
+than global module substrings. The configured `heartbeat` path is the CPU relay's
+local pulse. Successful SSH polls retain the worker's verified heartbeat unchanged
+in adjacent `worker-heartbeat.json`; failed polls never advance its timestamp.
+The health and queue APIs expose these separately as `relay_heartbeat` and
+`gpu_heartbeat`, including `fresh`. A missing worker observation is unknown, one
+older than 120 seconds is stale, and a registration-binding mismatch is explicit.
+Stale or mismatched observations cannot report a current adapter or active request.
+Older relay deployments without the worker file show unknown worker health.
+The Queue, System and arena badges use worker observations for worker status;
+CPU relay freshness and active evaluation leases do not establish worker liveness.
+Public health omits operator paths and SSH errors.
 
 `model` supplies the source's display label; leave it empty to retain historical
 legacy labels. Optional `checkpoint` maps each retained engine digest to its
