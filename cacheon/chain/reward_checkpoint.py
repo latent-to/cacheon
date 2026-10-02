@@ -34,6 +34,8 @@ def _encode(inputs):
                       for row in inputs["arenas"]]
     for key in ("earning_claims", "discovery_claims", "earned_contributions"):
         data[key] = [row.to_dict() for row in inputs[key]]
+    if "validated_claims" in inputs:
+        data["validated_claims"] = [row.to_dict() for row in inputs["validated_claims"]]
     return data
 
 
@@ -47,6 +49,8 @@ def _decode(data):
                      ("discovery_claims", DiscoveryBountyClaim),
                      ("earned_contributions", ProposalContributionRef)):
         inputs[key] = tuple(cls.from_dict(row) for row in data[key])
+    if "validated_claims" in data:
+        inputs["validated_claims"] = tuple(StandingRewardClaim.from_dict(row) for row in data["validated_claims"])
     if "allocation_terms" in inputs:
         inputs["allocation_terms"] = {key: tuple(value) for key, value in inputs["allocation_terms"].items()}
     return inputs

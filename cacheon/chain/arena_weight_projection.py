@@ -109,7 +109,8 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
             return build_weight_projection(primary, policy=policy, context=context,
                                            netuid=netuid, capture=capture)
 
-        combined = {key: [] for key in ("arenas", "earning_claims", "discovery_claims", "earned_contributions")}
+        combined = {key: [] for key in ("arenas", "earning_claims", "validated_claims",
+                                        "discovery_claims", "earned_contributions")}
         combined["decay_start_blocks"] = {}
         combined["score_speedups"] = {}
         terms, snapshots, adjustments, seen_reservations = {}, {}, {}, set()

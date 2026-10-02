@@ -188,8 +188,9 @@ def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[object, ...]:
 def passed_reward_evidence(
     store: FinalizedIntakeStore, *, score_speedups: dict[str, int] | None = None,
     reservation_ids: dict[str, str] | None = None,
+    validated_claims: list | None = None,
 ) -> tuple[tuple, tuple]:
-    """Reopen earned contributions; optionally fill scoring ratios keyed by unchanged claim IDs."""
+    """Reopen PASSes separately from the payment filter and queue scoring ratios."""
     from decimal import Decimal, ROUND_FLOOR
     from cacheon.chain.intake import IntakeError
 
@@ -205,7 +206,6 @@ def passed_reward_evidence(
         "JOIN reservations r USING(reservation_id) "
         "WHERE r.status='qualified' AND r.decision='PASS' "
         "AND sc.status!='duplicate_proposal' "
-        "AND sc.reward_eligible=1 "
         "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
     )
     for row in rows:
@@ -222,25 +222,24 @@ def passed_reward_evidence(
             raise IntakeError("PASS candidate differs from retained evidence")
         seen.add(key)
         comparison = comparisons.get(candidate.reservation_digest)
+        claim = StandingRewardClaim(
+            candidate.arena_digest,
+            candidate.target_id,
+            contribution.target_spec_digest,
+            contribution.digest,
+            candidate.hotkey,
+            int((Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(rounding=ROUND_FLOOR)),
+            candidate.finalized_block,
+            evidence.digest,
+        )
+        if validated_claims is not None:
+            validated_claims.append(claim)
+            contributions.append(contribution)
         if comparison is None or not comparison["reward_eligible"]:
             continue
-        claims.append(
-            StandingRewardClaim(
-                candidate.arena_digest,
-                candidate.target_id,
-                contribution.target_spec_digest,
-                contribution.digest,
-                candidate.hotkey,
-                int(
-                    (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
-                        rounding=ROUND_FLOOR
-                    )
-                ),
-                candidate.finalized_block,
-                evidence.digest,
-            )
-        )
-        contributions.append(contribution)
+        claims.append(claim)
+        if validated_claims is None:
+            contributions.append(contribution)
         if reservation_ids is not None:
             reservation_ids[claims[-1].digest] = candidate.reservation_digest
         if score_speedups is not None:
@@ -416,8 +415,10 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False, reserva
 
     standing, discovery = store.active_reward_claims()
     score_speedups = {}
+    validated_claims = []
     earning, contributions = passed_reward_evidence(
-        store, score_speedups=score_speedups, reservation_ids=reservation_ids)
+        store, score_speedups=score_speedups, reservation_ids=reservation_ids,
+        validated_claims=validated_claims)
     _hold_unpublished_claims(store, earning)
     adjustments = reward_decay_adjustments(store)
     live = {claim.digest for claim in earning}
@@ -450,6 +451,7 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False, reserva
         )
     return {
         "arenas": tuple(authorities), "earning_claims": earning,
+        "validated_claims": tuple(validated_claims),
         "discovery_claims": discovery, "earned_contributions": contributions,
         "decay_start_blocks": starts, "adjustments": adjustments,
         "score_speedups": score_speedups,

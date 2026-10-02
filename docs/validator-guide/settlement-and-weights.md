@@ -198,6 +198,12 @@ the preceding rewarded v17 record against the same baseline by at least 1.5%
 (`V17_REWARD_MARGIN`); credit remains the unshrunken marginal logarithmic reward. An
 unpaid estimate does not advance the reward record. Historical policies retain
 their configured minimum margin against the preceding rewarded record.
+
+Crown validity and payment eligibility are checked separately. A crowned
+contribution whose PASS falls below the reward margin remains valid but earns no
+credit; it does not block weight offers for other miners. The producer reopens
+its PASS evidence even when it is excluded from payment, and retains those
+validation inputs in the reward checkpoint for recovery.
 Pre-policy runtime generations retain their existing eligibility. See
 [emissions policy](../reference/emissions-policy.md) for grandfathering and ordering.
 The builder also reopens the active stacks
