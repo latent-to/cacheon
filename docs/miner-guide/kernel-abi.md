@@ -75,20 +75,3 @@ runs separately. Capture evidence does not establish fresh replay answers or
 full-model fidelity: authoritative qualification also applies the pristine
 end-to-end quality gate. See [Graph safety](graph-safety.md).
 
-## Retained catalog fixtures
-
-The source tree still contains catalog contracts and old example bundles used
-by offline tests. Their named arguments are defined by `SlotSpec`; they do not
-define the node ABI or imply current serving availability.
-
-### Atomic sparse-attention family
-
-The retained sparse-attention catalog target has two internal members. A node
-bundle instead declares the served module that contains the computation.
-
-### `attention.sparse_mla`
-
-For the retained fixture's exact reference and shapes, consult the
-[source catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
-and [reference table](../reference/slots-table.md). Arena node submissions use
-the stock method interface described above.

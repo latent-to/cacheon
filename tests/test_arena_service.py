@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from cacheon.arena_service import (
-    SCREEN_STAGES,
     AdmissionDecision,
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
@@ -17,11 +16,6 @@ from cacheon.arena_service import (
     ArenaServiceError,
     ArenaServiceManifest,
     ArenaServiceRegistry,
-    NonCrownScreenPolicy,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStagePolicy,
-    ScreenStageResult,
     Workload,
     WorkloadCell,
 )
@@ -59,15 +53,10 @@ def _manifest(**changes) -> ArenaServiceManifest:
         "finalized-entropy-v1",
         (WorkloadCell("s8", 8192, 1024, 64, 8),),
     )
-    capacity = ArenaCapacityPolicy(64, 600, 4, 8, 4, 2, 4, 3)
-    screens = NonCrownScreenPolicy(
-        tuple(ScreenStagePolicy(stage, 1_000) for stage in SCREEN_STAGES)
-    )
     values = {
         "runtime": runtime,
         "workload": workload,
-        "capacity": capacity,
-        "screens": screens,
+        "capacity": ArenaCapacityPolicy(64, 600, 8, 4),
         "qualification_policy_digest": _h("qualification-policy"),
         "provider_digest": _h("provider"),
     }
@@ -85,7 +74,7 @@ def _publication(tmp_path: Path):
     return publish_worker_bundle(source, tmp_path / "publications", committed)
 
 
-def _binding(tmp_path: Path, *, attempt: int = 1) -> ArenaCandidateBinding:
+def _binding(tmp_path: Path) -> ArenaCandidateBinding:
     publication = _publication(tmp_path)
     reservation = QualificationReservation(
         _h("reservation"),
@@ -99,30 +88,15 @@ def _binding(tmp_path: Path, *, attempt: int = 1) -> ArenaCandidateBinding:
         0,
         ("attention.msa-prefill",),
     )
-    return ArenaCandidateBinding(reservation, publication, attempt)
+    return ArenaCandidateBinding(reservation, publication, 1)
 
 
 class _Provider:
     provider_digest = _h("provider")
 
-    def __init__(
-        self,
-        grades=None,
-        *,
-        wrong_stage: bool = False,
-        resident_baseline_executor=None,
-    ):
-        self.grades = dict(grades or {})
-        self.wrong_stage = wrong_stage
+    def __init__(self, *, resident_baseline_executor=None):
         self.resident_baseline_executor = resident_baseline_executor
-        self.screen_calls = []
         self.plan_calls = []
-
-    def run_screen(self, manifest, stage, candidate):
-        self.screen_calls.append((manifest.digest, stage.stage, candidate.digest))
-        name = "build" if self.wrong_stage and stage.stage == "static" else stage.stage
-        grade, elapsed = self.grades.get(stage.stage, (ScreenGrade.PASS, 10))
-        return ScreenStageResult(name, grade, _h(stage.stage), elapsed)
 
     def build_qualification(self, request, state=None):
         self.plan_calls.append(request)
@@ -154,7 +128,6 @@ def test_service_identity_binds_every_serving_authority() -> None:
     manifest = _manifest()
     assert len(manifest.digest) == 64
     assert manifest.service_id == f"minimax-m3-sm120@{manifest.digest}"
-    assert manifest.screens.to_dict()["crownable"] is False
 
     variants = (
         dataclasses.replace(
@@ -185,8 +158,9 @@ def test_service_identity_binds_every_serving_authority() -> None:
             manifest, qualification_policy_digest=_h("qualification-policy2")
         ),
         dataclasses.replace(manifest, provider_digest=_h("provider2")),
+        dataclasses.replace(manifest, closed_targets=("attention.msa-prefill",)),
     )
-    assert len({manifest.digest, *(row.digest for row in variants)}) == 8
+    assert len({manifest.digest, *(row.digest for row in variants)}) == 9
 
 
 def test_workload_requires_typed_unique_cells() -> None:
@@ -201,34 +175,32 @@ def test_workload_requires_typed_unique_cells() -> None:
 
 def test_admission_is_capacity_bounded_and_fail_closed() -> None:
     service = ArenaService(_manifest(), _Provider())
-    assert service.admit(ArenaQueueSnapshot(0, 0, 0, 0)) is AdmissionDecision.ADMIT
-    assert service.admit(ArenaQueueSnapshot(1, 1, 4, 0)) is AdmissionDecision.QUEUE
-    assert service.admit(ArenaQueueSnapshot(64, 1, 0, 0)) is AdmissionDecision.HOLD
-    assert service.admit(ArenaQueueSnapshot(1, 600, 0, 0)) is AdmissionDecision.HOLD
     assert (
-        service.admit_qualification(
-            ArenaQueueSnapshot(0, 0, 0, 5), cohort_size=4
-        )
+        service.admit_qualification(ArenaQueueSnapshot(0, 0, 0), cohort_size=4)
+        is AdmissionDecision.ADMIT
+    )
+    assert (
+        service.admit_qualification(ArenaQueueSnapshot(0, 0, 5), cohort_size=4)
         is AdmissionDecision.QUEUE
     )
     assert (
-        service.admit_qualification(
-            ArenaQueueSnapshot(0, 0, 0, 0), cohort_size=5
-        )
+        service.admit_qualification(ArenaQueueSnapshot(64, 1, 0), cohort_size=1)
         is AdmissionDecision.HOLD
     )
     assert (
-        service.retry_disposition("qualification", attempt=3)
-        is PromotionDecision.RETRY
+        service.admit_qualification(ArenaQueueSnapshot(1, 600, 0), cohort_size=1)
+        is AdmissionDecision.HOLD
     )
     assert (
-        service.retry_disposition("qualification", attempt=4)
-        is PromotionDecision.HOLD
+        service.admit_qualification(ArenaQueueSnapshot(0, 0, 0), cohort_size=5)
+        is AdmissionDecision.HOLD
     )
-    assert (
-        service.retry_disposition("infrastructure", attempt=3)
-        is PromotionDecision.HOLD
-    )
+    with pytest.raises(ArenaServiceError, match="not exactly typed"):
+        service.admit_qualification(object(), cohort_size=1)
+    with pytest.raises(ArenaServiceError, match="cohort_size"):
+        service.admit_qualification(ArenaQueueSnapshot(0, 0, 0), cohort_size=0)
+    with pytest.raises(ArenaServiceError, match="nonnegative"):
+        ArenaQueueSnapshot(-1, 0, 0)
 
 
 def test_registry_is_closed_and_unambiguous() -> None:
@@ -249,76 +221,22 @@ def test_provider_is_validator_supplied_and_digest_bound() -> None:
         ArenaService(_manifest(), provider)
 
 
-def test_all_non_crown_screens_promote_in_fixed_order(tmp_path: Path) -> None:
+def test_only_exact_candidates_reach_qualification(tmp_path: Path) -> None:
     provider = _Provider()
     service = ArenaService(_manifest(), provider)
     binding = _binding(tmp_path)
-    receipt = service.screen(binding)
-
-    assert receipt.decision is PromotionDecision.PROMOTE
-    assert tuple(row.stage for row in receipt.results) == SCREEN_STAGES
-    assert tuple(row[1] for row in provider.screen_calls) == SCREEN_STAGES
-    assert set(receipt.to_dict()) == {
-        "candidate_digest",
-        "decision",
-        "results",
-        "screen_attempt",
-        "service_digest",
-    }
-    assert all(
-        forbidden not in repr(receipt.to_dict()).lower()
-        for forbidden in ("speedup", "score", "crown")
-    )
-
-
-def test_no_decision_retries_then_escalates(tmp_path: Path) -> None:
-    over_binding = _binding(tmp_path / "overrun", attempt=1)
-    timeout = _Provider({"build": (ScreenGrade.PASS, 1_001)})
-    overrun = ArenaService(_manifest(), timeout).screen(over_binding)
-    assert overrun.decision is PromotionDecision.RETRY
-    assert tuple(row.stage for row in overrun.results) == ("static", "build")
-    assert overrun.results[-1].grade is ScreenGrade.NO_DECISION
-
-    # The second inconclusive attempt exhausts the routing-only retry.
-    unavailable = _Provider({"abbreviated_serving": (ScreenGrade.NO_DECISION, 10)})
-    service = ArenaService(_manifest(), unavailable)
-    binding = _binding(tmp_path / "hold", attempt=2)
-    escalated = service.screen(binding)
-    assert escalated.decision is PromotionDecision.PROMOTE
-    assert escalated.results[-1].grade is ScreenGrade.NO_DECISION
-    assert escalated.results[-1].evidence_digest == _h("abbreviated_serving")
-    assert (
-        type(service.plan_qualification((binding,), (escalated,)))
-        is ArenaQualificationWork
-    )
-
-
-def test_provider_cannot_substitute_a_screen_stage(tmp_path: Path) -> None:
-    service = ArenaService(_manifest(), _Provider(wrong_stage=True))
-    with pytest.raises(ArenaServiceError, match="changed the requested screen stage"):
-        service.screen(_binding(tmp_path))
-
-
-def test_only_exact_promoted_coverage_reaches_qualification(tmp_path: Path) -> None:
-    provider = _Provider()
-    service = ArenaService(_manifest(), provider)
-    binding = _binding(tmp_path)
-    promoted = service.screen(binding)
-    work = service.plan_qualification((binding,), (promoted,))
+    work = service.plan_qualification((binding,))
     assert type(work) is ArenaQualificationWork
     assert work.factory.manifest.reservations == (binding.reservation,)
     assert work.resident_baseline_executor is None
     assert provider.plan_calls[0].service_digest == service.identity
 
-    rejected_provider = _Provider({"static": (ScreenGrade.FAIL, 1)})
-    rejected_service = ArenaService(_manifest(), rejected_provider)
-    rejected = rejected_service.screen(binding)
-    with pytest.raises(ArenaServiceError, match="promoted coverage"):
-        rejected_service.plan_qualification((binding,), (rejected,))
-
-    other = dataclasses.replace(promoted, service_digest=_h("other-service"))
-    with pytest.raises(ArenaServiceError, match="promoted coverage"):
-        service.plan_qualification((binding,), (other,))
+    with pytest.raises(ArenaServiceError, match="no exact candidates"):
+        service.plan_qualification(())
+    with pytest.raises(ArenaServiceError, match="no exact candidates"):
+        service.plan_qualification((binding.reservation,))
+    with pytest.raises(ArenaServiceError, match="exceeds arena capacity"):
+        service.plan_qualification((binding,) * 5)
 
 
 def test_qualification_work_preserves_resident_baseline_executor(
@@ -329,9 +247,8 @@ def test_qualification_work_preserves_resident_baseline_executor(
         resident_baseline_executor=resident_baseline_executor
     )
     service = ArenaService(_manifest(), provider)
-    binding = _binding(tmp_path)
 
-    work = service.plan_qualification((binding,), (service.screen(binding),))
+    work = service.plan_qualification((_binding(tmp_path),))
 
     assert work.resident_baseline_executor is resident_baseline_executor
 
@@ -351,12 +268,9 @@ def test_provider_cannot_change_finalized_order(tmp_path: Path) -> None:
                 ),
             )
 
-    provider = WrongProvider()
-    service = ArenaService(_manifest(), provider)
-    binding = _binding(tmp_path)
-    receipt = service.screen(binding)
+    service = ArenaService(_manifest(), WrongProvider())
     with pytest.raises(ArenaServiceError, match="finalized qualification order"):
-        service.plan_qualification((binding,), (receipt,))
+        service.plan_qualification((_binding(tmp_path),))
 
 
 def test_provider_cannot_change_registered_qualification_policy(tmp_path: Path) -> None:
@@ -368,10 +282,8 @@ def test_provider_cannot_change_registered_qualification_policy(tmp_path: Path) 
             )
 
     service = ArenaService(_manifest(), WrongPolicyProvider())
-    binding = _binding(tmp_path)
-    receipt = service.screen(binding)
     with pytest.raises(ArenaServiceError, match="qualification policy"):
-        service.plan_qualification((binding,), (receipt,))
+        service.plan_qualification((_binding(tmp_path),))
 
 
 def test_arena_service_has_no_dynamic_import_authority() -> None:

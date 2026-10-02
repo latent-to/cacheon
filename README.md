@@ -1,15 +1,15 @@
 # Cacheon
 
-Cacheon is an inference-throughput competition built around SGLang and designed
-to operate as a Bittensor subnet. Miners submit inspectable GPU-kernel
-contributions at registered boundaries in a validator-owned model. Validators
-admit those contributions through a typed, isolated pipeline and reward only
-improvements that reproduce under the registered throughput and quality policy.
+Cacheon is an inference-speed competition built around SGLang and designed to
+operate as a Bittensor subnet. Miners submit inspectable contributions at
+registered boundaries of a validator-owned engine: modules of the served model,
+or the scheduler's prefix cache. Validators admit those contributions through a
+typed, isolated pipeline and reward only improvements measured end to end on the
+registered agent workload under its speed and quality policy.
 
 This repository—published as [`latent-to/cacheon`](https://github.com/latent-to/cacheon)—contains
 the miner SDK and examples, validator and chain control plane, evaluation
-runtime, settlement and incentive machinery, and chain-independent engine
-release tooling.
+runtime, and settlement and incentive machinery.
 
 > [!IMPORTANT]
 > Cacheon is pre-release software. Implemented paths, retained empirical evidence,
@@ -40,14 +40,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[cpu,dev]"
 
-python -m cacheon.cli slots
-python -m cacheon.cli scan examples/miner_silu_torch
-python -m cacheon.cli verify examples/miner_silu_torch \
-  --device cpu \
-  --dtype float32
+python -m cacheon.cli scan examples/miner_node_identity
+python -m cacheon.cli verify examples/miner_node_identity
 ```
 
-`scan` and `verify` are development checks. They do not establish serving
+`scan` and `verify` are development checks; `check` runs the node audit and
+graph checks in the published arena image. They do not establish serving
 throughput, end-to-end quality, settlement eligibility, or a production
 release. Those decisions belong to the validator-owned qualification path
 described in the documentation.
@@ -58,9 +56,8 @@ described in the documentation.
   reward policy. A miner contribution owns only its registered target.
 - Candidate build and execution run in validator-owned, no-egress OCI workers;
   wallet and chain-signing authority remain outside candidate lifetimes.
-- A single passing qualification is not a crown. Settlement requires an
-  independently reproduced pair bound to the same contribution and evaluation
-  context.
+- One complete audited qualification PASS makes a contribution eligible for
+  settlement, which reopens its retained evidence before recording a crown.
 - Evaluation acceptance and serving are different decisions. Nothing in the
   repository turns a crown into a release; that is a maintainer decision made
   outside it.

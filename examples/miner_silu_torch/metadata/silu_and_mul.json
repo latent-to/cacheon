@@ -1,6 +1,0 @@
-{
-  "op": "activation.silu_and_mul",
-  "dtypes": ["float32", "bfloat16", "float16"],
-  "max_last_dim": 65536,
-  "notes": "CPU dry-run bundle; no architecture gate so it runs anywhere torch runs."
-}

@@ -10,10 +10,42 @@ pytest.importorskip("fastapi")
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from dashboard.sources import DashboardSource, install_sources, selected
+from dashboard.sources import DashboardSource, install_sources, selected, worker_heartbeats
 from dashboard import app as dashboard
 from dashboard import sources as source_module
 from dashboard.disclosure import bundle_visibility
+
+
+@pytest.mark.parametrize("case,state,fresh", [
+    ("current", "running", True), ("boundary", "running", True),
+    ("stale", "stale", False), ("missing", "unknown", False),
+    ("corrupt", "unknown", False), ("future", "unknown", False),
+    ("epoch", "epoch_mismatch", False), ("ready", "epoch_mismatch", False),
+    ("registration_missing", "unknown", False),
+])
+def test_worker_observation_is_independent_of_fresh_relay(tmp_path, case, state, fresh):
+    registration = {"worker_epoch": "epoch", "ready_receipt_digest": "ready", "worker_readiness_digest": "worker"}
+    relay = {**registration, "time_unix": 999, "state": "running", "active_request_id": "old-request"}
+    path = tmp_path / "heartbeat.json"
+    path.write_text(json.dumps(relay))
+    worker = {**registration, "time_unix": 999, "state": "running", "adapter_alive": True,
+              "active_request_id": "worker-request", "private_path": "/private/worker"}
+    if case == "boundary": worker["time_unix"] = 880
+    if case == "stale": worker["time_unix"] = 879
+    if case == "future": worker["time_unix"] = 1010
+    if case == "epoch": worker["worker_epoch"] = "old-epoch"
+    if case == "ready": worker["ready_receipt_digest"] = "old-ready"
+    if case == "registration_missing": registration = {}
+    if case != "missing":
+        path.with_name("worker-heartbeat.json").write_text("broken" if case == "corrupt" else json.dumps(worker))
+    result = worker_heartbeats(path, registration, 1000)
+    observed = result["gpu_heartbeat"]
+    assert (observed["state"], observed["fresh"]) == (state, fresh)
+    assert observed["adapter_alive"] is fresh
+    assert observed["active_request_id"] == ("worker-request" if fresh else None)
+    assert result["relay_heartbeat"]["age_s"] == 1
+    assert result["relay_heartbeat"]["fresh"] is (case != "registration_missing")
+    assert "/private/worker" not in json.dumps(result)
 
 
 @pytest.fixture
@@ -44,14 +76,14 @@ def planes(tmp_path, monkeypatch):
     sources = {}
     for key, status, reason, publication in (
         ("glm", "failed", "manifest: unknown arena", ""),
-        ("qwen", "promoted", "screen_promoted", "published"),
+        ("qwen", "qualifying", "", "published"),
     ):
         path = tmp_path / f"{key}.sqlite3"
         with sqlite3.connect(path) as con:
             con.execute("""CREATE TABLE reservations (
                 reservation_id, status, reason, publication_digest,
                 target_id DEFAULT '', arena_service_digest DEFAULT '',
-                screen_status DEFAULT '', decision DEFAULT '', competition_arena DEFAULT '')""")
+                decision DEFAULT '', competition_arena DEFAULT '')""")
             con.execute("CREATE TABLE metadata (key, value)")
             if key == "glm":
                 con.execute("INSERT INTO metadata VALUES ('legacy_arena_id', 'glm-arena')")
@@ -81,7 +113,7 @@ def test_prepublication_rejections_do_not_claim_the_other_arenas_submission(plan
     response = client.get("/api/submissions/shared?arena=qwen")
     assert response.status_code == 200
     row = response.json()
-    assert (row["source"], row["status"]) == ("qwen", "promoted")
+    assert (row["source"], row["status"]) == ("qwen", "qualifying")
     assert row["log_url"] == "/api/submissions/shared/logs?arena=qwen"
     assert client.get("/api/submissions/shared?arena=glm").status_code == 404
     assert client.get("/api/submissions/shared").status_code == 404

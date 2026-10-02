@@ -1,12 +1,4 @@
-"""Dashboard rendering of signed screen receipts and qualification speed reads.
-
-The screen path has recorded per-stage grades and numeric reasons inside the
-signed receipt since the 2026-08 hardening, and every graded qualification
-leaves a stage-exit artifact in an evidence store. Both already answer "which
-check failed" and "what did the lanes measure" — this module only renders
-them for the submissions API, so a rejected miner reads the verdict instead
-of asking the operator.
-"""
+"""Read retained fee credits and operator-recorded evaluation recovery links."""
 
 from __future__ import annotations
 
@@ -15,34 +7,14 @@ import sqlite3
 from typing import Any
 
 
-def screen_stages(receipt_json: object) -> list[dict[str, Any]] | None:
-    """Per-stage rows from one signed screen receipt; ``None`` when unreadable.
-
-    Receipts sealed before the hardening carry no per-stage reasons; their
-    rows still render with the stage and grade so the history stays honest.
-    """
-
-    if not isinstance(receipt_json, (str, bytes)):
-        return None
-    try:
-        results = json.loads(receipt_json)["results"]
-    except (TypeError, ValueError, KeyError):
-        return None
-    if not isinstance(results, list):
-        return None
-    stages: list[dict[str, Any]] = []
-    for row in results:
-        if not isinstance(row, dict):
-            return None
-        stages.append(
-            {
-                "stage": row.get("stage"),
-                "grade": row.get("grade"),
-                "reason": row.get("reason"),
-                "elapsed_ms": row.get("elapsed_ms"),
-            }
-        )
-    return stages
+def evaluation_credit(con: sqlite3.Connection, submission: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the credit spent on this submission, not the hotkey's available balance."""
+    row = con.execute(
+        "SELECT credit_id, amount_tao_rao, spent_block FROM eval_cost_credits "
+        "WHERE reservation_id=? AND hotkey=? AND spent_block>0",
+        (submission["reservation_id"], submission["hotkey"]),
+    ).fetchone()
+    return {"credit_id": row[0], "amount_tao": row[1] / 1e9, "spent_block": row[2]} if row else None
 
 
 def evaluation_recovery(con: sqlite3.Connection, submission: dict[str, Any]) -> dict[str, Any] | None:
@@ -79,4 +51,4 @@ def evaluation_recovery(con: sqlite3.Connection, submission: dict[str, Any]) -> 
     return recovery
 
 
-__all__ = ["evaluation_recovery", "screen_stages"]
+__all__ = ["evaluation_credit", "evaluation_recovery"]

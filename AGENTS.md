@@ -82,19 +82,18 @@ AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
 - A miner proposal is hostile input, not production source.
 - The validator owns the model, workload, timing, outputs, references, target
   policy, and verdict.
-- A contribution changes one registered singleton/atomic target; there is no
-  separate proposal lane for unregistered work.
+- A contribution changes one registered target (the model's `forward_pass`
+  nodes or the `prefix_cache`); there is no separate proposal lane for
+  unregistered work.
 - Candidate build and execution remain outside the trusted controller in
   validator-owned, no-egress OCI lifetimes.
 - CUDA graphs are part of the scored contract.
 - One complete audited PASS qualifies for settlement. Each new bundle receives one
-  B/C/B′ qualification; historical PASS pairs retain their existing identities and credit.
-- The resident hot-swap screen is routing-only. Its measurements cannot crown,
-  settle, or authorize rewards.
-- Production version-3 qualification binds two physical TP lanes. Speed
-  policy is the two-process B/C/B′ schedule for every candidate (v10, or v11
-  for a mixed-cell workload); it warms every workload cell and retains a
-  separate eager/untimed audit role when registered and pristine T.
+  paired-replay qualification; historical PASS pairs retain their existing identities and credit.
+- Production version-3 qualification binds two physical TP lanes. Speed policy is the paired
+  replay (policy 17; retained policy-16 evidence stays readable): both engines replay the sealed
+  agent workload concurrently across both lane orientations. A separate eager/untimed audit role
+  runs when registered, then pristine T.
 - Evaluation-stack settlement, incentive activation, weight publication,
   integration review, release signing, and serving are distinct authorities.
 - Legacy V1 weights are a fenced state machine. The V2 finite-debt economics
@@ -110,10 +109,12 @@ security review—not a local implementation shortcut.
 ```text
 cacheon/                    runtime and control-plane package
   chain/                   finalized intake, durable state, activation, weights
-  eval/                    screening, qualification, OCI, evidence, scoring
+  eval/                    qualification, OCI, evidence, scoring
   integrations/            version-pinned SGLang adapters
 cacheon_kernels/            validator-owned reference kernel library
 examples/                  miner bundles and adversarial controls
+bundles/                   validator-maintained contribution bundles, such as the GLM champion nodes
+dashboard/                 read-only submissions dashboard over the intake database
 tests/                     executable contracts and regressions
 docs/                      canonical documentation site
 scripts/                   repository validation and reproducible studies
@@ -122,6 +123,11 @@ scripts/                   repository validation and reproducible studies
 Use `docs/reference/codebase-map.md` for authority-oriented entry points.
 
 ## Development workflow
+
+Use `apply_patch` for every edit to a Git-tracked file so the change is visible
+in the app's diff UI. Do not modify tracked files through heredocs, shell
+redirection, or script-based rewrites. Heredocs are permitted only for throwaway
+scripts and files or folders ignored by Git. This rule also applies to subagents.
 
 Start from a clean understanding of the worktree:
 
@@ -214,10 +220,8 @@ python -m pytest -q tests
 Contributor bundle checks:
 
 ```bash
-python -m cacheon.cli scan examples/miner_silu_torch
-python -m cacheon.cli verify examples/miner_silu_torch \
-  --device cpu \
-  --dtype float32
+python -m cacheon.cli scan examples/miner_node_identity
+python -m cacheon.cli verify examples/miner_node_identity
 ```
 
 Use `python -m cacheon.cli` for GPU work; SGLang uses spawned processes and the
@@ -233,11 +237,12 @@ module entry point preserves the required guard.
   vocabulary, and compatibility checks derive from it.
 - A module of the served model is a node address (`model.layers.*.mlp`, `model`), served at
   every width by `cacheon/integrations/sglang_nodes.py` against stock in the running engine.
-  Only a span no module names starts in `cacheon/slots.py` with its own adapter. No parallel registry.
-- Block and collective contributions must satisfy graph capture/replay and
-  declare the required graph metadata.
-- Collective verification binds each process to its CUDA device before process
-  group initialization.
+  The one slot no module names, the scheduler's prefix cache (`tree_cache`), is served by
+  `cacheon/integrations/sglang_cache.py` through its own row in `cacheon/seams.py`. No
+  parallel registry.
+- Node contributions must execute under CUDA-graph capture and replay wherever their
+  seam is captured; there is no graph metadata to declare
+  (`docs/miner-guide/graph-safety.md`). The prefix cache runs outside CUDA graphs.
 - Do not mix measurements across runtime, model, image, topology, workload, or
   policy identities.
 

@@ -1,8 +1,10 @@
 # Slots and contribution targets
 
-For a node arena, an execution slot is an address in the served model's module
-tree. The registered `forward_pass` target admits a bundle's declared addresses.
-The arena still owns its model, workload, evaluation policy and supported nodes.
+An execution slot is either an address in the served model's module tree,
+admitted by the `forward_pass` target, or `tree_cache`, the scheduler's prefix
+cache, admitted by the `prefix_cache` target. A bundle changes one target, so
+kernels and a cache are separate submissions. The arena still owns its model,
+workload, evaluation policy and supported nodes.
 
 ## Current slot catalog
 
@@ -16,6 +18,7 @@ that every model contains or admits each address:
 | `model.layers.3` | Decoder layer 3 |
 | `model.layers.*.self_attn.q_b_proj` | Matching attention projection modules |
 | `model` | Whole decoder stack, only where the arena can grade it |
+| `tree_cache` | The scheduler's runtime cache object (see below) |
 
 `*` matches exactly one segment. The binder refuses addresses that match no
 module and parent/child claims that overlap. Binding succeeds only when the
@@ -25,10 +28,10 @@ coverage are checked separately.
 ## Current GLM-5.3 availability
 
 The GLM node arena is `glm53-b300-node-v1`, using GLM-5.3 NVFP4 with
-SGLang 0.5.18 on B300, TP4 and attention DP4. Its incumbent is the composed
-champion implementation. Use the [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
-with that model and topology. Arena-specific inputs and supported boundaries
-remain part of the published contract; Qwen checks do not establish GLM coverage.
+SGLang 0.5.20 on B300, TP4 and attention DP4. `forward_pass` and `prefix_cache`
+are both open, and its incumbent is the composed champion implementation. Use the
+[GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
+with that model and topology; Qwen checks do not establish GLM coverage.
 
 ## Arena availability
 
@@ -49,6 +52,64 @@ entry = "forward"
 The bundle uses that node's stock `forward` interface, with its module or
 prepared state as the first argument. See [Kernel ABI](kernel-abi.md).
 
+## The prefix cache
+
+`tree_cache` names the scheduler's prefix cache instead of a module. The factory
+`entry(cache)` receives the initialized runtime object and returns its type or a
+concrete subclass, on every model. The validator installs those methods on the
+existing object, preserving its components, host tier, allocator and request pool.
+The factory may initialize its own fields on the cache. Declare no `prepare`; a row
+declaring dtypes, architectures or metadata is never selected and the run fails.
+
+```toml
+[competition]
+target = "prefix_cache"
+mode = "slot"
+arena = "<published-arena-id>"
+
+[[ops]]
+slot = "tree_cache"
+source = "cache/policy.py"
+entry = "build"
+```
+
+An identity implementation is:
+
+```python
+def build(cache):
+    return type(cache)
+```
+
+An implementation can return a subclass with its own `evict`, `match_prefix` or
+other cache methods. It inherits the runtime cache interface instead of naming a
+particular SGLang cache class. The identity implementation establishes binding,
+not a speed win.
+
+A cache bundle is judged as the incumbent kernels with the candidate cache against
+the incumbent kernels with the incumbent cache, which is stock SGLang's until a
+cache is commissioned. The cache runs outside CUDA graphs, so it needs no captured
+execution. The same content check runs on both arms: the KV behind every prefix
+the cache serves is checked against what the engine computed for it, whichever
+slot or host tier the bytes came through. Serving other bytes, keeping pages
+across a flush, moving a request's own slots, claiming more tokens than the key, or
+serving or protecting a length that is not whole pages stops the engine as the
+candidate's failure, as does a `match_prefix` result that is not SGLang's `MatchResult`.
+Validation covers full-attention, sliding-window, compressed and recurrent state. See
+[the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
+
+The prefix cache is a target only on arenas that serve with prefix caching. The
+Qwen development configuration disables radix caching, and a cache bundle there
+stops with `this hybrid runtime disables prefix caching`; cache bundles apply to
+the GLM arena. The operator's announcement names each arena's open targets.
+At the GLM arena's sealed load, the stock cache already reaches the prefix hit
+rate the workload allows, so a cache win comes from lower overhead or better
+behavior under memory pressure rather than more hits.
+
+Start each iteration from the current winning cache implementation, retaining its
+useful behavior. A later cache version replaces the earlier version; two cache
+classes are not automatically combined. Its reward is based on improvement over
+the commissioned incumbent, including the existing kernels and cache.
+
 ## Selecting a target
 
 1. Start with the exact arena model, image, engine configuration and topology.
@@ -66,20 +127,8 @@ policy, never Python registration order.
 
 ## Target resolution fails closed
 
-Malformed addresses, mixed catalog-slot/node bundles, overlapping node claims,
+Malformed addresses, overlapping node claims,
 unknown targets and unavailable arena targets do not become successful stock
 runs. A successful interface smoke also does not establish a live node exists;
 that needs the loaded model.
 
-## Singleton targets
-
-Old catalog fixtures remain addressable by their singleton target IDs for
-reference verification. `cacheon slots` prints this retained catalog, not a
-model's module tree. Do not use that list as node-arena availability.
-
-## The registered atomic targets
-
-Retained atomic targets describe old multi-slot contracts. Their fixtures and
-historical identities remain tied to those contracts. A node bundle declares
-module addresses under `forward_pass`; it does not request a new atomic target
-for each fusion.

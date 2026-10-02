@@ -1,4 +1,4 @@
-"""Closed B300/TP4 composition root for arena screening and qualification.
+"""Closed B300/TP4 composition root for arena qualification.
 
 The generic arena service deliberately leaves deployment assembly out of the
 consensus-facing types.  This module supplies that assembly without resolving
@@ -6,32 +6,23 @@ module names, entry points, commands, or candidate-controlled configuration.
 Every executable authority is supplied in process, paired with a deployment
 identity digest, and captured before the provider accepts work.
 
-There is no generic build/ABI/graph screen API in the core package.  The four
-non-serving stages therefore use exact :class:`B300ScreenStageHandler` values.
-Those handlers must return real ``ScreenStageResult`` evidence; this provider
-never turns a boolean or an exception into ``PASS``.  The serving stage is the
-existing :class:`ResidentServingScreenStage`, owned through a bounded lifetime
-so it can be released before qualification takes the deployment executors.
+A commissioning run seals only :class:`B300DeclaredAuthorities` into the
+manifest; the full :class:`B300DeploymentAuthorities` with executors, judge,
+entropy, and deadline exist only inside the qualification worker process.
 """
 
 from __future__ import annotations
 
 import math
 import threading
-import time
 from dataclasses import dataclass, fields
-from typing import Callable, Protocol
+from typing import Callable
 
 from cacheon.arena_service import (
-    SCREEN_STAGES,
-    ArenaCandidateBinding,
     ArenaQualificationRequest,
     ArenaQualificationWork,
     ArenaRuntimeIdentity,
     ArenaServiceManifest,
-    ScreenGrade,
-    ScreenStagePolicy,
-    ScreenStageResult,
 )
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.b300_qualification_lanes import (
@@ -47,128 +38,10 @@ from cacheon.eval.b300_qualification_lanes import (
 from cacheon.eval.oci_backend import OCIBackendConfig, OCIEngineExecutor
 from cacheon.eval.qualification_intake import QualificationPlanFactory
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
-from cacheon.eval.resident_screen_lane import (
-    ResidentScreenLifetimeFailed,
-    ResidentServingScreenStage,
-)
 from cacheon.stack_identity import canonical_digest
 
 
-PROVIDER_SCHEMA = "cacheon.eval.b300-arena-provider.v2"
-SCREEN_EXCEPTION_SCHEMA = "cacheon.eval.b300-screen-exception.v1"
-_NON_SERVING_STAGES = SCREEN_STAGES[:-1]
-_SERVING_STAGE = SCREEN_STAGES[-1]
-
-
-def _resource_ids(value: object, field: str, *, allow_empty: bool) -> tuple[str, ...]:
-    if type(value) is not tuple:
-        raise B300ArenaProviderError(f"{field} must be an exact tuple")
-    rows = tuple(value)
-    if (
-        (not allow_empty and not rows)
-        or rows != tuple(sorted(set(rows)))
-        or any(
-            not isinstance(row, str)
-            or not row
-            or row.strip() != row
-            or len(row) > 128
-            or any(character in row for character in "\x00\r\n")
-            for row in rows
-        )
-    ):
-        raise B300ArenaProviderError(f"{field} are not canonical")
-    return rows
-
-
-class ScreenStageRunner(Protocol):
-    """Closed call shape for a deployment-owned non-serving screen."""
-
-    def __call__(
-        self,
-        manifest: ArenaServiceManifest,
-        policy: ScreenStagePolicy,
-        candidate: ArenaCandidateBinding,
-    ) -> ScreenStageResult: ...
-
-
-@dataclass(frozen=True)
-class B300ScreenStageHandler:
-    """Sealed identity and callable for one real non-serving screen stage."""
-
-    stage: str
-    identity_digest: str
-    resource_ids: tuple[str, ...]
-    runner: ScreenStageRunner
-
-    def __post_init__(self) -> None:
-        if self.stage not in _NON_SERVING_STAGES or not callable(self.runner):
-            raise B300ArenaProviderError("screen handler stage or runner is invalid")
-        object.__setattr__(
-            self,
-            "identity_digest",
-            _digest(self.identity_digest, f"{self.stage} handler identity"),
-        )
-        object.__setattr__(
-            self,
-            "resource_ids",
-            _resource_ids(
-                self.resource_ids,
-                f"{self.stage} handler resources",
-                allow_empty=True,
-            ),
-        )
-
-    def run_screen(
-        self,
-        manifest: ArenaServiceManifest,
-        policy: ScreenStagePolicy,
-        candidate: ArenaCandidateBinding,
-    ) -> ScreenStageResult:
-        return self.runner(manifest, policy, candidate)
-
-
-@dataclass(frozen=True)
-class B300ResidentScreenLifetime:
-    """One exact resident screen stage plus its deployment-owned teardown."""
-
-    screen_stage: ResidentServingScreenStage
-    closer: Callable[[], None]
-
-    def __post_init__(self) -> None:
-        if type(self.screen_stage) is not ResidentServingScreenStage or not callable(
-            self.closer
-        ):
-            raise B300ArenaProviderError("resident screen lifetime is not exact")
-
-    def close(self) -> None:
-        self.closer()
-
-
-@dataclass(frozen=True)
-class B300ResidentScreenFactory:
-    """Sealed construction authority for a lazily opened resident stage."""
-
-    identity_digest: str
-    resource_ids: tuple[str, ...]
-    create: Callable[[], B300ResidentScreenLifetime]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "identity_digest",
-            _digest(self.identity_digest, "resident screen factory identity"),
-        )
-        object.__setattr__(
-            self,
-            "resource_ids",
-            _resource_ids(
-                self.resource_ids,
-                "resident screen factory resources",
-                allow_empty=False,
-            ),
-        )
-        if not callable(self.create):
-            raise B300ArenaProviderError("resident screen factory is not callable")
+PROVIDER_SCHEMA = "cacheon.eval.b300-arena-provider.v3"
 
 
 QualificationFactoryBuilder = Callable[
@@ -179,12 +52,12 @@ DeadlineProvider = Callable[[ArenaQualificationRequest, object | None], float]
 
 @dataclass(frozen=True)
 class B300DeclaredQualificationAuthorities:
-    """Path-free qualification identities retained by screen-only workers.
+    """Path-free qualification identities sealed before any executor exists.
 
-    A commissioned screen worker must identify the later qualification worker
-    without pretending to possess its private judge, entropy, executors, or
-    factory.  These declarations are therefore sufficient for provider/service
-    identity, but grant no qualification capability.
+    A commissioning run must identify the qualification worker without
+    pretending to possess its private judge, entropy, executors, or factory.
+    These declarations are therefore sufficient for provider/service identity,
+    but grant no qualification capability.
     """
 
     qualification_policy_digest: str
@@ -227,51 +100,20 @@ class B300DeclaredQualificationAuthorities:
         }
 
 
-def _validate_screen_authorities(
-    runtime_identity: ArenaRuntimeIdentity,
-    screen_handlers: tuple[B300ScreenStageHandler, ...],
-    resident_screen_factory: B300ResidentScreenFactory,
-) -> tuple[B300ScreenStageHandler, ...]:
-    if type(runtime_identity) is not ArenaRuntimeIdentity:
-        raise B300ArenaProviderError("runtime identity is not exact")
-    handlers = tuple(screen_handlers)
-    if (
-        type(screen_handlers) is not tuple
-        or any(type(row) is not B300ScreenStageHandler for row in handlers)
-        or tuple(row.stage for row in handlers) != _NON_SERVING_STAGES
-    ):
-        raise B300ArenaProviderError(
-            "screen handlers differ from the canonical stage order"
-        )
-    if type(resident_screen_factory) is not B300ResidentScreenFactory:
-        raise B300ArenaProviderError("resident screen factory is not exact")
-    resident_resources = set(resident_screen_factory.resource_ids)
-    non_serving_resources = {
-        resource for handler in handlers for resource in handler.resource_ids
-    }
-    if resident_resources.intersection(non_serving_resources):
-        raise B300ArenaProviderError(
-            "resident screen resources overlap a retained non-serving handler"
-        )
-    return handlers
-
-
 @dataclass(frozen=True)
-class B300ScreenDeploymentAuthorities:
-    """Executable screen authority with declared, but unavailable, qualification."""
+class B300DeclaredAuthorities:
+    """Runtime identity plus declared qualification: the manifest's provider input.
+
+    This is what a commissioning run seals into the arena manifest.  It can
+    validate readiness and identity but cannot build qualification work.
+    """
 
     runtime_identity: ArenaRuntimeIdentity
-    screen_handlers: tuple[B300ScreenStageHandler, ...]
-    resident_screen_factory: B300ResidentScreenFactory
     qualification: B300DeclaredQualificationAuthorities
 
     def __post_init__(self) -> None:
-        handlers = _validate_screen_authorities(
-            self.runtime_identity,
-            self.screen_handlers,
-            self.resident_screen_factory,
-        )
-        object.__setattr__(self, "screen_handlers", handlers)
+        if type(self.runtime_identity) is not ArenaRuntimeIdentity:
+            raise B300ArenaProviderError("runtime identity is not exact")
         if type(self.qualification) is not B300DeclaredQualificationAuthorities:
             raise B300ArenaProviderError(
                 "declared qualification authority is not exact"
@@ -294,8 +136,6 @@ class B300DeploymentAuthorities:
     """
 
     runtime_identity: ArenaRuntimeIdentity
-    screen_handlers: tuple[B300ScreenStageHandler, ...]
-    resident_screen_factory: B300ResidentScreenFactory
     qualification_policy_digest: str
     qualification_builder_digest: str
     qualification_factory_builder: QualificationFactoryBuilder
@@ -310,12 +150,8 @@ class B300DeploymentAuthorities:
     qualification_stage: str
 
     def __post_init__(self) -> None:
-        handlers = _validate_screen_authorities(
-            self.runtime_identity,
-            self.screen_handlers,
-            self.resident_screen_factory,
-        )
-        object.__setattr__(self, "screen_handlers", handlers)
+        if type(self.runtime_identity) is not ArenaRuntimeIdentity:
+            raise B300ArenaProviderError("runtime identity is not exact")
         for field in (
             "qualification_policy_digest",
             "qualification_builder_digest",
@@ -480,7 +316,7 @@ def _validate_executor_lane(
         )
 
 
-_AuthorityBundle = B300DeploymentAuthorities | B300ScreenDeploymentAuthorities
+_AuthorityBundle = B300DeploymentAuthorities | B300DeclaredAuthorities
 
 
 def b300_arena_provider_digest(authorities: _AuthorityBundle) -> str:
@@ -488,18 +324,9 @@ def b300_arena_provider_digest(authorities: _AuthorityBundle) -> str:
 
     if type(authorities) not in {
         B300DeploymentAuthorities,
-        B300ScreenDeploymentAuthorities,
+        B300DeclaredAuthorities,
     }:
         raise B300ArenaProviderError("deployment authorities are not exact")
-    handlers = authorities.screen_handlers
-    resident_resources = set(authorities.resident_screen_factory.resource_ids)
-    non_serving_resources = {
-        resource for handler in handlers for resource in handler.resource_ids
-    }
-    if resident_resources.intersection(non_serving_resources):
-        raise B300ArenaProviderError(
-            "resident screen resources overlap a retained non-serving handler"
-        )
     qualification = authorities.qualification
     return canonical_digest(
         PROVIDER_SCHEMA,
@@ -525,19 +352,7 @@ def b300_arena_provider_digest(authorities: _AuthorityBundle) -> str:
                     qualification.resident_baseline_executor_policy_digest
                 ),
             },
-            "resident_screen": {
-                "factory_digest": authorities.resident_screen_factory.identity_digest,
-                "resource_ids": list(authorities.resident_screen_factory.resource_ids),
-            },
             "runtime": authorities.runtime_identity.to_dict(),
-            "screen_handlers": [
-                {
-                    "identity_digest": handler.identity_digest,
-                    "resource_ids": list(handler.resource_ids),
-                    "stage": handler.stage,
-                }
-                for handler in handlers
-            ],
         },
     )
 
@@ -554,7 +369,7 @@ class B300ArenaServiceProvider:
             raise B300ArenaProviderError("arena service manifest is not exact")
         if type(authorities) not in {
             B300DeploymentAuthorities,
-            B300ScreenDeploymentAuthorities,
+            B300DeclaredAuthorities,
         }:
             raise B300ArenaProviderError("deployment authorities are not exact")
         observed = b300_arena_provider_digest(authorities)
@@ -574,11 +389,6 @@ class B300ArenaServiceProvider:
         self.manifest = manifest
         self.provider_digest = observed
         self._authorities = authorities
-        self._handlers = {
-            handler.stage: (handler, handler.runner)
-            for handler in authorities.screen_handlers
-        }
-        self._create_resident = authorities.resident_screen_factory.create
         capabilities = (
             authorities if type(authorities) is B300DeploymentAuthorities else None
         )
@@ -586,93 +396,8 @@ class B300ArenaServiceProvider:
         self.qualification_stage = (
             capabilities.qualification_stage if capabilities is not None else None
         )
-        self._resident_lifetime: B300ResidentScreenLifetime | None = None
-        self._resident_failed = False
-        self._resident_teardown_failed = False
         self._closed = False
         self._lock = threading.RLock()
-
-    @property
-    def resident_screen_latched(self) -> bool:
-        """True once only an adapter restart can clear the resident lifetime."""
-
-        with self._lock:
-            return self._resident_failed or self._resident_teardown_failed
-
-    def retire_resident_screen(self) -> None:
-        """Release the retained screen lifetime before qualification owns its lane."""
-
-        with self._lock:
-            if not self._closed and self._resident_teardown_failed:
-                self._release_resident()
-            self._require_open_and_current()
-            self._release_resident()
-
-    def run_screen(
-        self,
-        manifest: ArenaServiceManifest,
-        stage: ScreenStagePolicy,
-        candidate: ArenaCandidateBinding,
-    ) -> ScreenStageResult:
-        if (
-            type(manifest) is not ArenaServiceManifest
-            or manifest != self.manifest
-            or type(stage) is not ScreenStagePolicy
-            or type(candidate) is not ArenaCandidateBinding
-        ):
-            raise B300ArenaProviderError("screen request differs from deployment authority")
-        expected_stage = next(
-            (row for row in manifest.screens.stages if row.stage == stage.stage), None
-        )
-        if expected_stage != stage:
-            raise B300ArenaProviderError("screen stage policy was substituted")
-        with self._lock:
-            self._require_open_and_current()
-            started = time.monotonic()
-            if stage.stage == _SERVING_STAGE:
-                lifetime = self._resident_lifetime
-                if lifetime is None:
-                    try:
-                        created = self._create_resident()
-                    except Exception as exc:
-                        raise B300ArenaProviderError(
-                            "resident screen start failed"
-                        ) from exc
-                    if type(created) is not B300ResidentScreenLifetime:
-                        raise B300ArenaProviderError(
-                            "resident factory returned an untyped lifetime"
-                        )
-                    lifetime = created
-                    self._resident_lifetime = lifetime
-                try:
-                    result = lifetime.screen_stage.run_screen(candidate)
-                except ResidentScreenLifetimeFailed as exc:
-                    self._resident_failed = True
-                    raise B300ArenaProviderError(
-                        "resident screen lifetime failed; epoch restart required"
-                    ) from exc
-                except Exception as exc:
-                    # The request may retry while the healthy resident remains,
-                    # but the exception is not a candidate screen verdict.
-                    raise B300ArenaProviderError(
-                        "resident screen request failed"
-                    ) from exc
-                if lifetime.screen_stage.lifetime_failed:
-                    self._resident_failed = True
-            else:
-                configured = self._handlers.get(stage.stage)
-                if configured is None:
-                    raise B300ArenaProviderError("screen stage is not configured")
-                _handler, runner = configured
-                try:
-                    result = runner(manifest, stage, candidate)
-                except Exception as exc:
-                    return self._exception_result(manifest, stage, candidate, exc, started)
-            if type(result) is not ScreenStageResult or result.stage != stage.stage:
-                raise B300ArenaProviderError(
-                    "screen handler changed the requested stage or evidence type"
-                )
-            return result
 
     def build_qualification(
         self,
@@ -692,9 +417,9 @@ class B300ArenaServiceProvider:
             capabilities = self._qualification_capabilities
             if capabilities is None:
                 raise B300ArenaProviderError(
-                    "qualification capabilities are unavailable on this screen worker"
+                    "qualification capabilities are unavailable on a declared-only provider"
                 )
-            self.retire_resident_screen()
+            self._require_open_and_current()
             try:
                 factory = capabilities.qualification_factory_builder(request, state)
             except Exception as exc:
@@ -738,68 +463,14 @@ class B300ArenaServiceProvider:
             )
 
     def close(self) -> None:
-        """Permanently close the provider and its resident screen lifetime."""
+        """Permanently close the provider."""
 
         with self._lock:
-            if self._closed and self._resident_lifetime is None:
-                return
             self._closed = True
-            self._release_resident()
-
-    def _exception_result(
-        self,
-        manifest: ArenaServiceManifest,
-        stage: ScreenStagePolicy,
-        candidate: ArenaCandidateBinding,
-        exc: Exception,
-        started: float,
-    ) -> ScreenStageResult:
-        handler_digest = (
-            self._authorities.resident_screen_factory.identity_digest
-            if stage.stage == _SERVING_STAGE
-            else self._handlers[stage.stage][0].identity_digest
-        )
-        evidence = canonical_digest(
-            SCREEN_EXCEPTION_SCHEMA,
-            {
-                "candidate_digest": candidate.digest,
-                "exception_type": type(exc).__name__,
-                "handler_digest": handler_digest,
-                "provider_digest": self.provider_digest,
-                "service_digest": manifest.digest,
-                "stage": stage.stage,
-            },
-        )
-        elapsed_ms = max(1, round((time.monotonic() - started) * 1_000))
-        return ScreenStageResult(
-            stage.stage,
-            ScreenGrade.PASS,
-            evidence,
-            elapsed_ms,
-        )
-
-    def _release_resident(self) -> None:
-        lifetime = self._resident_lifetime
-        if lifetime is None:
-            self._resident_teardown_failed = False
-            return
-        try:
-            lifetime.close()
-        except BaseException as exc:
-            self._resident_teardown_failed = True
-            raise B300ArenaProviderError("resident screen teardown failed") from exc
-        self._resident_lifetime = None
-        self._resident_teardown_failed = False
 
     def _require_open_and_current(self) -> None:
         if self._closed:
             raise B300ArenaProviderError("arena provider is closed")
-        if self._resident_failed:
-            raise B300ArenaProviderError(
-                "resident screen lifetime failed; epoch restart required"
-            )
-        if self._resident_teardown_failed:
-            raise B300ArenaProviderError("resident screen teardown is unresolved")
         if b300_arena_provider_digest(self._authorities) != self.provider_digest:
             raise B300ArenaProviderError(
                 "deployment authority identity changed after construction"
@@ -809,20 +480,16 @@ class B300ArenaServiceProvider:
 __all__ = [
     "B300ArenaProviderError",
     "B300ArenaServiceProvider",
+    "B300DeclaredAuthorities",
     "B300DeclaredQualificationAuthorities",
     "B300DeploymentAuthorities",
     "B300QualificationLaneOrientation",
     "B300QualificationLanePair",
     "B300QualificationLanePolicy",
-    "B300ResidentScreenFactory",
-    "B300ResidentScreenLifetime",
-    "B300ScreenStageHandler",
-    "B300ScreenDeploymentAuthorities",
     "PROVIDER_SCHEMA",
     "QUALIFICATION_LANE_PAIR_SCHEMA",
     "QUALIFICATION_LANE_SCHEMA",
     "QUALIFICATION_ROLE_SWAP_SCHEMA",
-    "SCREEN_EXCEPTION_SCHEMA",
     "b300_executor_role_policy_digest",
     "b300_arena_provider_digest",
 ]

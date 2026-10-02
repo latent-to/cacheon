@@ -264,25 +264,3 @@ def test_gate_requires_minimum_calls_on_every_slot_rank_receipt():
     )
     assert decision == "NO_DECISION" and "per-slot/member coverage" in desc
 
-
-# ---- selected-index grading, the grader `cacheon verify` still uses ---------------
-
-
-def _sel(rows):
-    return torch.tensor(rows, dtype=torch.int32).unsqueeze(0)  # (H=1, rows, k)
-
-
-def test_selection_overlap_grades_rows_and_refuses_rewritten_padding():
-    from cacheon.selection_overlap import NOTHING_SELECTED, selection_overlap
-
-    base = [[i * 8 + j for j in range(8)] for i in range(4)]
-    assert selection_overlap(_sel(base), _sel(base)) == (1.0, "")
-    # One fully-wrong row of four.
-    wrong = [[100 + j for j in range(8)], *base[1:]]
-    assert selection_overlap(_sel(wrong), _sel(base)) == (0.75, "")
-    # A candidate may not replace the reference's padding with extra blocks.
-    padded = _sel([[0, 1, 2, 3, -1, -1, -1, -1]])
-    score, reason = selection_overlap(_sel([[0, 1, 2, 3, 9, 10, 11, 12]]), padded)
-    assert score == 0.0 and "padding" in reason
-    empty = _sel([[-1] * 8])
-    assert selection_overlap(empty.clone(), empty) == (0.0, NOTHING_SELECTED)

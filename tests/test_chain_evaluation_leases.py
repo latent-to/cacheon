@@ -4,13 +4,6 @@ import sqlite3
 
 import pytest
 
-from cacheon.arena_service import (
-    SCREEN_STAGES,
-    ArenaScreenReceipt,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStageResult,
-)
 from cacheon.chain.intake import (
     EvaluationLease,
     FinalizedArrival,
@@ -29,6 +22,7 @@ from cacheon.eval.qualification_intake import (
 from cacheon.stack_identity import sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
+from tests.test_chain_intake import ATTEMPT
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 14)
@@ -103,43 +97,33 @@ def _publish(store: FinalizedIntakeStore, row, marker: str):
     )
 
 
-def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
-    service = _h("service")
-    active = store.begin_screen(reservation_id, service_digest=service)
-    candidate = _h(f"candidate:{reservation_id}:{active.screen_attempts}")
-    receipt = ArenaScreenReceipt(
-        service,
-        candidate,
-        active.screen_attempts,
-        tuple(
-            ScreenStageResult(stage, ScreenGrade.PASS, _h(stage), 1)
-            for stage in SCREEN_STAGES
+def _complete(store: FinalizedIntakeStore, lease: EvaluationLease) -> None:
+    """Retain one FAIL disposition per member inside the lease's accept context."""
+    authority = _h("authority")
+    rows = tuple(store.get(member.reservation_id) for member in lease.members)
+    for row in rows:
+        store.mark_qualifying(
+            row.reservation_id, authority, AUTHORITY, service_digest=_h("service")
+        )
+    store.apply_qualification_batch(
+        QualificationIntakeBatch(
+            authority,
+            tuple(
+                QualificationIntakeOutcome(
+                    row.reservation_id,
+                    row.delta_fingerprint.selected_delta_digest,
+                    authority,
+                    QualificationDecision.FAIL,
+                    "speed_regression",
+                    False,
+                    attempt_artifact_sha256=ATTEMPT.sha256,
+                    report_digest=_h(f"report:{row.reservation_id}"),
+                )
+                for row in rows
+            ),
+            ATTEMPT,
         ),
-        PromotionDecision.PROMOTE,
-    )
-    store.apply_screen_receipt(
-        reservation_id, candidate_digest=candidate, receipt=receipt
-    )
-
-
-def _complete_screen(store: FinalizedIntakeStore, lease: EvaluationLease) -> None:
-    assert len(lease.members) == 1
-    reservation_id = lease.members[0].reservation_id
-    service = _h("service")
-    active = store.begin_screen(reservation_id, service_digest=service)
-    candidate = _h(f"leased-candidate:{reservation_id}:{active.screen_attempts}")
-    receipt = ArenaScreenReceipt(
-        service,
-        candidate,
-        active.screen_attempts,
-        tuple(
-            ScreenStageResult(stage, ScreenGrade.PASS, _h(f"leased:{stage}"), 1)
-            for stage in SCREEN_STAGES
-        ),
-        PromotionDecision.PROMOTE,
-    )
-    store.apply_screen_receipt(
-        reservation_id, candidate_digest=candidate, receipt=receipt
+        current_finalized_block=store.finalized_cursor()[0],
     )
 
 
@@ -149,7 +133,12 @@ def _published_rows(store: FinalizedIntakeStore, count: int = 2):
         finalized_block=10,
         finalized_block_hash="0x" + f"{10:064x}",
     )
-    return tuple(_publish(store, row, chr(ord("a") + index)) for index, row in enumerate(rows))
+    published = tuple(
+        _publish(store, row, chr(ord("a") + index)) for index, row in enumerate(rows)
+    )
+    # Qualification drains only rows bound to the queue head's baseline segment.
+    store.backfill_reservation_baseline_segments()
+    return published
 
 
 def test_additive_schema_migrates_a_legacy_database(tmp_path):
@@ -176,16 +165,16 @@ def test_active_lease_survives_reopen_and_hides_legacy_queue_reader(tmp_path):
     with _store(tmp_path) as store:
         row = _published_rows(store, 1)[0]
         lease = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=10, lease_blocks=20
+            stage="qualification", owner="worker-a", current_block=10, lease_blocks=20
         )
         assert lease is not None
         assert lease.reservation_ids == (row.reservation_id,)
-        assert store.screenable() == ()
+        assert store.claimable() == ()
 
     with _store(tmp_path) as reopened:
         assert reopened.active_evaluation_leases() == (lease,)
         assert reopened.get(row.reservation_id).status == "published"
-        assert reopened.screenable() == ()
+        assert reopened.claimable() == ()
 
 
 def test_preview_and_claim_use_fifo_with_reproduction_priority(tmp_path):
@@ -199,18 +188,21 @@ def test_preview_and_claim_use_fifo_with_reproduction_priority(tmp_path):
             "screen_lane='reproduction' WHERE reservation_id=?",
             (third.reservation_id,),
         )
-        assert store.preview_evaluation_claim(stage="screen") == (
+        assert store.preview_evaluation_claim(stage="qualification") == (
             third.reservation_id,
         )
         reproduction = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=10
+            stage="qualification", owner="worker-a", current_block=10
         )
         assert reproduction is not None
         assert reproduction.reservation_ids == (third.reservation_id,)
-        assert store.preview_evaluation_claim(stage="screen") == (
-            first.reservation_id,
+        # The default capacity of one hides the primary cohort until more
+        # qualification capacity is granted.
+        assert store.preview_evaluation_claim(stage="qualification") == ()
+        primary = store.claim_evaluation_lease(
+            stage="qualification", owner="worker-b", current_block=10, max_active=2
         )
-        assert second.reservation_id != first.reservation_id
+        assert primary.reservation_ids == (first.reservation_id, second.reservation_id)
 
 
 def test_expiry_requeues_exact_status_without_attempt_and_advances_generation(tmp_path):
@@ -218,7 +210,7 @@ def test_expiry_requeues_exact_status_without_attempt_and_advances_generation(tm
         row = _published_rows(store, 1)[0]
         before = store.get(row.reservation_id)
         first = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=10, lease_blocks=2
+            stage="qualification", owner="worker-a", current_block=10, lease_blocks=2
         )
         assert first is not None
         _advance(store, 11)
@@ -226,12 +218,12 @@ def test_expiry_requeues_exact_status_without_attempt_and_advances_generation(tm
         _advance(store, 12)
         assert store.expire_evaluation_leases(current_block=12) == (first,)
         requeued = store.get(row.reservation_id)
-        assert (requeued.status, requeued.screen_attempts) == (
+        assert (requeued.status, store.qualification_attempts(row.reservation_id)) == (
             before.status,
-            before.screen_attempts,
+            0,
         )
         second = store.claim_evaluation_lease(
-            stage="screen", owner="worker-b", current_block=12, lease_blocks=2
+            stage="qualification", owner="worker-b", current_block=12, lease_blocks=2
         )
         assert second is not None
         assert second.generation == first.generation + 1
@@ -241,65 +233,38 @@ def test_expiry_requeues_exact_status_without_attempt_and_advances_generation(tm
         )] == ["claimed", "expired", "claimed"]
 
 
-def test_completed_result_wins_before_expiry_is_reclaimed(tmp_path):
+def test_expiry_wins_over_a_qualification_result_at_its_deadline(tmp_path):
     with _store(tmp_path) as store:
         row = _published_rows(store, 1)[0]
         lease = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=10, lease_blocks=2
+            stage="qualification", owner="worker-a", current_block=10, lease_blocks=2
         )
         assert lease is not None
         _advance(store, 12)
-        with store.accept_evaluation_result(
-            lease, current_block=12, result_digest=_h("late-result")
-        ):
-            _complete_screen(store, lease)
+        with pytest.raises(IntakeError, match="after lease expiry"):
+            with store.accept_evaluation_result(
+                lease, current_block=12, result_digest=_h("late-result")
+            ):
+                raise AssertionError("late result entered its mutation context")
         assert store.active_evaluation_leases() == ()
         retained = store.get(row.reservation_id)
-        assert (retained.status, retained.screen_attempts) == ("promoted", 1)
+        assert (retained.status, store.qualification_attempts(row.reservation_id)) == (
+            "published",
+            0,
+        )
         assert [event.event_type for event in store.evaluation_lease_events(
             lease_id=lease.lease_id
-        )] == ["claimed", "completed"]
-
-
-def test_heartbeat_is_cas_and_stale_completion_is_rejected(tmp_path):
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        original = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=10, lease_blocks=10
-        )
-        assert original is not None
-        _advance(store, 15)
-        extended = store.heartbeat_evaluation_lease(
-            original, current_block=15, lease_blocks=10
-        )
-        assert extended.expires_block == 25
-        _advance(store, 16)
-        with pytest.raises(IntakeError, match="stale"):
-            with store.accept_evaluation_result(
-                original, current_block=16, result_digest=_h("stale-result")
-            ):
-                raise AssertionError("stale lease entered its mutation context")
-        with store.accept_evaluation_result(
-            extended, current_block=16, result_digest=_h("screen-result")
-        ) as members:
-            assert tuple(row.reservation_id for row in members) == (
-                row.reservation_id,
-            )
-            _complete_screen(store, extended)
-        assert store.get(row.reservation_id).status == "promoted"
-        assert [event.event_type for event in store.evaluation_lease_events(
-            lease_id=extended.lease_id
-        )] == ["claimed", "heartbeat", "completed"]
+        )] == ["claimed", "expired"]
 
 
 def test_only_one_claimer_can_own_one_queue_row(tmp_path):
     with _store(tmp_path) as store:
         row = _published_rows(store, 1)[0]
         first = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=10
+            stage="qualification", owner="worker-a", current_block=10
         )
         second = store.claim_evaluation_lease(
-            stage="screen", owner="worker-b", current_block=10
+            stage="qualification", owner="worker-b", current_block=10, max_active=2
         )
         assert first is not None and first.reservation_ids == (row.reservation_id,)
         assert second is None
@@ -315,7 +280,8 @@ def test_active_leases_report_full_finalized_arrival_order(tmp_path):
         rows = _published_rows(store, 4)
         leases = []
         leases.append(store.claim_evaluation_lease(
-            stage="screen", owner="worker-0", current_block=10
+            stage="qualification", owner="worker-0", current_block=10,
+            max_members=1, max_active=4,
         ))
         # Force later rows through the contract's reproduction-priority lane so
         # claim order differs from finalized event order.
@@ -326,10 +292,12 @@ def test_active_leases_report_full_finalized_arrival_order(tmp_path):
                 (rows[index].reservation_id,),
             )
             leases.append(store.claim_evaluation_lease(
-                stage="screen", owner=f"worker-{index}", current_block=10
+                stage="qualification", owner=f"worker-{index}", current_block=10,
+                max_members=1, max_active=4,
             ))
         leases.append(store.claim_evaluation_lease(
-            stage="screen", owner="worker-1", current_block=10
+            stage="qualification", owner="worker-1", current_block=10,
+            max_members=1, max_active=4,
         ))
         assert all(lease is not None for lease in leases)
         assert tuple(
@@ -341,7 +309,7 @@ def test_legacy_mutation_is_fenced_but_exact_accept_context_is_authorized(tmp_pa
     with _store(tmp_path) as store:
         row, unrelated = _published_rows(store, 2)
         lease = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=10
+            stage="qualification", owner="worker-a", current_block=10, max_members=1
         )
         assert lease is not None
         with pytest.raises(IntakeError, match="fences"):
@@ -361,20 +329,19 @@ def test_legacy_mutation_is_fenced_but_exact_accept_context_is_authorized(tmp_pa
                     "WHERE reservation_id=?",
                     (unrelated.reservation_id,),
                 )
-            _complete_screen(store, lease)
-        assert store.get(row.reservation_id).status == "promoted"
+            _complete(store, lease)
+        assert store.get(row.reservation_id).status == "failed"
         assert store.get(unrelated.reservation_id).status == "published"
 
 
 def test_default_capacity_is_one_and_unresolved_predecessors_fence_settlement(tmp_path):
     with _store(tmp_path, max_cohort=3) as store:
         rows = _published_rows(store, 3)
-        for row in rows[:2]:
-            _promote(store, row.reservation_id)
         active = store.claim_evaluation_lease(
             stage="qualification",
             owner="worker-a",
             current_block=10,
+            lease_blocks=1,
             max_members=1,
         )
         assert active is not None
@@ -410,45 +377,16 @@ def test_default_capacity_is_one_and_unresolved_predecessors_fence_settlement(tm
         assert store.has_pending_settlement() is False
         assert store.lease_settlement_cohort(current_block=10) is None
         _advance(store, 11)
-        store.release_evaluation_lease(
-            active, current_block=11, reason="operator_release"
-        )
+        assert store.expire_evaluation_leases(current_block=11) == (active,)
         assert store.has_pending_settlement() is False
         for row in rows[:2]:
             store.expire(row.reservation_id, current_block=500010, reason="operator_terminal_expiry")
         assert store.has_pending_settlement() is True
 
 
-def test_systemic_release_retains_diagnostic_and_consumes_no_attempt(tmp_path):
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        lease = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=10
-        )
-        assert lease is not None
-        failure = _h("oci-backend-failure")
-        _advance(store, 11)
-        store.release_evaluation_lease(
-            lease,
-            current_block=11,
-            reason="oci_backend",
-            result_digest=failure,
-        )
-        retained = store.get(row.reservation_id)
-        assert (retained.status, retained.screen_attempts) == ("held", 0)
-        event = store.evaluation_lease_events(lease_id=lease.lease_id)[-1]
-        assert (event.event_type, event.reason, event.result_digest) == (
-            "released",
-            "oci_backend",
-            failure,
-        )
-
-
 def test_qualification_cohort_is_claimed_and_completed_atomically(tmp_path):
     with _store(tmp_path, max_cohort=2) as store:
         rows = _published_rows(store, 2)
-        for row in rows:
-            _promote(store, row.reservation_id)
         preview = store.preview_evaluation_claim(
             stage="qualification", max_members=2
         )
@@ -468,7 +406,10 @@ def test_qualification_cohort_is_claimed_and_completed_atomically(tmp_path):
                 lease, current_block=11, result_digest=_h("partial")
             ):
                 first = rows[0]
-                store.mark_qualifying(first.reservation_id, _h("authority"), AUTHORITY)
+                store.mark_qualifying(
+                    first.reservation_id, _h("authority"), AUTHORITY,
+                    service_digest=_h("service"),
+                )
                 outcome = QualificationIntakeOutcome(
                     first.reservation_id,
                     first.delta_fingerprint.selected_delta_digest,
@@ -492,7 +433,7 @@ def test_qualification_cohort_is_claimed_and_completed_atomically(tmp_path):
                     ),
                     current_finalized_block=11,
                 )
-        assert all(store.get(row.reservation_id).status == "promoted" for row in rows)
+        assert all(store.get(row.reservation_id).status == "published" for row in rows)
         assert store.active_evaluation_leases() == (lease,)
 
         authority = _h("cohort-authority")
@@ -503,7 +444,9 @@ def test_qualification_cohort_is_claimed_and_completed_atomically(tmp_path):
         ) as members:
             assert tuple(row.reservation_id for row in members) == preview
             for row in rows:
-                store.mark_qualifying(row.reservation_id, authority, AUTHORITY)
+                store.mark_qualifying(
+                    row.reservation_id, authority, AUTHORITY, service_digest=_h("service")
+                )
             outcomes = tuple(
                 QualificationIntakeOutcome(
                     row.reservation_id,
@@ -533,10 +476,11 @@ def test_qualification_cohort_is_claimed_and_completed_atomically(tmp_path):
 def test_no_plan_no_decision_is_not_mapped_to_candidate_failure(tmp_path):
     with _store(tmp_path) as store:
         row = _published_rows(store, 1)[0]
-        _promote(store, row.reservation_id)
         authority = _h("authority")
         failure = _h("infrastructure-failure")
-        store.mark_qualifying(row.reservation_id, authority, AUTHORITY)
+        store.mark_qualifying(
+            row.reservation_id, authority, AUTHORITY, service_digest=_h("service")
+        )
         outcome = QualificationIntakeOutcome(
             row.reservation_id,
             row.delta_fingerprint.selected_delta_digest,
@@ -617,7 +561,7 @@ def test_lease_clock_rejects_unretained_future_block(tmp_path):
         _published_rows(store, 1)
         with pytest.raises(IntakeError, match="durable finalized cursor"):
             store.claim_evaluation_lease(
-                stage="screen", owner="worker-a", current_block=11
+                stage="qualification", owner="worker-a", current_block=11
             )
 
 
@@ -625,7 +569,7 @@ def test_event_reader_recomputes_canonical_identity(tmp_path):
     with _store(tmp_path) as store:
         _published_rows(store, 1)
         lease = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=10
+            stage="qualification", owner="worker-a", current_block=10
         )
         assert lease is not None
         store._db.execute("DROP TRIGGER evaluation_lease_events_reject_update")
@@ -635,102 +579,3 @@ def test_event_reader_recomputes_canonical_identity(tmp_path):
         )
         with pytest.raises(IntakeError, match="event identity"):
             store.evaluation_lease_events(lease_id=lease.lease_id)
-
-
-@pytest.mark.parametrize("reason", ["systemic_qualification:worker_dead", "remote_screen_infrastructure"])
-def test_screen_infrastructure_parks_immediately_without_a_second_claim(tmp_path, reason):
-    # The catch-all starved FIFO on 2026-08-25..28 and 2026-08-29.
-    # The 2026-09-14 owner rule now forbids its first automatic paid retry.
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        _advance(store, 10)
-        lease = store.claim_evaluation_lease(stage="screen", owner="worker-a", current_block=10)
-        assert lease is not None
-        _advance(store, 11)
-        store.release_evaluation_lease(lease, current_block=11, reason=reason)
-        retained = store.get(row.reservation_id)
-        assert retained.status == "held"
-        assert retained.reason == "systemic_release_cap:1"
-        assert retained.screen_attempts == 0
-        assert store.claim_evaluation_lease(stage="screen", owner="worker-a", current_block=11) is None
-
-
-def test_exempt_releases_never_trip_the_cap(tmp_path):
-    # Deliberate operator actions and pre-dispatch claim races are the only
-    # release classes outside the cap; four of them park nothing.
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        clock = 10
-        for reason in (
-            "operator_release",
-            "screen_claim_snapshot",
-            "operator_reviewed_legacy_screen_only:v1:a:b",
-            "screen_claim_materialization",
-        ):
-            _advance(store, clock)
-            lease = store.claim_evaluation_lease(
-                stage="screen", owner="worker-a", current_block=clock
-            )
-            assert lease is not None
-            _advance(store, clock + 1)
-            store.release_evaluation_lease(
-                lease, current_block=clock + 1, reason=reason
-            )
-            clock += 2
-        assert store.get(row.reservation_id).status == "published"
-
-
-def test_release_cap_counts_consecutively_and_resets_on_completion(tmp_path):
-    # Operator-reviewed screen holds remain in history. A successful screen
-    # then resets the counter for authenticated pre-resident qualification refusals.
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        clock = 10
-        for _ in range(2):
-            _advance(store, clock)
-            lease = store.claim_evaluation_lease(
-                stage="screen", owner="worker-a", current_block=clock
-            )
-            assert lease is not None
-            _advance(store, clock + 1)
-            store.release_evaluation_lease(
-                lease,
-                current_block=clock + 1,
-                reason="remote_screen_infrastructure",
-            )
-            assert store.get(row.reservation_id).status == "held"
-            store.release_hold(row.reservation_id, reason="operator:verified-no-execution")
-            clock += 2
-        _advance(store, clock)
-        lease = store.claim_evaluation_lease(
-            stage="screen", owner="worker-a", current_block=clock
-        )
-        assert lease is not None
-        with store.accept_evaluation_result(
-            lease, current_block=clock, result_digest=_h("reset-result")
-        ):
-            _complete_screen(store, lease)
-        assert store.get(row.reservation_id).status == "promoted"
-        clock += 2
-        for round_number in (1, 2, 3):
-            _advance(store, clock)
-            lease = store.claim_evaluation_lease(
-                stage="qualification",
-                owner="worker-a",
-                current_block=clock,
-                max_members=1,
-            )
-            assert lease is not None, f"round {round_number} could not claim"
-            _advance(store, clock + 1)
-            store.release_evaluation_lease(
-                lease,
-                current_block=clock + 1,
-                reason="worker_pre_resident:adapter_request_failed",
-            )
-            clock += 2
-            retained = store.get(row.reservation_id)
-            if round_number < 3:
-                assert retained.status == "promoted"
-            else:
-                assert retained.status == "held"
-                assert retained.reason == "systemic_release_cap:3"

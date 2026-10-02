@@ -10,7 +10,7 @@ level.
 | Question | Minimum environment | What a green result means |
 |---|---|---|
 | Does the manifest parse and resolve to one target? | CPU contributor environment | Structure and registered capability policy are coherent |
-| Does an entry satisfy its tensor contract? | CPU for CPU-capable examples; otherwise GPU | The component matches the trusted reference for the exercised cases |
+| Does an entry import and match its node's interface? | CPU contributor environment (`verify`) | Import and signature only; numerical agreement comes from `check` against stock in the arena image |
 | Is a CUDA implementation graph-safe and dispatchable? | Exact GPU, Torch, CUDA, and pinned SGLang environment | The registered component and seam gates passed on that topology |
 | Does a proposal improve serving without quality loss? | Validator-owned arena and isolated complete engines | One qualification attempt produced reopenable evidence |
 
@@ -36,37 +36,24 @@ python -m pip install -e ".[cpu,dev]"
 Run the deterministic local loop:
 
 ```bash
-python -m cacheon.cli slots
-python -m cacheon.cli scan examples/miner_silu_torch
-python -m cacheon.cli verify examples/miner_silu_torch \
-  --device cpu --dtype float32
+python -m cacheon.cli scan examples/miner_node_identity
+python -m cacheon.cli verify examples/miner_node_identity
 pytest -q
 ```
 
-CPU verification is useful for manifest, scanner, and numerical contract work.
-It does not establish CUDA graph behavior, collective correctness, serving
-performance, or qualification.
+The CPU loop covers manifests, the scanner, target resolution and entry
+interfaces. It does not establish node numerics, CUDA graph behavior,
+collective correctness, serving performance, or qualification.
 
 ### Read the first loop correctly
 
-`slots` answers what the validator currently exposes. `scan` answers whether
-the bundle is structurally admissible without importing it. `verify` imports
-and executes the selected entry against validator-owned inputs and references.
-The commands intentionally form a ladder: do not debug numerical output until
-the manifest and target resolve cleanly.
-
-The faithful SiLU example should verify successfully. The companion
-`examples/miner_silu_broken_torch` implementation deliberately omits the SiLU
-operation and should fail correctness:
-
-```bash
-python -m cacheon.cli verify examples/miner_silu_broken_torch \
-  --device cpu --dtype float32
-```
-
-A failing negative control is evidence that the local verifier can distinguish
-the semantic operation from a cheaper look-alike. It is not an installation
-failure to “fix.”
+`scan` answers whether the bundle is structurally admissible without importing
+it. `verify` imports each entry in a spawned child and checks its signature
+against the node's stock arguments. Numerical truth is the stock module in the
+running engine: `cacheon check` in the published arena image audits every
+bound call against it. `examples/miner_node_wrong` passes the CPU loop and must
+fail that audit; a failing negative control there is evidence that the audit
+distinguishes the node's result from a cheaper look-alike.
 
 Keep signing keys out of the repository, virtual environment, shell history,
 test fixtures, and generated OCI contexts. Tests should use ephemeral keys.
@@ -75,7 +62,7 @@ test fixtures, and generated OCI contexts. Tests should use ephemeral keys.
 
 - Invoke GPU commands as `python -m cacheon.cli ...` so SGLang child processes
   resolve the same installed package.
-- Treat `cacheon/slots.py`, `cacheon/target_catalog.py`, stack manifests, and
+- Treat `cacheon/seams.py`, `cacheon/target_catalog.py`, stack manifests, and
   qualification schemas as contracts. Change tests and documentation with
   them.
 - Use temporary directories for intake, model, and native tests.
@@ -97,7 +84,7 @@ Use the narrowest test that can falsify the change, then widen the boundary:
    intake restart, and evidence reopening.
 4. **GPU seam tests** for the exact SGLang pin, architecture, graph replay,
    collectives, model, and tensor-parallel topology.
-5. **Arena qualification** for the two-process B/C/B′ schedule, registered
+5. **Arena qualification** for the paired replay of B and C, registered
    eager audit A, and candidate-free
    pristine T quality. Only this layer can create qualification authority.
 
@@ -125,7 +112,6 @@ hardware campaign.
 |---|---|---|
 | Manifest or bundle hashing | static/manifest and target-catalog tests | example bundles and full suite |
 | Slot ABI or verification | slot, tensor, and verifier tests | graph replay and the supported GPU matrix |
-| Target displacement/conflict | target catalog and stack planning | settlement and emissions projection |
 | Intake or retry state | chain intake and validator-loop tests | restart, evidence, and weight reconciliation |
 | Integration or Engine tree | stack manifest and Engine-tree tests | materialization and reopen verification |
 

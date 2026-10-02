@@ -7,9 +7,7 @@ import pytest
 
 import cacheon.chain.validator_loop as loop
 from cacheon.arena_service import (
-    SCREEN_STAGES, AdmissionDecision, ArenaQualificationWork,
-    ArenaScreenReceipt, ArenaService, ArenaServiceRegistry, PromotionDecision,
-    ScreenGrade, ScreenStageResult,
+    AdmissionDecision, ArenaQualificationWork, ArenaService, ArenaServiceRegistry,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain import FinalizedRevealSnapshot, RevealedCommitment
@@ -35,14 +33,19 @@ from cacheon.eval.qualification_intake import (
 BLOCK = 90
 BLOCK_HASH = "0x" + "9" * 64
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
+# Not the identity body: a copy of a public example is demoted before publication.
+_NODE_BODY = (
+    "def forward(module, hidden_states, *args, **kwargs):\n"
+    "    return module.forward(hidden_states.contiguous(), *args, **kwargs)\n"
+)
 
 
 def _bundle(
     root: Path,
     body: str,
     *,
-    slot: str = "activation.silu_and_mul",
-    entry: str = "silu_and_mul",
+    slot: str = "model.layers.*.mlp",
+    entry: str = "forward",
 ) -> Path:
     (root / "kernels").mkdir(parents=True)
     (root / "manifest.toml").write_text(
@@ -52,7 +55,6 @@ def _bundle(
         f'slot = "{slot}"\n'
         'source = "kernels/k.py"\n'
         f'entry = "{entry}"\n'
-        'dtypes = ["float32"]\n'
     )
     (root / "kernels/k.py").write_text(body)
     for directory in (root, root / "kernels"):
@@ -119,7 +121,7 @@ def _run(
 def test_finalized_reveal_publishes_once_and_restart_reopens(tmp_path, monkeypatch):
     source = _bundle(
         tmp_path / "source",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     digest = content_hash(source)
     snapshot = _snapshot([("miner", encode_payload(digest, "https://example.com/a"))])
@@ -146,7 +148,7 @@ def test_disabled_eval_cost_ignores_v2_pointer_without_consuming_it(
 ):
     source = _bundle(
         tmp_path / "source",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     digest = content_hash(source)
     snapshot = _snapshot(
@@ -181,7 +183,7 @@ def test_disabled_eval_cost_ignores_v2_pointer_without_consuming_it(
 def test_unpaid_v1_is_failed_when_eval_cost_is_required(tmp_path, monkeypatch):
     source = _bundle(
         tmp_path / "source",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     digest = content_hash(source)
     snapshot = _snapshot([("miner", encode_payload(digest, "https://example.com/a"))])
@@ -234,7 +236,7 @@ def test_paid_v2_is_admitted_when_eval_cost_is_required(
 ):
     source = _bundle(
         tmp_path / "source",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     digest = content_hash(source)
     snapshot = _snapshot(
@@ -300,7 +302,7 @@ def test_payment_must_cover_both_the_fee_and_its_declared_quote(quoted, transfer
 def test_payment_to_a_stale_owner_is_invalid(tmp_path, monkeypatch):
     source = _bundle(
         tmp_path / "source",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     digest = content_hash(source)
     snapshot = _snapshot(
@@ -344,7 +346,7 @@ def test_payment_to_a_stale_owner_is_invalid(tmp_path, monkeypatch):
 def test_unrecognizable_payment_pointer_is_invalid(tmp_path, monkeypatch):
     source = _bundle(
         tmp_path / "source",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     digest = content_hash(source)
     snapshot = _snapshot(
@@ -383,7 +385,7 @@ def test_unrecognizable_payment_pointer_is_invalid(tmp_path, monkeypatch):
 def test_eval_cost_fetch_error_does_not_advance_the_cursor(tmp_path, monkeypatch):
     source = _bundle(
         tmp_path / "source",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     digest = content_hash(source)
     snapshot = _snapshot(
@@ -437,7 +439,7 @@ def test_deterministically_unpublishable_submission_is_not_retried(
 ):
     source = _bundle(
         tmp_path / "source",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     reserved = source / ".cacheon-native-artifact.json"
     reserved.write_text("{}\n")
@@ -459,15 +461,15 @@ def test_deterministically_unpublishable_submission_is_not_retried(
 def test_reformatted_later_delta_is_copy_without_any_weight_edge(tmp_path, monkeypatch):
     first = _bundle(
         tmp_path / "first",
-        "import torch\n\ndef silu_and_mul(x, out):\n"
+        "import torch\n\ndef forward(module, x):\n"
         "    d = x.shape[-1] // 2\n"
-        "    out.copy_(torch.nn.functional.silu(x[..., :d]) * x[..., d:])\n",
+        "    return module.forward(torch.nn.functional.silu(x[..., :d]) * x[..., d:])\n",
     )
     second = _bundle(
         tmp_path / "second",
-        "import torch\n\n# formatting only\ndef silu_and_mul(x, out):\n"
+        "import torch\n\n# formatting only\ndef forward(module, x):\n"
         "    d = (x.shape[-1] // 2)\n"
-        "    out.copy_((torch.nn.functional.silu(x[..., :d]) * x[..., d:]))\n",
+        "    return module.forward((torch.nn.functional.silu(x[..., :d]) * x[..., d:]))\n",
     )
     first_hash, second_hash = content_hash(first), content_hash(second)
     assert first_hash != second_hash
@@ -493,14 +495,14 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
 ):
     source = _bundle(
         tmp_path / "source",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     digest = content_hash(source)
     snapshot = _snapshot([("miner", encode_payload(digest, "https://example.com/a"))])
 
     calls = []
     progress_events = []
-    promoted_limits = []
+    cohort_limits = []
     retained_blocks = []
     resident_baseline_executor = object()
     service = object.__new__(ArenaService)
@@ -516,26 +518,12 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
     )()
     registry = object.__new__(ArenaServiceRegistry)
     monkeypatch.setattr(ArenaServiceRegistry, "require", lambda *_: service)
-    monkeypatch.setattr(ArenaService, "admit", lambda *_: AdmissionDecision.ADMIT)
     monkeypatch.setattr(
         ArenaService, "admit_qualification", lambda *_args, **_kwargs: AdmissionDecision.ADMIT
     )
-    monkeypatch.setattr(
-        ArenaService,
-        "screen",
-        lambda self, candidate: ArenaScreenReceipt(
-            self.identity,
-            candidate.digest,
-            candidate.screen_attempt,
-            tuple(
-                ScreenStageResult(stage, ScreenGrade.PASS, chr(97 + index) * 64, 1)
-                for index, stage in enumerate(SCREEN_STAGES)
-            ),
-            PromotionDecision.PROMOTE,
-        ),
-    )
 
-    def plan(_self, candidates, _receipts, state=None):
+    def plan(_self, candidates, state=None):
+        assert [row.attempt for row in candidates] == [1]
         reservations = tuple(row.reservation for row in candidates)
         authority = QualificationAuthorityManifest(
             "registered", "a" * 64, "b" * 64, "c" * 64, "d" * 64,
@@ -594,13 +582,13 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
         "apply_qualification_batch",
         apply_with_progress,
     )
-    original_promoted = FinalizedIntakeStore.promoted
+    original_cohort = FinalizedIntakeStore.qualification_cohort
 
-    def promoted_with_limit(self, *, limit=None):
-        promoted_limits.append(limit)
-        return original_promoted(self, limit=limit)
+    def cohort_with_limit(self, *, limit=None):
+        cohort_limits.append(limit)
+        return original_cohort(self, limit=limit)
 
-    monkeypatch.setattr(FinalizedIntakeStore, "promoted", promoted_with_limit)
+    monkeypatch.setattr(FinalizedIntakeStore, "qualification_cohort", cohort_with_limit)
 
     def refreshed_head():
         progress_events.append("finalized_head")
@@ -617,13 +605,14 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
         arena_id="test-arena",
     )
     assert len(calls) == 1 and len(calls[0]) == 64
-    assert promoted_limits == [1]
+    assert cohort_limits == [1]
     assert progress_events == ["qualification_complete", "finalized_head", "apply"]
     assert retained_blocks == [BLOCK + 100]
     assert set(result.decisions.values()) == {"FAIL"}
     with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
         row = store.all()[0]
         assert row.status == "failed" and row.decision == "FAIL"
+        assert row.arena_service_digest == service.identity
         assert store.qualification_dispositions(row.reservation_id)[0]["decision"] == "FAIL"
 
 
@@ -777,16 +766,15 @@ def test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes(
     """
     closed = _bundle(
         tmp_path / "closed-src",
-        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+        _NODE_BODY,
     )
     fused = _bundle(
         tmp_path / "fused-src",
-        '"""Fuses activation.silu_and_mul into the norm epilogue."""\n'
-        "def rmsnorm(x, weight, out):\n"
-        "    silu_and_mul = x * x.sigmoid() * weight\n"
-        "    out.copy_(silu_and_mul)\n",
-        slot="norm.rmsnorm",
-        entry="rmsnorm",
+        '"""Folds the forward_pass model.layers.*.mlp node into the prefix cache."""\n'
+        "def forward(cache):\n"
+        "    forward_pass = type(cache)\n"
+        "    return forward_pass\n",
+        slot="tree_cache",
     )
     closed_digest = content_hash(closed)
     fused_digest = content_hash(fused)
@@ -803,12 +791,14 @@ def test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes(
             "digest": "e" * 64,
             "qualification_policy_digest": "f" * 64,
             "capacity": type("Capacity", (), {"max_cohort_size": 1})(),
-            "closed_targets": ("activation.silu_and_mul", "attention.sdpa"),
+            "closed_targets": ("forward_pass", "attention.sdpa"),
         },
     )()
     registry = object.__new__(ArenaServiceRegistry)
     monkeypatch.setattr(ArenaServiceRegistry, "require", lambda *_: service)
-    monkeypatch.setattr(ArenaService, "admit", lambda *_: AdmissionDecision.QUEUE)
+    monkeypatch.setattr(
+        ArenaService, "admit_qualification", lambda *_args, **_kwargs: AdmissionDecision.QUEUE
+    )
 
     result, _calls, options = _run(
         tmp_path,
@@ -821,7 +811,7 @@ def test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes(
     )
 
     assert list(result.rejected.values()) == [
-        "target_unavailable:activation.silu_and_mul"
+        "target_unavailable:forward_pass"
     ]
     assert len(result.published) == 1
     with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:

@@ -9,23 +9,16 @@ from types import SimpleNamespace
 import pytest
 
 from cacheon.arena_service import (
-    SCREEN_STAGES,
     ArenaCapacityPolicy,
     ArenaRuntimeIdentity,
-    ArenaScreenReceipt,
     ArenaServiceManifest,
-    NonCrownScreenPolicy,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStagePolicy,
-    ScreenStageResult,
     Workload,
     WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain import mainnet_screen_dispatcher as dispatcher_module
 from cacheon.chain import remote_worker_spool as spool
-from cacheon.chain.evaluation_coordinator import EvaluationResultEnvelope, WorkerReadiness
+from cacheon.chain.evaluation_coordinator import EvaluationCoordinator, WorkerReadiness
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
@@ -36,7 +29,6 @@ from cacheon.chain.publication import publish_worker_bundle
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.remote_evaluation_dispatcher import (
     REMOTE_EVALUATION_PROTOCOL_DIGEST,
-    RemoteEvaluationDispatcher,
     RemoteEvaluationDispatcherError,
     RemoteEvaluationRequest,
     RemoteWorkerCredential,
@@ -81,10 +73,7 @@ def _manifest() -> ArenaServiceManifest:
             "mainnet-test-seed-v1",
             (WorkloadCell("s8", 8192, 1024, 64, 8),),
         ),
-        capacity=ArenaCapacityPolicy(32, 100, 4, 8, 4, 3, 3, 3),
-        screens=NonCrownScreenPolicy(
-            tuple(ScreenStagePolicy(stage, 1_000) for stage in SCREEN_STAGES)
-        ),
+        capacity=ArenaCapacityPolicy(32, 100, 8, 4),
         qualification_policy_digest=_h("qualification-policy"),
         provider_digest=_h("remote-provider"),
     )
@@ -207,31 +196,27 @@ def _setup_authority(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     return config_path, config
 
 
-def test_builds_exact_screen_only_dispatcher_over_live_durable_cursor(
+def test_builds_exact_remote_only_coordinator_over_live_durable_cursor(
     tmp_path: Path,
 ) -> None:
     config_path, _ = _setup_authority(tmp_path)
     config = dispatcher_module.load_config(config_path)
 
-    dispatcher = dispatcher_module.build_dispatcher(config)
+    coordinator, transport = dispatcher_module.build_coordinator_and_transport(config)
 
-    assert type(dispatcher) is RemoteEvaluationDispatcher
-    assert dispatcher.coordinator.policy == POLICY
-    assert dispatcher.coordinator.scope == SCOPE
-    assert dispatcher.coordinator.advance_finalized_cursor() == (
+    assert type(coordinator) is EvaluationCoordinator
+    assert coordinator._store_factory is RecoverableFinalizedIntakeStore
+    assert coordinator.policy == POLICY
+    assert coordinator.scope == SCOPE
+    assert coordinator.advance_finalized_cursor() == (
         BLOCK,
         _block_hash(BLOCK),
     )
-    assert dispatcher.transport.identity.digest == config.transport_identity_digest
-    assert dispatcher.credential.digest == config.credential_digest
-    assert callable(dispatcher.transport.qualification_publication_resolver)
-    assert dispatcher.dispatch_screen_once() is None
-    provider = dispatcher.coordinator.service._provider
-    with pytest.raises(
-        dispatcher_module.MainnetScreenDispatcherError,
-        match="local arena provider execution is disabled",
-    ):
-        provider.run_screen(None, None, None)
+    assert transport.identity.digest == config.transport_identity_digest
+    assert transport.credential.digest == config.credential_digest
+    assert callable(transport.qualification_publication_resolver)
+    provider = coordinator.service._provider
+    assert not hasattr(provider, "run_screen")
     with pytest.raises(
         dispatcher_module.MainnetScreenDispatcherError,
         match="local arena provider execution is disabled",
@@ -239,38 +224,31 @@ def test_builds_exact_screen_only_dispatcher_over_live_durable_cursor(
         provider.build_qualification(None)
 
 
-def test_composed_qualification_claim_is_pinned_singleton_fifo(tmp_path: Path) -> None:
+def test_composed_qualification_claim_reopens_recovery_and_is_pinned_singleton_fifo(
+    tmp_path: Path,
+) -> None:
     config_path, raw = _setup_authority(tmp_path)
     intake_db = Path(raw["intake_db"])
     rows = tuple(
         _published_intake_row(tmp_path, intake_db, label=label)[0]
         for label in ("first", "second")
     )
-    dispatcher = dispatcher_module.build_dispatcher(dispatcher_module.load_config(config_path))
-    coordinator = dispatcher.coordinator
-    passing = tuple(
-        ScreenStageResult(stage, ScreenGrade.PASS, _h(stage), 1) for stage in SCREEN_STAGES
+    # Persist the recovery triggers, then close the commissioning connection.
+    # Their authorizing SQLite function is connection-local and must be
+    # re-registered by the coordinator's default store factory.
+    with RecoverableFinalizedIntakeStore(intake_db, POLICY, scope=SCOPE):
+        pass
+
+    coordinator, _ = dispatcher_module.build_coordinator_and_transport(
+        dispatcher_module.load_config(config_path)
     )
-    for row in rows:
-        claim = coordinator.claim_screen()
-        assert claim is not None and claim.reservation == row
-        receipt = ArenaScreenReceipt(
-            coordinator.service.identity,
-            claim.candidate.digest,
-            claim.candidate.screen_attempt,
-            passing,
-            PromotionDecision.PROMOTE,
-        )
-        envelope = EvaluationResultEnvelope.seal(
-            claim.lease, coordinator.readiness, coordinator.service, receipt
-        )
-        coordinator.commit_screen_result(claim, receipt, envelope)
     # Mainnet 2026-08-15: the v3 execution core refuses multi-candidate
     # requests at the deployment factory, so the dispatcher pins singleton
     # claims instead of deriving min(policy.max_cohort, capacity).
     assert coordinator.qualification_max_members == 1
     store, point = coordinator._open_at_durable_cursor()
     try:
+        assert type(store) is RecoverableFinalizedIntakeStore
         lease = store.claim_evaluation_lease(
             stage="qualification",
             owner=coordinator.owner,
@@ -281,6 +259,7 @@ def test_composed_qualification_claim_is_pinned_singleton_fifo(tmp_path: Path) -
     finally:
         store.close()
     assert lease is not None
+    assert lease.stage == "qualification"
     assert lease.reservation_ids == (rows[0].reservation_id,)
 
 
@@ -434,30 +413,6 @@ def test_qualification_publication_resolver_releases_store_before_tree_reopen(
     assert len(resolved) == 1
 
 
-def test_default_dispatcher_reopens_recovery_connection_before_screen_claim(
-    tmp_path: Path,
-) -> None:
-    config_path, raw = _setup_authority(tmp_path)
-    intake_db = Path(raw["intake_db"])
-    row, _ = _published_intake_row(tmp_path, intake_db, label="recovery-screen")
-
-    # Persist the recovery triggers, then close the commissioning connection.
-    # Their authorizing SQLite function is connection-local and must be
-    # re-registered by the dispatcher's default store factory.
-    with RecoverableFinalizedIntakeStore(intake_db, POLICY, scope=SCOPE):
-        pass
-
-    dispatcher = dispatcher_module.build_dispatcher(
-        dispatcher_module.load_config(config_path)
-    )
-    claim = dispatcher.coordinator.claim_screen()
-
-    assert claim is not None
-    assert claim.lease.stage == "screen"
-    assert claim.lease.reservation_ids == (row.reservation_id,)
-    assert claim.reservation.reservation_id == row.reservation_id
-
-
 def test_config_and_cli_are_closed_and_digest_pinned(tmp_path: Path) -> None:
     config_path, raw = _setup_authority(tmp_path)
     extra = dict(raw)
@@ -496,7 +451,7 @@ def test_config_and_cli_are_closed_and_digest_pinned(tmp_path: Path) -> None:
         dispatcher_module.MainnetScreenDispatcherError,
         match="transport_identity_digest differs",
     ):
-        dispatcher_module.build_dispatcher(config)
+        dispatcher_module.build_coordinator_and_transport(config)
 
 
 def test_live_cursor_rejects_missing_regression_and_scope_drift(

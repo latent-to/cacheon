@@ -89,7 +89,6 @@ class PassResult:
     decisions: dict[str, str] = field(default_factory=dict)
     held: list[str] = field(default_factory=list)
     settlements: dict[str, str] = field(default_factory=dict)
-    screens: dict[str, str] = field(default_factory=dict)
 
 
 def _finalized_arrivals(
@@ -261,15 +260,16 @@ def _apply_qualification(
 ) -> QualificationIntakeBatch:
     authority_rows = _qualification_reservations(reservations, publications)
     candidates = tuple(
-        ArenaCandidateBinding(authority, publication, reservation.screen_attempts)
+        ArenaCandidateBinding(
+            authority,
+            publication,
+            store.qualification_attempts(reservation.reservation_id) + 1,
+        )
         for reservation, publication, authority in zip(
             reservations, publications, authority_rows, strict=True
         )
     )
-    receipts = tuple(
-        store.latest_promoted_screen(row.reservation_id) for row in reservations
-    )
-    work = service.plan_qualification(candidates, receipts, state=store)
+    work = service.plan_qualification(candidates, state=store)
     _validate_work(work, authority_rows)
     prepared = None
     if type(work.factory.manifest) is QualificationAuthorityManifest:
@@ -289,7 +289,10 @@ def _apply_qualification(
     authority_manifest = work.factory.manifest.to_dict()
     for row in reservations:
         store.mark_qualifying(
-            row.reservation_id, authority_digest, authority_manifest
+            row.reservation_id,
+            authority_digest,
+            authority_manifest,
+            service_digest=service.identity,
         )
     batch = run_qualification_intake(
         work.factory,
@@ -324,47 +327,6 @@ def _apply_qualification(
         evidence_root=None if prepared is None else prepared.evidence_root,
     )
     return batch
-
-
-def _screen_pending(
-    store: FinalizedIntakeStore,
-    service: ArenaService,
-    *,
-    current_block: int,
-) -> dict[str, str]:
-    decisions = dict(store.prepare_screen_queue(
-        service_digest=service.identity, closed_targets=service.manifest.closed_targets
-    ))
-    for row in store.screenable(limit=store.policy.max_cohort):
-        admission = service.admit(
-            store.arena_queue_snapshot(current_block=current_block)
-        )
-        if admission is AdmissionDecision.QUEUE:
-            break
-        if admission is AdmissionDecision.HOLD:
-            store.mark_held(row.reservation_id, "arena_screen_capacity_hold")
-            decisions[row.reservation_id] = "hold"
-            continue
-        publication = reopen_worker_bundle(
-            row.publication_root,
-            row.arrival.content_hash,
-            expected_receipt_digest=row.publication_digest,
-        )
-        active = store.begin_screen(
-            row.reservation_id, service_digest=service.identity
-        )
-        authority = _qualification_reservations((active,), (publication,))[0]
-        candidate = ArenaCandidateBinding(
-            authority, publication, active.screen_attempts
-        )
-        receipt = service.screen(candidate)
-        store.apply_screen_receipt(
-            active.reservation_id,
-            candidate_digest=candidate.digest,
-            receipt=receipt,
-        )
-        decisions[active.reservation_id] = receipt.decision.value
-    return decisions
 
 
 def _settle_pending(
@@ -505,7 +467,7 @@ def run_pass(
             )
         # Retained-only operation has no reservation transaction in which to
         # apply the finalized-block SLA.  The call is idempotent for normal
-        # intake passes and keeps all downstream screening/settlement bounded.
+        # intake passes and keeps all downstream qualification/settlement bounded.
         store.expire_stale(current_block=result.finalized_block)
         result.reserved.extend(row.reservation_id for row in inserted)
 
@@ -589,14 +551,14 @@ def run_pass(
             result.published.pop(copied, None)
 
         if service is not None:
-            result.screens.update(
-                _screen_pending(
-                    store, service, current_block=result.finalized_block
-                )
-            )
+            for reservation_id, reason in store.prepare_qualification_queue(
+                service_digest=service.identity,
+                closed_targets=service.manifest.closed_targets,
+            ):
+                result.rejected[reservation_id] = reason
             # Drain only what this arena can seal; otherwise a singleton arena
-            # sees an oversized cohort and holds the entire promoted queue.
-            cohort = store.promoted(
+            # sees an oversized cohort and holds the entire queue.
+            cohort = store.qualification_cohort(
                 limit=min(
                     policy.max_cohort,
                     service.manifest.capacity.max_cohort_size,
@@ -673,8 +635,8 @@ def _open_store(
 ) -> FinalizedIntakeStore:
     """Open the intake store, waiting out a peer controller's short lock hold.
 
-    The screen dispatcher and the standing supervisor take the same exclusive
-    lock for a fraction of a second on every poll. On 2026-09-06 the intake
+    The standing supervisor takes the same exclusive lock for a fraction of a
+    second on every poll. On 2026-09-06 the intake
     pass met that hold on roughly every other pass and counted each one as a
     validator fault, so ten unlucky passes in a row would have stopped intake
     over nothing. The bounded wait spans one dispatcher poll; a collision that

@@ -30,14 +30,5 @@ nodes. Its README specifies the B300 topology and checker inputs; its provenance
 file identifies the unchanged kernel sources. It is the model-specific baseline
 assembly, while the controls above demonstrate the minimal node interface.
 
-## Retained catalog fixtures
-
-Other examples in the tree exercise older `SlotSpec` contracts, adversarial
-controls, native-build paths and identity tests. Their output-buffer signatures
-are not the node ABI. The presence of a fixture does not open a serving lane or
-establish that it beats the current incumbent. Use the node controls for the
-current miner workflow and the [source catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
-when maintaining a retained reference fixture.
-
-No registered target permits the old `miner_setup_demo` engine-wide setup hook.
-A candidate optimizes only its declared node, not unrelated model-serving policy.
+No registered target permits an engine-wide setup hook. A candidate optimizes only
+its declared node, not unrelated model-serving policy.

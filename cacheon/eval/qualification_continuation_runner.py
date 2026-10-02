@@ -1,40 +1,13 @@
-"""Private continuation-aware quality-stage orchestration.
-
-The public runner owns all authority types and supplies its seams at call time.
-Keeping those seams explicit preserves the existing monkeypatch surface without
-creating a second qualification registry or a circular module dependency.
-"""
+"""Resume the qualification owner's audit and pristine-T stages from durable work."""
 
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from cacheon.audit_gate import infrastructure_failure
-
-
-@dataclass(frozen=True)
-class QualificationContinuationRunnerSeams:
-    """Runner-owned operations consumed by the extracted continuation stage."""
-
-    qualification_decision: Any
-    qualification_stage_exit_type: type[Any]
-    quality_continuation_type: type[Any]
-    audit_continuation_type: type[Any]
-    selection_entropy_receipt_type: type[Any]
-    qualification_runner_error: type[Exception]
-    qualification_continuation_error: type[Exception]
-    qualification_authority_digest: Callable[[Any], str]
-    run_slot_audits: Callable[..., Any]
-    selection_receipt_type: type[Any]
-    cohort_trajectory_digest: Callable[[Any], str]
-    lifecycle_causal_completion: Callable[[Any], float]
-    canonical_digest: Callable[[str, Any], str]
-    reference_request: Callable[..., Any]
-    reference_session_plan_type: type[Any]
-    publish_qualification_stage_exit: Callable[..., Any]
-    reopen_qualification_stage_exit: Callable[..., Any]
 
 
 @dataclass(frozen=True)
@@ -59,55 +32,47 @@ class QualificationContinuationStageResult:
     t_post: Any | None = None
 
 
-def _audit_operation_digest(value: Any, lifecycle: Any, seams: Any) -> str:
-    return seams.canonical_digest(
+def _audit_operation_digest(value: Any, lifecycle: Any, owner: Any) -> str:
+    return owner.canonical_digest(
         "cacheon.qualification.audit-operation.v1",
-        {
-            "authority": seams.qualification_authority_digest(value),
-            "source": value.prepared.source.digest,
-            "trajectory": seams.cohort_trajectory_digest(lifecycle),
-        },
+        {"authority": owner.qualification_authority_digest(value),
+         "source": value.prepared.source.digest,
+         "trajectory": owner.cohort_trajectory_digest(lifecycle)},
     )
 
 
-def _t_operation_digest(value: Any, plan: Any, seams: Any) -> str:
-    return seams.canonical_digest(
+def _t_operation_digest(value: Any, plan: Any, owner: Any) -> str:
+    return owner.canonical_digest(
         "cacheon.qualification.pristine-t-operation.v1",
-        {
-            "authority": seams.qualification_authority_digest(value),
-            "native_build": value.pristine_binding.native_build_spec.digest,
-            "preflight": value.pristine_binding.runtime_preflight_receipt.sha256,
-            "controller": value.pristine_binding.controller_distribution_digest,
-            "launch": value.pristine_launch.digest,
-            "plan": plan.digest,
-        },
+        {"authority": owner.qualification_authority_digest(value),
+         "native_build": value.pristine_binding.native_build_spec.digest,
+         "preflight": value.pristine_binding.runtime_preflight_receipt.sha256,
+         "controller": value.pristine_binding.controller_distribution_digest,
+         "launch": value.pristine_launch.digest, "plan": plan.digest},
     )
 
 
 def run_continuation_quality_stage(
-    *,
-    value: Any,
-    executor: Any,
-    entropy_provider: Callable[..., Any],
-    deadline: float,
-    make_id: Callable[[], str],
-    continuation: Any | None,
-    quality_state: Any | None,
-    resident_lifecycle: Any | None,
-    resident_speed_witness: Any | None,
-    seams: QualificationContinuationRunnerSeams,
+    *, value: Any, executor: Any, entropy_provider: Callable[..., Any],
+    deadline: float, make_id: Callable[[], str], continuation: Any | None,
+    quality_state: Any | None, resident_lifecycle: Any,
+    resident_speed_witness: Any,
 ) -> QualificationContinuationStageResult:
-    """Resume or execute speed, audit, and pristine-T exactly as before."""
+    """Run only missing paid stages; fresh and resumed work share the same binding."""
+    # Resolve the actual owner at call time: no second registry of its operations.
+    from cacheon.eval import qualification_runner as owner
 
     lifecycle = resident_lifecycle
-    audit_operation = _audit_operation_digest(value, lifecycle, seams)
-    audit_state = (
-        None if continuation is None else continuation.load_audit(audit_operation)
-    )
+    speed = resident_speed_witness
+    audit_operation = _audit_operation_digest(value, lifecycle, owner)
+    audit_state = None if continuation is None else continuation.load_audit(audit_operation)
+    if quality_state is not None and audit_state is None:
+        raise owner.QualificationContinuationError(
+            "quality continuation exists without durable audit completion"
+        )
     if quality_state is None:
         # Charge completed work before launch, excluding downtime between durable
         # stages. An expired operator session must not buy a replacement B/C/B'.
-        speed = resident_speed_witness
         used = speed.completed_monotonic_s - speed.started_monotonic_s
         if audit_state is not None:
             used += audit_state.audit_completed - audit_state.audit_started
@@ -116,346 +81,182 @@ def run_continuation_quality_stage(
         last = max(speed.completed_monotonic_s,
                    audit_state.audit_completed if audit_state is not None else 0.0)
         if not math.isfinite(now) or now < last:
-            raise seams.qualification_continuation_error(
+            raise owner.QualificationContinuationError(
                 "current clock predates retained qualification; refusing new work"
             )
         deadline = min(deadline, now + remaining)
         if not math.isfinite(remaining) or deadline <= now:
-            raise seams.qualification_continuation_error(
+            raise owner.QualificationContinuationError(
                 "retained qualification exhausted its execution budget"
             )
 
-    def finish_resident_audit(
-        audit_witnesses: dict[str, Any],
-        audit_started: float,
-        audit_completed: float,
-        teardown: Any,
-    ) -> QualificationContinuationStageResult:
-        audit = audit_witnesses[value.candidates[0].selected_delta_digest]
-        # The stage exit re-checks this pair against the runner's own vocabulary.
-        failed = audit.decision is seams.qualification_decision.FAIL
-        terminal = seams.qualification_stage_exit_type(
-            seams.qualification_authority_digest(value),
-            value.prepared.source.digest,
-            value.candidates[0].selected_delta_digest,
-            "audit",
-            audit.decision,
-            "slot_audit_failed" if failed else "audit_not_covered",
-            resident_speed_witness,
-            audit,
-            audit_started,
-            audit_completed,
-            teardown.digest,
-        )
-        reference = seams.publish_qualification_stage_exit(
-            value.evidence_root, terminal
-        )
-        seams.reopen_qualification_stage_exit(
-            value.evidence_root,
-            reference,
-            expected=value,
-        )
-        if continuation is not None:
-            continuation.record_final(reference)
-        return QualificationContinuationStageResult(True, reference)
-
-    if quality_state is not None:
-        assert continuation is not None
+    with executor.exclusive_transaction() if quality_state is None else nullcontext():
         if audit_state is None:
-            raise seams.qualification_continuation_error(
-                "quality continuation exists without durable audit completion"
+            completed_audits = []
+            nonce = "" if continuation is None else continuation.arm_evaluator("audit", audit_operation)
+            audit_started = float(executor.manager.clock())
+
+            def commit_audit(witnesses: Any, last_completed: float) -> None:
+                if completed_audits:
+                    raise owner.QualificationRunnerError("audit sink called twice")
+                record = owner.AuditContinuation(
+                    nonce, audit_operation, tuple(witnesses.items()), audit_started,
+                    float(executor.manager.clock()), last_completed,
+                )
+                continuation.record_audit(record)
+                completed_audits.append(record)
+
+            witnesses, last_completed = owner._run_slot_audits(
+                value, lifecycle, executor=executor, deadline=float(deadline),
+                completion_sink=commit_audit if continuation is not None else None,
             )
+            if continuation is None:
+                audit_state = owner.AuditContinuation(
+                    nonce, audit_operation, tuple(witnesses.items()), audit_started,
+                    float(executor.manager.clock()), last_completed,
+                )
+            elif len(completed_audits) != 1:
+                raise owner.QualificationRunnerError("audit sink was not called once")
+            else:
+                audit_state = completed_audits[0]
         audit_witnesses = dict(audit_state.audit_witnesses)
-        if tuple(audit_witnesses) != tuple(
-            row.selected_delta_digest for row in value.candidates
-        ):
-            raise seams.qualification_continuation_error(
+        audit_started = audit_state.audit_started
+        audit_completed = audit_state.audit_completed
+        if tuple(audit_witnesses) != tuple(row.selected_delta_digest for row in value.candidates):
+            raise owner.QualificationContinuationError(
                 "quality continuation audit coverage differs from the sealed cohort"
             )
-        if any(
-            row.decision is not seams.qualification_decision.PASS
-            for row in audit_witnesses.values()
-        ):
-            raise seams.qualification_continuation_error(
-                "quality continuation carries a failed resident audit"
+        for audit in audit_witnesses.values():
+            unavailable = infrastructure_failure(
+                [row.to_gate_dict() for row in audit.receipts],
+                min_calls=audit.policy.minimum_calls,
+                expected_slots=audit.policy.expected_slots,
+                expected_member_count=audit.policy.expected_member_count,
             )
-        audit_started = float(audit_state.audit_started)
-        audit_completed = float(audit_state.audit_completed)
-        teardown_before = quality_state.teardown_before
-        entropy = quality_state.entropy
-        entropy_observed = float(quality_state.entropy_observed)
-        requests = quality_state.requests
-        reference_execution = quality_state.reference_execution
-        teardown_after = quality_state.teardown_after
-        selection = seams.selection_receipt_type.reveal(
-            value.commitment,
-            secret=value.selection_secret,
-            entropy=entropy,
-            sealed_cohort_trajectory_digest=seams.cohort_trajectory_digest(
-                lifecycle
-            ),
-        )
-        request_plan_digest = _request_plan_digest(
-            value=value,
-            lifecycle=lifecycle,
-            selection=selection,
-            resident_speed_witness=resident_speed_witness,
-            seams=seams,
-        )
-        if len(requests) != len(value.candidates) or any(
-            row.plan_digest != request_plan_digest for row in requests
-        ):
-            raise seams.qualification_continuation_error(
-                "quality continuation requests differ from the sealed request plan"
-            )
-        plan = seams.reference_session_plan_type(
-            value.candidates[0].profile.reference,
-            value.pristine_stack,
-            value.reference_engine_config.digest,
-            value.reference_engine_config,
-            value.reference_preflight,
-            request_plan_digest,
-            requests,
-        )
-        if quality_state.t_operation_digest != _t_operation_digest(
-            value, plan, seams
-        ):
-            raise seams.qualification_continuation_error(
-                "quality continuation differs from its pristine-T claim"
-            )
-        t_pre, t_post = reference_execution.device_receipts
-    else:
-        with executor.exclusive_transaction():
-            if audit_state is None:
-                audit_completion: list[float] = []
-                audit_nonce = (
-                    "" if continuation is None
-                    else continuation.arm_evaluator("audit", audit_operation)
+            if unavailable is not None:
+                raise owner.QualificationContinuationError("slot audit evidence unavailable: " + unavailable)
+        if any(row.decision is not owner.QualificationDecision.PASS for row in audit_witnesses.values()):
+            if quality_state is not None:
+                raise owner.QualificationContinuationError(
+                    "quality continuation carries a failed resident audit"
                 )
-                audit_started = float(executor.manager.clock())
-                def commit_audit(witnesses: Any, last_completed: float) -> None:
-                    if audit_completion:
-                        raise seams.qualification_runner_error("audit sink called twice")
-                    completed = float(executor.manager.clock())
-                    continuation.record_audit(seams.audit_continuation_type(
-                        audit_nonce, audit_operation, tuple(witnesses.items()),
-                        audit_started, completed, last_completed,
-                    ))
-                    audit_completion.append(completed)
+            teardown = executor.prove_quiescent()
+            if teardown.observed_monotonic_s < audit_state.audit_last_completed:
+                raise owner.QualificationRunnerError("audit-exit quiescence predates candidate teardown")
+            audit = audit_witnesses[value.candidates[0].selected_delta_digest]
+            # The stage exit re-checks this pair against the runner's own vocabulary.
+            terminal = owner.QualificationStageExit(
+                owner.qualification_authority_digest(value), value.prepared.source.digest,
+                value.candidates[0].selected_delta_digest, "audit", audit.decision,
+                "slot_audit_failed" if audit.decision is owner.QualificationDecision.FAIL else "audit_not_covered",
+                speed, audit, audit_started, audit_completed, teardown.digest,
+            )
+            reference = owner.publish_qualification_stage_exit(value.evidence_root, terminal)
+            owner.reopen_qualification_stage_exit(value.evidence_root, reference, expected=value)
+            if continuation is not None:
+                continuation.record_final(reference)
+            return QualificationContinuationStageResult(True, reference)
 
-                audit_witnesses, audit_last_completed = seams.run_slot_audits(
-                    value, lifecycle, executor=executor, deadline=float(deadline),
-                    completion_sink=commit_audit if continuation is not None else None,
-                )
-                if continuation is None:
-                    audit_completed = float(executor.manager.clock())
-                elif len(audit_completion) != 1:
-                    raise seams.qualification_runner_error("audit sink was not called once")
-                else:
-                    audit_completed = audit_completion[0]
-            else:
-                audit_witnesses = dict(audit_state.audit_witnesses)
-                audit_started = audit_state.audit_started
-                audit_completed = audit_state.audit_completed
-                audit_last_completed = audit_state.audit_last_completed
-            for audit in audit_witnesses.values():
-                unavailable = infrastructure_failure(
-                    [row.to_gate_dict() for row in audit.receipts],
-                    min_calls=audit.policy.minimum_calls,
-                    expected_slots=audit.policy.expected_slots,
-                    expected_member_count=audit.policy.expected_member_count,
-                )
-                if unavailable is not None:
-                    raise seams.qualification_continuation_error(
-                        "slot audit evidence unavailable: " + unavailable
-                    )
-            if any(
-                row.decision is not seams.qualification_decision.PASS
-                for row in audit_witnesses.values()
-            ):
-                teardown = executor.prove_quiescent()
-                if teardown.observed_monotonic_s < audit_last_completed:
-                    raise seams.qualification_runner_error(
-                        "audit-exit quiescence predates candidate teardown"
-                    )
-                return finish_resident_audit(
-                    audit_witnesses,
-                    audit_started,
-                    audit_completed,
-                    teardown,
-                )
+        if quality_state is None:
             teardown_before = executor.prove_quiescent()
             # Bind quiescence to the FINAL executed baseline (B'' under repeat
             # reads, B-prime otherwise) — baseline_after is mid-run in the
             # 5-leg shape.
-            last_post = max(
-                seams.lifecycle_causal_completion(lifecycle), audit_last_completed
-            )
+            last_post = max(owner._lifecycle_causal_completion(lifecycle), audit_state.audit_last_completed)
             if teardown_before.observed_monotonic_s < last_post:
-                raise seams.qualification_runner_error(
-                    "pre-T quiescence predates the final baseline teardown"
-                )
-            entropy = entropy_provider(value.commitment, teardown_before)
-            if type(entropy) is not seams.selection_entropy_receipt_type:
-                raise seams.qualification_runner_error(
-                    "entropy provider returned an untyped receipt"
-                )
+                raise owner.QualificationRunnerError("pre-T quiescence predates the final baseline teardown")
+            # Replay controls bound this entropy to the candidate's last lane, which V17 swaps away
+            # from this executor (every V17 PASS failed here, 2026-09-30); present that lane's receipt.
+            bound = teardown_before if lifecycle.crossover.goodput is None else lifecycle.crossover.candidate_quiescence
+            entropy = entropy_provider(value.commitment, bound)
+            if type(entropy) is not owner.SelectionEntropyReceipt:
+                raise owner.QualificationRunnerError("entropy provider returned an untyped receipt")
             entropy_observed = float(executor.manager.clock())
-            if (
-                not math.isfinite(entropy_observed)
-                or entropy_observed < teardown_before.observed_monotonic_s
-            ):
-                raise seams.qualification_runner_error(
-                    "entropy observation predates teardown"
-                )
-            selection = seams.selection_receipt_type.reveal(
-                value.commitment,
-                secret=value.selection_secret,
-                entropy=entropy,
-                sealed_cohort_trajectory_digest=seams.cohort_trajectory_digest(
-                    lifecycle
-                ),
-            )
-            request_plan_digest = _request_plan_digest(
-                value=value,
-                lifecycle=lifecycle,
-                selection=selection,
-                resident_speed_witness=resident_speed_witness,
-                seams=seams,
-            )
+            if not math.isfinite(entropy_observed) or entropy_observed < teardown_before.observed_monotonic_s:
+                raise owner.QualificationRunnerError("entropy observation predates teardown")
+        else:
+            teardown_before = quality_state.teardown_before
+            entropy = quality_state.entropy
+            entropy_observed = float(quality_state.entropy_observed)
+        selection = owner.SelectionReceipt.reveal(
+            value.commitment, secret=value.selection_secret, entropy=entropy,
+            sealed_cohort_trajectory_digest=owner.cohort_trajectory_digest(lifecycle),
+        )
+        if entropy != lifecycle.crossover.quality_entropy:
+            raise owner.QualificationContinuationError("replay control selection entropy changed after execution")
+        request_plan_digest = owner.canonical_digest(
+            "cacheon.qualification.reference-request-plan",
+            {"candidate_deltas": [row.selected_delta_digest for row in value.candidates],
+             "cohort_trajectory_digest": owner.cohort_trajectory_digest(lifecycle),
+             "reference_manifest_digest": value.candidates[0].profile.reference.digest,
+             "selection_digest": selection.digest,
+             "speed_evidence_policy": value.speed_evidence_policy.to_dict(),
+             "resident_speed_evidence": speed.evidence_digest},
+        )
+        if quality_state is None:
             session_id = make_id()
-            request_rows: list[Any] = []
-            for authority in value.candidates:
-                request_rows.append(
-                    seams.reference_request(
-                        lifecycle,
-                        authority,
-                        selection,
-                        session_id=session_id,
-                        plan_digest=request_plan_digest,
-                        request_id=make_id(),
-                        nonce=make_id(),
-                        index=len(request_rows),
-                    )
+            requests = tuple(owner._reference_request(
+                lifecycle, authority, selection, session_id=session_id,
+                plan_digest=request_plan_digest, request_id=make_id(), nonce=make_id(), index=index,
+            ) for index, authority in enumerate(value.candidates))
+        else:
+            requests = quality_state.requests
+            if len(requests) != len(value.candidates) or any(row.plan_digest != request_plan_digest for row in requests):
+                raise owner.QualificationContinuationError(
+                    "quality continuation requests differ from the sealed request plan"
                 )
-            requests = tuple(request_rows)
-            plan = seams.reference_session_plan_type(
-                value.candidates[0].profile.reference,
-                value.pristine_stack,
-                value.reference_engine_config.digest,
-                value.reference_engine_config,
-                value.reference_preflight,
-                request_plan_digest,
-                requests,
-            )
-            t_operation = _t_operation_digest(value, plan, seams)
-            t_nonce = (
-                "" if continuation is None
-                else continuation.arm_evaluator("t", t_operation)
-            )
-            quality_completion: list[tuple[Any, Any]] = []
+        plan = owner.ReferenceSessionPlan(
+            value.candidates[0].profile.reference, value.pristine_stack,
+            value.reference_engine_config.digest, value.reference_engine_config,
+            value.reference_preflight, request_plan_digest, requests,
+        )
+        t_operation = _t_operation_digest(value, plan, owner)
+        if quality_state is not None:
+            if quality_state.t_operation_digest != t_operation:
+                raise owner.QualificationContinuationError("quality continuation differs from its pristine-T claim")
+            reference_execution = quality_state.reference_execution
+            teardown_after = quality_state.teardown_after
+        else:
+            t_nonce = "" if continuation is None else continuation.arm_evaluator("t", t_operation)
+            quality_completion = []
 
             def close_reference(execution: Any) -> Any:
                 completed = executor.prove_quiescent()
                 t_before, t_after = execution.device_receipts
-                if (
-                    t_before.started_monotonic_s < entropy_observed
-                    or t_after.completed_monotonic_s
-                    > completed.observed_monotonic_s
-                ):
-                    raise seams.qualification_runner_error(
-                        "pristine T does not lie between causal boundaries"
-                    )
+                if (t_before.started_monotonic_s < entropy_observed
+                    or t_after.completed_monotonic_s > completed.observed_monotonic_s):
+                    raise owner.QualificationRunnerError("pristine T does not lie between causal boundaries")
                 return completed
 
             def commit_quality(execution: Any) -> None:
                 if quality_completion:
-                    raise seams.qualification_runner_error(
-                        "pristine T invoked its completion sink more than once"
-                    )
+                    raise owner.QualificationRunnerError("pristine T invoked its completion sink more than once")
                 completed = close_reference(execution)
-                continuation.record_quality(seams.quality_continuation_type(
-                    teardown_before=teardown_before,
-                    entropy=entropy,
-                    entropy_observed=entropy_observed,
-                    requests=requests,
-                    reference_execution=execution,
-                    teardown_after=completed,
-                    t_nonce=t_nonce,
-                    t_operation_digest=t_operation,
+                continuation.record_quality(owner.QualityContinuation(
+                    teardown_before=teardown_before, entropy=entropy,
+                    entropy_observed=entropy_observed, requests=requests,
+                    reference_execution=execution, teardown_after=completed,
+                    t_nonce=t_nonce, t_operation_digest=t_operation,
                 ))
                 quality_completion.append((execution, completed))
 
             reference_execution = executor.execute_reference(
-                value.pristine_launch,
-                value.pristine_binding,
-                value.model_mount,
-                plan,
+                value.pristine_launch, value.pristine_binding, value.model_mount, plan,
                 deadline=float(deadline),
-                completion_sink=(
-                    commit_quality if continuation is not None else None
-                ),
+                completion_sink=commit_quality if continuation is not None else None,
             )
             if continuation is not None and (
-                len(quality_completion) != 1
-                or quality_completion[0][0] is not reference_execution
+                len(quality_completion) != 1 or quality_completion[0][0] is not reference_execution
             ):
-                raise seams.qualification_runner_error(
-                    "pristine T returned without its exact durable completion"
-            )
-            if continuation is None:
-                teardown_after = close_reference(reference_execution)
-            else:
-                teardown_after = quality_completion[0][1]
-            t_pre, t_post = reference_execution.device_receipts
+                raise owner.QualificationRunnerError("pristine T returned without its exact durable completion")
+            teardown_after = close_reference(reference_execution) if continuation is None else quality_completion[0][1]
+        t_pre, t_post = reference_execution.device_receipts
 
     return QualificationContinuationStageResult(
-        False,
-        None,
-        lifecycle,
-        audit_witnesses,
-        audit_started,
-        audit_completed,
-        teardown_before,
-        entropy,
-        entropy_observed,
-        selection,
-        requests,
-        plan,
-        reference_execution,
-        teardown_after,
-        t_pre,
-        t_post,
+        False, None, lifecycle, audit_witnesses, audit_started, audit_completed,
+        teardown_before, entropy, entropy_observed, selection, requests, plan,
+        reference_execution, teardown_after, t_pre, t_post,
     )
 
 
-def _request_plan_digest(
-    *,
-    value: Any,
-    lifecycle: Any,
-    selection: Any,
-    resident_speed_witness: Any | None,
-    seams: QualificationContinuationRunnerSeams,
-) -> str:
-    payload = {
-        "candidate_deltas": [
-            row.selected_delta_digest for row in value.candidates
-        ],
-        "cohort_trajectory_digest": seams.cohort_trajectory_digest(lifecycle),
-        "reference_manifest_digest": value.candidates[0].profile.reference.digest,
-        "selection_digest": selection.digest,
-    }
-    payload["speed_evidence_policy"] = value.speed_evidence_policy.to_dict()
-    if resident_speed_witness is not None:
-        payload["resident_speed_evidence"] = resident_speed_witness.evidence_digest
-    return seams.canonical_digest(
-        "cacheon.qualification.reference-request-plan",
-        payload,
-    )
-
-
-__all__ = [
-    "QualificationContinuationRunnerSeams",
-    "QualificationContinuationStageResult",
-    "run_continuation_quality_stage",
-]
+__all__ = ["QualificationContinuationStageResult", "run_continuation_quality_stage"]

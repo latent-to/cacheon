@@ -15,39 +15,30 @@ from cacheon.stack_plan import (
     StackPlanError,
     plan_marginal_arm,
 )
-from cacheon.target_catalog import (
-    FEATURE_ENTRY,
-    TargetCatalog,
-    TargetKind,
-    TargetSpec,
-    default_target_catalog,
-)
+from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
-ROUTED = "moe.fused_routed_experts"
-SILU = "activation.silu_and_mul"
-NORM = "norm.rmsnorm"
-ALLREDUCE = "collective.all_reduce"
+FORWARD = "forward_pass"
+CACHE = "prefix_cache"
 
 
-def test_projection_transition_preserves_incumbents_at_other_callsites():
+def test_a_transition_preserves_the_incumbent_of_the_other_target():
+    # Model and cache replacements are distinct stack entries (2026-09-28): a
+    # cache candidate must keep the incumbent model kernels, and vice versa.
     catalog = default_target_catalog()
-    target = "collective.dp_output_projection_norm"
-    retained = ("collective.dp_attention_exchange.v1", "linear.dense", "norm.fused_add_rmsnorm")
-    entries = {name: _ref(catalog, name, name) for name in (*retained, ROUTED)}
+    entries = {FORWARD: _ref(catalog, FORWARD, "model")}
     incumbent = _stack(catalog, entries)
-    arm = _plan(incumbent, _ref(catalog, target, "projection"), catalog,
-                _context(catalog, (*entries, target)))
-    assert set(arm.candidate.entries) == {*entries, target}
+    arm = _plan(incumbent, _ref(catalog, CACHE, "cache"), catalog,
+                _context(catalog, (FORWARD, CACHE)))
+    assert set(arm.candidate.entries) == {FORWARD, CACHE}
     assert not arm.transition.displaced
-    assert all(arm.candidate.entries[name] == entry for name, entry in entries.items())
+    assert arm.candidate.entries[FORWARD] == entries[FORWARD]
     assert incumbent.entries == entries
     assert arm.baseline_before.stack_digest == arm.baseline_after.stack_digest == incumbent.digest
-    for name in retained:
-        next_arm = _plan(arm.candidate, _ref(catalog, name, "replacement"), catalog,
-                         _context(catalog, (*entries, target)))
-        assert next_arm.candidate.entries[target] == arm.candidate.entries[target]
-        assert not next_arm.transition.displaced
+    next_arm = _plan(arm.candidate, _ref(catalog, FORWARD, "replacement"), catalog,
+                     _context(catalog, (FORWARD, CACHE)))
+    assert next_arm.candidate.entries[CACHE] == arm.candidate.entries[CACHE]
+    assert not next_arm.transition.displaced
 
 
 def _h(label: str) -> str:
@@ -127,9 +118,8 @@ def _plan(
 @pytest.mark.parametrize(
     "initial_target,replacement_target,expected_removed",
     [
-        (None, ROUTED, ()),
-        (ROUTED, ROUTED, ()),
-        ("moe.fused_experts", ROUTED, ("moe.fused_experts",)),
+        (None, FORWARD, ()),
+        (FORWARD, FORWARD, ()),
     ],
 )
 def test_registered_stock_and_same_target_transitions(
@@ -161,130 +151,28 @@ def test_registered_stock_and_same_target_transitions(
     assert arm.transition.prior is entries.get(replacement_target)
 
 
-def test_subset_challenger_replaces_wide_incumbent_instead_of_being_shadowed():
-    catalog = default_target_catalog()
-    for wide, narrow in (
-        (ROUTED, "moe.fused_experts"),
-        ("norm.fused_add_rmsnorm", "norm.rmsnorm"),
-    ):
-        incumbent = _stack(catalog, {wide: _ref(catalog, wide, "wide")})
-        arm = _plan(
-            incumbent,
-            _ref(catalog, narrow, "narrow"),
-            catalog,
-            _context(catalog, (wide, narrow)),
-        )
-        assert tuple(row.target_id for row in arm.transition.displaced) == (wide,)
-        assert set(arm.candidate.entries) == {narrow}
-
-
 def test_planning_rejects_a_catalog_outside_the_frozen_stack_context():
     catalog = default_target_catalog()
-    context = _context(catalog, (ROUTED,))
+    context = _context(catalog, (FORWARD,))
     incumbent = _stack(catalog)
-    narrow = TargetCatalog(
-        (
-            replace(
-                catalog.require(ROUTED),
-                displaces=frozenset(),
-                conflicts_with=frozenset(),
-            ),
-        )
-    )
+    narrow = TargetCatalog((catalog.require(FORWARD),))
 
     with pytest.raises(StackPlanError, match="catalog does not match"):
         _plan(
             incumbent,
-            _ref(catalog, ROUTED, "replacement"),
+            _ref(catalog, FORWARD, "replacement"),
             narrow,
-            context,
-        )
-
-
-def _dependency_catalog() -> tuple[TargetCatalog, str]:
-    base = default_target_catalog()
-    atomic_id = "atomic.silu_allreduce"
-    specs = [
-        base.require(SILU),
-        replace(base.require(NORM), requires=frozenset({SILU})),
-        base.require(ALLREDUCE),
-        TargetSpec(
-            target_id=atomic_id,
-            kind=TargetKind.ATOMIC,
-            members=(SILU, ALLREDUCE),
-            displaces=frozenset({SILU, ALLREDUCE}),
-            allowed_features=frozenset({FEATURE_ENTRY}),
-            atomic_semantics_id="silu-allreduce-atomic.v1",
-        ),
-    ]
-    return TargetCatalog(specs), atomic_id
-
-
-def test_atomic_and_member_challengers_remove_every_overlapping_incumbent():
-    catalog, atomic_id = _dependency_catalog()
-    atomic_incumbent = _stack(
-        catalog, {atomic_id: _ref(catalog, atomic_id, "atomic incumbent")}
-    )
-    for challenger in (SILU, ALLREDUCE):
-        arm = _plan(
-            atomic_incumbent,
-            _ref(catalog, challenger, f"challenger:{challenger}"),
-            catalog,
-            _context(catalog, (atomic_id, challenger)),
-        )
-        assert tuple(row.target_id for row in arm.transition.displaced) == (atomic_id,)
-        assert set(arm.candidate.entries) == {challenger}
-
-    members = {target: _ref(catalog, target, target) for target in (SILU, ALLREDUCE)}
-    arm = _plan(
-        _stack(catalog, members),
-        _ref(catalog, atomic_id, "atomic challenger"),
-        catalog,
-        _context(catalog, (atomic_id, SILU, ALLREDUCE)),
-    )
-    assert {row.target_id for row in arm.transition.displaced} == set(members)
-    assert set(arm.candidate.entries) == {atomic_id}
-
-
-def test_stock_does_not_satisfy_active_only_dependency():
-    catalog, _ = _dependency_catalog()
-    context = _context(catalog, (SILU, NORM))
-    with pytest.raises(StackPlanError, match="stock does not satisfy requires"):
-        _plan(_stack(catalog), _ref(catalog, NORM, "norm"), catalog, context)
-
-    incumbent = _stack(catalog, {SILU: _ref(catalog, SILU, "silu")})
-    arm = _plan(
-        incumbent, _ref(catalog, NORM, "norm"), catalog, context
-    )
-    assert set(arm.candidate.entries) == {SILU, NORM}
-
-
-def test_displacement_rejects_stranded_active_dependent():
-    catalog, atomic_id = _dependency_catalog()
-    context = _context(catalog, (SILU, NORM, atomic_id))
-    incumbent = _stack(
-        catalog,
-        {
-            SILU: _ref(catalog, SILU, "silu"),
-            NORM: _ref(catalog, NORM, "norm"),
-        },
-    )
-    with pytest.raises(StackPlanError, match="stock does not satisfy requires"):
-        _plan(
-            incumbent,
-            _ref(catalog, atomic_id, "atomic"),
-            catalog,
             context,
         )
 
 
 def test_stale_target_spec_and_selected_payload_noop_reject():
     catalog = default_target_catalog()
-    context = _context(catalog, (ROUTED,))
-    prior = _ref(catalog, ROUTED, "prior", payload="same")
-    incumbent = _stack(catalog, {ROUTED: prior})
+    context = _context(catalog, (FORWARD,))
+    prior = _ref(catalog, FORWARD, "prior", payload="same")
+    incumbent = _stack(catalog, {FORWARD: prior})
     padded_alias = ProposalContributionRef(
-        target_id=ROUTED,
+        target_id=FORWARD,
         target_spec_digest=prior.target_spec_digest,
         artifact_digest=_h("different padding"),
         selected_payload_digest=prior.selected_payload_digest,
@@ -300,9 +188,9 @@ def test_stale_target_spec_and_selected_payload_noop_reject():
 
 def test_marginal_plan_rejects_equal_tree_and_detects_incumbent_rebase():
     catalog = default_target_catalog()
-    context = _context(catalog, (ROUTED, SILU))
+    context = _context(catalog, (FORWARD, CACHE))
     incumbent = _stack(catalog)
-    replacement = _ref(catalog, ROUTED, "routed")
+    replacement = _ref(catalog, FORWARD, "model")
     with pytest.raises(StackPlanError, match="tree digests must differ"):
         _plan(
             incumbent,
@@ -316,26 +204,26 @@ def test_marginal_plan_rejects_equal_tree_and_detects_incumbent_rebase():
 
 def _two_arms():
     catalog = default_target_catalog()
-    context = _context(catalog, (ROUTED, SILU))
+    context = _context(catalog, (FORWARD, CACHE))
     incumbent = _stack(catalog)
-    routed = _plan(incumbent, _ref(catalog, ROUTED, "routed"), catalog, context)
-    silu = _plan(incumbent, _ref(catalog, SILU, "silu"), catalog, context)
-    return catalog, context, incumbent, routed, silu
+    model = _plan(incumbent, _ref(catalog, FORWARD, "model"), catalog, context)
+    cache = _plan(incumbent, _ref(catalog, CACHE, "cache"), catalog, context)
+    return catalog, context, incumbent, model, cache
 
 
 def test_cohort_order_is_entropy_derived_and_authority_remains_distinct():
-    _, context, incumbent, routed, silu = _two_arms()
+    _, context, incumbent, model, cache = _two_arms()
     entropy = _h("post-seal entropy")
-    authority = (silu.transition.replacement, routed.transition.replacement)
+    authority = (cache.transition.replacement, model.transition.replacement)
     first = CohortPlan.seal(
-        (routed, silu),
+        (model, cache),
         entropy_digest=entropy,
         authority_order=authority,
         catalog=default_target_catalog(),
         expected_context=context,
     )
     second = CohortPlan.seal(
-        (silu, routed),
+        (cache, model),
         entropy_digest=entropy,
         authority_order=authority,
         catalog=default_target_catalog(),
@@ -346,8 +234,8 @@ def test_cohort_order_is_entropy_derived_and_authority_remains_distinct():
     assert first.execution_order == second.execution_order
     assert first.authority_order == authority
     assert set(first.execution_order) == {
-        routed.selected_delta_digest,
-        silu.selected_delta_digest,
+        model.selected_delta_digest,
+        cache.selected_delta_digest,
     }
     assert first.reopen(
         catalog=default_target_catalog(), expected_context=context
@@ -361,39 +249,39 @@ def test_cohort_order_is_entropy_derived_and_authority_remains_distinct():
     ["duplicate_delta", "duplicate_tree", "duplicate_authority", "missing_authority"],
 )
 def test_cohort_rejects_duplicate_work_and_invalid_authority(case):
-    catalog, context, incumbent, routed, silu = _two_arms()
-    arms = (routed, silu)
-    authority = (routed.transition.replacement, silu.transition.replacement)
+    catalog, context, incumbent, model, cache = _two_arms()
+    arms = (model, cache)
+    authority = (model.transition.replacement, cache.transition.replacement)
     message = ""
     if case == "duplicate_delta":
-        alias = _ref(catalog, ROUTED, "padding alias", payload="routed")
+        alias = _ref(catalog, FORWARD, "padding alias", payload="model")
         # _ref's payload label matches the original selected payload while the
         # whole artifact and attribution identities differ.
         duplicate = _plan(
             incumbent,
             alias,
             catalog,
-            _context(catalog, (ROUTED, SILU)),
+            _context(catalog, (FORWARD, CACHE)),
             candidate_tree="tree:alias",
         )
-        arms = (routed, duplicate)
-        authority = (routed.transition.replacement, duplicate.transition.replacement)
+        arms = (model, duplicate)
+        authority = (model.transition.replacement, duplicate.transition.replacement)
         message = "duplicate selected deltas"
     elif case == "duplicate_tree":
         duplicate_tree = _plan(
             incumbent,
-            silu.transition.replacement,
+            cache.transition.replacement,
             catalog,
-            _context(catalog, (ROUTED, SILU)),
-            candidate_tree=f"tree:c:{routed.selected_delta_digest}",
+            _context(catalog, (FORWARD, CACHE)),
+            candidate_tree=f"tree:c:{model.selected_delta_digest}",
         )
-        arms = (routed, duplicate_tree)
+        arms = (model, duplicate_tree)
         message = "duplicate candidate trees"
     elif case == "duplicate_authority":
-        authority = (routed.transition.replacement, routed.transition.replacement)
+        authority = (model.transition.replacement, model.transition.replacement)
         message = "duplicate contributions"
     else:
-        authority = (routed.transition.replacement,)
+        authority = (model.transition.replacement,)
         message = "every cohort contribution exactly once"
 
     with pytest.raises(StackPlanError, match=message):
@@ -407,14 +295,14 @@ def test_cohort_rejects_duplicate_work_and_invalid_authority(case):
 
 
 def test_plan_schema_versions_are_type_exact():
-    catalog, context, _, routed, sdpa = _two_arms()
+    catalog, context, _, model, cache = _two_arms()
     cohort = CohortPlan.seal(
-        (routed, sdpa),
+        (model, cache),
         entropy_digest=_h("entropy"),
-        authority_order=(routed.transition.replacement, sdpa.transition.replacement),
+        authority_order=(model.transition.replacement, cache.transition.replacement),
         catalog=catalog,
         expected_context=context,
     )
-    for record in (routed, cohort):
+    for record in (model, cohort):
         with pytest.raises(StackPlanError, match="schema_version"):
             replace(record, schema_version=True)

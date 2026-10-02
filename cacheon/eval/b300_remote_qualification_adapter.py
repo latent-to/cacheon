@@ -20,10 +20,7 @@ from enum import Enum
 import logging
 from pathlib import Path
 
-from cacheon.arena_service import (
-    ArenaCandidateBinding,
-    PromotionDecision,
-)
+from cacheon.arena_service import ArenaCandidateBinding
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.chain.evaluation_leases import EvaluationLease
 from cacheon.chain.publication import (
@@ -42,7 +39,6 @@ from cacheon.chain.remote_qualification_hold import (
     RemoteQualificationWorkerHold,
     capture_remote_qualification_hold,
 )
-from cacheon.chain.remote_qualification_evidence import _screen_receipt_from_dict
 from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorker,
     B300RemoteQualificationRun,
@@ -450,35 +446,26 @@ class B300RemoteQualificationAdapter:
 
         require_commissioned_incumbent(body, self.construction)
         candidate_rows = []
-        receipt_rows = []
         for row in body["candidates"]:
             reservation = QualificationReservation.from_dict(row["reservation"])
             publication = self.publications.resolve(row["publication"])
-            receipt = _screen_receipt_from_dict(row["screen_receipt"])
             try:
                 candidate = ArenaCandidateBinding(
                     reservation,
                     publication,
-                    receipt.screen_attempt,
+                    row["attempt"],
                 )
             except (TypeError, ValueError, RuntimeError) as exc:
                 raise B300RemoteQualificationAdapterError(
                     "remote candidate differs from its fixed pod publication"
                 ) from exc
-            if (
-                row["candidate_digest"] != candidate.digest
-                or receipt.candidate_digest != candidate.digest
-                or receipt.service_digest != manifest.digest
-                or receipt.decision is not PromotionDecision.PROMOTE
-            ):
+            if row["candidate_digest"] != candidate.digest:
                 raise B300RemoteQualificationAdapterError(
-                    "remote candidate differs from its promoted receipt"
+                    "remote candidate digest differs from its reconstruction"
                 )
             candidate_rows.append(candidate)
-            receipt_rows.append(receipt)
 
         candidates = tuple(candidate_rows)
-        receipts = tuple(receipt_rows)
         try:
             lease = EvaluationLease(
                 request.lease_id,
@@ -492,14 +479,14 @@ class B300RemoteQualificationAdapter:
             )
         except (TypeError, ValueError, RuntimeError) as exc:
             raise B300RemoteQualificationAdapterError(
-                "remote qualification lease or promoted cohort is invalid"
+                "remote qualification lease or cohort is invalid"
             ) from exc
         if (
             lease.reservation_ids
             != tuple(row.reservation.reservation_digest for row in candidates)
         ):
             raise B300RemoteQualificationAdapterError(
-                "remote lease differs from the exact promoted cohort"
+                "remote lease differs from the exact leased cohort"
             )
 
         worker = self.worker
@@ -508,7 +495,6 @@ class B300RemoteQualificationAdapter:
             result = worker.run_remote_qualification(
                 lease,
                 candidates,
-                receipts,
                 screen_lane=self.deployment.screen_lane,
                 continuation_store=self.continuation_store,
                 request_digest=request.digest,

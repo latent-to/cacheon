@@ -1,13 +1,14 @@
 """Serve any named node of the served model through one audited call body.
 
-A slot name that ``cacheon.slots`` does not define is a node address: a dotted name
+Every registered slot other than the prefix cache is a node address: a dotted name
 from ``named_modules()`` of the served model, where ``*`` stands for exactly one
 segment (``model.layers.*.mlp``). The candidate is a drop-in for that node's stock
 ``forward``: ``entry(prepared, *args, **kwargs)`` receives the stock arguments and
 returns what stock returns. ``prepare(module)`` runs once per bound node; a bundle
 without one receives the module itself. The same body therefore serves one
 activation, a fused MoE block, a decoder layer or the whole decoder stack, and a
-bundle that lists several addresses replaces several nodes at once.
+bundle that lists several addresses replaces several nodes at once. The prefix
+cache's address ``tree_cache`` is not a node; ``sglang_cache`` serves it.
 
 Truth is the stock node in the running engine, not hand-written reference math. On
 an audited eager call stock answers first; its outputs and the engine-state rows
@@ -50,14 +51,14 @@ from cacheon.capabilities import CallDescriptor
 from cacheon.dispatch import (
     _arch_tag, _dtype_name, _dynamo_compiling, _flashinfer_tuning, _in_cuda_graph,
 )
-from cacheon.integrations.sglang_dsa_state import StateFormat, dsa_state_rows, state_values
+from cacheon.integrations.sglang_cache import ADDRESS as _CACHE
+from cacheon.integrations.sglang_dsa_state import (
+    KV_BUFFERS as _KV_BUFFERS, StateFormat, dsa_state_rows, state_values,
+)
 from cacheon.registry import REGISTRY, KernelRegistry
-from cacheon.slots import SLOTS
 
 _RUNNER = "sglang.srt.model_executor.model_runner"
 _STOCK_LOAD = "_cacheon_stock_load_model"
-# The pinned engine's per-token cache buffers: the MHA pair or the MLA latent.
-_KV_BUFFERS = ("k_buffer", "v_buffer", "kv_buffer")
 # A row passes within max(_FLOOR, _TWIN_FACTOR x the twin's 90th-percentile row
 # error), never above _CEILING. No honest single kernel reached a quarter of the
 # floor; the widest honest node needed 0.33 (three times 11% at the whole stack) and
@@ -580,7 +581,7 @@ def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
 
     named = dict(runner.model.named_modules())
     bound: dict[str, str] = {}
-    for slot in sorted(s for s in registry.slots() if s not in SLOTS):
+    for slot in sorted(s for s in registry.slots() if s != _CACHE):
         pattern = node_pattern(slot)
         names = [name for name in named if pattern.match(name)]
         error = None

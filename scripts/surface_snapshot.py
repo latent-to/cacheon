@@ -59,7 +59,7 @@ BASELINE_DIR = ROOT / "scripts" / "surface_baseline"
 DIFF_KEYS = 20
 DIFF_WIDTH = 400
 THIRD_PARTY = ("bittensor", "numpy", "sglang", "torch")
-STACK_FIXTURES = ("tests/fixtures/stack_norm_singleton",)
+STACK_FIXTURES = ("tests/fixtures/node_singleton",)
 
 sys.path.insert(0, str(ROOT))
 # argparse wraps help to the terminal width; pin it before any format_help.
@@ -237,11 +237,10 @@ def domain_surface() -> dict[str, list[str]]:
 
 
 def codec_surface() -> dict[str, object]:
-    from cacheon.eval import qualification_continuation, resident_execution_evidence
+    from cacheon.eval import qualification_continuation
 
     codecs = {
         "qualification_continuation": qualification_continuation._codec(),
-        "resident_execution": resident_execution_evidence.EXECUTION_CODEC,
     }
     out: dict[str, object] = {}
     for name, codec in codecs.items():

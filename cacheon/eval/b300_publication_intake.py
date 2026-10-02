@@ -4,9 +4,7 @@ One authenticated qualification request carries one ``candidate_publication``
 artifact per wire candidate, in the exact order of the body's ``candidates``
 list.  Both lists are covered by the request authentication, so positional
 pairing is exact: a swapped, missing, duplicated, or substituted carrier fails
-the per-candidate publication verification before any resident work.  Screen
-requests keep their single-carrier shape through
-:func:`cacheon.chain.remote_worker_spool.artifact_for_role`.
+the per-candidate publication verification before any resident work.
 """
 
 from __future__ import annotations

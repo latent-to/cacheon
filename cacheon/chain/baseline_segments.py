@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 # Rows that hold no qualification evidence yet. A qualifying row holds a lease
 # and a reproduction_pending row holds a PASS half; both keep their segment so
 # the boundary stays visible to the operator instead of being rebound.
-_REBINDABLE = ("published", "transport_retry", "screening", "promoted")
+_REBINDABLE = ("published", "transport_retry")
 
 
 def bind_reservation_baseline_segment(
@@ -48,7 +48,7 @@ def bind_reservation_baseline_segment(
     *,
     reason: str,
 ) -> None:
-    """Bind one reservation, and its promoted retry group, to ``state``.
+    """Bind one reservation, and its retry group, to ``state``.
 
     A segment that already names ``state``'s arena is kept whatever its
     generation: learning the service after a crown must not rewrite a durable
@@ -75,15 +75,15 @@ def bind_reservation_baseline_segment(
     group = reservation["retry_group_digest"]
     reservation_ids = (reservation_id,)
     if group:
-        # The row being bound belongs to its own group even while it is back
-        # in the screen queue; the group query alone lists only promoted rows.
+        # The row being bound belongs to its own group whatever its status;
+        # the group query alone lists only the queued rows.
         reservation_ids = tuple(dict.fromkeys((
             reservation_id,
             *(
                 row["reservation_id"]
                 for row in store._db.execute(
                     "SELECT reservation_id FROM reservations "
-                    "WHERE status='promoted' AND retry_group_digest=? "
+                    "WHERE status='published' AND retry_group_digest=? "
                     "ORDER BY retry_position",
                     (group,),
                 )

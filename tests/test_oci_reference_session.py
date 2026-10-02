@@ -61,7 +61,7 @@ def _stack(*, entries=()) -> EvaluationStackManifest:
     catalog = {
         "schema_version": 1,
         "policy_version": "target-catalog.v1",
-        "targets": [{"target_id": "activation.silu_and_mul", "marker": "base"}],
+        "targets": [{"target_id": "forward_pass", "marker": "base"}],
         "composition_rules": [],
     }
     return EvaluationStackManifest(
@@ -297,17 +297,17 @@ def test_plan_closes_empty_stack_identity_and_ordered_cohort() -> None:
     assert plan.digest != plan.request_plan_digest
 
     proposal = ProposalContributionRef(
-        "activation.silu_and_mul",
+        "forward_pass",
         canonical_digest(
             "cacheon.target-spec",
-            {"target_id": "activation.silu_and_mul", "marker": "base"},
+            {"target_id": "forward_pass", "marker": "base"},
         ),
         _digest("artifact"),
         _digest("payload"),
         _digest("attribution"),
     )
     with pytest.raises(ReferenceSessionError, match="contributions"):
-        replace(plan, pristine_stack=_stack(entries=(("activation.silu_and_mul", proposal),)))
+        replace(plan, pristine_stack=_stack(entries=(("forward_pass", proposal),)))
     with pytest.raises(ReferenceSessionError, match="indices"):
         replace(plan, requests=(replace(plan.requests[0], request_index=1),))
     with pytest.raises(ReferenceSessionError, match="cohort binding"):
@@ -417,7 +417,6 @@ def test_reference_authority_import_closure_stays_data_only() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
     for forbidden in (
-        "cacheon.eval._launch",
         "cacheon.audit",
         "cacheon.eval.throughput_kl",
         "cacheon.eval.capability",

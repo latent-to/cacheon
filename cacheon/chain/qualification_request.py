@@ -29,13 +29,13 @@ def qualification_request_body(
     body = {
         "candidates": [
             {
+                "attempt": candidate.attempt,
                 "candidate_digest": candidate.digest,
                 "publication": publication.to_dict(),
                 "reservation": candidate.reservation.to_dict(),
-                "screen_receipt": receipt.to_dict(),
             }
-            for candidate, publication, receipt in zip(
-                claim.candidates, claim.publications, claim.screen_receipts, strict=True
+            for candidate, publication in zip(
+                claim.candidates, claim.publications, strict=True
             )
         ],
         "kind": "qualification_work",

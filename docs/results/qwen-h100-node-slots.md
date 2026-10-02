@@ -209,9 +209,9 @@ worst-window figures are, if anything, pessimistic.
 
 ## At the arena's width
 
-The runs above hold eight requests of a few hundred tokens. The arena's cells hold
-48 requests of 8,192 tokens and 6 of 65,536, and the audit role runs every charged
-batch at that width. The controls were repeated there, eager, FP8 cache, three
+The runs above hold eight requests of a few hundred tokens. At the time of these runs
+the arena's cells held 48 requests of 8,192 tokens and 6 of 65,536, and the audit role ran
+every charged batch at that width. The controls were repeated there, eager, FP8 cache, three
 generated tokens per request.
 
 The first audited 48-request decode step ran an 80 GiB H100 out of memory. The model

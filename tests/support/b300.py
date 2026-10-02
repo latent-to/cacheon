@@ -1,10 +1,9 @@
 """Device, runtime, and OCI policy fixtures shared by the B300 lane suites.
 
 Five suites each carried their own copy of these. The copies were verbatim
-except for two things that genuinely differ — the screen lane's resource
-policies are smaller than qualification's, and the reference-device suite runs a
-different GPU on purpose — so those are named presets here rather than mode
-flags on one builder. Anything a caller varies per test stays an argument.
+except that the reference-device suite runs a different GPU on purpose, so that
+is a named device profile here rather than a mode flag on one builder. Anything
+a caller varies per test stays an argument.
 """
 
 from __future__ import annotations
@@ -21,20 +20,9 @@ from cacheon.eval.oci_prebuild import OCIPrebuildPolicy
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 
 
-M3_REGISTERED_TARGET_IDS = (
-    "activation.silu_and_mul",
-    "collective.all_reduce",
-    "moe.fused_experts",
-    "norm.rmsnorm",
-)
-
-GLM53_REGISTERED_TARGET_IDS = (
-    "collective.all_reduce",
-    "collective.dp_attention_exchange.v1",
-    "linear.dense",
-    "moe.fused_routed_experts",
-    "norm.fused_add_rmsnorm",
-)
+# What a node arena registers: the model's nodes, and optionally the prefix cache.
+NODE_TARGET_IDS = ("forward_pass",)
+NODE_AND_CACHE_TARGET_IDS = ("forward_pass", "prefix_cache")
 
 
 def sha(label: str) -> str:
@@ -90,11 +78,14 @@ def arena_runtime() -> ArenaRuntimeIdentity:
     )
 
 
-# Qualification runs a full sealed cell; the screen lane is a short routing
-# check and is provisioned for that. Keeping both as presets preserves the
-# distinction a single "default" would have quietly erased.
-_RUNTIME_PRESETS = {
-    "qualification": dict(
+def runtime_policy() -> OCIRuntimeResourcePolicy:
+    """Qualification's runtime limits: a full sealed cell."""
+    return OCIRuntimeResourcePolicy(
+        uid=max(1, os.getuid()),
+        gid=max(1, os.getgid()),
+        cpu_millis=8_000,
+        tmpfs_bytes=1 << 30,
+        container_python="/usr/local/bin/python3",
         memory_bytes=32 << 30,
         pids_limit=4_096,
         nofile_limit=65_536,
@@ -103,53 +94,10 @@ _RUNTIME_PRESETS = {
         shm_bytes=8 << 30,
         init_timeout_seconds=120.0,
         batch_timeout_seconds=60.0,
-    ),
-    "screen": dict(
-        memory_bytes=8 << 30,
-        pids_limit=2_048,
-        nofile_limit=32_768,
-        cache_bytes=2 << 30,
-        cache_inodes=10_000,
-        shm_bytes=2 << 30,
-        init_timeout_seconds=30.0,
-        batch_timeout_seconds=30.0,
-    ),
-}
-
-_PREBUILD_PRESETS = {
-    "qualification": dict(
-        memory_bytes=32 << 30,
-        pids_limit=4_096,
-        stage_bytes=16 << 30,
-        stage_inodes=100_000,
-        timeout_seconds=7_200.0,
-        native_compile_timeout_seconds=6_000,
-    ),
-    "screen": dict(
-        memory_bytes=8 << 30,
-        pids_limit=2_048,
-        stage_bytes=4 << 30,
-        stage_inodes=10_000,
-        timeout_seconds=300.0,
-        native_compile_timeout_seconds=240,
-    ),
-}
-
-
-def runtime_policy(preset: str = "qualification") -> OCIRuntimeResourcePolicy:
-    return OCIRuntimeResourcePolicy(
-        uid=max(1, os.getuid()),
-        gid=max(1, os.getgid()),
-        cpu_millis=8_000,
-        tmpfs_bytes=1 << 30,
-        container_python="/usr/local/bin/python3",
-        **_RUNTIME_PRESETS[preset],
     )
 
 
-def prebuild_policy(
-    runtime: OCIRuntimeResourcePolicy, preset: str = "qualification"
-) -> OCIPrebuildPolicy:
+def prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
     return OCIPrebuildPolicy(
         uid=runtime.uid,
         gid=runtime.gid,
@@ -160,7 +108,12 @@ def prebuild_policy(
         build_tmpdir="/tmp",
         pinned_build_roots=("/usr/include", "/usr/lib", "/usr/local/cuda"),
         runtime_policy_digest=runtime.digest,
-        **_PREBUILD_PRESETS[preset],
+        memory_bytes=32 << 30,
+        pids_limit=4_096,
+        stage_bytes=16 << 30,
+        stage_inodes=100_000,
+        timeout_seconds=7_200.0,
+        native_compile_timeout_seconds=6_000,
     )
 
 

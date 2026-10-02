@@ -84,12 +84,8 @@ class OpEntry:
     variant: str = DEFAULT_VARIANT
     prepare: str | None = None  # optional 2nd callable (weight-prep) for (prepare, forward) slots
     setup: str | None = None  # optional callable run ONCE at engine init (framework mode)
-    # Override-point submission (the swigluoai class): the bundle does NOT ship a whole kernel —
-    # it fills a typed hole in a validator-owned base kernel from cacheon_kernels. ``entry`` then
-    # names the override device fn (e.g. a CuTe-DSL epilogue), ``base_kernel`` names the base
-    # (e.g. "nvfp4_moe_megakernel"), ``override_point`` the hole (e.g. "gemm1_epilogue"). The
-    # validator JIT-composes base+override at load (see cacheon_kernels.override). ``prepare`` is
-    # omitted: the validator owns the weight-prep for the base kernel.
+    # Retired override-point submission (a typed hole in a validator-owned base kernel). The
+    # fields stay parseable so retained manifests keep their bytes; target resolution refuses one.
     base_kernel: str | None = None
     override_point: str | None = None
     # Sanctioned "CUDA source" tier: bundle-relative paths to inspectable ``.cu``/``.cuh``
@@ -99,10 +95,6 @@ class OpEntry:
     # cacheon/sandbox.py) treat the file as sanctioned instead of an unscanned stray binary.
     cuda_sources: tuple[str, ...] = ()
     extra: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def is_override(self) -> bool:
-        return self.override_point is not None
 
 
 @dataclass(frozen=True)
@@ -128,13 +120,9 @@ class Manifest:
     raw: dict[str, Any] = field(default_factory=dict)
     competition: CompetitionEntry | None = None
 
-    def ops_for(self, slot: str) -> tuple[OpEntry, ...]:
-        """Return every implementation row for one semantic slot."""
-        return tuple(op for op in self.ops if op.slot == slot)
-
     def op_for(self, slot: str, variant: str | None = None) -> OpEntry | None:
         """Return one row without allowing manifest order to select a variant."""
-        matches = self.ops_for(slot)
+        matches = tuple(op for op in self.ops if op.slot == slot)
         if variant is not None:
             return next((op for op in matches if op.variant == variant), None)
         if len(matches) > 1:
@@ -210,7 +198,7 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
 
     Validates schema and path-safety only. It does NOT import or execute any
     miner code (that is ``cacheon.sandbox``'s job) and it does NOT check the slot
-    contract numerically (that is ``cacheon.verify``'s job).
+    contract numerically (that is ``cacheon.miner_check``'s and qualification's job).
     """
     root = Path(bundle_root).resolve()
     _require(root.is_dir(), f"bundle root is not a directory: {root}")

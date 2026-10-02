@@ -6,13 +6,6 @@ from pathlib import Path
 import pytest
 
 import cacheon.cli as cli
-from cacheon.arena_service import (
-    SCREEN_STAGES,
-    ArenaScreenReceipt,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStageResult,
-)
 from cacheon.chain import evaluation_lease_operator as operator
 from cacheon.chain.intake import (
     FinalizedArrival,
@@ -89,7 +82,6 @@ def _config(
     database: Path,
     *,
     policy: IntakePolicy = POLICY,
-    stage: str = "screen",
     owner: str = "operator-a",
     lease_blocks: int = 20,
     qualification_max_members: int = 2,
@@ -107,7 +99,7 @@ def _config(
         "owner": owner,
         "qualification_max_members": qualification_max_members,
         "schema": operator.CONFIG_SCHEMA,
-        "stage": stage,
+        "stage": "qualification",
     }
     return _seal(tmp_path / name, raw), raw
 
@@ -163,61 +155,17 @@ def _advance(
         )
 
 
-def _screen(
-    store: FinalizedIntakeStore,
-    reservation_id: str,
-    *,
-    service: str,
-    decision: PromotionDecision,
-) -> None:
-    active = store.begin_screen(reservation_id, service_digest=service)
-    candidate = _h(f"candidate:{reservation_id}:{active.screen_attempts}:{service[:8]}")
-    if decision is PromotionDecision.PROMOTE:
-        results = tuple(
-            ScreenStageResult(stage, ScreenGrade.PASS, _h(stage), 1)
-            for stage in SCREEN_STAGES
-        )
-    else:
-        # HOLD/RETRY terminate on the first stage with NO_DECISION.
-        results = (
-            ScreenStageResult(
-                SCREEN_STAGES[0], ScreenGrade.NO_DECISION, _h("nd"), 1
-            ),
-        )
-    receipt = ArenaScreenReceipt(
-        service,
-        candidate,
-        active.screen_attempts,
-        results,
-        decision,
-    )
-    store.apply_screen_receipt(
-        reservation_id, candidate_digest=candidate, receipt=receipt
-    )
-
-
-def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
-    _screen(
-        store,
-        reservation_id,
-        service=_h("service"),
-        decision=PromotionDecision.PROMOTE,
-    )
-
-
 def test_config_and_tracked_cli_are_closed(tmp_path: Path, capsys) -> None:
     database = _new_database(tmp_path)
     config_path, raw = _config(tmp_path, database)
     config = operator.load_config(config_path)
     assert config.policy == POLICY and config.scope == SCOPE
-    assert config.intake_db == database and config.stage == "screen"
+    assert config.intake_db == database and config.stage == "qualification"
 
     parser = cli.build_parser()
     parsed = (
         ["preview"],
         ["claim"],
-        ["heartbeat", "a" * 64],
-        ["release", "a" * 64, "--reason", "worker_unavailable"],
         ["requeue-expired", "--authority", "/tmp/requeue-authority.json"],
     )
     for suffix in parsed:
@@ -227,10 +175,13 @@ def test_config_and_tracked_cli_are_closed(tmp_path: Path, capsys) -> None:
         assert args.func is cli.cmd_chain_evaluation_lease
     with pytest.raises(SystemExit):
         parser.parse_args(["chain-evaluation-lease", "preview"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            ["chain-evaluation-lease", "--config", str(config_path), "release", "a" * 64]
-        )
+    # Every lease is a qualification lease and moves only through its
+    # recovery-owned transitions, so the operator has no heartbeat or release.
+    for retired in ("heartbeat", "release"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(
+                ["chain-evaluation-lease", "--config", str(config_path), retired, "a" * 64]
+            )
 
     extra = dict(raw)
     extra["candidate_command"] = ["python", "candidate.py"]
@@ -261,9 +212,12 @@ def test_malformed_stage_is_typed_and_cli_emits_no_success(
     malformed = dict(raw)
     malformed["stage"] = []
     config_path = _seal(tmp_path / "malformed-stage.json", malformed)
+    retired = _seal(tmp_path / "retired-stage.json", {**raw, "stage": "screen"})
 
     with pytest.raises(operator.FifoLeaseError, match="stage is unsupported"):
         operator.load_config(config_path)
+    with pytest.raises(operator.FifoLeaseError, match="stage is unsupported"):
+        operator.load_config(retired)
     assert cli.main(
         ["chain-evaluation-lease", "--config", str(config_path), "preview"]
     ) == 2
@@ -272,9 +226,9 @@ def test_malformed_stage_is_typed_and_cli_emits_no_success(
     assert "evaluation stage is unsupported" in captured.err
 
 
-def test_tracked_cli_executes_all_four_operations(tmp_path: Path, capsys) -> None:
+def test_tracked_cli_previews_and_claims_one_lease(tmp_path: Path, capsys) -> None:
     database = _new_database(tmp_path)
-    row = _published_rows(database, ("profile.screen.alpha",))[0]
+    row = _published_rows(database, ("profile.alpha",))[0]
     config_path, _ = _config(tmp_path, database, lease_blocks=5)
     prefix = ["chain-evaluation-lease", "--config", str(config_path)]
 
@@ -284,28 +238,9 @@ def test_tracked_cli_executes_all_four_operations(tmp_path: Path, capsys) -> Non
     assert cli.main([*prefix, "claim"]) == 0
     claimed = json.loads(capsys.readouterr().out)
     lease_id = claimed["lease"]["lease_id"]
-
-    _advance(database, BLOCK + 1)
-    assert cli.main([*prefix, "heartbeat", lease_id]) == 0
-    heartbeat = json.loads(capsys.readouterr().out)
-    assert heartbeat["lease"]["expires_block"] == BLOCK + 6
-    digest = _h("worker-diagnostic")
-    assert cli.main(
-        [
-            *prefix,
-            "release",
-            lease_id,
-            "--reason",
-            "worker_transport_unavailable",
-            "--result-digest",
-            digest,
-        ]
-    ) == 0
-    released = json.loads(capsys.readouterr().out)
-    assert (released["operation"], released["result_digest"]) == (
-        "release",
-        digest,
-    )
+    with FinalizedIntakeStore(database, POLICY, scope=SCOPE) as store:
+        (active,) = store.active_evaluation_leases()
+        assert (active.lease_id, active.expires_block) == (lease_id, BLOCK + 5)
 
 
 @pytest.mark.parametrize(
@@ -315,13 +250,13 @@ def test_tracked_cli_executes_all_four_operations(tmp_path: Path, capsys) -> Non
         ("profile.alpha.block", "profile.zeta.collective"),
     ],
 )
-def test_target_identity_never_reorders_screen_fifo(
+def test_target_identity_never_reorders_qualification_fifo(
     tmp_path: Path, target_ids: tuple[str, str]
 ) -> None:
     database = _new_database(tmp_path)
     rows = _published_rows(database, target_ids)
     assert tuple(row.target_id for row in rows) == target_ids
-    config_path, _ = _config(tmp_path, database)
+    config_path, _ = _config(tmp_path, database, qualification_max_members=1)
     config = operator.load_config(config_path)
     with FinalizedIntakeStore(database, POLICY, scope=SCOPE) as store:
         before = store.all()
@@ -389,25 +324,23 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
 ) -> None:
     policy = IntakePolicy(max_cohort=4, expiry_blocks=5)
     database = _new_database(tmp_path, policy=policy)
-    published, promoted = _published_rows(
+    first, second = _published_rows(
         database,
-        ("profile.screen", "profile.qualification"),
+        ("profile.first", "profile.second"),
         policy=policy,
     )
-    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
-        _promote(store, promoted.reservation_id)
     _advance(database, BLOCK + 5, policy=policy)
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
         assert {
-            store.get(published.reservation_id).status,
-            store.get(promoted.reservation_id).status,
+            store.get(first.reservation_id).status,
+            store.get(second.reservation_id).status,
         } == {"expired"}
 
     authority = _seal(
         tmp_path / "downtime-requeue.json",
         {
             "reason": "validator_worker_unavailable",
-            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "reservation_ids": [first.reservation_id, second.reservation_id],
             "retained_result_reservation_ids": [_h("retained-result")],
             "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
         },
@@ -416,16 +349,18 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
         tmp_path,
         database,
         policy=policy,
-        stage="qualification",
         lease_blocks=3,
     )
     config = operator.load_config(config_path)
     result = operator.requeue_expired(config, authority)
     assert [item["status"] for item in result["requeued"]] == [
         "published",
-        "promoted",
+        "published",
     ]
-    assert operator.preview(config)["reservation_ids"] == [promoted.reservation_id]
+    assert operator.preview(config)["reservation_ids"] == [
+        first.reservation_id,
+        second.reservation_id,
+    ]
 
     _advance(database, BLOCK + 9, policy=policy)
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
@@ -433,8 +368,8 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
     _advance(database, BLOCK + 10, policy=policy)
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
         assert {
-            store.get(published.reservation_id).status,
-            store.get(promoted.reservation_id).status,
+            store.get(first.reservation_id).status,
+            store.get(second.reservation_id).status,
         } == {"expired"}
 
     # One refresh is admitted after the cohort re-expires under the automatic
@@ -443,7 +378,7 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
         tmp_path / "downtime-requeue-refresh.json",
         {
             "reason": "validator_worker_unavailable",
-            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "reservation_ids": [first.reservation_id, second.reservation_id],
             "retained_result_reservation_ids": [_h("retained-result-refresh")],
             "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
         },
@@ -451,17 +386,17 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
     refreshed = operator.requeue_expired(config, refresh_authority)
     assert [item["status"] for item in refreshed["requeued"]] == [
         "published",
-        "promoted",
+        "published",
     ]
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
-        assert store.get(published.reservation_id).reason == (
+        assert store.get(first.reservation_id).reason == (
             "validator_downtime_requeued_refresh"
         )
     _advance(database, BLOCK + 15, policy=policy)
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
         assert {
-            store.get(published.reservation_id).status,
-            store.get(promoted.reservation_id).status,
+            store.get(first.reservation_id).status,
+            store.get(second.reservation_id).status,
         } == {"expired"}
     with pytest.raises(IntakeError, match="budget is already consumed"):
         operator.requeue_expired(config, refresh_authority)
@@ -474,7 +409,7 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
         {
             "allow_repeat_refresh": "yes",
             "reason": "validator_worker_unavailable",
-            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "reservation_ids": [first.reservation_id, second.reservation_id],
             "retained_result_reservation_ids": [_h("retained-result-repeat")],
             "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
         },
@@ -486,7 +421,7 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
         {
             "allow_repeat_refresh": True,
             "reason": "validator_worker_unavailable",
-            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "reservation_ids": [first.reservation_id, second.reservation_id],
             "retained_result_reservation_ids": [_h("retained-result-repeat")],
             "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
         },
@@ -494,113 +429,61 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
     repeated = operator.requeue_expired(config, repeat_authority)
     assert [item["status"] for item in repeated["requeued"]] == [
         "published",
-        "promoted",
+        "published",
     ]
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
-        assert store.get(published.reservation_id).reason == (
+        assert store.get(first.reservation_id).reason == (
             "validator_downtime_requeued_refresh"
         )
 
 
-def test_downtime_requeue_restores_midscreen_and_rotated_promote(
+def test_downtime_requeue_refuses_a_row_that_expired_before_publication(
     tmp_path: Path,
 ) -> None:
-    """Mid-screen hold/retry drop back to published; a promote that was
-    rescreened under a new service identity (two append-only promote
-    dispositions) still restores from the live receipt."""
+    """Every requeued row re-enters the one published queue, so a cohort that
+    names a row without a publication is refused whole."""
 
     policy = IntakePolicy(max_cohort=4, expiry_blocks=5)
     database = _new_database(tmp_path, policy=policy)
-    held, retried, rotated = _published_rows(
-        database,
-        ("profile.hold", "profile.retry", "profile.rotated"),
-        policy=policy,
-    )
-    old_service = _h("retired-service")
-    live_service = _h("live-service")
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
-        _screen(
-            store,
-            held.reservation_id,
-            service=live_service,
-            decision=PromotionDecision.HOLD,
+        published, unpublished = store.reserve_finalized(
+            (_arrival(0), _arrival(1)),
+            finalized_block=BLOCK,
+            finalized_block_hash=_block_hash(BLOCK),
         )
-        _screen(
-            store,
-            retried.reservation_id,
-            service=live_service,
-            decision=PromotionDecision.RETRY,
-        )
-        _screen(
-            store,
-            rotated.reservation_id,
-            service=old_service,
-            decision=PromotionDecision.PROMOTE,
-        )
-        store.demote_promoted_for_rescreen(
-            rotated.reservation_id, reason="service_rotated"
-        )
-        _screen(
-            store,
-            rotated.reservation_id,
-            service=live_service,
-            decision=PromotionDecision.PROMOTE,
-        )
-        assert store.get(held.reservation_id).screen_status == "hold"
-        assert store.get(retried.reservation_id).screen_status == "retry"
-        assert (
-            store._db.execute(
-                "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
-                "WHERE reservation_id=? AND decision='promote'",
-                (rotated.reservation_id,),
-            ).fetchone()["n"]
-            == 2
-        )
-
+        published = _publish(store, published, "profile.published")
     _advance(database, BLOCK + 5, policy=policy)
     with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
         assert {
-            store.get(held.reservation_id).status,
-            store.get(retried.reservation_id).status,
-            store.get(rotated.reservation_id).status,
+            store.get(published.reservation_id).status,
+            store.get(unpublished.reservation_id).status,
         } == {"expired"}
 
-    authority = _seal(
-        tmp_path / "midscreen-requeue.json",
-        {
-            "reason": "validator_worker_unavailable",
-            "reservation_ids": [
-                held.reservation_id,
-                retried.reservation_id,
-                rotated.reservation_id,
-            ],
-            "retained_result_reservation_ids": [],
-            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
-        },
-    )
-    config_path, _ = _config(
-        tmp_path,
-        database,
-        policy=policy,
-        stage="qualification",
-        lease_blocks=3,
-    )
-    result = operator.requeue_expired(operator.load_config(config_path), authority)
-    assert [item["status"] for item in result["requeued"]] == [
-        "published",
-        "published",
-        "promoted",
-    ]
-    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
-        held_row = store.get(held.reservation_id)
-        retried_row = store.get(retried.reservation_id)
-        rotated_row = store.get(rotated.reservation_id)
-        assert (held_row.status, held_row.screen_status) == ("published", "")
-        assert (retried_row.status, retried_row.screen_status) == ("published", "")
-        assert (rotated_row.status, rotated_row.screen_status) == (
-            "promoted",
-            "promote",
+    def authority(name: str, *rows) -> Path:
+        return _seal(
+            tmp_path / name,
+            {
+                "reason": "validator_worker_unavailable",
+                "reservation_ids": [row.reservation_id for row in rows],
+                "retained_result_reservation_ids": [],
+                "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+            },
         )
+
+    config_path, _ = _config(tmp_path, database, policy=policy, lease_blocks=3)
+    config = operator.load_config(config_path)
+    with pytest.raises(IntakeError, match="cannot restore this pipeline phase"):
+        operator.requeue_expired(
+            config, authority("mixed.json", published, unpublished)
+        )
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert store.get(published.reservation_id).status == "expired"
+
+    result = operator.requeue_expired(config, authority("alone.json", published))
+    assert [item["status"] for item in result["requeued"]] == ["published"]
+    assert operator.preview(config)["reservation_ids"] == [published.reservation_id]
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert store.get(unpublished.reservation_id).status == "expired"
 
 
 def test_lock_retry_is_exact_bounded_and_preserves_one_lease(
@@ -644,69 +527,6 @@ def test_lock_retry_is_exact_bounded_and_preserves_one_lease(
     assert calls == 1 and sleeps == []
 
 
-def test_heartbeat_reopens_current_exact_lease_and_rejects_stale(
-    tmp_path: Path,
-) -> None:
-    database = _new_database(tmp_path)
-    row = _published_rows(database, ("profile.heartbeat",))[0]
-    config_path, _ = _config(tmp_path, database, lease_blocks=5)
-    config = operator.load_config(config_path)
-    lease_id = operator.claim(config)["lease"]["lease_id"]
-
-    with FinalizedIntakeStore(database, POLICY, scope=SCOPE) as reopened:
-        original = reopened.active_evaluation_leases()[0]
-        assert original.lease_id == lease_id
-        assert original.reservation_ids == (row.reservation_id,)
-
-    _advance(database, BLOCK + 1)
-    first = operator.heartbeat(config, lease_id)
-    assert first["lease"]["expires_block"] == BLOCK + 6
-    with FinalizedIntakeStore(database, POLICY, scope=SCOPE) as store:
-        current = store.active_evaluation_leases()[0]
-        with pytest.raises(IntakeError, match="stale"):
-            store.heartbeat_evaluation_lease(
-                original, current_block=BLOCK + 1, lease_blocks=5
-            )
-
-    _advance(database, BLOCK + 2)
-    assert operator.heartbeat(config, lease_id)["lease"]["expires_block"] == BLOCK + 7
-
-
-@pytest.mark.parametrize("reason,status", [("worker_transport_unavailable", "held"), ("operator:verified_no_execution", "published")])
-def test_release_preserves_diagnostics_and_requires_review_before_reclaim(
-    tmp_path: Path, reason: str, status: str,
-) -> None:
-    database = _new_database(tmp_path)
-    row = _published_rows(database, ("profile.release",))[0]
-    config_path, _ = _config(tmp_path, database, lease_blocks=5)
-    config = operator.load_config(config_path)
-    lease_id = operator.claim(config)["lease"]["lease_id"]
-    _advance(database, BLOCK + 1)
-
-    operator.release(
-        config,
-        lease_id,
-        reason=reason,
-        result_digest=_h("infrastructure-diagnostic"),
-    )
-    with FinalizedIntakeStore(database, POLICY, scope=SCOPE) as store:
-        retained = store.get(row.reservation_id)
-        assert (retained.status, retained.screen_attempts) == (status, 0)
-        assert store.active_evaluation_leases() == ()
-        event = store.evaluation_lease_events(lease_id=lease_id)[-1]
-        assert (event.event_type, event.reason) == (
-            "released",
-            reason,
-        )
-
-    reclaimed = operator.claim(config)["lease"]
-    if status == "held":
-        assert reclaimed is None
-    else:
-        assert reclaimed["generation"] == 2
-        assert reclaimed["members"][0]["reservation_id"] == row.reservation_id
-
-
 def test_qualification_cohort_uses_store_order_and_sealed_maximum(
     tmp_path: Path,
 ) -> None:
@@ -715,13 +535,9 @@ def test_qualification_cohort_uses_store_order_and_sealed_maximum(
         database,
         ("profile.zeta.collective", "profile.alpha.block", "profile.middle"),
     )
-    with FinalizedIntakeStore(database, POLICY, scope=SCOPE) as store:
-        for row in rows:
-            _promote(store, row.reservation_id)
     config_path, _ = _config(
         tmp_path,
         database,
-        stage="qualification",
         qualification_max_members=2,
     )
     config = operator.load_config(config_path)
@@ -733,33 +549,3 @@ def test_qualification_cohort_uses_store_order_and_sealed_maximum(
     assert [member["reservation_id"] for member in lease["members"]] == expected
 
 
-def test_unknown_stale_and_wrong_authority_lease_ids_fail_closed(
-    tmp_path: Path,
-) -> None:
-    database = _new_database(tmp_path)
-    _published_rows(database, ("profile.closed",))
-    config_path, _ = _config(tmp_path, database)
-    config = operator.load_config(config_path)
-
-    with pytest.raises(operator.FifoLeaseError, match="SHA-256"):
-        operator.heartbeat(config, "not-a-lease")
-    with pytest.raises(operator.FifoLeaseError, match="was not found"):
-        operator.heartbeat(config, _h("unknown-lease"))
-
-    lease_id = operator.claim(config)["lease"]["lease_id"]
-    other_path, _ = _config(
-        tmp_path, database, owner="operator-b", name="other-owner.json"
-    )
-    other = operator.load_config(other_path)
-    with pytest.raises(operator.FifoLeaseError, match="owner or stage"):
-        operator.release(other, lease_id, reason="must_not_release_peer")
-    with pytest.raises(operator.FifoLeaseError, match="bounded printable"):
-        operator.release(config, lease_id, reason="bad\nreason")
-    with pytest.raises(operator.FifoLeaseError, match="SHA-256"):
-        operator.release(config, lease_id, reason="bad_digest", result_digest="abc")
-
-    operator.release(config, lease_id, reason="operator_requeue")
-    with pytest.raises(operator.FifoLeaseError, match="was not found"):
-        operator.release(config, lease_id, reason="duplicate_release")
-    with pytest.raises(operator.FifoLeaseError, match="was not found"):
-        operator.heartbeat(config, lease_id)

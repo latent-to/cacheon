@@ -9,7 +9,6 @@ import pytest
 
 from cacheon.arena_service import ArenaService
 from cacheon.chain import remote_worker_spool as spool
-from cacheon.chain.evaluation_coordinator import EvaluationRun
 from cacheon.chain.mainnet_screen_dispatcher import (
     make_qualification_publication_resolver,
 )
@@ -17,14 +16,7 @@ from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.recoverable_qualification_dispatcher import (
     RecoverableQualificationDispatcher,
 )
-from cacheon.chain.remote_evaluation_dispatcher import (
-    AuthenticatedRemoteEvaluationResponse,
-    RemoteEvaluationDispatcher,
-    RemoteEvaluationRequest,
-    RemoteWorkerCredential,
-    seal_remote_response,
-    verify_remote_request,
-)
+from cacheon.chain.remote_evaluation_dispatcher import RemoteWorkerCredential
 from cacheon.chain.remote_worker_registration import verify_registration
 from cacheon.chain.ssh_worker_transport import (
     DurableSpoolAuthenticatedWorkerTransport,
@@ -70,7 +62,6 @@ class _ComposedTransport:
         self.plan_fixtures = plan_fixtures
         self.hold_after_publish = hold_after_publish
         self.identity = delegate.identity
-        self.screen_requests: list[RemoteEvaluationRequest] = []
         self.plan = None
         self.plans = 0
         self.materializations = 0
@@ -86,30 +77,6 @@ class _ComposedTransport:
     @property
     def results(self) -> Path:
         return self.root / "spool" / "results"
-
-    def run_screen(self, request, *, job):
-        parsed = RemoteEvaluationRequest.from_dict(request.to_dict())
-        verify_remote_request(parsed, self.identity, self.credential)
-        assert parsed.lease_id == job.lease.lease_id
-        self.screen_requests.append(parsed)
-        receipt = self.coordinator.service.screen(job.candidate)
-        return AuthenticatedRemoteEvaluationResponse.from_dict(
-            seal_remote_response(
-                parsed, receipt, self.identity, self.credential
-            ).to_dict()
-        )
-
-    def run_qualification(self, _request, *, job):
-        """Satisfy the closed transport protocol without bypassing recovery.
-
-        The composed qualification path below must use the durable
-        plan/materialize/publish/resume methods.  A direct legacy transport call
-        would skip the exactly-once request fence, so make that mistake loud.
-        """
-
-        raise AssertionError(
-            f"direct qualification transport bypassed recovery for {job!r}"
-        )
 
     def plan_qualification_request(self, request):
         self.plans += 1
@@ -267,24 +234,17 @@ def _harness(tmp_path: Path, *, profile: str, hold_after_publish: bool):
         plan_fixtures=plan_fixtures,
         hold_after_publish=hold_after_publish,
     )
-    screen = RemoteEvaluationDispatcher(
-        coordinator=coordinator,
-        transport=transport,
-        credential=credential,
-    )
-    incumbent = fixtures._incumbent(service)
     return SimpleNamespace(
         coordinator=coordinator,
         credential=credential,
         fixtures=fixtures,
-        incumbent=incumbent,
+        incumbent=fixtures._incumbent(service),
         resolved=resolved,
-        screen=screen,
         transport=transport,
     )
 
 
-def _supervisor(harness, screen_runs: list[EvaluationRun]) -> StandingCpuSupervisor:
+def _supervisor(harness) -> StandingCpuSupervisor:
     qualification = RecoverableQualificationDispatcher(
         coordinator=harness.coordinator,
         transport=harness.transport,
@@ -293,17 +253,7 @@ def _supervisor(harness, screen_runs: list[EvaluationRun]) -> StandingCpuSupervi
         qualification_incumbent_stack=harness.incumbent,
         qualification_incumbent_tree_digest=harness.fixtures._h("incumbent-tree"),
     )
-
-    def screen_once():
-        result = harness.screen.dispatch_screen_once()
-        if result is not None:
-            screen_runs.append(result)
-        return result
-
-    return StandingCpuSupervisor(
-        screen_once=screen_once,
-        qualification_once=qualification.dispatch_once,
-    )
+    return StandingCpuSupervisor(qualification_once=qualification.dispatch_once)
 
 
 @pytest.mark.parametrize("fault", ["wrong_request", "heartbeat", "missing_carrier"])
@@ -312,8 +262,8 @@ def test_pending_wait_requires_healthy_same_request_recovery(tmp_path, monkeypat
     from cacheon.chain.ssh_worker_transport import RemoteQualificationWaitTimeout
 
     harness = _harness(tmp_path, profile="collective-alpha", hold_after_publish=False)
-    supervisor = _supervisor(harness, [])
-    assert supervisor.tick().phase is SupervisorPhase.SCREEN
+    supervisor = _supervisor(harness)
+    assert supervisor.status().phase is SupervisorPhase.IDLE
     def resume(plan):
         if fault == "missing_carrier":
             observed = harness.transport.inspect_planned_qualification(plan)
@@ -341,25 +291,23 @@ def test_pending_wait_requires_healthy_same_request_recovery(tmp_path, monkeypat
 
 @pytest.mark.parametrize("profile", ["collective-alpha", "block-beta"])
 @pytest.mark.parametrize("wait_mode", ["interrupted", "pending", "pending_restart"])
-def test_screen_to_qualification_restart_reuses_one_request(
+def test_qualification_restart_reuses_one_request(
     tmp_path: Path,
     profile: str,
     wait_mode: str,
 ) -> None:
     harness = _harness(tmp_path, profile=profile, hold_after_publish=False)
-    screen_runs: list[EvaluationRun] = []
-    supervisor = _supervisor(harness, screen_runs)
+    supervisor = _supervisor(harness)
 
     assert supervisor.weights_once is None
-    assert supervisor.tick().phase is SupervisorPhase.SCREEN
-    assert len(screen_runs) == 1
-    reservation_id = screen_runs[0].lease.reservation_ids[0]
     with RecoverableFinalizedIntakeStore(
         harness.fixtures._db_path(tmp_path),
         harness.fixtures.POLICY,
         scope=harness.fixtures.SCOPE,
     ) as store:
-        assert store.get(reservation_id).status == "promoted"
+        (queued,) = store.claimable()
+    reservation_id = queued.reservation_id
+    assert queued.status == "published"
 
     progress = supervisor.status().last_progress_unix
     harness.transport.pending_wait = wait_mode != "interrupted"
@@ -377,7 +325,7 @@ def test_screen_to_qualification_restart_reuses_one_request(
     request_id = plan.request_id
     harness.transport.complete()
 
-    restarted = supervisor if wait_mode == "pending" else _supervisor(harness, screen_runs)
+    restarted = supervisor if wait_mode == "pending" else _supervisor(harness)
     assert restarted.weights_once is None
     assert restarted.tick().phase is SupervisorPhase.QUALIFICATION
     assert harness.transport.plan.request_id == request_id
@@ -399,8 +347,6 @@ def test_screen_to_qualification_restart_reuses_one_request(
     ]
 
     assert restarted.tick().phase is SupervisorPhase.IDLE
-    assert len(harness.transport.screen_requests) == 1
-    assert len(screen_runs) == 1
     assert len([path for path in harness.transport.outbox.iterdir() if path.is_dir()]) == 1
     with RecoverableFinalizedIntakeStore(
         harness.fixtures._db_path(tmp_path),
@@ -417,21 +363,18 @@ def test_postpublication_infrastructure_hold_preserves_request_across_restart(
     # The 2026-08-10 fresh-request policy is superseded by the owner's
     # 2026-09-14 prohibition on paid retries without no-execution proof.
     harness = _harness(tmp_path, profile="hold-profile", hold_after_publish=True)
-    screen_runs: list[EvaluationRun] = []
-    supervisor = _supervisor(harness, screen_runs)
-    assert supervisor.tick().phase is SupervisorPhase.SCREEN
+    supervisor = _supervisor(harness)
     status = supervisor.tick()
     assert status.phase is SupervisorPhase.HOLD
     assert status.last_disposition == "hold"
     request_id = harness.transport.plan.request_id
-    assert _supervisor(harness, screen_runs).tick().phase is SupervisorPhase.HOLD
+    assert _supervisor(harness).tick().phase is SupervisorPhase.HOLD
     assert harness.transport.plan.request_id == request_id
     assert (
         harness.transport.plans,
         harness.transport.materializations,
         harness.transport.publications,
     ) == (1, 1, 1)
-    assert len(harness.transport.screen_requests) == len(screen_runs) == 1
     with RecoverableFinalizedIntakeStore(
         harness.fixtures._db_path(tmp_path), harness.fixtures.POLICY,
         scope=harness.fixtures.SCOPE,

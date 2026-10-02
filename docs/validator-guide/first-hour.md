@@ -40,11 +40,10 @@ install Cacheon editable without asking pip to replace those packages. Follow
 ## 2. Inspect the contracts
 
 ```bash
-python -m cacheon.cli slots
 pytest -q
 ```
 
-`slots` prints the live ABI catalog. The test suite is the executable behavior
+The test suite is the executable behavior
 contract; a passing CPU suite does not prove a GPU topology or OCI deployment.
 The CPU extras do not install SGLang, so a clean CPU-only environment should not
 run `compat` and expect green output.
@@ -81,14 +80,13 @@ This introspects the SDK methods Cacheon uses. It does not connect to a network.
 ## 3. Verify a known bundle locally
 
 ```bash
-python -m cacheon.cli scan examples/miner_silu_torch
-python -m cacheon.cli verify examples/miner_silu_torch \
-  --device cpu --dtype float32
+python -m cacheon.cli scan examples/miner_node_identity
+python -m cacheon.cli verify examples/miner_node_identity
 ```
 
-CPU verification checks manifest routing and op-level correctness against the validator
-reference. It does not predict GPU speed, CUDA-graph behavior, end-to-end quality, or a
-crown.
+`verify` checks manifest routing, imports and entry signatures. Numerical truth is the
+stock module in the running engine, so `cacheon check` in the published arena image is the
+first numerical check. Neither predicts speed, end-to-end quality, or a crown.
 
 Run diagnostics only on code you are prepared to execute. `verify` loads candidate code
 in spawned workers rather than the trusted CLI process, but the public diagnostic path is
@@ -155,7 +153,7 @@ Interpret the one-pass summary by stage:
 | `copies` | Later authoritative submitted-delta copies demoted against an earlier miner |
 | `rejected` | Terminal attributable intake failures |
 | `held` | Work requiring operator or bounded retry disposition |
-| `screens`, `decisions` | Disabled in intake-only mode |
+| `decisions` | Disabled in intake-only mode |
 | `settlements` | Committed settlement leases; runs in every mode over retained accepted PASS evidence |
 
 Run the identical command a second time. With no newly finalized reveals, it should not
@@ -221,12 +219,10 @@ review all of the following as one service identity:
 
 1. exact runtime, base engine, validator overlay, worker distribution, model revision,
    model content, GPU architecture, topology, GPU count, and TP size;
-2. prompt-corpus digest, seed scheme, and the exact scored workload cells;
-3. queue, screen, qualification, cohort, age, and retry bounds;
-4. five ordered non-crown screen timeouts plus resident-screen swap, canary, waiver,
-   and lifetime policy;
-5. provider implementation digest and qualification-policy digest; and
-6. adaptive resident speed policy, two non-overlapping physical TP lanes, audit-only
+2. prompt-corpus digest, seed scheme, the workload cells, and the sealed replay slice that is scored;
+3. queue depth, queue age, active-qualification, and cohort bounds;
+4. provider implementation digest and qualification-policy digest; and
+5. adaptive resident speed policy, two non-overlapping physical TP lanes, audit-only
    plan, calibration, pristine reference, evidence-root, entropy, hidden judge, OCI
    executor, and absolute-deadline authorities used by `build_qualification`.
 
@@ -256,9 +252,8 @@ result = run_validator(
 ```
 
 Do not substitute a shell command, dynamic import path, or fake provider that declares
-success. A commissioned provider must return real typed screen evidence and construct the
-sealed two-process B/C/B′ speed work, audit, and pristine-T
-qualification work.
+success. A commissioned provider must construct the sealed paired-replay speed
+work, audit, and pristine-T qualification work.
 
 ## 8. Observe one complete reservation lifecycle
 
@@ -266,8 +261,8 @@ Before daemonizing, retain evidence for one deliberately controlled admission an
 these transitions in order:
 
 ```text
-reserved → fetching → published → screening → promoted → qualifying
-         → qualified → leased settlement → crowned/held/discovery_bounty
+reserved → fetching → published → qualifying → qualified
+         → leased settlement → crowned/held/discovery_bounty
 ```
 
 A controlled negative should terminate as `failed`; an induced validator-side outage
@@ -278,9 +273,9 @@ Structural qualification fixtures can validate transitions, independence checks,
 evidence reopening. They cannot satisfy the production-provider, GPU-performance, or
 calibration requirements of this commissioning step.
 
-For resident authority, also confirm that timed GPU work never overlaps between lanes,
-both lanes prove quiescence before audit/T, B′ is read unconditionally, and the
-reproduction exact-swaps the physical baseline and candidate lane roles.
+For resident authority, also confirm that both lanes condition and flush before every
+paired window, both lanes prove quiescence before audit/T, and the second orientation
+boots fresh engines that exact-swap the physical baseline and candidate lane roles.
 
 ## 9. Commission the signer separately
 
@@ -297,7 +292,7 @@ the exact recipient set, normalized values within the fixed verifier tolerance,
 and a sufficiently new `last_update` are read back from chain.
 
 Legacy V1 is the only implemented emission lane. The V2 finite-debt surface
-was extracted from the tree on 2026-08-09; see
+is not in the tree; see
 [Emissions policy](../reference/emissions-policy.md) for the retained design
 intent and the reserved durable schema.
 
@@ -317,7 +312,7 @@ Before enabling full validation, an operator still needs to supply and review:
 - release-key, registry, integration-review, and serving-fleet processes if operating
   the release plane.
 
-Also require explicit incident procedures for transport exhaustion, screen/qualification
+Also require explicit incident procedures for transport exhaustion, qualification
 retry exhaustion, interrupted controller state, evidence-root loss, settlement lease
 expiry, stale projections, held publication journals, signer mismatch, release-key
 rotation, and serve-receipt failure. Each procedure must preserve the original record and

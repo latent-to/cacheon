@@ -1,5 +1,4 @@
-"""CPU tests for cacheon_kernels: the NVFP4 codec/layout primitives (round-trips) and the
-epilogue override-point compose() (dense path == generic MoE with a pluggable activation).
+"""CPU tests for cacheon_kernels: the NVFP4 codec/layout primitives (round-trips).
 
 No GPU, no cutlass, no sglang — exercises the portable library spine on the laptop.
 """
@@ -12,7 +11,6 @@ torch = pytest.importorskip("torch")
 import torch.nn.functional as F  # noqa: E402
 
 from cacheon_kernels import codec  # noqa: E402
-from cacheon_kernels.override import compose, point_for  # noqa: E402
 
 
 # ---- codec: layout transforms round-trip EXACTLY ----------------------------
@@ -67,79 +65,3 @@ def test_nvfp4_roundtrip_faithful():
     cos = F.cosine_similarity(deq.flatten(), x.flatten(), dim=0)
     assert cos > 0.99  # NVFP4 representational floor on smooth data
     assert codes.dtype == torch.uint8 and codes.shape[-1] == x.shape[-1] // 2
-
-
-# ---- override: compose() dense path == generic MoE with a pluggable activation ----
-
-def _dense_prepared(E=4, I=8, H=16, seed=0):
-    g = torch.Generator().manual_seed(seed)
-    w13 = torch.randn(E, 2 * I, H, generator=g) * 0.1
-    w2 = torch.randn(E, H, I, generator=g) * 0.1
-    return {"fmt": "dense", "w13": w13, "w2": w2, "inter": I}, g
-
-
-def _routing(M=8, E=4, topk=2, gen=None):
-    ids = torch.randint(0, E, (M, topk), generator=gen)
-    sc = torch.rand(M, topk, generator=gen)
-    w = sc / sc.sum(1, keepdim=True)
-    return ids.to(torch.int32), w.to(torch.float32)
-
-
-def test_compose_silu_matches_slot_reference():
-    """A SiLU torch epilogue through compose() reproduces the slot's own fp32 SiLU reference
-    -> the dense override path IS the generic MoE, activation injected."""
-    from cacheon.slots import _moe_reference
-
-    prepared, g = _dense_prepared()
-    H = prepared["w13"].shape[2]
-    x = torch.randn(8, H, generator=g) * 0.1
-    ids, weights = _routing(M=8, E=4, topk=2, gen=g)
-
-    silu_epilogue = lambda gate, up: F.silu(gate) * up  # noqa: E731
-    fused = compose("moe.fused_experts", "gemm1_epilogue", epilogue_torch=silu_epilogue)
-    out = torch.empty(8, H)
-    fused(x, ids, weights, prepared, out)
-
-    ref = _moe_reference(x, prepared["w13"], prepared["w2"], ids, weights)
-    assert torch.allclose(out.float(), ref.float(), atol=1e-4)
-
-
-def test_compose_swigluoai_differs_and_is_correct():
-    """The swigluoai epilogue produces the clamped-swigluoai math, distinct from SiLU."""
-    prepared, g = _dense_prepared(seed=1)
-    H = prepared["w13"].shape[2]
-    x = torch.randn(8, H, generator=g) * 0.1
-    ids, weights = _routing(M=8, E=4, topk=2, gen=g)
-
-    def swigluoai(gate, up, alpha=1.702, limit=7.0):
-        gc = gate.clamp(max=limit)
-        uc = up.clamp(min=-limit, max=limit)
-        return gc * torch.sigmoid(alpha * gc) * (uc + 1.0)
-
-    fused = compose("moe.fused_experts", "gemm1_epilogue", epilogue_torch=swigluoai)
-    out = torch.empty(8, H)
-    fused(x, ids, weights, prepared, out)
-    assert fused.__cacheon_override__ == "moe.fused_experts/gemm1_epilogue"
-
-    # hand-compute the same dense MoE with swigluoai
-    I = prepared["inter"]
-    acc = torch.zeros(8, H)
-    for k in range(ids.shape[1]):
-        e = ids[:, k].long()
-        fc1 = torch.einsum("mh,mih->mi", x.float(), prepared["w13"][e].float())
-        act = swigluoai(fc1[:, :I], fc1[:, I:])
-        acc += weights[:, k:k + 1].float() * torch.einsum("mi,mhi->mh", act, prepared["w2"][e].float())
-    assert torch.allclose(out.float(), acc, atol=1e-4)
-
-    # and it is NOT the SiLU answer
-    silu = compose("moe.fused_experts", "gemm1_epilogue", epilogue_torch=lambda gate, up: F.silu(gate) * up)
-    out_silu = torch.empty(8, H)
-    silu(x, ids, weights, prepared, out_silu)
-    assert not torch.allclose(out.float(), out_silu.float(), atol=1e-3)
-
-
-def test_unknown_override_point_raises():
-    with pytest.raises(KeyError, match="unknown override-point"):
-        point_for("moe.fused_experts", "nonexistent_point")
-    with pytest.raises(KeyError):
-        compose("moe.fused_experts", "nonexistent_point", epilogue_torch=lambda g, u: g)

@@ -13,7 +13,7 @@ Documentation should identify authority rather than create a second authority.
 - Curated results identify their measured scope and retained evidence.
 - Operator guides describe failure behavior and required trust inputs, not only
   a happy path.
-- Historical sequences belong in the design-evolution page. Task and reference
+- Historical sequences belong in `docs/results/`. Task and reference
   pages should remain neutral, current, and engineering-focused.
 
 When two pages overlap, choose one canonical explanation and link to it. Do not

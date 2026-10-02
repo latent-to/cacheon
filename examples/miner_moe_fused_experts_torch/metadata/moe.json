@@ -1,5 +1,0 @@
-{
-  "op": "moe.fused_experts",
-  "dtypes": ["float32", "bfloat16", "float16"],
-  "notes": "CPU/GPU dry-run prepare+forward MoE (SwiGLU-MLP experts). A quantized submission would carry packed FP4/FP8 weights + block scales in prepare and a fused GEMM in forward."
-}

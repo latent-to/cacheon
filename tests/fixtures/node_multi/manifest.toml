@@ -1,0 +1,22 @@
+bundle_id = "fixture-node-multi"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "forward_pass"
+mode = "slot"
+
+[[ops]]
+slot = "model.layers.*.mlp"
+source = "kernels/nodes.py"
+entry = "mlp"
+dtypes = ["bfloat16"]
+architectures = ["sm103"]
+metadata = "metadata/mlp.json"
+
+[[ops]]
+slot = "model.norm"
+source = "kernels/nodes.py"
+entry = "norm"
+dtypes = ["bfloat16"]
+architectures = ["sm103"]
+metadata = "metadata/norm.json"

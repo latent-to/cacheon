@@ -4,9 +4,9 @@
 # From untrusted GPU proposals to measured contributions.
 
 Cacheon measures untrusted GPU optimization proposals as attributable contributions
-and defines a separate review and release path for **Cacheon Engine**. SGLang owns
-the serving control plane; Cacheon's contribution boundary is the inference data
-plane. The current revision does not claim a completed production Engine release.
+to **Cacheon Engine**. SGLang owns the serving control plane; a contribution replaces
+modules of the served model or the scheduler's prefix cache. Integration and release
+are maintainer decisions outside this repository.
 
 <div class="cacheon-actions" markdown>
 [Build a kernel](miner-guide/overview.md){ .md-button .md-button--primary }
@@ -19,9 +19,10 @@ plane. The current revision does not claim a completed production Engine release
 ## Why miners participate
 
 Cacheon rewards fully qualified performance improvements, not uploads or
-self-reported benchmarks. If settlement crowns a proposal for a published target, it
-records the corresponding reward claim in the same transaction. The validator later
-combines eligible claims into a weight vector and publishes it on-chain; realized token
+self-reported benchmarks. A proposal earns credit when one complete audited
+qualification passes and beats the best earlier rewarded PASS against the same arena
+and incumbent by the required margin; a crown is not required. The validator later
+combines eligible credit into a weight vector and publishes it on-chain; realized token
 emission still depends on the wider Bittensor network.
 
 [See the reward lifecycle in plain English →](miner-guide/incentives.md)
@@ -70,25 +71,22 @@ validator-side change.
 Every candidate runs as a complete isolated engine, but it is rewarded only for the
 smallest validator-controlled delta it contributes. Authoritative qualification uses:
 
-- **B** — the exact incumbent evaluation stack;
+- **B** — the exact incumbent evaluation stack, which also generates the
+  quality gate's stock-drift controls after a speed PASS;
 - **C** — the same stack with one registered target replaced;
-- **B′** — a mandatory second incumbent read, the quality gate's stock-drift
-  control;
 - **A** — a separate eager, untimed sampled-audit role when registered; and
 - **T** — a candidate-free pristine reference that grades sealed trajectories after
   candidate destruction.
 
-Every candidate is measured by the two-process schedule: v10 (v11 for a
-mixed-cell workload) launches separate baseline and candidate engines and
-always takes B′; v12 appends a one-token prompt pass of each lane. The earlier
-schedules (v1–v7) are sealed MiniMax-M3 history that
-this tree no longer decodes. Primary and reproduction
-attempts also exchange incumbent and candidate physical-lane roles. A persistent
-hot-swap screen may route candidates before this schedule, but its measurements
-cannot qualify or settle a contribution.
+Every candidate is measured by the paired replay (speed policy 17): separate
+incumbent and candidate engines replay the same sealed agent workload
+concurrently on two isolated lanes over paired windows, then swap lanes and boot
+fresh, so a stable lane factor cancels out of the score. The last sealed window
+yields PASS or FAIL. Earlier batch-cell results are retained as stored and not
+regraded. There is no separate screen.
 
 This separates the **execution unit** (a complete disposable engine) from the
-**economic unit** (one singleton target or atomic target). A new optimization can
+**economic unit** (one registered target). A new optimization can
 build on previous wins without repackaging or
 copying them.
 
@@ -98,7 +96,7 @@ copying them.
 
 | Goal | Start here |
 |---|---|
-| Write a Triton, CuTeDSL, or Python reference kernel | [Miner guide](miner-guide/overview.md) |
+| Write a Triton, CuTeDSL, or Python kernel, or a prefix cache | [Miner guide](miner-guide/overview.md) |
 | Validate the repository locally without a GPU | [Local quickstart](get-started/quickstart.md) |
 | Deploy intake, an arena provider, and qualification workers | [Validator guide](validator-guide/overview.md) |
 | See what a crown does and does not authorize | [After a crown](engine/integration.md) |
@@ -108,8 +106,7 @@ copying them.
 
 Every performance or authority claim is scoped to the exact runtime, hardware, arena,
 stack, identities, and procedure that produced it. Diagnostic measurements cannot
-authorize a crown; crown evidence cannot authorize reviewed source; and release
-verification cannot retroactively validate qualification.
+authorize a crown, and crown evidence cannot authorize reviewed source or serving.
 
 !!! note "Source of executable truth"
     This [Cacheon repository](https://github.com/latent-to/cacheon) owns both

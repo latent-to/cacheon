@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from contextlib import contextmanager
 from dataclasses import replace
@@ -23,6 +24,7 @@ from cacheon.eval.qualification import (
 )
 from cacheon.eval.reference_protocol import ReferenceRoleInput, ReferenceTokenEvidence
 from cacheon.eval.reference_quality import ReferenceQualityVerdict
+from tests.support.replay import GOODPUT, replay_plan, replay_session
 
 
 _REAL_PUBLISH_CAUSAL = runner.publish_causal_qualification
@@ -158,9 +160,8 @@ class _Harness:
         )
         self.lifecycle = SimpleNamespace(
             candidates=lifecycle_candidates,
-            baseline_after=final_baseline,
-            # mirrors ResidentMarginalLifecycleEvidence.final_baseline, which is
-            # baseline_after on the three-read B/C/B-prime schedule
+            # mirrors ResidentMarginalLifecycleEvidence.final_baseline: the
+            # resident baseline lifetime that served the last paired window
             final_baseline=final_baseline,
         )
         prepared = SimpleNamespace(
@@ -376,8 +377,7 @@ class _Harness:
         monkeypatch.setattr(runner, "cohort_trajectory_digest", lambda _row: _d("cohort"))
 
         def entropy_provider(commitment, teardown):
-            assert commitment is self.commitment
-            assert teardown is before
+            assert commitment is self.commitment and teardown is getattr(self, "entropy_teardown", before)
             self.calls.append("entropy")
             return self.entropy
 
@@ -557,6 +557,7 @@ def _install_resident_runner_path(
         policy=SimpleNamespace(
             digest=_d("resident-policy"),
             max_qualification_seconds=7_200,
+            goodput=GOODPUT,
         ),
         baseline_lane_digest=_d("resident-baseline-lane"),
         candidate_lane_digest=_d("resident-candidate-lane"),
@@ -581,17 +582,17 @@ def _install_resident_runner_path(
         runner.ATTEMPT_SCHEMA_V3,
     )
 
-    class FakeResidentCrossover:
-        def __init__(self) -> None:
-            self.escalated = False
-
-    crossover = FakeResidentCrossover()
+    # A replay crossover: paired reads, the control-selection entropy the continuation must find
+    # unchanged, and the candidate-lane receipt it is bound to (V17 swaps lanes; 2026-09-30).
+    crossover = SimpleNamespace(goodput=SimpleNamespace(), quality_entropy=harness.entropy)
+    crossover.candidate_quiescence = harness.entropy_teardown = _quiescence(9, 2.9)
 
     class FakeResidentLifecycle:
         def __init__(self, prepared, plan, observed) -> None:
             assert prepared is harness.value.prepared
             assert plan is harness.value.resident_speed_plan
             assert observed is crossover
+            self.crossover = observed
             self.candidates = harness.lifecycle.candidates
             self.final_baseline = harness.lifecycle.final_baseline
 
@@ -621,24 +622,6 @@ def _install_resident_runner_path(
             self.started_monotonic_s = 1.0
             self.completed_monotonic_s = 3.0
             self.resident_policy = plan.policy
-            roles = ("B", "C", "B_prime")
-            self.rates = tuple(
-                SimpleNamespace(
-                    role=role,
-                    lane_digest=(
-                        plan.baseline_lane_digest
-                        if role.startswith("B")
-                        else plan.candidate_lane_digest
-                    ),
-                    launch_digest=(
-                        plan.baseline.launch.digest
-                        if role.startswith("B")
-                        else plan.candidate.launch.digest
-                    ),
-                    session_id=("a" if role.startswith("B") else "b") * 32,
-                )
-                for role in roles
-            )
 
         _scalars = (
             "selected_delta_digest",
@@ -685,7 +668,6 @@ def _install_resident_runner_path(
                     self.completed_monotonic_s, ".17g"
                 ),
                 "resident_policy": {"digest": self.resident_policy.digest},
-                "rates": [dict(vars(row)) for row in self.rates],
             }
 
         @classmethod
@@ -699,15 +681,13 @@ def _install_resident_runner_path(
                 digest=value["resident_policy"]["digest"],
                 max_qualification_seconds=7_200,
             )
-            witness.rates = tuple(
-                SimpleNamespace(**row) for row in value["rates"]
-            )
             return witness
 
         def __eq__(self, other):
             return type(other) is type(self) and self.to_dict() == other.to_dict()
 
-    def run_resident(plan, *, baseline_executor, candidate_executor, model_mount, deadline):
+    def run_resident(plan, *, baseline_executor, candidate_executor, model_mount, deadline,
+                     quality_control):
         assert plan is harness.value.resident_speed_plan
         assert plan is not harness.value.resident_audit_plan
         harness.resident_speed_plans.append(plan)
@@ -715,6 +695,7 @@ def _install_resident_runner_path(
         assert candidate_executor is harness.executor
         assert model_mount is harness.value.model_mount
         assert deadline == 100.0
+        assert callable(quality_control)
         harness.calls.append("resident.speed")
         return crossover
 
@@ -1351,15 +1332,14 @@ def test_reopen_rejects_self_consistent_speed_witness_arm_relabel(
     test_qualification.py proves the real witness's internal digest admits an
     equally self-consistent forgery at construction."""
 
-    harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     # Reopen's resident branch demands an exactly-typed ResidentCrossoverPlan
     # before it will even read the witness, so the harness's namespace plan is
-    # replaced by a real plan built through the production crossover math; the
-    # harness's candidate-launch and runtime-policy identities are realigned to
-    # it so every honest cross-check passes and only the relabel can fail.
-    from tests.test_qualification import _lifecycle as _resident_fixture
-
-    plan = _resident_fixture(tmp_path / "resident-fixture")[0].plan
+    # replaced by a real sealed replay plan (built before the harness stubs the
+    # authority type); the harness's candidate-launch and runtime-policy
+    # identities are realigned to it so every honest cross-check passes and
+    # only the relabel can fail.
+    plan = _typed_resident_qualification_input(tmp_path / "resident-fixture").resident_speed_plan
+    harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     harness.value.resident_speed_plan = plan
     harness.value.prepared.candidates[0].launch.digest = plan.candidate.launch.digest
     harness.value.expected_runtime_resource_policy_digest = (
@@ -1579,14 +1559,21 @@ def _typed_resident_qualification_input(
             physical_hardware=candidate_physical,
         ),
     )
-    baseline_session = replace(
+    replay = replay_plan(tmp_path / "replay")
+    # The slice fixture seals an empty trace; record its sealed main turns so the
+    # commitment below seals the replay's own quality prompt pool.
+    sealed = replay.slice.sessions[0]
+    (replay.slice.directory / f"000_{sealed.id}.json").write_text(json.dumps(
+        {"id": sealed.id, "models": ["m"], "block_size": 64, "hash_id_scope": "local",
+         "requests": [{"out": case.session.max_new_tokens}] * sealed.main_turns}))
+    baseline_session = replay_session(replace(
         case.session,
         launch_digest=incumbent_launch.digest,
         expected_preflight=expected_runtime_preflight(
             incumbent_launch,
             case.preflight,
         ),
-    )
+    ), replay)
     prepared = prepare_marginal_runtime(
         case.arm,
         catalog=case.catalog,
@@ -1680,7 +1667,7 @@ def _typed_resident_qualification_input(
         candidate.arm.selected_delta_digest,
         baseline_arm,
         candidate_arm,
-        ResidentSpeedPolicy.rebound(_resident_policy(version=10),
+        ResidentSpeedPolicy.rebound(_resident_policy(),
             calibration=calibration,
             context=calibration_context,
         ),

@@ -9,17 +9,12 @@ from pathlib import Path
 import pytest
 
 from cacheon.arena_service import (
-    SCREEN_STAGES,
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
+    ArenaQualificationRequest,
     ArenaQualificationWork,
     ArenaService,
     ArenaServiceManifest,
-    NonCrownScreenPolicy,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStagePolicy,
-    ScreenStageResult,
     Workload,
     WorkloadCell,
 )
@@ -28,14 +23,11 @@ from cacheon.chain.publication import publish_worker_bundle
 from cacheon.eval.b300_arena_provider import (
     B300ArenaProviderError,
     B300ArenaServiceProvider,
+    B300DeclaredAuthorities,
     B300DeclaredQualificationAuthorities,
     B300DeploymentAuthorities,
     B300QualificationLanePair,
     B300QualificationLanePolicy,
-    B300ResidentScreenFactory,
-    B300ResidentScreenLifetime,
-    B300ScreenDeploymentAuthorities,
-    B300ScreenStageHandler,
     b300_arena_provider_digest,
 )
 from cacheon.eval.device_state import DeviceStatePolicy
@@ -49,12 +41,6 @@ from cacheon.eval.qualification_intake import (
     QualificationPlanFactory,
     QualificationReservation,
 )
-from cacheon.eval.resident_queue import ScreenPolicy
-from cacheon.eval.resident_screen_lane import (
-    ResidentScreenLane,
-    ResidentScreenLifetimeFailed,
-    ResidentServingScreenStage,
-)
 from tests.support.b300 import StubHiddenJudge as _Judge, arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
 
 
@@ -62,7 +48,7 @@ SLOT = "activation.silu_and_mul"
 
 
 @pytest.fixture
-def executor_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def executor_factory(tmp_path: Path):
     executors: list[OCIEngineExecutor] = []
     sequence = 0
 
@@ -105,8 +91,6 @@ def executor_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         executors.append(executor)
         return executor
 
-    create.managed_executors = executors
-    create.monkeypatch = monkeypatch
     yield create
     for executor in executors:
         executor.manager.close()
@@ -141,80 +125,7 @@ class _FactoryBuilder:
         )
 
 
-class _ResidentFactory:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.created = 0
-        self.closed = 0
-
-    def __call__(self) -> B300ResidentScreenLifetime:
-        self.created += 1
-
-        def unused_lifetime(_driver):
-            raise AssertionError("an unswappable fixture must not start an engine")
-
-        lane = ResidentScreenLane(
-            unused_lifetime,
-            prompts=("screen prompt",),
-            policy=ScreenPolicy(),
-            verdict_timeout_s=5.0,
-            close_timeout_s=5.0,
-        )
-        intake = self.root / f"swap-{self.created}"
-        intake.mkdir(parents=True)
-        stage = ResidentServingScreenStage(lane, intake)
-
-        def close() -> None:
-            self.closed += 1
-            lane.close()
-
-        return B300ResidentScreenLifetime(stage, close)
-
-
-class _ScreenRunner:
-    def __init__(self, grades=None, *, wrong_stage: str | None = None) -> None:
-        self.grades = dict(grades or {})
-        self.wrong_stage = wrong_stage
-        self.calls = []
-
-    def for_stage(self, expected_stage: str):
-        def run(manifest, policy, candidate):
-            self.calls.append(
-                (manifest.digest, policy.stage, candidate.digest)
-            )
-            value = self.grades.get(expected_stage, ScreenGrade.PASS)
-            if isinstance(value, BaseException):
-                raise value
-            result_stage = self.wrong_stage or expected_stage
-            return ScreenStageResult(
-                result_stage,
-                value,
-                _h(f"{expected_stage}-{value.value}-evidence"),
-                1,
-            )
-
-        return run
-
-
-def _authorities(
-    tmp_path: Path,
-    executor_factory,
-    *,
-    grades=None,
-    wrong_stage: str | None = None,
-    builder: _FactoryBuilder | None = None,
-):
-    runner = _ScreenRunner(grades, wrong_stage=wrong_stage)
-    handlers = tuple(
-        B300ScreenStageHandler(
-            stage,
-            _h(f"{stage}-handler"),
-            () if stage == "static" else ("build-resource",),
-            runner.for_stage(stage),
-        )
-        for stage in SCREEN_STAGES[:-1]
-    )
-    resident = _ResidentFactory(tmp_path)
+def _authorities(executor_factory, *, builder: _FactoryBuilder | None = None):
     factory_builder = builder or _FactoryBuilder()
     policy_digest = _h("qualification-policy")
     candidate_executor = executor_factory("candidate", "A")
@@ -229,12 +140,6 @@ def _authorities(
     )
     authorities = B300DeploymentAuthorities(
         runtime_identity=_runtime(),
-        screen_handlers=handlers,
-        resident_screen_factory=B300ResidentScreenFactory(
-            _h("resident-screen-factory"),
-            ("screen-resource",),
-            resident,
-        ),
         qualification_policy_digest=policy_digest,
         qualification_builder_digest=_h("qualification-builder"),
         qualification_factory_builder=factory_builder,
@@ -248,7 +153,7 @@ def _authorities(
         qualification_lane_pair=lane_pair,
         qualification_stage="primary",
     )
-    return authorities, runner, resident, factory_builder
+    return authorities, factory_builder
 
 
 def _manifest(
@@ -263,10 +168,7 @@ def _manifest(
     values = {
         "runtime": authorities.runtime_identity,
         "workload": workload,
-        "capacity": ArenaCapacityPolicy(32, 100, 2, 8, 4, 2, 3, 3),
-        "screens": NonCrownScreenPolicy(
-            tuple(ScreenStagePolicy(stage, 30_000) for stage in SCREEN_STAGES)
-        ),
+        "capacity": ArenaCapacityPolicy(32, 100, 8, 4),
         "qualification_policy_digest": authorities.qualification_policy_digest,
         "provider_digest": b300_arena_provider_digest(authorities),
     }
@@ -326,286 +228,16 @@ def _binding(tmp_path: Path, index: int = 0) -> ArenaCandidateBinding:
     return ArenaCandidateBinding(reservation, publication, 1)
 
 
-def test_all_five_real_screens_run_in_order_and_preserve_pass(
-    tmp_path: Path, executor_factory
-) -> None:
-    authorities, runner, resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
-    manifest = _manifest(authorities)
-    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
-
-    receipt = service.screen(_binding(tmp_path / "candidate"))
-
-    assert receipt.decision is PromotionDecision.PROMOTE
-    assert tuple(row.stage for row in receipt.results) == SCREEN_STAGES
-    assert tuple(row[1] for row in runner.calls) == SCREEN_STAGES[:-1]
-    assert resident.created == 1
-    service._provider.close()
-    assert resident.closed == 1
-
-
-def test_fail_is_not_rewritten(tmp_path: Path, executor_factory) -> None:
-    authorities, _runner, resident, _builder = _authorities(
-        tmp_path,
-        executor_factory,
-        grades={"abi": ScreenGrade.FAIL},
-    )
-    manifest = _manifest(authorities)
-    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
-
-    receipt = service.screen(_binding(tmp_path / "fail"))
-
-    assert receipt.results[-1].stage == "abi"
-    assert receipt.results[-1].grade is ScreenGrade.FAIL
-    assert receipt.decision is PromotionDecision.REJECT
-    assert resident.created == 0
-
-
-def test_no_decision_abi_screen_retries_then_holds_instead_of_reaching_qualification(
-    tmp_path: Path, executor_factory
-) -> None:
-    """An undecided ABI stage must not buy a seat on the GPU.
-
-    Qualification is the expensive half of the pipeline. An undecided stage
-    retries within the screen budget and then parks; only an undecided final
-    stage escalates to qualification. The ABI stage is never final.
-    """
-
-    authorities, _runner, resident, _builder = _authorities(
-        tmp_path,
-        executor_factory,
-        grades={"abi": ScreenGrade.NO_DECISION},
-    )
-    manifest = _manifest(authorities)
-    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
-    first = _binding(tmp_path / "no-decision")
-    exhausted = dataclasses.replace(
-        first, screen_attempt=manifest.capacity.screen_retry_limit
-    )
-
-    for binding, expected in ((first, PromotionDecision.RETRY),
-                              (exhausted, PromotionDecision.HOLD)):
-        receipt = service.screen(binding)
-        assert receipt.decision is expected
-        assert tuple(row.stage for row in receipt.results) == ("static", "build", "abi")
-        assert receipt.results[-1].grade is ScreenGrade.NO_DECISION
-    # The screen stops at the undecided stage: no later stage is run, and the
-    # candidate never reaches the resident lane.
-    assert resident.created == 0
-    service._provider.close()
-
-
-def test_stage_substitution_is_a_provider_contract_error(
-    tmp_path: Path, executor_factory
-) -> None:
-    authorities, _runner, _resident, _builder = _authorities(
-        tmp_path,
-        executor_factory,
-        wrong_stage="build",
-    )
-    manifest = _manifest(authorities)
-    provider = B300ArenaServiceProvider(manifest, authorities)
-    candidate = _binding(tmp_path / "candidate")
-
-    with pytest.raises(B300ArenaProviderError, match="changed the requested stage"):
-        provider.run_screen(manifest, manifest.screens.stages[0], candidate)
-    with pytest.raises(B300ArenaProviderError, match="policy was substituted"):
-        provider.run_screen(
-            manifest,
-            ScreenStagePolicy("static", 29_999),
-            candidate,
-        )
-
-
-def test_handler_exception_is_waived_but_untyped_output_is_not(
-    tmp_path: Path, executor_factory
-) -> None:
-    authorities, _runner, _resident, _builder = _authorities(
-        tmp_path,
-        executor_factory,
-        grades={"build": RuntimeError("worker unavailable")},
-    )
-    manifest = _manifest(authorities)
-    provider = B300ArenaServiceProvider(manifest, authorities)
-    candidate = _binding(tmp_path / "candidate")
-
-    result = provider.run_screen(manifest, manifest.screens.stages[1], candidate)
-
-    assert type(result) is ScreenStageResult
-    assert result.grade is ScreenGrade.PASS
-    assert result.stage == "build"
-
-    bad_handler = dataclasses.replace(
-        authorities.screen_handlers[1],
-        identity_digest=_h("bad-handler"),
-        runner=lambda *_args: object(),
-    )
-    bad_authorities = dataclasses.replace(
-        authorities,
-        screen_handlers=(
-            authorities.screen_handlers[0],
-            bad_handler,
-            *authorities.screen_handlers[2:],
-        ),
-    )
-    bad_manifest = _manifest(bad_authorities)
-    bad_provider = B300ArenaServiceProvider(bad_manifest, bad_authorities)
-    with pytest.raises(B300ArenaProviderError, match="evidence type"):
-        bad_provider.run_screen(
-            bad_manifest,
-            bad_manifest.screens.stages[1],
-            candidate,
-        )
-
-
-def test_serving_host_error_does_not_release_or_reload_resident(
-    tmp_path: Path, executor_factory, monkeypatch
-) -> None:
-    authorities, _runner, resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
-    manifest = _manifest(authorities)
-    provider = B300ArenaServiceProvider(manifest, authorities)
-    candidate = _binding(tmp_path / "candidate")
-    calls = 0
-
-    def run(_stage, _candidate):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise OSError("candidate carrier unavailable")
-        return ScreenStageResult(
-            "abbreviated_serving", ScreenGrade.PASS, _h("serving-pass"), 1
-        )
-
-    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", run)
-    # A host error is not a candidate verdict: the request fails and may be
-    # retried while the healthy resident stays loaded.
-    with pytest.raises(B300ArenaProviderError, match="resident screen request failed"):
-        provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
-    second = provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
-    assert second.grade is ScreenGrade.PASS
-    assert resident.created == 1
-    assert resident.closed == 0
-    provider.close()
-    assert resident.closed == 1
-
-
-def test_engine_death_latches_epoch_without_silent_reboot(
-    tmp_path: Path, executor_factory, monkeypatch
-) -> None:
-    authorities, _runner, resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
-    manifest = _manifest(authorities)
-    provider = B300ArenaServiceProvider(manifest, authorities)
-    candidate = _binding(tmp_path / "candidate")
-    monkeypatch.setattr(
-        ResidentServingScreenStage,
-        "run_screen",
-        lambda _stage, _candidate: (_ for _ in ()).throw(
-            ResidentScreenLifetimeFailed("engine lost")
-        ),
-    )
-    for _ in range(2):
-        with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
-            provider.run_screen(
-                manifest, manifest.screens.stages[-1], candidate
-            )
-    assert resident.created == 1
-    assert resident.closed == 0
-    provider.close()
-    assert resident.closed == 1
-
-
-def test_candidate_failure_returns_fail_then_latches_dead_resident(
-    tmp_path: Path, executor_factory, monkeypatch
-) -> None:
-    authorities, _runner, resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
-    manifest = _manifest(authorities)
-    provider = B300ArenaServiceProvider(manifest, authorities)
-    candidate = _binding(tmp_path / "candidate")
-
-    def candidate_fail(stage, _candidate):
-        stage._lifetime_failed = True
-        return ScreenStageResult(
-            "abbreviated_serving",
-            ScreenGrade.FAIL,
-            _h("candidate-prepare-failure"),
-            1,
-            "candidate prepare OOM at kernels/moe.py:10",
-        )
-
-    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", candidate_fail)
-    result = provider.run_screen(
-        manifest, manifest.screens.stages[-1], candidate
-    )
-    assert result.grade is ScreenGrade.FAIL
-    with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
-        provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
-    assert resident.created == 1
-    provider.close()
-
-
-def test_canary_failure_holds_and_latches_resident_epoch(
-    tmp_path: Path, executor_factory, monkeypatch
-) -> None:
-    authorities, _runner, resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
-    manifest = _manifest(authorities)
-    provider = B300ArenaServiceProvider(manifest, authorities)
-    candidate = _binding(tmp_path / "candidate")
-    calls = 0
-
-    def canary_failure(stage, _item):
-        nonlocal calls
-        calls += 1
-        stage._lifetime_failed = True
-        return ScreenStageResult(
-            "abbreviated_serving",
-            ScreenGrade.NO_DECISION,
-            _h("stock-canary-failure"),
-            1,
-            "validator_stock_canary_not_recovered reference=100 recovery=90,90",
-        )
-
-    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", canary_failure)
-    assert not provider.resident_screen_latched
-    assert provider.run_screen(
-        manifest, manifest.screens.stages[-1], candidate
-    ).grade is ScreenGrade.NO_DECISION
-    assert (calls, resident.created, resident.closed) == (1, 1, 0)
-    # The latch is visible behind the completed result so the adapter can
-    # retire itself before the next request dies against it.
-    assert provider.resident_screen_latched
-    with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
-        provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
-    assert (calls, resident.created, resident.closed) == (1, 1, 0)
-    provider.close()
-    assert resident.closed == 1
-
-
 def test_qualification_preserves_exact_request_order_and_real_authorities(
     tmp_path: Path, executor_factory
 ) -> None:
-    authorities, _runner, resident, builder = _authorities(
-        tmp_path, executor_factory
-    )
+    authorities, builder = _authorities(executor_factory)
     manifest = _manifest(authorities)
     service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
     first = _binding(tmp_path / "first", 0)
     second = _binding(tmp_path / "second", 1)
-    receipts = (service.screen(first), service.screen(second))
 
-    work = service.plan_qualification(
-        (first, second),
-        receipts,
-        state={"attempt": 1},
-    )
+    work = service.plan_qualification((first, second), state={"attempt": 1})
 
     assert type(work) is ArenaQualificationWork
     assert type(work.factory) is QualificationPlanFactory
@@ -621,35 +253,28 @@ def test_qualification_preserves_exact_request_order_and_real_authorities(
     assert work.hidden_judge is authorities.hidden_judge
     assert builder.calls[0][0].candidates == (first, second)
     assert builder.calls[0][1] == {"attempt": 1}
-    assert resident.created == 1
-    assert resident.closed == 1
 
 
 def test_reordered_factory_is_refused(
     tmp_path: Path, executor_factory
 ) -> None:
-    builder = _FactoryBuilder(reverse=True)
-    authorities, _runner, _resident, _builder = _authorities(
-        tmp_path,
+    authorities, _builder = _authorities(
         executor_factory,
-        builder=builder,
+        builder=_FactoryBuilder(reverse=True),
     )
     manifest = _manifest(authorities)
     service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
     first = _binding(tmp_path / "first", 0)
     second = _binding(tmp_path / "second", 1)
-    receipts = (service.screen(first), service.screen(second))
 
     with pytest.raises(B300ArenaProviderError, match="cohort order"):
-        service.plan_qualification((first, second), receipts)
+        service.plan_qualification((first, second))
 
 
 def test_runtime_model_topology_and_policy_must_match_manifest(
-    tmp_path: Path, executor_factory
+    executor_factory,
 ) -> None:
-    authorities, _runner, _resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
+    authorities, _builder = _authorities(executor_factory)
     runtime_mismatch = dataclasses.replace(
         authorities.runtime_identity,
         model_content_digest=_h("another-model"),
@@ -669,20 +294,14 @@ def test_runtime_model_topology_and_policy_must_match_manifest(
         )
 
 
-def test_provider_digest_binds_handler_runtime_and_qualification_policy(
-    tmp_path: Path, executor_factory
+def test_provider_digest_binds_builder_runtime_and_qualification_policy(
+    executor_factory,
 ) -> None:
-    authorities, _runner, _resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
+    authorities, _builder = _authorities(executor_factory)
     original = b300_arena_provider_digest(authorities)
-    changed_handler = dataclasses.replace(
-        authorities.screen_handlers[0],
-        identity_digest=_h("changed-static-handler"),
-    )
-    changed_handlers = dataclasses.replace(
+    changed_builder = dataclasses.replace(
         authorities,
-        screen_handlers=(changed_handler, *authorities.screen_handlers[1:]),
+        qualification_builder_digest=_h("changed-qualification-builder"),
     )
     changed_policy = dataclasses.replace(
         authorities,
@@ -699,7 +318,7 @@ def test_provider_digest_binds_handler_runtime_and_qualification_policy(
     assert len(
         {
             original,
-            b300_arena_provider_digest(changed_handlers),
+            b300_arena_provider_digest(changed_builder),
             b300_arena_provider_digest(changed_policy),
             b300_arena_provider_digest(changed_runtime),
         }
@@ -707,11 +326,9 @@ def test_provider_digest_binds_handler_runtime_and_qualification_policy(
 
 
 def test_provider_identity_is_stable_across_exact_primary_reproduction_swap(
-    tmp_path: Path, executor_factory
+    executor_factory,
 ) -> None:
-    primary, _runner, _resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
+    primary, _builder = _authorities(executor_factory)
     reproduction = dataclasses.replace(
         primary,
         executor=executor_factory("candidate", "B"),
@@ -738,11 +355,9 @@ def test_provider_identity_is_stable_across_exact_primary_reproduction_swap(
 
 
 def test_lane_pair_rejects_overlap_and_full_authority_rejects_orientation_drift(
-    tmp_path: Path, executor_factory
+    executor_factory,
 ) -> None:
-    primary, _runner, _resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
+    primary, _builder = _authorities(executor_factory)
     with pytest.raises(B300ArenaProviderError, match="overlapping"):
         B300QualificationLanePair(
             primary.qualification_lane_pair.lane_a,
@@ -770,40 +385,53 @@ def test_lane_pair_rejects_overlap_and_full_authority_rejects_orientation_drift(
         b300_arena_provider_digest(primary)
 
 
-def test_screen_only_and_full_authorities_share_exact_provider_identity(
+def test_declared_and_full_authorities_share_exact_provider_identity(
     tmp_path: Path, executor_factory
 ) -> None:
-    full, _runner, _resident, _builder = _authorities(
-        tmp_path, executor_factory
-    )
+    full, builder = _authorities(executor_factory)
     declared = full.qualification
     assert type(declared) is B300DeclaredQualificationAuthorities
-    screen_only = B300ScreenDeploymentAuthorities(
-        full.runtime_identity,
-        full.screen_handlers,
-        full.resident_screen_factory,
-        declared,
-    )
+    sealed = B300DeclaredAuthorities(full.runtime_identity, declared)
+    manifest = _manifest(full)
 
-    assert b300_arena_provider_digest(screen_only) == b300_arena_provider_digest(
-        full
+    assert b300_arena_provider_digest(sealed) == b300_arena_provider_digest(full)
+    assert manifest.provider_digest == b300_arena_provider_digest(sealed)
+
+    # The sealed declaration identifies the service but grants no capability.
+    request = ArenaQualificationRequest(
+        manifest.digest,
+        manifest.qualification_policy_digest,
+        (_binding(tmp_path / "candidate"),),
     )
-    assert _manifest(full).provider_digest == b300_arena_provider_digest(
-        screen_only
-    )
+    with pytest.raises(B300ArenaProviderError, match="declared-only provider"):
+        B300ArenaServiceProvider(manifest, sealed).build_qualification(request)
+    assert builder.calls == []
+
+
+def test_closed_provider_refuses_qualification(
+    tmp_path: Path, executor_factory
+) -> None:
+    authorities, builder = _authorities(executor_factory)
+    manifest = _manifest(authorities)
+    provider = B300ArenaServiceProvider(manifest, authorities)
+    service = ArenaService(manifest, provider)
+    provider.close()
+
+    with pytest.raises(B300ArenaProviderError, match="provider is closed"):
+        service.plan_qualification((_binding(tmp_path / "candidate"),))
+    assert builder.calls == []
 
 
 def test_factory_exception_stays_a_provider_error(
     tmp_path: Path, executor_factory
 ) -> None:
-    builder = _FactoryBuilder(fail=True)
-    authorities, _runner, _resident, _builder = _authorities(
-        tmp_path, executor_factory, builder=builder
+    authorities, _builder = _authorities(
+        executor_factory,
+        builder=_FactoryBuilder(fail=True),
     )
     manifest = _manifest(authorities)
     service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
     candidate = _binding(tmp_path / "candidate")
-    receipt = service.screen(candidate)
 
     with pytest.raises(B300ArenaProviderError, match="factory construction"):
-        service.plan_qualification((candidate,), (receipt,))
+        service.plan_qualification((candidate,))

@@ -321,11 +321,14 @@ def test_causal_authority_binds_eager_plan_and_rejects_old_fake(tmp_path) -> Non
         runner.QualificationRunnerError,
         match="resident audit plan coverage differs",
     ):
+        # The old fake: the charged plan's transport reused with an audit policy
+        # (a replay plan cannot carry one), instead of the derived authority.
         replace(
             value,
             resident_audit_plan=replace(
                 value.prepared.candidates[0].session_plan,
                 audit_policy=value.audit_policies[0],
+                replay=None,
             ),
         )
 

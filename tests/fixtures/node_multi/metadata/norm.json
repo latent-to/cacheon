@@ -1,0 +1,6 @@
+{
+  "architectures": ["sm103"],
+  "dtypes": ["bfloat16"],
+  "notes": "Final-norm member of the multi-node forward_pass fixture.",
+  "op": "model.norm"
+}

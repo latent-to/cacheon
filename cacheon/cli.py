@@ -1,19 +1,17 @@
 """Cacheon validator CLI — drives the submission pipeline end to end.
 
-    python -m cacheon.cli slots
     python -m cacheon.cli scan      <bundle>
-    python -m cacheon.cli verify    <bundle> [--dtype bfloat16] [--device cuda]
+    python -m cacheon.cli verify    <bundle>
+    python -m cacheon.cli check     --help
 
 Pipeline (mirrors the validator flow):
 
-    manifest -> static scan -> (isolated) load -> op-correctness -> register
-             -> chain intake -> qualification (B/C/B'/T) -> settlement
+    manifest -> static scan -> node interface smoke -> chain intake
+             -> qualification (paired replay windows + audit) -> settlement
 
-SECURITY NOTE: ``verify`` imports the miner module, which runs
-its code in THIS process. That is only acceptable because the whole validator
-host is expected to be the sandbox (no network, per-eval GPU context, watchdog).
-Do not run this on a machine you care about without that isolation. See
-``cacheon/sandbox.py``.
+``verify`` never imports miner code in this process: the interface smoke runs
+in a spawned child, and numerical node checks run in the arena image through
+``check``. See ``cacheon/sandbox.py``.
 """
 
 from __future__ import annotations
@@ -40,17 +38,6 @@ def _wallet_from_args(args: argparse.Namespace):
     if path:
         kwargs["path"] = path
     return bt.Wallet(**kwargs)
-
-
-def cmd_slots(_: argparse.Namespace) -> int:
-    from cacheon.slots import SLOTS, list_slots
-
-    print("Registered op-slots (the submission ABI):")
-    for name in list_slots():
-        spec = SLOTS[name]
-        print(f"  {name}  [{spec.kind}]")
-        print(f"      {spec.summary}")
-    return 0
 
 
 def cmd_compat(args: argparse.Namespace) -> int:
@@ -1742,7 +1729,7 @@ def cmd_chain_validate(
             f"intake @finalized {res.finalized_block}: seen={res.seen} "
             f"reserved={len(res.reserved)} published={len(res.published)} "
             f"copies={len(res.copies)} rejected={len(res.rejected)} "
-            f"screens={len(res.screens)} decisions={len(res.decisions)} "
+            f"decisions={len(res.decisions)} "
             f"settlements={len(res.settlements)} held={len(res.held)}"
         )
         for reservation, why in res.rejected.items():
@@ -1851,65 +1838,6 @@ def cmd_chain_release_hold(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_chain_reopen_qualification(args: argparse.Namespace) -> int:
-    """Reopen one unsettled PASS pair whose credited half read the baseline out of band."""
-
-    from cacheon import chain
-    from cacheon.chain.baseline_band import (
-        BaselineBandError,
-        qualification_evidence_roots,
-        remeasurement_evidence,
-    )
-    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
-
-    roots = qualification_evidence_roots(
-        Path(args.evidence_state_dir),
-        tuple(Path(root) for root in args.evidence_root),
-    )
-    subtensor = chain.connect(args.network)
-    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
-    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
-        if store.remeasurement_pending(args.reservation_id):
-            # Second run on an already reopened row: repair its baseline binding.
-            row = store.get(args.reservation_id)
-            print(
-                f"{row.reservation_id} is already reopened ({row.status}, "
-                f"{row.reason}); rebinding its baseline segment"
-            )
-            if args.dry_run:
-                print("dry run: reservation left unchanged")
-                return 0
-            state = store.rebind_remeasurement_segment(args.reservation_id)
-            print(
-                "left unbound for the fresh screen to bind"
-                if state is None
-                else f"rebound to arena {state.arena_digest[:16]} "
-                f"generation {state.generation}"
-            )
-            return 0
-        try:
-            evidence = remeasurement_evidence(store, args.reservation_id, roots)
-        except BaselineBandError as exc:
-            raise SystemExit(f"remeasurement refused: {exc}") from None
-        print(evidence.describe())
-        if not evidence.out_of_band:
-            raise SystemExit(
-                "remeasurement refused: the credited half read the baseline "
-                "lane inside the arena band"
-            )
-        if args.dry_run:
-            print("dry run: reservation left unchanged")
-            return 0
-        reopened = store.reopen_for_remeasurement(
-            args.reservation_id, reason="baseline_out_of_band"
-        )
-    print(
-        f"reopened {reopened.reservation_id}: status={reopened.status} "
-        f"reason={reopened.reason}"
-    )
-    return 0
-
-
 def cmd_chain_backfill_lineage(args: argparse.Namespace) -> int:
     """Rebuild the per-target lineage ledger from the newest CROWN per target."""
 
@@ -1967,9 +1895,6 @@ def cmd_chain_evaluation_lease(args: argparse.Namespace) -> int:
         result = operate(
             load_config(args.config),
             args.lease_operation,
-            lease_id=getattr(args, "lease_id", None),
-            reason=getattr(args, "reason", None),
-            result_digest=getattr(args, "result_digest", ""),
             authority_path=getattr(args, "authority", None),
         )
     except (FifoLeaseError, IntakeError, OSError) as exc:
@@ -2104,183 +2029,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return rc
 
 
-def _recursive_scan_ok(bundle: str, manifest=None) -> bool:
-    """Fail-closed vendored-tree guard for the eval paths: scan every bundle .py, not just the
-    declared entries (a vendored library .py using open/importlib/subprocess must not slip in
-    unscanned). Prints violations; returns False if any.
-
-    ``manifest`` (already loaded by the caller) supplies the declared ``cuda_sources``
-    allowlist, so scan_tree runs in its fail-closed mode: any file that's neither a
-    scanned ``.py``, a declared cuda_source, nor benign metadata is rejected. Passing
-    ``None`` falls back to the old (looser) behavior — kept only for callers that scan
-    without a manifest; every call site in this file now has one available.
-    """
-    from cacheon.sandbox import scan_tree
-
-    declared_cuda = all_declared_cuda_sources(bundle, manifest) if manifest is not None else None
-    tree = scan_tree(bundle, declared_cuda_sources=declared_cuda)
-    if not tree.ok:
-        print("  [FAIL] recursive policy scan (vendored-tree guard):")
-        for v in tree.violations:
-            print(f"      {v}")
-    return tree.ok
-
-
-def _declared_metadata(bundle: str, op) -> dict:
-    """Read normative eligibility metadata; malformed content fails closed."""
-    if not getattr(op, "metadata", None):
-        return {}
-    import json
-    from pathlib import Path
-
-    value = json.loads((Path(bundle) / op.metadata).read_text())
-    if not isinstance(value, dict):
-        raise ValueError(f"metadata for {op.slot!r} must be a JSON object")
-    return value
-
-
 def cmd_verify(args: argparse.Namespace) -> int:
-    from cacheon.registry import (
-        Eligibility,
-        KernelImpl,
-        KernelRegistry,
-        eligibility_from_metadata,
-    )
-    from cacheon.slots import SLOTS, get_slot, model_profile, slot_for_model
-    from cacheon.verify import format_verify, verify_entry
+    from cacheon.miner_check import verify_nodes
 
-    m = load_manifest(args.bundle)
-    if any(op.slot not in SLOTS for op in m.ops):
-        from cacheon.miner_check import verify_nodes
-
-        return verify_nodes(args.bundle)
-    if not _recursive_scan_ok(args.bundle, manifest=m):  # vendored-tree guard (every .py, not just entries)
-        return 2
-
-    # Parse every known row once and run the complete bundle through the SAME
-    # registration rules used by the live seam before loading any candidate source.
-    # Per-row verification alone cannot detect two individually valid domains that
-    # overlap and would make live routing ambiguous.
-    metadata_by_row: dict[int, dict] = {}
-    eligibility_by_row: dict[int, Eligibility] = {}
-    domain_registry = KernelRegistry()
-
-    def _domain_only_entry(*_args, **_kwargs):
-        raise AssertionError("domain preflight entries are never invoked")
-
-    for row_index, op in enumerate(m.ops):
-        label = f"{op.slot} variant={op.variant!r}"
-        try:
-            metadata = _declared_metadata(args.bundle, op)
-            eligibility = eligibility_from_metadata(
-                metadata, op.dtypes, op.architectures
-            )
-            domain_registry.register(
-                KernelImpl(
-                    slot=op.slot,
-                    bundle_id=m.bundle_id,
-                    entry=_domain_only_entry,
-                    eligibility=eligibility,
-                    variant=op.variant,
-                )
-            )
-        except (OSError, ValueError) as exc:
-            print(f"  [FAIL] {label}: invalid or ambiguous variant domain: {exc}")
-            return 2
-        metadata_by_row[row_index] = metadata
-        eligibility_by_row[row_index] = eligibility
-
-    import torch
-    # Mirror the ACTUAL device resolution, including verify_collective's fallback:
-    # a collective needs world_size GPUs, so a 1-GPU box silently runs gloo/CPU.
-    ws = getattr(args, "world_size", None) or 2
-    has_collective = any(op.slot in SLOTS and get_slot(op.slot).kind == "collective"
-                         for op in m.ops)
-    cuda_ok = torch.cuda.is_available() and (
-        not has_collective or torch.cuda.device_count() >= ws)
-    effective_device = args.device or ("cuda" if cuda_ok else "cpu")
-    if effective_device == "cpu":
-        print("[note] some or all of this verify runs on CPU: it checks op-correctness "
-              "only — it does not predict GPU throughput, CUDA-graph capture, or the "
-              "fidelity gates (see docs/dev/gpu-setup.md).")
-    rc = 0
-    known_rows = context_inapplicable_rows = 0
-    for row_index, op in enumerate(m.ops):
-        label = f"{op.slot} variant={op.variant!r}"
-        known_rows += 1
-        metadata = metadata_by_row[row_index]
-        model_key = args.model or metadata.get("model") or metadata.get("model_profile")
-        if model_profile(model_key, op.slot) is not None:
-            via = "via --model" if args.model else "declared in metadata"
-            print(f"  [profile] {label}: model {model_key!r} ({via}) -> validator slot profile "
-                  "(activation + low-bit metric)")
-        slot = slot_for_model(op.slot, model_key)
-        src = resolve_source(args.bundle, op)
-        scan = scan_path(src)
-        if not scan.ok:
-            print(f"  [FAIL] {label}: failed policy scan")
-            for v in scan.violations:
-                print(f"      {v}")
-            rc = 2
-            continue
-
-        if slot.kind == "collective":
-            # Collectives span ranks -> distributed verify (spawns world_size ranks;
-            # gloo/CPU if device=cpu, nccl/GPU if cuda). No per-op single-process path.
-            from cacheon.verify_collective import verify_collective
-
-            ws = getattr(args, "world_size", None) or 2
-            result = verify_collective(slot, str(src), op.entry, prepare_name=op.prepare,
-                                       world_size=ws, device=args.device, seed=args.seed,
-                                       dtype_name=args.dtype,
-                                       jitter_seed=args.seed,  # anti shape-branch, like per-op
-                                       model_key=model_key,
-                                       # rebuild plan (declared cuda_sources) must apply
-                                       # in the ranks that load the kernel
-                                       bundle_path=str(args.bundle),
-                                       eligibility=eligibility_by_row[row_index],
-                                       tp_size=getattr(args, "tp_size", None),
-                                       variant_name=op.variant)
-            print(f"  [variant {op.variant!r}]")
-            print(format_verify(result))
-            if result.context_inapplicable:
-                context_inapplicable_rows += 1
-            elif not result.passed or (
-                effective_device == "cuda" and not result.fully_verified
-            ):
-                rc = 2
-            continue
-
-        # Load + run the miner kernel in a FRESH spawned process, so THIS trusted CLI
-        # process never imports miner code (no in-process RCE sink). Production must also
-        # namespace/no-egress that child; this removes the trusted-process execution.
-        from cacheon.eval._launch import call_in_subprocess
-        from cacheon.verify import verify_entry_from_source
-
-        result = call_in_subprocess(
-            verify_entry_from_source, op.slot, str(src), op.entry,
-            prepare_name=op.prepare, dtype_name=args.dtype, device=args.device, seed=args.seed,
-            jitter_seed=args.seed,  # count-dim jitter so shapes vary per run (anti shape-branch)
-            model_key=model_key,  # validator per-model slot profile (activation + metric)
-            override_point=op.override_point,  # compose a miner epilogue into the base kernel
-            eligibility_metadata=metadata,
-            manifest_dtypes=op.dtypes,
-            manifest_architectures=op.architectures,
-            tp_size=getattr(args, "tp_size", None),
-            world_size=getattr(args, "world_size", None),
-            bundle_path=str(args.bundle),
-            variant_name=op.variant,
-        )
-        print(f"  [variant {op.variant!r}]")
-        print(format_verify(result))
-        if result.context_inapplicable:
-            context_inapplicable_rows += 1
-        elif not result.passed:
-            rc = 2
-    if known_rows and context_inapplicable_rows == known_rows and rc == 0:
-        print("no bundle variant is applicable to the selected verify context")
-        rc = 2
-    return rc
+    return verify_nodes(args.bundle)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2293,7 +2045,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Cacheon validator harness.\n"
             "\n"
             "Commands by workflow:\n"
-            "  develop a kernel (miner) ... slots, scan, verify\n"
+            "  develop a bundle (miner) ... scan, verify, check\n"
             "  submit on-chain (miner) .... chain-register, chain-package,\n"
             "                               chain-publish, chain-eval-cost,\n"
             "                               chain-submit, chain-status\n"
@@ -2306,9 +2058,6 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = p.add_subparsers(dest="cmd", required=True)
-
-    sp = sub.add_parser("slots", help="list the op-slot ABI")
-    sp.set_defaults(func=cmd_slots)
 
     sp = sub.add_parser("compat", help="check our sglang integration points survived an upgrade")
     sp.add_argument("--sglang-version", help="exact version from the arena's runtime authority")
@@ -2981,12 +2730,6 @@ def build_parser() -> argparse.ArgumentParser:
     lease_ops = sp.add_subparsers(dest="lease_operation", required=True)
     lease_ops.add_parser("preview", help="read the next canonical FIFO member IDs")
     lease_ops.add_parser("claim", help="claim the next canonical FIFO lease")
-    heartbeat = lease_ops.add_parser("heartbeat", help="extend one exact active lease")
-    heartbeat.add_argument("lease_id")
-    released = lease_ops.add_parser("release", help="release one exact active lease")
-    released.add_argument("lease_id")
-    released.add_argument("--reason", required=True)
-    released.add_argument("--result-digest", default="")
     requeue_expired = lease_ops.add_parser(
         "requeue-expired",
         help="readmit one sealed validator-downtime cohort with a fresh SLA window",
@@ -3109,33 +2852,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_chain_release_hold)
 
     sp = sub.add_parser(
-        "chain-reopen-qualification",
-        help=(
-            "operator: return one unsettled PASS reservation to the screen "
-            "queue for a fresh qualification when retained evidence shows its credited "
-            "half read the baseline lane under the arena band; never signs, "
-            "settles, or crowns"
-        ),
-    )
-    sp.add_argument("--netuid", type=int, required=True)
-    sp.add_argument("--network", required=True)
-    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
-    sp.add_argument("--reservation-id", required=True)
-    sp.add_argument(
-        "--evidence-state-dir", required=True,
-        help="worker state directory holding the qualification-evidence-* stores",
-    )
-    sp.add_argument(
-        "--evidence-root", action="append", default=[],
-        help="additional evidence store root (repeatable)",
-    )
-    sp.add_argument(
-        "--dry-run", action="store_true",
-        help="print the band evidence and leave the reservation unchanged",
-    )
-    sp.set_defaults(func=cmd_chain_reopen_qualification)
-
-    sp = sub.add_parser(
         "chain-backfill-lineage",
         help=(
             "operator: rebuild the per-target lineage ledger from the newest "
@@ -3181,25 +2897,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_explain)
 
     sp = sub.add_parser(
-        "verify", help="scan and interface smoke for nodes; reference check for catalog slots",
+        "verify", help="static scan and interface smoke for a node bundle",
         epilog=("examples:\n"
                 "  cacheon verify examples/miner_node_identity\n"
                 "  # node numerical checks need the published image and model\n"
                 "  cacheon check --help"),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("bundle")
-    sp.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
-    sp.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
-    sp.add_argument("--seed", type=int, default=0)
-    sp.add_argument("--world-size", type=int, default=None, dest="world_size",
-                    help="ranks for DISTRIBUTED verify of collective slots (default 2; "
-                         "use the arena TP size, e.g. 4, on a multi-GPU box)")
-    sp.add_argument("--tp-size", type=int, default=None, dest="tp_size",
-                    help="tensor-parallel size for capability-aware non-collective verify")
-    sp.add_argument("--model", default=None,
-                    help="validator model key for the per-model slot profile (activation + "
-                         "low-bit metric), e.g. MiniMax-M3. Default: the model declared in the "
-                         "op's metadata (dev convenience); production uses the served-model key.")
     sp.set_defaults(func=cmd_verify)
 
     from cacheon.miner_check import add_parser

@@ -67,7 +67,6 @@ def test_legacy_manifest_gets_stable_default_variant(tmp_path):
 
     assert manifest.ops[0].variant == DEFAULT_VARIANT
     assert manifest.op_for(SLOT) is manifest.ops[0]
-    assert manifest.ops_for(SLOT) == manifest.ops
 
 
 @pytest.mark.parametrize(
@@ -130,7 +129,7 @@ def test_manifest_retains_order_and_requires_variant_for_ambiguous_op_for(tmp_pa
         )
     )
 
-    assert tuple(op.variant for op in manifest.ops_for(SLOT)) == ("h64", "h128")
+    assert tuple(op.variant for op in manifest.ops) == ("h64", "h128")
     assert manifest.op_for(SLOT, "h128") is manifest.ops[1]
     with pytest.raises(ManifestError, match="multiple variants"):
         manifest.op_for(SLOT)

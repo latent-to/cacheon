@@ -47,7 +47,7 @@ from cacheon.chain.submit import submit_bundle
 HASH = "a" * 64
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
 TREASURY = "treasury"
-_BUNDLE = Path(__file__).resolve().parent.parent / "examples" / "miner_silu_torch"
+_BUNDLE = Path(__file__).resolve().parent.parent / "examples" / "miner_node_identity"
 _PAID_AMOUNT = 10
 
 
@@ -118,7 +118,7 @@ def _proof(**changes) -> EvalCostPaymentProof:
 def test_v1_quote_ignores_submission_extras() -> None:
     base = quote_eval_cost(_request(), at_block=70)
     varied = quote_eval_cost(
-        _request(target_id="activation.silu_and_mul", submission={"gpu_s": 1800}),
+        _request(target_id="forward_pass", submission={"gpu_s": 1800}),
         at_block=70,
     )
     assert base == varied
@@ -345,7 +345,7 @@ def test_v2_payload_round_trip() -> None:
 
 def test_dry_run_pay_quotes_without_a_chain() -> None:
     result = submit_bundle(
-        None, None, 307, _BUNDLE, "https://example.com/bundles/miner-silu-torch.tar",
+        None, None, 307, _BUNDLE, "https://example.com/bundles/miner-node-identity.tar",
         dry_run=True,
         pay=True,
         eval_cost_policy=EvalCostPolicy(amount_rao=10, destination=TREASURY),
@@ -421,7 +421,7 @@ def test_read_subnet_owner_coldkey_refuses_missing_owner() -> None:
 def test_dry_run_pay_refuses_without_a_destination() -> None:
     with pytest.raises(EvalCostError, match="destination"):
         submit_bundle(
-            None, None, 307, _BUNDLE, "https://example.com/bundles/miner-silu-torch.tar",
+            None, None, 307, _BUNDLE, "https://example.com/bundles/miner-node-identity.tar",
             dry_run=True,
             pay=True,
             eval_cost_policy=EvalCostPolicy(amount_rao=10),
@@ -932,7 +932,7 @@ def test_reuse_binds_an_unused_payment_and_encodes_v2() -> None:
         _Wallet(),
         307,
         _BUNDLE,
-        "https://example.com/bundles/miner-silu-torch.tar",
+        "https://example.com/bundles/miner-node-identity.tar",
         dry_run=True,
         payment_block=80,
         payment_extrinsic_index=4,
@@ -974,7 +974,7 @@ def test_commit_failure_after_pay_preserves_the_unused_pointer(monkeypatch) -> N
             _Wallet(),
             307,
             _BUNDLE,
-            "https://example.com/bundles/miner-silu-torch.tar",
+            "https://example.com/bundles/miner-node-identity.tar",
             pay=True,
             eval_cost_policy=EvalCostPolicy(amount_rao=10, destination=TREASURY),
         )
@@ -1011,7 +1011,7 @@ def test_chain_rejection_after_pay_preserves_the_unused_pointer(monkeypatch) -> 
             _Wallet(),
             307,
             _BUNDLE,
-            "https://example.com/bundles/miner-silu-torch.tar",
+            "https://example.com/bundles/miner-node-identity.tar",
             pay=True,
             eval_cost_policy=EvalCostPolicy(amount_rao=10, destination=TREASURY),
         )

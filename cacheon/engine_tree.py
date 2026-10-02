@@ -829,12 +829,6 @@ def _op_identity(manifest: Manifest, op: OpEntry) -> dict[str, object]:
     return identity
 
 
-def _runtime_op_identity(manifest: Manifest, op: OpEntry) -> dict[str, object]:
-    """Return one emitted runtime row."""
-
-    return _op_identity(manifest, op)
-
-
 def _validate_variant_domains(root: Path, manifest: Manifest) -> None:
     from cacheon.registry import (
         eligibility_domain_is_empty,
@@ -881,6 +875,7 @@ def _inspect_contribution(
 ) -> InspectedContribution:
     """Inspect one registered contribution source without executing it."""
 
+    from cacheon.integrations.sglang_cache import ADDRESS, admit
     from cacheon.registry import eligibility_from_metadata
     from cacheon.target_catalog import TargetCatalog
 
@@ -930,6 +925,11 @@ def _inspect_contribution(
     )
     for relative in python_files:
         _module_name("cacheon_validation", relative)
+
+    for op in manifest.ops:
+        if op.slot.split(".")[0] == ADDRESS:
+            source = _logical_path(op.source, field="python source")
+            admit(_parse_python(root, source)[1], op.slot, op.entry, error=EngineTreeError)
 
     file_rows: list[dict[str, object]] = []
     for role, paths in (
@@ -1086,15 +1086,9 @@ def _contribution_files(
         )
 
     required_entry_names: dict[str, set[str]] = {}
-    optional_entry_names: dict[str, set[str]] = {}
     for op in inspection.manifest.ops:
         required = required_entry_names.setdefault(op.source, set())
-        optional = optional_entry_names.setdefault(op.source, set())
-        if op.is_override:
-            required.add(op.entry + "_ref")
-            optional.add(op.entry)
-        else:
-            required.add(op.entry)
+        required.add(op.entry)
         if op.prepare is not None:
             required.add(op.prepare)
         if op.setup is not None:
@@ -1103,20 +1097,9 @@ def _contribution_files(
     for relative, required in sorted(required_entry_names.items()):
         output = f"entries/{_generated_name(prefix, relative, suffix='.py')}"
         module_name = module_names[relative]
-        lines = [
-            f"from {module_name} import {name} as {name}\n"
-            for name in sorted(required)
-        ]
-        for name in sorted(optional_entry_names[relative] - required):
-            lines.extend(
-                (
-                    "try:\n",
-                    f"    from {module_name} import {name} as {name}\n",
-                    "except ImportError:\n",
-                    "    pass\n",
-                )
-            )
-        shim = "".join(lines).encode("utf-8")
+        shim = "".join(
+            f"from {module_name} import {name} as {name}\n" for name in sorted(required)
+        ).encode("utf-8")
         try:
             compile(shim, output, "exec", ast.PyCF_ONLY_AST, dont_inherit=True)
         except SyntaxError as exc:  # pragma: no cover - manifest names are validated
@@ -1134,7 +1117,7 @@ def _contribution_files(
 
     op_rows: list[dict[str, object]] = []
     for op in sorted(inspection.manifest.ops, key=lambda row: (row.slot, row.variant)):
-        row = _runtime_op_identity(inspection.manifest, op)
+        row = _op_identity(inspection.manifest, op)
         row["source"] = entry_paths[op.source]
         row["metadata"] = metadata_paths.get(op.metadata) if op.metadata else None
         row["cuda_sources"] = [native_paths[path] for path in row["cuda_sources"]]
@@ -1148,30 +1131,6 @@ def _toml_string(value: str) -> str:
 
 def _toml_array(values: list[str]) -> str:
     return "[" + ", ".join(_toml_string(value) for value in values) + "]"
-
-
-def _toml_value(value: object) -> str:
-    """Serialize the bounded JSON-shaped artifact-plan subset as TOML."""
-
-    if isinstance(value, str):
-        return _toml_string(value)
-    if type(value) is bool:
-        return "true" if value else "false"
-    if type(value) in {int, float}:
-        return repr(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    if isinstance(value, dict):
-        # TOML has no null. Canonical artifact plans use ``None`` only for
-        # inactive/default fields in their tagged unions; omit those fields on
-        # the wire and let the typed manifest decoder reconstruct and validate
-        # the canonical defaults. A top-level/list null remains unsupported.
-        return "{ " + ", ".join(
-            f"{_toml_string(str(key))} = {_toml_value(item)}"
-            for key, item in sorted(value.items(), key=lambda row: str(row[0]))
-            if item is not None
-        ) + " }"
-    raise EngineTreeError(f"runtime manifest contains an unsupported TOML value: {value!r}")
 
 
 def _runtime_manifest(ops: list[dict[str, object]]) -> bytes:

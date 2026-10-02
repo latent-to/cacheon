@@ -36,7 +36,7 @@ def bundle_visibility(connection, reservation_id, block_time):
             "SELECT max(l.completed_block) AS block FROM evaluation_leases l "
             "JOIN evaluation_lease_members m ON m.lease_id=l.lease_id "
             "WHERE m.reservation_id=? AND l.state='completed' "
-            "AND l.stage IN ('screen','qualification') UNION ALL "
+            "AND l.stage='qualification' UNION ALL "
             "SELECT max(retained_block) FROM settlement_qualifications "
             "WHERE reservation_id=?)", (reservation_id, reservation_id),
         ).fetchone()[0] or 0

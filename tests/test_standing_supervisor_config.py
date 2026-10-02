@@ -9,6 +9,9 @@ import pytest
 from cacheon.arena_service import ArenaService
 from cacheon.chain import mainnet_screen_dispatcher as dispatcher_module
 from cacheon.chain import remote_worker_spool as spool
+from cacheon.chain.recoverable_qualification_dispatcher import (
+    RecoverableQualificationDispatcher,
+)
 from cacheon.chain.standing_cpu_supervisor import (
     CONFIG_SCHEMA,
     StandingCpuSupervisor,
@@ -30,10 +33,10 @@ def _private_file(path: Path, payload: bytes) -> None:
     path.chmod(0o400)
 
 
-def _screen_fixtures():
+def _dispatcher_fixtures():
     path = Path(__file__).with_name("test_mainnet_screen_dispatcher.py")
     specification = importlib.util.spec_from_file_location(
-        "cacheon_standing_screen_fixtures", path
+        "cacheon_standing_dispatcher_fixtures", path
     )
     assert specification is not None and specification.loader is not None
     module = importlib.util.module_from_spec(specification)
@@ -60,10 +63,10 @@ def _incumbent(service: ArenaService) -> EvaluationStackManifest:
 
 
 def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
-    fixtures = _screen_fixtures()
-    screen_root = tmp_path / "screen"
-    screen_root.mkdir(mode=0o700)
-    screen_config_path, _ = fixtures._setup_authority(screen_root)
+    fixtures = _dispatcher_fixtures()
+    dispatcher_root = tmp_path / "dispatcher"
+    dispatcher_root.mkdir(mode=0o700)
+    dispatcher_config_path, _ = fixtures._setup_authority(dispatcher_root)
     private = tmp_path / "standing-private"
     private.mkdir(mode=0o700)
     evidence = private / "qual-evidence"
@@ -92,7 +95,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         "restart_initial_backoff_ms": 10,
         "restart_max_backoff_ms": 40,
         "schema": CONFIG_SCHEMA,
-        "screen_dispatcher_config": str(screen_config_path),
+        "screen_dispatcher_config": str(dispatcher_config_path),
         "settlement_network": "",
         "stall_timeout_ms": 120_000,
         "weights_stage_config": "",
@@ -244,17 +247,16 @@ def test_build_standing_supervisor_omits_weights(tmp_path: Path) -> None:
     assert type(supervisor) is StandingCpuSupervisor
     assert supervisor.weights_once is None
     assert supervisor.settle_once is None
-    assert callable(supervisor.screen_once)
+    assert type(supervisor.qualification_once.__self__) is RecoverableQualificationDispatcher
     assert callable(supervisor.qualification_once)
 
 
-def test_economics_supervisor_can_disable_both_evaluation_stages(tmp_path):
+def test_retired_enable_screen_key_fails_closed(tmp_path):
     path, row = _setup(tmp_path)
-    row.update(enable_screen=False, enable_qualification=False)
-    _rewrite(path, row)
-    supervisor = build_standing_supervisor(load_standing_config(path))
-    assert supervisor.screen_once is None
-    assert supervisor.qualification_once is None
+    for value in (False, True):
+        _rewrite(path, {**row, "enable_screen": value})
+        with pytest.raises(StandingCpuSupervisorError, match="fields are not closed"):
+            load_standing_config(path)
 
 
 def test_enabled_settlement_is_actually_wired_into_the_supervisor(
@@ -468,12 +470,13 @@ def test_weights_stage_chooses_burn_or_real_projection_from_store_state(
     assert result.request_id == "d" * 64
 
 
-def test_disabled_qualification_gates_the_stage_and_screens_still_claim(
+def test_disabled_qualification_gates_the_stage(
     tmp_path: Path,
 ) -> None:
     # Operator gate: while a qualification-side defect is under repair, the
-    # stage is held without touching screens (observed need 2026-08-10: a
-    # deterministic arm-boot failure was consuming every claim window).
+    # stage is held while settlement and weights keep running (observed need
+    # 2026-08-10: a deterministic arm-boot failure was consuming every claim
+    # window).
     standing_path, raw = _setup(tmp_path)
     gated = dict(raw)
     gated["enable_qualification"] = False
@@ -486,9 +489,8 @@ def test_disabled_qualification_gates_the_stage_and_screens_still_claim(
     assert config.enable_qualification is False
     supervisor = build_standing_supervisor(config)
     assert supervisor.qualification_once is None
-    assert callable(supervisor.screen_once)
     status = supervisor.tick()
-    assert status.last_stage in ("screen", "idle")
+    assert status.last_stage == "idle"
 
 
 def test_main_returns_2_on_missing_config(tmp_path: Path) -> None:

@@ -72,6 +72,7 @@ def test_cpu_relay_heartbeat_survives_long_copy_and_stops_on_exit(
     observed = []
 
     def slow_copy(*_args, **_kwargs):
+        remote_observation = (heartbeat_path.parent / "worker-heartbeat.json").read_bytes()
         for _ in range(8):
             updated.clear()
             now[0] += 10
@@ -80,6 +81,7 @@ def test_cpu_relay_heartbeat_survives_long_copy_and_stops_on_exit(
                 transport.load_json(heartbeat_path), registration, 20
             )
             observed.append(heartbeat["time_unix"])
+            assert (heartbeat_path.parent / "worker-heartbeat.json").read_bytes() == remote_observation
         if interrupted:
             raise RuntimeError("copy interrupted")
         return copy_operation == "pull_result"
@@ -98,6 +100,38 @@ def test_cpu_relay_heartbeat_survives_long_copy_and_stops_on_exit(
     now[0] += 100
     assert not updated.wait(0.03)
     assert heartbeat_path.read_bytes() == after_exit
+
+
+def test_failed_worker_polls_do_not_refresh_the_last_worker_heartbeat(tmp_path, monkeypatch):
+    registration = {"worker_epoch": "a" * 32, "ready_receipt_digest": "b" * 64,
+                    "worker_readiness_digest": "c" * 64, "credential_path": "unused"}
+    path = tmp_path / "registration.json"
+    path.write_text(json.dumps(registration))
+    monkeypatch.setattr(transport, "verify_registration", lambda row: row)
+    monkeypatch.setattr(transport, "registration_transport_identity", lambda row: None)
+    monkeypatch.setattr(transport, "registration_credential", lambda *args: None)
+    ticks = iter([True, True, True, False])
+    monkeypatch.setattr(transport, "registration_is_current", lambda *args: next(ticks))
+    now = [1000]
+    monkeypatch.setattr(transport.time, "time", lambda: now[0])
+    heartbeat = transport.heartbeat_payload(registration, "running", "d" * 64, adapter_alive=True)
+    calls = []
+
+    def remote(*args):
+        calls.append(now[0])
+        if len(calls) > 1:
+            raise transport.RemoteWorkerError("SSH unavailable")
+        return heartbeat
+
+    monkeypatch.setattr(transport, "remote_heartbeat", remote)
+    monkeypatch.setattr(transport, "iter_queue", lambda *args, **kwargs: [])
+    monkeypatch.setattr(transport.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + 200))
+    transport.cpu_serve(registration_path=path, current_registration_path=path,
+                        spool_root=tmp_path, site=transport.RemotePodSite("/pod", "/pod/service.py"))
+    assert calls == [1000, 1200, 1400]
+    assert transport.load_json(tmp_path / "state/worker-heartbeat.json") == heartbeat
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [r["time_unix"] for r in events if r["event"] == "dispatcher_retry"] == [1200, 1400]
 
 
 @pytest.mark.parametrize("status,active,ready,archived", [

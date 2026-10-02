@@ -1,7 +1,7 @@
 """Closed B300 qualification composition for registered submitted bundles.
 
-This is a qualification composition root, not a screening implementation or
-plugin loader.  A remote request names only an exact
+This is a qualification composition root, not a plugin loader.  A remote
+request names only an exact
 :class:`ArenaQualificationRequest` and retained ``primary``/``reproduction``
 stage; it cannot select code, paths, profiles, executors, judges, or deadlines.
 
@@ -28,14 +28,12 @@ from cacheon._strict import require_digest
 from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaQualificationRequest,
-    ArenaScreenReceipt,
     ArenaServiceManifest,
-    PromotionDecision,
 )
 from cacheon.eval.b300_arena_provider import (
     B300ArenaProviderError,
     B300DeploymentAuthorities,
-    B300ScreenDeploymentAuthorities,
+    B300DeclaredAuthorities,
     b300_arena_provider_digest,
 )
 from cacheon.eval.marginal_runtime import PreparedCandidateRuntime
@@ -99,7 +97,7 @@ QUALIFICATION_SPEED_EVIDENCE_POLICY = (
 CONSTRUCTION_SCHEMA = "cacheon.eval.b300-qualification-construction.v3"
 POLICY_SCHEMA = "cacheon.eval.b300-qualification-policy.v2"
 REGISTRY_SCHEMA = "cacheon.eval.b300-qualification-profile-registry.v2"
-COHORT_SCHEMA = "cacheon.eval.b300-qualification-cohort.v2"
+COHORT_SCHEMA = "cacheon.eval.b300-qualification-cohort.v3"
 SELECTION_REFERENCE_SCHEMA = (
     "cacheon.eval.b300-qualification-selection-secret-reference.v1"
 )
@@ -197,7 +195,7 @@ class B300RegisteredProfileAuthority:
 
 @dataclass(frozen=True)
 class B300QualificationCohort:
-    """Path-free identity for one exact promoted registered candidate.
+    """Path-free identity for one exact leased registered candidate.
 
     ``ArenaCandidateBinding`` contains a trusted pod-local immutable publication
     root, but its digest deliberately excludes that root.  No root or other
@@ -223,27 +221,14 @@ class B300QualificationCohort:
             raise B300QualificationDeploymentError(
                 "resident v3 qualification requires one submitted bundle"
             )
-        candidate = self.request.candidates[0]
-        receipt = self.request.screen_receipts[0]
-        if (
-            type(candidate) is not ArenaCandidateBinding
-            or type(receipt) is not ArenaScreenReceipt
-            or receipt.candidate_digest != candidate.digest
-            or receipt.screen_attempt != candidate.screen_attempt
-            or receipt.service_digest != self.request.service_digest
-            or receipt.decision is not PromotionDecision.PROMOTE
-        ):
+        if type(self.request.candidates[0]) is not ArenaCandidateBinding:
             raise B300QualificationDeploymentError(
-                "qualification cohort lacks exact promoted coverage"
+                "qualification cohort candidate is not exactly typed"
             )
 
     @property
     def candidate(self) -> ArenaCandidateBinding:
         return self.request.candidates[0]
-
-    @property
-    def receipt(self) -> ArenaScreenReceipt:
-        return self.request.screen_receipts[0]
 
     @property
     def digest(self) -> str:
@@ -255,7 +240,6 @@ class B300QualificationCohort:
                     self.request.qualification_policy_digest
                 ),
                 "screen_lane": self.screen_lane,
-                "screen_receipt_digest": self.receipt.digest,
                 "service_digest": self.request.service_digest,
             },
         )
@@ -861,14 +845,14 @@ class B300QualificationDeployment:
             != b300_arena_provider_digest(self.authorities)
         ):
             raise B300QualificationDeploymentError(
-                "qualification authorities drifted from the screen service manifest"
+                "qualification authorities drifted from the service manifest"
             )
 
 
 def compose_b300_qualification_deployment(
     *,
     manifest: ArenaServiceManifest,
-    screen_authorities: B300ScreenDeploymentAuthorities,
+    declared: B300DeclaredAuthorities,
     construction: B300QualificationConstructionAuthority,
     candidate_executor: OCIEngineExecutor,
     resident_baseline_executor: OCIEngineExecutor,
@@ -876,19 +860,19 @@ def compose_b300_qualification_deployment(
 ) -> B300QualificationDeployment:
     """Compose one exact full worker authority from validator-owned inputs.
 
-    The screen worker must have declared the *same* qualification capability in
-    advance.  A screen-only service whose declaration predicted overlapping
-    executors, another profile registry, or another orientation is rejected; it
-    cannot be upgraded in place by an operator flag.
+    The commissioned manifest must have declared the *same* qualification
+    capability in advance.  A declaration that predicted overlapping executors,
+    another profile registry, or another orientation is rejected; it cannot be
+    upgraded in place by an operator flag.
     """
 
     if type(manifest) is not ArenaServiceManifest:
         raise B300QualificationDeploymentError(
             "qualification service manifest is not exact"
         )
-    if type(screen_authorities) is not B300ScreenDeploymentAuthorities:
+    if type(declared) is not B300DeclaredAuthorities:
         raise B300QualificationDeploymentError(
-            "screen deployment authorities are not exact"
+            "declared deployment authorities are not exact"
         )
     if type(construction) is not B300QualificationConstructionAuthority:
         raise B300QualificationDeploymentError(
@@ -900,9 +884,8 @@ def compose_b300_qualification_deployment(
         )
     _executor_pair(candidate_executor, resident_baseline_executor)
     if (
-        manifest.runtime != screen_authorities.runtime_identity
-        or manifest.provider_digest
-        != b300_arena_provider_digest(screen_authorities)
+        manifest.runtime != declared.runtime_identity
+        or manifest.provider_digest != b300_arena_provider_digest(declared)
         or construction.incumbent_stack.runtime_digest
         != manifest.runtime.runtime_digest
         or construction.incumbent_stack.base_engine_digest
@@ -910,19 +893,17 @@ def compose_b300_qualification_deployment(
         or construction.incumbent_stack.arena_digest != manifest.digest
         or manifest.qualification_policy_digest
         != construction.qualification_policy_digest
-        or screen_authorities.qualification.qualification_policy_digest
+        or declared.qualification.qualification_policy_digest
         != construction.qualification_policy_digest
-        or screen_authorities.qualification.qualification_builder_digest
+        or declared.qualification.qualification_builder_digest
         != construction.qualification_builder_digest
     ):
         raise B300QualificationDeploymentError(
-            "screen manifest did not predeclare this qualification construction"
+            "manifest did not predeclare this qualification construction"
         )
     try:
         authorities = B300DeploymentAuthorities(
-            runtime_identity=screen_authorities.runtime_identity,
-            screen_handlers=screen_authorities.screen_handlers,
-            resident_screen_factory=screen_authorities.resident_screen_factory,
+            runtime_identity=declared.runtime_identity,
             qualification_policy_digest=construction.qualification_policy_digest,
             qualification_builder_digest=(
                 construction.qualification_builder_digest
@@ -943,19 +924,19 @@ def compose_b300_qualification_deployment(
                 construction,
                 screen_lane=screen_lane,
             ),
-            qualification_lane_pair=screen_authorities.qualification.lane_pair,
+            qualification_lane_pair=declared.qualification.lane_pair,
             qualification_stage=screen_lane,
         )
     except B300ArenaProviderError as exc:
         raise B300QualificationDeploymentError(
             f"qualification executor orientation differs from declaration: {exc}"
         ) from exc
-    # This exact equality is the key screen->qualification handoff.  The
+    # This exact equality is the key declaration->qualification handoff.  The
     # provider-level declaration must be stable across the primary/reproduction
     # physical role swap; otherwise its manifest cannot validate both attempts.
-    if authorities.qualification != screen_authorities.qualification:
+    if authorities.qualification != declared.qualification:
         raise B300QualificationDeploymentError(
-            "full qualification executors differ from the screen declaration"
+            "full qualification executors differ from the sealed declaration"
         )
     return B300QualificationDeployment(
         manifest,

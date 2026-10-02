@@ -22,8 +22,7 @@ does not guarantee that the complete qualification decision can be regraded.
 
 - chain scope, finalized cursor, and reservations;
 - immutable proposal publication and copy disposition;
-- arena screen attempts and receipts;
-- qualification authority, outcomes, and reproduction state;
+- qualification authority and outcomes;
 - settlement candidates, leases, events, and evaluation stacks;
 - standing and discovery reward claims; and
 - weight projections and publication journal records.
@@ -69,9 +68,9 @@ chain, not a claim that every row is embedded in the attempt or SQLite:
 |---|---|
 | Intake | Finalized block/event order, payload, committed hash, reservation, immutable publication |
 | Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm/cohort plans |
-| Arena | Service manifest, capacity decision, ordered screen-stage evidence and receipt |
+| Arena | Service manifest, capacity decision, candidate binding (reservation, publication, qualification attempt) |
 | Launch | Runtime preflight, model mount, native build/publication, hardware/resource/seccomp identity |
-| Execution | Versioned `ResidentSpeedWitness` rows (v10/v11 B/C/B′), physical-lane roles, and the richer session/device observations validated against the frozen plan. Current source requires complete per-rank execution evidence before speed grading. Witnesses below version 8 are sealed MiniMax-M3 history and are refused |
+| Execution | Versioned `ResidentSpeedWitness` paired-replay turn records (policies 16/17), physical-lane roles, and the richer session/device observations validated against the frozen plan. Current source requires complete per-rank execution evidence before speed grading. Witnesses below version 16 are batch-cell or MiniMax-M3 history and are refused |
 | Slot audit | Bounded raw eager/untimed candidate facts, exact slot × rank/process coverage, canonical decimal receipt identity, and trusted-host grade when the plan registers an audit requirement |
 | Graph | Member, variant, shape, capture, and replay observations |
 | Selection | Pre-execution commitment, post-commit entropy, secret reveal, selected prompts, sealed trajectory digest |
@@ -86,6 +85,12 @@ chain, not a claim that every row is embedded in the attempt or SQLite:
 Not every artifact is public. Selection secrets and hidden tasks remain in private
 validator storage; serializable authority records contain references and commitments, not
 the secret bytes.
+
+Pristine-reference requests can carry text or canonical input token IDs. The `ORQ3`
+frame carries the IDs directly, so the reference engine scores the same chat-template
+input used by a replay without decoding and tokenizing it again. Its response must
+match the input token count and digest. Existing `ORQ1`/`ORQ2` text frames retain their
+original encoding, and all three rollout roles share each prompt's output length.
 
 ```mermaid
 flowchart LR
@@ -111,9 +116,10 @@ desired verdict:
 1. Reopen the chain-scoped reservation and immutable publication.
 2. Reopen the exact target catalog, stack/tree, launch, model, and native identities.
 3. Authenticate each evidence artifact by domain, schema, size, and digest.
-4. Validate the exact schedule required by the witness version (including
-   current v10/v11 B/C/B′), physical-lane roles, counts, and
-   intervals, then regrade speed under frozen calibration.
+4. Validate the exact window schedule and stopping point required by the
+   witness version, both physical-lane orientations (or the single orientation
+   a sealed futility FAIL retains), turn records and host timing, then regrade
+   speed under frozen calibration.
 5. Regrade graph observations against the frozen requirement.
 6. When the registered plan requires slot audit, reopen the bounded raw audit
    facts, verify exact slot × rank/process coverage, and reproduce the
@@ -121,8 +127,9 @@ desired verdict:
 7. Reconstruct selection and verify post-commit entropy and trajectory binding.
 8. Verify T is candidate-free and covers the selected prompts/tasks.
 9. Regrade quality and speed under the exact frozen calibration.
-10. Reconstruct the qualification decision and reproduction identity,
-    including the required physical-lane swap across a settlement pair.
+10. Reconstruct the qualification decision and contribution identity; a
+    historical pair also requires its reproduction identity and lane swap
+    across the two attempts.
 11. Reopen settlement and reward claims before projecting weights.
 
 Missing, changed, ambiguous, or context-mismatched evidence prevents a valid full regrade;
@@ -131,8 +138,8 @@ its recognized authority failures to `NO_DECISION`; a later audit must describe 
 external regrade context as an unavailable proof, not fabricate a new verdict.
 
 Settlement recovery is narrower. It reopens and authenticates the retained attempt bytes,
-checks the stored PASS disposition and seven digest-distinctness fields, and binds the
-settlement transition. It does not call the full causal grader or recover graph/calibration
+checks the stored audited PASS disposition (and, for a historical pair, the seven
+digest-distinctness fields), and binds the settlement transition. It does not call the full causal grader or recover graph/calibration
 references from the attempt. “Reopened for settlement” and “fully regraded” are therefore
 different evidence claims.
 
@@ -140,7 +147,7 @@ different evidence claims.
 
 [`cacheon/audit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit.py)
 emits sampled comparison facts for supported live dispatch seams. Production
-qualification keeps those facts out of charged B/C/[B′] roles and obtains them from
+qualification keeps those facts out of the timed incumbent and candidate roles and obtains them from
 a separate eager, untimed candidate role. [`cacheon/audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 grades the bounded facts without importing Torch into `PASS`, `FAIL`, or `NO_DECISION`.
 `PASS` requires the exact registered slot × TP-rank/process coverage. Malformed,
@@ -160,8 +167,9 @@ missing or incomplete witness as either a PASS or an attributable candidate FAIL
 ### Reopening a disputed speed pass
 
 Start with the settlement candidate and its retained qualification attempt.
-Regrade the exact B/C/B′ schedule, charged spans, drift and calibration, then
-verify audit, selection, candidate-free T and the live target transition.
+Regrade the exact paired-window schedule, turn records, stopping point and
+calibration, then verify audit, selection, candidate-free T and the live target
+transition.
 New bundles require one complete audited PASS. Historical paired qualifications
 retain their original identities and conservative settlement rule. Dashboard
 rounding and logs cannot replace the artifacts required by the retained schema.
@@ -182,9 +190,8 @@ a generic process exit into an attributable candidate verdict.
 | Artifact exists but belongs to another arena/stack/attempt context | Context mismatch; it cannot repair this authority |
 | Required attempt/witness or referenced graph/quality evidence is incomplete | No attributable regraded verdict; hold or `NO_DECISION` |
 | Regraded result differs from stored verdict | Preserve both products, stop downstream transition, investigate policy/code/state integrity |
-| Two passes reuse authority or evidence | Reproduction requirement is unsatisfied |
+| A historical pair reuses authority or evidence | The pair is not settleable |
 | Active claim's evidence was deleted | Hold reward projection; do not treat deletion as retirement |
-| Release artifact fails reopen while crown evidence survives | Block that release/publication; historical crown authority is a separate state machine |
 
 ## Retention and recovery
 
@@ -203,7 +210,7 @@ credentials, or unredacted logs. The operator still owns:
 - snapshot scheduling, private-bucket access, encryption, versioning/object lock,
   lifecycle, and capacity;
 - restore tests that preserve file modes, ownership, single-link shape, and absolute root;
-- capacity alerts and a policy for non-authoritative screen/debug logs;
+- capacity alerts and a policy for non-authoritative debug logs;
 - encryption and access control for private prompts, hidden tasks, model identity, and
   operational metadata; and
 - deletion rules that prevent an active reward claim from outliving its reopenable
@@ -217,8 +224,8 @@ upload is not sufficient; every scheduled snapshot should pass
 Retention clocks are type-specific. Settlement lease expiry can recycle a lease, and a
 discovery claim may have a policy lifetime. Eligible unresolved intake rows expire
 automatically against finalized arrival/progress-block authority after the configured
-SLA; wall-clock age is not the authority. Active `fetching`, `screening`, and
-`qualifying` work is excluded, and the dedicated schema-3 migration hold requires its
+SLA; wall-clock age is not the authority. Active `fetching` and `qualifying` work
+is excluded, and the dedicated schema-3 migration hold requires its
 explicit archive path. An operator may also call the typed `expire` transition after the
 configured minimum age or release a held reservation with an audited reason. None of
 these row-level transitions is a typed retirement of an entire arena. Backup or cleanup
