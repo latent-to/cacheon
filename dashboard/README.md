@@ -241,6 +241,30 @@ or unknown; missing retained measurements stay null.
 
 ## Multiple arenas
 
+Submission links include server-rendered Open Graph and Twitter metadata, with a
+1200×630 PNG at `/api/submissions/<id>/preview.png?arena=<key>`. Crawlers do not
+need JavaScript. Cards show the model, target, evaluation status, retained gain,
+submission performance, stock SGLang performance, and a seven-character SGLang
+Git commit. The dashboard extra includes Pillow; the bundled Ubuntu font keeps
+rendering independent of host fonts.
+
+Only a retained qualification against an explicitly empty incumbent stack is a
+stock comparison. The card uses the lower accepted qualification when a historical
+PASS pair exists, and reads performance from that same attempt. Batch throughput
+uses the fastest B/B-prime stock observation and the conservative candidate rate;
+replay cards label mean decode throughput separately from the credited score.
+Incumbent comparisons never become stock gains: unavailable stock comparisons,
+measurements, and commits are shown as unavailable. Pending and failed submissions
+keep their actual status. HTML is not cached; PNGs are cached for 60 seconds so
+new results can replace pending cards (social platforms may cache independently).
+
+Each source may optionally set `sglang_commits`, a JSON object mapping full
+64-character runtime digests to full 40-character upstream SGLang Git commits.
+Populate it from the commissioned image's build metadata, retaining entries for
+historical runtimes. The card resolves the qualification's runtime, never the
+current worker's version or the dashboard's checkout. Missing entries display
+`SGLang commit unavailable`; runtime digests are not Git revisions.
+
 Set `CACHEON_DASH_SOURCES` to an absolute JSON config path. It has `default`
 (the selected source key) and a `sources` array. Every source explicitly names:
 

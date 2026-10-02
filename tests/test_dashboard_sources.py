@@ -19,9 +19,10 @@ from dashboard.disclosure import bundle_visibility
 @pytest.mark.parametrize("key", ["qwen3.6", "glm-5.3"])
 def test_competition_paths_serve_dashboard_without_shadowing_routes(monkeypatch, planes, key):
     monkeypatch.setattr(dashboard.app.state, "dashboard_sources", planes[1])
+    monkeypatch.setattr(dashboard.app.state, "dashboard_default", "glm")
     client = TestClient(dashboard.app)
     root = client.get("/")
-    response = client.get(f"/{key}?submission=example#winners")
+    response = client.get(f"/{key}#winners")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert response.content == root.content

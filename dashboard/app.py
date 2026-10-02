@@ -18,7 +18,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -28,6 +28,7 @@ from dashboard.forensics import (
     submission_qualifications,
 )
 from dashboard.enrichment import Enrichment
+from dashboard.social import install_social, submission_page
 from dashboard.sources import selected, value, install_sources, process_matches, scope_reservations, worker_heartbeats
 from dashboard.disclosure import disclose_bundle, install_disclosure_routes
 from dashboard.competition import competition_label, submission_baseline, target_summary
@@ -324,9 +325,8 @@ app = FastAPI(
 
 
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
-
+def index(request: Request):
+    return submission_page(request, globals())
 
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon() -> FileResponse:
@@ -925,8 +925,8 @@ def _sqlite_error(_req: Any, exc: sqlite3.Error) -> JSONResponse:
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+install_social(app, globals())
 install_sources(app, globals())
-
 if ENRICH:
     ENRICHER.start()
 

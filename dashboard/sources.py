@@ -9,7 +9,7 @@ import re
 import sqlite3
 from urllib.parse import urlencode
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 selected = ContextVar("dashboard_source", default=None)
@@ -94,7 +94,7 @@ def load_sources(path, network, netuid, enrich):
         raise ValueError("enrichment cache cannot be an intake database")
     result, databases, caches, private_roots = {}, set(), set(), []
     for row in raw["sources"]:
-        if set(row) != {"key", "label", "model", "paths", "cache", "evidence_roots",
+        if set(row) - {"sglang_commits"} != {"key", "label", "model", "paths", "cache", "evidence_roots",
                         "cutoff_reservation", "processes", "weights_included", "checkpoint"}:
             raise ValueError("dashboard source fields do not match")
         key = row["key"]
@@ -115,6 +115,13 @@ def load_sources(path, network, netuid, enrich):
                 or not any(n.startswith("/") for n in needles) for needles in row["processes"].values()):
             raise ValueError("process checks require command arguments and an absolute source path")
         values = {_PATHS[name]: p for name, p in paths.items()}
+        commits = row.get("sglang_commits", {})
+        if not isinstance(commits, dict) or any(
+                not re.fullmatch(r"[0-9a-f]{64}", runtime)
+                or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit)
+                for runtime, commit in commits.items()):
+            raise ValueError("sglang_commits maps runtime digests to full SGLang Git commits")
+        values["SGLANG_COMMITS"] = commits
         values.update(QUAL_EVIDENCE_EXTRA=extras, CUTOFF_RESERVATION=row["cutoff_reservation"],
                       ENRICHER=Enrichment(cache, network, netuid))
         result[key] = DashboardSource(key, row["label"], row["model"], values,
@@ -289,12 +296,12 @@ def install_sources(app, api):
     app.state.dashboard_weight_producer_pidfile = settings.get("weight_producer_pidfile")
 
     @app.get("/{arena}", include_in_schema=False)
-    def arena_page(arena: str):
+    def arena_page(arena: str, request: Request):
         """Serve competition links using the slugs advertised by the API."""
         if not any(source.public()["slug"] == arena
                    for source in app.state.dashboard_sources.values()):
             raise HTTPException(404, "Unknown arena")
-        return api["index"]()
+        return api["index"](request)
 
     @app.get("/api/arenas")
     def arenas():
@@ -331,9 +338,11 @@ def install_sources(app, api):
     async def source_request(request, call_next):
         sources = app.state.dashboard_sources
         global_route = request.url.path in {"/api/weights", "/api/arenas", "/api/arena-events", "/api/bundle-encryption-key"}
-        if not request.url.path.startswith("/api/") or global_route:
+        page_source = next((s for s in sources.values() if request.url.path == "/" + s.public()["slug"]), None)
+        page = request.url.path == "/" or page_source is not None
+        if not (request.url.path.startswith("/api/") or page) or global_route:
             return await call_next(request)
-        key = request.query_params.get("arena", app.state.dashboard_default)
+        key = page_source.key if page_source else request.query_params.get("arena", app.state.dashboard_default)
         key = next((source.key for source in sources.values() if source.public()["slug"] == key), key)
         if key is None and not sources:
             return await call_next(request)
