@@ -16,8 +16,8 @@ still owns every chain write.
 The intake store is an exclusive single-writer authority. The stage holds it
 only to build the projection -- the metagraph read and the HTTP push happen
 outside that window -- so this service coexists with a live intake controller.
-A lock collision means the controller owns the database for this tick and is a
-skipped pass, not a failure.
+A lock collision uses the last durable reward checkpoint to recompute at the
+live head. Before the first checkpoint, it is a skipped pass, not a failure.
 
 Exactly one offer producer may run against a database. When this service is
 armed, the standing supervisor's ``enable_weights`` must be false, otherwise two
@@ -180,6 +180,10 @@ def build_offer_publisher(
 
     def open_store() -> Any:
         try:
+            if not screen_config.intake_db.is_file():
+                from cacheon.chain.reward_checkpoint import RewardSourceUnavailable
+
+                raise RewardSourceUnavailable("reward intake database is unavailable")
             return resolved(
                 screen_config.intake_db,
                 screen_config.policy,

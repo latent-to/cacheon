@@ -415,6 +415,13 @@ never signs; the serve-weights lane owns readback and the follow-weights
 signer decides what reaches the chain. Naming `weights_stage_config` while
 `enable_weights` is false is refused, as is the reverse.
 
+The producer keeps an atomic `.rewards.json` checkpoint beside this config
+(replace the config filename's final suffix). The directory must be writable
+by the service user. A missing or busy intake database uses the saved reward
+inputs and the live block to recompute decay; corrupt evidence still fails the
+live pass. The checkpoint and follower's 12-hour last-seen/burn policy are
+described in [Shared current weights](settlement-and-weights.md#shared-current-weights-endpoint).
+
 ### Static allocation configuration
 
 Use weights config schema `cacheon-standing-weights-config-v2` with the existing
@@ -457,8 +464,9 @@ projection is preserved. After activation, all sources must be present, share
 the chain scope, and have consistent finalized cursors no later than the
 metagraph. Intake may stop advancing: retained rewards are still projected at
 the current finalized block, including their publication-based decay. Missing
-or corrupt evidence prevents an offer. A busy source
-uses the service's existing skipped-pass behavior.
+or corrupt evidence prevents a live projection. A busy or missing source uses
+the producer's last complete reward checkpoint when one exists; before the first
+checkpoint a busy source skips the pass.
 
 To change percentages or waiting-bonus strength, atomically replace the file with the complete history
 plus a new row whose `from_block` is later than both current intake and projection

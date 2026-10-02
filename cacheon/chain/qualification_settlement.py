@@ -355,15 +355,29 @@ def confirm_reward_decay(store: FinalizedIntakeStore, projection, record) -> Non
 
 def reconcile_follower_reward_decay(store: FinalizedIntakeStore, journal_path, *, validator_hotkey: str) -> None:
     """Consume the existing signer's confirmed journal, including across producer restarts."""
+    row = store._db.execute(
+        "SELECT value FROM metadata WHERE key='reward_decay_confirmation_cursor'"
+    ).fetchone()
+    cursor = json.loads(row["value"]) if row else {"path": str(journal_path), "sequence": 0}
+    maximum, confirmations = read_reward_confirmations(
+        journal_path, cursor=cursor, scope=store.scope, validator_hotkey=validator_hotkey)
+    with store._transaction():
+        for projection, record in confirmations:
+            confirm_reward_decay(store, projection, record)
+        store._db.execute(
+            "INSERT INTO metadata(key,value) VALUES('reward_decay_confirmation_cursor',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (json.dumps({"path": str(journal_path), "sequence": maximum}, sort_keys=True),),
+        )
+
+
+def read_reward_confirmations(journal_path, *, cursor, scope, validator_hotkey):
+    """Reopen confirmed signer receipts for intake or its durable reward checkpoint."""
     import sqlite3
     from cacheon.chain.intake import IntakeError
     from cacheon.chain.weight_share import CurrentWeightOffer
     from cacheon.chain.weights import WeightPublicationRecord
 
-    row = store._db.execute(
-        "SELECT value FROM metadata WHERE key='reward_decay_confirmation_cursor'"
-    ).fetchone()
-    cursor = json.loads(row["value"]) if row else {"path": str(journal_path), "sequence": 0}
     if cursor["path"] != str(journal_path):
         raise IntakeError("reward confirmation journal changed")
     with sqlite3.connect(Path(journal_path).as_uri() + '?mode=ro', uri=True) as journal:
@@ -377,29 +391,18 @@ def reconcile_follower_reward_decay(store: FinalizedIntakeStore, journal_path, *
             "SELECT * FROM followed_weight_publications WHERE sequence>? "
             "AND status='confirmed' ORDER BY sequence", (cursor["sequence"],),
         ).fetchall()
-    with store._transaction():
-        starts = {row["claim_digest"]: row["start_block"] for row in reward_decay_adjustments(store)}
-        pending = {digest for digest, start in starts.items() if start is None}
-        evidence = {row.retained_evidence_digest for row in passed_reward_claims(store)
-                    if row.digest in pending} if pending else set()
-        for row in rows:
-            offer = CurrentWeightOffer.from_dict(json.loads(row["offer_json"]))
-            record = WeightPublicationRecord.from_dict(json.loads(row["record_json"]))
-            projection = offer.projection
-            if (offer.digest != row["offer_digest"] or record.digest != row["record_digest"]
-                    or record.status != row["status"]
-                    or projection.digest != row["projection_digest"]
-                    or projection.validator_hotkey != validator_hotkey
-                    or projection.chain_scope_digest != store.scope.digest
-                    or projection.netuid != store.scope.netuid):
-                raise IntakeError("reward confirmation differs from its signer or chain authority")
-            if evidence.intersection(projection.evidence_digests):
-                confirm_reward_decay(store, projection, record)
-        store._db.execute(
-            "INSERT INTO metadata(key,value) VALUES('reward_decay_confirmation_cursor',?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (json.dumps({"path": str(journal_path), "sequence": maximum}, sort_keys=True),),
-        )
+    confirmations = []
+    for row in rows:
+        offer = CurrentWeightOffer.from_dict(json.loads(row["offer_json"]))
+        record = WeightPublicationRecord.from_dict(json.loads(row["record_json"]))
+        projection = offer.projection
+        if (offer.digest != row["offer_digest"] or record.digest != row["record_digest"]
+                or record.status != row["status"] or projection.digest != row["projection_digest"]
+                or projection.validator_hotkey != validator_hotkey
+                or projection.chain_scope_digest != scope.digest or projection.netuid != scope.netuid):
+            raise IntakeError("reward confirmation differs from its signer or chain authority")
+        confirmations.append((projection, record))
+    return maximum, confirmations
 
 
 def _reward_projection_inputs(store, *, include_uncrowned: bool = False, reservation_ids=None) -> dict:
@@ -461,6 +464,7 @@ def build_weight_projection(
     policy,
     context,
     netuid: int,
+    capture=None,
 ) -> WeightProjection:
     """Pool all retained earning claims under each crown's sealed catalog."""
 
@@ -514,7 +518,7 @@ def build_weight_projection(
         policy_digest = canonical_digest("cacheon.operator.reward-decay-policy.v1", {
             "base_policy": policy_digest, "adjustment_digest": adjustment_digest,
         })
-    return WeightProjection(
+    result = WeightProjection(
         context.chain_scope_digest,
         netuid,
         context.validator_hotkey,
@@ -531,3 +535,6 @@ def build_weight_projection(
             (row.hotkey, row.weight_ppm) for row in projection.weights
         ),
     )
+    if capture is not None:
+        capture(result, inputs)
+    return result

@@ -692,13 +692,16 @@ Push and serve use one `X-Cacheon-*`/`cacheon.*` transport format for headers,
 schemas, HMAC domains, offer bytes, and acknowledgements.
 
 `follow-weights` rebinds the offer to the follower hotkey and publishes through
-`reconcile_weight_publication` / commit-reveal. A fresh follower accepts an
-older projection only while its age is at most `--refresh-blocks` and every
-authority-relevant UID is unchanged. It retains publication chronology in a
-signer-only journal, so a V2 follower does not need the evaluator's settlement
-or composition database. Use one `--journal-db` per signer. Debt-lane offers
-carry the full `DebtWeightPublicationBinding` so follower `weights_ppm` match
-the economic projection.
+`reconcile_weight_publication` / commit-reveal. A source projection must be no
+more than `--refresh-blocks` old. The journal saves each new authenticated
+source with its first observation time. During gateway failure or stale offers,
+the follower republishes the saved amounts for up to 12 hours, then burns to
+the chain-resolved subnet owner. With no saved source it burns immediately.
+Repeated offers and fallback publications do not renew the clock. Hotkeys bind
+to current UIDs; an absent saved recipient selects burn. Fresh source offers
+restore normal following. Pending transactions and holds retain their existing
+journal semantics. Use one persistent `--journal-db` per signer. See
+[the fallback contract](../validator-guide/settlement-and-weights.md#shared-current-weights-endpoint).
 
 `set-weights` and `follow-weights` accept a repeatable `--fallback-endpoint`
 (`wss://` URL) that the SDK client fails over to when `--network` is

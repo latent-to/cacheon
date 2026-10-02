@@ -853,15 +853,9 @@ def _cmd_follow_weights_once(
     from cacheon.chain.intake import (
         FinalizedIntakeStore,
         IntakeScope,
-        SQLiteFollowerWeightPublicationJournal,
     )
-    from cacheon.chain.weight_share import (
-        DEFAULT_MAX_SKEW_SECONDS,
-        WeightShareError,
-        fetch_current_weights,
-        publish_followed_weights,
-        rebind_offer_signer,
-    )
+    from cacheon.chain.weight_share import DEFAULT_MAX_SKEW_SECONDS
+    from cacheon.chain.follower_fallback import follow_with_fallback
 
     skew = int(getattr(args, "max_skew_seconds", DEFAULT_MAX_SKEW_SECONDS))
     if not 1 <= skew <= 600:
@@ -878,33 +872,15 @@ def _cmd_follow_weights_once(
             f"pinning subnet-owner hotkey {expected_authority} "
             f"(uid {owner.uid}, block={owner.block})"
         )
-    offer = fetch_current_weights(
-        args.url,
-        signer=wallet.hotkey,
-        netuid=args.netuid,
-        max_skew_seconds=skew,
-        expected_authority=expected_authority,
-    )
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
-    if offer.projection.chain_scope_digest != scope.digest:
-        raise WeightShareError(
-            "fetched projection chain scope differs from the connected network"
-        )
-    if offer.projection.netuid != args.netuid:
-        raise WeightShareError("fetched projection netuid mismatch")
-    rebound = rebind_offer_signer(offer, wallet.hotkey.ss58_address)
     with FinalizedIntakeStore(args.journal_db, scope=scope) as store:
-        journal = SQLiteFollowerWeightPublicationJournal(store, rebound)
-        result = publish_followed_weights(
-            subtensor=subtensor,
-            signer_wallet=wallet,
-            offer=offer,
-            journal=journal,
-            refresh_blocks=args.refresh_blocks,
-            dry_run=args.dry_run,
+        result, mode = follow_with_fallback(
+            store=store, subtensor=subtensor, wallet=wallet, url=args.url,
+            expected_authority=expected_authority, max_skew_seconds=skew,
+            refresh_blocks=args.refresh_blocks, dry_run=args.dry_run,
         )
     print(
-        f"follow-weights lane={rebound.lane} projection={result.projection_digest} "
+        f"follow-weights mode={mode} projection={result.projection_digest} "
         f"status={result.status} chain_matches={result.chain_matches} "
         f"submitted={result.submitted} refresh_due={result.refresh_due}"
     )
