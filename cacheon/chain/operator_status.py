@@ -4,7 +4,7 @@ The long-running validator owns the writable :class:`FinalizedIntakeStore` lock.
 Support and incident-response commands therefore inspect the live WAL database through
 an explicit read transaction instead of pretending to be another controller.  The
 result contains finalized arrival authority, actual selectable queue position, typed
-screen and qualification references, and only path-free evidence availability.
+qualification references, and only path-free evidence availability.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ _SAFE_REASON = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
 _INTAKE_QUEUED = frozenset({"reserved", "transport_retry"})
 _INTAKE_ACTIVE = frozenset({"fetching"})
 _ARENA_QUEUED = frozenset({"published", "reproduction_pending"})
-_ARENA_ACTIVE = frozenset({"screening", "promoted", "qualifying"})
+_ARENA_ACTIVE = frozenset({"qualifying"})
 
 
 def _readonly_connection(path: str | Path) -> sqlite3.Connection:
@@ -201,20 +201,11 @@ def _queue_position(
 ) -> dict[str, object] | None:
     status = row["status"]
     if active_lease is not None:
-        stage = active_lease["stage"]
-        if stage == "screen":
-            predicate = "r.status IN ('published','reproduction_pending')"
-            ordering = "reproduction_priority_then_finalized_arrival"
-            phase = "arena_screen"
-        elif stage == "qualification":
-            predicate = "r.status='promoted'"
-            ordering = "reproduction_and_retry_group_qualification_scheduler"
-            phase = "arena_qualification"
-        else:
+        if active_lease["stage"] != "qualification":
             raise OperatorStatusError("active evaluation lease stage is unsupported")
         depth = db.execute(
             "SELECT COUNT(*) AS n FROM reservations AS r WHERE "
-            + predicate
+            "r.status IN ('published','reproduction_pending')"
             + _unleased_clause("r", lease_schema)
         ).fetchone()["n"]
         prior = active_lease["prior_status"]
@@ -224,12 +215,12 @@ def _queue_position(
             else "primary"
         )
         return {
-            "phase": phase,
+            "phase": "arena_qualification",
             "state": "leased",
             "lane": lane,
             "position": None,
             "depth": depth,
-            "ordering_authority": ordering,
+            "ordering_authority": "reproduction_and_retry_group_qualification_scheduler",
         }
     if status in _INTAKE_QUEUED:
         ordered = _ordered_ids(
@@ -273,7 +264,7 @@ def _queue_position(
         ordered = _ordered_ids(db, sql)
         lane = "reproduction" if status == "reproduction_pending" else "primary"
         return {
-            "phase": "arena_screen",
+            "phase": "arena_qualification",
             "state": "queued",
             "lane": lane,
             "position": ordered.index(row["reservation_id"]) + 1,
@@ -281,31 +272,18 @@ def _queue_position(
             "ordering_authority": "reproduction_priority_then_finalized_arrival",
         }
     if status in _ARENA_ACTIVE:
-        if status == "promoted":
-            depth = db.execute(
-                "SELECT COUNT(*) AS n FROM reservations AS r WHERE r.status='promoted'"
-                + _unleased_clause("r", lease_schema)
-            ).fetchone()["n"]
-            phase = "arena_qualification"
-            state = "awaiting_qualification"
-            ordering = "reproduction_and_retry_group_qualification_scheduler"
-        else:
-            depth = db.execute(
-                "SELECT COUNT(*) AS n FROM reservations AS r WHERE r.status IN "
-                "('published','reproduction_pending')"
-                + _unleased_clause("r", lease_schema)
-            ).fetchone()["n"]
-            phase = "arena_screen" if status == "screening" else "arena_qualification"
-            state = "active"
-            ordering = "reproduction_priority_then_finalized_arrival"
-        lane = row["screen_lane"] or "primary"
+        depth = db.execute(
+            "SELECT COUNT(*) AS n FROM reservations AS r WHERE r.status IN "
+            "('published','reproduction_pending')"
+            + _unleased_clause("r", lease_schema)
+        ).fetchone()["n"]
         return {
-            "phase": phase,
-            "state": state,
-            "lane": lane,
+            "phase": "arena_qualification",
+            "state": "active",
+            "lane": row["screen_lane"] or "primary",
             "position": None,
             "depth": depth,
-            "ordering_authority": ordering,
+            "ordering_authority": "reproduction_priority_then_finalized_arrival",
         }
     return None
 
@@ -322,62 +300,6 @@ def _evidence_ref(encoded: object, *, field: str) -> dict[str, object] | None:
     except (EvidenceStoreError, TypeError, ValueError) as exc:
         raise OperatorStatusError(f"{field} evidence reference is corrupt: {exc}") from None
     return reference.to_dict()
-
-
-def _screen_dispositions(
-    db: sqlite3.Connection, reservation_id: str
-) -> list[dict[str, object]]:
-    from cacheon.arena_service import (
-        ArenaScreenReceipt,
-        ArenaServiceError,
-        PromotionDecision,
-        ScreenStageResult,
-    )
-
-    result: list[dict[str, object]] = []
-    rows = db.execute(
-        "SELECT attempt_index,service_digest,candidate_digest,receipt_digest,"
-        "receipt_json,decision,stage_count,lane "
-        "FROM arena_screen_dispositions "
-        "WHERE reservation_id=? ORDER BY attempt_index",
-        (reservation_id,),
-    )
-    for row in rows:
-        try:
-            raw = json.loads(row["receipt_json"])
-            stages = tuple(
-                ScreenStageResult.from_dict(item) for item in raw["results"]
-            )
-            receipt = ArenaScreenReceipt(
-                raw["service_digest"],
-                raw["candidate_digest"],
-                raw["screen_attempt"],
-                stages,
-                PromotionDecision(raw["decision"]),
-            )
-        except (KeyError, TypeError, ValueError, ArenaServiceError) as exc:
-            raise OperatorStatusError(f"screen receipt is corrupt: {exc}") from None
-        if (
-            receipt.digest != row["receipt_digest"]
-            or receipt.service_digest != row["service_digest"]
-            or receipt.candidate_digest != row["candidate_digest"]
-            or receipt.decision.value != row["decision"]
-            or len(receipt.results) != row["stage_count"]
-            or receipt.screen_attempt != row["attempt_index"] + 1
-        ):
-            raise OperatorStatusError("screen receipt differs from its retained index")
-        result.append(
-            {
-                "attempt_index": row["attempt_index"],
-                "lane": row["lane"],
-                "decision": receipt.decision.value,
-                "service_digest": receipt.service_digest,
-                "candidate_digest": receipt.candidate_digest,
-                "receipt_digest": receipt.digest,
-                "stages": [stage.to_dict() for stage in receipt.results],
-            }
-        )
-    return result
 
 
 def _qualification_dispositions(
@@ -520,7 +442,6 @@ def _audit_events(
                     "published",
                     "copies",
                     "rejected",
-                    "screens",
                     "decisions",
                     "settlements",
                 ):
@@ -544,18 +465,13 @@ def _audit_events(
 
 def _evidence_limitations(
     row: sqlite3.Row,
-    screens: list[dict[str, object]],
     qualifications: list[dict[str, object]],
     settlements: list[dict[str, object]],
 ) -> list[str]:
     limitations: list[str] = []
     if any(item["diagnostic_reference"] == "failure_digest_only" for item in qualifications):
         limitations.append("qualification_failure_retained_by_digest_only")
-    if (
-        row["status"] in {"failed", "held", "no_decision"}
-        and not screens
-        and not qualifications
-    ):
+    if row["status"] in {"failed", "held", "no_decision"} and not qualifications:
         limitations.append("no_typed_failure_artifact_reference")
     if any(
         not item["evidence"]["available_on_this_host"]  # type: ignore[index]
@@ -628,11 +544,10 @@ def reservation_status(
         active_lease = _active_evaluation_lease(
             db, row, lease_schema=lease_schema
         )
-        screens = _screen_dispositions(db, row["reservation_id"])
         qualifications = _qualification_dispositions(db, row["reservation_id"])
         settlements = _settlement_qualifications(db, row["reservation_id"])
         result: dict[str, Any] = {
-            "schema": "cacheon.operator.reservation-status.v2",
+            "schema": "cacheon.operator.reservation-status.v3",
             "cursor": _cursor(db),
             "arrival_authority": {
                 "kind": "finalized_chain",
@@ -658,7 +573,6 @@ def reservation_status(
                 "attribution": _attribution(row),
                 "target_id": row["target_id"] or None,
                 "transport_attempts": row["transport_attempts"],
-                "screen_attempts": row["screen_attempts"],
                 "screen_lane": row["screen_lane"] or None,
                 "publication_digest": row["publication_digest"] or None,
                 "publication": _path_availability(row["publication_root"]),
@@ -674,12 +588,11 @@ def reservation_status(
                 lease_schema=lease_schema,
             ),
             "evaluation_lease": active_lease,
-            "screens": screens,
             "qualification_dispositions": qualifications,
             "settlement_qualifications": settlements,
             "audit_events": _audit_events(audit_log, row["reservation_id"]),
             "evidence_limitations": _evidence_limitations(
-                row, screens, qualifications, settlements
+                row, qualifications, settlements
             ),
         }
         return result
@@ -750,16 +663,6 @@ def format_reservation_status(value: dict[str, object]) -> str:
             f"qualification_evidence: {row['qualification_evidence_digest'] or '-'}",
         ]
     )
-    for screen in value["screens"]:  # type: ignore[assignment]
-        lines.append(
-            f"screen[{screen['attempt_index']}]: lane={screen['lane']} "
-            f"decision={screen['decision']} receipt={screen['receipt_digest']}"
-        )
-        for stage in screen["stages"]:
-            lines.append(
-                f"  stage[{stage['stage']}]: grade={stage['grade']} "
-                f"evidence={stage['evidence_digest']} elapsed_ms={stage['elapsed_ms']}"
-            )
     for attempt in value["qualification_dispositions"]:  # type: ignore[assignment]
         lines.append(
             f"qualification[{attempt['attempt_index']}]: "

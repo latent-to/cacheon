@@ -60,7 +60,7 @@ def test_wrong_incumbent_stops_before_publication_and_resident_entry(
 
     assert "incumbent differs" in str(error.value.__cause__)
     assert calls == []
-    assert runtime.worker.retire_calls == runtime.worker.calls == 0
+    assert runtime.worker.calls == 0
     assert not (tmp_path / "result" / "RESIDENT_ENTRY_ARMED.json").exists()
 
 
@@ -68,14 +68,14 @@ def test_request_reader_preserves_legacy_and_rejects_partial_or_invalid_pin(tmp_
     fixtures = recovery_tests._fixtures()
     authority = fixtures._authority(tmp_path, recoverable=True)
     bound = authority.request.body
-    _validate_request_body("qualification", bound)
+    _validate_request_body(bound)
     legacy = {key: value for key, value in bound.items() if key not in INCUMBENT_FIELDS}
-    _validate_request_body("qualification", legacy)
+    _validate_request_body(legacy)
     for field in INCUMBENT_FIELDS:
         with pytest.raises(RemoteEvaluationDispatcherError):
-            _validate_request_body("qualification", {**legacy, field: bound[field]})
+            _validate_request_body({**legacy, field: bound[field]})
         with pytest.raises(RemoteEvaluationDispatcherError):
-            _validate_request_body("qualification", {**bound, field: "invalid"})
+            _validate_request_body({**bound, field: "invalid"})
 
 
 @pytest.mark.parametrize("field", sorted(INCUMBENT_FIELDS))

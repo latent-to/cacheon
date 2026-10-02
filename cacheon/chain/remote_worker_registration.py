@@ -110,7 +110,7 @@ class PodPaths:
 
 
 def verify_ready_receipt(row: object) -> dict[str, Any]:
-    from cacheon.eval.b300_arena_definition import B300ScreenDeploymentError, ready_lanes
+    from cacheon.eval.b300_arena_definition import B300DeploymentError, ready_lanes
 
     if type(row) is dict and row.get("schema") == "cacheon-current-pod-commission-v1":
         fields = frozenset(
@@ -194,7 +194,7 @@ def verify_ready_receipt(row: object) -> dict[str, Any]:
             fail("commissioned Python identity is malformed")
         try:
             ready_lanes(value)
-        except B300ScreenDeploymentError as exc:
+        except B300DeploymentError as exc:
             fail(str(exc))
         return value
     fields = frozenset(

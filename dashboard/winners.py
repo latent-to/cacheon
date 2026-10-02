@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -10,10 +11,19 @@ from typing import Any
 from cacheon.chain.evaluation_order import reward_visibility_sql, reward_comparisons
 
 
+def excluded_claims() -> set[str]:
+    """Reservations the operator priced at zero in the producer's rule file; empty when none is named."""
+    try:
+        return {row["reservation_id"] for row in
+                json.loads(Path(os.environ["CACHEON_DASH_EXCLUSIONS"]).read_text()).get("claims", ())}
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+
+
 def qualified_winners(con, *, include_waiting: bool = False) -> list[dict[str, Any]]:
     """Read reward winners, optionally including PASSes awaiting queue resolution."""
-    comparisons = reward_comparisons(con)
-    return [dict(row) | {"reward_eligible": False}
+    comparisons, excluded = reward_comparisons(con), excluded_claims()
+    return [dict(row) | {"reward_eligible": False, "excluded": row["reservation_id"] in excluded}
             | reward_comparison_summary(comparisons.get(row["reservation_id"], {}))
             for row in con.execute("""
         SELECT sc.reservation_id, sc.status, sc.reason, sc.candidate_json,
@@ -57,9 +67,74 @@ def reward_comparison_summary(comparison: dict) -> dict:
     }
 
 
-def submission_reward_comparison(con, reservation_id: str) -> dict:
+def reward_status(comparisons: dict, reservation_id: str, offer, shares, excluded=()) -> dict:
+    """What a PASS earns: the producer's ordered comparison plus its share of the served offer."""
+    if reservation_id not in comparisons:
+        return {}
+    return reward_comparison_summary(comparisons[reservation_id]) | winner_reward(
+        {"reservation_id": reservation_id, "waiting_for_queue": False, "excluded": reservation_id in excluded}, offer, shares)
+
+
+def submission_reward_comparison(con, reservation_id: str, offer=None, shares=None) -> dict:
     """Use the same ordered comparison as the weight producer for submission details."""
-    return reward_comparison_summary(reward_comparisons(con).get(reservation_id, {}))
+    return reward_status(reward_comparisons(con), reservation_id, offer, shares or {}, excluded_claims())
+
+
+def result_summary(speed: object) -> dict[str, Any] | None:
+    """What a replay row leads with: measured and required gain, passes run, decode and first-token time per arm.
+
+    A batch-cell attempt has no retained grade, and its raw C/B lane ratio is not the gain that was credited.
+    """
+    if not isinstance(speed, dict) or "grading" not in speed:
+        return None
+    grade = speed["grading"]
+
+    def mean(role: str, field: str) -> float | None:
+        values = [lane[field] for lane in speed["lanes"] if lane["role"] == role and lane[field] is not None]
+        return sum(values) / len(values) if values else None
+    return {"speedup": speed["speedup"], "required_speedup": grade["required_speedup"],
+            "passes": speed["windows"], "pass_limit": speed["window_limit"], "detail": grade["detail"],
+            "decode_tps": [mean("B", "decode_tps"), mean("C", "decode_tps")],
+            "ttft_s": [mean("B", "mean_ttft_s"), mean("C", "mean_ttft_s")]}
+
+
+def list_results(con, items: list[dict[str, Any]], roots, offer, shares) -> dict[tuple[str, str], dict[str, Any]]:
+    """Give each listed submission its last graded result and what it earns; return the pay bars.
+
+    On 2026-10-01 the list read "PASS / qualified" for a +6.13% pass and a +1.06% pass alike,
+    and nothing at all for a FAIL that had measured +0.84% against a required +1.21%.
+    """
+    from dashboard.forensics import retained_speed
+
+    comparisons, excluded = reward_comparisons(con), excluded_claims()
+    attempts = {row["reservation_id"]: row["attempt_ref_json"] for row in con.execute(
+        "SELECT reservation_id, attempt_ref_json FROM qualification_dispositions WHERE reservation_id IN ("
+        + ",".join("?" * len(items)) + ") ORDER BY attempt_index", [item["reservation_id"] for item in items])}
+    for item in items:
+        item["result"] = result_summary(retained_speed(attempts.get(item["reservation_id"]), roots, item["target_id"]))
+        item["reward"] = reward_status(comparisons, item["reservation_id"], offer, shares, excluded) or None
+    return reward_bars(con, comparisons)
+
+
+def reward_bars(con, comparisons=None) -> dict[tuple[str, str], dict[str, Any]]:
+    """Best paid PASS per (arena, baseline stack): what a later PASS on that baseline must beat.
+
+    On 2026-10-01 every GLM row read "must beat 1.048008x": the crown lineage of an operator-excluded
+    result. Lineage adoption has not decided pay since previous-paid-winner scoring replaced it, and a
+    PASS the operator priced at zero is not shown as the result to beat.
+    """
+    bars: dict[tuple[str, str], dict[str, Any]] = {}
+    comparisons, excluded = reward_comparisons(con) if comparisons is None else comparisons, excluded_claims()
+    for row in con.execute("SELECT reservation_id, candidate_json FROM settlement_candidates"):
+        comparison = comparisons.get(row["reservation_id"])
+        if not comparison or not comparison["reward_eligible"] or row["reservation_id"] in excluded:
+            continue
+        primary = json.loads(row["candidate_json"])["primary"]
+        group = primary.get("arena_digest"), primary.get("incumbent_stack_digest")
+        score = float(comparison["previous_best_speedup"] * comparison["relative_speedup"])
+        if score > bars.get(group, {"speedup": 0.0})["speedup"]:
+            bars[group] = {"speedup": score, "reservation_id": row["reservation_id"]}
+    return bars
 
 
 def _lane_tokens_per_second(speed: object, role: str) -> Decimal | None:
@@ -94,16 +169,20 @@ def conservative_candidate_tokens_per_second(
     return min(rates) if rates else None
 
 
-def measured_baseline(speed_reads: list[object], primary: dict[str, Any]) -> dict[str, Any]:
+def measured_baseline(speed_reads: list[object], primary: dict[str, Any], *, baseline=None) -> dict[str, Any]:
     """Slowest measured B/B-prime rate; identify stock versus an incumbent stack."""
     rates = [rate for speed in speed_reads for role in ("B", "B_prime")
              if (rate := _lane_tokens_per_second(speed, role)) is not None]
     manifest = primary.get("incumbent_manifest")
-    kind = ("stock" if not manifest.get("entries") else "incumbent") if isinstance(manifest, dict) else "unknown"
-    return {
-        "baseline_tokens_per_second": round(float(min(rates)), 1) if rates else None,
-        "baseline_kind": kind,
-    }
+    kind = (("stock" if not manifest.get("entries") else "incumbent") if isinstance(manifest, dict)
+            else (baseline or {}).get("kind", "unknown"))
+    return {"baseline_tokens_per_second": round(float(min(rates)), 1) if rates else None, "baseline_kind": kind}
+
+
+def candidate_measurement(speeds: list[object]) -> dict[str, float | None]:
+    """Batch-cell tok/s of the retained qualification; a replay attempt reports ``result_summary`` instead."""
+    rate = conservative_candidate_tokens_per_second(speeds)
+    return {"tokens_per_second": round(float(rate), 1) if rate is not None else None}
 
 
 def prefill_summary(speed_reads: list[object]) -> dict[str, float | None]:
@@ -175,7 +254,7 @@ def winner_reward(row, offer, shares) -> dict[str, Any]:
         status = "attribution_unavailable"
     else:
         share = float(shares.get(row["reservation_id"], Decimal(0)))
-        status = "earning" if share else "not_earning"
+        status = "earning" if share else "excluded" if row.get("excluded") else "not_earning"
     return {"weight_share": share, "reward_claim_status": status}
 
 
@@ -191,14 +270,15 @@ def latest_hold(connection: Any, reservation_id: str, fallback: str) -> tuple[st
 
 
 def settlement_label(connection: Any, reservation_id: str, status: object, reason: object) -> str:
-    """A stale hold is a PASS, not a fault; reward records are checked separately.
+    """A crown hold is a PASS, not a fault; reward records are checked separately.
 
-    On 2026-09-22 two earning Qwen passes read as unpaid under "held".
+    On 2026-09-22 two earning Qwen passes read as unpaid under "held"; on 2026-10-01 a PASS
+    earning 17% did, held as ``lost_potential`` because it did not exceed the crown record.
     """
     if status != "held":
         return str(status or "")
     held_reason, _ = latest_hold(connection, reservation_id, str(reason or "held"))
-    return "passed" if held_reason == "stale_incumbent" else "held"
+    return "passed" if held_reason in ("stale_incumbent", "lost_potential") else "held"
 
 
 def settlement_hold_notice(connection: Any, reservation_id: str,
@@ -209,9 +289,10 @@ def settlement_hold_notice(connection: Any, reservation_id: str,
         return None
     reason, sequence = latest_hold(connection, reservation_id, settlement.get("reason") or "held")
     if lost or reason == "lost_potential":
-        title = "Potential winner lost comparison"
+        # On 2026-10-01 a PASS earning 17% of the offer was titled "lost comparison": its crown hold, not its pay.
+        title = "Potential winner lost comparison" if lost else "Passed evaluation — did not take the crown"
         comparison = ("the best earlier PASS by the reward margin" if lost
-                      else "the current champion on the measured baseline")
+                      else "the current champion on the measured baseline. Rewards are decided separately from the crown")
         message = ("This submission passed evaluation, but did not beat " + comparison
                    + ". Its PASS and measurements are retained.")
         sequence = sequence if reason == "lost_potential" else None
@@ -231,17 +312,20 @@ def settlement_hold_notice(connection: Any, reservation_id: str,
             "event_sequence": sequence}
 
 
-def reward_exclusion_notice(hotkey: str, offer_path: object) -> dict[str, Any] | None:
-    """Report only operator exclusions referenced by the currently served offer."""
-    from pathlib import Path
-    from cacheon.stack_identity import canonical_digest
+def reward_exclusion_notice(hotkey: str, offer_path: object, reservation_id: str = "") -> dict[str, Any] | None:
+    """Report the operator decision the weight producer applies to this PASS or this hotkey.
 
+    ``CACHEON_DASH_EXCLUSIONS`` names the producer's own rule file. The served offer no longer carries
+    a digest this reader can recompute, so a hotkey record shows only while that offer pays it nothing.
+    """
     try:
-        rule = json.loads(Path("/root/cacheon-ops/weight-controls/20260908/exclusions.json").read_text())
+        rule = json.loads(Path(os.environ["CACHEON_DASH_EXCLUSIONS"]).read_text())
         projection = json.loads(Path(offer_path).read_text())["offer"]["projection"]
-        decision = canonical_digest("cacheon.operator.source-copy-exclusion.v1", rule)
-        if decision not in projection["evidence_digests"]:
-            return None
+        claim = next((r for r in rule.get("claims", ()) if r["reservation_id"] == reservation_id), None)
+        if claim is not None:
+            return {"title": "This PASS is priced at zero — operator decision", "message": claim["reason"],
+                    "reason": "operator_claim_exclusion", "evidence": "", "source_reservation": "",
+                    "decision_time": rule.get("created_at") or "", "offer_block": projection["effective_block"]}
         record = next((r for r in rule["records"] if r["hotkey"] == hotkey), None)
         if record is None or dict(projection["weights_ppm"]).get(hotkey, 0) > 0:
             return None

@@ -328,6 +328,7 @@ class ResidentAuditExecutionAuthority:
                 charged_plan.request_geometry(i)[1] for i in indices
             ),
             measure_phase_latency=False,
+            replay=None,
         )
         allocation = resident_audit_allocation_digest(
             charged_binding,

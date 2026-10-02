@@ -52,7 +52,7 @@ def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
                 competition_arena TEXT NOT NULL DEFAULT '',
                 lease_id TEXT PRIMARY KEY,
                 generation INTEGER NOT NULL CHECK(generation>0),
-                stage TEXT NOT NULL CHECK(stage IN ('screen','qualification')),
+                stage TEXT NOT NULL CHECK(stage IN ('qualification')),
                 owner TEXT NOT NULL,
                 claimed_block INTEGER NOT NULL CHECK(claimed_block>=0),
                 initial_expires_block INTEGER NOT NULL CHECK(initial_expires_block>claimed_block),
@@ -73,7 +73,7 @@ def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
                 position INTEGER NOT NULL CHECK(position>=0),
                 reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
                 prior_status TEXT NOT NULL CHECK(
-                    prior_status IN ('published','reproduction_pending','promoted')
+                    prior_status IN ('published','reproduction_pending')
                 ),
                 active INTEGER NOT NULL CHECK(active IN (0,1)),
                 PRIMARY KEY(lease_id, position),
@@ -92,7 +92,7 @@ def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
                 event_type TEXT NOT NULL CHECK(
                     event_type IN ('claimed','heartbeat','expired','released','completed')
                 ),
-                stage TEXT NOT NULL CHECK(stage IN ('screen','qualification')),
+                stage TEXT NOT NULL CHECK(stage IN ('qualification')),
                 owner TEXT NOT NULL,
                 members_json TEXT NOT NULL,
                 finalized_block INTEGER NOT NULL CHECK(finalized_block>=0),

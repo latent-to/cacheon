@@ -28,9 +28,7 @@ import statistics
 from collections.abc import Iterable
 from typing import Any
 
-from cacheon.eval.continuation_codec import ContinuationCodecError
 from cacheon.eval.resident_execution_evidence import (
-    EXECUTION_CODEC,
     RankExecution,
     eager_slots,
 )
@@ -179,9 +177,9 @@ def _decoded_evidence(product: dict) -> list[tuple[str, dict]]:
 def _evidence(decoded: list[tuple[str, dict]], suffix: str) -> list[dict]:
     """Every evidence payload whose domain kind is ``suffix``, ignoring the stage.
 
-    Domains are ``<stage>.<kind>`` — ``qualification.stage-exit``,
-    ``screen.stage-exit``. Matching the kind alone is what lets one renderer
-    serve every stage instead of growing a branch per lane.
+    Domains are ``<stage>.<kind>``, for example ``qualification.stage-exit``.
+    Matching the kind alone is what lets one renderer serve every stage instead
+    of growing a branch per lane.
     """
 
     return [
@@ -338,8 +336,9 @@ def _speed_lines(stage_exit: dict, *, baseline: str = _STOCK) -> list[str]:
 def _window_spread(windows: list[dict]) -> float | None:
     """How much the timed runs disagreed; ``None`` when it cannot be computed.
 
-    Deliberately the SAME statistic as ``ResidentSpeedPolicy.read_window_scatter``
-    — median absolute deviation about the median, relative to the median — and
+    Deliberately the SAME statistic as the window-scatter gate of the batch-cell
+    speed policies (8-15), whose retained evidence this page still explains —
+    median absolute deviation about the median, relative to the median — and
     not the max-minus-min it used to be. That difference is not cosmetic: on a
     real crowned run the two read 0.57% and 8.22% on identical evidence, so a
     miner reading this page would have concluded their run was twelve times
@@ -432,18 +431,7 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
     )
     lines = [f"evidence for {', '.join(targets) or 'an unnamed target'}"]
     execution: list[str] = []
-    for payload in _evidence(decoded, "execution"):
-        for swap in payload.get("swaps") or []:
-            if not isinstance(swap, dict):
-                continue
-            ranks = _typed_ranks(swap.get("ranks"))
-            execution.append(
-                f"  {'generation':<26s} {swap.get('generation')} on lane "
-                f"{swap.get('lane_id')}: {swap.get('executed_ranks')} of "
-                f"{swap.get('expected_ranks')} GPU(s) ran your kernel cleanly"
-            )
-            execution.extend(execution_lines(ranks))
-    if not execution and stderr is not None:
+    if stderr is not None:
         ranks = ranks_from_log(stderr)
         execution = ([] if not ranks else execution_lines(ranks))
         execution += (
@@ -687,20 +675,6 @@ def worker_log_lines(value: object) -> list[str]:
             if detail not in lines:
                 lines.append(detail)
     return lines
-
-
-def _typed_ranks(value: object) -> tuple[RankExecution, ...]:
-    """Rows as published, skipping any the renderer cannot read."""
-
-    ranks = []
-    for row in value if isinstance(value, list) else []:
-        try:
-            typed = EXECUTION_CODEC.decode(row)
-        except ContinuationCodecError:
-            continue
-        if type(typed) is RankExecution:
-            ranks.append(typed)
-    return tuple(ranks)
 
 
 def _path_lines(rows: list[dict]) -> list[str]:

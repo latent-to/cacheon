@@ -16,13 +16,12 @@ from cacheon.chain import remote_qualification_hold as remote_hold
 from cacheon.chain import remote_worker_spool as spool
 from cacheon.chain.remote_evaluation_dispatcher import (
     REMOTE_EVALUATION_PROTOCOL_DIGEST,
-    RemoteWorkerCredential,
-    _request_body_for_screen,
-    seal_remote_request,
     seal_remote_response,
 )
+from cacheon.chain.remote_worker_request_plan import _lease_dict
 from cacheon.stack_identity import canonical_json_bytes
 from cacheon.eval.remote_run_forensics import append_event as append_run_event, journal_path
+from tests.test_remote_worker_request_plan import _authority
 
 
 def _dispatcher_fixtures():
@@ -37,129 +36,36 @@ def _dispatcher_fixtures():
     return module
 
 
-def _screen_authority(tmp_path: Path):
-    fixtures = _dispatcher_fixtures()
-    fixtures._published_rows(tmp_path, 1)
-    service = ArenaService(fixtures._manifest(), fixtures._Provider())
-    cursor = fixtures._Cursor((fixtures.BLOCK, fixtures._block_hash(fixtures.BLOCK)))
-    coordinator = fixtures._coordinator(tmp_path, service, cursor)
-    claim = coordinator.claim_screen()
-    assert claim is not None
-    credential = RemoteWorkerCredential("screen-key-v1", b"s" * 32)
-    identity = fixtures._transport_identity(coordinator, credential)
-    secret = tmp_path / "credential.secret"
-    secret.write_bytes(b"s" * 32)
-    secret.chmod(0o400)
-    known_hosts = tmp_path / "known_hosts"
-    known_hosts.write_text("pinned-host-key\n", encoding="utf-8")
-    known_hosts.chmod(0o600)
-    registration = {
-        "adapter_sha256": "a" * 64,
-        "created_at_unix": int(time.time()),
-        "credential_digest": credential.digest,
-        "credential_file_sha256": spool.file_sha256(secret),
-        "credential_id": credential.credential_id,
-        "credential_path": str(secret),
-        "known_hosts_path": str(known_hosts),
-        "known_hosts_sha256": spool.file_sha256(known_hosts),
-        "lane_devices": list(range(coordinator.readiness.gpu_count)),
-        "lane_digest": "e" * 64,
-        "pod_host": "pod.example",
-        "pod_port": 22,
-        "pod_user": "root",
-        "python_executable": sys.executable,
-        "python_executable_sha256": spool.file_sha256(Path(sys.executable).resolve()),
-        "ready_receipt_digest": coordinator.readiness.ready_receipt_digest,
-        "ready_receipt_file_sha256": "b" * 64,
-        "remote_service_sha256": "c" * 64,
-        "schema": spool.SCHEMA_REGISTRATION,
-        "service_identity": service.manifest.service_id,
-        "transport_identity": identity.to_dict(),
-        "transport_identity_digest": identity.digest,
-        "worker_epoch": "d" * 32,
-        "worker_readiness": coordinator.readiness.to_dict(),
-        "worker_readiness_digest": coordinator.readiness.digest,
-    }
-    registration["registration_digest"] = spool.spool_digest(
-        spool.DOMAIN_REGISTRATION, registration
-    )
-    registration_module.verify_registration(registration)
-    request = seal_remote_request(
-        claim.lease,
-        coordinator.readiness,
-        service.manifest.service_id,
-        identity,
-        credential,
-        _request_body_for_screen(coordinator, claim),
-    )
-    wire_path = tmp_path / "screen-request.json"
-    wire_path.write_bytes(spool.spool_canonical_json(request.to_dict()) + b"\n")
-    publication_path = tmp_path / "candidate-publication.tar"
-    _publication_tar(claim.publication, publication_path)
+def _qualification_authority(tmp_path: Path):
+    authority = _authority(tmp_path)
     request_id, job_dir = spool.enqueue_request(
-        registration,
-        _lease_dict(claim.lease),
-        (
-            ("screen_payload", wire_path),
-            ("candidate_publication", publication_path),
-        ),
+        authority.registration,
+        _lease_dict(authority.claim.lease),
+        authority.inputs,
         tmp_path / "outbox",
         deadline_seconds=100,
-        identity=identity,
-        credential=credential,
+        identity=authority.identity,
+        credential=authority.credential,
     )
     return (
-        coordinator,
-        claim,
-        service,
-        credential,
-        identity,
-        registration,
-        request,
+        authority.coordinator,
+        authority.claim,
+        authority.service,
+        authority.credential,
+        authority.identity,
+        authority.registration,
+        authority.request,
         request_id,
         job_dir,
     )
 
 
-def _lease_dict(lease) -> dict[str, object]:
-    return {
-        "claimed_block": lease.claimed_block,
-        "expires_block": lease.expires_block,
-        "generation": lease.generation,
-        "initial_expires_block": lease.initial_expires_block,
-        "lease_id": lease.lease_id,
-        "members": [row.to_dict() for row in lease.members],
-        "owner": lease.owner,
-        "stage": lease.stage,
-    }
-
-
-def _publication_tar(publication, destination: Path) -> None:
-    manifest = (
-        spool.spool_canonical_json(
-            {
-                "publication": publication.to_dict(),
-                "schema": "cacheon-remote-worker-publication-v1",
-            }
-        )
-        + b"\n"
+def _hold(request) -> remote_hold.RemoteQualificationHoldProduct:
+    return remote_hold.capture_remote_qualification_hold(
+        request,
+        reason=remote_hold.RemoteQualificationHoldReason.GRAPH_EVIDENCE_INCOMPLETE,
+        diagnostic_digest="d" * 64,
     )
-    with tarfile.open(destination, "w") as archive:
-        archive.addfile(
-            spool.tar_info("publication.json", len(manifest)), io.BytesIO(manifest)
-        )
-        native = (publication.root / spool.NATIVE_ARTIFACT_MANIFEST).read_bytes()
-        archive.addfile(
-            spool.tar_info(
-                f"bundle/{spool.NATIVE_ARTIFACT_MANIFEST}", len(native)
-            ),
-            io.BytesIO(native),
-        )
-        for row in publication.files:
-            data = publication.root.joinpath(*Path(row.path).parts).read_bytes()
-            archive.addfile(
-                spool.tar_info(f"bundle/{row.path}", len(data)), io.BytesIO(data)
-            )
 
 
 def test_spool_digest_matches_deployed_semantic_envelope() -> None:
@@ -176,7 +82,7 @@ def test_spool_digest_matches_deployed_semantic_envelope() -> None:
 def test_registration_typed_identities_reopen_exactly(tmp_path: Path) -> None:
     (
         coordinator,
-        claim,
+        _claim,
         _service,
         credential,
         identity,
@@ -184,49 +90,46 @@ def test_registration_typed_identities_reopen_exactly(tmp_path: Path) -> None:
         _request,
         _request_id,
         _job_dir,
-    ) = _screen_authority(tmp_path)
-    try:
-        reopened_identity = registration_module.registration_transport_identity(
-            registration
+    ) = _qualification_authority(tmp_path)
+    reopened_identity = registration_module.registration_transport_identity(
+        registration
+    )
+    assert reopened_identity == identity
+    reopened_credential = registration_module.registration_credential(
+        registration, Path(registration["credential_path"])
+    )
+    assert reopened_credential.digest == credential.digest
+    readiness_value, readiness_digest = registration_module.verify_readiness(
+        registration["worker_readiness"]
+    )
+    assert readiness_digest == coordinator.readiness.digest
+    assert readiness_value == coordinator.readiness.to_dict()
+    assert (
+        registration_module.registration_is_current(
+            registration, Path("/nonexistent/registration.json")
         )
-        assert reopened_identity == identity
-        reopened_credential = registration_module.registration_credential(
-            registration, Path(registration["credential_path"])
-        )
-        assert reopened_credential.digest == credential.digest
-        readiness_value, readiness_digest = registration_module.verify_readiness(
-            registration["worker_readiness"]
-        )
-        assert readiness_digest == coordinator.readiness.digest
-        assert readiness_value == coordinator.readiness.to_dict()
-        assert (
-            registration_module.registration_is_current(
-                registration, Path("/nonexistent/registration.json")
-            )
-            is False
-        )
-        mutated = dict(registration)
-        mutated["pod_host"] = "other.example"
-        with pytest.raises(spool.RemoteWorkerError, match="digest mismatch"):
-            registration_module.verify_registration(mutated)
-    finally:
-        coordinator._release(claim.lease, reason="test_cleanup")
+        is False
+    )
+    mutated = dict(registration)
+    mutated["pod_host"] = "other.example"
+    with pytest.raises(spool.RemoteWorkerError, match="digest mismatch"):
+        registration_module.verify_registration(mutated)
 
 
-def test_spool_screen_request_and_response_are_exact_authenticated_authority(
+def test_spool_qualification_request_and_response_are_exact_authenticated_authority(
     tmp_path: Path,
 ) -> None:
     (
-        coordinator,
+        _coordinator,
         claim,
-        service,
+        _service,
         credential,
         identity,
         registration,
         request,
         request_id,
         job_dir,
-    ) = _screen_authority(tmp_path)
+    ) = _qualification_authority(tmp_path)
     outer = spool.verify_request(
         spool.load_json(job_dir / "request.json"),
         job_dir,
@@ -237,8 +140,7 @@ def test_spool_screen_request_and_response_are_exact_authenticated_authority(
     assert outer["request_id"] == request_id
     assert outer["lease"]["lease_id"] == claim.lease.lease_id
 
-    receipt = service.screen(claim.candidate)
-    response = seal_remote_response(request, receipt, identity, credential)
+    response = seal_remote_response(request, _hold(request), identity, credential)
     result_root = tmp_path / "result"
     result_root.mkdir()
     (result_root / "response.json").write_bytes(
@@ -265,53 +167,25 @@ def test_spool_screen_request_and_response_are_exact_authenticated_authority(
         tmp_path / "outbox", registration, identity=identity, credential=credential
     )
     assert [row[1]["request_id"] for row in queue] == [request_id]
-    coordinator._release(claim.lease, reason="test_cleanup")
 
 
 def test_spool_completed_payload_stage_algebra_is_exact_and_closed(
     tmp_path: Path,
 ) -> None:
-    (
-        coordinator,
-        claim,
-        service,
-        _credential,
-        _identity,
-        _registration,
-        request,
-        _request_id,
-        _job_dir,
-    ) = _screen_authority(tmp_path)
-    receipt = service.screen(claim.candidate)
-    hold = remote_hold.RemoteQualificationHoldProduct(
-        request_digest="1" * 64,
-        service_identity=request.service_identity,
-        service_digest="2" * 64,
-        worker_readiness_digest="3" * 64,
-        ready_receipt_digest="4" * 64,
-        ready_epoch=1,
-        screen_lane="primary",
-        reservation_digests=("5" * 64,),
-        selected_delta_digests=("6" * 64,),
-        candidate_digests=("7" * 64,),
-        reason=remote_hold.RemoteQualificationHoldReason.GRAPH_EVIDENCE_INCOMPLETE,
-    )
-    try:
-        assert remote_hold.is_exact_remote_stage_payload(receipt, "screen")
-        assert remote_hold.is_exact_remote_stage_payload(hold, "qualification")
-        assert not remote_hold.is_exact_remote_stage_payload(receipt, "qualification")
-        assert not remote_hold.is_exact_remote_stage_payload(hold, "screen")
-        assert not remote_hold.is_exact_remote_stage_payload(object(), "screen")
-        assert not remote_hold.is_exact_remote_stage_payload(object(), "qualification")
-        assert not remote_hold.is_exact_remote_stage_payload(receipt, "unknown")
-    finally:
-        coordinator._release(claim.lease, reason="test_cleanup")
+    request = _qualification_authority(tmp_path)[6]
+    hold = _hold(request)
+    assert remote_hold.is_exact_remote_stage_payload(hold, "qualification")
+    assert not remote_hold.is_exact_remote_stage_payload(hold, "screen")
+    assert not remote_hold.is_exact_remote_stage_payload(request, "qualification")
+    assert not remote_hold.is_exact_remote_stage_payload(object(), "qualification")
+    assert not remote_hold.is_exact_remote_stage_payload(object(), "screen")
+    assert not remote_hold.is_exact_remote_stage_payload(hold, "unknown")
 
 
 def test_spool_rejects_forged_request_hmac(tmp_path: Path) -> None:
     (
-        coordinator,
-        claim,
+        _coordinator,
+        _claim,
         _service,
         credential,
         identity,
@@ -319,15 +193,15 @@ def test_spool_rejects_forged_request_hmac(tmp_path: Path) -> None:
         _request,
         _request_id,
         job_dir,
-    ) = _screen_authority(tmp_path)
+    ) = _qualification_authority(tmp_path)
     outer = spool.load_json(job_dir / "request.json")
-    payload = spool.artifact_for_role(outer, job_dir, "screen_payload")
+    payload = spool.artifact_for_role(outer, job_dir, "qualification_payload")
     value = spool.load_json(payload)
     value["auth_tag"] = "f" * 64
     payload.chmod(0o600)
     payload.write_bytes(spool.spool_canonical_json(value) + b"\n")
     artifact = next(
-        row for row in outer["artifacts"] if row["role"] == "screen_payload"
+        row for row in outer["artifacts"] if row["role"] == "qualification_payload"
     )
     artifact["sha256"] = spool.file_sha256(payload)
     artifact["size"] = payload.stat().st_size
@@ -340,7 +214,6 @@ def test_spool_rejects_forged_request_hmac(tmp_path: Path) -> None:
         spool.verify_request(
             outer, job_dir, registration, identity=identity, credential=credential
         )
-    coordinator._release(claim.lease, reason="test_cleanup")
 
 
 def test_safe_extract_rejects_path_traversal(tmp_path: Path) -> None:
@@ -357,7 +230,7 @@ def test_safe_extract_rejects_path_traversal(tmp_path: Path) -> None:
 
 def test_wire_bodies_reject_command_surfaces() -> None:
     assert spool.contains_command_surface({"outer": [{"argv": ["x"]}]}) is True
-    assert spool.contains_command_surface({"outer": [{"role": "screen"}]}) is False
+    assert spool.contains_command_surface({"outer": [{"role": "qualification"}]}) is False
     assert (
         registration_module.REMOTE_EVALUATION_PROTOCOL_DIGEST
         == REMOTE_EVALUATION_PROTOCOL_DIGEST
@@ -374,25 +247,25 @@ def test_verify_lease_enforces_exact_stage_membership() -> None:
         "lease_id": "a" * 64,
         "members": [member],
         "owner": "operator-a",
-        "stage": "screen",
+        "stage": "qualification",
     }
     assert spool.verify_lease(dict(base)) == base
-    two_members = dict(base)
-    two_members["members"] = [
+    cohort = dict(base)
+    cohort["members"] = [
         member,
         {"prior_status": "published", "reservation_id": "2" * 64},
     ]
+    assert spool.verify_lease(cohort) == cohort
+    retired_stage = dict(base)
+    retired_stage["stage"] = "screen"
     with pytest.raises(spool.RemoteWorkerError, match="lease projection"):
-        spool.verify_lease(two_members)
-    unpromoted = dict(base)
-    unpromoted["stage"] = "qualification"
-    with pytest.raises(spool.RemoteWorkerError, match="lease projection"):
-        spool.verify_lease(unpromoted)
-    promoted = dict(unpromoted)
+        spool.verify_lease(retired_stage)
+    promoted = dict(base)
     promoted["members"] = [
         {"prior_status": "promoted", "reservation_id": "1" * 64}
     ]
-    assert spool.verify_lease(promoted) == promoted
+    with pytest.raises(spool.RemoteWorkerError, match="lease projection"):
+        spool.verify_lease(promoted)
 
 
 def test_heartbeat_roundtrip_binding_and_liveness(tmp_path: Path) -> None:
@@ -470,8 +343,8 @@ def test_result_ready_receipt_binds_request_and_epoch() -> None:
 
 def test_local_no_decision_result_is_closed(tmp_path: Path) -> None:
     (
-        coordinator,
-        claim,
+        _coordinator,
+        _claim,
         _service,
         credential,
         identity,
@@ -479,27 +352,24 @@ def test_local_no_decision_result_is_closed(tmp_path: Path) -> None:
         _request,
         request_id,
         job_dir,
-    ) = _screen_authority(tmp_path)
-    try:
-        outer = spool.load_json(job_dir / "request.json")
-        results_root = tmp_path / "results"
-        results_root.mkdir()
-        spool.write_local_no_decision(results_root, outer, "request_deadline_elapsed")
-        result = spool.verify_adapter_result(
-            spool.load_json(results_root / request_id / "result.json"),
-            results_root / request_id,
-            outer,
-            registration,
-            request_root=job_dir,
-            identity=identity,
-            credential=credential,
-        )
-        assert result["state"] == "no_decision"
-        assert result["failure_code"] == "request_deadline_elapsed"
-        with pytest.raises(spool.RemoteWorkerError, match="not registered"):
-            spool.write_local_no_decision(results_root, outer, "made_up_code")
-    finally:
-        coordinator._release(claim.lease, reason="test_cleanup")
+    ) = _qualification_authority(tmp_path)
+    outer = spool.load_json(job_dir / "request.json")
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    spool.write_local_no_decision(results_root, outer, "request_deadline_elapsed")
+    result = spool.verify_adapter_result(
+        spool.load_json(results_root / request_id / "result.json"),
+        results_root / request_id,
+        outer,
+        registration,
+        request_root=job_dir,
+        identity=identity,
+        credential=credential,
+    )
+    assert result["state"] == "no_decision"
+    assert result["failure_code"] == "request_deadline_elapsed"
+    with pytest.raises(spool.RemoteWorkerError, match="not registered"):
+        spool.write_local_no_decision(results_root, outer, "made_up_code")
 
 
 def test_make_registration_binds_ready_receipt_and_reopens(tmp_path: Path) -> None:
@@ -555,7 +425,7 @@ def test_make_registration_binds_ready_receipt_and_reopens(tmp_path: Path) -> No
         remote_service=remote_service,
         adapter=adapter,
         credential=credential,
-        credential_id="screen-key-v1",
+        credential_id="qualification-key-v1",
         output=output,
         python_executable=sys.executable,
         lane_devices=",".join(

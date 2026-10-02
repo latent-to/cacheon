@@ -20,28 +20,27 @@ flowchart LR
 ```
 
 `load_manifest()` covers only the first step: required syntax, identifier
-shape, path containment/existence, variant uniqueness, and structural CUDA or
-patch declarations. It does not import source, prove that the requested target
+shape, path containment/existence, variant uniqueness, and structural CUDA
+declarations. It does not import source, prove that the requested target
 exists, or verify numerical behavior. `scan`, target resolution, `verify`, and
 production qualification are separate gates so a structurally valid document
 cannot grant itself authority.
 
-## Minimal singleton example
+## Minimal node example
 
 ```toml
-bundle_id = "example-silu-v1"
+bundle_id = "example-mlp-v1"
 abi_version = "cacheon-op-abi-v0"
 
 [competition]
-target = "activation.silu_and_mul"
+target = "forward_pass"
 mode = "slot"
 
 [[ops]]
-slot = "activation.silu_and_mul"
+slot = "model.layers.*.mlp"
 source = "kernel.py"
-entry = "silu_and_mul"
-dtypes = ["float32"]
-architectures = ["cpu"]
+entry = "forward"
+dtypes = ["bfloat16"]
 ```
 
 `bundle_id` and identifiers accept letters, numbers, `.`, `_`, and `-`.
@@ -53,7 +52,7 @@ Paths are relative to the bundle and must resolve to regular contained files.
 |---|---:|---|
 | `bundle_id` | yes | Human-readable bundle identifier; not the content identity |
 | `abi_version` | yes | New bundles must emit `cacheon-op-abi-v0`; the reader also accepts the exact hash-bound pre-cutover spelling described below |
-| `[competition]` | recommended | Explicit requested target and `slot`/`atomic` mode |
+| `[competition]` | recommended | Explicit requested target and `slot` mode |
 | `[[ops]]` | yes | One or more implementation rows |
 
 New bundles must use `cacheon-op-abi-v0`. Validators also retain one narrowly
@@ -69,8 +68,8 @@ The canonical bundle hash, not `bundle_id`, is the proposal's content identity.
 The content hash walks the bundle's own regular files in sorted relative-path
 order and hashes length-prefixed path and byte sequences. Git and Python cache
 noise is excluded; symlinks are not part of the hashed file set and the bundle
-loader/scanner rejects unsafe tree structure. Editing source, metadata, a
-patch, or even the manifest produces a new identity. Renaming only the outer
+loader/scanner rejects unsafe tree structure. Editing source, metadata,
+or even the manifest produces a new identity. Renaming only the outer
 directory does not.
 
 `bundle_id` is useful in logs and diagnostics but never proves that two reveals
@@ -82,34 +81,32 @@ and qualification use digest-bound content.
 | Field | Values |
 |---|---|
 | `target` | A validator-registered target ID |
-| `mode` | `slot` or `atomic`; `system` parses only for legacy migration |
+| `mode` | `slot`; `atomic` and `system` parse only so retained legacy bundles stay readable, and do not resolve |
 | `arena` | Exact logical arena ID; omitted or empty selects the existing default competition |
 
 The table is a request, not policy. Intake resolves it against the frozen
 [target catalog](target-catalog.md) and complete observed feature set. The
-current resolver can infer a target when an exact singleton or registered
-atomic member set is unambiguous, which preserves older bundles. New
-competitive bundles should declare `[competition]` explicitly. Additional arenas
+current resolver infers the target whose node roots hold every declared
+address. New competitive bundles should declare `[competition]` explicitly. Additional arenas
 require an explicit `arena`, for example `arena = "qwen36-35b-h100-bf16-tp1"`.
 It participates in the bundle hash and selects one evaluation; submissions are
-not broadcast to every model. Slot names remain shared mathematical contracts.
+not broadcast to every model.
 An unknown selector stays unclaimed and is subject to the ordinary intake SLA.
 
 ## Operation rows
 
 | Field | Required | Meaning |
 |---|---:|---|
-| `slot` | yes | Registered execution slot, or a [node address](../architecture/slot-contract.md#node-addresses) such as `model.layers.*.mlp` (target `forward_pass`) |
+| `slot` | yes | A [node address](../architecture/slot-contract.md#node-addresses) such as `model.layers.*.mlp` (target `forward_pass`), or `tree_cache` (target `prefix_cache`) |
 | `source` | yes | Python source module within the bundle |
 | `entry` | yes | Entry callable name |
 | `variant` | conditional | Capability variant; required on every row when a slot repeats |
-| `prepare` | no | Weight-preparation callable for a registered prepare/forward ABI |
+| `prepare` | no | `prepare(module)`, called once per bound node |
 | `setup` | development only | Legacy parser/direct-framework diagnostic hook; every registered component target forbids it |
 | `dtypes` | no | Declared dtype capability domain; an empty array adds no dtype restriction |
 | `architectures` | no | Declared architecture capability domain; an empty array adds no architecture restriction |
 | `metadata` | no | Eligibility/capability JSON within the bundle |
-| `base_kernel` | no | Validator-owned base-kernel identifier for an override submission |
-| `override_point` | no | Typed hole in that base; requires `base_kernel` |
+| `base_kernel`, `override_point` | no | Retired override composition fields; target resolution refuses a row that sets either |
 | `cuda_sources` | no | Inspectable `.cu`/`.cuh` inputs for a reviewed builder |
 
 Unknown operation fields are retained for observation. They do not grant a
@@ -120,15 +117,14 @@ than its target admits.
 
 The `slot` chooses a validator-owned semantic ABI, not an arbitrary import
 hook. The validator resolves `source` inside the bundle and looks up the named
-Python identifier only after structural and static gates. It allocates outputs
-and passes arguments in the registered slot order. Candidate code fills those
-outputs; it does not redefine shapes, references, tolerances, or the call site.
+Python identifier only after structural and static gates. Candidate code does
+not redefine shapes, references, tolerances, or the call site.
 
-A node-address row is called in place of the named module instead: `entry`
+A node-address row is called in place of the named module: `entry`
 receives the prepared state and then the module's own forward arguments, and
 returns what the module would. Every row of such a bundle is a node address, no
 two rows may overlap, and the bundle resolves to `forward_pass` whether or not
-`[competition]` names it.
+`[competition]` names it. A `tree_cache` row's `entry(cache)` returns the cache class.
 
 For prepare/forward slots, `prepare` names the registered one-time weight
 transformation while `entry` names the runtime call. `setup` is a legacy direct
@@ -150,25 +146,25 @@ listing `sm103` does not prove the source builds or runs there.
 
 ```toml
 [[ops]]
-slot = "norm.rmsnorm"
+slot = "model.layers.*.mlp"
 variant = "sm90-bf16"
-source = "rms_sm90.py"
-entry = "rmsnorm"
+source = "mlp_sm90.py"
+entry = "forward"
 dtypes = ["bfloat16"]
 architectures = ["sm90"]
 
 [[ops]]
-slot = "norm.rmsnorm"
+slot = "model.layers.*.mlp"
 variant = "sm103-bf16"
-source = "rms_sm103.py"
-entry = "rmsnorm"
+source = "mlp_sm103.py"
+entry = "forward"
 dtypes = ["bfloat16"]
 architectures = ["sm103"]
 ```
 
 This example demonstrates variant syntax only; check
 [Arena availability](../miner-guide/slots.md#arena-availability) before paying
-for `norm.rmsnorm`.
+for a submission.
 
 CUDA source declarations behave similarly. Listing `.cu`/`.cuh` paths makes
 them inspectable inputs to the sanctioned build lane; it is not permission to
@@ -193,23 +189,22 @@ A bundle cannot choose:
 | Path error | Absolute path, `..` escape, missing file, unsafe symlink | Keep every declared input as a regular contained file |
 | Duplicate-slot error | Multiple rows without explicit unique variants | Name every variant and make domains disjoint |
 | Competition error | Unknown target, wrong `slot`/`atomic` mode, legacy `system` title | Choose a registered target from validator output |
-| Feature-admission error | CUDA, patch, override, setup, or extra capability outside target policy | Remove the feature or choose the registered lane |
+| Feature-admission error | `setup`, a retired override field, or an extra capability outside target policy | Remove the feature |
 | CUDA-source declaration error | Missing, uncontained, or non-`.cu`/`.cuh` input | Declare contained source paths in `cuda_sources`; build admission remains validator-owned |
 | Static scan error | Forbidden import/operation or uninspectable tree content | Rewrite the source; scanning is not a sandbox exception list |
-| Verification error | Callable/signature/output/reference mismatch | Debug the registered tensor and correctness contract |
+| Verification error | Import or entry-signature mismatch (`verify`), or audit violations against stock (`check`) | Match the node's stock arguments and result structure |
 | Qualification failure | Complete engine misses timing, drift, quality, fidelity, or resource gates | Inspect retained arena evidence; do not relabel the outcome |
 
 ## Pre-submission checklist
 
-- Run `slots` and select the economic target separately from its execution
-  slot members.
-- Declare `[competition]` explicitly for new singleton or atomic work.
+- Choose `forward_pass` (node addresses) or `prefix_cache` (`tree_cache`).
+- Declare `[competition]` explicitly.
 - Keep `bundle_id` descriptive but assume only the content hash is identity.
-- Declare every source, metadata, CUDA, and dependency-patch input with a
-  contained relative path.
+- Declare every source, metadata, and CUDA input with a contained relative
+  path; `.patch`/`.diff` files are refused.
 - Give repeated slot rows unique variants with non-overlapping domains.
 - Avoid `setup`; use only registered `prepare` and entry contracts.
-- Run `scan`, then the appropriate local or collective `verify` command.
+- Run `scan` and `verify`, then `check` in the published arena image.
 - Hash and package the exact verified tree; any later byte change is a new
   proposal.
 

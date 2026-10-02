@@ -58,9 +58,11 @@ from tests.support.preflight import preflight_receipt
 
 ROOT = Path(__file__).parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
-SILU = ROOT / "examples" / "miner_silu_torch"
-SINGLETON = FIXTURES / "stack_norm_singleton"
-FUSED = ROOT / "examples" / "miner_dp_attention_exchange_torch"
+# Three distinct forward_pass bundles; the names predate node targets and other
+# suites import them. FUSED is the multi-member one (two non-overlapping nodes).
+SILU = ROOT / "examples" / "miner_node_identity"
+SINGLETON = FIXTURES / "node_singleton"
+FUSED = FIXTURES / "node_multi"
 
 
 def _digest(label: str) -> str:
@@ -378,8 +380,8 @@ def test_singleton_derives_exact_launch_and_session_plan(tmp_path: Path) -> None
     assert all(word not in encoded for word in ("baseline", "challenger", "target_id"))
 
 
-@pytest.mark.parametrize("fixture", (SINGLETON, FUSED), ids=("norm-singleton", "fused-atomic"))
-def test_singleton_and_atomic_fixtures_bind_without_runtime_import(
+@pytest.mark.parametrize("fixture", (SINGLETON, FUSED), ids=("node-singleton", "multi-node"))
+def test_single_and_multi_node_fixtures_bind_without_runtime_import(
     tmp_path: Path, fixture: Path
 ) -> None:
     case = _case(tmp_path, fixture)
@@ -510,16 +512,16 @@ def test_prepare_never_imports_candidate_top_level(tmp_path: Path) -> None:
     (source / "metadata").mkdir()
     (source / "manifest.toml").write_text(
         'bundle_id="raising"\nabi_version="cacheon-op-abi-v0"\n'
-        '[[ops]]\nslot="activation.silu_and_mul"\nsource="kernels/raising.py"\n'
-        'entry="silu_and_mul"\ndtypes=["bfloat16"]\nmetadata="metadata/op.json"\n'
+        '[[ops]]\nslot="model.layers.*.mlp"\nsource="kernels/raising.py"\n'
+        'entry="forward"\ndtypes=["bfloat16"]\nmetadata="metadata/op.json"\n'
     )
     (source / "metadata/op.json").write_text(
-        '{"op":"activation.silu_and_mul","dtypes":["bfloat16"]}\n'
+        '{"op":"model.layers.*.mlp","dtypes":["bfloat16"]}\n'
     )
     (source / "kernels/raising.py").write_text(
         f"from pathlib import Path\nPath({str(marker)!r}).write_text('bad')\n"
         "raise RuntimeError('must not import')\n"
-        "def silu_and_mul(x, out):\n    raise RuntimeError('unreachable')\n"
+        "def forward(module, *args, **kwargs):\n    raise RuntimeError('unreachable')\n"
     )
     case = _case(tmp_path / "case", source)
     _prepared(case)

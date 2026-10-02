@@ -8,10 +8,6 @@ import pytest
 
 import cacheon.cli as cli
 from cacheon import chain
-from cacheon.arena_service import (
-    SCREEN_STAGES, ArenaScreenReceipt, PromotionDecision, ScreenGrade,
-    ScreenStageResult,
-)
 from cacheon.chain.intake import (
     FinalizedArrival, FinalizedIntakeStore, IntakeError, IntakePolicy,
     IntakeScope, SQLiteWeightPublicationJournal,
@@ -103,23 +99,15 @@ def _audit_policy(label: str, slots: tuple[str, ...]) -> SlotAuditPolicy:
     return SlotAuditPolicy(_h(f"audit-seed:{label}")[:32], 100_000, 32, slots, 1)
 
 
-def _promote(
-    store: FinalizedIntakeStore, reservation_id: str, *, service: str = _h("service")
-) -> None:
-    active = store.begin_screen(reservation_id, service_digest=service)
-    candidate_digest = _h(f"candidate:{reservation_id}:{active.screen_attempts}")
-    receipt = ArenaScreenReceipt(
-        service,
-        candidate_digest,
-        active.screen_attempts,
-        tuple(
-            ScreenStageResult(stage, ScreenGrade.PASS, _h(stage), 1)
-            for stage in SCREEN_STAGES
-        ),
-        PromotionDecision.PROMOTE,
-    )
-    store.apply_screen_receipt(
-        reservation_id, candidate_digest=candidate_digest, receipt=receipt
+def _claim(
+    store: FinalizedIntakeStore,
+    reservation_id: str,
+    authority: str = "7" * 64,
+    *,
+    service: str = _h("service"),
+):
+    return store.mark_qualifying(
+        reservation_id, authority, AUTHORITY, service_digest=service
     )
 
 
@@ -158,8 +146,7 @@ def _publish_pair(store, rows):
             digest=marker * 64,
             root=f"/published/{marker}",
         )
-        _promote(store, row.reservation_id)
-        store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
+        _claim(store, row.reservation_id)
 
 
 def _settlement_plan(store, lease):
@@ -276,7 +263,7 @@ def _qualified_settlement_candidate(
     arena_marker: str = "",
     submission_block: int = 10,
     attempt_payloads: tuple[bytes, bytes] | None = None,
-    target: str = "activation.silu_and_mul",
+    target: str = "forward_pass",
 ) -> SettlementCandidate | str:
     catalog = default_target_catalog()
     arena_digest = _h("arena" + arena_marker)
@@ -329,7 +316,6 @@ def _qualified_settlement_candidate(
         digest="d" * 64 if not marker else _h("publication" + marker),
         root="/published/candidate" + marker,
     )
-    _promote(store, row.reservation_id, service=arena_digest)
     def qualification(marker: str, authority: str, attempt, speedup: str):
         audit_policy = _audit_policy(marker, (target,))
         return SettlementQualification(
@@ -365,7 +351,7 @@ def _qualified_settlement_candidate(
 
     authority = _h("primary-authority" + arena_marker)
     settled = qualification("primary" + marker, authority, primary_attempt, speedups[0])
-    store.mark_qualifying(row.reservation_id, authority, AUTHORITY)
+    _claim(store, row.reservation_id, authority, service=arena_digest)
     outcome = QualificationIntakeOutcome(
         row.reservation_id, arm.selected_delta_digest, authority,
         QualificationDecision.PASS, "qualified", False,
@@ -384,197 +370,6 @@ def _qualified_settlement_candidate(
             (row.reservation_id,),
         ).fetchone()[0] == 1
     return row.reservation_id if primary_only else SettlementCandidate.from_qualification(settled)
-
-
-def _stage_exit(reads: dict[str, float]) -> bytes:
-    """A stage-exit artifact whose lane rates read back as ``reads`` tok/s."""
-
-    def rate(role: str, tokens_per_second: float) -> dict[str, object]:
-        seconds = 131072 / tokens_per_second
-        return {
-            "role": role,
-            "timed_tokens": 786432,
-            "timed_seconds": str(seconds * 6),
-            "conditioning_seconds": str(seconds),
-            "windows": [
-                {"batch_index": index, "seconds": str(seconds), "tokens": 131072}
-                for index in range(2, 8)
-            ],
-        }
-
-    rates = [rate(role, value) for role, value in reads.items()]
-    return json.dumps({"speed_witness": {"rates": rates, "resident_policy": {"min_margin": "0.01"}}}, sort_keys=True).encode()
-
-
-def test_reopen_for_remeasurement_returns_a_pass_pair_to_the_screen_queue(tmp_path):
-    from cacheon.chain.baseline_band import BaselineBandError, remeasurement_evidence
-
-    with _store(tmp_path) as store:
-        slow = _qualified_settlement_candidate(
-            store,
-            marker="slow",
-            speedups=("1.135", "1.132"),
-            attempt_payloads=(
-                _stage_exit({"B": 2031.0, "C": 2307.0}),
-                _stage_exit({"B": 2021.8, "C": 2288.8}),
-            ),
-        )
-        peer = _qualified_settlement_candidate(
-            store,
-            index=1,
-            marker="peer",
-            speedups=("1.032", "1.024"),
-            check_single_pass=False,
-            attempt_payloads=(
-                _stage_exit({"B": 2245.6, "C": 2311.0, "B_prime": 2235.8,
-                             "B_double_prime": 2240.0}),
-                _stage_exit({"B": 2253.2, "C": 2304.0, "B_prime": 2248.6,
-                             "B_double_prime": 2250.0}),
-            ),
-        )
-        stable = _qualified_settlement_candidate(
-            store, index=2, marker="stable", check_single_pass=False,
-            attempt_payloads=(
-                _stage_exit({"B": 2241.0, "C": 2300.0, "B_prime": 2245.0, "B_double_prime": 2243.0}),
-                b"unused historical fixture",
-            ),
-        )
-        assert isinstance(slow, SettlementCandidate)
-        assert isinstance(peer, SettlementCandidate)
-        roots = (store.path.parent / "evidence",)
-        store._db.execute("INSERT INTO metadata VALUES('reward_grandfathered_runtimes',?)", (json.dumps([slow.incumbent_manifest.runtime_digest]),))
-        evidence = remeasurement_evidence(store, slow.reservation_digest, roots)
-        assert evidence.out_of_band
-        assert evidence.credited_index == 0
-        assert evidence.baseline_reads == 7
-        assert "OUT OF BAND" in evidence.describe()
-        assert not remeasurement_evidence(store, peer.reservation_digest, roots).out_of_band
-        assert {claim.hotkey for claim in store.passed_reward_claims()} == {
-            slow.hotkey, peer.hotkey, stable.hotkey,
-        }
-
-        with pytest.raises(IntakeError, match="not registered"):
-            store.reopen_for_remeasurement(
-                slow.reservation_digest, reason="operator_decision"
-            )
-        reopened = store.reopen_for_remeasurement(
-            slow.reservation_digest, reason="baseline_out_of_band"
-        )
-        assert (
-            reopened.status, reopened.screen_status, reopened.decision, reopened.reason
-        ) == ("published", "", "", "remeasure:baseline_out_of_band")
-        assert reopened.arena_service_digest == ""
-        assert {claim.hotkey for claim in store.passed_reward_claims()} == {peer.hotkey, stable.hotkey}
-        for table in ("settlement_candidates", "settlement_qualifications"):
-            assert store._db.execute(
-                f"SELECT COUNT(*) AS n FROM {table} WHERE reservation_id=?",
-                (slow.reservation_digest,),
-            ).fetchone()["n"] == 0
-        archived = store._db.execute(
-            "SELECT reason, candidate_json, qualifications_json FROM "
-            "settlement_reopenings WHERE reservation_id=?",
-            (slow.reservation_digest,),
-        ).fetchone()
-        assert archived["reason"] == "baseline_out_of_band"
-        assert json.loads(archived["candidate_json"])[0]["status"] == "pending"
-        assert len(json.loads(archived["qualifications_json"])) == 1
-        with pytest.raises(IntakeError, match="retained PASS"):
-            store.reopen_for_remeasurement(
-                slow.reservation_digest, reason="baseline_out_of_band"
-            )
-        with pytest.raises(BaselineBandError, match="accepted attempts"):
-            remeasurement_evidence(store, slow.reservation_digest, roots)
-
-        # The row re-enters the screen queue and reaches qualification again.
-        _promote(store, slow.reservation_digest)
-        assert store.get(slow.reservation_digest).status == "promoted"
-
-
-def test_reopen_for_remeasurement_refuses_settled_pairs(tmp_path):
-    with _store(tmp_path) as store:
-        winner = _qualified_settlement_candidate(
-            store, marker="winner", speedups=("1.07", "1.06"),
-        )
-        loser = _qualified_settlement_candidate(
-            store, index=1, marker="loser", speedups=("1.04", "1.03"),
-            check_single_pass=False,
-        )
-        single = _qualified_settlement_candidate(
-            store, index=2, marker="single", primary_only=True,
-            check_single_pass=False,
-        )
-        assert isinstance(winner, SettlementCandidate)
-        assert isinstance(loser, SettlementCandidate)
-        lease = store.lease_settlement_cohort(current_block=11)
-        assert lease is not None
-        plan, evidence = _settlement_plan(store, lease)
-        store.commit_settlement(lease, plan, evidence, current_block=11)
-
-        for settled in (winner, loser):
-            with pytest.raises(IntakeError, match="unsettled"):
-                store.reopen_for_remeasurement(
-                    settled.reservation_digest, reason="baseline_out_of_band"
-                )
-        with pytest.raises(IntakeError, match="unsettled"):
-            store.reopen_for_remeasurement(single, reason="baseline_out_of_band")
-
-
-def test_reopened_row_binds_to_the_stack_that_rescreens_it(tmp_path):
-    # Mainnet 2026-09-04: the reopened row still carried the service digest of
-    # the arena that screened its old pair, so the queue backfill bound it to
-    # that retired stack before the fresh screen ran; the queue head then named
-    # a stack without a commission and every later miner waited behind it.
-    with _store(tmp_path) as store:
-        pair = _qualified_settlement_candidate(
-            store, marker="stale", speedups=("1.135", "1.132"),
-        )
-        assert isinstance(pair, SettlementCandidate)
-        rid = pair.reservation_digest
-        catalog = default_target_catalog()
-        live_arena = _h("arena-live")
-        store.initialize_evaluation_stack(
-            EvaluationStackManifest(
-                runtime_digest=_h("runtime"),
-                base_engine_digest=_h("base"),
-                arena_digest=live_arena,
-                catalog_snapshot=catalog.snapshot(),
-                catalog_digest=catalog.digest,
-                entries={},
-            ),
-            tree_digest=_h("incumbent-tree"),
-        )
-        with pytest.raises(IntakeError, match="reopened"):
-            store.rebind_remeasurement_segment(rid)
-
-        reopened = store.reopen_for_remeasurement(rid, reason="baseline_out_of_band")
-        assert reopened.arena_service_digest == ""
-        assert store.reservation_baseline_segment(rid) is None
-        # With the service digest cleared the backfill cannot resolve a retired
-        # stack for the row, and a rebind before the screen leaves it unbound.
-        store.backfill_reservation_baseline_segments()
-        assert store.reservation_baseline_segment(rid) is None
-        assert store.rebind_remeasurement_segment(rid) is None
-
-        # Reproduce the trap the way it happened (stale service digest on the row
-        # when the backfill ran); the fresh screen under the live arena rebinds it.
-        with store._transaction():
-            store._db.execute(
-                "UPDATE reservations SET arena_service_digest=? WHERE reservation_id=?",
-                (pair.arena_digest, rid),
-            )
-        store.backfill_reservation_baseline_segments()
-        assert store.reservation_baseline_segment(rid).arena_digest == pair.arena_digest
-        _promote(store, rid, service=live_arena)
-        assert store.get(rid).arena_service_digest == live_arena
-        assert store.reservation_baseline_segment(rid).arena_digest == live_arena
-        assert store.qualification_queue_baseline().arena_digest == live_arena
-
-        state = store.rebind_remeasurement_segment(rid)
-        assert state is not None
-        assert state.arena_digest == live_arena
-        assert store.reservation_baseline_segment(rid).arena_digest == live_arena
-        assert store.qualification_queue_baseline().arena_digest == live_arena
-        assert store.rebind_remeasurement_segment(rid).arena_digest == live_arena
 
 
 def test_finalized_batch_is_reserved_atomically_before_transport(tmp_path):
@@ -1055,12 +850,9 @@ def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_pat
             current_finalized_block=10,
         )
         assert [row.status for row in stored] == ["published", "published"]
-        # Re-screen both republished retries; the live promoted() cohort
-        # selector must isolate the first retry group rather than merging
-        # both groups back into one failing cohort.
-        for row in rows:
-            _promote(store, row.reservation_id)
-        assert tuple(row.reservation_id for row in store.promoted()) == (
+        # The live cohort selector must isolate the first republished retry
+        # group rather than merging both groups back into one failing cohort.
+        assert tuple(row.reservation_id for row in store.qualification_cohort()) == (
             rows[0].reservation_id,
         )
         assert store.qualification_dispositions(rows[0].reservation_id)[0][
@@ -1103,13 +895,12 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
             current_finalized_block=10,
         )
 
-        # The live screen selector picks the offender's isolated retry first
+        # The live claim selector picks the offender's isolated retry first
         # in finalized order.
-        assert tuple(row.reservation_id for row in store.screenable(limit=1)) == (
+        assert tuple(row.reservation_id for row in store.claimable(limit=1)) == (
             offender.reservation_id,
         )
-        _promote(store, offender.reservation_id)
-        store.mark_qualifying(offender.reservation_id, "8" * 64, AUTHORITY)
+        _claim(store, offender.reservation_id, "8" * 64)
         singleton_failure = "9" * 64
         store.apply_qualification_batch(
             QualificationIntakeBatch(
@@ -1141,13 +932,12 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
         assert len(store.qualification_dispositions(offender.reservation_id)) == 2
 
         # Once the bounded offender is held, the peer's isolated group remains
-        # runnable: the live screen selector now picks it, and it can retain an
+        # runnable: the live claim selector now picks it, and it can retain an
         # independently evidenced terminal decision.
-        assert tuple(row.reservation_id for row in store.screenable(limit=1)) == (
+        assert tuple(row.reservation_id for row in store.claimable(limit=1)) == (
             peer.reservation_id,
         )
-        _promote(store, peer.reservation_id)
-        store.mark_qualifying(peer.reservation_id, "a" * 64, AUTHORITY)
+        _claim(store, peer.reservation_id, "a" * 64)
         store.apply_qualification_batch(
             QualificationIntakeBatch(
                 "a" * 64,
@@ -1182,8 +972,7 @@ def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_
             store, later.reservation_id, _fingerprint("target.a", "slot.a"),
             digest="b" * 64, root="/published/later",
         )
-        _promote(store, later.reservation_id)
-        store.mark_qualifying(later.reservation_id, "5" * 64, AUTHORITY)
+        _claim(store, later.reservation_id, "5" * 64)
         store.apply_qualification_batch(
             QualificationIntakeBatch(
                 "5" * 64,
@@ -1238,7 +1027,6 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
                 digest=_h(f"old-publication:{index}"),
                 root=f"/published/old-{index}",
             )
-        _promote(store, old_rows[1].reservation_id, service=old_stack.arena_digest)
         assert commission_boundary(store, old_stack.manifest, tree_digest=old_stack.tree_digest) is None
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
@@ -1252,11 +1040,6 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
             for row in old_rows
         )
 
-        # Learning the service after the transition cannot rewrite the old
-        # reservation's durable baseline.
-        _promote(store, old_rows[0].reservation_id, service=old_stack.arena_digest)
-        assert store.reservation_baseline_segment(old_rows[0].reservation_id) == old_stack
-
         new_row = _reserve_one(store, index=22, hotkey="new", block=12)
         _publish(
             store,
@@ -1265,7 +1048,6 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
             digest=_h("new-publication"),
             root="/published/new",
         )
-        _promote(store, new_row.reservation_id, service=new_stack.arena_digest)
         assert commission_boundary(store, old_stack.manifest, tree_digest=old_stack.tree_digest) is None
         assert store.reservation_baseline_segment(new_row.reservation_id) == old_stack
 
@@ -1295,7 +1077,7 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
         assert store.preview_evaluation_claim(
             stage="qualification", max_members=8
         ) == tuple(row.reservation_id for row in old_rows)
-        assert tuple(row.reservation_id for row in store.promoted()) == tuple(
+        assert tuple(row.reservation_id for row in store.qualification_cohort()) == tuple(
             row.reservation_id for row in old_rows
         )
 
@@ -1313,6 +1095,10 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
         assert reopened.reservation_baseline_segment(old_rows[0].reservation_id) == old_stack
         assert reopened.reservation_baseline_segment(new_row.reservation_id) == old_stack
         assert reopened.qualification_queue_baseline() == old_stack
+        # Learning the service at claim time, after the transition, cannot
+        # rewrite the durable baseline.
+        _claim(reopened, new_row.reservation_id, service=new_stack.arena_digest)
+        assert reopened.reservation_baseline_segment(new_row.reservation_id) == old_stack
 
 
 def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_path):
@@ -1371,12 +1157,8 @@ def test_recommission_preserves_current_loser_evidence_without_requeue(tmp_path)
 
         retained = store.get(loser.reservation_digest)
         assert retained.status == "qualified"
-        assert retained.screen_status == "promote"
-        assert store._db.execute(
-            "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
-            "WHERE reservation_id=?",
-            (loser.reservation_digest,),
-        ).fetchone()["n"] == 1
+        assert retained.arena_service_digest == loser.arena_digest
+        assert len(store.qualification_dispositions(loser.reservation_digest)) == 1
         assert store._db.execute(
             "SELECT COUNT(*) AS n FROM settlement_qualifications "
             "WHERE reservation_id=?",
@@ -1422,7 +1204,7 @@ def test_crown_records_the_target_lineage_tip_and_fences_a_stale_lease(tmp_path)
         )
         forged = replace(
             lease,
-            lineage_tips={"activation.silu_and_mul": forged_tip},
+            lineage_tips={"forward_pass": forged_tip},
         )
         forged_plan = plan_settlement(
             forged.candidates,
@@ -1440,16 +1222,16 @@ def test_crown_records_the_target_lineage_tip_and_fences_a_stale_lease(tmp_path)
 
         assert winner.candidate_manifest is not None
         crowned_artifact = winner.candidate_manifest.entries[
-            "activation.silu_and_mul"
+            "forward_pass"
         ].artifact_digest
         tips = store.target_lineage_tips()
-        tip = tips["activation.silu_and_mul"]
+        tip = tips["forward_pass"]
         assert tip.artifact_digest == crowned_artifact
         assert tip.parent_artifact_digest == ""
         assert tip.winner_speedup == winner.speedup
         row = store._db.execute(
             "SELECT * FROM target_lineage_tips WHERE target_id=?",
-            ("activation.silu_and_mul",),
+            ("forward_pass",),
         ).fetchone()
         assert row["arena_id"] == winner.arena_digest
         assert row["stack_digest"] == winner.candidate_stack_digest
@@ -1468,10 +1250,10 @@ def test_crown_records_the_target_lineage_tip_and_fences_a_stale_lease(tmp_path)
         )
         assert store.target_lineage_tips() == {}
         rebuilt = store.backfill_target_lineage_tips()
-        assert rebuilt["activation.silu_and_mul"] == tip
-        assert store.target_lineage_tips()["activation.silu_and_mul"] == tip
+        assert rebuilt["forward_pass"] == tip
+        assert store.target_lineage_tips()["forward_pass"] == tip
         assert store.backfill_target_lineage_tips()[
-            "activation.silu_and_mul"
+            "forward_pass"
         ] == tip
 
 
@@ -1502,7 +1284,7 @@ def test_faster_pretransition_sibling_replaces_cross_arena_lineage_tip(tmp_path)
         store.commit_settlement(
             first_lease, first_plan, first_evidence, current_block=11
         )
-        first_tip = store.target_lineage_tips()["activation.silu_and_mul"]
+        first_tip = store.target_lineage_tips()["forward_pass"]
         assert first_tip.winner_speedup == first.speedup
 
         sibling_lease = store.lease_settlement_cohort(current_block=12)
@@ -1526,9 +1308,9 @@ def test_faster_pretransition_sibling_replaces_cross_arena_lineage_tip(tmp_path)
 
         assert faster.candidate_manifest is not None
         faster_artifact = faster.candidate_manifest.entries[
-            "activation.silu_and_mul"
+            "forward_pass"
         ].artifact_digest
-        new_tip = store.target_lineage_tips()["activation.silu_and_mul"]
+        new_tip = store.target_lineage_tips()["forward_pass"]
         assert new_tip.artifact_digest == faster_artifact
         assert new_tip.parent_artifact_digest == first_tip.parent_artifact_digest
         assert new_tip.winner_speedup == faster.speedup
@@ -1572,7 +1354,7 @@ def test_backfill_proves_reservation_before_winner_qualification_completed(
             "DELETE FROM target_lineage_pretransition_reservations"
         )
         lineage = store.backfill_target_lineage_tips()[
-            "activation.silu_and_mul"
+            "forward_pass"
         ]
         assert store._db.execute(
             "SELECT 1 FROM target_lineage_pretransition_reservations "
@@ -1965,8 +1747,7 @@ def test_pass_without_exact_settlement_projection_is_rejected_atomically(tmp_pat
             store, row.reservation_id, _fingerprint("target.a", "slot.a"),
             digest="d" * 64, root="/published/a",
         )
-        _promote(store, row.reservation_id)
-        store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
+        _claim(store, row.reservation_id)
         outcome = QualificationIntakeOutcome(
             row.reservation_id,
             "3" * 64,
@@ -2045,7 +1826,7 @@ def test_sqlite_weight_journal_reopen_rejects_corrupt_head_projection(tmp_path):
 
 
 def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
-    """A released qualification hold resumes after its retained screen."""
+    """A released qualification hold requeues with its claim stamp intact."""
 
     with _store(tmp_path) as store:
         row = _reserve_one(store)
@@ -2053,7 +1834,7 @@ def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
             store, row.reservation_id, _fingerprint("target.a", "slot.a"),
             digest="d" * 64, root="/published/a",
         )
-        _promote(store, row.reservation_id)
+        _claim(store, row.reservation_id)
         store.mark_held(
             row.reservation_id, "remote_qualification_hold:legacy_no_decision"
         )
@@ -2065,4 +1846,6 @@ def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
         released = store.release_hold(
             row.reservation_id, reason="operator fixed the cause"
         )
-        assert (released.status, released.screen_status) == ("promoted", "promote")
+        assert (
+            released.status, released.screen_lane, released.arena_service_digest
+        ) == ("published", "primary", _h("service"))

@@ -20,10 +20,8 @@ from dataclasses import dataclass
 from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaQualificationWork,
-    ArenaScreenReceipt,
     ArenaService,
     ArenaServiceManifest,
-    PromotionDecision,
 )
 from cacheon.chain.evaluation_leases import EvaluationLease
 from cacheon.chain.evaluation_coordinator import (
@@ -40,7 +38,6 @@ from cacheon.chain.remote_qualification_hold import (
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
     B300DeploymentAuthorities,
-    B300ScreenDeploymentAuthorities,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_backend import OCIEngineExecutor
@@ -169,15 +166,12 @@ class B300MainnetWorker:
     def __init__(
         self,
         manifest: ArenaServiceManifest,
-        authorities: B300DeploymentAuthorities | B300ScreenDeploymentAuthorities,
+        authorities: B300DeploymentAuthorities,
         readiness: WorkerReadiness,
     ) -> None:
         if type(manifest) is not ArenaServiceManifest:
             raise B300MainnetWorkerError("worker manifest is not exactly typed")
-        if type(authorities) not in {
-            B300DeploymentAuthorities,
-            B300ScreenDeploymentAuthorities,
-        }:
+        if type(authorities) is not B300DeploymentAuthorities:
             raise B300MainnetWorkerError("worker deployment authorities are not exact")
         if type(readiness) is not WorkerReadiness:
             raise B300MainnetWorkerError("worker readiness is not exactly typed")
@@ -187,11 +181,7 @@ class B300MainnetWorker:
         self.service = service
         self.readiness = readiness
         self._provider = provider
-        self._remote_qualification_lane = (
-            authorities.qualification_stage
-            if type(authorities) is B300DeploymentAuthorities
-            else None
-        )
+        self._remote_qualification_lane = authorities.qualification_stage
         self._closed = False
         self._lock = threading.RLock()
         self.worker_digest = canonical_digest(
@@ -206,47 +196,10 @@ class B300MainnetWorker:
             },
         )
 
-    def run_remote_screen(
-        self,
-        lease: EvaluationLease,
-        candidate: ArenaCandidateBinding,
-    ) -> EvaluationRun:
-        """Run the path-free authenticated screen DTO used by the pod codec.
-
-        Remote transport does not possess the CPU-only ``IntakeReservation``
-        needed to recreate ``ClaimedScreenEvaluation``.  The lease already
-        commits the sole qualification reservation, so this narrow entrypoint
-        verifies that exact binding and returns the ordinary sealed run.
-        """
-
-        if (
-            type(lease) is not EvaluationLease
-            or type(candidate) is not ArenaCandidateBinding
-            or lease.stage != "screen"
-            or lease.reservation_ids
-            != (candidate.reservation.reservation_digest,)
-        ):
-            raise B300MainnetWorkerError(
-                "remote screen lease differs from the exact candidate"
-            )
-        with self._lock:
-            if self._closed:
-                raise B300MainnetWorkerError("B300 mainnet worker is closed")
-            self._validate_readiness(self.readiness, self.service)
-            payload = self._screen_candidate(candidate)
-            envelope = EvaluationResultEnvelope.seal(
-                lease,
-                self.readiness,
-                self.service,
-                payload,
-            )
-            return EvaluationRun(lease, envelope, payload, "completed")
-
     def run_remote_qualification(
         self,
         lease: EvaluationLease,
         candidates: tuple[ArenaCandidateBinding, ...],
-        screen_receipts: tuple[ArenaScreenReceipt, ...],
         *,
         screen_lane: str,
         continuation_store: QualificationContinuationStore,
@@ -254,8 +207,8 @@ class B300MainnetWorker:
     ) -> B300RemoteQualificationRun | RemoteQualificationWorkerHold:
         """Run one path-free, lane-bound remote qualification cohort.
 
-        The CPU transport sends immutable publications, reservations, promoted
-        receipts, and the retained primary/reproduction lane.  A deployment
+        The CPU transport sends immutable publications, reservations, and the
+        retained primary/reproduction lane.  A deployment
         composes this worker with the corresponding physical TP4 role
         orientation; this method refuses a missing or differently oriented lane
         before constructing private qualification work.
@@ -272,31 +225,19 @@ class B300MainnetWorker:
         except ValueError as exc:
             raise B300MainnetWorkerError(str(exc)) from None
         candidate_rows = tuple(candidates) if type(candidates) is tuple else ()
-        receipt_rows = (
-            tuple(screen_receipts) if type(screen_receipts) is tuple else ()
-        )
         if (
             type(lease) is not EvaluationLease
             or lease.stage != "qualification"
             or not candidate_rows
             or any(type(row) is not ArenaCandidateBinding for row in candidate_rows)
-            or len(candidate_rows) != len(receipt_rows)
-            or any(type(row) is not ArenaScreenReceipt for row in receipt_rows)
             or lease.reservation_ids
             != tuple(row.reservation.reservation_digest for row in candidate_rows)
-            or tuple(row.candidate_digest for row in receipt_rows)
-            != tuple(row.digest for row in candidate_rows)
-            or any(
-                row.service_digest != self.service.identity
-                or row.decision is not PromotionDecision.PROMOTE
-                for row in receipt_rows
-            )
             or screen_lane not in {"primary", "reproduction"}
             or screen_lane != self._remote_qualification_lane
             or (screen_lane == "reproduction" and len(candidate_rows) != 1)
         ):
             raise B300MainnetWorkerError(
-                "remote qualification lease differs from the exact promoted cohort"
+                "remote qualification lease differs from the exact leased cohort"
             )
         with self._lock:
             if self._closed:
@@ -304,7 +245,6 @@ class B300MainnetWorker:
             self._validate_readiness(self.readiness, self.service)
             execution = self._execute_qualification(
                 candidate_rows,
-                receipt_rows,
                 continuation_store=continuation_store,
                 request_digest=request_digest,
             )
@@ -327,29 +267,13 @@ class B300MainnetWorker:
             )
 
     def close(self) -> None:
-        """Permanently release qualification and screen resident lifetimes."""
+        """Permanently release the qualification provider."""
 
         with self._lock:
             if self._closed:
                 return
             self._provider.close()
             self._closed = True
-
-    def retire_resident_screen(self) -> None:
-        """Fence the standing screen lifetime before either TP4 orientation runs."""
-
-        with self._lock:
-            if self._closed:
-                raise B300MainnetWorkerError("B300 mainnet worker is closed")
-            self._validate_readiness(self.readiness, self.service)
-            self._provider.retire_resident_screen()
-
-    @property
-    def resident_screen_latched(self) -> bool:
-        """True once the screen lifetime can only be cleared by an adapter restart."""
-
-        with self._lock:
-            return self._provider.resident_screen_latched
 
     def __enter__(self) -> "B300MainnetWorker":
         with self._lock:
@@ -360,26 +284,9 @@ class B300MainnetWorker:
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         self.close()
 
-    def _screen_candidate(
-        self,
-        candidate: ArenaCandidateBinding,
-    ) -> ArenaScreenReceipt:
-        receipt = self.service.screen(candidate)
-        if (
-            type(receipt) is not ArenaScreenReceipt
-            or receipt.service_digest != self.service.identity
-            or receipt.candidate_digest != candidate.digest
-            or receipt.screen_attempt != candidate.screen_attempt
-        ):
-            raise B300MainnetWorkerError(
-                "screen result changed the exact leased candidate"
-            )
-        return receipt
-
     def _execute_qualification(
         self,
         candidates: tuple[ArenaCandidateBinding, ...],
-        screen_receipts: tuple[ArenaScreenReceipt, ...],
         *,
         continuation_store: QualificationContinuationStore | None = None,
         request_digest: str | None = None,
@@ -391,11 +298,7 @@ class B300MainnetWorker:
         ]
         | RemoteQualificationWorkerHold
     ):
-        work = self.service.plan_qualification(
-            candidates,
-            screen_receipts,
-            state=None,
-        )
+        work = self.service.plan_qualification(candidates, state=None)
         self._validate_work(work, candidates)
         supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
         if request_digest is not None:

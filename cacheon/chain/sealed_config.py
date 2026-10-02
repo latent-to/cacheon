@@ -1,6 +1,6 @@
 """Shared fail-closed validators for sealed operator configuration inputs.
 
-One implementation of the checks the standing supervisor, the mainnet screen
+One implementation of the checks the standing supervisor, the mainnet
 dispatcher, and the lease operator each carried as private copies. Every
 function takes the caller's error type so refusal exception classes and
 messages stay exactly what each loader's contract tests pin. The path

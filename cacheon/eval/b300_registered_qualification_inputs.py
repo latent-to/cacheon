@@ -185,7 +185,7 @@ class B300RegisteredTargetProjection:
             "target_spec_digest",
             _digest(self.target_spec_digest, "target-spec digest"),
         )
-        if self.kind not in {TargetKind.SLOT.value, TargetKind.ATOMIC.value}:
+        if self.kind != TargetKind.SLOT.value:
             raise B300RegisteredQualificationError("target kind is not registered")
         members = tuple(self.members)
         contracts = tuple(self.member_contracts)
@@ -197,11 +197,7 @@ class B300RegisteredTargetProjection:
             or type(self.member_contracts) is not tuple
             or any(type(row) is not B300MemberContractProjection for row in contracts)
             or tuple(row.slot_id for row in contracts) != members
-            or (
-                self.kind == TargetKind.SLOT.value
-                and members != (self.target_id,)
-            )
-            or (self.kind == TargetKind.ATOMIC.value and len(members) < 2)
+            or members != (self.target_id,)
         ):
             raise B300RegisteredQualificationError(
                 "registered target member-contract projection is not canonical"

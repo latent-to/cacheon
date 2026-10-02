@@ -20,7 +20,7 @@ def test_winners_view_separates_credit_from_measured_throughput() -> None:
         Path(__file__).parents[1] / "dashboard" / "static" / "index.html"
     ).read_text()
 
-    assert '"Gain vs baseline","Gain vs previous best","Measured baseline"' in html
+    assert '"Gain vs baseline","Gain vs previous best","Baseline → candidate"' in html
     assert "baseline_tokens_per_second" in html
     assert "baseline_kind" in html
     assert "tokens_per_second" in html
@@ -128,7 +128,7 @@ def test_winners_and_miners_render_the_served_weight_share() -> None:
         Path(__file__).parents[1] / "dashboard" / "static" / "index.html"
     ).read_text()
 
-    assert '"Submission weight share (served offer)"' in html
+    assert '"Share of served offer"' in html
     assert '"Registered","Weight share","Subs"' in html
     assert "w.weight_share" in html and "m.weight_share" in html
     assert "Served weight offer" in html
@@ -145,6 +145,7 @@ def test_winner_share_uses_reservation_including_zero_and_missing_attribution() 
     assert winner_reward(row, offer, shares)["weight_share"] == .6
     row["reservation_id"] = "unpaid"
     assert winner_reward(row, offer, shares) == {"weight_share": 0, "reward_claim_status": "not_earning"}
+    assert winner_reward(row | {"excluded": True}, offer, shares)["reward_claim_status"] == "excluded"
     assert winner_reward(row, {}, shares) == {"weight_share": None, "reward_claim_status": "attribution_unavailable"}
     row["waiting_for_queue"] = True
     assert winner_reward(row, offer, shares) == {"weight_share": None, "reward_claim_status": "waiting_for_queue"}
@@ -170,6 +171,7 @@ def test_a_stale_hold_reads_as_a_paid_pass() -> None:
 
     # The candidates table only says "held"; the typed reason is in the journal.
     assert settlement_label(_Connection("stale_incumbent"), "a" * 64, "held", "held") == "passed"
+    assert settlement_label(_Connection("lost_potential"), "a" * 64, "held", "held") == "passed"
     assert settlement_label(_Connection("conflict_lost"), "a" * 64, "held", "held") == "held"
     assert settlement_label(_Connection("stale_incumbent"), "a" * 64, "crowned", "crowned") == "crowned"
 

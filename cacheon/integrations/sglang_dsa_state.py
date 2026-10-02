@@ -13,6 +13,8 @@ from typing import Callable
 import torch
 
 StateFormat = torch.dtype | Callable[[torch.Tensor], torch.Tensor]
+# The per-layer, slot-addressed KV buffers a pinned SGLang pool may expose.
+KV_BUFFERS = ("k_buffer", "v_buffer", "kv_buffer")
 
 
 def state_values(raw: torch.Tensor, held: StateFormat) -> torch.Tensor:

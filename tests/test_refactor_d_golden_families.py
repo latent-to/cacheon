@@ -14,13 +14,6 @@ from typing import Any
 
 import pytest
 
-from cacheon.arena_service import (
-    SCREEN_STAGES,
-    ArenaScreenReceipt,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStageResult,
-)
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.evaluation_recovery_plan import (
@@ -73,7 +66,7 @@ _CREATED_AT_UNIX = 1_700_000_000
 _WORKER_EPOCH = "1" * 32
 
 
-def _candidate(index: int, service_digest: str) -> tuple[QualificationReservation, dict[str, Any]]:
+def _candidate(index: int) -> tuple[QualificationReservation, dict[str, Any]]:
     label = f"candidate-{index}"
     publication = {
         "address_digest": _h(f"{label}:address"),
@@ -100,30 +93,23 @@ def _candidate(index: int, service_digest: str) -> tuple[QualificationReservatio
     binding.pop("arrival_order")
     candidate_digest = canonical_digest(
         "cacheon.arena.candidate-binding",
-        {"publication_digest": wire_digest, "reservation": binding, "screen_attempt": 1},
-    )
-    receipt = ArenaScreenReceipt(
-        service_digest=service_digest,
-        candidate_digest=candidate_digest,
-        screen_attempt=1,
-        results=tuple(
-            ScreenStageResult(stage, ScreenGrade.PASS, _h(f"{label}:evidence-{stage}"), 1)
-            for stage in SCREEN_STAGES
-        ),
-        decision=PromotionDecision.PROMOTE,
+        {"attempt": 1, "publication_digest": wire_digest, "reservation": binding},
     )
     return reservation, {
+        "attempt": 1,
         "candidate_digest": candidate_digest,
         "publication": publication,
         "reservation": reservation.to_dict(),
-        "screen_receipt": receipt.to_dict(),
     }
 
 
 def _plan_and_lease(inputs: dict[str, Any]) -> tuple[QualificationRequestPlan, EvaluationLease]:
     service_digest = _h("service")
     policy_digest = _h("qualification-policy")
-    rows = [_candidate(index, service_digest) for index in range(int(inputs["candidates"]))]
+    rows = [_candidate(index) for index in range(int(inputs["candidates"]))]
+    prior_status = (
+        "reproduction_pending" if inputs["screen_lane"] == "reproduction" else "published"
+    )
     body = {
         "candidates": [row for _, row in rows],
         "kind": "qualification_work",
@@ -138,7 +124,7 @@ def _plan_and_lease(inputs: dict[str, Any]) -> tuple[QualificationRequestPlan, E
         stage="qualification",
         owner="validator",
         members=tuple(
-            EvaluationLeaseMember(reservation.reservation_digest, "promoted")
+            EvaluationLeaseMember(reservation.reservation_digest, prior_status)
             for reservation, _ in rows
         ),
         claimed_block=0,

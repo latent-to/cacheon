@@ -14,12 +14,6 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
-from cacheon.eval.continuation_codec import ContinuationCodecError
-from cacheon.eval.resident_execution_evidence import (
-    EXECUTION_CODEC,
-    UNOBSERVED,
-    ResidentExecutionEvidence,
-)
 from cacheon.stack_identity import canonical_digest
 from cacheon._strict import NODE_ADDRESS, require_digest
 
@@ -55,15 +49,15 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     **dict.fromkeys("""
         chunked_prefill_size context_length dp_size max_mamba_cache_size
         max_prefill_tokens page_size speculative_num_steps speculative_eagle_topk
-        speculative_num_draft_tokens
+        speculative_num_draft_tokens hicache_size
     """.split(), "positive_int"),
     **dict.fromkeys("""
         cuda_graph_backend_prefill kv_cache_dtype mamba_ssm_dtype quantization
-        speculative_algorithm
+        speculative_algorithm hicache_mem_layout hicache_io_backend
     """.split(), "token"),
     **dict.fromkeys("""
         disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
-        enable_linear_replayssm_spec trust_remote_code
+        enable_linear_replayssm_spec trust_remote_code enable_hierarchical_cache
     """.split(), "bool"),
     **dict.fromkeys(("cuda_graph_bs", "cuda_graph_bs_decode"), "int_list"),
     # Resident sessions recapture CUDA graphs on a LIVE scheduler loop; the
@@ -596,86 +590,9 @@ class RuntimePreflightFacts:
         return cls(**values)  # type: ignore[arg-type]
 
 
-@dataclass(frozen=True)
-class BatchRequest:
-    """One host-disclosed prompt batch and its exact evidence shape."""
-
-    session_id: str
-    launch_digest: str
-    request_id: str
-    nonce: str
-    batch_index: int
-    prompts: tuple[str, ...]
-    max_new_tokens: int
-    top_logprobs_num: int
-    temperature: float
-    expected_prompt_tokens: int | None = None
-    measure_phase_latency: bool = False
-
-    def __post_init__(self) -> None:
-        for name in ("session_id", "request_id", "nonce"):
-            object.__setattr__(self, name, _binding_id(getattr(self, name), field_name=name))
-        if len({self.session_id, self.request_id, self.nonce}) != 3:
-            raise SessionProtocolError("session_id, request_id, and nonce must be distinct")
-        object.__setattr__(self, "launch_digest", _digest(
-            self.launch_digest, field_name="launch_digest"
-        ))
-        object.__setattr__(self, "batch_index", _bounded_int(
-            self.batch_index, field_name="batch_index", minimum=0,
-            maximum=2_147_483_647,
-        ))
-        if (
-            isinstance(self.prompts, (str, bytes))
-            or not isinstance(self.prompts, Sequence)
-            or not 1 <= len(self.prompts) <= MAX_PROMPTS_PER_BATCH
-        ):
-            raise SessionProtocolError("batch prompts count is invalid")
-        clean: list[str] = []
-        total_chars = 0
-        for prompt in self.prompts:
-            if not isinstance(prompt, str) or len(prompt) > MAX_PROMPT_CHARS:
-                raise SessionProtocolError("batch contains an invalid/oversized prompt")
-            total_chars += len(prompt)
-            if total_chars > MAX_TOTAL_PROMPT_CHARS:
-                raise SessionProtocolError("batch exceeds its total prompt-character bound")
-            clean.append(prompt)
-        object.__setattr__(self, "prompts", tuple(clean))
-        object.__setattr__(self, "max_new_tokens", _bounded_int(
-            self.max_new_tokens, field_name="max_new_tokens", minimum=1,
-            maximum=MAX_NEW_TOKENS,
-        ))
-        # Width zero is the pure-generation read: no logprob collection rides
-        # the clock and the evidence carries exact empty top-k positions.
-        object.__setattr__(self, "top_logprobs_num", _bounded_int(
-            self.top_logprobs_num, field_name="top_logprobs_num", minimum=0,
-            maximum=MAX_TOP_LOGPROBS,
-        ))
-        object.__setattr__(self, "temperature", _bounded_float(
-            self.temperature, field_name="temperature", minimum=0.0, maximum=100.0
-        ))
-        if self.expected_prompt_tokens is not None:
-            object.__setattr__(self, "expected_prompt_tokens", _bounded_int(
-                self.expected_prompt_tokens, field_name="expected_prompt_tokens",
-                minimum=1, maximum=MAX_PROMPT_TOKENS,
-            ))
-        if type(self.measure_phase_latency) is not bool or (
-            self.measure_phase_latency and self.max_new_tokens < 2
-        ):
-            raise SessionProtocolError("phase measurement requires at least two output tokens")
-        expected_evidence_payload_bytes(self)
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            **({"measure_phase_latency": True} if self.measure_phase_latency else {}),
-            "schema": SESSION_SCHEMA, "type": "batch_request",
-            "session_id": self.session_id, "launch_digest": self.launch_digest,
-            "request_id": self.request_id, "nonce": self.nonce,
-            "batch_index": self.batch_index, "prompts": list(self.prompts),
-            "max_new_tokens": self.max_new_tokens,
-            "top_logprobs_num": self.top_logprobs_num,
-            "temperature": self.temperature,
-            "expected_prompt_tokens": self.expected_prompt_tokens,
-        }
+# Keep the established public type identity for retained/third-party consumers.
+from cacheon.eval.oci_request_input import BatchRequest
+BatchRequest.__module__ = __name__
 
 
 @dataclass(frozen=True)
@@ -992,213 +909,6 @@ def validate_ready(
         )
 
 
-CONTAINER_SWAP_INTAKE_PATH = "/cacheon/swap-intake"
-MAX_SWAP_SLOTS = 64
-MAX_SWAP_RANKS = 64
-
-
-@dataclass(frozen=True)
-class SwapRequest:
-    """One host-ordered resident-lane bundle swap (or return to stock).
-
-    ``bundle_digest`` names a content-addressed staged tree under the read-only
-    swap-intake mount; ``None`` returns the engine to stock dispatch.  The
-    worker must re-hash the staged tree against the digest before loading, so a
-    tampered mount fails closed.  ``generation`` is strictly increasing across
-    the session and binds every later batch to the kernel that was live.
-    """
-
-    session_id: str
-    launch_digest: str
-    request_id: str
-    nonce: str
-    swap_index: int
-    generation: int
-    bundle_digest: str | None
-
-    def __post_init__(self) -> None:
-        for name in ("session_id", "request_id", "nonce"):
-            object.__setattr__(self, name, _binding_id(getattr(self, name), field_name=name))
-        if len({self.session_id, self.request_id, self.nonce}) != 3:
-            raise SessionProtocolError("session_id, request_id, and nonce must be distinct")
-        object.__setattr__(self, "launch_digest", _digest(
-            self.launch_digest, field_name="launch_digest"
-        ))
-        object.__setattr__(self, "swap_index", _bounded_int(
-            self.swap_index, field_name="swap_index", minimum=0,
-            maximum=2_147_483_647,
-        ))
-        object.__setattr__(self, "generation", _bounded_int(
-            self.generation, field_name="generation", minimum=1,
-            maximum=2_147_483_647,
-        ))
-        if self.bundle_digest is not None:
-            object.__setattr__(self, "bundle_digest", _digest(
-                self.bundle_digest, field_name="bundle_digest"
-            ))
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "schema": SESSION_SCHEMA, "type": "swap_request",
-            "session_id": self.session_id, "launch_digest": self.launch_digest,
-            "request_id": self.request_id, "nonce": self.nonce,
-            "swap_index": self.swap_index, "generation": self.generation,
-            "bundle_digest": self.bundle_digest,
-        }
-
-
-_SWAP_REQUEST_FIELDS = frozenset("""
-bundle_digest generation launch_digest nonce request_id schema session_id
-swap_index type
-""".split())
-
-
-def swap_request(
-    *,
-    session_id: str,
-    launch_digest: str,
-    request_id: str,
-    nonce: str,
-    swap_index: int,
-    generation: int,
-    bundle_digest: str | None,
-) -> dict[str, object]:
-    return SwapRequest(
-        session_id, launch_digest, request_id, nonce, swap_index, generation,
-        bundle_digest,
-    ).to_dict()
-
-
-def validate_swap_request(message: object) -> SwapRequest:
-    row = _exact_object(message, fields=_SWAP_REQUEST_FIELDS, label="swap request")
-    if row["schema"] != SESSION_SCHEMA or row["type"] != "swap_request":
-        raise SessionProtocolError("swap request schema/type mismatch")
-    return SwapRequest(
-        row["session_id"], row["launch_digest"], row["request_id"], row["nonce"],
-        row["swap_index"], row["generation"], row["bundle_digest"],
-    )  # type: ignore[arg-type]
-
-
-_SWAP_EVIDENCE_FIELDS = frozenset("""
-bundle_digest generation launch_digest nonce prior_execution rank_count
-request_id schema session_id slots swap_index type
-""".split())
-
-
-def _swap_slots(value: object) -> tuple[str, ...]:
-    if not isinstance(value, (tuple, list)) or len(value) > MAX_SWAP_SLOTS:
-        raise SessionProtocolError("swap slots must be a bounded array")
-    slots = tuple(value)
-    if slots != tuple(sorted(set(slots))) or any(
-        not isinstance(slot, str) or _TOKEN.fullmatch(slot) is None for slot in slots
-    ):
-        raise SessionProtocolError("swap slots must be sorted unique tokens")
-    return slots
-
-
-def swap_evidence_message(
-    *,
-    request: SwapRequest,
-    slots: Sequence[str],
-    rank_count: int,
-    execution: ResidentExecutionEvidence,
-) -> dict[str, object]:
-    """The worker's post-swap report; carries no worker timing or verdict.
-
-    A worker sends this only after EVERY scheduler rank acknowledged the exact
-    generation with an identical slot set; any rank failure must surface as a
-    session error frame instead, leaving the registry empty (stock dispatch).
-    """
-
-    if type(request) is not SwapRequest:
-        raise SessionProtocolError("swap evidence binding is not exactly typed")
-    if type(execution) is not ResidentExecutionEvidence:
-        raise SessionProtocolError("swap execution evidence is not exactly typed")
-    clean_slots = _swap_slots(tuple(slots))
-    if request.bundle_digest is None and clean_slots:
-        raise SessionProtocolError("stock swap evidence must register no slots")
-    if request.bundle_digest is not None and not clean_slots:
-        raise SessionProtocolError("bundle swap evidence must register slots")
-    return {
-        "bundle_digest": request.bundle_digest,
-        "generation": request.generation,
-        "launch_digest": request.launch_digest,
-        "nonce": request.nonce,
-        # Execution evidence for the generation this swap CLOSES, not the one it
-        # opens. -1 means "unobserved" and is a distinct state from an observed
-        # zero; the two must never be flattened into one, because absent
-        # evidence is an infrastructure fault while an observed zero is a fact
-        # about the candidate. The protocol carries the facts only — their
-        # interpretation belongs to the evaluator.
-        "prior_execution": EXECUTION_CODEC.encode(execution),
-        "rank_count": _bounded_int(
-            rank_count, field_name="swap rank_count", minimum=1,
-            maximum=MAX_SWAP_RANKS,
-        ),
-        "request_id": request.request_id,
-        "schema": SESSION_SCHEMA,
-        "session_id": request.session_id,
-        "slots": list(clean_slots),
-        "swap_index": request.swap_index,
-        "type": "swap_evidence",
-    }
-
-
-def validate_swap_evidence(
-    message: object,
-    *,
-    request: SwapRequest,
-    expected_rank_count: int,
-) -> tuple[tuple[str, ...], ResidentExecutionEvidence]:
-    if type(request) is not SwapRequest:
-        raise SessionProtocolError("swap evidence expectation is not exactly typed")
-    expected_ranks = _bounded_int(
-        expected_rank_count, field_name="expected swap rank_count", minimum=1,
-        maximum=MAX_SWAP_RANKS,
-    )
-    row = _exact_object(message, fields=_SWAP_EVIDENCE_FIELDS, label="swap evidence")
-    expected = {
-        "bundle_digest": request.bundle_digest,
-        "generation": request.generation,
-        "launch_digest": request.launch_digest,
-        "nonce": request.nonce,
-        "rank_count": expected_ranks,
-        "request_id": request.request_id,
-        "schema": SESSION_SCHEMA,
-        "session_id": request.session_id,
-        "swap_index": request.swap_index,
-        "type": "swap_evidence",
-    }
-    if any(row[name] != value for name, value in expected.items()):
-        raise SessionProtocolError(
-            "swap evidence nonce/request/session/launch/generation binding mismatch"
-        )
-    slots = _swap_slots(row["slots"])
-    if request.bundle_digest is None and slots:
-        raise SessionProtocolError("stock swap evidence must register no slots")
-    if request.bundle_digest is not None and not slots:
-        raise SessionProtocolError("bundle swap evidence must register slots")
-    try:
-        execution = EXECUTION_CODEC.decode(row["prior_execution"])
-    except ContinuationCodecError as exc:
-        raise SessionProtocolError(f"swap execution evidence is invalid: {exc}") from None
-    if type(execution) is not ResidentExecutionEvidence:
-        raise SessionProtocolError("swap execution evidence is not exactly typed")
-    # A closed generation precedes the one being opened, and a rank count cannot
-    # exceed the group. Either may be -1 (unobserved); neither may be a fiction
-    # that would let a worker manufacture execution the controller never saw,
-    # and rows, when carried, cover the whole group or none of it.
-    if not UNOBSERVED <= execution.prior_generation < request.generation:
-        raise SessionProtocolError(
-            "swap execution evidence names an impossible generation"
-        )
-    if not UNOBSERVED <= execution.prior_execution_ranks <= expected_ranks:
-        raise SessionProtocolError("swap execution evidence exceeds its rank group")
-    if len(execution.ranks) not in (0, expected_ranks):
-        raise SessionProtocolError("swap execution rows do not cover the rank group")
-    return slots, execution
-
-
 _BATCH_REQUEST_FIELDS = frozenset("""
 batch_index expected_prompt_tokens launch_digest max_new_tokens nonce prompts
 request_id schema session_id temperature top_logprobs_num type
@@ -1305,7 +1015,7 @@ _TOPK_ENTRY = struct.Struct(">fI")
 def expected_evidence_payload_bytes(request: BatchRequest) -> int:
     if not isinstance(request, BatchRequest):
         raise SessionProtocolError("evidence request is not typed")
-    prompt_count = len(request.prompts)
+    prompt_count = request.prompt_count
     per_position = _TOKEN_ID.size + request.top_logprobs_num * _TOPK_ENTRY.size
     # Each prompt record leads with its engine-observed prompt token count.
     total = _EVIDENCE_BINDING.size + prompt_count * (
@@ -1317,7 +1027,7 @@ def expected_evidence_payload_bytes(request: BatchRequest) -> int:
 
 
 def _validated_evidence(evidence: BatchEvidence, *, request: BatchRequest) -> BatchEvidence:
-    if not isinstance(evidence, BatchEvidence) or len(evidence.prompts) != len(request.prompts):
+    if not isinstance(evidence, BatchEvidence) or len(evidence.prompts) != request.prompt_count:
         raise SessionProtocolError("binary evidence prompt count is invalid")
     clean_prompts: list[PromptEvidence] = []
     for prompt in evidence.prompts:
@@ -1376,7 +1086,7 @@ def evidence_frame(evidence: BatchEvidence, *, request: BatchRequest) -> bytes:
     payload = bytearray(_EVIDENCE_BINDING.pack(
         bytes.fromhex(request.session_id), bytes.fromhex(request.launch_digest),
         bytes.fromhex(request.request_id), bytes.fromhex(request.nonce),
-        request.batch_index, len(request.prompts), request.max_new_tokens,
+        request.batch_index, request.prompt_count, request.max_new_tokens,
         request.top_logprobs_num,
     ))
     for prompt in clean.prompts:
@@ -1406,7 +1116,7 @@ def decode_evidence_payload(payload: bytes, *, request: BatchRequest) -> BatchEv
         or request_id.hex() != request.request_id
         or nonce.hex() != request.nonce
         or batch_index != request.batch_index
-        or prompt_count != len(request.prompts)
+        or prompt_count != request.prompt_count
         or token_count != request.max_new_tokens
         or topk_width != request.top_logprobs_num
     ):

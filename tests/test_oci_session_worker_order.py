@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import asyncio
 import os
 import subprocess
 import sys
@@ -11,6 +12,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from tests.support.pipes import engine_loop as engine_loop
+
+pytestmark = pytest.mark.usefixtures("engine_loop")
 
 from cacheon.eval import engine_worker as engine_policy
 from cacheon.eval import oci_session_worker as worker
@@ -359,7 +364,7 @@ def test_preflight_frame_is_published_before_engine_candidate_or_native_entry(
         assert first[:4] == CONTROL_MAGIC
         assert parse_frame_bytes(first, max_bytes=MAX_CONTROL_BYTES)["type"] == "preflight"
         order.append("engine")
-        yield SimpleNamespace(engine=SimpleNamespace(), require_completion=lambda: None)
+        yield SimpleNamespace(engine=SimpleNamespace(loop=asyncio.get_event_loop()), require_completion=lambda: None)
 
     monkeypatch.setattr(worker, "_validate_live_preflight", preflight)
     monkeypatch.setattr(worker, "_engine_session", engine_session)
@@ -485,7 +490,9 @@ def test_open_ended_worker_returns_only_exact_binary_batch_evidence(monkeypatch)
     completions: list[int] = []
 
     class Engine:
-        def generate(self, **kwargs):
+        loop = asyncio.get_event_loop()
+
+        async def async_generate(self, **kwargs):
             assert kwargs["sampling_params"]["ignore_eos"] is True
             return {
                 "output_ids": [11, 12],
@@ -582,7 +589,9 @@ def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
     )
 
     class Engine:
-        def generate(self, **_kwargs):
+        loop = asyncio.get_event_loop()
+
+        async def async_generate(self, **_kwargs):
             return {
                 "output_ids": [11, 12],
                 "meta_info": {
@@ -682,7 +691,8 @@ def test_candidate_coverage_failure_remains_hard_error_outside_audit(monkeypatch
         )
 
 
-def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monkeypatch):
+@pytest.mark.parametrize("canonical", [False, True])
+def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monkeypatch, canonical):
     config = _config()
     session, launch = "6" * 32, _digest("a")
     requests = tuple(
@@ -694,6 +704,10 @@ def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monke
     long_role = ReferenceRoleInput((7, 8, 9, 10), ((7, 9), (8, 10)) * 2)
     long = replace(short, prompt_digest=_digest("7"), roles=(long_role,) * 3)
     requests = (requests[0], replace(requests[1], tokens_per_prompt=4, prompts=(short, long)))
+    if canonical:
+        requests = tuple(replace(request, prompts=tuple(
+            replace(prompt, prompt="", input_ids=(11, 2)) for prompt in request.prompts
+        )) for request in requests)
     _bind_init(monkeypatch, config, launch)
     monkeypatch.setenv("CACHEON_SESSION_PROTOCOL", "reference")
     payload = (
@@ -703,6 +717,11 @@ def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monke
     )
     input_fd, output_read, output_write = _session_fds(payload)
     engine = _ReferenceEngine()
+    if canonical:
+        def no_retokenization(_prompt):
+            raise AssertionError("canonical replay input must not be re-tokenized")
+
+        monkeypatch.setattr(engine.tokenizer_manager.tokenizer, "encode", no_retokenization)
     monkeypatch.setattr(
         worker,
         "_validate_live_preflight",
@@ -742,6 +761,8 @@ def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monke
         assert len(engine.calls) == 6
         assert [len(call["input_ids"]) for call in engine.calls] == [1, 1, 1, 2, 2, 2]
         assert all(call["top_logprobs_num"] == 1 for call in engine.calls)
+        assert all(ids[:2] == ([11, 2] if canonical else [1, 2])
+                   for call in engine.calls for ids in call["input_ids"])
         assert os.read(output_read, 1) == b""
     finally:
         os.close(input_fd)

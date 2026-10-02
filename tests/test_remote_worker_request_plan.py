@@ -95,9 +95,6 @@ class _Authority:
             poll_seconds=1,
         )
 
-    def cleanup(self) -> None:
-        self.coordinator._release(self.claim.lease, reason="test_cleanup")
-
 
 def _published_profile(fixtures, root: Path, profile: str) -> None:
     source = root / f"source-{profile}"
@@ -163,8 +160,6 @@ def _authority(
     if recoverable:
         coordinator_options["store_factory"] = RecoverableFinalizedIntakeStore
     coordinator = fixtures._coordinator(root, service, cursor, **coordinator_options)
-    for _name in cohort:
-        fixtures._promote_one(coordinator)
     claim = fixtures._claim_qualification(coordinator)
     assert len(claim.publications) == len(cohort)
     credential = RemoteWorkerCredential("qualification-key-v1", b"q" * 32)
@@ -342,14 +337,6 @@ def test_reconstructed_transport_uses_one_plan_carrier_ready_and_no_enqueue(
     tmp_path: Path, monkeypatch
 ) -> None:
     authority = _authority(tmp_path)
-    calls = 0
-
-    def forbidden_enqueue(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        raise AssertionError("recovery invoked legacy enqueue")
-
-    monkeypatch.setattr(ssh_transport, "enqueue_request", forbidden_enqueue)
     first = authority.transport()
     plan = first.plan_qualification_request(authority.request)
     reopened = planning.QualificationRequestPlan.from_dict(plan.to_dict())
@@ -374,8 +361,6 @@ def test_reconstructed_transport_uses_one_plan_carrier_ready_and_no_enqueue(
     assert (carriers[0] / "REQUEST_READY").read_bytes() == (
         plan.request_id + "\n"
     ).encode()
-    assert calls == 0
-    authority.cleanup()
 
 
 def test_plan_samples_time_once_and_supports_two_independent_roots(
@@ -404,8 +389,6 @@ def test_plan_samples_time_once_and_supports_two_independent_roots(
     assert first_plan.remote_request.body["candidates"][0]["publication"] != (
         second_plan.remote_request.body["candidates"][0]["publication"]
     )
-    first.cleanup()
-    second.cleanup()
 
 
 def test_partial_hidden_blob_is_repaired_only_while_prepublication(
@@ -432,7 +415,6 @@ def test_partial_hidden_blob_is_repaired_only_while_prepublication(
     assert _materialize(authority, plan).state == "carrier_materialized"
     assert not hidden.exists()
     assert len([p for p in authority.outbox.iterdir() if p.is_dir()]) == 1
-    authority.cleanup()
 
 
 @pytest.mark.parametrize("mode", ["tampered", "duplicate", "missing"])
@@ -456,7 +438,6 @@ def test_tampered_duplicate_and_missing_carriers_hold(
         action = lambda: authority.transport().resume_planned_qualification(plan)
     with pytest.raises(planning.QualificationRecoveryHold):
         action()
-    authority.cleanup()
 
 
 def test_changed_worker_readiness_registration_or_credential_holds(
@@ -521,7 +502,6 @@ def test_changed_worker_readiness_registration_or_credential_holds(
             identity=authority.identity,
             credential=wrong_credential,
         )
-    authority.cleanup()
 
 
 def test_same_epoch_registration_refresh_keeps_plan_dispatchable(
@@ -554,7 +534,6 @@ def test_same_epoch_registration_refresh_keeps_plan_dispatchable(
         credential=authority.credential,
     )
     assert observation.state == "carrier_materialized"
-    authority.cleanup()
 
 
 @pytest.mark.parametrize("evidence", ["ready", "dispatch", "result"])
@@ -588,7 +567,6 @@ def test_prepublication_proof_rejects_any_point_of_no_return_evidence(
             identity=authority.identity,
             credential=authority.credential,
         )
-    authority.cleanup()
 
 
 def test_concurrent_publishers_create_one_exact_ready_marker(tmp_path: Path) -> None:
@@ -608,7 +586,6 @@ def test_concurrent_publishers_create_one_exact_ready_marker(tmp_path: Path) -> 
     markers = list(observation.carrier_path.glob("REQUEST_READY"))
     assert len(markers) == 1
     assert markers[0].read_bytes() == (plan.request_id + "\n").encode()
-    authority.cleanup()
 
 
 def test_sqlite_recovery_persists_one_plan_across_every_publication_crash_window(
@@ -757,25 +734,22 @@ def test_two_member_cohort_plan_carries_every_publication_in_order(
     tmp_path: Path,
 ) -> None:
     authority = _authority(tmp_path, profiles=("alpha", "beta"))
-    try:
-        assert len(authority.claim.lease.reservation_ids) == 2
-        plan = _plan(authority)
-        roles = tuple(row.role for row in plan.artifacts)
-        assert roles == (
-            "qualification_payload",
-            "candidate_publication",
-            "candidate_publication",
-        )
-        expected = tuple(
-            spool.file_sha256(path) for path in authority.publication_paths
-        )
-        assert tuple(row.sha256 for row in plan.artifacts[1:]) == expected
-        assert _materialize(authority, plan).state == "carrier_materialized"
-        published = _publish(authority, plan)
-        assert published.state == "request_ready"
-        assert published.carrier_path is not None
-        blobs = published.carrier_path / "blobs"
-        for row in plan.artifacts:
-            assert (blobs / row.sha256).is_file()
-    finally:
-        authority.cleanup()
+    assert len(authority.claim.lease.reservation_ids) == 2
+    plan = _plan(authority)
+    roles = tuple(row.role for row in plan.artifacts)
+    assert roles == (
+        "qualification_payload",
+        "candidate_publication",
+        "candidate_publication",
+    )
+    expected = tuple(
+        spool.file_sha256(path) for path in authority.publication_paths
+    )
+    assert tuple(row.sha256 for row in plan.artifacts[1:]) == expected
+    assert _materialize(authority, plan).state == "carrier_materialized"
+    published = _publish(authority, plan)
+    assert published.state == "request_ready"
+    assert published.carrier_path is not None
+    blobs = published.carrier_path / "blobs"
+    for row in plan.artifacts:
+        assert (blobs / row.sha256).is_file()

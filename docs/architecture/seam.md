@@ -1,12 +1,12 @@
 # SGLang seam
 
-The seam connects Cacheon's stable slot ABI to version-pinned SGLang internals. It is intentionally split into two layers:
+The seam connects Cacheon's contribution targets to version-pinned SGLang internals. It is intentionally split into two layers:
 
-- [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) defines the stable miner-facing semantic contract;
+- the [target catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) defines the stable miner-facing contract: node addresses under the model and the prefix cache;
 - [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) defines the SGLang-specific adapter registry that must be reviewed whenever the runtime pin moves;
 - [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py) and the [`scheduler_gate` adapter](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_scheduler_gate.py) enforce activation and scheduler-only candidate loading.
 
-Slots are the narrow waist. Adapters are replaceable glue.
+Targets are the narrow waist. Adapters are replaceable glue.
 
 ## Why the seam exists
 
@@ -37,9 +37,8 @@ flowchart LR
 `SEAM_ADAPTERS` is the single source of truth for:
 
 - modules watched by the startup bootstrap;
-- integration modules installed by `seam.activate()`;
-- compatibility canaries run against the pinned SGLang revision;
-- public binding identifiers and their fixed environment gates.
+- integration modules installed by `seam.activate()`; and
+- compatibility canaries run against the pinned SGLang revision.
 
 Adding an adapter is one table change plus its implementation and tests. Bootstrap, activation, and compatibility derive their vocabulary from that table rather than maintaining parallel lists.
 
@@ -48,22 +47,15 @@ The registered rows are:
 | Adapter | SGLang chokepoint | Role |
 |---|---|---|
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot |
-| `resident_swap` | `ModelRunner.init_decode_cuda_graph` plus idle-gated scheduler cache flush | Persistent resident screening only; not qualification or a slot |
 | `nodes` | `ModelRunner.load_model` | Every registered [node address](slot-contract.md#node-addresses); binds the named modules of the served model once the weights are loaded |
+| `cache` | `create_tree_cache` | The [prefix cache](slot-contract.md#the-prefix-cache); passes the initialized runtime object to the bundle's factory and checks the KV behind its served prefixes |
 
-`nodes` is the only adapter that serves candidate code. It patches no SGLang
-method: it replaces the `forward` of the modules a bundle named, so a model whose
-layers take a different class (`GemmaRMSNorm` instead of `RMSNorm`) is reached by
-the same row. The per-operation adapters it replaced each pinned one SGLang
-method and had to be re-derived for every model family and engine bump.
-
-`resident_swap` is deliberately outside the crown path. It is inert unless the
-validator supplies `CACHEON_RESIDENT_SWAP` to a persistent screening engine. The
-host stages a strictly increasing swap generation, triggers an idle-gated
-recapture, and requires an acknowledgement from every scheduler rank. A failed
-swap clears and disables the registry so the screen cannot measure a
-half-installed contribution. Qualification launches never set this control
-directory and never inherit screen evidence.
+`nodes` serves all candidate model code and `cache` the one scheduler object a
+bundle may replace. `nodes` patches no SGLang method: it replaces the `forward` of
+the modules a bundle named, so a model whose layers take a different class
+(`GemmaRMSNorm` instead of `RMSNorm`) is reached by the same row. The
+per-operation adapters it replaced each pinned one SGLang method and had to be
+re-derived for every model family and engine bump.
 
 ## Bootstrap across spawned processes
 
@@ -96,15 +88,9 @@ Principal code: [`bootstrap.py`](https://github.com/latent-to/cacheon/blob/main/
 
 ## Closed activation vocabulary
 
-The controller does not send arbitrary environment variable names across the worker protocol. It selects a sorted, duplicate-free set of public binding identifiers from the closed `SEAM_BINDINGS` vocabulary.
+The controller does not send arbitrary environment variable names across the worker protocol. Adapter rows carry no binding identifiers: the node and cache adapters are armed by the registered bundle alone.
 
-Inside the engine, each binding maps to one fixed gate. No current adapter row
-declares a binding, so the vocabulary is empty and every session carries an empty
-binding set; the node adapter is armed by the registered bundle alone.
-
-Normalization rejects unknown, duplicated, or non-canonical identifiers. Engine launch then emits the complete fixed seam environment, preventing stale ambient values from arming additional adapters.
-
-The exact binding set is derived from the materialized stack and retained in launch identity. B and B′ use the same incumbent binding set. C differs only as required by its selected target delta. The pristine T reference has no candidate seam activation.
+Engine launch emits the complete fixed seam environment, preventing stale ambient values from arming additional adapters. Activation follows the materialized stack retained in launch identity: every incumbent read loads the same incumbent contributions, C differs only by its selected target delta, and the pristine T reference has no candidate seam activation.
 
 ## Sealed contribution namespaces
 
@@ -146,10 +132,10 @@ scheduler:    positive process entry, sealed contribution loaded, registry enabl
 
 ### Trace one serving call
 
-For a signed release, one successful candidate-backed call crosses the seam in this order:
+In an evaluation engine, one successful candidate-backed call crosses the seam in this order:
 
-1. The container entry point verifies the release, model, native artifacts, signed command,
-   and required binding set before starting SGLang.
+1. The trusted launcher fixes the engine tree, model, native publication, and command
+   before starting SGLang in the OCI worker.
 2. The startup bootstrap arms import hooks in each spawned interpreter without importing a
    contribution.
 3. Spawned interpreters import watched SGLang modules. Original modules load first, then
@@ -165,6 +151,10 @@ For a signed release, one successful candidate-backed call crosses the seam in t
    arguments.
 7. The rank emits `completed` receipts for the selected slot.
 
+The prefix cache follows the same load gate, but its `cache` adapter binds once, when
+the scheduler builds its cache: the choice uses an empty call descriptor, and every
+handoff to the cache runs the [content check](../validator-guide/fidelity.md#prefix-cache-content-check).
+
 If step 6 finds no eligible candidate, stock routing before selection can be legitimate.
 If the candidate fails after selection, the error takes the run down: it is never
 reinterpreted as a successful candidate execution or served by stock.
@@ -175,7 +165,7 @@ The node dispatcher:
 
 1. serves stock while Dynamo is tracing, while FlashInfer is profiling tactics, while
    another candidate is already running, or while the registry is disabled;
-2. derives a call descriptor (dtype, width, token count, architecture, graph mode) from
+2. derives a call descriptor (dtype, last dimension, architecture, graph mode) from
    the live call and resolves a variant against validator-owned eligibility;
 3. runs `prepare(module)` once per bound node;
 4. on a sampled eager call, takes the stock answer and the honest twin's answer first and
@@ -189,7 +179,7 @@ The dispatcher is [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/
 
 ## Graph behavior
 
-Binding happens before SGLang captures its prefill and decode graphs, so a bound node is captured at every width. Audited comparisons run on eager calls only; the timed graphs-on run records whether each candidate call happened inside a capture.
+Binding happens before SGLang captures its prefill and decode graphs, so a bound node is captured at every width. Audited comparisons run on eager calls only; the timed graphs-on run records whether each candidate call happened inside a capture. The prefix cache runs outside CUDA graphs, so the execution gate counts its completions without a capture.
 
 An adapter that fires only in eager mode, captures a cached answer, mutates storage identity, or bypasses live replay is not qualified for a graphs-on arena. See [Slot contract](slot-contract.md) and [Graph safety](../miner-guide/graph-safety.md).
 
@@ -201,7 +191,9 @@ Scheduler ranks can write process-local seam receipts:
 - `load_failed` — activation failed or registered nothing;
 - `not_selected` — a candidate is registered for this slot but the routing
   decision sent the call to stock, with the field-level reason;
-- `completed` — the candidate produced the model-facing output.
+- `completed` — the candidate produced the model-facing output;
+- `failed` — the candidate raised after selection; the exception still takes the
+  engine down.
 
 A `completed` receipt carries two further fields:
 
@@ -229,13 +221,11 @@ covering three unrelated causes — the declared domain never matched a live cal
 the seam never fired, or the entry was never reached — and each needs a different
 fix. With it, the ladder answers the question directly.
 
-These receipts are valuable positive accounting. They catch phantom passes where a benchmark accidentally measures stock code. They are also used by the signed-release serve smoke to require active/completed coverage.
+These receipts are valuable positive accounting. They catch phantom passes where a benchmark accidentally measures stock code.
 
-`fired` was retired on 2026-08-23. It recorded that the registry *resolved* an
-implementation, which is weaker than it reads — the caller could still decline
-afterwards — so every production call site opted out of the write and a
-probe-only duplicate of `lookup` existed solely to avoid it. Once an entry is
-invoked there are exactly two outcomes, `completed` or `fallback`, and either one
+There is no receipt for registry resolution alone: resolving an implementation is
+weaker than it reads, because the caller can still decline afterwards. Once an entry
+is invoked there are exactly two outcomes, `completed` or `failed`, and either one
 proves selection.
 
 The active-member gate expects exactly the registered tensor-parallel scheduler
@@ -254,11 +244,9 @@ The seam is deliberately pinned-runtime code. An SGLang upgrade requires:
 1. updating the explicit runtime pin and vendor provenance;
 2. running the compatibility canary over every assessable adapter row;
 3. reviewing changed chokepoints and call descriptors;
-4. rerunning slot, graph, collective, engine, and failure-path tests;
+4. rerunning node, cache, graph, engine, and failure-path tests;
 5. recalibrating affected arena noise and quality profiles;
-6. producing new runtime, engine-tree, native, and release identities.
-
-Optional backend rows declare `requires` packages so CPU/dev environments can skip an unassessable adapter rather than report a false break. Production arenas that depend on that adapter must provide and assess the dependency.
+6. producing new runtime, engine-tree, and native identities.
 
 !!! warning "Pin-validation boundary"
     A green import/chokepoint canary is necessary compatibility evidence, not proof that
@@ -271,24 +259,23 @@ Read receipts in lifecycle order instead of treating any single file as success:
 
 | Last trustworthy observation | Likely boundary | What to inspect |
 |---|---|---|
-| No `active` receipt | Bootstrap, watched import, sealed namespace, or registration | Pin, adapter canary, worker role, tree/release digests, scheduler logs |
+| No `active` receipt | Bootstrap, watched import, sealed namespace, or registration | Pin, adapter canary, worker role, tree/stack digests, scheduler logs |
 | `active`, `not_selected` present | The declared domain never matched a live call | The receipt names the field and the expected domain; compare against the sealed workload |
 | `active`, no `not_selected`, no `completed` | The chokepoint never fired, or the entry was never reached | Adapter firing, seam env, topology, deadline, exception, rank agreement, device state |
-| `completed` with `captured: false` | Candidate never entered the captured graph; scored replays served stock | Whether the seam was reached during capture, and graph metadata against the captured shapes |
+| `completed` with `captured: false` | Candidate never entered the captured graph; scored replays served stock | Whether the seam was reached during capture, and the declared domain against the captured shapes |
 | Full per-rank coverage, quality/speed fails | Seam worked; the contribution did not qualify | Qualification evidence and pristine T report, not bootstrap code |
 
 A common diagnostic mistake is to stop at “the server answered.” Stock fallback can keep
 a server responsive. Authority requires the expected slot-by-rank `active`/
-`completed` coverage and the absence of `load_failed` or `fallback`, followed by the
+`completed` coverage and the absence of `load_failed` or `failed`, followed by the
 separate quality and performance gates.
 
 ## Source map
 
-- [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) — adapter and binding source of truth
+- [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) — adapter source of truth
 - [`bootstrap.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bootstrap.py) — startup/import hook
 - [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py) — activation and sealed contribution loading
 - [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py) — capture, tracing and tuning probes the dispatcher reads
 - [`integrations/sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py) — the node dispatcher
 - [`integrations/`](https://github.com/latent-to/cacheon/tree/main/cacheon/integrations) — version-pinned SGLang adapters
-- [`integrations/sglang_resident_swap.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_resident_swap.py) — screening-only swap and graph-recapture hook
 - [`compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py) — pin and chokepoint canary

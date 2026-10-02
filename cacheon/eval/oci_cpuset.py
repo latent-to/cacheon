@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 
@@ -85,4 +86,34 @@ def validate_cpuset_pair(
     return cpus, mems
 
 
-__all__ = ["validate_cpuset_pair"]
+def canonical_cpu_pins(value: object) -> tuple[tuple[str, tuple[int, ...]], ...] | None:
+    """Return sealed per-GPU pins sorted by GPU: each row is (scheduler vCPU, pool vCPUs...).
+
+    The B300 VM's vCPUs differ 2x in single-thread speed and unpinned engines landed on different
+    ones each boot: whole-boot copy-vs-copy offsets up to 6.7% (2026-09-30).
+    """
+    if value is None:
+        return None
+    rows = value.items() if isinstance(value, dict) else value
+    pins = tuple(sorted((str(gpu), tuple(cpus)) for gpu, cpus in rows))
+    if (not pins or len({gpu for gpu, _ in pins}) != len(pins)
+            or len({cpus[0] for _, cpus in pins if cpus}) != len(pins)
+            or any(not gpu.isdigit() or len(cpus) < 2 or len(set(cpus)) != len(cpus)
+                   or any(type(c) is not int or not 0 <= c <= _MAX_CPU_INDEX for c in cpus)
+                   for gpu, cpus in pins)):
+        raise ValueError("cpu_pins is malformed")
+    return pins
+
+
+def lane_cpu_pin_plan(pins: tuple[tuple[str, tuple[int, ...]], ...], gpu_ids: tuple[str, ...]) -> str:
+    """The engine worker's plan for one lane: pinned scheduler vCPUs in device order and the pool.
+
+    A lane GPU without a pin shortens the scheduler list, which the worker rejects at launch.
+    """
+    table = dict(pins)
+    return json.dumps({"schedulers": [table[gpu][0] for gpu in gpu_ids if gpu in table],
+                       "pool": sorted({c for gpu in gpu_ids for c in table.get(gpu, ())[1:]})},
+                      separators=(",", ":"))
+
+
+__all__ = ["canonical_cpu_pins", "lane_cpu_pin_plan", "validate_cpuset_pair"]

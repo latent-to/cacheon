@@ -26,12 +26,17 @@ to run the dashboard and its API tests.
 |-----|---------|
 | Overview | Status counts, submissions/day sparkline, failure reasons, currently running eval |
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
-| Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
+| Submissions | All reservations: status, hotkey, submit time/block, fee tx, decisions, full detail drawer (qualification attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (0.5 τ minimum): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
 | Winners | Retained PASS settlement candidates: credited gain, measured candidate and baseline tok/s, prefill gain, served weight share, settlement status, and current on-chain emission |
 | Miners | Per-hotkey leaderboard sorted by served weight share: submissions, crowns, qualified/failed, fees paid, registration + emission |
 | Timeline | Settlement events (CROWN/ADOPTION/HOLD/…), the served weight offer's vector, and this validator's follower journal (intent/pending/held/confirmed) |
 | System | DB/chain/process/heartbeat health, intake lag |
+
+Queue, submission-list and detail fee labels include the credit spent on that
+specific submission. Available credits and credits spent on another submission
+do not mark it as covered. On-chain payments retain their transaction links;
+credit-funded details show the covered amount without inventing a transaction.
 
 The Winners tab places completed PASSes still awaiting earlier queue entries in
 a separate, greyed-out **Potential winners** table above retained rewards. Their
@@ -40,7 +45,7 @@ Once queue eligibility is finalized, qualifying winners appear normally on the
 next refresh; PASSes below the winning threshold do not enter retained rewards.
 Resolution uses the shared reward comparison from the weight producer: scoring
 gain is relative to the best earlier PASS in queue order within the same arena
-and measured baseline, including an earlier PASS that missed the reward margin.
+and measured baseline that itself earned.
 Later submissions never change an earlier submission's reference. Retained
 baseline measurements and PASS evidence are unchanged.
 Already finalized rewards retain their existing eligibility if earlier work is reopened.
@@ -80,6 +85,7 @@ separate from finalized `items` / `pass_total`. Waiting rows have
 | `MALLOC_ARENA_MAX` | `2` in `run.sh`; limits glibc allocator arenas for concurrent reads, trading allocator concurrency for lower retained memory. Direct Python launches must set it before starting Python. |
 | `CACHEON_DASH_OFFER` | `/var/lib/cacheon/current_weights.json` (the file the weight-offer service serves) |
 | `CACHEON_DASH_FOLLOW_JOURNAL` | unset; the follower journal SQLite named by the follow-weights lane's `--journal-db`. When unset the Timeline says so instead of showing a stale journal. |
+| `CACHEON_DASH_EXCLUSIONS` | unset; the `exclusions.json` the running weight producer applies. A submission named in its `claims`, or a hotkey in its `records` that the served offer pays nothing, shows the operator's recorded decision. When unset no decision is shown. |
 
 ## API
 
@@ -120,16 +126,26 @@ remain readable by intake and cannot be made confidential retroactively.
 The evaluation baseline card links to the submission recorded by the evaluated
 artifact's lineage transition, preserving the selected arena. A base-engine
 baseline has no submission; missing historical links are labelled explicitly.
+The card and the Submissions list also name the best retained PASS on that same
+arena and baseline stack: the result a later PASS must beat by the reward margin
+to earn. The crown lineage decides adoption, not pay, and is not shown.
 The previous-best scoring comparison also links to that submission's details.
 
+A replay-graded submission leads with its `result` in the Submissions list, the
+Winners table and the detail: the verdict with the measured gain, the gain that
+was needed and the passes run, then pooled decode tok/s and mean first-token
+time, baseline → candidate. `reward` is its share of the served offer and the
+ordered comparison that decided it (the detail carries the same fields under
+`settlement`). Both are null where nothing is retained to report, which
+includes every batch-cell attempt: its raw lane ratio is not the credited gain.
+
 The submission detail renders the signed evaluation records in full. Each
-screen attempt carries `stages` — every graded check from the signed receipt
-(stage, grade, reason, elapsed time), so a `screen_rejected` names the exact
-failing check and its measured margin. Each qualification attempt carries
-`speed` — the lane rates from the retained stage-exit artifact (per-role
-tokens/second, timed windows, window scatter, conditioning ratio, and the
-C/B speedup); `speed` is null when no local evidence store retains that
-attempt's artifact. It also reuses the validator's `worker_log` explanation.
+qualification attempt carries
+`speed` — the measurements from the retained stage-exit artifact: the paired
+replay windows and the retained grade for replay attempts, or the stored lane
+rates (per-role tokens/second, timed windows, window scatter, conditioning ratio,
+and the C/B speedup) for retained batch-cell attempts; `speed` is null when no
+local evidence store retains that attempt's artifact. It also reuses the validator's `worker_log` explanation.
 Each request with retained forensics links to
 `/api/submissions/{reservation_id}/forensics/{request_id}.log`. The response is
 built read-only from the hash-verified result and contains the exact
@@ -146,12 +162,14 @@ Each qualification attempt also has a **Performance** section:
   Their measurements and original decision remain separate from the reservation's
   current status, including a later operator rejection. Importing the same
   attempt does not duplicate it in the history.
-- **Why this result:** the shared grader explains the retained policy and reads,
-  including gains against both baselines, required gain and measured baseline
-  drift. A borderline speed result is distinguishable from invalid measurement.
-- **Output throughput:** B/C/B′ output tok/s and total timed batch seconds.
+- **Agent replay:** the measured and required gain, then one row per pass. A
+  pass pairs the baseline and the candidate that ran at the same moment: gain,
+  time for the same work, decode tok/s pooled over the arm, mean and p95
+  first-token time, and service attainment.
+- **Output throughput:** retained batch-cell attempts show B/C/B′ output tok/s
+  and total timed batch seconds from their stored reads, without a regrade.
   This includes prompt processing and generation; it is not isolated decode time.
-- **Prefill:** v12 prompt-pass throughput in **prompts/s**, total timed batch
+- **Prefill:** retained v12 prompt-pass throughput in **prompts/s**, total timed batch
   seconds, observed candidate gain over the faster baseline read, and the
   retained prefill margin. Each prompt pass generates one output token, so the
   output-token count is a request count, not an input-token throughput measure.
@@ -161,15 +179,10 @@ Each qualification attempt also has a **Performance** section:
   request concurrency. Cells are recomputed from retained host timing windows.
   Evaluations without these timings explicitly show **Not measured**.
 
-The Winners table includes conservative observed prefill gain when retained
-passing attempts contain prompt passes. Missing historical measurements remain
-absent. `session.measure_phase_latency` must have been enabled in the evaluation
-to display TTFT/TPOT; enabling a dashboard panel does not enable measurement or
-reconstruct timings for old runs.
-
-Credited gains are labelled separately from measured throughput. A v12 prefill
-credit is not an output-throughput ratio, so the dashboard does not divide
-candidate tok/s by that credit to invent a stock tok/s estimate.
+For batch-cell rows the Winners table shows measured baseline → candidate tok/s
+and the conservative observed prefill gain when prompt passes were retained.
+`session.measure_phase_latency` must have been enabled in the evaluation to
+display TTFT/TPOT; a dashboard panel cannot reconstruct timings for old runs.
 
 The API keeps ordinary lane `tokens_per_second` and adds `timed_seconds` and
 `cells`. Prefill lanes set `tokens_per_second` to null and expose
@@ -197,8 +210,11 @@ PASS by the sealed minimum margin. Pre-policy runtime generations retain their
 existing eligibility; a crown is not required. The weight producer and Winners
 view share this arrival-ordered filter.
 A pass that settlement held as `stale_incumbent` (timed against an earlier
-baseline than the champion) is shown as `paid pass` in `settlement_status`,
-since it earns like any other pass and only the champion adoption was withheld.
+baseline than the champion) or `lost_potential` (did not exceed the crown
+record) is shown as `passed` in `settlement_status`: it earns like any other
+pass and only the crown was withheld. The detail's **Reward and crown** block
+states the two separately. A PASS named in the `claims` of
+`CACHEON_DASH_EXCLUSIONS` reads `excluded` and is never shown as the result to beat.
 Historical retained pairs keep their identities. `/api/winners` carries each
 reservation's `weight_share` from the served offer's allocation evidence
 (`submission_weights_ppm`), including the allocator's integer rounding. A
@@ -221,9 +237,7 @@ uses the served hotkey vector.
 
 `/api/winners` keeps settlement credit (`improvement_pct`) separate from measured
 candidate and baseline throughput. `baseline_kind` identifies stock, incumbent,
-or unknown; missing retained measurements stay null. The former `sglang_*` and
-`cumulative_*_over_sglang` estimates are removed: weighted prefill credits and
-different competition epochs cannot reconstruct a measured stock throughput.
+or unknown; missing retained measurements stay null.
 
 ## Multiple arenas
 
@@ -281,9 +295,17 @@ block, using source and local sequence only for ties, and names unavailable
 sources. The Timeline offers an all-arena toggle.
 
 Process health matches command arguments plus a configured source path, rather
-than global module substrings. A missing heartbeat is unknown, one older than
-120 seconds is stale, and an epoch mismatch is explicit. A fresh relay heartbeat
-alone is not a GPU acceptance proof. Public health omits operator paths.
+than global module substrings. The configured `heartbeat` path is the CPU relay's
+local pulse. Successful SSH polls retain the worker's verified heartbeat unchanged
+in adjacent `worker-heartbeat.json`; failed polls never advance its timestamp.
+The health and queue APIs expose these separately as `relay_heartbeat` and
+`gpu_heartbeat`, including `fresh`. A missing worker observation is unknown, one
+older than 120 seconds is stale, and a registration-binding mismatch is explicit.
+Stale or mismatched observations cannot report a current adapter or active request.
+Older relay deployments without the worker file show unknown worker health.
+The Queue, System and arena badges use worker observations for worker status;
+CPU relay freshness and active evaluation leases do not establish worker liveness.
+Public health omits operator paths and SSH errors.
 
 `model` supplies the source's display label; leave it empty to retain historical
 legacy labels. Optional `checkpoint` maps each retained engine digest to its

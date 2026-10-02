@@ -506,58 +506,55 @@ def test_publish_result_emits_verifiable_ready_receipt(tmp_path: Path) -> None:
         request,
         request_id,
         job_dir,
-    ) = fixtures._screen_authority(tmp_path)
-    try:
-        outer = spool.verify_request(
-            spool.load_json(job_dir / "request.json"),
-            job_dir,
-            registration,
-            identity=identity,
-            credential=credential,
-        )
-        from cacheon.chain.remote_evaluation_dispatcher import seal_remote_response
+    ) = fixtures._qualification_authority(tmp_path)
+    outer = spool.verify_request(
+        spool.load_json(job_dir / "request.json"),
+        job_dir,
+        registration,
+        identity=identity,
+        credential=credential,
+    )
+    from cacheon.chain.remote_evaluation_dispatcher import seal_remote_response
 
-        receipt = service.screen(claim.candidate)
-        response = seal_remote_response(request, receipt, identity, credential)
-        result_root = tmp_path / "pod-result"
-        result_root.mkdir()
-        (result_root / "response.json").write_bytes(
-            spool.spool_canonical_json(response.to_dict()) + b"\n"
-        )
-        append_run_event(
-            journal_path(result_root), request_id, "adapter.terminal", "completed"
-        )
-        spool.finalize_adapter_response(
-            outer, job_dir, result_root, identity=identity, credential=credential
-        )
-        outgoing = tmp_path / "outgoing"
-        pod_service.publish_result(
-            registration,
-            outer,
-            result_root,
-            request_root=job_dir,
-            outgoing_root=outgoing,
-            events_root=tmp_path,
-            identity=identity,
-            credential=credential,
-        )
-        ready = spool.load_json(outgoing / f"{request_id}.ready.json")
-        verified = spool.verify_result_ready(ready, outer, registration)
-        archive = outgoing / f"{request_id}.{verified['archive_sha256']}.tar"
-        assert archive.is_file()
-        assert archive.stat().st_size == verified["archive_size"]
-        pod_service.publish_result(
-            registration,
-            outer,
-            result_root,
-            request_root=job_dir,
-            outgoing_root=outgoing,
-            events_root=tmp_path,
-            identity=identity,
-            credential=credential,
-        )
-    finally:
-        coordinator._release(claim.lease, reason="test_cleanup")
+    receipt = fixtures._hold(request)
+    response = seal_remote_response(request, receipt, identity, credential)
+    result_root = tmp_path / "pod-result"
+    result_root.mkdir()
+    (result_root / "response.json").write_bytes(
+        spool.spool_canonical_json(response.to_dict()) + b"\n"
+    )
+    append_run_event(
+        journal_path(result_root), request_id, "adapter.terminal", "completed"
+    )
+    spool.finalize_adapter_response(
+        outer, job_dir, result_root, identity=identity, credential=credential
+    )
+    outgoing = tmp_path / "outgoing"
+    pod_service.publish_result(
+        registration,
+        outer,
+        result_root,
+        request_root=job_dir,
+        outgoing_root=outgoing,
+        events_root=tmp_path,
+        identity=identity,
+        credential=credential,
+    )
+    ready = spool.load_json(outgoing / f"{request_id}.ready.json")
+    verified = spool.verify_result_ready(ready, outer, registration)
+    archive = outgoing / f"{request_id}.{verified['archive_sha256']}.tar"
+    assert archive.is_file()
+    assert archive.stat().st_size == verified["archive_size"]
+    pod_service.publish_result(
+        registration,
+        outer,
+        result_root,
+        request_root=job_dir,
+        outgoing_root=outgoing,
+        events_root=tmp_path,
+        identity=identity,
+        credential=credential,
+    )
 
 
 def test_adapter_control_frames_must_be_canonical() -> None:

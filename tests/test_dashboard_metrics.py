@@ -11,16 +11,23 @@ from cacheon.chain.baseline_band import qualification_evidence_roots, qualificat
 from cacheon.eval.evidence_store import (
     EvidenceArtifactRef, prepare_evidence_root, publish_canonical_json_evidence, reopen_evidence,
 )
-from cacheon.eval.resident_measurement import TimedWindow
+
+
+def _window(index, tokens, seconds, input_tokens=None, latencies=()):
+    """One timed window exactly as a retained batch-cell stage exit stores it."""
+    row = {"batch_index": index, "seconds": format(seconds, ".17g"), "tokens": tokens}
+    if latencies:
+        row.update(input_tokens=input_tokens,
+                   prompt_latencies=[[format(a, ".17g"), format(b, ".17g")] for a, b in latencies])
+    return row
 
 
 def _rate(role, seconds, tokens, *, phase=False):
-    windows = [TimedWindow(i, n, float(s)).to_dict()
-               for i, (s, n) in enumerate(zip(seconds, tokens))]
+    windows = [_window(i, n, float(s)) for i, (s, n) in enumerate(zip(seconds, tokens))]
     if phase:
         windows = [
-            TimedWindow(0, 8, 2.0, 1024, ((.25, 1.25), (.75, 1.75))).to_dict(),
-            TimedWindow(1, 32, 4.0, 2048, ((1., 3.),) * 4).to_dict(),
+            _window(0, 8, 2.0, 1024, ((.25, 1.25), (.75, 1.75))),
+            _window(1, 32, 4.0, 2048, ((1., 3.),) * 4),
         ]
     return {
         "role": role,
@@ -95,14 +102,15 @@ def test_rotated_evidence_and_target_selection_preserve_historical_reads(tmp_pat
 
 
 def _dashboard_db(path, reference, root, target):
+    from cacheon.chain.eval_cost_credit import EVAL_COST_CREDITS_DDL
+
     con = sqlite3.connect(path)
+    con.executescript(EVAL_COST_CREDITS_DDL)
     con.executescript("""
         CREATE TABLE metadata(key TEXT);
         CREATE TABLE reservations(reservation_id TEXT, status TEXT, decision TEXT,
             reason TEXT, hotkey TEXT, content_hash TEXT, target_id TEXT, block INTEGER,
             event_index INTEGER, admission_epoch INTEGER);
-        CREATE TABLE arena_screen_dispositions(reservation_id TEXT, attempt_index INTEGER,
-            decision TEXT, lane TEXT, stage_count INTEGER, receipt_json TEXT);
         CREATE TABLE qualification_dispositions(reservation_id TEXT, attempt_index INTEGER,
             decision TEXT, reason TEXT, attempt_ref_json TEXT);
         CREATE TABLE settlement_candidates(reservation_id TEXT, status TEXT, reason TEXT,
@@ -150,7 +158,7 @@ def test_payment_recovery_links_actual_evaluation_without_rewriting_rejection(tm
     with sqlite3.connect(db) as con:
         con.execute("ALTER TABLE metadata ADD COLUMN value TEXT")
         for column in ("event_subindex", "invalid_reason", "transport_attempts", "screen_lane",
-                       "screen_status", "screen_attempts", "retry_position",
+                       "retry_position",
                        "eval_cost_payment_block", "eval_cost_payment_extrinsic_index"):
             con.execute(f"ALTER TABLE reservations ADD COLUMN {column}")
         con.execute("UPDATE reservations SET reason='eval_cost_payment_invalid'")
@@ -283,28 +291,6 @@ def test_held_result_retains_metrics_without_a_disposition_and_deduplicates_impo
     assert "differs from retained result" in damaged["forensics"][0]["qualification_error"]
 
 
-def test_dashboard_explains_valid_boundary_uncertainty_from_the_shared_grader(tmp_path):
-    from cacheon.chain.baseline_band import qualification_speed_from_payload
-    from cacheon.eval.qualification_runner import ResidentSpeedWitness
-    from tests.test_crossover_runtime import _rig, _speed
-    from tests.test_prefill_lane import _policy
-
-    plan, baseline, candidate, mount, _, _ = _rig(
-        tmp_path, (0.994, 0.995), policy=_policy(), timed_batches=5,
-        baseline_durations=(1., 1.006, 1., 1.))
-    result = _speed(plan, baseline, candidate, mount)
-    witness = ResidentSpeedWitness.from_evidence(result, plan)
-    speed = qualification_speed_from_payload(json.dumps({"speed_witness": witness.to_dict()}).encode())
-    grade = speed["grading"]
-    assert grade["decision"] == "NO_DECISION"
-    assert grade["detail"] == "measurement uncertainty crosses the speed decision boundary"
-    assert grade["measurement_valid"] and not grade["conditioning_failed"]
-    assert grade["candidate_vs_before"] < 1.01 < grade["candidate_vs_after"]
-    assert grade["required_speedup"] > grade["candidate_vs_before"]
-    assert grade["baseline_drift"] < grade["max_noise"]
-    assert speed["prefill"]["speedup"] < 1.05
-
-
 @pytest.mark.parametrize("detailed", [False, True])
 def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path, client, detailed):
 
@@ -365,7 +351,7 @@ def test_winners_api_labels_a_stale_hold_as_a_pass(tmp_path, client, monkeypatch
     assert winners[0]["reward_claim_status"] == "offer_unavailable"
 
 
-@pytest.mark.parametrize("target", ["activation.silu_and_mul", "norm.rmsnorm"])
+@pytest.mark.parametrize("target", ["forward_pass", "prefix_cache"])
 @pytest.mark.parametrize("score,earns", [("1.1", True), ("1.045", False)])
 def test_waiting_winners_keep_metrics_without_payouts_until_queue_resolves(
     tmp_path, client, monkeypatch, target, score, earns,
@@ -450,8 +436,8 @@ def test_winners_split_same_hotkey_while_miners_keep_total(tmp_path, client, mon
 
 
 @pytest.mark.parametrize("target,other_target", [
-    ("activation.silu_and_mul", "norm.rmsnorm"),
-    ("norm.rmsnorm", "activation.silu_and_mul"),
+    ("forward_pass", "prefix_cache"),
+    ("prefix_cache", "forward_pass"),
 ])
 def test_resolving_earlier_winner_rescores_potential_winners_in_queue_order(
     tmp_path, client, monkeypatch, target, other_target,
@@ -488,12 +474,12 @@ def test_resolving_earlier_winner_rescores_potential_winners_in_queue_order(
         winners = {row["reservation_id"]: row for row in after["items"]}
         assert after["waiting_items"] == [] and after["waiting_total"] == 0
         assert set(winners) == {candidates[i].reservation_digest for i in (0, 3, 4)}
-        # The best earlier PASS is index 1, even though it missed the reward margin.
-        # Neither the slower immediate predecessor nor the faster later PASS is the reference.
+        # Index 1 missed the reward margin and cannot raise the next miner's hurdle.
+        # The earlier rewarded record, not an unpaid or later PASS, is the reference.
         winner = winners[candidates[3].reservation_digest]
-        relative = Decimal("1.12") / Decimal("1.105")
+        relative = Decimal("1.12") / Decimal("1.1")
         score_ppm = int((relative * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
-        assert winner["previous_best_reservation_id"] == candidates[1].reservation_digest
+        assert winner["previous_best_reservation_id"] == candidates[0].reservation_digest
         assert winner["relative_improvement_pct"] == pytest.approx(float((relative - 1) * 100))
         assert winner["score_improvement_pct"] == (score_ppm - 1_000_000) / 10_000
         claims = {claim.hotkey: claim for claim in inputs["earning_claims"]}
@@ -539,3 +525,52 @@ def test_lost_potential_notice_waits_for_finalized_reward_comparison(eligible):
         notice = settlement_hold_notice(con, "candidate", {"status": "held"})
         assert notice["reason"] == "lost_potential" and notice["event_sequence"] == 1
         assert "current champion" in notice["message"]
+
+
+@pytest.mark.parametrize("decision", ("NO_DECISION", "FAIL"))
+def test_baseline_cutoff_notice_confirms_credit_only_for_no_charge_disposal(decision):
+    from dashboard.app import submission_row
+    from cacheon.chain.miner_feedback import _guidance
+    from cacheon.chain.eval_cost_credit import EVAL_COST_CREDITS_DDL
+
+    with sqlite3.connect(":memory:") as con:
+        con.executescript(EVAL_COST_CREDITS_DDL)
+        row = submission_row(dict(reservation_id="late", status="expired", decision=decision,
+            reason="baseline_closed_at_submission", hotkey="miner", content_hash="bundle",
+            block=9009700, event_index=0, admission_epoch=1), con)
+    notice = row["admission_notice"]
+    if decision == "NO_DECISION":
+        assert notice == _guidance("baseline_closed_at_submission")
+        assert notice["cause"] == "This baseline closed before your submission."
+        assert "Your submission credit has been preserved." in notice["next_step"]
+    else:
+        assert notice is None
+
+
+@pytest.mark.parametrize("age,state", [(None, "unknown"), (121, "stale"), (9, "running")])
+def test_health_and_queue_use_worker_observation_not_cpu_pulse(tmp_path, client, monkeypatch, age, state):
+    import time
+    from dashboard import app
+    from tests.test_chain_intake import _store
+
+    with _store(tmp_path) as store:
+        monkeypatch.setattr(app, "DB_PATH", store.path)
+    registration = {"worker_epoch": "epoch", "ready_receipt_digest": "ready", "worker_readiness_digest": "worker"}
+    registration_path, heartbeat_path = tmp_path / "registration.json", tmp_path / "heartbeat.json"
+    registration_path.write_text(json.dumps(registration))
+    now = int(time.time())
+    relay = {**registration, "time_unix": now, "state": "running", "active_request_id": "stale-request"}
+    heartbeat_path.write_text(json.dumps(relay))
+    if age is not None:
+        heartbeat_path.with_name("worker-heartbeat.json").write_text(json.dumps({**relay, "time_unix": now - age}))
+    monkeypatch.setattr(app, "REGISTRATION_PATH", registration_path)
+    monkeypatch.setattr(app, "HEARTBEAT_PATH", heartbeat_path)
+    for route in ("/api/health", "/api/queue"):
+        response = client.get(route)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["relay_heartbeat"]["fresh"]
+        worker = payload["gpu_heartbeat"]
+        assert worker["state"] == state
+        assert worker["fresh"] is (state == "running")
+        assert worker["active_request_id"] == ("stale-request" if state == "running" else None)

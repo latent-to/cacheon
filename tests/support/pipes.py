@@ -2,9 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
+import pytest
+
 from cacheon.eval.oci_process import OCIAttachedDiagnostic
+
+
+@pytest.fixture
+def engine_loop():
+    """Give fake engines the persistent loop owned by a real SGLang Engine."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        yield loop
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 class PipeClient:
@@ -51,3 +66,15 @@ class PipeManager:
     def spawn_attached(self, _lease, _argv):
         self.calls += 1
         return self.client
+
+
+def generate(engine, request, emit=None):
+    """Drive the production async generator from synchronous protocol tests."""
+    from cacheon.eval.phase_latency import engine_outputs, generate_outputs
+
+    async def send(frame):
+        emit(frame)
+
+    return engine_outputs(engine.loop.run_until_complete(
+        generate_outputs(engine, request, send if emit is not None else None)
+    ), request=request)

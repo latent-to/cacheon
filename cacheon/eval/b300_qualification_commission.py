@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import threading
 import time
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
-import cacheon.eval.b300_screen_deployment as screen_deployment
+import cacheon.eval.b300_deployment as b300_deployment
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
+from cacheon.eval.b300_arena_definition import (
+    data_parallel_size as _data_parallel_size,
+    device_policy as _device_policy,
+    hardware_bindings as _hardware_bindings,
+)
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
@@ -34,10 +40,8 @@ from cacheon.eval.b300_sealed_qualification_commission import (
     parse_sealed_calibration_package,
     sealed_qualification_profile_rows,
 )
-from cacheon.eval.b300_screen_qualification_bridge import (
-    QUALIFICATION_EXECUTOR_ID,
-    CommissionedB300QualificationService,
-)
+from cacheon.eval.b300_qualification_declaration import QUALIFICATION_EXECUTOR_ID
+from cacheon.eval.b300_qualification_lanes import commissioned_incumbent_arm as commissioned_incumbent_arm
 from cacheon.eval.b300_remote_worker_adapter import B300RemoteQualificationCommission
 from cacheon.eval.calibration import (
     CalibrationContext,
@@ -112,7 +116,7 @@ def _bind_hidden_judge(
 ) -> object:
     judge = capability
     binder = getattr(capability, "bind_prompt_plan", None)
-    if callable(binder):
+    if hidden_tasks_per_prompt and callable(binder):
         if getattr(capability, "tokenizer_digest", None) != tokenizer_digest:
             raise B300QualificationCommissionError(
                 "hidden judge tokenizer differs from the sealed prompt identity"
@@ -165,7 +169,7 @@ def _private_root(path: Path) -> Path:
 
 
 def _sealed_calibration(
-    inputs: "screen_deployment._CommissionedInputs",
+    inputs: "b300_deployment._CommissionedInputs",
     context: CalibrationContext,
     stage: str,
 ) -> tuple[
@@ -175,10 +179,10 @@ def _sealed_calibration(
 ]:
     reference = inputs.authority_refs["calibration_package"]
     try:
-        path, value, sha = screen_deployment._stable_json(
+        path, value, sha = b300_deployment._stable_json(
             reference["path"], "calibration package"
         )
-    except screen_deployment.B300ScreenDeploymentError as exc:
+    except b300_deployment.B300DeploymentError as exc:
         raise B300QualificationCommissionError(
             f"sealed calibration package is unreadable: {exc}"
         ) from None
@@ -190,7 +194,7 @@ def _sealed_calibration(
 
 
 def _lane_policies(
-    inputs: "screen_deployment._CommissionedInputs",
+    inputs: "b300_deployment._CommissionedInputs",
 ) -> tuple[DeviceStatePolicy, DeviceStatePolicy]:
     by_id = {gpu.physical_id: gpu for gpu in inputs.qualification_gpus}
     policies = []
@@ -204,7 +208,7 @@ def _lane_policies(
             raise B300QualificationCommissionError(
                 "sealed qualification lane is absent from READY inventory"
             ) from None
-        policy = screen_deployment._device_policy(gpus)
+        policy = _device_policy(gpus)
         if (
             policy.policy_sha256 != lane.device_policy_digest
             or policy.configuration_sha256 != lane.device_configuration_digest
@@ -216,9 +220,93 @@ def _lane_policies(
     return policies[0], policies[1]
 
 
+@dataclass
+class CommissionedB300QualificationService:
+    """One worker plus both sealed qualification orientations."""
+
+    worker: B300MainnetWorker
+    commission: B300RemoteQualificationCommission
+    reproduction_commission: B300RemoteQualificationCommission
+    _executors: tuple[OCIEngineExecutor, ...]
+    _reproduction_worker: B300MainnetWorker | None = None
+    _lock: object = field(default_factory=threading.RLock)
+    _closed: bool = False
+
+    def __post_init__(self) -> None:
+        commissions = (self.commission, self.reproduction_commission)
+        if (
+            type(self._executors) is not tuple
+            or len(self._executors) != 2
+            or any(type(row) is not OCIEngineExecutor for row in self._executors)
+            or len({id(row.manager) for row in self._executors}) != 2
+            or tuple(row.deployment.screen_lane for row in commissions)
+            != ("primary", "reproduction")
+            or commissions[0].deployment.manifest != commissions[1].deployment.manifest
+            or commissions[0].readiness != commissions[1].readiness
+            or type(self.worker) is not B300MainnetWorker
+            or self.worker.service.manifest != self.commission.deployment.manifest
+            or self.worker.readiness != self.commission.readiness
+            or self.worker._remote_qualification_lane != "primary"
+        ):
+            raise B300QualificationCommissionError(
+                "commissioned service does not own both qualification orientations"
+            )
+
+    def adapter_for(self, publications, continuation_store, screen_lane: str):
+        with self._lock:
+            if self._closed:
+                raise B300QualificationCommissionError(
+                    "commissioned qualification service is closed"
+                )
+            if screen_lane == "primary":
+                commission, worker = self.commission, self.worker
+            elif screen_lane == "reproduction":
+                commission = self.reproduction_commission
+                worker = self._reproduction_worker
+                if worker is None:
+                    worker = B300MainnetWorker(
+                        commission.deployment.manifest,
+                        commission.deployment.authorities,
+                        commission.readiness,
+                    )
+                    self._reproduction_worker = worker
+            else:
+                raise B300QualificationCommissionError(
+                    "qualification stage must be primary or reproduction"
+                )
+            return commission.adapter_for(
+                publications,
+                continuation_store,
+                worker=worker,
+            )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        failure: BaseException | None = None
+        closers = (
+            self.worker.close,
+            *(
+                ()
+                if self._reproduction_worker is None
+                else (self._reproduction_worker.close,)
+            ),
+            *(executor.manager.close for executor in self._executors),
+        )
+        for closer in closers:
+            try:
+                closer()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise failure
+
+
 def compose_commissioned_qualifications(
-    inputs: "screen_deployment._CommissionedInputs",
-    composition: "screen_deployment._Composition",
+    inputs: "b300_deployment._CommissionedInputs",
+    composition: "b300_deployment._Composition",
     readiness: WorkerReadiness,
     capabilities: B300QualificationCapabilities,
     *,
@@ -281,17 +369,17 @@ def compose_commissioned_qualifications(
             f"sealed qualification policy failed to seal: {exc}"
         ) from None
 
-    _require_cell_conformance(inputs, policy, session_block, speed_block)
+    _require_replay_quality(policy, session_block)
 
     lane_a_policy, lane_b_policy = _lane_policies(inputs)
-    lane_a_executor = screen_deployment._build_executor(
+    lane_a_executor = b300_deployment._build_executor(
         inputs.root / "qualification-lane-a",
         inputs.preflight,
         lane_a_policy,
         executor_id=QUALIFICATION_EXECUTOR_ID,
         runtime_seed_root=inputs.runtime_seed_root, resources=inputs.authority.get("resources"),
     )
-    lane_b_executor = screen_deployment._build_executor(
+    lane_b_executor = b300_deployment._build_executor(
         inputs.root / "qualification-lane-b",
         inputs.preflight,
         lane_b_policy,
@@ -333,42 +421,16 @@ def compose_commissioned_qualifications(
     return (commissions[0], commissions[1]), executors
 
 
-def _require_cell_conformance(inputs, policy, session_block, speed_block) -> None:
-    """The declared workload cell and the consumed session are projections of
-    one sealed authority; any mismatch is a commissioning error, never a
-    runtime surprise.  Batch widths were validated against the cell at parse.
-    A min_windows floor above the cell's timed reads is unsatisfiable by
-    construction and must die here, not forty minutes into a measured run.
+def _require_replay_quality(policy, session_block) -> None:
+    """Replay quality is teacher NLL under greedy decoding; a sealed profile
+    asking for sampled or numeric hidden-task quality must die at commission,
+    not forty minutes into a measured run.
     """
 
-    quality_cell = screen_deployment._scored_cell(inputs.workload)
-    batch_cells = getattr(
-        inputs,
-        "prompt_batch_cells",
-        (quality_cell.cell_id,) * len(inputs.prompt_batches),
-    )
-    warmup_cells = batch_cells[:session_block["warmup_count"]]
-    expected_counts = {
-        cell.cell_id: cell.timed_reads
-        + warmup_cells.count(cell.cell_id)
-        for cell in inputs.workload.cells
-    }
-    observed_counts = {
-        cell.cell_id: batch_cells.count(cell.cell_id)
-        for cell in inputs.workload.cells
-    }
-    if (
-        policy.tokens_per_prompt != max(cell.output_tokens for cell in inputs.workload.cells)
-        or type(batch_cells) is not tuple
-        or len(batch_cells) != len(inputs.prompt_batches)
-        or observed_counts != expected_counts
-        or set(warmup_cells) != {cell.cell_id for cell in inputs.workload.cells}
-        or speed_block["min_windows"]
-        > sum(cell.timed_reads for cell in inputs.workload.cells)
-    ):
-        raise B300QualificationCommissionError(
-            "sealed session does not conform to the declared workload cell"
-        )
+    if policy.topk_width != 0 or float(session_block["temperature"]) != 0:
+        raise B300QualificationCommissionError("goodput replay requires greedy decoding and teacher-NLL quality")
+    if policy.hidden_tasks_required or policy.hidden_tasks_per_prompt:
+        raise B300QualificationCommissionError("replay prompts require a teacher-only profile without numeric hidden tasks")
 
 
 def _compose_locked(
@@ -391,7 +453,7 @@ def _compose_locked(
 ) -> B300RemoteQualificationCommission:
     snapshot = catalog.snapshot()
     target_members, context, stock, stock_tree = (
-        screen_deployment._commissioned_stock_authority(
+        b300_deployment._commissioned_stock_authority(
             inputs,
             manifest,
             catalog,
@@ -400,107 +462,53 @@ def _compose_locked(
             label="pristine reference",
         )
     )
-    # The measured baseline is the durable incumbent the capabilities declare;
-    # at genesis the declared entries are empty and this reopens the exact
-    # stock tree above, so both arms of the branchless pair coincide.
-    _, _, incumbent, incumbent_tree = (
-        screen_deployment._commissioned_stock_authority(
-            inputs,
-            manifest,
-            catalog,
-            snapshot,
-            error=B300QualificationCommissionError,
-            label="qualification",
-            entries=capabilities.incumbent_entries,
-            resolver=capabilities.source_resolver,
+    from cacheon.eval.agent_replay import AgentReplayPlan
+    from cacheon.eval.goodput_runtime import GoodputPolicy
+    settings = session_block["replay"]
+    goodput = GoodputPolicy.from_dict(speed_block["goodput"])
+    if not goodput.error_rate:
+        raise B300QualificationCommissionError(
+            "new replay commissions require elapsed-work statistical eligibility; "
+            "V16 latency scoring is retained only for historical evidence"
         )
+    replay = AgentReplayPlan(
+        Path(settings["manifest_path"]), (settings["load"],),
+        Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
+        inputs.root / "qualification-replays" / screen_lane,
+        goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
+        elapsed_cost=True,
+        max_work_seconds=settings.get("max_work_seconds", 0),
     )
-    engine_config = screen_deployment._engine_config(
-        inputs.engine_template,
-        inputs.workload.cells,
-        disable_cuda_graph=False,
+    if replay.slice.digest != settings["slice_digest"]:
+        raise B300QualificationCommissionError("replay slice differs from its sealed authority")
+    from cacheon.eval.qualification_trajectories import prompt_pool
+    from cacheon.eval.reference_protocol import MAX_TOKENS
+    maximum = max(prompt_pool(replay).values())
+    if policy.tokens_per_prompt != maximum or maximum > MAX_TOKENS:
+        raise B300QualificationCommissionError(
+            "reference token maximum must match the replay slice and fit the reference protocol"
+        )
+    incumbent, incumbent_binding, incumbent_arm = commissioned_incumbent_arm(
+        inputs, manifest, candidate_executor,
+        entries=capabilities.incumbent_entries, resolver=capabilities.source_resolver,
+        replay=replay,
     )
-    dp_size = screen_deployment._data_parallel_size(engine_config)
-    baseline_hardware, baseline_physical = screen_deployment._hardware_bindings(
-        inputs.runtime, candidate_executor.device_policy, dp_size=dp_size,
-    )
-    incumbent_native = screen_deployment._native_build(
-        incumbent_tree.tree_digest,
-        inputs.preflight,
-        candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
-    )
-    pristine_native = screen_deployment._native_build(
+    incumbent_tree = incumbent_binding.tree
+    incumbent_launch = incumbent_arm.launch
+    baseline_session_plan = incumbent_arm.session_plan
+    engine_config = baseline_session_plan.engine_config
+    dp_size = _data_parallel_size(engine_config)
+    baseline_physical = incumbent_arm.binding.physical_hardware
+    pristine_native = b300_deployment._native_build(
         stock_tree.tree_digest,
         inputs.preflight,
         candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
     )
-    incumbent_launch = EngineLaunchSpec(
-        runtime_digest=inputs.runtime.runtime_digest,
-        base_engine_digest=inputs.runtime.base_engine_digest,
-        arena_digest=manifest.digest,
-        stack_digest=incumbent_tree.stack_digest,
-        tree_digest=incumbent_tree.tree_digest,
-        image_digest=inputs.preflight.image_digest,
-        platform_digest=inputs.preflight.platform_digest,
-        controller_distribution_digest=inputs.controller_distribution_digest,
-        worker_distribution_digest=inputs.preflight.worker_distribution_digest,
-        model_revision_digest=inputs.runtime.model_revision_digest,
-        model_manifest_digest=inputs.runtime.model_manifest_digest,
-        model_content_digest=inputs.runtime.model_content_digest,
-        validator_overlay_digest=inputs.runtime.validator_overlay_digest,
-        engine_config_digest=engine_config.digest,
-        seccomp_policy_digest=screen_deployment._file_sha256(
-            candidate_executor.config.prebuild.seccomp_profile
-        ),
-        resource_policy_digest=(
-            candidate_executor.config.prebuild.policy.resource_policy_digest
-        ),
-        native_build_spec_digest=incumbent_native.digest,
-        hardware=baseline_hardware,
-    )
-    trusted_baseline = TrustedLaunchBinding(
-        materialized_tree_root=incumbent_tree.root,
-        controller_distribution_digest=inputs.controller_distribution_digest,
-        native_build_spec=incumbent_native,
-        runtime_preflight_receipt=inputs.preflight,
-        physical_hardware=baseline_physical,
-    )
-    incumbent_binding = MaterializedArmBinding(incumbent_tree, trusted_baseline)
     trusted_pristine = replace(
-        trusted_baseline, materialized_tree_root=stock_tree.root,
+        incumbent_arm.binding, materialized_tree_root=stock_tree.root,
         native_build_spec=pristine_native,
     )
     pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
-    quality_cell = screen_deployment._scored_cell(inputs.workload)
-    cells_by_id = {cell.cell_id: cell for cell in inputs.workload.cells}
-    batch_cells = inputs.prompt_batch_cells
-    mixed_cells = len(inputs.workload.cells) > 1
-    baseline_session_plan = SessionExecutionPlan(
-        launch_digest=incumbent_launch.digest,
-        expected_engine_config_digest=engine_config.digest,
-        engine_config=engine_config,
-        expected_preflight=expected_runtime_preflight(
-            incumbent_launch, inputs.preflight
-        ),
-        prompt_batches=inputs.prompt_batches,
-        warmup_count=session_block["warmup_count"],
-        conditioning_count=session_block["conditioning_count"],
-        max_new_tokens=policy.tokens_per_prompt,
-        top_logprobs_num=policy.topk_width,
-        temperature=float(session_block["temperature"]),
-        expected_prompt_tokens=quality_cell.input_tokens,
-        measure_phase_latency=session_block.get("measure_phase_latency", False),
-        batch_max_new_tokens=(
-            tuple(cells_by_id[cell_id].output_tokens for cell_id in batch_cells)
-            if mixed_cells
-            else ()
-        ),
-        batch_expected_prompt_tokens=(
-            tuple(cells_by_id[cell_id].input_tokens for cell_id in batch_cells)
-            if mixed_cells
-            else ()
-        ),
-    )
     pristine_launch, pristine_session_plan = _pristine_reference_authority(
         incumbent_launch,
         baseline_session_plan,
@@ -555,10 +563,10 @@ def _compose_locked(
         evidence_root,
         calibration_evidence,
     )
-    resident_hardware, resident_physical = screen_deployment._hardware_bindings(
+    resident_hardware, resident_physical = _hardware_bindings(
         inputs.runtime, baseline_executor.device_policy, dp_size=dp_size,
     )
-    resident_native = screen_deployment._native_build(
+    resident_native = b300_deployment._native_build(
         incumbent_tree.tree_digest,
         inputs.preflight,
         baseline_executor.config.prebuild.policy, inputs.runtime.target_architecture,
@@ -570,7 +578,7 @@ def _compose_locked(
         resource_policy_digest=(
             baseline_executor.config.prebuild.policy.resource_policy_digest
         ),
-        seccomp_policy_digest=screen_deployment._file_sha256(
+        seccomp_policy_digest=b300_deployment._file_sha256(
             baseline_executor.config.prebuild.seccomp_profile
         ),
     )
@@ -596,35 +604,22 @@ def _compose_locked(
         baseline_executor.config.runtime.digest,
         baseline_executor.device_policy.configuration_sha256,
     )
-    prefill_lane = speed_block.get("prefill_lane")
-    if prefill_lane is not None and not mixed_cells:
-        # Version 12 scores the mixed-cell makespan; a single-cell workload
-        # has no such rule to append the prefill pass to.
-        raise B300QualificationCommissionError(
-            "the prefill lane requires a mixed-cell workload"
-        )
     resident_speed_policy = ResidentSpeedPolicy.from_calibration(
         max_stage_seconds=speed_block["max_stage_seconds"],
         max_qualification_seconds=speed_block["max_qualification_seconds"],
         calibration=calibration_manifest,
         context=calibration_context,
-        # New commissions seal one bounded borderline repeat: v13 single-cell,
-        # v14 mixed-cell, or v15 with the prefill pass. Existing evidence keeps
-        # its original version and arithmetic.
-        version=15 if prefill_lane is not None else 14 if mixed_cells else 13,
+        # New commissions grade elapsed work statistically (v17); v16 evidence
+        # keeps its fixed-cutoff arithmetic.
+        version=17,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),
-        prefill_min_margin=(
-            float(prefill_lane["min_margin"]) if prefill_lane is not None else 0.0
-        ),
-        prefill_credit_weight=(
-            float(prefill_lane["credit_weight"]) if prefill_lane is not None else 0.0
-        ),
+        goodput=goodput,
     )
 
     def bind_candidate(candidate_tree) -> TrustedLaunchBinding:
-        candidate_native = screen_deployment._native_build(
+        candidate_native = b300_deployment._native_build(
             candidate_tree.tree_digest,
             inputs.preflight,
             candidate_executor.config.prebuild.policy, inputs.runtime.target_architecture,
@@ -734,7 +729,7 @@ def _compose_locked(
         )
     deployment = compose_b300_qualification_deployment(
         manifest=manifest,
-        screen_authorities=composition.authorities,
+        declared=composition.authorities,
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
@@ -750,7 +745,7 @@ def build_commissioned_b300_qualification_service(
     *, commissioned_root: Path | None = None,
 ) -> CommissionedB300QualificationService:
     inputs, composition, readiness = (
-        screen_deployment.replay_commissioned_screen_composition(
+        b300_deployment.replay_commissioned_composition(
             registration, ready_receipt, commissioned_root=commissioned_root
         )
     )
@@ -766,15 +761,12 @@ def build_commissioned_b300_qualification_service(
             commission.deployment.authorities,
             readiness,
         )
-        service = CommissionedB300QualificationService(
+        return CommissionedB300QualificationService(
             worker,
             commission,
             reproduction_commission,
             executors,
-            composition,
         )
-        composition = None
-        return service
     except BaseException:
         try:
             if worker is not None:
@@ -783,9 +775,6 @@ def build_commissioned_b300_qualification_service(
             for executor in executors:
                 executor.manager.close()
         raise
-    finally:
-        if composition is not None:
-            composition.close()
 
 
 __all__ = [
@@ -795,4 +784,5 @@ __all__ = [
     "CommissionedB300QualificationService",
     "build_commissioned_b300_qualification_service",
     "compose_commissioned_qualifications",
+    "commissioned_incumbent_arm",
 ]

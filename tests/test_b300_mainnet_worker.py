@@ -11,25 +11,16 @@ import pytest
 
 import cacheon.eval.b300_mainnet_worker as worker_module
 from cacheon.arena_service import (
-    SCREEN_STAGES,
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
     ArenaService,
     ArenaServiceManifest,
-    NonCrownScreenPolicy,
-    PromotionDecision,
-    ScreenGrade,
-    ScreenStagePolicy,
-    ScreenStageResult,
     Workload,
     WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.evaluation_coordinator import (
     ClaimedQualificationEvaluation,
-    ClaimedScreenEvaluation,
-    EvaluationResultEnvelope,
-    EvaluationRun,
     WorkerReadiness,
 )
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
@@ -39,12 +30,10 @@ from cacheon.chain.remote_qualification_hold import RemoteQualificationHoldReaso
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
+    B300DeclaredAuthorities,
     B300DeploymentAuthorities,
     B300QualificationLanePair,
     B300QualificationLanePolicy,
-    B300ResidentScreenFactory,
-    B300ResidentScreenLifetime,
-    B300ScreenStageHandler,
     b300_arena_provider_digest,
 )
 from cacheon.eval.b300_mainnet_worker import (
@@ -69,11 +58,6 @@ from cacheon.eval.qualification_intake import (
     QualificationReservation,
     QualificationRetryPlan,
 )
-from cacheon.eval.resident_queue import ScreenPolicy
-from cacheon.eval.resident_screen_lane import (
-    ResidentScreenLane,
-    ResidentServingScreenStage,
-)
 from tests.support.b300 import StubHiddenJudge as _Judge, arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
 
 
@@ -81,7 +65,7 @@ SLOT = "activation.silu_and_mul"
 
 
 @pytest.fixture
-def executor_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def executor_factory(tmp_path: Path):
     executors: list[OCIEngineExecutor] = []
     sequence = 0
 
@@ -122,8 +106,6 @@ def executor_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         executors.append(executor)
         return executor
 
-    create.managed_executors = executors
-    create.monkeypatch = monkeypatch
     yield create
     for executor in executors:
         executor.manager.close()
@@ -152,56 +134,8 @@ class _FactoryBuilder:
         )
 
 
-class _ResidentFactory:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.created = 0
-        self.closed = 0
-
-    def __call__(self) -> B300ResidentScreenLifetime:
-        self.created += 1
-
-        def unused_lifetime(_driver):
-            raise AssertionError("the non-swappable fixture must not start an engine")
-
-        lane = ResidentScreenLane(
-            unused_lifetime,
-            prompts=("screen prompt",),
-            policy=ScreenPolicy(),
-            verdict_timeout_s=5.0,
-            close_timeout_s=5.0,
-        )
-        intake = self.root / f"swap-{self.created}"
-        intake.mkdir(parents=True)
-        stage = ResidentServingScreenStage(lane, intake)
-
-        def close() -> None:
-            self.closed += 1
-            lane.close()
-
-        return B300ResidentScreenLifetime(stage, close)
-
-
-def _authorities(tmp_path: Path, executor_factory):
-    def runner(manifest, policy, candidate):
-        return ScreenStageResult(
-            policy.stage,
-            ScreenGrade.PASS,
-            _h(f"{manifest.digest}:{policy.stage}:{candidate.digest}"),
-            1,
-        )
-
-    resident = _ResidentFactory(tmp_path)
+def _authorities(executor_factory):
     builder = _FactoryBuilder()
-    handlers = tuple(
-        B300ScreenStageHandler(
-            stage,
-            _h(f"{stage}-handler"),
-            () if stage == "static" else (f"{stage}-resource",),
-            runner,
-        )
-        for stage in SCREEN_STAGES[:-1]
-    )
     candidate_executor = executor_factory("candidate", "A")
     baseline_executor = executor_factory("resident_baseline", "B")
     lane_pair = B300QualificationLanePair(
@@ -214,12 +148,6 @@ def _authorities(tmp_path: Path, executor_factory):
     )
     authorities = B300DeploymentAuthorities(
         runtime_identity=_runtime(),
-        screen_handlers=handlers,
-        resident_screen_factory=B300ResidentScreenFactory(
-            _h("resident-screen-factory"),
-            ("resident-screen-resource",),
-            resident,
-        ),
         qualification_policy_digest=_h("qualification-policy"),
         qualification_builder_digest=_h("qualification-builder"),
         qualification_factory_builder=builder,
@@ -233,7 +161,7 @@ def _authorities(tmp_path: Path, executor_factory):
         qualification_lane_pair=lane_pair,
         qualification_stage="primary",
     )
-    return authorities, resident, builder
+    return authorities, builder
 
 
 def _manifest(authorities: B300DeploymentAuthorities) -> ArenaServiceManifest:
@@ -244,10 +172,7 @@ def _manifest(authorities: B300DeploymentAuthorities) -> ArenaServiceManifest:
             "sealed-prompt-seeds-v1",
             (WorkloadCell("s8", 8192, 1024, 64, 8),),
         ),
-        capacity=ArenaCapacityPolicy(32, 100, 2, 8, 4, 2, 3, 3),
-        screens=NonCrownScreenPolicy(
-            tuple(ScreenStagePolicy(stage, 30_000) for stage in SCREEN_STAGES)
-        ),
+        capacity=ArenaCapacityPolicy(32, 100, 8, 4),
         qualification_policy_digest=authorities.qualification_policy_digest,
         provider_digest=b300_arena_provider_digest(authorities),
     )
@@ -299,13 +224,7 @@ def _bundle(tmp_path: Path, index: int) -> Path:
     return source
 
 
-def _bound_row(
-    tmp_path: Path,
-    manifest: ArenaServiceManifest,
-    index: int,
-    *,
-    promoted: bool,
-):
+def _bound_row(tmp_path: Path, manifest: ArenaServiceManifest, index: int):
     source = _bundle(tmp_path, index)
     committed = content_hash(source)
     publication = publish_worker_bundle(
@@ -336,7 +255,7 @@ def _bound_row(
         reservation_id=arrival.reservation_id,
         arrival=arrival,
         admission_epoch=0,
-        status="promoted" if promoted else "published",
+        status="published",
         target_id=SLOT,
         target_members=(SLOT,),
         delta_fingerprint=fingerprint,
@@ -345,11 +264,8 @@ def _bound_row(
         publication_root=publication.root,
         qualification_authority_digest="",
         qualification_evidence_digest="",
-        arena_service_digest=manifest.digest if promoted else "",
-        screen_lane="primary" if promoted else "",
-        screen_status="promote" if promoted else "",
-        screen_stage_count=len(SCREEN_STAGES) if promoted else 0,
-        screen_attempts=1 if promoted else 0,
+        arena_service_digest=manifest.digest,
+        screen_lane="primary",
         decision="",
         reason="",
     )
@@ -369,66 +285,21 @@ def _bound_row(
     return reservation, publication, candidate
 
 
-def _screen_claim(
-    tmp_path: Path,
-    manifest: ArenaServiceManifest,
-) -> ClaimedScreenEvaluation:
-    reservation, publication, candidate = _bound_row(
-        tmp_path, manifest, 0, promoted=False
-    )
-    lease = EvaluationLease(
-        _h("screen-lease"),
-        1,
-        "screen",
-        "b300-worker-test",
-        (EvaluationLeaseMember(reservation.reservation_id, "published"),),
-        20,
-        40,
-        40,
-    )
-    return ClaimedScreenEvaluation(lease, reservation, publication, candidate)
-
-
-def _promoted_receipt(
-    manifest: ArenaServiceManifest,
-    candidate: ArenaCandidateBinding,
-) -> object:
-    results = tuple(
-        ScreenStageResult(stage, ScreenGrade.PASS, _h(f"{candidate.digest}:{stage}"), 1)
-        for stage in SCREEN_STAGES
-    )
-    from cacheon.arena_service import ArenaScreenReceipt
-
-    return ArenaScreenReceipt(
-        manifest.digest,
-        candidate.digest,
-        candidate.screen_attempt,
-        results,
-        PromotionDecision.PROMOTE,
-    )
-
-
 def _qualification_claim(
     tmp_path: Path,
     manifest: ArenaServiceManifest,
     *,
     count: int = 2,
 ) -> ClaimedQualificationEvaluation:
-    rows = tuple(
-        _bound_row(tmp_path, manifest, index, promoted=True)
-        for index in range(count)
-    )
+    rows = tuple(_bound_row(tmp_path, manifest, index) for index in range(count))
     reservations = tuple(row[0] for row in rows)
-    publications = tuple(row[1] for row in rows)
-    candidates = tuple(row[2] for row in rows)
-    receipts = tuple(_promoted_receipt(manifest, row) for row in candidates)
     lease = EvaluationLease(
         _h(f"qualification-lease-{count}"),
         1,
         "qualification",
         "b300-worker-test",
         tuple(
-            EvaluationLeaseMember(row.reservation_id, "promoted")
+            EvaluationLeaseMember(row.reservation_id, "published")
             for row in reservations
         ),
         20,
@@ -438,9 +309,8 @@ def _qualification_claim(
     return ClaimedQualificationEvaluation(
         lease,
         reservations,
-        publications,
-        candidates,
-        receipts,
+        tuple(row[1] for row in rows),
+        tuple(row[2] for row in rows),
     )
 
 
@@ -472,34 +342,6 @@ def _systemic_batch(factory: QualificationPlanFactory) -> QualificationIntakeBat
     )
 
 
-def test_remote_screen_runs_all_real_provider_stages_and_seals_result(
-    tmp_path: Path,
-    executor_factory,
-) -> None:
-    authorities, resident, _builder = _authorities(tmp_path, executor_factory)
-    manifest = _manifest(authorities)
-    readiness = _readiness(manifest, authorities)
-    claim = _screen_claim(tmp_path / "candidate", manifest)
-    worker = B300MainnetWorker(manifest, authorities, readiness)
-    try:
-        # The path-free remote DTO needs no CPU intake reservation.
-        result = worker.run_remote_screen(claim.lease, claim.candidate)
-
-        assert type(result) is EvaluationRun
-        assert result.lease is claim.lease
-        assert result.disposition == "completed"
-        assert type(result.envelope) is EvaluationResultEnvelope
-        assert tuple(row.stage for row in result.payload.results) == SCREEN_STAGES
-        assert result.payload.decision is PromotionDecision.PROMOTE
-        assert result.payload.candidate_digest == claim.candidate.digest
-        assert result.envelope.payload_digest == result.payload.digest
-        assert resident.created == 1
-        result.envelope.verify(claim.lease, readiness, worker.service, result.payload)
-    finally:
-        worker.close()
-    assert resident.closed == 1
-
-
 def _fake_remote_intake(monkeypatch, batch_for):
     """Route the remote path through an intake that returns ``batch_for(factory)``.
 
@@ -525,7 +367,7 @@ def test_remote_qualification_releases_systemic_batch(
     executor_factory,
     monkeypatch,
 ) -> None:
-    authorities, resident, builder = _authorities(tmp_path, executor_factory)
+    authorities, builder = _authorities(executor_factory)
     manifest = _manifest(authorities)
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
@@ -535,7 +377,6 @@ def test_remote_qualification_releases_systemic_batch(
         result = worker.run_remote_qualification(
             claim.lease,
             claim.candidates,
-            claim.screen_receipts,
             screen_lane="primary",
             continuation_store=QualificationContinuationStore(tmp_path / "continuation"),
             request_digest=_h("remote-request"),
@@ -551,7 +392,6 @@ def test_remote_qualification_releases_systemic_batch(
         assert result.authority_manifest is intake_calls[0].manifest
         assert len(intake_calls) == 1
         assert builder.calls[0][1] is None
-        assert resident.created == 0
         result.run.envelope.verify(
             claim.lease, readiness, worker.service, result.run.payload
         )
@@ -563,7 +403,7 @@ def test_remote_qualification_refuses_lane_or_cohort_drift(
     tmp_path: Path,
     executor_factory,
 ) -> None:
-    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
+    authorities, _builder = _authorities(executor_factory)
     manifest = _manifest(authorities)
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
@@ -577,25 +417,22 @@ def test_remote_qualification_refuses_lane_or_cohort_drift(
             worker.run_remote_qualification(
                 claim.lease,
                 claim.candidates,
-                claim.screen_receipts,
                 screen_lane="primary",
                 continuation_store=continuation,
                 request_digest=None,
             )
-        with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
+        with pytest.raises(B300MainnetWorkerError, match="exact leased cohort"):
             worker.run_remote_qualification(
                 claim.lease,
                 claim.candidates,
-                claim.screen_receipts,
                 screen_lane="reproduction",
                 continuation_store=continuation,
                 request_digest=request_digest,
             )
-        with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
+        with pytest.raises(B300MainnetWorkerError, match="exact leased cohort"):
             worker.run_remote_qualification(
                 claim.lease,
                 tuple(reversed(claim.candidates)),
-                claim.screen_receipts,
                 screen_lane="primary",
                 continuation_store=continuation,
                 request_digest=request_digest,
@@ -625,7 +462,7 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
     executor_factory,
     monkeypatch,
 ) -> None:
-    primary, _resident, _builder = _authorities(tmp_path, executor_factory)
+    primary, _builder = _authorities(executor_factory)
     manifest = _manifest(primary)
     readiness = _readiness(manifest, primary)
     original = _qualification_claim(tmp_path / "cohort", manifest, count=1)
@@ -650,11 +487,10 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
     worker = B300MainnetWorker(manifest, reproduction, readiness)
     try:
         assert worker._remote_qualification_lane == "reproduction"
-        with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
+        with pytest.raises(B300MainnetWorkerError, match="exact leased cohort"):
             worker.run_remote_qualification(
                 claim.lease,
                 claim.candidates,
-                claim.screen_receipts,
                 screen_lane="primary",
                 continuation_store=continuation,
                 request_digest=request_digest,
@@ -662,7 +498,6 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
         result = worker.run_remote_qualification(
             claim.lease,
             claim.candidates,
-            claim.screen_receipts,
             screen_lane="reproduction",
             continuation_store=continuation,
             request_digest=request_digest,
@@ -679,7 +514,7 @@ def test_remote_qualification_refuses_a_plan_it_cannot_reopen(
     executor_factory,
     monkeypatch,
 ) -> None:
-    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
+    authorities, _builder = _authorities(executor_factory)
     manifest = _manifest(authorities)
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
@@ -696,7 +531,6 @@ def test_remote_qualification_refuses_a_plan_it_cannot_reopen(
             worker.run_remote_qualification(
                 claim.lease,
                 claim.candidates,
-                claim.screen_receipts,
                 screen_lane="primary",
                 continuation_store=QualificationContinuationStore(
                     tmp_path / "continuation"
@@ -712,7 +546,7 @@ def test_qualification_refuses_result_that_reorders_leased_cohort(
     executor_factory,
     monkeypatch,
 ) -> None:
-    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
+    authorities, _builder = _authorities(executor_factory)
     manifest = _manifest(authorities)
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
@@ -740,7 +574,6 @@ def test_qualification_refuses_result_that_reorders_leased_cohort(
             worker.run_remote_qualification(
                 claim.lease,
                 claim.candidates,
-                claim.screen_receipts,
                 screen_lane="primary",
                 continuation_store=QualificationContinuationStore(
                     tmp_path / "continuation"
@@ -764,17 +597,24 @@ def test_worker_has_no_dynamic_dispatch_surface() -> None:
         assert forbidden not in source
 
 
-def test_readiness_drift_is_rejected_before_work(
-    tmp_path: Path,
+def test_readiness_drift_and_declared_only_authority_are_rejected_before_work(
     executor_factory,
 ) -> None:
-    authorities, resident, _builder = _authorities(tmp_path, executor_factory)
+    authorities, builder = _authorities(executor_factory)
     manifest = _manifest(authorities)
-    readiness = dataclasses.replace(
-        _readiness(manifest, authorities),
-        service_digest=_h("different-service"),
-    )
+    readiness = _readiness(manifest, authorities)
 
     with pytest.raises(B300MainnetWorkerError, match="readiness differs"):
-        B300MainnetWorker(manifest, authorities, readiness)
-    assert resident.created == 0
+        B300MainnetWorker(
+            manifest,
+            authorities,
+            dataclasses.replace(readiness, service_digest=_h("different-service")),
+        )
+    # A commissioning declaration carries the same provider identity but no
+    # executors, judge, or deadline, so it cannot become a worker.
+    declared = B300DeclaredAuthorities(
+        authorities.runtime_identity, authorities.qualification
+    )
+    with pytest.raises(B300MainnetWorkerError, match="authorities are not exact"):
+        B300MainnetWorker(manifest, declared, readiness)
+    assert builder.calls == []

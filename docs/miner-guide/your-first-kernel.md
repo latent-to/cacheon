@@ -2,7 +2,8 @@
 
 Start with a node control, then replace its implementation. The CPU command
 checks packaging and callable interfaces. The engine command uses the real
-model, binder and audit in the published arena image.
+model, binder and audit in the published arena image. A prefix-cache bundle
+follows the same steps; see [Prefix-cache bundles](#prefix-cache-bundles).
 
 ## 1. Install a development checkout
 
@@ -60,7 +61,7 @@ smoke test too.
 ## 5. Add a real specialization
 
 Implement the computation inside the selected stock method interface. Keep its
-arguments, return structure and state effects. Do not modify the scheduler or
+arguments, return structure and state effects. Do not modify batching or
 engine configuration. See [Kernel ABI](kernel-abi.md) and
 [Finding a win](finding-a-win.md).
 
@@ -69,7 +70,8 @@ engine configuration. See [Kernel ABI](kernel-abi.md) and
 Inside the published image, mount the model and public arena inputs read-only,
 with writable cache and result directories. Expose the full arena GPU topology.
 The [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
-provide a bounded eight-request batch for its published B300 configuration.
+provide two batches, 24 requests in all, that exercise prefill, decode and
+prefix reuse on its published B300 configuration.
 The [Qwen3.6-35B-A3B inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/qwen36)
 provide a short and a long-context set, the H100 image recipe and the
 `[competition]` lines for arena `qwen36-35b-h100-bf16-tp1`.
@@ -130,3 +132,34 @@ A development check is not full-model quality, a speed win, qualification or
 settlement. Measure the complete serving workload against the incumbent, then
 follow [Submitting a bundle](submitting.md). Returning correct answers with no
 speed improvement is a successful diagnostic, not a competitive contribution.
+
+## Prefix-cache bundles
+
+A cache bundle names `tree_cache` under the `prefix_cache` target and supplies a
+factory that receives the runtime cache and returns a subclass of its type:
+
+```toml
+[competition]
+target = "prefix_cache"
+mode = "slot"
+arena = "<published-arena-id>"
+
+[[ops]]
+slot = "tree_cache"
+source = "cache/policy.py"
+entry = "build"
+```
+
+```python
+def build(cache):
+    return type(cache)
+```
+
+Declare no `prepare`, dtypes, architectures or metadata. `verify` imports `build`
+and checks that it accepts the runtime cache. Run `check` with the GLM development
+inputs: their second batch reuses prefixes, so the cache audit sees enough
+completions on every rank. The Qwen development configuration disables radix
+caching, so a cache bundle cannot run there. The table has one `tree_cache` row
+per rank; the cache runs outside CUDA graphs, so it needs no captured execution.
+The validator checks the bytes behind every prefix the cache serves; see
+[Slots and targets](slots.md#the-prefix-cache).

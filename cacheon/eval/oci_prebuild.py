@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import stat
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -533,7 +534,38 @@ def _read_prebuild_receipt(
     return row
 
 
-def run_oci_prebuild(
+_STORE_LOCKS: dict[str, threading.RLock] = {}
+_STORE_LOCKS_GUARD = threading.Lock()
+
+
+def _store_lock(root: str | os.PathLike[str]) -> threading.RLock:
+    """Serialize one host publication store across the lanes of this process.
+
+    Both qualification lanes share one store so the lane swap reuses the first
+    orientation's build. Every host open compares full directory stats, so a
+    peer's shard mkdir or entry rename inside that window fails the open;
+    builds, publishes, and host reopens therefore take turns.
+    """
+    with _STORE_LOCKS_GUARD:
+        return _STORE_LOCKS.setdefault(os.path.realpath(root), threading.RLock())
+
+
+def reopen_publication(path: str | os.PathLike[str], **kwargs) -> NativeArtifactPublication:
+    """Reopen one host publication while no peer lane mutates its store."""
+    with _store_lock(Path(path).parent.parent):
+        return reopen_native_artifact(path, **kwargs)
+
+
+def run_oci_prebuild(launch: EngineLaunchSpec, binding: TrustedLaunchBinding, config: OCIPrebuildConfig,
+                     **kwargs) -> OCIPrebuildResult:
+    """Hold the store while building or reusing, so a waiting lane reuses its peer's build."""
+    if not isinstance(config, OCIPrebuildConfig):
+        raise OCIPrebuildError("config must be OCIPrebuildConfig")
+    with _store_lock(config.publication_root):
+        return _run_oci_prebuild(launch, binding, config, **kwargs)
+
+
+def _run_oci_prebuild(
     launch: EngineLaunchSpec,
     binding: TrustedLaunchBinding,
     config: OCIPrebuildConfig,
@@ -543,8 +575,6 @@ def run_oci_prebuild(
     deadline: float | None = None,
 ) -> OCIPrebuildResult:
     """Build, seal, publish, and reopen one native artifact tree."""
-    if not isinstance(config, OCIPrebuildConfig):
-        raise OCIPrebuildError("config must be OCIPrebuildConfig")
     deadline = _absolute_deadline(deadline)
     # A caller-owned deadline and every phase timeout must read the same monotonic
     # clock.  Construct the manager before identity work only when that deadline is

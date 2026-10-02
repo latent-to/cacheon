@@ -1,19 +1,14 @@
 # Validator and operator guide
 
-Cacheon has two operational planes with different trust boundaries:
-
-- the **referee plane** accepts proposals, measures marginal improvements, retains
-  evidence, settles target ownership, and projects rewards; and
-- the **release plane** defines how reviewed contributions become signed,
-  chain-independent Cacheon Engine artifacts.
-
-A validator may operate both planes, but they must not be collapsed. A crowned miner
-bundle is still hostile proposal material. It is not a production release, and the
-serving fleet never needs chain access or a miner-hosted URL.
+This repository implements the **referee plane**: it accepts proposals, measures
+marginal improvements, retains evidence, settles target ownership, and projects
+rewards. Integration, release, and serving are separate authorities outside this
+repository. A crowned miner bundle is still hostile proposal material. It is not a
+production release, and a serving fleet never needs chain access or a miner-hosted URL.
 
 !!! important
     The public `cacheon chain-validate` command can run finalized **intake only**. Full
-    screening and qualification require deployment code to inject a trusted
+    qualification requires deployment code to inject a trusted
     `ArenaServiceRegistry` and select `--arena-id`. This repository defines the typed
     interface and enforcement logic; it does not ship a production arena provider.
 
@@ -28,9 +23,8 @@ flowchart LR
     Origin["Miner HTTPS origin"] --> Intake
     Intake --> Private["Private 0700 fetch tree"]
     Private --> Publication["Immutable worker publication"]
-    Publication --> Screen["Resident screen<br/>routing only"]
-    Screen --> Arena["Injected arena service<br/>trusted provider"]
-    Arena --> OCI["Two-process speed substrate<br/>B/C/B′ (v10, v11 mixed-cell)"]
+    Publication --> Arena["Injected arena service<br/>trusted provider"]
+    Arena --> OCI["Paired replay speed stage<br/>B and C concurrent (v17)"]
     OCI --> Audit["Audit-only role"]
     Audit --> T["Pristine T reference<br/>candidate-free"]
     T --> Evidence["Content-addressed evidence"]
@@ -77,15 +71,12 @@ The current validator path is deliberately staged:
 4. Resolve the submitted delta to one registered target and compute copy
    fingerprints over submitted bytes only.
 5. Copy the private intake tree into an immutable worker publication.
-6. Run registered, non-crownable screens, using the routing-only resident screen for
-   swappable candidates and an explicit waiver for non-swappable candidates.
-   The resident screen requires successful calls to every registered entry on
-   every rank, including native eager split operations inside SGLang's prefill
-   graph path. Bundle swaps rebuild both prefill and decode graphs. Full
-   qualification retains the scored CUDA-graph and correctness requirements;
-   the screen does not change the commissioned graph backend or capture sizes.
-7. Qualify promoted candidates under the version-3 protocol: two-process
-   B/C/B′ (v10, or v11 for a mixed-cell workload), then audit and pristine T.
+6. Admit the publication to its arena's qualification queue at first claim:
+   duplicate FAIL replay, closed-target release, and capacity limits apply here.
+   There is no separate screen.
+7. Qualify admitted candidates under the version-3 protocol: a paired replay
+   of B and C in both lane orientations (speed policy 17), then audit and
+   pristine T.
 8. Reopen the complete audited PASS and apply target and evaluation-stack changes
    in one settlement transaction.
 9. Reconcile the global reward projection from a separate signer process.
@@ -96,7 +87,7 @@ One reservation therefore crosses three different kinds of state:
 |---|---|---|
 | Arrival | Finalized cursor and `reserved` row | Intake controller |
 | Transport | `fetching` → `transport_retry`, `failed`, or `published` | Intake controller |
-| Screening | `screening` → `promoted`, retry lane, `failed`, or `held` | Registered arena service through the controller |
+| Admission | `published` queue; duplicate replay `failed`, closed target `expired`, or capacity `held` | Registered arena service through the controller |
 | Qualification | `qualifying` → `qualified`, `failed`, or `no_decision` | Qualification authority plus transactional store projection |
 | Settlement | Leased candidate, event journal, stack generation, active claims | Pure planner plus SQLite transaction |
 | Emissions | Legacy V1 standing projection and append-only publication journal | Separate weight reconciler |
@@ -116,11 +107,11 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 | Authority | Owns | Must not trust |
 |---|---|---|
 | Chain intake controller | Finalized order, reservations, private fetch, publication, durable state | Network arrival order, miner paths, mutable hosted bytes |
-| Arena service | Runtime/model/topology/workload identity, capacity, screens, qualification-plan construction | Submission-provided module paths or commands |
-| OCI execution controller | Resident lane roles, serialized work, mounts, deadlines, device observations, protocol, teardown | Candidate process, candidate clocks, candidate quality claims |
+| Arena service | Runtime/model/topology/workload identity, capacity, qualification-plan construction | Submission-provided module paths or commands |
+| OCI execution controller | Resident lane roles, paired windows, mounts, deadlines, device observations, protocol, teardown | Candidate process, candidate clocks, candidate quality claims |
 | Audit-only role | Exact slot × rank/PID witness graded by the trusted host | Candidate-side audit or framework output |
-| Pristine reference T | Untimed teacher-forced quality evidence | Candidate C or incumbent B′ as grading oracle |
-| Settlement store | Paired reproductions, target transitions, reward claims | A single passing report or stale incumbent identity |
+| Pristine reference T | Untimed teacher-forced quality evidence | Candidate C or the incumbent engine as grading oracle |
+| Settlement store | Reopened audited PASS evidence, target transitions, reward claims | An unreopened report or stale incumbent identity |
 | Weight signer | Wallet, live metagraph, publication journal, chain readback | An SDK “submitted” return value as confirmation |
 | Release authority | Integration review, model seal, release key, deterministic artifacts | A crown as automatic permission to ship |
 
@@ -128,83 +119,32 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 
 | Task | Supported surface |
 |---|---|
-| Inspect slot and SDK compatibility | `cacheon slots`, `cacheon compat`, `cacheon chain-compat` |
+| Inspect SGLang seam and SDK compatibility | `cacheon compat`, `cacheon chain-compat` |
 | Publish and submit a proposal | `cacheon chain-publish`, `cacheon chain-eval-cost`, `cacheon chain-submit` |
 | Inspect chain state | `cacheon chain-status` |
 | Inspect private reservation/miner outcomes | `cacheon chain-reservation-status`, `cacheon chain-miner-report` |
 | Grant/list one-use eval-cost make-goods | `cacheon chain-eval-cost-credit` |
 | Run bounded finalized public intake | `cacheon chain-validate --intake-only` |
 | Run full referee service | Deployment code calling `run_validator(...)` with an injected registry/provider |
-| Run the standing screen/qualification/settlement/offer loop | `python -m cacheon.chain.standing_cpu_supervisor --config <SEALED_CONFIG>`; deployment supplies sealed capabilities and transport identities |
+| Run the standing qualification/settlement/offer loop | `python -m cacheon.chain.standing_cpu_supervisor --config <SEALED_CONFIG>`; deployment supplies sealed capabilities and transport identities |
 | Publish a private recovery snapshot | `cacheon chain-snapshot` |
 | Verify or stage a recovery snapshot | `cacheon chain-snapshot-verify` |
 | Reconcile legacy V1 rewards | `cacheon set-weights`, optionally `--watch`, in a separate control-plane process |
 | Project an all-uncrowned V1 bootstrap | `cacheon set-weights --burn-hotkey <REGISTERED_HOTKEY>` |
 | Burn continuously to the subnet owner | `cacheon set-weights --burn-to-subnet-owner --watch` (journaled bootstrap; stops at the first CROWN; `--dry-run` to stop before signing) |
 | Seal model bytes | `cacheon model-provision` |
-| Verify a signed release | `cacheon release-verify` |
-| Materialize a release build context | `cacheon release-context` |
-| Construct, sign, publish, or start a release | Reviewed programmatic APIs; no public construction CLI is bundled |
 
-`scan` and `verify` are contributor diagnostics. Contributor-controlled matched A/B
+`scan`, `verify`, and `check` are contributor diagnostics. Contributor-controlled paired
 profiling is useful before submission and during integration, but its output is not a
 crown, a settlement record, or weight authority. See
-[Contributor profiling](running-evals.md).
-
-## Cacheon rename cutover
-
-The Cacheon rename changes executable and deployment names, but it is not a
-protocol-state migration.
-
-!!! warning
-    Do not install `cacheon-harness` over an editable `cacheon-harness` checkout
-    or reuse an evaluator image built with the old Python package. Both
-    distributions and bootstrap entry points can remain installed, while the old
-    image cannot import the renamed Cacheon worker modules.
-
-For each operator role:
-
-1. Stop the intake, gateway, follower, signer, and evaluation processes cleanly,
-   then create and verify a private recovery snapshot before the cutover.
-2. Build from a clean source archive into a fresh virtual environment. If a host
-   must be reused, uninstall `cacheon-harness` before installing
-   `cacheon-harness`, and verify that no legacy distribution, console script,
-   `.pth`, SGLang entry point, or `cacheon/` wheel payload remains.
-3. Rebuild and re-attest every evaluator/OCI image, then deploy the complete
-   process cohort with the `cacheon` CLI, `cacheon` Python modules, and
-   `CACHEON_*` environment names. Do not mix old and new interpreters in one
-   process or image.
-4. Keep existing SQLite databases, evidence, signed offers, recovery archives,
-   and object-store keys byte-for-byte. Their `cacheon.*`,
-   `cacheon-op-abi-v0`, and `cacheon/validator-archive/v1` values are stable
-   protocol/storage compatibility identifiers. Do not bulk-rewrite or rehash
-   them as branding.
-5. Reopen and reconcile the existing authority before resuming submissions.
-   Confirm the expected database scope, crown/stack state, publication journal,
-   recovery manifest, weight-offer authority, and chain readback under the new
-   process cohort.
-
-During the transition, `CACHEON_OBJECT_STORE_*` aliases are accepted as fallback
-for the corresponding `CACHEON_OBJECT_STORE_*` variables, and
-`CACHEON_WEIGHT_PUSH_CREDENTIALS`, `CACHEON_WEIGHT_PUSH_KEY`, and
-`CACHEON_WEIGHT_PUSH_CREDENTIAL_ID` remain fallback aliases for their
-`CACHEON_*` forms. Explicit CLI values win, followed by Cacheon variables, then
-Cacheon aliases; migrate service configuration to Cacheon names rather than
-depending on the fallback indefinitely.
-
-The shared-weight gateway also verifies complete legacy `X-Cacheon-*` request,
-response, acknowledgement, HMAC-domain, and stored-envelope dialects alongside
-the distinct `X-Cacheon-*` dialect. A request or stored object must be internally
-consistent with one dialect; mixed headers, schemas, or digests fail closed.
-Existing authenticated objects can therefore be reopened without normalization,
-while newly configured services should use the Cacheon dialect.
+[Verification and diagnostics](running-evals.md).
 
 ## Durable state
 
 Production referee state lives in `FinalizedIntakeStore`. The store binds its database to
 a chain genesis hash and netuid, records finalized
-priority, and carries each reservation through fetch, screening, qualification,
-reproduction, settlement, and weight-publication state. WAL mode, full synchronous
+priority, and carries each reservation through fetch, qualification,
+settlement, and weight-publication state. WAL mode, full synchronous
 writes, a process lock, and explicit restart recovery make partially completed work
 visible rather than silently replaying it.
 
@@ -233,13 +173,12 @@ Use the authority boundary to decide who absorbs a failure:
 
 | Failure | Economic treatment | Operator action |
 |---|---|---|
-| Invalid payload, committed-hash mismatch, unsafe archive, attributable screen/qualification violation | Candidate `FAIL` | Retain reason/evidence; no automatic retry |
+| Invalid payload, committed-hash mismatch, unsafe archive, attributable qualification violation | Candidate `FAIL` | Retain reason/evidence; no automatic retry |
 | DNS/TLS timeout, publication storage fault, controller crash, excessive baseline drift, missing evidence authority | `NO_DECISION`, retry, or `held` | Repair validator infrastructure, then use the bounded retry/release path |
 | Queue or cohort capacity exceeded | Queue while within policy; otherwise `held` | Add capacity or review the registered bounds; never reorder by fetch completion |
 | Settlement incumbent or journal head changed | Abort/hold; no partial transaction | Reopen current authority and re-plan |
 | Commissioned qualification incumbent differs from the durable evaluation stack | Refused before any lease, request, or GPU action; no candidate signal | Recommission from the current crowned stack |
 | Weight readback missing or divergent | Publication `held`; a hold over an attempt the chain never saw releases itself | Preserve journal, audit chain state, append an explicit release only after review |
-| Release verification or serve receipt failure | No rollout | Quarantine artifact/image; do not fall back silently to stock serving |
 
 Developer-local state and profiler output do not describe production economics and cannot
 replace any durable intake, qualification, settlement, or weight-publication product.
@@ -253,11 +192,9 @@ replace any durable intake, qualification, settlement, or weight-publication pro
 - It does not eliminate workload overfitting, GPU/driver vulnerabilities, denial of
   service, or release-key operational risk.
 - It does not automatically ship a crowned proposal.
-- It does not treat resident-screen measurements as crown authority.
-- It does not implement V2 finite-debt economics; that surface was extracted
-  from the tree on 2026-08-09 and only its reserved durable schema remains.
-- It does not claim a completed production Engine release, authorized registry image,
-  or complete all-rank serving receipt set for this revision.
+- It does not implement V2 finite-debt economics; only its reserved durable schema
+  remains.
+- It does not construct, sign, or serve an Engine release.
 
 Security assumptions and residual risks are detailed in
 [Threat model](../security/threat-model.md) and [Isolation](../security/isolation.md).

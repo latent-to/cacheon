@@ -1,14 +1,14 @@
 {
   "_meta": {
-    "generated_at_commit": "a887d917",
+    "generated_at_commit": "5544ada7",
     "purpose": "Refactor D durable-format goldens (synthetic inputs)",
     "python": "3.12.11"
   },
   "families": {
     "request_plan": {
       "primary": {
-        "canonical": "{\"artifacts\":[{\"role\":\"qualification_payload\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"size\":10},{\"role\":\"candidate_publication\",\"sha256\":\"62453d6b464fa8149789710c6fbd132b6aaf54648fdc0f1201b372d2ab69674c\",\"size\":20}],\"created_at_unix\":1700000000,\"credential_digest\":\"58e140dfb19ea8522106a75c5429bad495155eda4deceb0a255f7eb9d6654dd7\",\"deadline_unix\":1700003600,\"lease\":{\"claimed_block\":0,\"expires_block\":1,\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"promoted\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"stage\":\"qualification\"},\"plan_digest\":\"7863dcc45a7d6e1e20dac34a123158f39ddd027063d2b21395881b3bd7292a9f\",\"queued_at_unix_ns\":1700000000000000000,\"registration_digest\":\"29c9c30e0604515ced98b3d14fd88751a8f8e4b9bc69d483a67a257c14ab79fb\",\"remote_request\":{\"auth_tag\":\"d2d837798332375d69a48c5502008a6d2ca741f18d116dd46d1d22ba48aabe46\",\"body\":{\"candidates\":[{\"candidate_digest\":\"d4533058510892712a2ecdf423d0f0bff5a60e9686742985e2aef239c492d25b\",\"publication\":{\"address_digest\":\"6caabefc19f92a841fa07d33ae6297c3d6ab4248d21202f8f0c270e8d3201ab9\",\"content_hash\":\"f5f407039a541f436b458d62e94a5ccf2991e23e1b71dc40663bbd2e2cc463ed\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"410f42c9402902a8eb753df4f40666527297f82ba9f09891f750625ac3032b33\",\"size\":1}],\"publication_digest\":\"43d850a42b88f28a6234bb73d2adb4defd461afce876b92ee2e5766a483049ff\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":0,\"finalized_block\":1,\"finalized_event_index\":0,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-0\",\"reservation_digest\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\",\"selected_delta_digest\":\"6181c64eaac8e7d5835182c507fff31ab5b70897f29360f6a850c4dd0af9e97d\",\"submission_digest\":\"82ec25189519c4505f72fcce430bf7a56c136c0e4319cd2b2786ba3595372508\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]},\"screen_receipt\":{\"candidate_digest\":\"d4533058510892712a2ecdf423d0f0bff5a60e9686742985e2aef239c492d25b\",\"decision\":\"promote\",\"results\":[{\"elapsed_ms\":1,\"evidence_digest\":\"bb84358428dc2f26f6af693b195b116b4520a14914b492a038c383ee4c945e5e\",\"grade\":\"pass\",\"stage\":\"static\"},{\"elapsed_ms\":1,\"evidence_digest\":\"fc25f029a0266c28955eb9768ffff49e8c883217478bd2ddd3ab3c0e13d9b16e\",\"grade\":\"pass\",\"stage\":\"build\"},{\"elapsed_ms\":1,\"evidence_digest\":\"ae1bf2d22fb04d8367e9d69480e178f512a336f3b129075137b267c4b66a7d5f\",\"grade\":\"pass\",\"stage\":\"abi\"},{\"elapsed_ms\":1,\"evidence_digest\":\"4465be0bca7b9afa338120129eb5744a8c567dc2e27c3b2ea99313f96d866ff4\",\"grade\":\"pass\",\"stage\":\"graph\"},{\"elapsed_ms\":1,\"evidence_digest\":\"942cb96034d0f2712a9ed0368fd93c60a62b03d3907c68593a4a47b3a0c4b2b4\",\"grade\":\"pass\",\"stage\":\"abbreviated_serving\"}],\"screen_attempt\":1,\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"}}],\"kind\":\"qualification_work\",\"qualification_policy_digest\":\"e192462f9022f2b477f73cdbe9e6c9f891ebcfdc2b4ed4f8ddd7b1ff107ee6a6\",\"schema_version\":2,\"screen_lane\":\"primary\",\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"},\"body_kind\":\"qualification_work\",\"body_sha256\":\"4eb1eabf7461481798bdab2a7ecc661d1c88d43b29ad159cd6877f0e03b547ae\",\"claimed_block\":0,\"credential_id\":\"golden-credential\",\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"promoted\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"ready_epoch\":0,\"ready_receipt_digest\":\"91e9c1f32bec3747f898cc62ad2e27042e3fb2fc6311dc75d77e62cdc9f77b5e\",\"request_digest\":\"d47c8f89bcc5622a6940ad2a2b9799d268995753775c8f8e844b57e2e3fec0b4\",\"schema_version\":2,\"service_identity\":\"golden-arena@9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\",\"stage\":\"qualification\",\"transport_identity_digest\":\"ae36fbac990319dd5350a30fed2d580f311fdc5f29e4bcfa090de70680f2959a\",\"worker_readiness_digest\":\"5461e7ab2e04d910fcf595b68b3c43ecd7b65361d4d75f17ff2a2836af0fd885\"},\"request_id\":\"e118c6104122b7ea049d35bc27da18afb6df19a1512118995b1f646a9f3eba97\",\"schema\":\"cacheon-qualification-request-plan-v1\",\"transport_identity_digest\":\"ae36fbac990319dd5350a30fed2d580f311fdc5f29e4bcfa090de70680f2959a\",\"worker_epoch\":\"11111111111111111111111111111111\"}",
-        "digest": "7863dcc45a7d6e1e20dac34a123158f39ddd027063d2b21395881b3bd7292a9f",
+        "canonical": "{\"artifacts\":[{\"role\":\"qualification_payload\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"size\":10},{\"role\":\"candidate_publication\",\"sha256\":\"62453d6b464fa8149789710c6fbd132b6aaf54648fdc0f1201b372d2ab69674c\",\"size\":20}],\"created_at_unix\":1700000000,\"credential_digest\":\"58e140dfb19ea8522106a75c5429bad495155eda4deceb0a255f7eb9d6654dd7\",\"deadline_unix\":1700003600,\"lease\":{\"claimed_block\":0,\"expires_block\":1,\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"published\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"stage\":\"qualification\"},\"plan_digest\":\"c6bd972a2a6414acf0b60513e3fc29c0539bc6bf82bdb3698e99ab07ab3b5069\",\"queued_at_unix_ns\":1700000000000000000,\"registration_digest\":\"29c9c30e0604515ced98b3d14fd88751a8f8e4b9bc69d483a67a257c14ab79fb\",\"remote_request\":{\"auth_tag\":\"8dbc89758eb4f173b3eacf3fc87aa50e0779f7d63ee5aab4e08c2cae3a9ed307\",\"body\":{\"candidates\":[{\"attempt\":1,\"candidate_digest\":\"55e51d604f06e7dc2cd6e8e05e26f8d8afe96abc54f96e6dceae356f5ae732e5\",\"publication\":{\"address_digest\":\"6caabefc19f92a841fa07d33ae6297c3d6ab4248d21202f8f0c270e8d3201ab9\",\"content_hash\":\"f5f407039a541f436b458d62e94a5ccf2991e23e1b71dc40663bbd2e2cc463ed\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"410f42c9402902a8eb753df4f40666527297f82ba9f09891f750625ac3032b33\",\"size\":1}],\"publication_digest\":\"43d850a42b88f28a6234bb73d2adb4defd461afce876b92ee2e5766a483049ff\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":0,\"finalized_block\":1,\"finalized_event_index\":0,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-0\",\"reservation_digest\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\",\"selected_delta_digest\":\"6181c64eaac8e7d5835182c507fff31ab5b70897f29360f6a850c4dd0af9e97d\",\"submission_digest\":\"82ec25189519c4505f72fcce430bf7a56c136c0e4319cd2b2786ba3595372508\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]}}],\"kind\":\"qualification_work\",\"qualification_policy_digest\":\"e192462f9022f2b477f73cdbe9e6c9f891ebcfdc2b4ed4f8ddd7b1ff107ee6a6\",\"schema_version\":2,\"screen_lane\":\"primary\",\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"},\"body_kind\":\"qualification_work\",\"body_sha256\":\"cb06a3b1e6ef019a92bcef7a109481250560b8bed31ec8c67e5b4497d2558f06\",\"claimed_block\":0,\"credential_id\":\"golden-credential\",\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"published\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"ready_epoch\":0,\"ready_receipt_digest\":\"91e9c1f32bec3747f898cc62ad2e27042e3fb2fc6311dc75d77e62cdc9f77b5e\",\"request_digest\":\"f70d3f1a41797131a3eeb428a9170b8e3243cce01b830bb41e5abbe05ebce841\",\"schema_version\":2,\"service_identity\":\"golden-arena@9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\",\"stage\":\"qualification\",\"transport_identity_digest\":\"409c8c1e0b9e433946a5c2bb690b1dc05a75e49b7ea5321bdbbbe7b042e71aab\",\"worker_readiness_digest\":\"5461e7ab2e04d910fcf595b68b3c43ecd7b65361d4d75f17ff2a2836af0fd885\"},\"request_id\":\"aa3fdab6eda618cce5b66e28aa1e5e853be0692ca35329fbdfc3d6ebc3f4fb1d\",\"schema\":\"cacheon-qualification-request-plan-v1\",\"transport_identity_digest\":\"409c8c1e0b9e433946a5c2bb690b1dc05a75e49b7ea5321bdbbbe7b042e71aab\",\"worker_epoch\":\"11111111111111111111111111111111\"}",
+        "digest": "c6bd972a2a6414acf0b60513e3fc29c0539bc6bf82bdb3698e99ab07ab3b5069",
         "extras": {
           "lease": {
             "claimed_block": 0,
@@ -18,16 +18,16 @@
             "lease_id": "b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37",
             "members": [
               {
-                "prior_status": "promoted",
+                "prior_status": "published",
                 "reservation_id": "45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de"
               }
             ],
             "owner": "validator",
             "stage": "qualification"
           },
-          "remote_request_digest": "d47c8f89bcc5622a6940ad2a2b9799d268995753775c8f8e844b57e2e3fec0b4",
-          "request_id": "e118c6104122b7ea049d35bc27da18afb6df19a1512118995b1f646a9f3eba97",
-          "sqlite_blob_sha256": "4117ae7dd9486444aae75bb55cff86c77e980eccf41186ab2bd287b1722b8bc3"
+          "remote_request_digest": "f70d3f1a41797131a3eeb428a9170b8e3243cce01b830bb41e5abbe05ebce841",
+          "request_id": "aa3fdab6eda618cce5b66e28aa1e5e853be0692ca35329fbdfc3d6ebc3f4fb1d",
+          "sqlite_blob_sha256": "43abb5fb7a298651081e32fef5c4a17ca6a83e224f46d0250f0ece9241dcc869"
         },
         "inputs": {
           "candidates": 1,
@@ -36,8 +36,8 @@
         }
       },
       "renewed_lease": {
-        "canonical": "{\"artifacts\":[{\"role\":\"qualification_payload\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"size\":10},{\"role\":\"candidate_publication\",\"sha256\":\"62453d6b464fa8149789710c6fbd132b6aaf54648fdc0f1201b372d2ab69674c\",\"size\":20}],\"created_at_unix\":1700000000,\"credential_digest\":\"58e140dfb19ea8522106a75c5429bad495155eda4deceb0a255f7eb9d6654dd7\",\"deadline_unix\":1700003600,\"lease\":{\"claimed_block\":0,\"expires_block\":9,\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"promoted\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"stage\":\"qualification\"},\"plan_digest\":\"afd024b6f2735c17e80e700befd6a193d7013895efc7d8cd781fd6af61b4f0f5\",\"queued_at_unix_ns\":1700000000000000000,\"registration_digest\":\"29c9c30e0604515ced98b3d14fd88751a8f8e4b9bc69d483a67a257c14ab79fb\",\"remote_request\":{\"auth_tag\":\"d2d837798332375d69a48c5502008a6d2ca741f18d116dd46d1d22ba48aabe46\",\"body\":{\"candidates\":[{\"candidate_digest\":\"d4533058510892712a2ecdf423d0f0bff5a60e9686742985e2aef239c492d25b\",\"publication\":{\"address_digest\":\"6caabefc19f92a841fa07d33ae6297c3d6ab4248d21202f8f0c270e8d3201ab9\",\"content_hash\":\"f5f407039a541f436b458d62e94a5ccf2991e23e1b71dc40663bbd2e2cc463ed\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"410f42c9402902a8eb753df4f40666527297f82ba9f09891f750625ac3032b33\",\"size\":1}],\"publication_digest\":\"43d850a42b88f28a6234bb73d2adb4defd461afce876b92ee2e5766a483049ff\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":0,\"finalized_block\":1,\"finalized_event_index\":0,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-0\",\"reservation_digest\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\",\"selected_delta_digest\":\"6181c64eaac8e7d5835182c507fff31ab5b70897f29360f6a850c4dd0af9e97d\",\"submission_digest\":\"82ec25189519c4505f72fcce430bf7a56c136c0e4319cd2b2786ba3595372508\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]},\"screen_receipt\":{\"candidate_digest\":\"d4533058510892712a2ecdf423d0f0bff5a60e9686742985e2aef239c492d25b\",\"decision\":\"promote\",\"results\":[{\"elapsed_ms\":1,\"evidence_digest\":\"bb84358428dc2f26f6af693b195b116b4520a14914b492a038c383ee4c945e5e\",\"grade\":\"pass\",\"stage\":\"static\"},{\"elapsed_ms\":1,\"evidence_digest\":\"fc25f029a0266c28955eb9768ffff49e8c883217478bd2ddd3ab3c0e13d9b16e\",\"grade\":\"pass\",\"stage\":\"build\"},{\"elapsed_ms\":1,\"evidence_digest\":\"ae1bf2d22fb04d8367e9d69480e178f512a336f3b129075137b267c4b66a7d5f\",\"grade\":\"pass\",\"stage\":\"abi\"},{\"elapsed_ms\":1,\"evidence_digest\":\"4465be0bca7b9afa338120129eb5744a8c567dc2e27c3b2ea99313f96d866ff4\",\"grade\":\"pass\",\"stage\":\"graph\"},{\"elapsed_ms\":1,\"evidence_digest\":\"942cb96034d0f2712a9ed0368fd93c60a62b03d3907c68593a4a47b3a0c4b2b4\",\"grade\":\"pass\",\"stage\":\"abbreviated_serving\"}],\"screen_attempt\":1,\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"}}],\"kind\":\"qualification_work\",\"qualification_policy_digest\":\"e192462f9022f2b477f73cdbe9e6c9f891ebcfdc2b4ed4f8ddd7b1ff107ee6a6\",\"schema_version\":2,\"screen_lane\":\"primary\",\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"},\"body_kind\":\"qualification_work\",\"body_sha256\":\"4eb1eabf7461481798bdab2a7ecc661d1c88d43b29ad159cd6877f0e03b547ae\",\"claimed_block\":0,\"credential_id\":\"golden-credential\",\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"promoted\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"ready_epoch\":0,\"ready_receipt_digest\":\"91e9c1f32bec3747f898cc62ad2e27042e3fb2fc6311dc75d77e62cdc9f77b5e\",\"request_digest\":\"d47c8f89bcc5622a6940ad2a2b9799d268995753775c8f8e844b57e2e3fec0b4\",\"schema_version\":2,\"service_identity\":\"golden-arena@9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\",\"stage\":\"qualification\",\"transport_identity_digest\":\"ae36fbac990319dd5350a30fed2d580f311fdc5f29e4bcfa090de70680f2959a\",\"worker_readiness_digest\":\"5461e7ab2e04d910fcf595b68b3c43ecd7b65361d4d75f17ff2a2836af0fd885\"},\"request_id\":\"93dc4c2bc35c3d98882b338f736b1433267bd80ce6347e099f768ccb7981218a\",\"schema\":\"cacheon-qualification-request-plan-v1\",\"transport_identity_digest\":\"ae36fbac990319dd5350a30fed2d580f311fdc5f29e4bcfa090de70680f2959a\",\"worker_epoch\":\"11111111111111111111111111111111\"}",
-        "digest": "afd024b6f2735c17e80e700befd6a193d7013895efc7d8cd781fd6af61b4f0f5",
+        "canonical": "{\"artifacts\":[{\"role\":\"qualification_payload\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"size\":10},{\"role\":\"candidate_publication\",\"sha256\":\"62453d6b464fa8149789710c6fbd132b6aaf54648fdc0f1201b372d2ab69674c\",\"size\":20}],\"created_at_unix\":1700000000,\"credential_digest\":\"58e140dfb19ea8522106a75c5429bad495155eda4deceb0a255f7eb9d6654dd7\",\"deadline_unix\":1700003600,\"lease\":{\"claimed_block\":0,\"expires_block\":9,\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"published\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"stage\":\"qualification\"},\"plan_digest\":\"2a74d309c5dcefcafe14f02dc6d1e702beca96066b1771b2251e00a09692b5d6\",\"queued_at_unix_ns\":1700000000000000000,\"registration_digest\":\"29c9c30e0604515ced98b3d14fd88751a8f8e4b9bc69d483a67a257c14ab79fb\",\"remote_request\":{\"auth_tag\":\"8dbc89758eb4f173b3eacf3fc87aa50e0779f7d63ee5aab4e08c2cae3a9ed307\",\"body\":{\"candidates\":[{\"attempt\":1,\"candidate_digest\":\"55e51d604f06e7dc2cd6e8e05e26f8d8afe96abc54f96e6dceae356f5ae732e5\",\"publication\":{\"address_digest\":\"6caabefc19f92a841fa07d33ae6297c3d6ab4248d21202f8f0c270e8d3201ab9\",\"content_hash\":\"f5f407039a541f436b458d62e94a5ccf2991e23e1b71dc40663bbd2e2cc463ed\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"410f42c9402902a8eb753df4f40666527297f82ba9f09891f750625ac3032b33\",\"size\":1}],\"publication_digest\":\"43d850a42b88f28a6234bb73d2adb4defd461afce876b92ee2e5766a483049ff\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":0,\"finalized_block\":1,\"finalized_event_index\":0,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-0\",\"reservation_digest\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\",\"selected_delta_digest\":\"6181c64eaac8e7d5835182c507fff31ab5b70897f29360f6a850c4dd0af9e97d\",\"submission_digest\":\"82ec25189519c4505f72fcce430bf7a56c136c0e4319cd2b2786ba3595372508\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]}}],\"kind\":\"qualification_work\",\"qualification_policy_digest\":\"e192462f9022f2b477f73cdbe9e6c9f891ebcfdc2b4ed4f8ddd7b1ff107ee6a6\",\"schema_version\":2,\"screen_lane\":\"primary\",\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"},\"body_kind\":\"qualification_work\",\"body_sha256\":\"cb06a3b1e6ef019a92bcef7a109481250560b8bed31ec8c67e5b4497d2558f06\",\"claimed_block\":0,\"credential_id\":\"golden-credential\",\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"published\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"ready_epoch\":0,\"ready_receipt_digest\":\"91e9c1f32bec3747f898cc62ad2e27042e3fb2fc6311dc75d77e62cdc9f77b5e\",\"request_digest\":\"f70d3f1a41797131a3eeb428a9170b8e3243cce01b830bb41e5abbe05ebce841\",\"schema_version\":2,\"service_identity\":\"golden-arena@9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\",\"stage\":\"qualification\",\"transport_identity_digest\":\"409c8c1e0b9e433946a5c2bb690b1dc05a75e49b7ea5321bdbbbe7b042e71aab\",\"worker_readiness_digest\":\"5461e7ab2e04d910fcf595b68b3c43ecd7b65361d4d75f17ff2a2836af0fd885\"},\"request_id\":\"24aa5d146572589992b4d57a04d758a0c99b5e1e9f604ffb5ac0d23c64f0162b\",\"schema\":\"cacheon-qualification-request-plan-v1\",\"transport_identity_digest\":\"409c8c1e0b9e433946a5c2bb690b1dc05a75e49b7ea5321bdbbbe7b042e71aab\",\"worker_epoch\":\"11111111111111111111111111111111\"}",
+        "digest": "2a74d309c5dcefcafe14f02dc6d1e702beca96066b1771b2251e00a09692b5d6",
         "extras": {
           "lease": {
             "claimed_block": 0,
@@ -47,16 +47,16 @@
             "lease_id": "b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37",
             "members": [
               {
-                "prior_status": "promoted",
+                "prior_status": "published",
                 "reservation_id": "45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de"
               }
             ],
             "owner": "validator",
             "stage": "qualification"
           },
-          "remote_request_digest": "d47c8f89bcc5622a6940ad2a2b9799d268995753775c8f8e844b57e2e3fec0b4",
-          "request_id": "93dc4c2bc35c3d98882b338f736b1433267bd80ce6347e099f768ccb7981218a",
-          "sqlite_blob_sha256": "186b4012201afb007a43ecd4c5f3e0c2cc39030e6de099b433e8fd2e86d3449e"
+          "remote_request_digest": "f70d3f1a41797131a3eeb428a9170b8e3243cce01b830bb41e5abbe05ebce841",
+          "request_id": "24aa5d146572589992b4d57a04d758a0c99b5e1e9f604ffb5ac0d23c64f0162b",
+          "sqlite_blob_sha256": "68af706689d092929a70ae6d27de9ec0456e72bb329c6e939c1f211ac90b8331"
         },
         "inputs": {
           "candidates": 1,
@@ -65,8 +65,8 @@
         }
       },
       "reproduction": {
-        "canonical": "{\"artifacts\":[{\"role\":\"qualification_payload\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"size\":10},{\"role\":\"candidate_publication\",\"sha256\":\"62453d6b464fa8149789710c6fbd132b6aaf54648fdc0f1201b372d2ab69674c\",\"size\":20}],\"created_at_unix\":1700000000,\"credential_digest\":\"58e140dfb19ea8522106a75c5429bad495155eda4deceb0a255f7eb9d6654dd7\",\"deadline_unix\":1700003600,\"lease\":{\"claimed_block\":0,\"expires_block\":1,\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"promoted\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"stage\":\"qualification\"},\"plan_digest\":\"6566d143f67288b5482174f648a1dbd88930a24064755a56df03d5e42aff8e54\",\"queued_at_unix_ns\":1700000000000000000,\"registration_digest\":\"29c9c30e0604515ced98b3d14fd88751a8f8e4b9bc69d483a67a257c14ab79fb\",\"remote_request\":{\"auth_tag\":\"2db41364aa793bda554cb041ccfac6c3af9d98ec1625639e4572e51ccd538776\",\"body\":{\"candidates\":[{\"candidate_digest\":\"d4533058510892712a2ecdf423d0f0bff5a60e9686742985e2aef239c492d25b\",\"publication\":{\"address_digest\":\"6caabefc19f92a841fa07d33ae6297c3d6ab4248d21202f8f0c270e8d3201ab9\",\"content_hash\":\"f5f407039a541f436b458d62e94a5ccf2991e23e1b71dc40663bbd2e2cc463ed\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"410f42c9402902a8eb753df4f40666527297f82ba9f09891f750625ac3032b33\",\"size\":1}],\"publication_digest\":\"43d850a42b88f28a6234bb73d2adb4defd461afce876b92ee2e5766a483049ff\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":0,\"finalized_block\":1,\"finalized_event_index\":0,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-0\",\"reservation_digest\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\",\"selected_delta_digest\":\"6181c64eaac8e7d5835182c507fff31ab5b70897f29360f6a850c4dd0af9e97d\",\"submission_digest\":\"82ec25189519c4505f72fcce430bf7a56c136c0e4319cd2b2786ba3595372508\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]},\"screen_receipt\":{\"candidate_digest\":\"d4533058510892712a2ecdf423d0f0bff5a60e9686742985e2aef239c492d25b\",\"decision\":\"promote\",\"results\":[{\"elapsed_ms\":1,\"evidence_digest\":\"bb84358428dc2f26f6af693b195b116b4520a14914b492a038c383ee4c945e5e\",\"grade\":\"pass\",\"stage\":\"static\"},{\"elapsed_ms\":1,\"evidence_digest\":\"fc25f029a0266c28955eb9768ffff49e8c883217478bd2ddd3ab3c0e13d9b16e\",\"grade\":\"pass\",\"stage\":\"build\"},{\"elapsed_ms\":1,\"evidence_digest\":\"ae1bf2d22fb04d8367e9d69480e178f512a336f3b129075137b267c4b66a7d5f\",\"grade\":\"pass\",\"stage\":\"abi\"},{\"elapsed_ms\":1,\"evidence_digest\":\"4465be0bca7b9afa338120129eb5744a8c567dc2e27c3b2ea99313f96d866ff4\",\"grade\":\"pass\",\"stage\":\"graph\"},{\"elapsed_ms\":1,\"evidence_digest\":\"942cb96034d0f2712a9ed0368fd93c60a62b03d3907c68593a4a47b3a0c4b2b4\",\"grade\":\"pass\",\"stage\":\"abbreviated_serving\"}],\"screen_attempt\":1,\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"}}],\"kind\":\"qualification_work\",\"qualification_policy_digest\":\"e192462f9022f2b477f73cdbe9e6c9f891ebcfdc2b4ed4f8ddd7b1ff107ee6a6\",\"schema_version\":2,\"screen_lane\":\"reproduction\",\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"},\"body_kind\":\"qualification_work\",\"body_sha256\":\"c28b0e0b284fdfddac5a6c1a95657c88be77721f5896f6110147ca6620dfc205\",\"claimed_block\":0,\"credential_id\":\"golden-credential\",\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"promoted\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"ready_epoch\":0,\"ready_receipt_digest\":\"91e9c1f32bec3747f898cc62ad2e27042e3fb2fc6311dc75d77e62cdc9f77b5e\",\"request_digest\":\"cfc0fb3df9a5e1eca167e62e068861edf76f2fbd1e09d8fc9d96925e85e832a8\",\"schema_version\":2,\"service_identity\":\"golden-arena@9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\",\"stage\":\"qualification\",\"transport_identity_digest\":\"ae36fbac990319dd5350a30fed2d580f311fdc5f29e4bcfa090de70680f2959a\",\"worker_readiness_digest\":\"5461e7ab2e04d910fcf595b68b3c43ecd7b65361d4d75f17ff2a2836af0fd885\"},\"request_id\":\"e118c6104122b7ea049d35bc27da18afb6df19a1512118995b1f646a9f3eba97\",\"schema\":\"cacheon-qualification-request-plan-v1\",\"transport_identity_digest\":\"ae36fbac990319dd5350a30fed2d580f311fdc5f29e4bcfa090de70680f2959a\",\"worker_epoch\":\"11111111111111111111111111111111\"}",
-        "digest": "6566d143f67288b5482174f648a1dbd88930a24064755a56df03d5e42aff8e54",
+        "canonical": "{\"artifacts\":[{\"role\":\"qualification_payload\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"size\":10},{\"role\":\"candidate_publication\",\"sha256\":\"62453d6b464fa8149789710c6fbd132b6aaf54648fdc0f1201b372d2ab69674c\",\"size\":20}],\"created_at_unix\":1700000000,\"credential_digest\":\"58e140dfb19ea8522106a75c5429bad495155eda4deceb0a255f7eb9d6654dd7\",\"deadline_unix\":1700003600,\"lease\":{\"claimed_block\":0,\"expires_block\":1,\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"reproduction_pending\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"stage\":\"qualification\"},\"plan_digest\":\"77c67972a3a5cf896eb08884d53c87b69f2545885baa91bfe38bc90b018739d5\",\"queued_at_unix_ns\":1700000000000000000,\"registration_digest\":\"29c9c30e0604515ced98b3d14fd88751a8f8e4b9bc69d483a67a257c14ab79fb\",\"remote_request\":{\"auth_tag\":\"b310c1a7f0eecc9ff0ad2ed1e5ec78124d38de6b3d87c23f08f3924dd3a378f6\",\"body\":{\"candidates\":[{\"attempt\":1,\"candidate_digest\":\"55e51d604f06e7dc2cd6e8e05e26f8d8afe96abc54f96e6dceae356f5ae732e5\",\"publication\":{\"address_digest\":\"6caabefc19f92a841fa07d33ae6297c3d6ab4248d21202f8f0c270e8d3201ab9\",\"content_hash\":\"f5f407039a541f436b458d62e94a5ccf2991e23e1b71dc40663bbd2e2cc463ed\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"410f42c9402902a8eb753df4f40666527297f82ba9f09891f750625ac3032b33\",\"size\":1}],\"publication_digest\":\"43d850a42b88f28a6234bb73d2adb4defd461afce876b92ee2e5766a483049ff\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":0,\"finalized_block\":1,\"finalized_event_index\":0,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-0\",\"reservation_digest\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\",\"selected_delta_digest\":\"6181c64eaac8e7d5835182c507fff31ab5b70897f29360f6a850c4dd0af9e97d\",\"submission_digest\":\"82ec25189519c4505f72fcce430bf7a56c136c0e4319cd2b2786ba3595372508\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]}}],\"kind\":\"qualification_work\",\"qualification_policy_digest\":\"e192462f9022f2b477f73cdbe9e6c9f891ebcfdc2b4ed4f8ddd7b1ff107ee6a6\",\"schema_version\":2,\"screen_lane\":\"reproduction\",\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"},\"body_kind\":\"qualification_work\",\"body_sha256\":\"eac52ae4b4d909d0b47c3d34d9dc15192dd6caa2cda1b34c260e05628e0e3d7c\",\"claimed_block\":0,\"credential_id\":\"golden-credential\",\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"reproduction_pending\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"}],\"owner\":\"validator\",\"ready_epoch\":0,\"ready_receipt_digest\":\"91e9c1f32bec3747f898cc62ad2e27042e3fb2fc6311dc75d77e62cdc9f77b5e\",\"request_digest\":\"6e97fec8b47be90647d56601bb1dce400a23b302a5d1c738282fda5fab946199\",\"schema_version\":2,\"service_identity\":\"golden-arena@9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\",\"stage\":\"qualification\",\"transport_identity_digest\":\"409c8c1e0b9e433946a5c2bb690b1dc05a75e49b7ea5321bdbbbe7b042e71aab\",\"worker_readiness_digest\":\"5461e7ab2e04d910fcf595b68b3c43ecd7b65361d4d75f17ff2a2836af0fd885\"},\"request_id\":\"661b495355d1ad11b793cabf6b1977b51dcc99dca38cab9ef0dee8cb1ef30e60\",\"schema\":\"cacheon-qualification-request-plan-v1\",\"transport_identity_digest\":\"409c8c1e0b9e433946a5c2bb690b1dc05a75e49b7ea5321bdbbbe7b042e71aab\",\"worker_epoch\":\"11111111111111111111111111111111\"}",
+        "digest": "77c67972a3a5cf896eb08884d53c87b69f2545885baa91bfe38bc90b018739d5",
         "extras": {
           "lease": {
             "claimed_block": 0,
@@ -76,16 +76,16 @@
             "lease_id": "b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37",
             "members": [
               {
-                "prior_status": "promoted",
+                "prior_status": "reproduction_pending",
                 "reservation_id": "45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de"
               }
             ],
             "owner": "validator",
             "stage": "qualification"
           },
-          "remote_request_digest": "cfc0fb3df9a5e1eca167e62e068861edf76f2fbd1e09d8fc9d96925e85e832a8",
-          "request_id": "e118c6104122b7ea049d35bc27da18afb6df19a1512118995b1f646a9f3eba97",
-          "sqlite_blob_sha256": "fa69ca4f10ae34fef0d971bfea46686091f9b7bd9661978489486067295426fb"
+          "remote_request_digest": "6e97fec8b47be90647d56601bb1dce400a23b302a5d1c738282fda5fab946199",
+          "request_id": "661b495355d1ad11b793cabf6b1977b51dcc99dca38cab9ef0dee8cb1ef30e60",
+          "sqlite_blob_sha256": "3b047cfac0ee5d7dfef94bb6c3b0f43e67661ea9cb811c8d265cc59d6b709525"
         },
         "inputs": {
           "candidates": 1,
@@ -94,8 +94,8 @@
         }
       },
       "two_member": {
-        "canonical": "{\"artifacts\":[{\"role\":\"qualification_payload\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"size\":10},{\"role\":\"candidate_publication\",\"sha256\":\"62453d6b464fa8149789710c6fbd132b6aaf54648fdc0f1201b372d2ab69674c\",\"size\":20},{\"role\":\"candidate_publication\",\"sha256\":\"99ba975b0a78b5445405c92a93a47e017b62fd9f30ecdc068a88a7fa71b70788\",\"size\":21}],\"created_at_unix\":1700000000,\"credential_digest\":\"58e140dfb19ea8522106a75c5429bad495155eda4deceb0a255f7eb9d6654dd7\",\"deadline_unix\":1700003600,\"lease\":{\"claimed_block\":0,\"expires_block\":1,\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"promoted\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"},{\"prior_status\":\"promoted\",\"reservation_id\":\"ad328029ab6ebb75f5726a6276406d7e9db2c5936819ddb9157d03ff1c9ab223\"}],\"owner\":\"validator\",\"stage\":\"qualification\"},\"plan_digest\":\"a0b79a1726dc96da040946b184e8ddfe79c98ad62d82f1fc96edcc2cd2bd6d57\",\"queued_at_unix_ns\":1700000000000000000,\"registration_digest\":\"29c9c30e0604515ced98b3d14fd88751a8f8e4b9bc69d483a67a257c14ab79fb\",\"remote_request\":{\"auth_tag\":\"1897b6a58363ad3edcea1ac8f89a8c17ff4eba22402772d98c98e1489ac4b8f0\",\"body\":{\"candidates\":[{\"candidate_digest\":\"d4533058510892712a2ecdf423d0f0bff5a60e9686742985e2aef239c492d25b\",\"publication\":{\"address_digest\":\"6caabefc19f92a841fa07d33ae6297c3d6ab4248d21202f8f0c270e8d3201ab9\",\"content_hash\":\"f5f407039a541f436b458d62e94a5ccf2991e23e1b71dc40663bbd2e2cc463ed\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"410f42c9402902a8eb753df4f40666527297f82ba9f09891f750625ac3032b33\",\"size\":1}],\"publication_digest\":\"43d850a42b88f28a6234bb73d2adb4defd461afce876b92ee2e5766a483049ff\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":0,\"finalized_block\":1,\"finalized_event_index\":0,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-0\",\"reservation_digest\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\",\"selected_delta_digest\":\"6181c64eaac8e7d5835182c507fff31ab5b70897f29360f6a850c4dd0af9e97d\",\"submission_digest\":\"82ec25189519c4505f72fcce430bf7a56c136c0e4319cd2b2786ba3595372508\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]},\"screen_receipt\":{\"candidate_digest\":\"d4533058510892712a2ecdf423d0f0bff5a60e9686742985e2aef239c492d25b\",\"decision\":\"promote\",\"results\":[{\"elapsed_ms\":1,\"evidence_digest\":\"bb84358428dc2f26f6af693b195b116b4520a14914b492a038c383ee4c945e5e\",\"grade\":\"pass\",\"stage\":\"static\"},{\"elapsed_ms\":1,\"evidence_digest\":\"fc25f029a0266c28955eb9768ffff49e8c883217478bd2ddd3ab3c0e13d9b16e\",\"grade\":\"pass\",\"stage\":\"build\"},{\"elapsed_ms\":1,\"evidence_digest\":\"ae1bf2d22fb04d8367e9d69480e178f512a336f3b129075137b267c4b66a7d5f\",\"grade\":\"pass\",\"stage\":\"abi\"},{\"elapsed_ms\":1,\"evidence_digest\":\"4465be0bca7b9afa338120129eb5744a8c567dc2e27c3b2ea99313f96d866ff4\",\"grade\":\"pass\",\"stage\":\"graph\"},{\"elapsed_ms\":1,\"evidence_digest\":\"942cb96034d0f2712a9ed0368fd93c60a62b03d3907c68593a4a47b3a0c4b2b4\",\"grade\":\"pass\",\"stage\":\"abbreviated_serving\"}],\"screen_attempt\":1,\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"}},{\"candidate_digest\":\"0b53e09115d20ac6f49775944fbe58cdf940a642c758e3001eecde6bbcbd773f\",\"publication\":{\"address_digest\":\"e5d8a9d96019c1f15e89df098ec0c06de8fcacafca7cda8d1e9b91e7601cba1b\",\"content_hash\":\"b2ec5e56fec140d3e70928024416d4c3017cc2af1a89beae512805f2ac10685a\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"f28db616a65659106863747701bf9ab987f4a2dc2bc7c0b1d65dcc2a23e9a742\",\"size\":1}],\"publication_digest\":\"5a7d0cb7a242c17148f4a5b57771101c8fc5348d32f3facc6d7eb004d7857853\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":1,\"finalized_block\":2,\"finalized_event_index\":1,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-1\",\"reservation_digest\":\"ad328029ab6ebb75f5726a6276406d7e9db2c5936819ddb9157d03ff1c9ab223\",\"selected_delta_digest\":\"76414e139af72d0af453a3daece867dfb9d80f1b181e40bbcf6d827638093094\",\"submission_digest\":\"6b5ff8c646bcc6d484b1c40a18ab872fa82ee8c4587f15f6ef23060c92a08cc4\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]},\"screen_receipt\":{\"candidate_digest\":\"0b53e09115d20ac6f49775944fbe58cdf940a642c758e3001eecde6bbcbd773f\",\"decision\":\"promote\",\"results\":[{\"elapsed_ms\":1,\"evidence_digest\":\"d6094868b9814a819f2f4eae2e102812b36a2a4e4cfaf0be234fe6edb2e3d41e\",\"grade\":\"pass\",\"stage\":\"static\"},{\"elapsed_ms\":1,\"evidence_digest\":\"ed3d52bf38cb86e880aec1624781c8e794e6eb32d34cc5033d554972b2bb23e4\",\"grade\":\"pass\",\"stage\":\"build\"},{\"elapsed_ms\":1,\"evidence_digest\":\"2d2f9686206c8dc207658b0c56f7c96989ba262edb5e217004b5143277e2cf2a\",\"grade\":\"pass\",\"stage\":\"abi\"},{\"elapsed_ms\":1,\"evidence_digest\":\"f04c25f5301189c1bbfc5bd596c09cede7b126204572b94abbf6345ee2ec7b56\",\"grade\":\"pass\",\"stage\":\"graph\"},{\"elapsed_ms\":1,\"evidence_digest\":\"dec561c077fd7c68ed2141de271f995629b29d73822d773736b202c03a6ef17e\",\"grade\":\"pass\",\"stage\":\"abbreviated_serving\"}],\"screen_attempt\":1,\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"}}],\"kind\":\"qualification_work\",\"qualification_policy_digest\":\"e192462f9022f2b477f73cdbe9e6c9f891ebcfdc2b4ed4f8ddd7b1ff107ee6a6\",\"schema_version\":2,\"screen_lane\":\"primary\",\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"},\"body_kind\":\"qualification_work\",\"body_sha256\":\"249bc873eb33426513e67aa2ae6216e3504a47823c2493713164682871561338\",\"claimed_block\":0,\"credential_id\":\"golden-credential\",\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"promoted\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"},{\"prior_status\":\"promoted\",\"reservation_id\":\"ad328029ab6ebb75f5726a6276406d7e9db2c5936819ddb9157d03ff1c9ab223\"}],\"owner\":\"validator\",\"ready_epoch\":0,\"ready_receipt_digest\":\"91e9c1f32bec3747f898cc62ad2e27042e3fb2fc6311dc75d77e62cdc9f77b5e\",\"request_digest\":\"6cb4c7580d7b51e3bd243ad34a895eeb06f17d9c9a3c049d0b6c083f30591501\",\"schema_version\":2,\"service_identity\":\"golden-arena@9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\",\"stage\":\"qualification\",\"transport_identity_digest\":\"ae36fbac990319dd5350a30fed2d580f311fdc5f29e4bcfa090de70680f2959a\",\"worker_readiness_digest\":\"5461e7ab2e04d910fcf595b68b3c43ecd7b65361d4d75f17ff2a2836af0fd885\"},\"request_id\":\"177ea69c8a3a1f534e62a262f1c859ab5fdf09c0d417229e3273d55ca501d372\",\"schema\":\"cacheon-qualification-request-plan-v1\",\"transport_identity_digest\":\"ae36fbac990319dd5350a30fed2d580f311fdc5f29e4bcfa090de70680f2959a\",\"worker_epoch\":\"11111111111111111111111111111111\"}",
-        "digest": "a0b79a1726dc96da040946b184e8ddfe79c98ad62d82f1fc96edcc2cd2bd6d57",
+        "canonical": "{\"artifacts\":[{\"role\":\"qualification_payload\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"size\":10},{\"role\":\"candidate_publication\",\"sha256\":\"62453d6b464fa8149789710c6fbd132b6aaf54648fdc0f1201b372d2ab69674c\",\"size\":20},{\"role\":\"candidate_publication\",\"sha256\":\"99ba975b0a78b5445405c92a93a47e017b62fd9f30ecdc068a88a7fa71b70788\",\"size\":21}],\"created_at_unix\":1700000000,\"credential_digest\":\"58e140dfb19ea8522106a75c5429bad495155eda4deceb0a255f7eb9d6654dd7\",\"deadline_unix\":1700003600,\"lease\":{\"claimed_block\":0,\"expires_block\":1,\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"published\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"},{\"prior_status\":\"published\",\"reservation_id\":\"ad328029ab6ebb75f5726a6276406d7e9db2c5936819ddb9157d03ff1c9ab223\"}],\"owner\":\"validator\",\"stage\":\"qualification\"},\"plan_digest\":\"7caec19bd2aa809699cb316e582375507d662e5d6238442353904570b73508fc\",\"queued_at_unix_ns\":1700000000000000000,\"registration_digest\":\"29c9c30e0604515ced98b3d14fd88751a8f8e4b9bc69d483a67a257c14ab79fb\",\"remote_request\":{\"auth_tag\":\"18f3e76a09ee0ab7d92415d7c5cb3f99f851e99d315f7d5861f47482f17c8c26\",\"body\":{\"candidates\":[{\"attempt\":1,\"candidate_digest\":\"55e51d604f06e7dc2cd6e8e05e26f8d8afe96abc54f96e6dceae356f5ae732e5\",\"publication\":{\"address_digest\":\"6caabefc19f92a841fa07d33ae6297c3d6ab4248d21202f8f0c270e8d3201ab9\",\"content_hash\":\"f5f407039a541f436b458d62e94a5ccf2991e23e1b71dc40663bbd2e2cc463ed\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"410f42c9402902a8eb753df4f40666527297f82ba9f09891f750625ac3032b33\",\"size\":1}],\"publication_digest\":\"43d850a42b88f28a6234bb73d2adb4defd461afce876b92ee2e5766a483049ff\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":0,\"finalized_block\":1,\"finalized_event_index\":0,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-0\",\"reservation_digest\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\",\"selected_delta_digest\":\"6181c64eaac8e7d5835182c507fff31ab5b70897f29360f6a850c4dd0af9e97d\",\"submission_digest\":\"82ec25189519c4505f72fcce430bf7a56c136c0e4319cd2b2786ba3595372508\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]}},{\"attempt\":1,\"candidate_digest\":\"d8253af76933a43ca80d2e0abb5e02eed1597c7e55ecd29b2c0ecf158321b6b1\",\"publication\":{\"address_digest\":\"e5d8a9d96019c1f15e89df098ec0c06de8fcacafca7cda8d1e9b91e7601cba1b\",\"content_hash\":\"b2ec5e56fec140d3e70928024416d4c3017cc2af1a89beae512805f2ac10685a\",\"directories\":[],\"files\":[{\"path\":\"bundle.bin\",\"sha256\":\"f28db616a65659106863747701bf9ab987f4a2dc2bc7c0b1d65dcc2a23e9a742\",\"size\":1}],\"publication_digest\":\"5a7d0cb7a242c17148f4a5b57771101c8fc5348d32f3facc6d7eb004d7857853\",\"schema\":\"cacheon.worker-bundle-publication.v1\"},\"reservation\":{\"arrival_order\":1,\"finalized_block\":2,\"finalized_event_index\":1,\"finalized_event_subindex\":0,\"hotkey\":\"golden-hotkey-1\",\"reservation_digest\":\"ad328029ab6ebb75f5726a6276406d7e9db2c5936819ddb9157d03ff1c9ab223\",\"selected_delta_digest\":\"76414e139af72d0af453a3daece867dfb9d80f1b181e40bbcf6d827638093094\",\"submission_digest\":\"6b5ff8c646bcc6d484b1c40a18ab872fa82ee8c4587f15f6ef23060c92a08cc4\",\"target_id\":\"target-a\",\"target_members\":[\"component\"]}}],\"kind\":\"qualification_work\",\"qualification_policy_digest\":\"e192462f9022f2b477f73cdbe9e6c9f891ebcfdc2b4ed4f8ddd7b1ff107ee6a6\",\"schema_version\":2,\"screen_lane\":\"primary\",\"service_digest\":\"9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\"},\"body_kind\":\"qualification_work\",\"body_sha256\":\"c18eab30d61cb0b4b4815abd2ea873c187c2a4a0e9c1b6f592b98020b2e4bc41\",\"claimed_block\":0,\"credential_id\":\"golden-credential\",\"generation\":1,\"initial_expires_block\":1,\"lease_id\":\"b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37\",\"members\":[{\"prior_status\":\"published\",\"reservation_id\":\"45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de\"},{\"prior_status\":\"published\",\"reservation_id\":\"ad328029ab6ebb75f5726a6276406d7e9db2c5936819ddb9157d03ff1c9ab223\"}],\"owner\":\"validator\",\"ready_epoch\":0,\"ready_receipt_digest\":\"91e9c1f32bec3747f898cc62ad2e27042e3fb2fc6311dc75d77e62cdc9f77b5e\",\"request_digest\":\"fa4b25f197a6ee09254e1bb8d60d5076fa94c03637f56ed7e4545b4168b067d2\",\"schema_version\":2,\"service_identity\":\"golden-arena@9df6b026a8c6c26e3c3acd2370a16e93fffdc0015ff5bd879218788025db0280\",\"stage\":\"qualification\",\"transport_identity_digest\":\"409c8c1e0b9e433946a5c2bb690b1dc05a75e49b7ea5321bdbbbe7b042e71aab\",\"worker_readiness_digest\":\"5461e7ab2e04d910fcf595b68b3c43ecd7b65361d4d75f17ff2a2836af0fd885\"},\"request_id\":\"39e59ca3e4813427a73175cae19fb2df819bacccf7fb6b423c65cbfb3afecedf\",\"schema\":\"cacheon-qualification-request-plan-v1\",\"transport_identity_digest\":\"409c8c1e0b9e433946a5c2bb690b1dc05a75e49b7ea5321bdbbbe7b042e71aab\",\"worker_epoch\":\"11111111111111111111111111111111\"}",
+        "digest": "7caec19bd2aa809699cb316e582375507d662e5d6238442353904570b73508fc",
         "extras": {
           "lease": {
             "claimed_block": 0,
@@ -105,138 +105,25 @@
             "lease_id": "b544a7686d1186680a9d8f24ff542b00d8ae60da4dd2613a38f6292a8337cc37",
             "members": [
               {
-                "prior_status": "promoted",
+                "prior_status": "published",
                 "reservation_id": "45c33a0d3e0165b5eeb8302a5f17289076756fad7f40dfe9fc3b5d7b1a1b69de"
               },
               {
-                "prior_status": "promoted",
+                "prior_status": "published",
                 "reservation_id": "ad328029ab6ebb75f5726a6276406d7e9db2c5936819ddb9157d03ff1c9ab223"
               }
             ],
             "owner": "validator",
             "stage": "qualification"
           },
-          "remote_request_digest": "6cb4c7580d7b51e3bd243ad34a895eeb06f17d9c9a3c049d0b6c083f30591501",
-          "request_id": "177ea69c8a3a1f534e62a262f1c859ab5fdf09c0d417229e3273d55ca501d372",
-          "sqlite_blob_sha256": "fb18fb8a596230b105252b00382f5fcad6079c45febf2b86e7f0215e336c8270"
+          "remote_request_digest": "fa4b25f197a6ee09254e1bb8d60d5076fa94c03637f56ed7e4545b4168b067d2",
+          "request_id": "39e59ca3e4813427a73175cae19fb2df819bacccf7fb6b423c65cbfb3afecedf",
+          "sqlite_blob_sha256": "81940759e43a1ef8040e5bf623b355f0c5b325107c73c9c8a7754d8ded363ab2"
         },
         "inputs": {
           "candidates": 2,
           "expires_block": 1,
           "screen_lane": "primary"
-        }
-      }
-    },
-    "verification_descriptor": {
-      "collective_graph_sequence": {
-        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":16,\"tp_size\":4,\"world_size\":4},\"ordinal\":0},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":32,\"tp_size\":4,\"world_size\":4},\"ordinal\":1}],\"case_kind\":\"collective_graph_sequence\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-d\"}",
-        "digest": "ce847fdd21a3c453a0ae0cb27b5cc02b2971b2069ec7909ee28c79c00871bed8",
-        "extras": {},
-        "inputs": {
-          "calls": [
-            {
-              "architecture": "sm100",
-              "dtype": "bfloat16",
-              "graph_mode": "cuda_graph",
-              "hidden": 4096,
-              "num_tokens": 16,
-              "tp_size": 4,
-              "world_size": 4
-            },
-            {
-              "architecture": "sm100",
-              "dtype": "bfloat16",
-              "graph_mode": "cuda_graph",
-              "hidden": 4096,
-              "num_tokens": 32,
-              "tp_size": 4,
-              "world_size": 4
-            }
-          ],
-          "case_kind": "collective_graph_sequence",
-          "slot_id": "collective.all_reduce",
-          "variant_id": "golden-d"
-        }
-      },
-      "collective_single": {
-        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":8,\"tp_size\":4,\"world_size\":4},\"ordinal\":0}],\"case_kind\":\"collective_single\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-b\"}",
-        "digest": "d79f92760ea15ec235f18af75ff2f3a94d828800a1530a18dad9b158e2c82c2a",
-        "extras": {},
-        "inputs": {
-          "calls": [
-            {
-              "architecture": "sm100",
-              "dtype": "bfloat16",
-              "graph_mode": "cuda_graph",
-              "hidden": 4096,
-              "num_tokens": 8,
-              "tp_size": 4,
-              "world_size": 4
-            }
-          ],
-          "case_kind": "collective_single",
-          "slot_id": "collective.all_reduce",
-          "variant_id": "golden-b"
-        }
-      },
-      "collective_temporal_eager": {
-        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":1,\"tp_size\":4,\"world_size\":4},\"ordinal\":0},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":8,\"tp_size\":4,\"world_size\":4},\"ordinal\":1},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":64,\"tp_size\":4,\"world_size\":4},\"ordinal\":2}],\"case_kind\":\"collective_temporal_eager\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-c\"}",
-        "digest": "5d1381da769bbe6431acda07925b21be2ddc58f8d8bcb85ab3b6f24b6676bb36",
-        "extras": {},
-        "inputs": {
-          "calls": [
-            {
-              "architecture": "sm100",
-              "dtype": "bfloat16",
-              "graph_mode": "cuda_graph",
-              "hidden": 4096,
-              "num_tokens": 1,
-              "tp_size": 4,
-              "world_size": 4
-            },
-            {
-              "architecture": "sm100",
-              "dtype": "bfloat16",
-              "graph_mode": "cuda_graph",
-              "hidden": 4096,
-              "num_tokens": 8,
-              "tp_size": 4,
-              "world_size": 4
-            },
-            {
-              "architecture": "sm100",
-              "dtype": "bfloat16",
-              "graph_mode": "cuda_graph",
-              "hidden": 4096,
-              "num_tokens": 64,
-              "tp_size": 4,
-              "world_size": 4
-            }
-          ],
-          "case_kind": "collective_temporal_eager",
-          "slot_id": "collective.all_reduce",
-          "variant_id": "golden-c"
-        }
-      },
-      "ordinary_single": {
-        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"last_dim\":2048,\"num_tokens\":64,\"tp_size\":4,\"world_size\":4},\"ordinal\":0}],\"case_kind\":\"ordinary_single\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"activation.silu_and_mul\",\"variant_id\":\"golden-a\"}",
-        "digest": "6598a2daaa78ae6df58cdd0c2e6931b653f109cc5d30d677f5d90798b01aa2b7",
-        "extras": {},
-        "inputs": {
-          "calls": [
-            {
-              "architecture": "sm100",
-              "dtype": "bfloat16",
-              "graph_mode": "cuda_graph",
-              "last_dim": 2048,
-              "num_tokens": 64,
-              "tp_size": 4,
-              "world_size": 4
-            }
-          ],
-          "case_kind": "ordinary_single",
-          "slot_id": "activation.silu_and_mul",
-          "variant_id": "golden-a"
         }
       }
     }

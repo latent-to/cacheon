@@ -1,16 +1,16 @@
-"""Sealed config and builder for finalized, FIFO, remote screen dispatch.
+"""Sealed config and builder for the CPU side of remote qualification dispatch.
 
 The intake-only validator remains the sole chain reader and durable cursor
 advancer.  The dispatcher built here reopens that cursor read-only for every
-coordinator operation, claims exactly one durable screen lease, and hands the
-resulting typed request to the authenticated spool transport.  Its only
-production consumer is ``cacheon.chain.standing_cpu_supervisor``, which owns
-the process loop; qualification is not an operation exposed here.
+coordinator operation and binds the authenticated spool transport, coordinator,
+and credential that ``cacheon.chain.recoverable_qualification_dispatcher``
+drives.  Its only production consumer is
+``cacheon.chain.standing_cpu_supervisor``, which owns the process loop.
 
 There is deliberately no provider import, command, argv, shell, environment,
 or candidate-selected execution surface.  ``ArenaService`` still requires a
-provider object, so the CPU installs a digest-exact remote-only proxy whose two
-execution methods always fail closed if local code reaches them.
+provider object, so the CPU installs a digest-exact remote-only proxy whose
+execution method always fails closed if local code reaches it.
 """
 
 from __future__ import annotations
@@ -30,8 +30,6 @@ from cacheon.arena_service import (
     ArenaRuntimeIdentity,
     ArenaService,
     ArenaServiceManifest,
-    NonCrownScreenPolicy,
-    ScreenStagePolicy,
     Workload,
     WorkloadCell,
 )
@@ -43,7 +41,6 @@ from cacheon.chain.intake import IntakePolicy, IntakeScope
 from cacheon.chain.publication import reopen_worker_bundle
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.remote_evaluation_dispatcher import (
-    RemoteEvaluationDispatcher,
     RemoteEvaluationDispatcherError,
     RemoteEvaluationRequest,
 )
@@ -103,12 +100,10 @@ _WORKLOAD_FIELDS = frozenset(
     {"cells", "prompt_corpus_digest", "prompt_seed_scheme"}
 )
 _CELL_FIELDS = frozenset(WorkloadCell.__dataclass_fields__)
-_SCREENS_FIELDS = frozenset({"crownable", "stages"})
-_STAGE_FIELDS = frozenset(ScreenStagePolicy.__dataclass_fields__)
 
 
 class MainnetScreenDispatcherError(RuntimeError):
-    """The standing screen dispatcher cannot preserve its closed authority."""
+    """The standing dispatcher cannot preserve its closed authority."""
 
 
 def _closed(value: object, fields: frozenset[str], label: str) -> dict[str, Any]:
@@ -152,19 +147,6 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
     capacity = ArenaCapacityPolicy(
         **_closed(row["capacity"], _CAPACITY_FIELDS, "arena capacity")
     )
-    screens_row = _closed(row["screens"], _SCREENS_FIELDS, "screen policy")
-    if screens_row["crownable"] is not False or type(screens_row["stages"]) is not list:
-        raise MainnetScreenDispatcherError(
-            "screen policy must be explicitly non-crown and list its stages"
-        )
-    screens = NonCrownScreenPolicy(
-        tuple(
-            ScreenStagePolicy(
-                **_closed(stage, _STAGE_FIELDS, "screen stage policy")
-            )
-            for stage in screens_row["stages"]
-        )
-    )
     closed_targets_raw = row["closed_targets"]
     if type(closed_targets_raw) is not list:
         raise MainnetScreenDispatcherError("arena closed targets are not a list")
@@ -172,7 +154,6 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
         runtime=runtime,
         workload=workload,
         capacity=capacity,
-        screens=screens,
         qualification_policy_digest=row["qualification_policy_digest"],
         provider_digest=row["provider_digest"],
         closed_targets=tuple(closed_targets_raw),
@@ -191,19 +172,12 @@ class RemoteOnlyArenaProvider:
     def __init__(self, provider_digest: str):
         self.provider_digest = _digest(provider_digest, "provider_digest")
 
-    @staticmethod
-    def _local_execution_disabled() -> NoReturn:
-        raise MainnetScreenDispatcherError(
-            "local arena provider execution is disabled; only authenticated "
-            "remote screens are allowed"
-        )
-
-    def run_screen(self, _manifest, _stage, _candidate) -> NoReturn:
-        self._local_execution_disabled()
-
     def build_qualification(self, _request, state=None) -> NoReturn:
         del state
-        self._local_execution_disabled()
+        raise MainnetScreenDispatcherError(
+            "local arena provider execution is disabled; only authenticated "
+            "remote qualification is allowed"
+        )
 
 
 @dataclass(frozen=True)
@@ -585,17 +559,21 @@ def make_qualification_publication_resolver(
     return resolve
 
 
-def build_dispatcher(
+def build_coordinator_and_transport(
     config: DispatcherConfig,
     *,
     store_factory: Callable[..., Any] | None = None,
-) -> RemoteEvaluationDispatcher:
+) -> tuple[EvaluationCoordinator, DurableSpoolAuthenticatedWorkerTransport]:
     """Construct the exact CPU coordinator and durable spool adapter.
+
+    ``RecoverableQualificationDispatcher`` binds the pair and checks that the
+    transport identity, readiness digest, and credential agree with the
+    coordinator's sealed service.
 
     The default is the recovery-capable finalized intake store because recovery
     triggers are durable while their authorizing SQLite function is
     connection-local. Reopening a commissioned database with the base store can
-    therefore fail even during a screen-only lease mutation. Tests may inject
+    therefore fail even during a plain lease mutation. Tests may inject
     another exact factory explicitly.
     """
 
@@ -665,8 +643,4 @@ def build_dispatcher(
         raise MainnetScreenDispatcherError(
             "durable spool transport differs from pinned registration authority"
         )
-    return RemoteEvaluationDispatcher(
-        coordinator=coordinator,
-        transport=transport,
-        credential=transport.credential,
-    )
+    return coordinator, transport

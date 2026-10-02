@@ -15,13 +15,14 @@ paying again. See [Submitting](submitting.md#step-by-step-commands).
     arena. The validator compares it with that arena's exact evaluation incumbent
     on the registered workload and checks that it remains within the required
     behavior and quality limits. If the same optimization passes one complete audited
-    qualification attempt, its retained contribution earns V1 credit. Settlement
-    may also name it the new **crown** for that target.
+    qualification attempt and beats the best earlier rewarded PASS against the same
+    arena and incumbent by the required margin, its retained contribution earns V1
+    credit. Settlement may also name it the new **crown** for that target.
 
     The active policy determines how that claim contributes to validator weights.
     A separate publisher later combines all eligible claims into a weight vector and
-    confirms that vector on-chain. Merely submitting code, reporting a local
-    benchmark, or passing a routing screen earns nothing.
+    confirms that vector on-chain. Merely submitting code or reporting a local
+    benchmark earns nothing.
 
 ## Why participate?
 
@@ -41,9 +42,10 @@ The value proposition has three parts:
 - **Results, not promises.** Reward eligibility follows an end-to-end improvement
   measured by the validator with retained speed and correctness evidence. It does not depend on a
   self-reported benchmark or how large the submission is.
-- **One focused improvement.** A miner can improve one published kernel or
-  multi-kernel target against the manually commissioned incumbent. A crown
-  leaves that comparison baseline unchanged until the operator replaces it.
+- **One focused improvement.** A miner can improve the model's modules
+  (`forward_pass`) or the scheduler's prefix cache (`prefix_cache`) against the
+  manually commissioned incumbent. A crown leaves that comparison baseline
+  unchanged until the operator replaces it.
 - **Verifiable credit.** The chain records which hotkey submitted each exact
   bundle and when. Qualification, settlement, and the reward claim retain that
   identity, creating an auditable record of the measured contribution.
@@ -57,8 +59,8 @@ projection on-chain.
 ## From proposal to possible emission
 
 ```text
-submit -> pass one complete audited qualification -> retained contribution becomes eligible for V1 credit
-       -> validator publishes confirmed weights -> network determines emission
+submit -> pass one complete audited qualification -> beat the best earlier rewarded PASS by the margin
+       -> V1 credit -> validator publishes confirmed weights -> network determines emission
 ```
 
 The stages have different meanings:
@@ -66,7 +68,7 @@ The stages have different meanings:
 | Stage | What it establishes | Reward status |
 |---|---|---|
 | Finalized reveal accepted into intake | Exact proposal identity, miner hotkey, and finalized arrival order | No reward |
-| Complete qualification `PASS` / `qualified` | Speed, graph, audit, and pristine quality gates passed | The distinct retained contribution earns V1 credit |
+| Complete qualification `PASS` / `qualified` | Speed, graph, audit, and pristine quality gates passed | The distinct retained contribution earns V1 credit if it beats the best earlier rewarded PASS in its reward group by the margin |
 | Crown settled | Settlement selected the proposal and recorded its crown and standing claim together | Its retained PASS credit continues |
 | Weight publication confirmed | The intended recipients and weight values were read back from finalized chain state within the verifier tolerance | Cacheon's projection is realized; token income remains network-dependent |
 | Crown retired or neutralized | The standing claim is no longer active | Its retained PASS credit continues to decay under V1 |
@@ -75,31 +77,24 @@ The stages have different meanings:
 
 Settlement rechecks the evidence and selects a crown among competing proposals
 for the same or overlapping work. V1 credit includes every distinct retained
-qualified contribution, including a contribution that does not become the crown.
-Evaluation continues against the operator's commissioned baseline after settlement.
+qualified contribution that beats the best earlier rewarded PASS in its reward
+group by the margin, including one that does not become the crown. A reward group
+is one arena and one incumbent stack, so kernel and cache PASSes against the same
+baseline compete with each other. Bundles committed before a baseline's first crown
+still run against it; later ones are returned until a new baseline is commissioned.
 
-The speedup used for settlement is deliberately conservative:
-
-```text
-settled speedup = C / max(B, B′)
-```
-
-Both stock observations must be valid. The faster observed stock rate sets the
-comparison, and every workload cell is warmed before timing. Historical paired
-qualifications keep their original lower accepted speedup.
-
-Under speed policy v12 the validator also takes a one-token prompt pass of each
-lane after B′. A candidate that clears the decode bar is credited exactly as
-above. A candidate that misses the decode bar without regressing can still
-qualify on the prompt pass, at its own sealed margin, and is then credited at a
-sealed fraction of the prompt-pass gain rather than at its raw prompt speedup:
+The speedup used for settlement is the paired replay's point estimate:
 
 ```text
-settled speedup = 1 + credit_weight × (C_prefill / max(B_prefill, B′_prefill) − 1)
+settled speedup = exp(mean over both lane orientations of
+                      log(pooled incumbent cost / pooled candidate cost))
 ```
 
-A measured decode slowdown or a conditioning regression fails whatever the
-prompt pass measures.
+Each cost is the elapsed serving time of one complete pass over the sealed
+agent workload. Qualification passes only when the one-sided lower bound on
+that speedup exceeds 1 and service attainment holds, but credit uses the point
+estimate, not the bound. Historical qualifications keep the speedup their own
+policy recorded.
 
 ## What “validator weight” means
 
@@ -140,10 +135,9 @@ tempo and halving state, the complete active validator stake-and-weight matrix,
 the subnet's consensus parameters, and the resulting miner incentive. Those
 inputs can change until the epoch runs.
 
-Cacheon has no retained mainnet epoch that binds all of those inputs to a crowned
-miner, so this page does not invent a numeric alpha example. Once such a finalized
-epoch exists, the honest example is a historical calculation from that exact chain
-state—not a conversion from local speedup alone. See Bittensor's official
+This page therefore gives no numeric alpha example. An honest example is a
+historical calculation from one exact finalized chain state, not a conversion from
+local speedup alone. See Bittensor's official
 [emissions and Yuma Consensus explanation](https://www.bittensor.com/docs/concepts/emissions).
 
 ## Which reward policy applies?
@@ -153,10 +147,10 @@ cannot choose between them. The operator must announce the active policy,
 including its exact digest, chain scope, arena, target catalog, and publication
 cadence.
 
-| Policy | Plain-English model | Current status |
+| Policy | Plain-English model | Status |
 |---|---|---|
-| **Legacy V1 standing rewards** | Each distinct retained audited PASS earns credit based on its accepted improvement. Credit decays after confirmed publication and is allocated alongside other eligible claims. A crown is not required for each earning contribution. | Implemented and exercised end to end on testnet; this does not establish mainnet economics. Check the operator announcement for the deployment you intend to join. |
-| **V2 finite debt** | An eligible post-activation crown receives a bounded claim that is paid down over later confirmed epochs. A later crown does not erase the unpaid balance, but the old crown receives no perpetual royalty. | Design retained; the implementation was extracted from the tree on 2026-08-09 and would return as a new reviewed change. It creates no claim and pays nothing today. |
+| **Legacy V1 standing rewards** | Each distinct retained audited PASS that beats the best earlier rewarded PASS in its reward group by the margin earns credit based on its accepted improvement. Credit decays after confirmed publication and is allocated alongside other eligible claims. A crown is not required for each earning contribution. | Implemented and exercised end to end on testnet; this does not establish mainnet economics. Check the operator announcement for the deployment you intend to join. |
+| **V2 finite debt** | An eligible post-activation crown receives a bounded claim that is paid down over later confirmed epochs. A later crown does not erase the unpaid balance, but the old crown receives no perpetual royalty. | Design retained; the implementation is not in the tree and would return as a new reviewed change. It creates no claim and pays nothing. |
 
 Only legacy V1 can publish weights. Do not estimate a current reward with the
 V2 formula; until a future release reintroduces and an operator activates it,
@@ -167,13 +161,12 @@ V2 creates no claim and pays no principal.
 V1 is relative rather than fixed:
 
 1. A distinct contribution with a complete audited PASS earns V1 credit when it
-   beats the best earlier PASS on the same arena and commissioned baseline by
-   the sealed minimum margin. Finalized queue order determines precedence;
-   completion order does not. A subthreshold PASS still raises the comparison
-   high-water mark if it is faster.
-2. The claim's starting credit uses its conservative speedup divided by that
-   best preceding speedup. The first PASS uses a denominator of one. The frozen
-   evaluation baseline remains available for later submissions.
+   beats the best earlier rewarded PASS on the same arena and commissioned baseline by
+   at least 1.5% (V17). An unpaid result does not raise the next miner's hurdle.
+   Historical policies retain their minimum-margin rule. Finalized queue order determines precedence; completion order does not.
+2. The claim's starting credit uses its settled speedup divided by that
+   best preceding speedup. The first PASS uses a denominator of one. After a baseline's first crown,
+   later commitments are [returned unevaluated](diagnostics.md#baseline-admission-closed), fee preserved.
 3. New credit starts decaying after its first qualifying confirmed weight
    publication. Finalized submission time determines the waiting bonus and
    applicable arena terms. Retained historical decay clocks stay unchanged.
@@ -220,8 +213,10 @@ publication pending or held.
 
 ### A simplified V1 example
 
-Suppose a candidate records a complete audited PASS at `1.034x`, using its
-throughput divided by the faster valid stock rate. Settlement uses `1.034x`.
+Suppose a candidate records a complete audited PASS with a settled speedup of
+`1.034x`: over both lane orientations, the incumbent's pooled elapsed cost for the
+sealed workload is 1.034 times the candidate's. If it is the first PASS against
+that baseline, it is eligible and settlement uses `1.034x`.
 
 Under V1, the `3.4%` marginal improvement becomes the input to the claim's
 standing-credit calculation. It does **not** mean the miner receives 3.4% of
@@ -238,9 +233,10 @@ are in [Legacy V1 emissions policy](../reference/emissions-policy.md#legacy-v1).
 At minimum:
 
 - the exact policy and parameters announced for the deployment;
-- the conservative speedup from complete accepted qualification (historical
+- the settled speedup from complete accepted qualification (historical
   paired qualifications retain their lower accepted speedup);
-- whether a distinct complete audited PASS has been retained;
+- whether a distinct complete audited PASS has been retained and beats the best
+  earlier rewarded PASS in its reward group by the margin;
 - the proposal's finalized block, frozen arena percentage and waiting-bonus rule;
 - its confirmed decay-start block and retained decay adjustments;
 - other live standing and discovery claims;

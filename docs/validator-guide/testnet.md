@@ -111,7 +111,7 @@ The committed content hash is rederived from the local bundle and later from the
 and extracted tree. Hosting different bytes causes a durable rejection.
 
 Eval-cost defaults off. When the operator enables it, add
-`--eval-cost-tao-rao 1000000000` to `chain-validate` and follow the miner `--pay`
+`--eval-cost-tao-rao 500000000` to `chain-validate` and follow the miner `--pay`
 sequence in [Submitting a proposal](../miner-guide/submitting.md#step-by-step-commands).
 
 ## Inspect chain state
@@ -140,8 +140,8 @@ cacheon chain-validate \
 ```
 
 Expected output summarizes finalized block, arrivals, reservations, immutable
-publications, copies, rejections, screens, decisions, settlements, and holds. In
-intake-only mode the screen, qualification, and settlement counts remain disabled.
+publications, copies, rejections, decisions, settlements, and holds. In
+intake-only mode the qualification and settlement counts remain disabled.
 
 Run the same command again. No new reveal should be republished; durable identity and the
 finalized cursor make the pass idempotent.
@@ -173,13 +173,12 @@ select the arena. See [Arena service](arena-service.md) and
 commands, scoring policy, chain-signing credentials, and weight publication belong to
 separate authorities and must not be added to the intake service definition.
 
-With an injected deployment registry, the same testnet loop may screen, qualify, retain a
+With an injected deployment registry, the same testnet loop may qualify, retain a
 complete audited PASS, and settle. That does not move qualification onto chain: the chain supplies
 arrival and current metagraph authority, while the registered OCI/referee fleet produces
-and retains the evidence. Production version-3 qualification uses the
-two-process B/C/B′ schedule, then audit and pristine T. Verify the primary and
-exact physical-lane-swapped reproduction
-separately before daemon mode.
+and retains the evidence. Production version-3 qualification uses the paired
+replay of B and C, then audit and pristine T. Verify both lane orientations of
+the paired replay before daemon mode.
 
 ## Weight dry run
 
@@ -230,9 +229,8 @@ dry-run or signer-free journal modes.
 
 ## V2 status
 
-The V2 shadow, activation, and debt-publication commands were extracted from
-the tree on 2026-08-09 without ever producing a live activation or
-publication receipt. Legacy V1 `set-weights` is the only publication path.
+The V2 shadow, activation, and debt-publication commands are not in the tree.
+Legacy V1 `set-weights` is the only publication path.
 See [Emissions policy](../reference/emissions-policy.md#finite-debt-v2).
 
 ## Evidence scope
@@ -244,8 +242,7 @@ reopened. Do not infer a stronger boundary from testnet connectivity:
 |---|---|---|
 | Finalized reveal, committed-tree re-hash, immutable publication, and restart reconciliation | Chain intake, proposal identity, and durable cursor behavior | GPU qualification, settlement, or release readiness |
 | Metagraph-backed weight dry run | Projection construction against live chain state without an extrinsic | Signing, submission, inclusion, or confirmation |
-| Structural two-pass fixture | State-machine transitions, independence checks, evidence reopening, and settlement plumbing | Empirical GPU speedup, production calibration, or arena-provider readiness |
-| Builder-authenticated reproducible OCI pair plus release/session-bound serving receipts | Release-image identity and execution through the approved serving seams for that exact session | Qualification authority unless separate resident crossover, audit, and T evidence exists; clean-wheel, native-provider, and effective-policy gates remain separate prerequisites |
+| Structural qualification fixture | State-machine transitions, evidence reopening, and settlement plumbing | Empirical GPU speedup, production calibration, or arena-provider readiness |
 
 Deployment must supply and commission its production arena
 provider independently of the command-line intake path.
@@ -257,7 +254,8 @@ Before treating a deployment as production-capable, require evidence for all of:
 - endpoint/genesis/netuid scope and finality behavior;
 - HTTPS intake limits, committed hash, publication reopen, copy ordering, and restart;
 - registered arena manifest/provider identity and queue behavior;
-- faithful and broken non-crown screen controls;
+- faithful, broken, and infrastructure qualification controls through the production
+  entrypoint;
 - one real complete isolated qualification with evidence restore and no duplicate evaluator run;
 - settlement lease expiry, blocker, atomic-commit, and stale-incumbent controls;
 - live V1 dry-run projection plus signer journal/readback drills under approved policy;
