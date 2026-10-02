@@ -9,9 +9,11 @@ import re
 import sqlite3
 from urllib.parse import urlencode
 
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 selected = ContextVar("dashboard_source", default=None)
+_ARENA_SLUGS = {"qwen": "qwen3.6", "glm": "glm-5.3"}
 _PATHS = {"db": "DB_PATH", "mission": "MISSION", "audit": "AUDIT_PATH",
           "spool": "SPOOL", "heartbeat": "HEARTBEAT_PATH", "registration": "REGISTRATION_PATH",
           "logs": "LOG_ROOT", "evidence_state": "QUAL_EVIDENCE_STATE", "stage": "STAGE_ROOT"}
@@ -31,7 +33,8 @@ class DashboardSource:
 
     def public(self):
         """Expose labels and reward status, never operator filesystem coordinates."""
-        return {"key": self.key, "label": self.label, "model": self.model,
+        return {"key": self.key, "slug": _ARENA_SLUGS.get(self.key, self.key),
+                "label": self.label, "model": self.model,
                 "weights_status": "included in global offer" if self.weights_included
                 else "weights off / not yet in served vector"}
 
@@ -285,6 +288,14 @@ def install_sources(app, api):
     app.state.dashboard_weight_producer_config = settings.get("weight_producer_config")
     app.state.dashboard_weight_producer_pidfile = settings.get("weight_producer_pidfile")
 
+    @app.get("/{arena}", include_in_schema=False)
+    def arena_page(arena: str):
+        """Serve competition links using the slugs advertised by the API."""
+        if not any(source.public()["slug"] == arena
+                   for source in app.state.dashboard_sources.values()):
+            raise HTTPException(404, "Unknown arena")
+        return api["index"]()
+
     @app.get("/api/arenas")
     def arenas():
         items = []
@@ -323,6 +334,7 @@ def install_sources(app, api):
         if not request.url.path.startswith("/api/") or global_route:
             return await call_next(request)
         key = request.query_params.get("arena", app.state.dashboard_default)
+        key = next((source.key for source in sources.values() if source.public()["slug"] == key), key)
         if key is None and not sources:
             return await call_next(request)
         if key not in sources:
