@@ -42,6 +42,38 @@ def value(name, fallback):
     return source.values[name] if source is not None and name in source.values else fallback
 
 
+def worker_heartbeats(heartbeat_path, registration, now):
+    """Keep the relay's local pulse separate from the last verified worker observation.
+
+    Only successful SSH polls replace worker-heartbeat.json. Its original worker
+    timestamp ages through failed polls and long transfers; relay activity cannot
+    make the worker current. Deployments without that observation report unknown.
+    """
+    result = {}
+    for key, path in (("gpu_heartbeat", heartbeat_path.with_name("worker-heartbeat.json")),
+                      ("relay_heartbeat", heartbeat_path)):
+        try:
+            row = json.loads(path.read_text())
+        except (OSError, ValueError):
+            row = {}
+        if not isinstance(row, dict):
+            row = {}
+        stamp = row.get("time_unix")
+        age = max(0, now - stamp) if type(stamp) is int and 0 < stamp <= now + 5 else None
+        bindings = ("worker_epoch", "ready_receipt_digest", "worker_readiness_digest")
+        state = ("unknown" if age is None or not all(registration.get(k) for k in bindings) else
+                 "epoch_mismatch" if any(row.get(k) != registration[k] for k in bindings) else
+                 "stale" if age > 120 else row.get("state", "unknown"))
+        fresh = age is not None and age <= 120 and state not in ("unknown", "epoch_mismatch", "stale")
+        result[key] = {
+            "state": state, "reported_state": row.get("state"), "age_s": age, "fresh": fresh,
+            "adapter_alive": bool(row.get("adapter_alive")) if fresh else False,
+            "active_request_id": row.get("active_request_id") if fresh else None,
+            "worker_epoch": row.get("worker_epoch"),
+        }
+    return result
+
+
 def load_sources(path, network, netuid, enrich):
     """Read explicitly configured planes; no discovery of private roots by model name."""
     from dashboard.enrichment import Enrichment

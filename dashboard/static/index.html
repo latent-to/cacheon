@@ -349,14 +349,14 @@ async function viewOverview() {
       ${card(t.failed, "failed", t.failed ? "bad" : "")}
       ${card(t.expired, "expired")}
       ${card(t.unique_hotkeys, "unique hotkeys")}
-      ${card(t.active_leases, "running evals", t.active_leases ? "ok" : "")}
+      ${card(t.active_leases, "active eval leases", t.active_leases ? "info" : "")}
       ${card(t.payments_tao.toFixed(0) + " τ", t.payments_count + " eval-fee payments", "info")}
     </div>
     ${lease ? `<div class="callout" style="border-left-color:var(--ok)">
-      <b style="color:var(--fg)">Eval running now:</b>
+      <b style="color:var(--fg)">Evaluation lease active:</b>
       ${pill(lease.stage)} <code>${esc(short(lease.reservation_id, 12))}</code>
       on <b>${esc(lease.target_id || "—")}</b> (${esc(lease.target_summary)}) ·
-      running ${dur(lease.running_seconds)} · ${lease.remaining_seconds < 0 ? "lease expired, awaiting recovery" : "lease renews while it runs"}
+      lease age ${dur(lease.running_seconds)} · ${lease.remaining_seconds < 0 ? "lease expired, awaiting recovery" : "lease renewal active"}
     </div>` : `<div class="callout">No evaluation lease active right now.</div>`}
     <h2>Submissions per day (UTC)</h2>
     <div class="spark">${spark || '<span class="muted">no data yet</span>'}</div>
@@ -377,7 +377,7 @@ async function viewQueue() {
     <td><code>${esc(short(l.reservation_id, 12))}</code></td>
     <td>${esc(l.target_id || "—")}<div class="muted small">${esc(l.target_summary)}</div></td>
     <td>${key(l.hotkey, { tao_app: "https://www.tao.app/portfolio/" + l.hotkey })}</td>
-    <td>${fmtTime(l.claimed)}<div class="muted small">running ${dur(l.running_seconds)}</div></td>
+    <td>${fmtTime(l.claimed)}<div class="muted small">lease age ${dur(l.running_seconds)}</div></td>
     <td>${l.remaining_blocks < 0 ? '<span class="pill warn">expired</span>' : `${l.remaining_blocks ?? "—"} blk`}<div class="muted small">${l.remaining_blocks < 0 ? "awaiting recovery" : "renews while it runs"}</div></td>
     <td>gen ${l.generation} ${pill(l.reservation_status)}</td></tr>`);
   const pending = (q.pending || []).map((s) => `<tr class="clickable" onclick="openDetail('${s.reservation_id}')">
@@ -398,17 +398,18 @@ async function viewQueue() {
     <td>${pill(l.stage)}</td><td>${pill(l.state)}</td>
     <td>${fmtTime(l.claimed)}</td>
     <td class="small muted">${esc(short(l.reason, 60))}</td></tr>`);
-  const sup = q.supervisor || {}, hb = q.gpu_heartbeat || {};
+  const sup = q.supervisor || {}, hb = q.gpu_heartbeat || {}, relay = q.relay_heartbeat || {};
   return `
     <div class="cards">
       ${card(q.pending.length, "pending in queue", q.pending.length ? "info" : "")}
-      ${card(q.active_leases.length, "running evals", q.active_leases.length ? "ok" : "")}
+      ${card(q.active_leases.length, "active eval leases", q.active_leases.length ? "info" : "")}
       ${card(q.gpu_requests.length, "GPU requests in spool")}
       ${card(esc(sup.phase || "—"), "supervisor phase")}
-      ${card(hb.age_s != null ? dur(hb.age_s) : "—", "Worker connection checked",
-             hb.age_s == null || hb.age_s > 120 ? "warn" : "ok")}
+      ${card(hb.age_s != null ? dur(hb.age_s) : "unknown", "Last worker heartbeat", hb.fresh ? "ok" : "warn")}
+      ${card(relay.age_s != null ? dur(relay.age_s) : "unknown", "CPU relay heartbeat", relay.fresh ? "ok" : "warn")}
     </div>
-    <h2>Running evaluations (wall clock)</h2>
+    <h2>Claimed evaluations</h2>
+    <p class="muted small">A lease can remain active while the worker is disconnected.</p>
     ${table(["Stage","Reservation","Target","Hotkey","Started","Lease left","State"], active,
       "No active evaluation lease.")}
     <h2>Pending submissions (queue order)</h2>
@@ -421,8 +422,8 @@ async function viewQueue() {
     <p class="muted small">Supervisor: ${esc(sup.phase || "—")} / ${esc(sup.last_stage || "—")}
       ${sup.time_unix ? "· " + ago(sup.time_unix) : ""}
       ${sup.hold_reason ? "· hold: " + esc(sup.hold_reason) : ""} ·
-      CPU relay ${esc(hb.state || "unknown")} ·
-      active request ${esc(short(hb.active_request_id, 14))}</p>`;
+      CPU relay ${esc(relay.state || "unknown")} · worker ${esc(hb.state || "unknown")} ·
+      worker-reported request ${esc(short(hb.active_request_id, 14))}</p>`;
 }
 
 async function viewSubmissions() {
@@ -634,7 +635,7 @@ async function viewSystem() {
   const procs = h.processes.map((p) => `<tr>
     <td>${esc(p.name)}</td>
     <td>${p.up ? '<span class="pill ok">up</span>' : '<span class="pill bad">down</span>'}</td></tr>`);
-  const hb = h.gpu_heartbeat || {};
+  const hb = h.gpu_heartbeat || {}, relay = h.relay_heartbeat || {};
   return `
     <div class="cards">
       ${card(h.db.ok ? "ok" : "down", "intake DB", h.db.ok ? "ok" : "bad")}
@@ -642,7 +643,8 @@ async function viewSystem() {
       ${card(h.chain.tip.block ? Number(h.chain.tip.block).toLocaleString() : "—", "finalized tip")}
       ${card(h.intake_lag_blocks ?? "—", "intake lag (blocks)",
         h.intake_lag_blocks > 40 ? "warn" : "ok")}
-      ${card(hb.age_s != null ? dur(hb.age_s) : "—", "GPU heartbeat", hb.age_s == null || hb.age_s > 120 ? "warn" : "ok")}
+      ${card(hb.age_s != null ? dur(hb.age_s) : "unknown", "Last worker heartbeat", hb.fresh ? "ok" : "warn")}
+      ${card(relay.age_s != null ? dur(relay.age_s) : "unknown", "CPU relay heartbeat", relay.fresh ? "ok" : "warn")}
       ${card(h.chain.metagraph_age_s != null ? dur(h.chain.metagraph_age_s) : "—", "metagraph age")}
     </div>
     <div class="grid2">
@@ -651,7 +653,7 @@ async function viewSystem() {
         <dl class="kv" style="display:grid;grid-template-columns:170px 1fr;gap:4px 12px">
           <dt class="muted">Network</dt><dd class="mono small">netuid ${h.chain.netuid}</dd>
           <dt class="muted">Worker epoch</dt><dd class="mono small">${esc(h.worker_epoch || "—")}</dd>
-          <dt class="muted">Worker connection</dt><dd class="mono small">relay ${esc(hb.state || "—")} · checked ${hb.age_s == null ? "—" : dur(hb.age_s) + " ago"} · request ${esc(short(hb.active_request_id, 16))}</dd>
+          <dt class="muted">Worker observation</dt><dd class="mono small">${esc(hb.state || "unknown")} · ${hb.age_s == null ? "no heartbeat observed" : dur(hb.age_s) + " ago"} · request ${esc(short(hb.active_request_id, 16))}</dd>
           <dt class="muted">Audit updated</dt><dd class="mono small">${h.intake_finalized.audit_mtime_unix ? ago(h.intake_finalized.audit_mtime_unix) : "—"}</dd>
         </dl>
       </div>
@@ -884,12 +886,13 @@ async function loadArenas() {
   $("#arena-select").innerHTML = arenas.length ? arenas.map(s =>
     `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}</option>`).join("") : '<option>Current arena</option>';
   $("#arena-status").innerHTML = arenas.map(s => {
-    const h = s.health, fresh = h.gpu_heartbeat.age_s != null && h.gpu_heartbeat.age_s <= 120;
+    const h = s.health, hb = h.gpu_heartbeat || {};
+    const healthyWorker = hb.fresh && ["idle", "running"].includes(hb.state);
     const weightsOff = s.weights_status === "weights off / not yet in served vector";
-    const status = weightsOff ? "weights off" : h.db.ok ? (fresh ? h.gpu_heartbeat.state : "GPU update stale") : "database unavailable";
+    const status = weightsOff ? "weights off" : h.db.ok ? (hb.state || "worker unknown") : "database unavailable";
     const weight = Number.isInteger(s.target_weight_ppm) ? `${(s.target_weight_ppm / 10000).toLocaleString(undefined, {maximumFractionDigits: 4})}% target` : "target unavailable";
     const basis = "Current configured arena target, not the actual reward split.";
-    return `<span class="pill ${!weightsOff && h.db.ok && fresh ? "ok" : "warn"}">${esc(s.label)}: ${esc(status)} <span title="${esc(basis)}">· ${esc(weight)}</span></span>`;
+    return `<span class="pill ${!weightsOff && h.db.ok && healthyWorker ? "ok" : "warn"}">${esc(s.label)}: ${esc(status)} <span title="${esc(basis)}">· ${esc(weight)}</span></span>`;
   }).join(" ") + (arenas.length ? '<span> Reward offer is global. Sponsorship revenue, evaluation fees/credits, and miner alpha rewards are separate.</span>' : "");
   const current = arenas.find(s => s.key === arena);
   if (current) $("#arena-status").innerHTML += `<strong> ${esc(current.label)}: ${esc(current.weights_status)}</strong>`;

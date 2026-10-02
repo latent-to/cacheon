@@ -28,7 +28,7 @@ from dashboard.forensics import (
     submission_qualifications,
 )
 from dashboard.enrichment import Enrichment
-from dashboard.sources import selected, value, install_sources, process_matches, scope_reservations
+from dashboard.sources import selected, value, install_sources, process_matches, scope_reservations, worker_heartbeats
 from dashboard.disclosure import disclose_bundle, install_disclosure_routes
 from dashboard.competition import competition_label, submission_baseline, target_summary
 from cacheon.chain.baseline_band import qualification_evidence_roots
@@ -348,12 +348,7 @@ def health() -> dict[str, Any]:
     except sqlite3.Error:
         db_ok = False
     audit = finalized_tip_from_audit()
-    heartbeat = load_json(value("HEARTBEAT_PATH", HEARTBEAT_PATH))
-    hb_age = None
-    if isinstance(heartbeat.get("time_unix"), int):
-        hb_age = max(0, int(time.time()) - heartbeat["time_unix"])
     registration = load_json(value("REGISTRATION_PATH", REGISTRATION_PATH))
-    epoch = str(registration.get("worker_epoch") or heartbeat.get("worker_epoch") or "")
     tip = dict(value("ENRICHER", ENRICHER).tip)
     lag_blocks = None
     if tip.get("block") and audit.get("block"):
@@ -378,16 +373,8 @@ def health() -> dict[str, Any]:
             {"name": "CPU spool relay",
              "up": process_matches("relay", ("cpu-serve", str(value("SPOOL", SPOOL))))},
         ],
-        "gpu_heartbeat": {
-            "state": ("unknown" if hb_age is None else "stale" if hb_age > 120 else
-                      "epoch_mismatch" if heartbeat.get("worker_epoch") != epoch else heartbeat.get("state")),
-            "reported_state": heartbeat.get("state"),
-            "age_s": hb_age,
-            "adapter_alive": bool(heartbeat.get("adapter_alive")),
-            "active_request_id": heartbeat.get("active_request_id"),
-            "worker_epoch": heartbeat.get("worker_epoch"),
-        },
-        "worker_epoch": epoch,
+        **worker_heartbeats(value("HEARTBEAT_PATH", HEARTBEAT_PATH), registration, int(time.time())),
+        "worker_epoch": registration.get("worker_epoch", ""),
     }
 
 
@@ -642,12 +629,8 @@ def queue() -> dict[str, Any]:
     for lease in recent_leases:
         lease["claimed"] = with_time(int(lease["claimed_block"]))
 
-    heartbeat = load_json(value("HEARTBEAT_PATH", HEARTBEAT_PATH))
-    hb_age = None
-    if isinstance(heartbeat.get("time_unix"), int):
-        hb_age = max(0, now - heartbeat["time_unix"])
     registration = load_json(value("REGISTRATION_PATH", REGISTRATION_PATH))
-    epoch = str(registration.get("worker_epoch") or heartbeat.get("worker_epoch") or "")
+    epoch = str(registration.get("worker_epoch") or "")
 
     return {
         "now_unix": now,
@@ -656,13 +639,7 @@ def queue() -> dict[str, Any]:
         "recent_leases": recent_leases,
         "gpu_requests": spool_requests(),
         "supervisor": supervisor_status(epoch),
-        "gpu_heartbeat": {
-            "state": ("unknown" if hb_age is None else "stale" if hb_age > 120 else
-                      "epoch_mismatch" if heartbeat.get("worker_epoch") != epoch else heartbeat.get("state")),
-            "reported_state": heartbeat.get("state"), "age_s": hb_age,
-            "adapter_alive": bool(heartbeat.get("adapter_alive")),
-            "active_request_id": heartbeat.get("active_request_id"),
-        },
+        **worker_heartbeats(value("HEARTBEAT_PATH", HEARTBEAT_PATH), registration, now),
         "tip": tip,
     }
 
