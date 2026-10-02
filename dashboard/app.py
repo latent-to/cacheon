@@ -34,7 +34,7 @@ from dashboard.competition import competition_label, submission_baseline, target
 from cacheon.chain.baseline_band import qualification_evidence_roots
 from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
 from cacheon.chain.miner_feedback import _guidance
-from dashboard.receipts import evaluation_recovery
+from dashboard.receipts import evaluation_credit, evaluation_recovery
 from dashboard.winners import (
     candidate_measurement,
     measured_baseline,
@@ -117,7 +117,6 @@ def rows(con: sqlite3.Connection, sql: str, args: tuple = ()) -> list[dict[str, 
 
 ENRICHER = Enrichment(CACHE_DB, NETWORK, NETUID)
 
-# ------------------------------------------------------------ helpers ------
 
 
 def links_for_block(block: int) -> dict[str, str]:
@@ -261,7 +260,7 @@ def spool_requests() -> list[dict[str, Any]]:
     return out
 
 
-def submission_row(r: dict[str, Any]) -> dict[str, Any]:
+def submission_row(r: dict[str, Any], con: sqlite3.Connection) -> dict[str, Any]:
     """Shape one reservations row for the API."""
     paid_block = int(r.get("eval_cost_payment_block") or 0)
     paid_idx = int(r.get("eval_cost_payment_extrinsic_index") or 0)
@@ -290,6 +289,7 @@ def submission_row(r: dict[str, Any]) -> dict[str, Any]:
         "is_active": r["status"] in ACTIVE_STATUSES,
         "is_terminal": r["status"] in TERMINAL_STATUSES,
         "payment": None,
+        "fee_credit": evaluation_credit(con, r),
     }
     if paid_block:
         sub["payment"] = {
@@ -483,7 +483,7 @@ def submissions(
         ORDER BY block {'ASC' if order == 'asc' else 'DESC'}, event_index
         LIMIT ? OFFSET ?
     """, (*args, limit, offset))
-    shaped = [submission_row(r) for r in data]
+    shaped = [submission_row(r, con) for r in data]
     bars = list_results(con, shaped, evidence_roots(con), *current_offer(submissions=True))
     for item in shaped:
         item["evaluation_recovery"] = evaluation_recovery(con, item)
@@ -507,7 +507,7 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
         raise HTTPException(404, "reservation not found")
     r = dict(row)
     rid = r["reservation_id"]
-    detail = submission_row(r)
+    detail = submission_row(r, con)
     detail["evaluation_recovery"] = evaluation_recovery(con, detail)
     detail["payload_digest"] = r.get("payload_digest") or ""
     detail["publication_digest"] = r.get("publication_digest") or ""
@@ -590,18 +590,18 @@ def queue() -> dict[str, Any]:
         FROM evaluation_leases WHERE state != 'active'
         ORDER BY claimed_block DESC LIMIT 15
     """)
-    con.close()
 
     now = int(time.time())
     tip = dict(value("ENRICHER", ENRICHER).tip)
     items = []
     for pos, r in enumerate(pending, start=1):
-        item = submission_row(r)
+        item = submission_row(r, con)
         item["queue_position"] = pos
         item["waiting_seconds"] = (
             now - item["submitted"]["time_unix"]
             if item["submitted"]["time_unix"] else None)
         items.append(item)
+    con.close()
 
     active = []
     for lease in leases:

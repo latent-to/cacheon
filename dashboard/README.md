@@ -33,6 +33,11 @@ to run the dashboard and its API tests.
 | Timeline | Settlement events (CROWN/ADOPTION/HOLD/…), the served weight offer's vector, and this validator's follower journal (intent/pending/held/confirmed) |
 | System | DB/chain/process/heartbeat health, intake lag |
 
+Queue, submission-list and detail fee labels include the credit spent on that
+specific submission. Available credits and credits spent on another submission
+do not mark it as covered. On-chain payments retain their transaction links;
+credit-funded details show the covered amount without inventing a transaction.
+
 The Winners tab places completed PASSes still awaiting earlier queue entries in
 a separate, greyed-out **Potential winners** table above retained rewards. Their
 measured gains remain visible, but payouts and final winner selection are pending.
