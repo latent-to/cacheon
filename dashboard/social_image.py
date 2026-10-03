@@ -49,6 +49,8 @@ def render_card(card: SubmissionCard) -> bytes:
                                          (875, "STOCK SGLANG", card.stock, card.stock_ttft)):
             text(x, 451, label + " · " + card.metric, 16, MUTED, width=510, anchor="mm")
             text(x, 483, f"{value:,.1f} tok/s · {ttft(latency)}", 22, width=510, anchor="mm")
+        if card.stock_reference_date:
+            text(600, 515, f"Stock reference · {card.stock_reference_date} · separate runs", 16, MUTED, anchor="mm")
     else:
         text(600, 292, card.metric, 21, MUTED, anchor="mm")
         if card.submission is not None:

@@ -2,8 +2,12 @@
 
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from html import escape
 import json
+import math
+import os
+from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import Request
@@ -17,7 +21,7 @@ from dashboard.winners import candidate_measurement, result_summary
 
 @dataclass(frozen=True)
 class SubmissionCard:
-    """Public display fields; stock numbers belong to the same retained attempt."""
+    """Public measurements with explicit attribution for a separate stock run."""
 
     reservation: str
     model: str
@@ -30,6 +34,7 @@ class SubmissionCard:
     metric: str = "OUTPUT THROUGHPUT"
     commit: str = ""
     version: str = ""
+    stock_reference_date: str = ""
 
     @property
     def comparison(self):
@@ -60,11 +65,43 @@ class SubmissionCard:
                            + f"; stock SGLang {rate(self.stock)}")
             if self.stock_ttft is not None:
                 measurement += f", TTFT {self.stock_ttft * 1000:,.1f} ms"
+            if self.stock_reference_date:
+                measurement += f". Stock reference {self.stock_reference_date}; separate runs, not a paired qualification"
         return f"{self.model} · {self.target} · {self.status}. {measurement}. {self.runtime_label}."
 
 
+def stock_reference(qualification, speed):
+    """Match an explicitly configured retained stock run to this replay identity."""
+    path = os.environ.get("CACHEON_DASH_STOCK_REFERENCES")
+    if not path:
+        return {}
+    candidate = qualification.get("candidate_manifest") or {}
+    matches = []
+    for entry in json.loads(Path(path).read_text()):
+        summary = json.loads(Path(entry["summary"]).read_text())
+        inputs = json.loads(Path(entry["inputs"]).read_text())
+        stock = inputs["stock_manifest"]
+        if stock["_entries"] != [] or summary["kind"] != "stock_sglang_reference":
+            raise ValueError("OG stock reference must have an empty contribution stack")
+        if (any(not candidate.get(key) or candidate[key] != stock[key]
+                for key in ("arena_digest", "runtime_digest", "base_engine_digest"))
+                or not speed.get("workload_digest")
+                or speed["workload_digest"] != inputs["workload_digest"]
+                or speed["workload_digest"] != summary["workload_digest"]
+                or speed.get("load") != summary["load"]):
+            continue
+        rate, ttft = summary["mean_decode_tps"], summary["mean_ttft_s"]
+        if not math.isfinite(rate) or rate <= 0 or not math.isfinite(ttft) or ttft < 0:
+            raise ValueError("OG stock reference measurements must be finite and valid")
+        matches.append(dict(stock=rate, stock_ttft=ttft, stock_reference_date=
+                            datetime.fromtimestamp(summary["completed_unix"], timezone.utc).date().isoformat()))
+    if len(matches) > 1:
+        raise ValueError("Multiple OG stock references match this replay; configure one")
+    return matches[0] if matches else {}
+
+
 def submission_card(reservation, api):
-    """Read rates and TTFT from one retained qualification and its stock identity."""
+    """Read candidate rates from one qualification, with paired or reference stock."""
     detail = api["submission_detail"](reservation, Response())
     rid, target = detail["reservation_id"], detail["target_id"]
     fields = dict(reservation=rid, model=detail["competition"], target=target,
@@ -92,6 +129,8 @@ def submission_card(reservation, api):
             baseline, candidate = result["decode_tps"]
             fields.update(metric="DECODE THROUGHPUT", submission=candidate, stock=baseline if stock else None,
                           ttft=result["ttft_s"][1], stock_ttft=result["ttft_s"][0] if stock else None)
+            if not stock and candidate is not None:
+                fields.update(stock_reference(qualification, speed))
         else:
             baseline = [lane["tokens_per_second"] for lane in speed["lanes"]
                         if lane["role"] in ("B", "B_prime", "B_double_prime")
