@@ -23,6 +23,9 @@ def render_card(card: SubmissionCard) -> bytes:
         while draw.textlength(value, font=font) > width and size > 12:
             size -= 1
             font = ImageFont.truetype(str(ASSETS / "Ubuntu.ttf"), size)
+        if anchor == "mm":
+            left, top, right, bottom = draw.textbbox((0, 0), value, font=font)
+            x, y, anchor = x - (left + right) / 2, y - (top + bottom) / 2, None
         draw.text((x, y), value, font=font, fill=color, anchor=anchor)
 
     draw.rectangle((0, 0, 1199, 7), fill=ACCENT)
@@ -32,32 +35,30 @@ def render_card(card: SubmissionCard) -> bytes:
     text(110, 35, "Cacheon", 34)
     text(280, 46, "COMPETITIVE INFERENCE OPTIMIZATION", 19, MUTED, width=650)
     draw.rounded_rectangle((958, 38, 1146, 78), 20, fill="#0c302a")
-    text(1052, 45, card.status, 18, ACCENT, width=165, anchor="mt")
+    text(1052, 60, card.status, 18, ACCENT, width=148, anchor="mm")
     text(54, 118, card.model, 53)
     text(57, 186, "TARGET  /  " + card.target.replace("_", " ").upper(), 21, MUTED)
     draw.line((54, 242, 1146, 242), fill=LINE)
-    if card.gain is not None:
-        text(54, 278, f"{card.gain:+.2f}%", 106, ACCENT, width=510)
-        text(59, 400, "improvement over stock SGLang", 23)
+    def ttft(value):
+        return f"TTFT {value * 1000:,.1f} ms" if value is not None else "TTFT unavailable"
+
+    if card.comparison:
+        text(600, 328, f"{card.gain:+.2f}%", 106, ACCENT, width=1000, anchor="mm")
+        text(600, 401, "throughput improvement over stock SGLang", 23, anchor="mm")
+        for x, label, value, latency in ((325, "SUBMISSION", card.submission, card.ttft),
+                                         (875, "STOCK SGLANG", card.stock, card.stock_ttft)):
+            text(x, 451, label + " · " + card.metric, 16, MUTED, width=510, anchor="mm")
+            text(x, 483, f"{value:,.1f} tok/s · {ttft(latency)}", 22, width=510, anchor="mm")
     else:
-        text(54, 300, "Stock comparison", 38, MUTED, width=510)
-        text(54, 350, "unavailable", 38, MUTED)
-    text(59, 440, "Retained evaluation result", 20, MUTED)
-    draw.line((594, 282, 594, 487), fill=LINE)
-    text(640, 282, card.metric, 19, MUTED)
-    maximum = max(card.submission or 0, card.stock or 0)
-    for label, value, y, color in (("Submission", card.submission, 316, ACCENT),
-                                   ("Stock SGLang", card.stock, 403, "#60716e")):
-        text(640, y + 12, label, 23)
-        text(1146, y, f"{value:,.1f}" if value is not None else "—", 40, width=240, anchor="rt")
-        if value is not None:
-            text(1060, y + 49, "tok/s", 19, MUTED)
-            width = round(407 * value / maximum) if maximum else 0
-            if width:
-                draw.rounded_rectangle((640, y + 57, 640 + width, y + 67), 5, fill=color)
+        text(600, 292, card.metric, 21, MUTED, anchor="mm")
+        if card.submission is not None:
+            text(600, 377, f"{card.submission:,.1f}", 106, ACCENT, width=1000, anchor="mm")
+            text(600, 452, "tok/s", 25, MUTED, anchor="mm")
+        else:
+            text(600, 377, "Awaiting measurement", 42, MUTED, anchor="mm")
+        text(600, 491, ttft(card.ttft), 22, MUTED, anchor="mm")
     draw.line((54, 531, 1146, 531), fill=LINE)
-    runtime = "SGLang @ " + card.commit[:7] if card.commit else "SGLang commit unavailable"
-    text(54, 560, runtime, 22, MUTED, width=620)
+    text(54, 560, card.runtime_label, 22, MUTED, width=620)
     text(720, 563, "SUBMISSION  " + card.reservation[:12], 19, MUTED)
     output = BytesIO()
     image.save(output, format="PNG", optimize=True)

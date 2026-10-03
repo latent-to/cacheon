@@ -94,7 +94,7 @@ def load_sources(path, network, netuid, enrich):
         raise ValueError("enrichment cache cannot be an intake database")
     result, databases, caches, private_roots = {}, set(), set(), []
     for row in raw["sources"]:
-        if set(row) - {"sglang_commits"} != {"key", "label", "model", "paths", "cache", "evidence_roots",
+        if set(row) != {"key", "label", "model", "paths", "cache", "evidence_roots",
                         "cutoff_reservation", "processes", "weights_included", "checkpoint"}:
             raise ValueError("dashboard source fields do not match")
         key = row["key"]
@@ -115,13 +115,6 @@ def load_sources(path, network, netuid, enrich):
                 or not any(n.startswith("/") for n in needles) for needles in row["processes"].values()):
             raise ValueError("process checks require command arguments and an absolute source path")
         values = {_PATHS[name]: p for name, p in paths.items()}
-        commits = row.get("sglang_commits", {})
-        if not isinstance(commits, dict) or any(
-                not re.fullmatch(r"[0-9a-f]{64}", runtime)
-                or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit)
-                for runtime, commit in commits.items()):
-            raise ValueError("sglang_commits maps runtime digests to full SGLang Git commits")
-        values["SGLANG_COMMITS"] = commits
         values.update(QUAL_EVIDENCE_EXTRA=extras, CUTOFF_RESERVATION=row["cutoff_reservation"],
                       ENRICHER=Enrichment(cache, network, netuid))
         result[key] = DashboardSource(key, row["label"], row["model"], values,

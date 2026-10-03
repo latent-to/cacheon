@@ -243,27 +243,34 @@ or unknown; missing retained measurements stay null.
 
 Submission links include server-rendered Open Graph and Twitter metadata, with a
 1200×630 PNG at `/api/submissions/<id>/preview.png?arena=<key>`. Crawlers do not
-need JavaScript. Cards show the model, target, evaluation status, retained gain,
-submission performance, stock SGLang performance, and a seven-character SGLang
-Git commit. The dashboard extra includes Pillow; the bundled Ubuntu font keeps
+need JavaScript. Cards show the model, target, evaluation status, throughput gain,
+submission and stock SGLang tok/s and TTFT, plus the SGLang version tag and
+seven-character Git commit. The dashboard extra includes Pillow; the bundled Ubuntu font keeps
 rendering independent of host fonts.
 
 Only a retained qualification against an explicitly empty incumbent stack is a
 stock comparison. The card uses the lower accepted qualification when a historical
 PASS pair exists, and reads performance from that same attempt. Batch throughput
 uses the fastest B/B-prime stock observation and the conservative candidate rate;
-replay cards label mean decode throughput separately from the credited score.
-Incumbent comparisons never become stock gains: unavailable stock comparisons,
-measurements, and commits are shown as unavailable. Pending and failed submissions
+replay cards use mean decode throughput and mean TTFT. The headline is
+`(submission tok/s / stock tok/s - 1) × 100`, not the qualification score.
+Incumbent comparisons never become stock gains. Without stock measurements,
+the card shows centered submission tok/s and TTFT, with no comparison section.
+Missing measurements and commits are labelled unavailable. Pending and failed submissions
 keep their actual status. HTML is not cached; PNGs are cached for 60 seconds so
 new results can replace pending cards (social platforms may cache independently).
 
-Each source may optionally set `sglang_commits`, a JSON object mapping full
-64-character runtime digests to full 40-character upstream SGLang Git commits.
-Populate it from the commissioned image's build metadata, retaining entries for
-historical runtimes. The card resolves the qualification's runtime, never the
-current worker's version or the dashboard's checkout. Missing entries display
-`SGLang commit unavailable`; runtime digests are not Git revisions.
+Build metadata is fetched automatically from the commissioned image's
+`ai.sglang.build.commit` and `ai.sglang.image.tag` Docker labels. The submission's
+runtime must match the configured registration; its READY receipt is read from
+the source's `stage` directory or one of its immediate subdirectories. The READY
+digest must match the registration before its immutable `worker_image` is inspected
+over SSH using that registration's host, port, user and known-hosts file. The
+dashboard process needs the existing operator SSH authentication. No container is
+started and no candidate code is executed. Lookups time out after five seconds
+and are cached for five minutes; failures are logged. There is no manually
+maintained commit/version map. Missing metadata or a historical runtime that no
+longer matches the registration displays `SGLang commit unavailable`.
 
 Set `CACHEON_DASH_SOURCES` to an absolute JSON config path. It has `default`
 (the selected source key) and a `sources` array. Every source explicitly names:

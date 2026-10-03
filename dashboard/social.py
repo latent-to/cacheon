@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from dashboard.forensics import retained_speed
 from dashboard.sources import selected
+from dashboard.sglang import sglang_build
 from dashboard.winners import candidate_measurement, result_summary
 
 
@@ -22,26 +23,48 @@ class SubmissionCard:
     model: str
     target: str
     status: str
-    gain: float | None = None
     submission: float | None = None
     stock: float | None = None
+    ttft: float | None = None
+    stock_ttft: float | None = None
     metric: str = "OUTPUT THROUGHPUT"
     commit: str = ""
+    version: str = ""
+
+    @property
+    def comparison(self):
+        """A throughput comparison requires a measured, positive stock rate."""
+        return self.submission is not None and self.stock is not None and self.stock > 0
+
+    @property
+    def gain(self):
+        """The percentage corresponds to the throughput numbers printed on this card."""
+        return (self.submission / self.stock - 1) * 100 if self.comparison else None
+
+    @property
+    def runtime_label(self):
+        """Use the recorded upstream build, rather than the current worker version."""
+        if not self.commit:
+            return "SGLang commit unavailable"
+        return "SGLang " + (self.version + " · " if self.version else "@ ") + self.commit[:7]
 
     @property
     def description(self):
         """Text alternative for crawlers and screen readers."""
-        gain = (f"{self.gain:+.2f}% over stock SGLang" if self.gain is not None
-                else "Stock comparison unavailable")
         rate = lambda n: f"{n:,.1f} tok/s" if n is not None else "unavailable"
-        runtime = f"SGLang @ {self.commit[:7]}" if self.commit else "SGLang commit unavailable"
-        return (f"{self.model} · {self.target} · {self.status}. {gain}. "
-                f"{self.metric.title()}: submission {rate(self.submission)}; "
-                f"stock SGLang {rate(self.stock)}. {runtime}.")
+        measurement = f"{self.metric.title()}: submission {rate(self.submission)}"
+        if self.ttft is not None:
+            measurement += f", TTFT {self.ttft * 1000:,.1f} ms"
+        if self.comparison:
+            measurement = (f"{self.gain:+.2f}% throughput improvement over stock SGLang. " + measurement
+                           + f"; stock SGLang {rate(self.stock)}")
+            if self.stock_ttft is not None:
+                measurement += f", TTFT {self.stock_ttft * 1000:,.1f} ms"
+        return f"{self.model} · {self.target} · {self.status}. {measurement}. {self.runtime_label}."
 
 
 def submission_card(reservation, api):
-    """Bind the displayed score and rates to one retained qualification."""
+    """Read rates and TTFT from one retained qualification and its stock identity."""
     detail = api["submission_detail"](reservation, Response())
     rid, target = detail["reservation_id"], detail["target_id"]
     fields = dict(reservation=rid, model=detail["competition"], target=target,
@@ -52,6 +75,7 @@ def submission_card(reservation, api):
         if not rows:
             result = detail.get("result")
             return SubmissionCard(**fields, submission=result["decode_tps"][1] if result else detail.get("tokens_per_second"),
+                                  ttft=result["ttft_s"][1] if result else None,
                                   metric="DECODE THROUGHPUT" if result else "OUTPUT THROUGHPUT")
         # Historical paired qualifications retain the lower accepted score.
         row = min(rows, key=lambda r: float(json.loads(r["qualification_json"])["speedup"]))
@@ -61,13 +85,13 @@ def submission_card(reservation, api):
     runtime = (qualification.get("candidate_manifest") or {}).get("runtime_digest")
     stock = bool(runtime) and incumbent.get("entries") == {} and incumbent.get("runtime_digest") == runtime
     source = selected.get()
-    commit = source.values.get("SGLANG_COMMITS", {}).get(runtime, "") if source else ""
-    fields.update(commit=commit, gain=(float(qualification["speedup"]) - 1) * 100 if stock else None)
+    fields.update(sglang_build(runtime, source))
     if speed:
         result = result_summary(speed)
         if result:
             baseline, candidate = result["decode_tps"]
-            fields.update(metric="DECODE THROUGHPUT", submission=candidate, stock=baseline if stock else None)
+            fields.update(metric="DECODE THROUGHPUT", submission=candidate, stock=baseline if stock else None,
+                          ttft=result["ttft_s"][1], stock_ttft=result["ttft_s"][0] if stock else None)
         else:
             baseline = [lane["tokens_per_second"] for lane in speed["lanes"]
                         if lane["role"] in ("B", "B_prime", "B_double_prime")
