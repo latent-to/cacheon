@@ -21,3 +21,7 @@ Optional object-store support (`pip install -e ".[object-store]"`) uses
 boto3/botocore (Apache-2.0) against S3-compatible APIs. Hippius is configured
 as one endpoint/region preset in cacheon/object_store.py; no Hippius or other
 provider SDK source is vendored.
+
+dashboard/static/Ubuntu.ttf is the unmodified Ubuntu Font Family variable
+font, copyright 2010–2022 Canonical Ltd, distributed under the Ubuntu Font
+Licence 1.0 (dashboard/static/Ubuntu-LICENCE.txt).

@@ -25,7 +25,7 @@ dependencies = [
 # `pip install torch --index-url https://download.pytorch.org/whl/cpu` first.
 cpu = ["torch"]
 dev = ["pytest>=7", "ruff==0.12.7", "httpx>=0.24"]
-dashboard = ["fastapi>=0.100", "uvicorn>=0.23"]
+dashboard = ["fastapi>=0.100", "uvicorn>=0.23", "Pillow>=10.0"]
 # AIPerf 0.13.0 runs in its own Python 3.12+ environment; this is its trusted
 # HTTP-to-OCI adapter, which also runs on existing Python 3.10 controllers.
 replay = ["aiohttp>=3.9,<4", "transformers>=4.51"]

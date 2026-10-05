@@ -241,6 +241,60 @@ or unknown; missing retained measurements stay null.
 
 ## Multiple arenas
 
+Submission links include server-rendered Open Graph and Twitter metadata, with a
+1200×630 PNG at `/api/submissions/<id>/preview.png?arena=<key>`. Crawlers do not
+need JavaScript. Cards show the model, target, evaluation status, throughput gain,
+submission and stock SGLang tok/s and TTFT, plus the SGLang version tag and
+seven-character Git commit. The dashboard extra includes Pillow; the bundled Ubuntu font keeps
+rendering independent of host fonts.
+
+An explicitly empty incumbent stack supplies a paired stock comparison.
+The card uses the lower accepted qualification when a historical
+PASS pair exists, and reads performance from that same attempt. Batch throughput
+uses the fastest B/B-prime stock observation and the conservative candidate rate;
+replay cards use mean decode throughput and mean TTFT. The headline is
+`(submission tok/s / stock tok/s - 1) × 100`, not the qualification score.
+Incumbent comparisons never become stock gains. Without stock measurements,
+the card shows centered submission tok/s and TTFT, with no comparison section.
+Missing measurements and commits are labelled unavailable. Pending and failed submissions
+keep their actual status. HTML is not cached; PNGs are cached for 60 seconds so
+new results can replace pending cards (social platforms may cache independently).
+
+For replay submissions evaluated against an optimized incumbent, set
+`CACHEON_DASH_STOCK_REFERENCES` to an absolute JSON file containing a list of
+`{"summary": "/absolute/stock-run/summary.json", "inputs": "/absolute/stock-run/A-inputs.json"}`
+entries. These are the saved stock-run summary and original lane inputs, not
+submission-specific numbers. The inputs must contain an empty `stock_manifest`
+(`stock_manifest._entries: []` in the saved dataclass inputs) and its
+`workload_digest`; the summary supplies `kind: "stock_sglang_reference"`,
+`workload_digest`, `load`, `mean_decode_tps`, `mean_ttft_s`, and `completed_unix`.
+Keep both files with the retained raw measurements. The stock manifest's arena,
+runtime, and base-engine digests must match the candidate; both workload digests
+and concurrency must match its retained replay. The arena binds model and topology;
+the workload binds engine configuration and replay inputs. One reference can then
+serve future submissions with the same identities, across targets. Configure only
+one reference per identity; ambiguous or unreadable configured references raise an
+error rather than selecting a favorable run. Different identities remain unpaired.
+
+Cards with a separate reference use the saved mean decode throughput and mean
+TTFT, and visibly label the stock measurement date and **separate runs** in both
+the PNG and crawler metadata. The headline still compares the displayed decode
+tok/s, not replay turns/s or settlement credit. A paired stock measurement takes
+precedence. This affects social presentation only; it does not regrade submissions
+or change rewards.
+
+Build metadata is fetched automatically from the commissioned image's
+`ai.sglang.build.commit` and `ai.sglang.image.tag` Docker labels. The submission's
+runtime must match the configured registration; its READY receipt is read from
+the source's `stage` directory or one of its immediate subdirectories. The READY
+digest must match the registration before its immutable `worker_image` is inspected
+over SSH using that registration's host, port, user and known-hosts file. The
+dashboard process needs the existing operator SSH authentication. No container is
+started and no candidate code is executed. Lookups time out after five seconds
+and are cached for five minutes; failures are logged. There is no manually
+maintained commit/version map. Missing metadata or a historical runtime that no
+longer matches the registration displays `SGLang commit unavailable`.
+
 Set `CACHEON_DASH_SOURCES` to an absolute JSON config path. It has `default`
 (the selected source key) and a `sources` array. Every source explicitly names:
 
