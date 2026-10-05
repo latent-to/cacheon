@@ -198,6 +198,12 @@ the preceding rewarded v17 record against the same baseline by at least 1.5%
 (`V17_REWARD_MARGIN`); credit remains the unshrunken marginal logarithmic reward. An
 unpaid estimate does not advance the reward record. Historical policies retain
 their configured minimum margin against the preceding rewarded record.
+
+Crown validity and payment eligibility are checked separately. A crowned
+contribution whose PASS falls below the reward margin remains valid but earns no
+credit; it does not block weight offers for other miners. The producer reopens
+its PASS evidence even when it is excluded from payment, and retains those
+validation inputs in the reward checkpoint for recovery.
 Pre-policy runtime generations retain their existing eligibility. See
 [emissions policy](../reference/emissions-policy.md) for grandfathering and ordering.
 The builder also reopens the active stacks
@@ -428,9 +434,7 @@ Roles are split so the **eval host never publishes weights on-chain**:
    signer-only journal does not require a replica of evaluator economic
    state.
 
-Offer production must survive an evaluation pause: `follow-weights` refuses a
-projection older than its refresh window, so an offer that stops being re-minted
-while the standing supervisor is down freezes the chain vector. The standalone
+Offer production must survive an evaluation pause. The standalone
 producer, `python -m cacheon.chain.weight_offer_service --config <sealed offer
 config>`, composes the supervisor's weights stage against the same sealed dispatcher
 (`screen_dispatcher_config`) and weights authorities on a loop, pushes to
@@ -438,13 +442,38 @@ config>`, composes the supervisor's weights stage against the same sealed dispat
 Exactly one producer runs per intake database: while it is armed, the standing
 supervisor's `enable_weights` stays false.
 
+Intake progress is not a prerequisite for refreshing retained rewards. The
+producer uses the live finalized metagraph even when one or all intake cursors
+have stopped advancing. It refreshes every `max(1, refresh_blocks // 2)` blocks
+to leave delivery margin before followers' freshness deadline; configure its
+poll interval well below that margin. This refresh does not require a new
+submission or a changed weight vector. Keep the producer supervised separately
+from intake and evaluation.
+
+After a successful projection, the producer atomically saves its reopened reward
+inputs beside the weights-stage config: `weights-stage.json` produces
+`weights-stage.rewards.json` (schema `cacheon.reward-checkpoint.v1`, mode `0600`).
+Keep that directory writable by the producer. If any reward database is missing
+or locked, this checkpoint supplies the last validated claims, stacks, scoring
+ratios, allocation terms and decay starts to the same reward calculator at the
+current finalized metagraph. It also consumes the existing confirmation journal
+to start pending decay clocks during the outage. Restarting preserves these
+clocks and the exact last offer for same-block retries. A successful live pass
+replaces the checkpoint and picks up new rewards. This fallback cannot discover
+new settlements or revocations while intake is unavailable.
+
+No checkpoint means no producer fallback. Invalid live evidence, changed policy
+or allocation authority, an unreadable confirmation journal, and crossing an
+allocation activation not yet captured still prevent a push. Chain RPC and the
+gateway must remain available; followers have their own bounded fallback below.
+
 Weights-stage config `cacheon-standing-weights-config-v2` adds the absolute
 `confirmation_journal` path to the existing signer's SQLite journal. The file
 must be owner-controlled. Before projecting, the producer reconciles confirmed
 rows against the expected validator, chain scope and netuid, then records the
 first qualifying publication block for each pending PASS. The journal cursor
 and starts survive restart; changing the journal path or truncating its history
-is an error. Schema v1 remains readable without journal reconciliation. Direct
+is an error. The retired schema v1 is refused. Direct
 publication records the same decay start transactionally with its journal CAS.
 
 ```bash
@@ -524,13 +553,31 @@ monotonic publication journal.
 omitted it resolves and pins the current subnet-owner burn hotkey from the
 finalized metagraph (same selection as `--burn-to-subnet-owner`). Pass an
 explicit ss58 when the gateway signs with a dedicated non-owner key.
-`follow-weights` permits initial catch-up only when the offer is no more than
-`--refresh-blocks` behind the live finalized metagraph and the signer and every
-weighted recipient retain their UIDs. Its dedicated
-`followed_weight_publications` journal accepts both V1 and V2 offers, refuses
-block rollback, same-block equivocation, signer changes, and V2-to-V1 lane
-regression, and should be one database per signer. Retryable object-store or
-gateway failures remain retryable through HTTP `503`.
+`follow-weights` accepts a new source offer only when it is authenticated, bound
+to this chain, and no more than `--refresh-blocks` behind the finalized head.
+It stores that exact offer and its first observation time in its existing
+`--journal-db`. If the gateway fails, returns an invalid offer, or keeps serving
+a stale projection, the follower republishes the last accepted hotkey amounts
+for up to **12 hours**. Repeated responses with the same offer, local refreshes,
+and restarts never reset the age. Beyond 12 hours, or without a saved source, it
+publishes 100% to the chain-resolved subnet-owner burn hotkey. An upgraded
+follower seeds this cache on its first accepted source; older journal entries
+without an observation time do not establish a 12-hour allowance.
+
+Both fresh and retained vectors bind to the live finalized metagraph; amounts
+follow hotkeys if their UIDs move. If a retained recipient is no longer
+registered, the follower burns rather than redirecting its share. The signer
+must still be registered and chain RPC must work. Logs show `mode=source`,
+`mode=retained`, or `mode=burn`. Fresh accepted offers automatically restore
+normal following. Source rollback and same-block conflicts cannot update the
+saved source. Fallback does not apply additional reward decay: only the
+producer has the reward inputs needed for that calculation.
+
+Every mode uses the existing publication journal and chain submission cadence.
+An in-flight transaction completes before its replacement; a different vector
+at the same finalized block waits for the next block. Existing holds remain
+holds. Dry runs neither seed the source cache nor sign. Use one journal database
+per signer and retain it across service restarts.
 
 When `serve-weights` is deliberately run without push credentials, raw local
 or object-store bytes are an operator-trusted source; the gateway cannot prove

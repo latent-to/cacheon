@@ -57,6 +57,7 @@ class WeightsStageConfig:
     burn_hotkey: str
     confirmation_journal: Path | None = None
     arena_allocation_path: Path | None = None
+    reward_checkpoint_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,7 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
         burn_hotkey=burn_hotkey,
         confirmation_journal=journal,
         arena_allocation_path=allocation_path,
+        reward_checkpoint_path=config_path.with_suffix(".rewards.json"),
     )
 
 
@@ -198,13 +200,53 @@ def compose_weight_offer_push(
         stage.discovery_pool_ppm,
     )
     last_push_block = 0
+    # Leave room for polling, intake lock contention and HTTP delivery before
+    # followers reach their freshness limit, even when the vector is unchanged.
+    offer_refresh_blocks = max(1, stage.refresh_blocks // 2)
     netuid = int(scope.netuid)
+    from cacheon.chain.reward_checkpoint import RewardCheckpoint, RewardSourceUnavailable
+
+    checkpoint = (None if stage.reward_checkpoint_path is None else
+                  RewardCheckpoint(stage.reward_checkpoint_path, policy=policy, scope=scope, stage=stage))
+
+    def project_live(context):
+        from cacheon.chain.arena_weight_projection import (
+            build_static_projection, load_allocation, require_legacy_projection,
+        )
+        from cacheon.chain.qualification_settlement import (
+            build_weight_projection, reconcile_follower_reward_decay,
+        )
+
+        capture = None if checkpoint is None else checkpoint.capture
+        with store_factory() as store:
+            if stage.arena_allocation_path is not None:
+                return build_static_projection(
+                    store, allocation=load_allocation(stage.arena_allocation_path),
+                    policy=policy, context=context, netuid=netuid,
+                    confirmation_journal=stage.confirmation_journal, capture=capture,
+                )
+            require_legacy_projection(store, context.current_block)
+            if stage.confirmation_journal is not None:
+                reconcile_follower_reward_decay(
+                    store, stage.confirmation_journal, validator_hotkey=stage.attribution_hotkey)
+            standing, discovery = store.active_reward_claims()
+            crowned = any(state.generation > 0 for state in store.evaluation_stacks())
+            if standing or discovery or crowned or not stage.burn_hotkey:
+                if capture is None:
+                    return store.build_weight_projection(policy=policy, context=context, netuid=netuid)
+                return build_weight_projection(
+                    store, policy=policy, context=context, netuid=netuid, capture=capture)
+            projection = store.build_burn_weight_projection(
+                policy=policy, context=context, netuid=netuid, burn_hotkey=stage.burn_hotkey)
+            if capture is not None:
+                capture(projection)
+            return projection
 
     def publish() -> Any:
         nonlocal last_push_block
         try:
             current_block, _ = chain.read_finalized_head(subtensor)
-            if last_push_block and current_block - last_push_block < stage.refresh_blocks:
+            if last_push_block and current_block - last_push_block < offer_refresh_blocks:
                 return None
             metagraph = chain.fetch_metagraph(subtensor, netuid)
             context = GlobalRewardProjectionContext(
@@ -219,52 +261,24 @@ def compose_weight_offer_push(
                     )
                 ),
             )
-            with store_factory() as store:
-                from cacheon.chain.arena_weight_projection import (
-                    build_static_projection, load_allocation, require_legacy_projection,
-                )
+            from cacheon.chain.weight_offer_service import WeightOfferBusyError
+            from cacheon.chain.intake import IntakeError, is_lock_collision
 
-                if stage.arena_allocation_path is not None:
-                    projection = build_static_projection(
-                        store, allocation=load_allocation(stage.arena_allocation_path),
-                        policy=policy, context=context, netuid=netuid,
-                        confirmation_journal=stage.confirmation_journal,
-                        max_lag_blocks=stage.refresh_blocks,
-                    )
-                else:
-                    require_legacy_projection(store, context.current_block)
-                    if stage.confirmation_journal is not None:
-                        from cacheon.chain.qualification_settlement import reconcile_follower_reward_decay
-
-                        reconcile_follower_reward_decay(
-                            store, stage.confirmation_journal, validator_hotkey=stage.attribution_hotkey,
-                        )
-                    states = store.evaluation_stacks()
-                    standing, discovery = store.active_reward_claims()
-                    crowned = any(state.generation > 0 for state in states)
-                    if standing or discovery or crowned:
-                        # Real economic authority exists: project it. A mixed or
-                        # torn state (claims without a crowned arena, or the
-                        # reverse) is the builder's refusal to surface, not a
-                        # reason to burn.
-                        projection = store.build_weight_projection(
-                            policy=policy,
-                            context=context,
-                            netuid=netuid,
-                        )
-                    elif stage.burn_hotkey:
-                        projection = store.build_burn_weight_projection(
-                            policy=policy,
-                            context=context,
-                            netuid=netuid,
-                            burn_hotkey=stage.burn_hotkey,
-                        )
-                    else:
-                        projection = store.build_weight_projection(
-                            policy=policy,
-                            context=context,
-                            netuid=netuid,
-                        )
+            if checkpoint is not None:
+                checkpoint.pending = None
+            try:
+                projection = project_live(context)
+            except (WeightOfferBusyError, IntakeError) as exc:
+                if not isinstance(exc, (WeightOfferBusyError, RewardSourceUnavailable)) and not is_lock_collision(exc):
+                    raise
+                if checkpoint is None or not checkpoint.path.is_file():
+                    raise
+                projection = checkpoint.project(context)
+            else:
+                if checkpoint is not None:
+                    checkpoint.save()
+            if checkpoint is not None:
+                projection = checkpoint.select_offer(projection)
             offer = CurrentWeightOffer.from_legacy_projection(projection)
             response = push_current_weights(
                 stage.push_url,

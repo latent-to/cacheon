@@ -188,8 +188,9 @@ def passed_reward_claims(store: FinalizedIntakeStore) -> tuple[object, ...]:
 def passed_reward_evidence(
     store: FinalizedIntakeStore, *, score_speedups: dict[str, int] | None = None,
     reservation_ids: dict[str, str] | None = None,
+    validated_claims: list | None = None,
 ) -> tuple[tuple, tuple]:
-    """Reopen earned contributions; optionally fill scoring ratios keyed by unchanged claim IDs."""
+    """Reopen PASSes separately from the payment filter and queue scoring ratios."""
     from decimal import Decimal, ROUND_FLOOR
     from cacheon.chain.intake import IntakeError
 
@@ -205,7 +206,6 @@ def passed_reward_evidence(
         "JOIN reservations r USING(reservation_id) "
         "WHERE r.status='qualified' AND r.decision='PASS' "
         "AND sc.status!='duplicate_proposal' "
-        "AND sc.reward_eligible=1 "
         "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
     )
     for row in rows:
@@ -222,25 +222,24 @@ def passed_reward_evidence(
             raise IntakeError("PASS candidate differs from retained evidence")
         seen.add(key)
         comparison = comparisons.get(candidate.reservation_digest)
+        claim = StandingRewardClaim(
+            candidate.arena_digest,
+            candidate.target_id,
+            contribution.target_spec_digest,
+            contribution.digest,
+            candidate.hotkey,
+            int((Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(rounding=ROUND_FLOOR)),
+            candidate.finalized_block,
+            evidence.digest,
+        )
+        if validated_claims is not None:
+            validated_claims.append(claim)
+            contributions.append(contribution)
         if comparison is None or not comparison["reward_eligible"]:
             continue
-        claims.append(
-            StandingRewardClaim(
-                candidate.arena_digest,
-                candidate.target_id,
-                contribution.target_spec_digest,
-                contribution.digest,
-                candidate.hotkey,
-                int(
-                    (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
-                        rounding=ROUND_FLOOR
-                    )
-                ),
-                candidate.finalized_block,
-                evidence.digest,
-            )
-        )
-        contributions.append(contribution)
+        claims.append(claim)
+        if validated_claims is None:
+            contributions.append(contribution)
         if reservation_ids is not None:
             reservation_ids[claims[-1].digest] = candidate.reservation_digest
         if score_speedups is not None:
@@ -355,15 +354,29 @@ def confirm_reward_decay(store: FinalizedIntakeStore, projection, record) -> Non
 
 def reconcile_follower_reward_decay(store: FinalizedIntakeStore, journal_path, *, validator_hotkey: str) -> None:
     """Consume the existing signer's confirmed journal, including across producer restarts."""
+    row = store._db.execute(
+        "SELECT value FROM metadata WHERE key='reward_decay_confirmation_cursor'"
+    ).fetchone()
+    cursor = json.loads(row["value"]) if row else {"path": str(journal_path), "sequence": 0}
+    maximum, confirmations = read_reward_confirmations(
+        journal_path, cursor=cursor, scope=store.scope, validator_hotkey=validator_hotkey)
+    with store._transaction():
+        for projection, record in confirmations:
+            confirm_reward_decay(store, projection, record)
+        store._db.execute(
+            "INSERT INTO metadata(key,value) VALUES('reward_decay_confirmation_cursor',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (json.dumps({"path": str(journal_path), "sequence": maximum}, sort_keys=True),),
+        )
+
+
+def read_reward_confirmations(journal_path, *, cursor, scope, validator_hotkey):
+    """Reopen confirmed signer receipts for intake or its durable reward checkpoint."""
     import sqlite3
     from cacheon.chain.intake import IntakeError
     from cacheon.chain.weight_share import CurrentWeightOffer
     from cacheon.chain.weights import WeightPublicationRecord
 
-    row = store._db.execute(
-        "SELECT value FROM metadata WHERE key='reward_decay_confirmation_cursor'"
-    ).fetchone()
-    cursor = json.loads(row["value"]) if row else {"path": str(journal_path), "sequence": 0}
     if cursor["path"] != str(journal_path):
         raise IntakeError("reward confirmation journal changed")
     with sqlite3.connect(Path(journal_path).as_uri() + '?mode=ro', uri=True) as journal:
@@ -377,29 +390,18 @@ def reconcile_follower_reward_decay(store: FinalizedIntakeStore, journal_path, *
             "SELECT * FROM followed_weight_publications WHERE sequence>? "
             "AND status='confirmed' ORDER BY sequence", (cursor["sequence"],),
         ).fetchall()
-    with store._transaction():
-        starts = {row["claim_digest"]: row["start_block"] for row in reward_decay_adjustments(store)}
-        pending = {digest for digest, start in starts.items() if start is None}
-        evidence = {row.retained_evidence_digest for row in passed_reward_claims(store)
-                    if row.digest in pending} if pending else set()
-        for row in rows:
-            offer = CurrentWeightOffer.from_dict(json.loads(row["offer_json"]))
-            record = WeightPublicationRecord.from_dict(json.loads(row["record_json"]))
-            projection = offer.projection
-            if (offer.digest != row["offer_digest"] or record.digest != row["record_digest"]
-                    or record.status != row["status"]
-                    or projection.digest != row["projection_digest"]
-                    or projection.validator_hotkey != validator_hotkey
-                    or projection.chain_scope_digest != store.scope.digest
-                    or projection.netuid != store.scope.netuid):
-                raise IntakeError("reward confirmation differs from its signer or chain authority")
-            if evidence.intersection(projection.evidence_digests):
-                confirm_reward_decay(store, projection, record)
-        store._db.execute(
-            "INSERT INTO metadata(key,value) VALUES('reward_decay_confirmation_cursor',?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (json.dumps({"path": str(journal_path), "sequence": maximum}, sort_keys=True),),
-        )
+    confirmations = []
+    for row in rows:
+        offer = CurrentWeightOffer.from_dict(json.loads(row["offer_json"]))
+        record = WeightPublicationRecord.from_dict(json.loads(row["record_json"]))
+        projection = offer.projection
+        if (offer.digest != row["offer_digest"] or record.digest != row["record_digest"]
+                or record.status != row["status"] or projection.digest != row["projection_digest"]
+                or projection.validator_hotkey != validator_hotkey
+                or projection.chain_scope_digest != scope.digest or projection.netuid != scope.netuid):
+            raise IntakeError("reward confirmation differs from its signer or chain authority")
+        confirmations.append((projection, record))
+    return maximum, confirmations
 
 
 def _reward_projection_inputs(store, *, include_uncrowned: bool = False, reservation_ids=None) -> dict:
@@ -413,8 +415,10 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False, reserva
 
     standing, discovery = store.active_reward_claims()
     score_speedups = {}
+    validated_claims = []
     earning, contributions = passed_reward_evidence(
-        store, score_speedups=score_speedups, reservation_ids=reservation_ids)
+        store, score_speedups=score_speedups, reservation_ids=reservation_ids,
+        validated_claims=validated_claims)
     _hold_unpublished_claims(store, earning)
     adjustments = reward_decay_adjustments(store)
     live = {claim.digest for claim in earning}
@@ -447,6 +451,7 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False, reserva
         )
     return {
         "arenas": tuple(authorities), "earning_claims": earning,
+        "validated_claims": tuple(validated_claims),
         "discovery_claims": discovery, "earned_contributions": contributions,
         "decay_start_blocks": starts, "adjustments": adjustments,
         "score_speedups": score_speedups,
@@ -461,6 +466,7 @@ def build_weight_projection(
     policy,
     context,
     netuid: int,
+    capture=None,
 ) -> WeightProjection:
     """Pool all retained earning claims under each crown's sealed catalog."""
 
@@ -514,7 +520,7 @@ def build_weight_projection(
         policy_digest = canonical_digest("cacheon.operator.reward-decay-policy.v1", {
             "base_policy": policy_digest, "adjustment_digest": adjustment_digest,
         })
-    return WeightProjection(
+    result = WeightProjection(
         context.chain_scope_digest,
         netuid,
         context.validator_hotkey,
@@ -531,3 +537,6 @@ def build_weight_projection(
             (row.hotkey, row.weight_ppm) for row in projection.weights
         ),
     )
+    if capture is not None:
+        capture(result, inputs)
+    return result

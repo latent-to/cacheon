@@ -36,6 +36,7 @@ def test_follow_weights_pins_subnet_owner_when_expected_authority_empty(
             return "0x" + "00" * 32
 
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
+    monkeypatch.setattr(chain, "fetch_metagraph", lambda *_a, **_k: view)
     monkeypatch.setattr(
         chain,
         "resolve_subnet_owner_burn_target",

@@ -53,7 +53,7 @@ def _project(primary, schedule, journal, block=20):
                       current_block=block, current_block_hash=intake._bh(block))
     return allocation.build_static_projection(
         primary, allocation=schedule, policy=intake.POLICY, context=context,
-        netuid=intake.SCOPE.netuid, confirmation_journal=journal, max_lag_blocks=2,
+        netuid=intake.SCOPE.netuid, confirmation_journal=journal,
     )
 
 
@@ -170,14 +170,16 @@ def test_quarter_bonus_uses_arrival_even_when_old_pass_qualifies_later(tmp_path,
             _project(primary, ArenaAllocation.from_dict(raw), journal, 7220)
 
 
-@pytest.mark.parametrize("failure", ["stale", "ahead", "hash", "missing", "duplicate", "evidence"])
+@pytest.mark.parametrize("failure", ["absent_cursor", "claim_ahead", "ahead", "hash", "missing", "duplicate", "evidence"])
 def test_bad_secondary_prevents_offer_and_rolls_back_primary(tmp_path, monkeypatch, failure):
     schedule, journal, configs = _fixture(tmp_path, monkeypatch)
     _register(tmp_path, schedule, journal)
     _advance(tmp_path)
     with intake._store(tmp_path / "b") as secondary:
-        if failure in {"stale", "ahead", "hash"}:
-            block = {"stale": 10, "ahead": 21, "hash": 20}[failure]
+        if failure == "absent_cursor":
+            secondary._db.execute("DELETE FROM metadata WHERE key='finalized_cursor'")
+        elif failure in {"claim_ahead", "ahead", "hash"}:
+            block = {"claim_ahead": 9, "ahead": 21, "hash": 20}[failure]
             secondary._db.execute("UPDATE metadata SET value=? WHERE key='finalized_cursor'",
                                   (json.dumps([block, intake._bh(99 if failure == "hash" else block)]),))
         elif failure == "duplicate":
@@ -199,7 +201,7 @@ def test_bad_secondary_prevents_offer_and_rolls_back_primary(tmp_path, monkeypat
     with intake._store(tmp_path / "a") as primary:
         before = primary._db.execute("SELECT value FROM metadata WHERE key='static_arena_allocation'").fetchone()[0]
         with pytest.raises((IntakeError, ValueError),
-                           match="snapshot" if failure in {"stale", "ahead", "hash"} else None):
+                           match="snapshot" if failure in {"absent_cursor", "ahead", "hash"} else None):
             _project(primary, schedule, journal)
         assert primary._db.execute("SELECT value FROM metadata WHERE key='static_arena_allocation'").fetchone()[0] == before
 
@@ -255,6 +257,39 @@ def test_busy_secondary_uses_existing_service_skip(tmp_path, monkeypatch):
             _project(primary, schedule, journal)
 
 
+@pytest.mark.parametrize("stopped", [("a",), ("b",), ("a", "b")])
+def test_stopped_intake_keeps_projecting_and_decaying_retained_rewards(tmp_path, monkeypatch, stopped):
+    schedule, journal_path, _ = _fixture(tmp_path, monkeypatch)
+    _register(tmp_path, schedule, journal_path)
+    _advance(tmp_path)
+    with intake._store(tmp_path / "a") as primary:
+        first = _project(primary, schedule, journal_path)
+    with FinalizedIntakeStore(journal_path, scope=intake.SCOPE) as signer:
+        journal = SQLiteFollowerWeightPublicationJournal(signer, CurrentWeightOffer.from_legacy_projection(first))
+        journal.compare_and_swap(None, WeightPublicationRecord(
+            first.digest, "confirmed", confirmed_block=21, confirmed_last_update=21))
+    later_block = 21 + intake.POLICY.half_life_blocks * 2
+    for name in {"a", "b"} - set(stopped):
+        with intake._store(tmp_path / name) as store:
+            intake._reserve(store, (), block=later_block)
+    with intake._store(tmp_path / "a") as primary:
+        claims = primary.passed_reward_claims()
+        later = _project(primary, schedule, journal_path, later_block)
+        report = json.loads(reopen_evidence(primary.path.parent / "weight-allocation-evidence",
+                                           later.allocation_evidence))
+        assert later.effective_block == later_block and later.digest != first.digest
+        assert later.crown_count == first.crown_count
+        assert later.rewarded_evidence_digests == first.rewarded_evidence_digests
+        assert primary.passed_reward_claims() == claims
+        for name in stopped:
+            assert report["sources"][name]["cursor"] == [20, intake._bh(20)]
+        assert rewards.reward_decay_adjustments(primary)[-1]["start_block"] == 21
+        assert report["decay_digest"] != json.loads(reopen_evidence(
+            primary.path.parent / "weight-allocation-evidence", first.allocation_evidence))["decay_digest"]
+    with intake._store(tmp_path / "a") as primary:
+        assert _project(primary, schedule, journal_path, later_block) == later
+
+
 @pytest.mark.parametrize("invalid_reason", ["missing_eval_cost_payment", ""])
 def test_duplicate_arrival_without_a_pass_does_not_claim_reward_ownership(tmp_path, monkeypatch, invalid_reason):
     schedule, journal, _ = _fixture(tmp_path, monkeypatch)
@@ -295,6 +330,7 @@ def test_existing_push_stage_reloads_allocation_and_emits_one_offer(tmp_path, mo
                          "refresh_blocks": 1})
     stage = load_weights_config(stage_path)
     head = [12]
+    fetch_metagraph = chain.fetch_metagraph
     monkeypatch.setattr(chain, "connect", lambda *a, **kw: object())
     monkeypatch.setattr(chain, "read_finalized_head", lambda st: (head[0], intake._bh(head[0])))
     monkeypatch.setattr(chain, "fetch_metagraph", lambda st, netuid: SimpleNamespace(
@@ -338,3 +374,29 @@ def test_existing_push_stage_reloads_allocation_and_emits_one_offer(tmp_path, mo
     assert sorted(value[1] for value in report["submission_terms"].values()) == [0, 400_000, 1_000_000]
     assert report["arena_weights_ppm"] == {"a": 714_286, "b": 285_714}
     assert report["burned_ppm"] == 0
+    # The real push stage must keep minting current offers while every intake
+    # cursor remains at 22, including after its process is restarted.
+    head[0] = 10_000
+    publish()
+    assert offers[-1].projection.effective_block == 10_000
+    assert offers[-1].projection.weights_ppm == offers[-2].projection.weights_ppm
+    assert offers[-1].digest != offers[-2].digest
+    from cacheon.chain.weights import StaleWeightProjectionError
+    from tests.test_weight_publication import Chain, Journal, _wallet
+
+    follower = Chain(block=head[0])
+    follower.hotkeys = ["validator", "minera", "minerb"]
+    with monkeypatch.context() as follow_patch:
+        follow_patch.setattr(chain, "fetch_metagraph", fetch_metagraph)
+        with pytest.raises(StaleWeightProjectionError, match="freshness window"):
+            weight_share.publish_followed_weights(
+                subtensor=follower, signer_wallet=_wallet(), offer=offers[-2],
+                journal=Journal(), refresh_blocks=stage.refresh_blocks, dry_run=True)
+        result = weight_share.publish_followed_weights(
+            subtensor=follower, signer_wallet=_wallet(), offer=offers[-1],
+            journal=Journal(), refresh_blocks=stage.refresh_blocks, dry_run=True)
+        assert result.status == "dry_run"
+    publish = compose_weight_offer_push(stage, store_factory=lambda: intake._store(tmp_path / "a"),
+                                        scope=intake.SCOPE)
+    publish()
+    assert offers[-1] == offers[-2]

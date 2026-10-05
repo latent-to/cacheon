@@ -565,6 +565,7 @@ def project_global_rewards(
     discovery_claims: Iterable[DiscoveryBountyClaim] = (),
     *,
     earned_contributions: Iterable[ProposalContributionRef] = (),
+    validated_claims: Iterable[StandingRewardClaim] | None = None,
     decay_start_blocks: Mapping[str, int | None] | None = None,
     allocation_terms: Mapping[str, tuple[str, int]] | None = None,
     allocation_burn_hotkey: str = "",
@@ -575,6 +576,8 @@ def project_global_rewards(
 
     Scoring ratios affect credit only; retained claim identities, standing-crown
     validation, and publication decay clocks continue to bind the measured PASS.
+    Validated PASSes can support a crown without qualifying for payment; only
+    earning_claims receive credit. Older callers validate against their earning set.
     """
 
     if type(policy) is not EmissionsPolicyManifest:
@@ -592,6 +595,11 @@ def project_global_rewards(
         raise EconomicsError("PASS reward claims are not exactly typed")
     if len({row.digest for row in earning}) != len(earning):
         raise EconomicsError("PASS reward claims are duplicated")
+    validated = earning if validated_claims is None else tuple(validated_claims)
+    if any(type(row) is not StandingRewardClaim for row in validated):
+        raise EconomicsError("validated PASS claims are not exactly typed")
+    if not {row.digest for row in earning} <= {row.digest for row in validated}:
+        raise EconomicsError("earning claim has no validated PASS")
     if score_speedups is not None and set(score_speedups) != {row.digest for row in earning}:
         raise EconomicsError("reward scoring requires a speedup for every earning PASS")
     if stall_bonus_terms is not None and (
@@ -606,7 +614,7 @@ def project_global_rewards(
         raise EconomicsError("reward decay adjustment has no earning PASS")
     eligible = context.eligible_hotkeys
     standing_index: dict[tuple[str, str, str], StandingRewardClaim] = {}
-    for claim in earning:
+    for claim in validated:
         key = (claim.arena_digest, claim.target_id, claim.contribution_digest)
         if key in standing_index:
             raise EconomicsError("PASS reward claims reuse a contribution")
@@ -651,7 +659,7 @@ def project_global_rewards(
                             and original.attribution_digest == contribution.attribution_digest
                         )
                     )
-                    for row in earning
+                    for row in validated
                 ):
                     continue
                 raise EconomicsError("every active target requires exactly one standing claim")
