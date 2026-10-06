@@ -881,12 +881,12 @@ def _cmd_follow_weights_once(
         )
     print(
         f"follow-weights mode={mode} projection={result.projection_digest} "
-        f"status={result.status} chain_matches={result.chain_matches} "
-        f"submitted={result.submitted} refresh_due={result.refresh_due}"
+        f"status={'committed' if result.status == 'confirmed' else result.status} "
+        f"submitted={result.submitted}"
     )
     if result.refresh_due:
         return 3
-    return 0 if result.status in {"dry_run", "confirmed", "pending"} else 2
+    return 0 if result.status in {"dry_run", "confirmed", "released"} else 2
 
 
 def cmd_follow_weights(args: argparse.Namespace) -> int:

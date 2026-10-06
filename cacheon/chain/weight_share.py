@@ -45,8 +45,6 @@ from cacheon.chain.weights import (
     WeightProjection,
     WeightPublicationError,
     ReopenableWeightPublicationJournal,
-    reconcile_weight_publication,
-    resume_weight_projection,
 )
 from cacheon.object_store import (
     ObjectStore,
@@ -1381,7 +1379,7 @@ def publish_followed_weights(
     refresh_blocks: int,
     dry_run: bool = False,
 ):
-    """Publish a fetched offer through the normal weight reconciler / commit-reveal."""
+    """Publish the current offer, completing on a successful commit."""
 
     if type(offer) is not CurrentWeightOffer:
         raise WeightShareError("follow publish requires an exact CurrentWeightOffer")
@@ -1390,18 +1388,15 @@ def publish_followed_weights(
     except AttributeError as exc:
         raise WeightShareError("follower publish requires a signer wallet") from exc
     projection = rebind_offer_signer(offer, follower_hotkey).projection
-    if not dry_run:
-        projection = resume_weight_projection(projection, journal)
-    return reconcile_weight_publication(
+    from cacheon.chain.weight_commit import commit_weight_publication
+
+    return commit_weight_publication(
         subtensor,
-        None if dry_run else signer_wallet,
+        signer_wallet,
         projection,
         journal,
         refresh_blocks=refresh_blocks,
         dry_run=dry_run,
-        allow_stale_initial=True,
-        max_stale_initial_blocks=refresh_blocks,
-        require_current_crown=projection.crown_count > 0,
     )
 
 

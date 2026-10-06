@@ -573,11 +573,36 @@ normal following. Source rollback and same-block conflicts cannot update the
 saved source. Fallback does not apply additional reward decay: only the
 producer has the reward inputs needed for that calculation.
 
-Every mode uses the existing publication journal and chain submission cadence.
-An in-flight transaction completes before its replacement; a different vector
-at the same finalized block waits for the next block. Existing holds remain
-holds. Dry runs neither seed the source cache nor sign. Use one journal database
-per signer and retain it across service restarts.
+Every follower mode completes publication when the SDK reports a successful
+commit included and finalized. It does not wait for reveal or read back active
+weights. The existing journal records that success as `confirmed` with reason
+`block_inclusion`; this means commit acceptance, not verified emissions. Failed
+commits are logged, recorded as `released`, and retried on the next watch pass.
+Historical `intent`, `pending`, and `held` records do not block newer offers.
+An unchanged successful allocation refreshes after `--refresh-blocks`; changed
+allocations are attempted on the next pass, subject to the SDK's chain rate limit.
+A different vector at the same finalized block waits for the next block. Dry runs
+neither seed the source cache nor sign. Retain one journal database per signer.
+
+Run reveal checking as a separate, wallet-free process:
+
+```bash
+python -m cacheon.chain.weight_reveal_monitor \
+  --journal-db /absolute/path/follow.sqlite3 \
+  --state /absolute/path/reveal-monitor.json \
+  --webhook-file /absolute/path/discord-webhook.txt \
+  --network finney --deadline-blocks 600 --interval 60
+```
+
+Store the Discord webhook URL in the private webhook file. The monitor opens
+the signer journal read-only and writes only its own state. It alerts once when
+a commit's weights remain unobserved past the deadline, and again on recovery.
+It accounts for uint16 rounding, omitted zero-weight recipients, and a later
+revealed allocation superseding an intermediate one. On first start it checks
+the latest accepted commit; persisted state preserves outstanding checks across
+restarts. Repeated check failures also alert. Neither reveal failures nor Discord
+delivery failures stop, hold, release, or otherwise control the publisher.
+The legacy combined `set-weights` reconciler described above remains separate.
 
 When `serve-weights` is deliberately run without push credentials, raw local
 or object-store bytes are an operator-trusted source; the gateway cannot prove

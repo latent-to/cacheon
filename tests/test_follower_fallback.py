@@ -83,17 +83,18 @@ def test_first_boot_without_a_source_burns_and_recovers(tmp_path, monkeypatch):
     assert accepted.projection.effective_block == 101 and cached is not None
 
 
-def test_replayed_offer_does_not_extend_age_or_replace_pending_intent(tmp_path, monkeypatch):
+def test_replayed_offer_does_not_extend_age_or_wait_for_reveal(tmp_path, monkeypatch):
     live, source, follow = _setup(tmp_path, monkeypatch, apply=False)
     first, _, original, cached = follow()
-    assert first.status == "pending"
+    assert first.status == "confirmed"
     _, _, _, repeated = follow(2000)
     assert repeated[0] == cached[0]
     source[0] = OSError("offline")
     live.block = 101
-    result, mode, pending, _ = follow(1001 + fallback.MAX_RETAINED_SECONDS)
-    assert mode == "burn" and result.status == "pending"
-    assert pending == original and live.submit_calls == 1
+    result, mode, burned, _ = follow(1001 + fallback.MAX_RETAINED_SECONDS)
+    assert mode == "burn" and result.status == "confirmed"
+    assert burned != original and live.submit_calls == 2
+    assert live.weight_reads == 0
 
 
 def test_dry_run_does_not_seed_cache_or_sign(tmp_path, monkeypatch):
@@ -132,11 +133,20 @@ def test_same_block_recovery_defers_one_block_without_equivocation(tmp_path, mon
     assert recovered.projection.weights_ppm == good.projection.weights_ppm
 
 
-def test_cli_uses_fallback_when_the_gateway_is_down(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("accepted", [True, False])
+def test_cli_uses_fallback_when_the_gateway_is_down(tmp_path, monkeypatch, capsys, accepted):
     import argparse
     from cacheon import cli
 
     live, source, _ = _setup(tmp_path, monkeypatch)
+    if not accepted:
+        original = live.set_weights
+
+        def reject(**kwargs):
+            original(**kwargs)
+            return False
+
+        live.set_weights = reject
     source[0] = OSError("offline")
     monkeypatch.setattr(cli, "_wallet_from_args", lambda args: _wallet())
     args = argparse.Namespace(netuid=307, expected_authority="gateway-key",
