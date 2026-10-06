@@ -350,7 +350,7 @@ def test_fetch_binds_request_signature_over_timestamp() -> None:
     assert headers["x-cacheon-signature"] == sign_auth_digest(follower, digest)
 
 
-def test_new_offers_do_not_replace_pending_weight_transactions():
+def test_successful_commit_finishes_without_waiting_for_reveal():
     from tests.test_weight_publication import Chain, Journal, _projection, _wallet
 
     chain = Chain()
@@ -372,28 +372,29 @@ def test_new_offers_do_not_replace_pending_weight_transactions():
             journal=journal, refresh_blocks=20,
         )
 
-    assert follow(original).status == "pending"
+    assert follow(original).status == "confirmed"
     chain.block = 101
-    chain.install(original.weights, update=100)
     newer = _projection(block=101, weights=(("bob", 1_000_000),))
+    journal.retained[newer.digest] = newer
     result = follow(newer)
     assert result.status == "confirmed"
-    assert result.projection_digest == original.digest
-    assert chain.submit_calls == 1
+    assert result.projection_digest == newer.digest
+    assert chain.submit_calls == 2
 
     chain.block = 102
     replacement = _projection(block=102, weights=newer.weights_ppm)
     journal.retained[replacement.digest] = replacement
-    assert follow(replacement).status == "pending"
-    chain.install(replacement.weights, update=102)
+    assert follow(replacement).status == "confirmed"
     chain.block = 103
     result = follow(_projection(block=103, weights=newer.weights_ppm))
     assert result.status == "confirmed"
-    assert result.projection_digest == replacement.digest
+    assert result.projection_digest == newer.digest
     assert chain.submit_calls == 2
     assert [r.status for r in journal.history] == [
-        "intent", "pending", "confirmed", "intent", "pending", "confirmed",
+        "intent", "confirmed", "intent", "confirmed",
     ]
+    assert journal.row.reason == "block_inclusion"
+    assert chain.weight_reads == 0
 
 
 def test_push_endpoint_accepts_rotatable_credentials(

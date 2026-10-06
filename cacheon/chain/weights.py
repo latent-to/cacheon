@@ -2,7 +2,8 @@
 
 This module owns no database and imports no evaluation runtime. The settlement
 store supplies a compare-and-swap journal implementation; only the control-plane
-signer supplies a wallet. An SDK return value is never confirmation authority.
+signer supplies a wallet. Followers finish on an accepted commit; the legacy
+set-weights reconciler retains its finalized-readback contract.
 """
 
 from __future__ import annotations
