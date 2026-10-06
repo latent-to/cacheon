@@ -602,6 +602,13 @@ revealed allocation superseding an intermediate one. On first start it checks
 the latest accepted commit; persisted state preserves outstanding checks across
 restarts. Repeated check failures also alert. Neither reveal failures nor Discord
 delivery failures stop, hold, release, or otherwise control the publisher.
+For a newly weighted hotkey it sends an informational message after an accepted
+commit, then another when the matching allocation is observed active on-chain.
+Each message names the hotkey, UID, share, and block. Already active recipients
+seed its initial inventory; subsequent share changes and ordinary restarts do
+not repeat the new-hotkey announcement. Undelivered info messages remain queued
+in the monitor's own state. Activation describes this validator's weight row,
+not network-wide emissions.
 The legacy combined `set-weights` reconciler described above remains separate.
 
 When `serve-weights` is deliberately run without push credentials, raw local

@@ -22,6 +22,19 @@ def send_discord(webhook: str, message: str) -> None:
         response.read()
 
 
+def _send_info(state, notify):
+    """Retry informational deliveries without losing successful sends or stopping checks."""
+    queue = state.setdefault("info_messages", [])
+    while queue:
+        try:
+            notify(queue[0])
+        except Exception as exc:
+            print(f"weight-reveal-monitor info delivery failed: {type(exc).__name__}", flush=True)
+            break
+        queue.pop(0)
+    return state
+
+
 def check_reveals(subtensor, journal: Path, state: dict, *, deadline_blocks: int, notify) -> dict:
     """Read commit receipts and weights; write only the caller's monitor state."""
     state = json.loads(json.dumps(state))
@@ -45,26 +58,46 @@ def check_reveals(subtensor, journal: Path, state: dict, *, deadline_blocks: int
                             "block": record["submit_block"]})
         state["cursor"] = sequence
     if not pending:
-        return state
+        return _send_info(state, notify)
     from cacheon.chain.weight_projection import WeightProjection
 
     latest = WeightProjection.from_dict(pending[-1]["projection"])
     live = chain.fetch_metagraph(subtensor, latest.netuid)
     observed = chain.read_validator_weight_snapshot(
         subtensor, latest.netuid, latest.validator_hotkey, metagraph_view=live)
+    known = set(state.setdefault("known_hotkeys", sorted(observed.weights)))
+    awaiting = state.setdefault("hotkeys_awaiting_activation", {})
+    info = state.setdefault("info_messages", [])
     matched = 0
+    matched_projection = None
     for item in pending:
         projection = WeightProjection.from_dict(item["projection"])
         if (projection.netuid != latest.netuid or projection.validator_hotkey != latest.validator_hotkey):
             raise ValueError("monitor journal contains multiple signers or subnets")
         # Chain weights use uint16 precision and omit zero-rounded dust recipients.
         expected = projection.weights
+        for hotkey in sorted(set(expected) - known):
+            info.append(f"Cacheon SN{projection.netuid} INFO: weights committed for new hotkey "
+                        f"{hotkey} (UID {live.uid_of(hotkey)}), allocation {expected[hotkey]:.4%}. "
+                        f"Commit submitted at block {item['block']}; awaiting activation.")
+            known.add(hotkey)
+            awaiting[hotkey] = item["block"]
         if (observed.last_update_block >= item["block"]
                 and all(math.isclose(observed.weights.get(k, 0), expected.get(k, 0),
                                      rel_tol=2e-5, abs_tol=2e-5)
                         for k in set(expected) | set(observed.weights))):
             matched = item["sequence"]
+            matched_projection = projection
+    state["known_hotkeys"] = sorted(known)
     if matched:
+        for hotkey, block in list(awaiting.items()):
+            if (hotkey in matched_projection.weights and observed.weights.get(hotkey, 0) > 0
+                    and observed.last_update_block >= block):
+                info.append(f"Cacheon SN{latest.netuid} INFO: weights are now active for hotkey "
+                            f"{hotkey} (UID {live.uid_of(hotkey)}), observed share "
+                            f"{observed.weights[hotkey]:.4%} at block {live.block}. "
+                            "This confirms this validator's weights, not network-wide emissions.")
+                del awaiting[hotkey]
         # A later revealed allocation supersedes earlier commits. They must not
         # raise a false alarm just because polling never saw their intermediate row.
         pending[:] = [item for item in pending if item["sequence"] > matched]
@@ -81,7 +114,7 @@ def check_reveals(subtensor, journal: Path, state: dict, *, deadline_blocks: int
                f"last weight update {observed.last_update_block}. Publication is NOT paused.")
         state["alerted"] = True
     state["checked_block"] = live.block
-    return state
+    return _send_info(state, notify)
 
 
 def main() -> None:
