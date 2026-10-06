@@ -302,11 +302,24 @@ def qualification_queue_baseline(
     )
 
 
+def commissioned_baseline(incumbent, tree_digest):
+    """Reproduce the existing genesis identity of a sealed commission."""
+    return EvaluationStackState(
+        incumbent.arena_digest, 0, incumbent, tree_digest,
+        canonical_digest(_EVALUATION_STACK_GENESIS_DOMAIN, {
+            "arena_digest": incumbent.arena_digest,
+            "stack_digest": incumbent.digest,
+            "tree_digest": tree_digest,
+        }),
+    )
+
+
 def commission_boundary(
     store: "FinalizedIntakeStore",
     incumbent: "EvaluationStackManifest",
     *,
     tree_digest: str,
+    preserve_revealed: bool = False,
 ) -> tuple[str, str, str] | None:
     """Bind unmeasured work to the sealed commission before any claim.
 
@@ -316,7 +329,8 @@ def commission_boundary(
     Old screen/backfill code stamped that mutable crown into queued segments;
     repair those unmeasured bindings here, where the sealed dispatcher supplies
     the actual worker incumbent. Retained qualification evidence keeps its
-    binding and still halts a genuinely different manual commission.
+    binding and still halts a different commission. In automatic mode, preserve
+    accepted disclosure bindings until their contribution content is loaded.
     """
 
     try:
@@ -325,14 +339,7 @@ def commission_boundary(
         if str(exc) != "evaluation stack is not initialized":
             raise
         store.initialize_evaluation_stack(incumbent, tree_digest=tree_digest)
-    commissioned = EvaluationStackState(
-        incumbent.arena_digest, 0, incumbent, tree_digest,
-        canonical_digest(_EVALUATION_STACK_GENESIS_DOMAIN, {
-            "arena_digest": incumbent.arena_digest,
-            "stack_digest": incumbent.digest,
-            "tree_digest": tree_digest,
-        }),
-    )
+    commissioned = commissioned_baseline(incumbent, tree_digest)
     marks = ",".join("?" for _ in _REBINDABLE)
     with store._transaction():
         rows = tuple(store._db.execute(
@@ -346,6 +353,15 @@ def commission_boundary(
         ))
         for row in rows:
             prior = reservation_baseline_segment(store, row["reservation_id"])
+            binding = store._db.execute(
+                "SELECT binding_reason FROM reservation_baseline_segments WHERE reservation_id=?",
+                (row["reservation_id"],),
+            ).fetchone()
+            revealed = binding is not None and binding[0].startswith("revealed_baseline")
+            if preserve_revealed and revealed and prior is not None:
+                from cacheon.chain.baseline_admission import same_baseline
+                if not same_baseline(prior.manifest, incumbent):
+                    continue
             if prior is not None and (
                 prior.manifest.digest == incumbent.digest
                 and prior.tree_digest == tree_digest
@@ -357,7 +373,7 @@ def commission_boundary(
             )
             bind_reservation_baseline_segment(
                 store, row["reservation_id"], commissioned,
-                reason="commissioned_incumbent",
+                reason="revealed_baseline:loaded" if preserve_revealed and revealed else "commissioned_incumbent",
             )
     required = qualification_queue_baseline(store)
     if required is None or (
