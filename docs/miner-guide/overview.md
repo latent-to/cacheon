@@ -80,6 +80,14 @@ arena = "<published-arena-id>"
 The manifest requests an existing target; it does not grant new authority. See
 [Slots and targets](slots.md) and [Kernel ABI](kernel-abi.md).
 
+When automatic baseline loading is enabled, also set `competition.baseline` to the
+`baseline` returned by the validator dashboard's
+`/api/baseline?arena=<dashboard-arena-key>` endpoint: the latest publicly downloadable
+winner's full reservation ID, or `stock` before any winner is disclosed. Check it
+before hashing and committing. Once the next winner is disclosed, new commitments
+on the previous baseline are returned unevaluated with credit preserved. Already
+accepted work finishes against its assigned baseline.
+
 `verify` is scanning plus import/signature smoke. Use
 [`check` in the published image](your-first-kernel.md#6-move-to-the-matching-gpu-environment)
 for the live model binder, audit and captured execution.

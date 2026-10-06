@@ -76,7 +76,17 @@ a recovery mechanism.
 
 ## Deterministic plan
 
-Admission owns the baseline cutoff. The first crown on a commissioned baseline closes
+Admission owns the baseline cutoff. With automatic baseline loading enabled, new
+commitments must name the latest publicly downloadable crowned winner in
+`competition.baseline`. Disclosure occurs eight hours after the retained evaluation
+result, and never before settlement crowns it. Admission uses the exact timestamp of
+the finalized commitment; a delayed fetch does not change that timestamp. The next
+disclosed winner closes the previous baseline for new commitments, even while
+accepted work drains against it. Missing or stale declarations expire as
+`baseline_not_latest_revealed` before qualification, preserving submission credit
+and releasing the evaluation payment. The cutoff is per competition arena.
+
+Without automatic loading, the first crown on a commissioned baseline closes
 that baseline to later finalized commitments in the same competition. The
 qualification queue's admission step rejects them as `baseline_closed_at_submission`
 before any qualification lease or candidate execution. A commitment in the finalized
@@ -93,8 +103,8 @@ and conservative winning speedups. An ancestor-baseline candidate must strictly 
 product of winning edges from its measured ancestor to the current tip. With `A -> B -> C`,
 a candidate D measured on A must beat `(B/A) * (C/B)`. Equality does not pass. If D wins,
 the active lineage becomes `A -> D`, with crown reason `qualified_ancestor_win`; the old
-branch remains auditable history. Qualification keeps the operator's commissioned
-baseline until an explicit recommission.
+branch remains auditable history. Qualification keeps its commissioned baseline
+until the queue reaches another accepted baseline and recommissioning completes.
 
 A candidate at/below the composed performance threshold receives `lost_potential`.
 The dashboard also uses `lost_potential` when a finalized queue comparison does not
@@ -167,7 +177,58 @@ remote product that differs from the baseline assigned to its own lease is still
 released through a digest-bound stale-incumbent recovery event because that is an
 execution-authority mismatch, not a normal queue transition. The projector derives
 crown history from retained settlement candidates and qualification evidence rather
-than a second reward table.
+than a second reward table. In automatic mode, accepted disclosed-baseline bindings
+survive a commission change; only bindings matching the loaded contribution content
+are rebound to its new service identity.
+
+### Automatic baseline loading
+
+The standing CPU supervisor accepts this optional field in its sealed configuration:
+
+```json
+"baseline_loading": {
+  "command": ["/absolute/path/to/deployment-commissioner"],
+  "timeout_seconds": 1800,
+  "activation_block": 123456
+}
+```
+
+Commitments at or before `activation_block` retain the previous workflow; later
+commitments require `competition.baseline`. Qualification and settlement must both
+be enabled. Omitting the field preserves manual commissioning. The executable and
+arguments are operator-owned argv, executed without a shell. The timeout must be
+between 1 and 3600 seconds.
+
+The deployment supplies the commissioner, just as it supplies its production
+provider and transport. At the next accepted queue segment, the supervisor waits
+for earlier unresolved work, active leases, and pending settlement to drain. It
+invokes the command with one JSON object on stdin: `standing_config` (active config
+path), `incumbent_stack` (winning manifest), `incumbent_tree_digest`, and
+`transition_event_id`, all read from retained authority. The winning candidate's
+qualification is not repeated to establish the baseline.
+
+The command stages and loads those exact contributions through the deployment's
+existing commissioning path, completes READY/registration and transport setup, and
+writes a separate sealed standing config. It leaves the input config untouched and
+returns only `{"standing_config":"/absolute/path/to/prepared.json"}` on stdout;
+diagnostics go to stderr. It must stop child work on failure or timeout. Preserve
+the database, chain scope, runtime, workload, qualification and intake policies,
+closed targets, loading settings, and weight authority. Rotate service and worker
+identities as required by the commission. This evaluation baseline load does not
+authorize serving or change reward evidence.
+
+The supervisor reopens the returned config, checks its incumbent and unchanged
+context, atomically replaces its original config, and re-executes itself. The next
+queue segment then uses the loaded baseline. No load occurs without queued work
+requesting that baseline.
+
+An interrupted or failed command retains `<standing-config>.baseline-loading.json`
+and raises a stage error. Restart after a completed config switch clears the marker;
+otherwise the operator must inspect the partial commission, finish the exact
+prepared cutover or restore the prior commissioned worker, and resolve the marker
+before resuming. The failure cannot produce a miner FAIL. Keep one supervisor per
+competition. Before live activation, validate the deployment's commissioner on the
+exact GPU topology and production entrypoint, including failure recovery.
 
 Credit uses the logarithm of the candidate speedup divided by the best earlier
 rewarded PASS speedup on the same arena and baseline, a submission-time stall multiplier,

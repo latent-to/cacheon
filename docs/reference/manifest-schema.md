@@ -83,12 +83,20 @@ and qualification use digest-bound content.
 | `target` | A validator-registered target ID |
 | `mode` | `slot`; `atomic` and `system` parse only so retained legacy bundles stay readable, and do not resolve |
 | `arena` | Exact logical arena ID; omitted or empty selects the existing default competition |
+| `baseline` | Latest disclosed winner's full lowercase reservation ID, or `stock` before the first disclosed crown; required for new commitments when automatic baseline loading is enabled |
 
 The table is a request, not policy. Intake resolves it against the frozen
 [target catalog](target-catalog.md) and complete observed feature set. The
 current resolver infers the target whose node roots hold every declared
 address. New competitive bundles should declare `[competition]` explicitly. Additional arenas
 require an explicit `arena`, for example `arena = "qwen36-35b-h100-bf16-tp1"`.
+
+Read `/api/baseline?arena=<dashboard-arena-key>` on the validator dashboard for the
+current `baseline`, `competition_arena`, and public `bundle_url`. Put those selectors in the manifest
+before hashing and submitting. A newer disclosed crown closes the old baseline
+for new finalized commitments, even while the evaluator finishes its old queue.
+Previously accepted work keeps its baseline. Historical manifests may omit the
+field; an opted-in validator rejects missing or stale declarations before evaluation.
 It participates in the bundle hash and selects one evaluation; submissions are
 not broadcast to every model.
 An unknown selector stays unclaimed and is subject to the ordinary intake SLA.

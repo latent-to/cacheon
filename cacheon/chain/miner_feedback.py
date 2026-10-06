@@ -116,6 +116,10 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "A FAIL verdict replays onto identical bytes. Change the kernel, not the "
         "packaging.",
     ),
+    "baseline_not_latest_revealed": (
+        "Your submission does not name the latest publicly revealed baseline.",
+        "Set competition.baseline to the newest disclosed winning reservation ID and submit the updated bundle.",
+    ),
     "baseline_closed_at_submission": (
         "This baseline closed before your submission.",
         "Your submission credit has been preserved. Resubmit against the current "

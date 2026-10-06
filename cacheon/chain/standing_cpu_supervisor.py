@@ -497,6 +497,8 @@ def run_forever(
             raise
         if on_status is not None:
             on_status(status)
+        if status.last_disposition == "baseline_loaded":
+            return
         if stop.is_set():
             if status.last_disposition != "waiting":
                 break
@@ -578,6 +580,7 @@ class StandingSupervisorConfig:
     idle_poll_s: float
     restart_initial_backoff_s: float
     restart_max_backoff_s: float
+    source_path: Path | None = None
 
     @property
     def digest(self) -> str:
@@ -600,7 +603,8 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         raise StandingCpuSupervisorError(
             f"standing config cannot reopen: {exc}"
         ) from None
-    row = _closed_config(raw, _STANDING_CONFIG_FIELDS, "standing supervisor config")
+    fields = _STANDING_CONFIG_FIELDS | ({"baseline_loading"} if "baseline_loading" in raw else set())
+    row = _closed_config(raw, fields, "standing supervisor config")
     if row["schema"] != CONFIG_SCHEMA:
         raise StandingCpuSupervisorError("standing supervisor config schema is unsupported")
 
@@ -633,6 +637,14 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
     enable_qualification = _exact_bool(
         row["enable_qualification"], "enable_qualification"
     )
+    if "baseline_loading" in row:
+        from cacheon.chain.baseline_loading import loading_config
+        try:
+            loading_config(row["baseline_loading"])
+        except ValueError as exc:
+            raise StandingCpuSupervisorError(str(exc)) from exc
+        if not enable_qualification or not enable_settlement:
+            raise StandingCpuSupervisorError("baseline_loading requires qualification and settlement")
     # Settlement is chain-independent arithmetic over already-durable PASS
     # pairs, but it is *clocked* by the finalized head: ``_settle_pending``
     # refuses a regressed clock and stamps the cohort lease with it. That read
@@ -704,6 +716,7 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         idle_poll_s=idle_poll_ms / 1000.0,
         restart_initial_backoff_s=restart_initial_backoff_ms / 1000.0,
         restart_max_backoff_s=restart_max_backoff_ms / 1000.0,
+        source_path=config_path,
     )
 
 
@@ -731,6 +744,10 @@ def build_standing_supervisor(
         dispatcher_config,
         store_factory=RecoverableFinalizedIntakeStore,
     )
+    subtensor = None
+    if config.enable_settlement:
+        from cacheon import chain
+        subtensor = chain.connect(config.settlement_network, retry_forever=True)
     qualification_once = None
     if config.enable_qualification:
         try:
@@ -751,17 +768,22 @@ def build_standing_supervisor(
             ),
         )
         qualification_once = qualification_dispatcher.dispatch_once
+        if "baseline_loading" in config.raw:
+            from cacheon.chain.baseline_admission import admit_revealed_baselines
+            from cacheon.chain.baseline_loading import BaselineLoader, exact_block_clock
+            qualification_dispatcher.baseline_admission = partial(
+                admit_revealed_baselines, incumbent=incumbent,
+                tree_digest=config.qualification_incumbent_tree_digest,
+                block_time=exact_block_clock(subtensor),
+                activation_block=config.raw["baseline_loading"]["activation_block"],
+            )
+            qualification_once = BaselineLoader(config, qualification_dispatcher)
 
     settle_once = None
     if config.enable_settlement:
         from cacheon import chain
 
-        # One long-lived read-only connection for the whole process, the same
-        # shape the intake loop uses. ``retry_forever`` keeps an endpoint blip
-        # from tearing down a supervisor that is mid-qualification; the stage
-        # itself is skipped whenever nothing is pending, so a slow head read
-        # never sits in the qualification path.
-        subtensor = chain.connect(config.settlement_network, retry_forever=True)
+        # Settlement reads the head only when candidates are pending.
         settle_once = settlement_stage(
             open_store=coordinator._open_at_durable_cursor,
             finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
@@ -841,6 +863,8 @@ def main(argv: list[str] | None = None) -> int:
         restart_max_backoff_s=config.restart_max_backoff_s,
         on_status=_emit_status,
     )
+    if supervisor.status().last_disposition == "baseline_loaded":
+        os.execv(sys.executable, [sys.executable, "-m", "cacheon.chain.standing_cpu_supervisor", "--config", args.config])
     return 0
 
 

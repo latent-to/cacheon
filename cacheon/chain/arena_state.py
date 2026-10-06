@@ -399,7 +399,8 @@ class ArenaStateMixin:
         return self.get(reservation_id)
 
     def prepare_qualification_queue(
-        self, *, service_digest: str, closed_targets: tuple[str, ...] = (), limit: int | None = None
+        self, *, service_digest: str, closed_targets: tuple[str, ...] = (), limit: int | None = None,
+        enforce_crown_cutoff: bool = True,
     ) -> tuple[tuple[str, str], ...]:
         """Admit routed submissions before their first claim and replay prior losers.
 
@@ -440,7 +441,7 @@ class ArenaStateMixin:
             before = len(retired)
             for row in self.claimable(limit=limit):
                 first_claim = row.status == "published" and not row.arena_service_digest
-                if first_claim and cutoff is not None and row.arrival.block > cutoff:
+                if enforce_crown_cutoff and first_claim and cutoff is not None and row.arrival.block > cutoff:
                     rejected = self._expire_before_claim(row.reservation_id, "baseline_closed_at_submission")
                     retired.append((row.reservation_id, rejected.reason))
                     continue

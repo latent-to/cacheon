@@ -274,8 +274,15 @@ Do not include wallet secrets, private URLs, or validator filesystem paths.
 
 ### Baseline admission closed
 
+`baseline_not_latest_revealed` means `competition.baseline` was missing or did not
+name the latest publicly downloadable crowned winner at the finalized commitment's
+timestamp. Read `/api/baseline?arena=<dashboard-arena-key>` on the dashboard, build
+against that winner, and set its `baseline` value before hashing and resubmitting.
+This return is `NO_DECISION` before evaluation; submission credit and a cited payment
+remain reusable. Accepted commitments keep their baseline when a new winner is disclosed.
+
 `baseline_closed_at_submission` means the finalized commitment was later than the
-first champion win on the commissioned baseline. It is rejected at admission,
+first champion win on a manually commissioned baseline. It is rejected at admission,
 before its first qualification claim, with `NO_DECISION`, not a failed evaluation.
 Your submission credit is preserved, and a cited evaluation payment remains reusable.
 The message says: “This baseline closed before your submission. Your submission

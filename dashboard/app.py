@@ -270,8 +270,8 @@ def submission_row(r: dict[str, Any], con: sqlite3.Connection) -> dict[str, Any]
         "status": r["status"],
         "decision": r.get("decision") or "",
         "reason": r.get("reason") or "",
-        "admission_notice": (_guidance(r["reason"]) if r.get("reason") ==
-                             "baseline_closed_at_submission" and r.get("decision") == "NO_DECISION" else None),
+        "admission_notice": (_guidance(r["reason"]) if r.get("reason") in (
+            "baseline_closed_at_submission", "baseline_not_latest_revealed") and r.get("decision") == "NO_DECISION" else None),
         "invalid_reason": r.get("invalid_reason") or "",
         "hotkey": r["hotkey"],
         "hotkey_links": links_for_address(r["hotkey"]),
@@ -559,8 +559,8 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
 
 
 install_disclosure_routes(app, intake_conn, lambda block: value("ENRICHER", ENRICHER).block_time(block),
-                          lambda: value("MISSION", MISSION) / "private", lambda: value("SPOOL", SPOOL))
-
+                          lambda: value("MISSION", MISSION) / "private", lambda: value("SPOOL", SPOOL),
+                          lambda: load_json(value("REGISTRATION_PATH", REGISTRATION_PATH)))
 
 @app.get("/api/queue")
 def queue() -> dict[str, Any]:

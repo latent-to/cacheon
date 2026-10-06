@@ -228,6 +228,7 @@ class RecoverableQualificationDispatcher:
         qualification_evidence_root: str | Path,
         qualification_incumbent_stack: EvaluationStackManifest,
         qualification_incumbent_tree_digest: str,
+        baseline_admission=None,
     ) -> None:
         if (
             type(coordinator) is not EvaluationCoordinator
@@ -288,6 +289,7 @@ class RecoverableQualificationDispatcher:
         self.qualification_evidence_root = root
         self.qualification_incumbent_stack = qualification_incumbent_stack
         self.qualification_incumbent_tree_digest = tree_digest
+        self.baseline_admission = baseline_admission
 
     def _validate_live_authority(self) -> None:
         self.coordinator.readiness.validate(self.coordinator.service)
@@ -323,18 +325,13 @@ class RecoverableQualificationDispatcher:
     def _bind_commissioned_incumbent(
         self, store: RecoverableFinalizedIntakeStore,
     ) -> QualificationCommissionRequired | None:
-        """Type the segment boundary from ``cacheon.chain.baseline_segments``.
-
-        Once FIFO reaches a segment with a different stack of the live arena,
-        the typed commission boundary halts the evaluator before a lease,
-        request, publication, or GPU action. No completed evidence is erased.
-        """
-
+        """Halt before claiming a different FIFO baseline; retain completed evidence."""
         try:
             boundary = commission_boundary(
                 store,
                 self.qualification_incumbent_stack,
                 tree_digest=self.qualification_incumbent_tree_digest,
+                preserve_revealed=self.baseline_admission is not None,
             )
         except IntakeError as exc:
             raise RecoverableQualificationDispatcherError(
@@ -347,12 +344,15 @@ class RecoverableQualificationDispatcher:
         try:
             recovery = store.pending_qualification_recovery(owner=self.coordinator.owner)
             if recovery is None:
+                if self.baseline_admission is not None:
+                    self.baseline_admission(store)
                 # Admission runs before the first claim: an exact copy of a
                 # loser inherits its FAIL, and closed targets or post-crown
                 # arrivals are released (duplicate_replay, arena_state).
                 store.prepare_qualification_queue(
                     service_digest=self.coordinator.service.identity,
                     closed_targets=self.coordinator.service.manifest.closed_targets,
+                    enforce_crown_cutoff=self.baseline_admission is None,
                 )
             if recovery is None or recovery.phase is RecoveryPhase.CLAIMED:
                 boundary = self._bind_commissioned_incumbent(store)

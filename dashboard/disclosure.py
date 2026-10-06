@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import tempfile
 from contextlib import closing
@@ -13,39 +14,18 @@ from fastapi.responses import Response
 from dashboard.forensics import (
     DashboardForensicsError, ForensicsNotFound, ForensicsUnavailable, forensics_log,
 )
-
-DISCLOSURE_DELAY_SECONDS = 8 * 60 * 60
+from cacheon.chain.source_disclosure import (
+    DISCLOSURE_DELAY_SECONDS as DISCLOSURE_DELAY_SECONDS,
+    bundle_visibility as source_visibility,
+)
 
 
 def bundle_visibility(connection, reservation_id, block_time):
     """Use retained result blocks, never submission time or an estimated timestamp."""
-    row = connection.execute(
-        "SELECT status FROM reservations WHERE reservation_id=?", (reservation_id,),
-    ).fetchone()
-    if row is None:
-        raise HTTPException(404, "reservation not found")
-    result_block = 0
-    active = connection.execute(
-        "SELECT 1 FROM evaluation_leases l JOIN evaluation_lease_members m "
-        "ON m.lease_id=l.lease_id WHERE m.reservation_id=? AND l.state='active'",
-        (reservation_id,),
-    ).fetchone()
-    if row[0] in ("qualified", "failed") and not active:
-        result_block = connection.execute(
-            "SELECT max(block) FROM ("
-            "SELECT max(l.completed_block) AS block FROM evaluation_leases l "
-            "JOIN evaluation_lease_members m ON m.lease_id=l.lease_id "
-            "WHERE m.reservation_id=? AND l.state='completed' "
-            "AND l.stage='qualification' UNION ALL "
-            "SELECT max(retained_block) FROM settlement_qualifications "
-            "WHERE reservation_id=?)", (reservation_id, reservation_id),
-        ).fetchone()[0] or 0
-    stamp = block_time(result_block) if result_block else {}
-    release_at = (stamp["unix"] + DISCLOSURE_DELAY_SECONDS
-                  if stamp.get("unix") is not None and stamp.get("estimated") is False
-                  else None)
-    return {"available": release_at is not None and time.time() >= release_at,
-            "release_at": release_at, "result_block": result_block or None}
+    try:
+        return source_visibility(connection, reservation_id, block_time, now=time.time())
+    except LookupError:
+        raise HTTPException(404, "reservation not found") from None
 
 
 def disclose_bundle(connection, detail, block_time):
@@ -84,8 +64,38 @@ def download_public_log(connection, spool, reservation_id, request_id, block_tim
     })
 
 
-def install_disclosure_routes(app, connection, block_time, private_root, spool):
+def install_disclosure_routes(app, connection, block_time, private_root, spool, registration=None):
     """Use the same result clock for logs and the validator's checked bundle bytes."""
+    @app.get("/api/baseline")
+    def baseline(arena: str = ""):
+        from cacheon.chain.baseline_admission import latest_revealed, revealed_baselines
+        from cacheon.chain.intake import IntakeError
+        from cacheon.stack_manifest import EvaluationStackManifest
+        from dashboard.sources import selected
+
+        registered = {} if registration is None else registration()
+        actual_arena = registered.get("worker_readiness", {}).get("arena_id")
+        if not actual_arena or not registered.get("service_identity"):
+            raise HTTPException(503, "Commissioned baseline registration unavailable")
+        if selected.get() is None and arena and arena != actual_arena:
+            raise HTTPException(404, "Unknown competition arena")
+        with closing(connection()) as con:
+            legacy = con.execute("SELECT value FROM metadata WHERE key='legacy_arena_id'").fetchone()
+            scope = "" if legacy is not None and actual_arena == legacy[0] else actual_arena
+            stack = con.execute("SELECT stack_json FROM evaluation_stacks WHERE arena_id=? "
+                                "AND competition_arena=?", (registered["service_identity"], scope)).fetchone()
+            if stack is None:
+                raise HTTPException(503, "Commissioned baseline state unavailable")
+            try:
+                incumbent = EvaluationStackManifest.from_dict(json.loads(stack[0]))
+                winner = latest_revealed(revealed_baselines(con, scope, block_time, incumbent), time.time())
+            except IntakeError as exc:
+                raise HTTPException(503, str(exc)) from exc
+        return {"competition_arena": actual_arena, "baseline": "stock" if winner is None else winner[1],
+                "release_at": None if winner is None else winner[0],
+                "bundle_url": None if winner is None else
+                    f"/api/submissions/{winner[1]}/bundle.tar.gz"}
+
     @app.get("/api/bundle-encryption-key")
     def encryption_key():
         from cacheon.chain.bundle_privacy import validator_key
