@@ -10,16 +10,25 @@ ordinary full-KV checker remains active in both serving roles.
 from __future__ import annotations
 
 import secrets
+import sys
 
 from cacheon import audit
 from cacheon.integrations.sglang_cache import _LAYERS, _MODULI, _STATE
 
+_COMPONENTS = "sglang.srt.mem_cache.unified_cache.components"
+
 
 def compressed_page_buffers(pool):
-    """Expose compressed KV and index pages using the runtime's physical page numbering."""
+    """Expose compressed KV and index pages using the runtime's physical page numbering.
+
+    An index page holds fewer slots than a full page; each index entry carries
+    its buffers with their rows per full page.
+    """
     kv, index = [], []
     unified = getattr(pool, "unified_kv_pool", None)
     for ratio, part in getattr(pool, "kv_pools", {}).items():
+        if part is None:
+            continue
         if unified is None:
             kv.append(part.kv_buffer)
         else:
@@ -34,8 +43,17 @@ def compressed_page_buffers(pool):
                 kv.append(views)
         indexer = pool.index_pools.get(ratio)
         if indexer is not None:
-            index.append(indexer.contiguous_page_row_buffers())
+            per_page = (int(pool.page_size) // ratio) // int(indexer.page_size)
+            index.append((indexer.contiguous_page_row_buffers(), per_page))
     return kv, index
+
+
+def _evicted(req) -> int:
+    """The window positions the runtime already let go of, by its own component name."""
+    components = sys.modules.get(_COMPONENTS)
+    if components is None:
+        raise RuntimeError("tree_cache: the runtime's cache components are not loaded")
+    return int(req.kv.get_evicted_seqlen(components.ComponentType.SWA))
 
 
 class PrefixStateAudit:
@@ -56,12 +74,16 @@ class PrefixStateAudit:
         if (self.swa is not None or self.ring is not None) and self.window <= 0:
             raise RuntimeError("tree_cache: sliding-window state has no positive window size")
         self.buffers = self._buffers()
+        # A window pool that stores whole pages has fewer rows than slots.
+        self.paged = {kind for kind, buffer in self.buffers.items()
+                      if kind[0] == "swa" and buffer.shape[0] < self.swa.size}
+        self.live = any(kind[0] in ("ring", "request") for kind in self.buffers)
         self.weights = {}
         self.pending = {}
         self.owned = {}
 
     def _buffers(self):
-        """Sample the engine's transferable sliding-window state."""
+        """Sample the engine's transferable sliding-window state and its request-held rings."""
         from cacheon.integrations.sglang_dsa_state import KV_BUFFERS
 
         groups = {}
@@ -72,10 +94,12 @@ class PrefixStateAudit:
             for name in ("kv_buffer", "kv_buffer_rope"):
                 groups["ring", name] = [b[:self.ring.num_slots * self.ring_size]
                                         for b in getattr(self.ring, name, ()) if b is not None]
-            for name in ("compress_state_pools", "indexer_compress_state_pools"):
-                groups["request", name] = [p.kv_score_buffer.kv_score.reshape(
-                    -1, self.pool.get_ring_size(p.ratio) * p.kv_score_buffer.kv_score.shape[-1],
-                ) for p in getattr(self.pool, name, ()) if p is not None]
+        for name in ("compress_state_pools", "indexer_compress_state_pools"):
+            groups["request", name] = [
+                p.kv_score_buffer.kv_score.reshape(-1, p.ring_size * p.kv_score_buffer.kv_score.shape[-1])
+                for p in getattr(self.pool, name, ())
+                if p is not None and (self.ring is not None or getattr(p, "request_scoped", False))
+            ]
         chosen = {}
         draw = secrets.SystemRandom()
         for kind, buffers in groups.items():
@@ -90,7 +114,7 @@ class PrefixStateAudit:
     def _state(self, kind, indices):
         """Read the rows a prefix names, in the engine's declared representation."""
         buffer = self.buffers[kind]
-        if kind[:2] == ("swa", "index_k_with_scale_buffer"):
+        if kind in self.paged:
             indices = indices[:, ::self.swa.page_size] // self.swa.page_size
         if bool(((indices < 0) | (indices >= buffer.shape[0])).any()):
             self.guard.refuse("a prefix names state slots outside the engine's pool")
@@ -134,8 +158,7 @@ class PrefixStateAudit:
         # Record every computed page still resident: a later branch can reuse an
         # earlier window. On reads, require the whole live window regardless of
         # eviction metadata supplied by the cache.
-        begin = (max(start, int(req.kv.swa_evicted_seqlen)) if record
-                 else max(0, len(row) - self.window))
+        begin = max(start, _evicted(req)) if record else max(0, len(row) - self.window)
         first, last = (begin + page - 1) // page, end // page
         if first >= last:
             return
@@ -152,7 +175,7 @@ class PrefixStateAudit:
         if req.rid in self.pending:
             self.guard.refuse("a host prefix was consumed before its state audit completed")
         self._swa(req, ids, row, record=True, start=max(held.own, held.recorded))
-        if self.ring is not None and not finished:
+        if self.live and not finished:
             self.owned[req.rid] = self._ring_snapshot(req, len(row))
 
     def _check(self, req, ids, row):
@@ -205,7 +228,7 @@ class PrefixStateAudit:
         after = self.requests.req_to_token[req.kv.req_pool_idx, :len(row)].long()
         self._swa(req, req.get_fill_ids(), after, record=False, computed=True)
         before = self.owned.pop(req.rid, {})
-        if self.ring is not None:
+        if self.live:
             after = self._ring_snapshot(req, len(row))
             for kind, value in before.items():
                 self.guard._flag(_STATE, after[kind] != value)
@@ -214,8 +237,10 @@ class PrefixStateAudit:
     def _ring_snapshot(self, req, length):
         """Preserve live ring rows and request-scoped compressor state across cache calls."""
         slot = self.torch.tensor([req.kv.req_pool_idx], device=self.guard.device)
-        positions = self.torch.arange(max(0, length - self.window), length, device=self.guard.device)
-        rows = (slot * self.ring_size + positions % self.ring_size)[None]
+        rows = slot
+        if self.ring is not None:
+            positions = self.torch.arange(max(0, length - self.window), length, device=self.guard.device)
+            rows = (slot * self.ring_size + positions % self.ring_size)[None]
         return {kind: self._signature(kind, rows if kind[0] == "ring" else slot)
                 for kind in self.buffers if kind[0] in ("ring", "request")}
 

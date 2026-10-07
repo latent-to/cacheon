@@ -13,7 +13,6 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 selected = ContextVar("dashboard_source", default=None)
-_ARENA_SLUGS = {"qwen": "qwen3.6", "glm": "glm-5.3"}
 _PATHS = {"db": "DB_PATH", "mission": "MISSION", "audit": "AUDIT_PATH",
           "spool": "SPOOL", "heartbeat": "HEARTBEAT_PATH", "registration": "REGISTRATION_PATH",
           "logs": "LOG_ROOT", "evidence_state": "QUAL_EVIDENCE_STATE", "stage": "STAGE_ROOT"}
@@ -30,10 +29,11 @@ class DashboardSource:
     processes: dict
     weights_included: bool
     checkpoint: dict | None
+    slug: str = ""
 
     def public(self):
         """Expose labels and reward status, never operator filesystem coordinates."""
-        return {"key": self.key, "slug": _ARENA_SLUGS.get(self.key, self.key),
+        return {"key": self.key, "slug": self.slug or self.key,
                 "label": self.label, "model": self.model,
                 "weights_status": "included in global offer" if self.weights_included
                 else "weights off / not yet in served vector"}
@@ -94,12 +94,15 @@ def load_sources(path, network, netuid, enrich):
         raise ValueError("enrichment cache cannot be an intake database")
     result, databases, caches, private_roots = {}, set(), set(), []
     for row in raw["sources"]:
-        if set(row) != {"key", "label", "model", "paths", "cache", "evidence_roots",
+        if set(row) != {"key", "slug", "label", "model", "paths", "cache", "evidence_roots",
                         "cutoff_reservation", "processes", "weights_included", "checkpoint"}:
             raise ValueError("dashboard source fields do not match")
-        key = row["key"]
+        key, slug = row["key"], row["slug"]
         if not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key) or key in result:
             raise ValueError("dashboard source keys must be unique")
+        if not isinstance(slug, str) or not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", slug) or any(
+                source.slug == slug for source in result.values()):
+            raise ValueError("dashboard source slugs must be unique path names")
         if set(row["paths"]) != set(_PATHS) or type(row["weights_included"]) is not bool:
             raise ValueError("source paths and weight status must be explicit")
         paths = {name: Path(path) for name, path in row["paths"].items()}
@@ -118,7 +121,7 @@ def load_sources(path, network, netuid, enrich):
         values.update(QUAL_EVIDENCE_EXTRA=extras, CUTOFF_RESERVATION=row["cutoff_reservation"],
                       ENRICHER=Enrichment(cache, network, netuid))
         result[key] = DashboardSource(key, row["label"], row["model"], values,
-                                      row["processes"], row["weights_included"], row["checkpoint"])
+                                      row["processes"], row["weights_included"], row["checkpoint"], slug)
         databases.add(db)
         caches.add(cache.resolve())
         private_roots.append(private)

@@ -119,7 +119,8 @@ def planes(tmp_path, monkeypatch):
         registration = tmp_path / f"{key}-registration.json"
         registration.write_text(json.dumps({"worker_readiness": {"arena_id": f"{key}-arena"}}))
         sources[key] = DashboardSource(key, key, key,
-                                      {"DB_PATH": path, "REGISTRATION_PATH": registration}, {}, False, None)
+                                      {"DB_PATH": path, "REGISTRATION_PATH": registration}, {}, False, None,
+                                      {"qwen": "qwen3.6", "glm": "glm-5.3"}[key])
     for source in sources.values():
         source.values["PEER_DB_PATHS"] = tuple(
             peer.values["DB_PATH"] for peer in sources.values() if peer is not source)

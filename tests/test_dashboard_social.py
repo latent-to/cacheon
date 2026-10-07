@@ -221,7 +221,7 @@ def test_html_and_png_work_without_javascript_for_paths_and_query_aliases(cards,
 
     social.install_social(app, api)
     install_sources(app, {**api, "index": index})
-    app.state.dashboard_sources = {key: DashboardSource(key, key, model, {}, {}, False, None)}
+    app.state.dashboard_sources = {key: DashboardSource(key, key, model, {}, {}, False, None, slug)}
     app.state.dashboard_default = key
     client = TestClient(app)
     for url in (f"/{slug}?submission=submission&arena=wrong", f"/?arena={key}&submission=submission",

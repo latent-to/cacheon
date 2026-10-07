@@ -3,8 +3,11 @@
 Cacheon competes against and integrates with an exact SGLang runtime. The pin is
 part of evaluation identity, not a loose minimum version. The
 default compatibility pin is `0.5.20` in
-[`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py). Different arenas may commission different exact runtimes.
-Run `python -m cacheon.cli compat --sglang-version 0.5.20` inside a Qwen or GLM image
+[`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py). Different arenas may commission different exact runtimes:
+the GLM arena runs `0.5.20` and the DeepSeek-V4.1-Flash arena `0.5.21`, whose
+prefix cache hands a finished request through `insert_req` and `on_release`
+instead of `cache_finished_req`; the cache seam guards both shapes.
+Run `python -m cacheon.cli compat --sglang-version <pin>` inside the image
 commissioned for that version. The runtime preflight independently compares the
 installed version with its sealed `expected_sglang_version`. This does not
 change an existing arena's authority or permit mixing measurements across versions.

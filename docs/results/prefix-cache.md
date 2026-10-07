@@ -67,8 +67,9 @@ violation rather than passing with incorrect output or failing at admission.
 The GLM checks cover full-attention KV, draft and index state. Paged
 sliding-window validation is implemented and tested against native SGLang cache
 classes on CPU; no sliding-window model GPU result is claimed here. Validation of
-per-request sliding-window rings, paged sliding-window index state and compressed
-KV pages is implemented and tested on CPU only; no GPU result is claimed for them.
+per-request sliding-window rings, window pools that store whole pages, compressed
+KV and index pages, and the pending-pair rings a DeepSeek-V4 kv-source layer holds
+per request is implemented and tested on CPU only; no GPU result is claimed for them.
 Recurrent checkpoints are refused rather than validated.
 
 Target-level preservation through successive cache replacements is separately

@@ -55,6 +55,7 @@ from cacheon.integrations.sglang_cache import ADDRESS as _CACHE
 from cacheon.integrations.sglang_dsa_state import (
     KV_BUFFERS as _KV_BUFFERS, StateFormat, dsa_state_rows, state_values,
 )
+from cacheon.integrations.sglang_dsv4_state import dsv4_state_rows
 from cacheon.registry import REGISTRY, KernelRegistry
 
 _RUNNER = "sglang.srt.model_executor.model_runner"
@@ -146,27 +147,7 @@ def _state_rows(
         return []
     rows: list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]] = []
     if batch.out_cache_loc is not None:
-        pool = getattr(runner.token_to_kv_pool, "full_kv_pool", runner.token_to_kv_pool)
-        buffers = [
-            buffer
-            for name in _KV_BUFFERS
-            for buffer in (getattr(pool, name, None) or ())
-            if torch.is_tensor(buffer)
-        ]
-        if not buffers:
-            raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
-        held = getattr(pool, "dtype", None)
-        fp8 = held is not None and held.is_floating_point and held.itemsize == 1
-        dsa = dsa_state_rows(pool, batch.out_cache_loc, layer)
-        rows.extend(dsa if dsa is not None else [
-            (
-                buffer,
-                0,
-                batch.out_cache_loc.long(),
-                held if fp8 and buffer.dtype == torch.uint8 else buffer.dtype,
-            )
-            for buffer in buffers
-        ])
+        rows.extend(_cache_rows(runner.token_to_kv_pool, batch, layer))
     requests = runner.req_to_token_pool
     recurrent = getattr(requests, "mamba_pool", None)
     if recurrent is not None:
@@ -178,6 +159,37 @@ def _state_rows(
         if cache.replayssm_g is not None:
             rows.extend(_replay_rows(runner, recurrent, batch))
     return rows
+
+
+def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
+    """The cache rows this batch writes, in the pool's own addressing: by page or by slot."""
+
+    paged = dsv4_state_rows(pool, batch, layer)
+    if paged is not None:
+        return paged
+    pool = getattr(pool, "full_kv_pool", pool)
+    buffers = [
+        buffer
+        for name in _KV_BUFFERS
+        for buffer in (getattr(pool, name, None) or ())
+        if torch.is_tensor(buffer)
+    ]
+    if not buffers:
+        raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
+    dsa = dsa_state_rows(pool, batch.out_cache_loc, layer)
+    if dsa is not None:
+        return dsa
+    held = getattr(pool, "dtype", None)
+    fp8 = held is not None and held.is_floating_point and held.itemsize == 1
+    return [
+        (
+            buffer,
+            0,
+            batch.out_cache_loc.long(),
+            held if fp8 and buffer.dtype == torch.uint8 else buffer.dtype,
+        )
+        for buffer in buffers
+    ]
 
 
 class _Low(NamedTuple):

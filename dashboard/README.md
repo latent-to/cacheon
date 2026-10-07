@@ -301,6 +301,7 @@ Set `CACHEON_DASH_SOURCES` to an absolute JSON config path. It has `default`
 ```json
 {
   "key": "secondary",
+  "slug": "secondary-1.0",
   "label": "Secondary arena",
   "model": "Commissioned model name",
   "paths": {
@@ -334,11 +335,11 @@ The dashboard reads current WAL contents and reports an unreadable DB; it does
 not substitute an immutable snapshot. Config changes take effect after restart.
 
 The page's arena selector scopes every data tab, detail link, and delayed
-bundle/log download. Share a competition at `/<key>#<tab>`, for example
-`/qwen3.6#winners` or `/glm-5.3#winners`. Submission links use
-`/qwen3.6?submission=<id>#winners`. Only the versioned paths are accepted;
-`/qwen` and `/glm` return 404. Query parameters accept both the versioned
-names and the existing `?arena=qwen` / `?arena=glm` keys.
+bundle/log download. Share a competition at `/<slug>#<tab>`, where `slug` is
+the versioned path name each source declares, for example `/qwen3.6#winners`
+or `/glm-5.3#winners`. Submission links use `/qwen3.6?submission=<id>#winners`.
+Only the declared slugs are accepted as paths; a bare key such as `/glm`
+returns 404. Query parameters accept both the slug and the `?arena=<key>` key.
 The root page selects the configured default; `?arena=<key>` page
 links also work and become path links in the address bar without losing the
 tab or submission. A path takes precedence over an `arena` query parameter.

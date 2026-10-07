@@ -112,8 +112,8 @@ Truth is the stock node in the running engine, on the same call:
 
 1. on an audited eager call the stock node runs first;
 2. its result tensors are kept, together with the engine-state rows the batch may
-   write: the cache rows at `out_cache_loc` and, on hybrid models, the recurrent
-   state rows of the batch's requests;
+   write: the cache rows at `out_cache_loc` (whole pages where the pool stores
+   pages) and, on hybrid models, the recurrent state rows of the batch's requests;
 3. the arguments stock changed and the state rows are put back;
 4. the honest twin answers the same call and is put back the same way: the stock
    node with supported fused ops on SGLang's native reference paths, giving the
@@ -128,8 +128,13 @@ Truth is the stock node in the running engine, on the same call:
 
 Packed DSA MLA records are decoded as FP8 latent values with FP32 scales and BF16
 rotary values. The separate index cache is decoded as FP8 keys with FP32 scales;
-its touched pages are preserved and restored as raw bytes. An unrecognized
-packed layout raises instead of being interpreted as homogeneous FP8. The first
+its touched pages are preserved and restored as raw bytes. DeepSeek-V4 pages are
+decoded by the layout the pool declares: E4M3 values with one UE8M0 exponent per
+tile and a BF16 rotary tail, or packed E2M1 values with E4M3 scales; its FP4
+index pages are decoded the same way, and a kv-source layer's compressed pages,
+index pages and per-request pending-pair ring are graded with its window pages.
+An unrecognized packed layout raises instead of being interpreted as homogeneous
+FP8. The first
 failed window of each bound node is logged with its concrete name and tensor
 position, including when the contribution claims a wildcard address.
 
@@ -243,8 +248,10 @@ dtypes, architectures or eligibility never matches, and the run fails as `candid
 The same content checks run for stock and candidate. Stock checking failures are
 infrastructure failures; they are not attributed to a miner's cache. Storage
 validation is adapter work under this common contract. It recognizes full-attention
-KV, paged sliding-window KV and its index state, compressed KV and index pages, and
-per-request sliding-window rings. A request-local ring is never stored in the tree,
+KV, sliding-window KV and its index state (by slot, or by page where the window pool
+stores whole pages), compressed KV and index pages, per-request sliding-window rings,
+and the pending-pair ring a DeepSeek-V4 kv-source layer holds per request, which a
+cache handoff must leave unchanged. A request-local ring is never stored in the tree,
 so a prefix hit that skips its trailing window is refused. Recurrent checkpoints are
 refused: no commissioned arena caches them. A new model does not require a new
 miner contract; an unfamiliar storage layout requires validator support before a
@@ -274,7 +281,8 @@ page: the request's `extra_key` and `cache_salt`, its tokens, and under EAGLE th
 token after the page, which the draft KV reads. At the same handoff it hashes up
 to 64 randomly chosen pages the request read from the cache and requires each
 pair to be on record. Hashes cover four layers, drawn at engine start, of each KV
-buffer kind in the target and draft pools, the DSA indexer's included. The pairs
+buffer kind in the target and draft pools, the DSA indexer's pages and the shorter
+DeepSeek-V4 index pages of each full page included. The pairs
 live in a 16 MB table on the device, and a flush forgets them. After the cache
 handles an unfinished request, the request's own slots beyond what the cache now
 protects must be unmoved, and the row the next forward pass reads must agree with
