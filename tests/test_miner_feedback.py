@@ -23,6 +23,7 @@ from cacheon.eval.resident_execution_evidence import (
     RankExecution,
     SlotExecution,
 )
+from tests.test_dashboard_metrics import _witness
 
 # Every reason mainnet has actually written to a miner-visible row, read from
 # the live intake database on 2026-08-23. This is the ground-truth floor: these
@@ -310,11 +311,7 @@ def test_a_kernel_that_never_ran_is_said_so_before_any_speed_number() -> None:
 
     import base64
 
-    rates = [
-        {"role": role, "timed_seconds": seconds, "timed_tokens": 131072, "windows": []}
-        for role, seconds in (("B", 86.6), ("C", 63.0), ("B_prime", 62.7))
-    ]
-    stage = {"speed_witness": {"rates": rates}}
+    stage = {"speed_witness": _witness().to_dict()}
     product = {
         "authority_manifest": {"reservations": [{"target_id": "a.slot"}]},
         "evidence": [
@@ -338,45 +335,37 @@ def test_the_report_names_what_the_bundle_was_timed_against(entries) -> None:
 
     import base64
 
-    rates = [
-        {"role": role, "timed_seconds": seconds, "timed_tokens": 131072, "windows": []}
-        for role, seconds in (("B", 100.0), ("C", 100.3), ("B_prime", 100.0))
-    ]
-    stage = base64.b64encode(json.dumps({"speed_witness": {"rates": rates}}).encode()).decode()
+    witness = _witness(gains=(1., .95)).to_dict()
+    stage = base64.b64encode(json.dumps({"speed_witness": witness}).encode()).decode()
     text = "\n".join(explain({
         "incumbent_stack": {"entries": entries},
         "evidence": [{"reference": {"domain": "qualification.stage-exit"}, "payload_base64": stage}],
     }))
+    assert "tokens/sec per user" in text and "FAIL:" in text
     if entries:
         assert "SGLang with the crowned kernels for forward_pass" in text
-        assert "current baseline (before)" in text and "SLOWER than the current baseline" in text
-        assert "the current baseline measured 0.0% apart" in text and "SGLang alone" not in text
+        assert "current baseline  " in text and "SLOWER than the current baseline" in text
+        assert "SGLang alone" not in text
     else:
-        assert "SGLang alone (before)" in text and "SLOWER than SGLang (" in text
+        assert "SGLang alone  " in text and "SLOWER than SGLang (" in text
         assert "current baseline" not in text and "crowned" not in text
-
-
-def test_a_run_noisier_than_its_own_effect_is_called_out_as_no_evidence() -> None:
-    rates = [
-        {"role": role, "timed_seconds": seconds, "timed_tokens": 131072, "windows": []}
-        for role, seconds in (("B", 86.6), ("C", 63.0), ("B_prime", 62.7))
-    ]
-    text = "\n".join(_speed_lines({"speed_witness": {"rates": rates}}))
-    assert "NOT A REAL RESULT" in text
-    assert "machine noise" in text
 
 
 def test_a_clean_win_carries_no_disqualifying_headline() -> None:
     """The headline must stay silent when nothing is wrong, or it means nothing."""
 
-    rates = [
-        {"role": role, "timed_seconds": seconds, "timed_tokens": 131072, "windows": []}
-        for role, seconds in (("B", 100.0), ("C", 80.0), ("B_prime", 100.4))
-    ]
-    speed = _speed_lines({"speed_witness": {"rates": rates}})
+    speed = "\n".join(_speed_lines({"speed_witness": _witness().to_dict()}))
     ran = _summary(completed=[{"slot": "a.slot", "calls": 9, "captured": True}])
-    assert "NOT A REAL RESULT" not in "\n".join(speed)
-    assert _headline(execution_lines(ranks_from_log(ran)), speed) == ""
+    assert "1.04x FASTER than SGLang (1.0400x on the same work;" in speed
+    assert "PASS:" in speed and "passes at 2 sessions per lane" in speed
+    assert _headline(execution_lines(ranks_from_log(ran))) == ""
+
+
+def test_a_retired_batch_cell_witness_renders_no_rates() -> None:
+    (line,) = _speed_lines({"speed_witness": {"rates": [{"role": "B", "timed_seconds": 86.6}]}})
+    assert "retired batch-cell policy" in line and "86.6" not in line
+    (line,) = _speed_lines({})
+    assert "not measured" in line
 
 
 def test_a_raised_kernel_is_named_as_the_bundles_fault_before_the_numbers() -> None:

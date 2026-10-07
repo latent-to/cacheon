@@ -24,7 +24,6 @@ from __future__ import annotations
 import base64
 import json
 import re
-import statistics
 from collections.abc import Iterable
 from typing import Any
 
@@ -51,22 +50,6 @@ _TRACE_ERROR = re.compile(
     r"^(?P<kind>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s+(?P<message>[^\n]+)$",
     re.MULTILINE,
 )
-
-#: Internally the timed runs are named B, C, B'. A miner has no reason to know
-#: that vocabulary, and using it in their report makes the one number they care
-#: about — did my kernel help — harder to read, not more precise. Unknown roles
-#: print their raw name rather than being dropped.
-_ARM_LABEL = {
-    "B": "{baseline} (before)",
-    "C": "with your kernel",
-    "B_prime": "{baseline} (after)",
-    "B_prefill": "{baseline}, prompt pass (before)",
-    "C_prefill": "with your kernel, prompt pass",
-    "B_prime_prefill": "{baseline}, prompt pass (after)",
-}
-
-_ARM_LABEL.update({role + "_repeat": label + " (repeat)"
-                   for role, label in tuple(_ARM_LABEL.items())})
 
 #: What a baseline run is called unless the product's incumbent carries crowned kernels.
 _STOCK = "SGLang alone"
@@ -277,95 +260,61 @@ def _audit_lines(stage_exit: dict) -> list[str]:
 
 
 def _speed_lines(stage_exit: dict, *, baseline: str = _STOCK) -> list[str]:
-    rates = _get(stage_exit, "speed_witness", "rates", default=[])
-    rates = [r for r in rates if isinstance(r, dict)] if isinstance(rates, list) else []
-    if not rates:
+    """The paired replay as a miner reads it: each arm's per-user decode rate, then the verdict.
+
+    The numbers come from the same reader the dashboard uses, so the two can
+    never disagree. A witness timed under a retired batch-cell policy renders
+    no rates: its lane ratio was never the credited gain.
+    """
+
+    witness = _get(stage_exit, "speed_witness")
+    if not isinstance(witness, dict) or witness.get("goodput") is None:
+        if isinstance(witness, dict) and witness.get("rates"):
+            return [f"  {'speed':<26s} timed under a retired batch-cell policy; "
+                    "its lane rates are no longer rendered and the verdict is the record"]
         return [f"  {'speed':<26s} not measured — the run stopped before timing"]
+    from cacheon.chain.baseline_band import replay_measurements
 
-    named = baseline if baseline == _STOCK else "the " + baseline
-    versus, slower = ("SGLang", "SGLang-only") if baseline == _STOCK else (named, "baseline")
-    lines: list[str] = []
-    measured: dict[str, float] = {}
-    for row in rates:
-        role = str(row.get("role") or "?")
-        label = _ARM_LABEL.get(role, role).replace("{baseline}", baseline)
-        seconds = _number(row.get("timed_seconds"))
-        tokens = _number(row.get("timed_tokens"))
-        if not seconds or not tokens:
-            lines.append(f"  {label:<26s} recorded, but its timing is unusable")
-            continue
-        rate = tokens / seconds
-        measured[role] = rate
-        windows = row.get("windows")
-        windows = [w for w in windows if isinstance(w, dict)] if isinstance(windows, list) else []
-        spread = _window_spread(windows)
-        spread_text = f", varying by {spread * 100:.2f}%" if spread is not None else ""
-        detail = f"  ({len(windows)} runs{spread_text})" if windows else ""
-        lines.append(f"  {label:<26s} {rate:10.2f} tokens/sec{detail}")
-
-    # Compared against the SLOWEST baseline run, which is the reading most
-    # generous to the miner. Saying which rule was used matters more than the
-    # number, because a miner who disagrees can then recompute it themselves.
-    sglang = [rate for role, rate in measured.items() if role.startswith("B")]
-    with_kernel = measured.get("C")
-    if sglang and with_kernel:
-        ratio = with_kernel / min(sglang)
+    speed = replay_measurements(witness)
+    if "speedup" not in speed:
+        return [f"  {'speed':<26s} retained replay evidence could not be read: "
+                f"{speed.get('grading_error')}"]
+    grade = speed["grading"]
+    versus = "SGLang" if baseline == _STOCK else "the " + baseline
+    lines = [f"  {'speed':<26s} paired agent replay, {speed['windows']} of "
+             f"{speed['window_limit']} passes at {speed['load']} sessions per lane"]
+    for role, label in (("B", baseline), ("C", "with your kernel")):
+        lanes = [lane for lane in speed["lanes"] if lane["role"] == role]
+        decode = _mean([lane["decode_tps"] for lane in lanes])
+        first = _mean([lane["mean_ttft_s"] for lane in lanes])
         lines.append(
-            f"  {'result':<26s} your kernel is {max(ratio, 1 / ratio):.2f}x "
-            f"{'FASTER' if ratio > 1 else 'SLOWER'} than {versus} "
-            f"({ratio:.4f}x, measured against the slower {slower} run)"
+            f"  {label:<26s} "
+            + (f"{decode:8.1f} tokens/sec per user" if decode is not None else "decode rate unrecorded")
+            + (f", first token in {first:.2f} s" if first is not None else "")
         )
-        if len(sglang) > 1:
-            # The machine's own run-to-run variation. If it is bigger than the
-            # difference the kernel showed, the number measured the machine.
-            noise = (max(sglang) - min(sglang)) / min(sglang)
-            claim = abs(ratio - 1.0)
-            lines.append(
-                f"  {'machine noise':<26s} {named} measured {noise * 100:.1f}% "
-                f"apart on the same hardware"
-            )
-            if noise > claim:
-                lines.append(
-                    f"  {'NOT A REAL RESULT':<26s} that noise is larger than the "
-                    f"{claim * 100:.1f}% your kernel changed things by, so this "
-                    "comparison cannot tell them apart"
-                )
+    ratio = float(speed["speedup"])
+    lines.append(
+        f"  {'result':<26s} your kernel is {max(ratio, 1 / ratio):.2f}x "
+        f"{'FASTER' if ratio > 1 else 'SLOWER'} than {versus} "
+        f"({ratio:.4f}x on the same work; {float(grade['required_speedup']):.4f}x was needed)"
+    )
+    if grade.get("lower_speedup") is not None:
+        lines.append(f"  {'after noise':<26s} at least {float(grade['lower_speedup']):.4f}x "
+                     "once the configured noise allowance is taken off")
+    lines.append(f"  {'verdict':<26s} {grade['decision']}: {grade['detail']}")
     return lines
 
 
-def _window_spread(windows: list[dict]) -> float | None:
-    """How much the timed runs disagreed; ``None`` when it cannot be computed.
-
-    Deliberately the SAME statistic as the window-scatter gate of the batch-cell
-    speed policies (8-15), whose retained evidence this page still explains —
-    median absolute deviation about the median, relative to the median — and
-    not the max-minus-min it used to be. That difference is not cosmetic: on a
-    real crowned run the two read 0.57% and 8.22% on identical evidence, so a
-    miner reading this page would have concluded their run was twelve times
-    noisier than the gate that actually judged it. A report that disagrees with
-    the gate is worse than no report, because both look authoritative.
-    """
-
-    rates = []
-    for window in windows:
-        seconds = _number(window.get("seconds"))
-        tokens = _number(window.get("tokens"))
-        if seconds and tokens:
-            rates.append(tokens / seconds)
-    if len(rates) < 3:
-        return None
-    median = statistics.median(rates)
-    if median <= 0:
-        return None
-    return statistics.median([abs(rate - median) for rate in rates]) / median
+def _mean(values: list) -> float | None:
+    values = [float(value) for value in values if value is not None]
+    return sum(values) / len(values) if values else None
 
 
-def _headline(execution: list[str], speed: list[str]) -> str:
+def _headline(execution: list[str]) -> str:
     """The one sentence that must be read before any number below it.
 
     Ordered by what disqualifies what. A kernel that never ran makes the speed
-    numbers meaningless, and a machine noisier than the effect makes them
-    meaningless too — either way saying so afterwards is too late.
+    numbers meaningless, and saying so afterwards is too late.
 
     Matches on the labels this module itself emits rather than re-deriving the
     facts from the evidence, so there is exactly one place that decides whether
@@ -397,11 +346,6 @@ def _headline(execution: list[str], speed: list[str]) -> str:
         return (
             "VERDICT  your kernel raised an exception and the engine went down "
             "with it. This is attributed to the bundle, not to the validator."
-        )
-    if any("NOT A REAL RESULT" in line for line in speed):
-        return (
-            "VERDICT  this run cannot tell your kernel apart from normal "
-            "machine variation. The speedup below is not evidence."
         )
     return ""
 
@@ -452,7 +396,7 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
     crowned = sorted(entries) if isinstance(entries, dict) else []
     baseline = "current baseline" if crowned else _STOCK
     speed = _speed_lines(stage_exit, baseline=baseline)
-    headline = _headline(execution, speed)
+    headline = _headline(execution)
     if headline:
         lines.append("")
         lines.append(headline)

@@ -28,25 +28,22 @@ def test_runtime_argv_registers_only_ordinary_and_reference_sessions(
         )
 
 
+def _engine_kwargs(value):
+    from cacheon.eval.oci_session_protocol import _ENGINE_KWARG_KINDS, _validate_options
+
+    return _validate_options(value, _ENGINE_KWARG_KINDS, label="engine_config.engine_kwargs")
+
+
 class TestEngineKwargAdditions:
     def test_watchdog_timeout_accepted(self) -> None:
-        from cacheon.eval.oci_session_protocol import _validate_engine_kwargs
-
-        result = _validate_engine_kwargs({"watchdog_timeout": 1800})
-        assert result == {"watchdog_timeout": 1800}
+        assert _engine_kwargs({"watchdog_timeout": 1800}) == {"watchdog_timeout": 1800}
 
     def test_cuda_graph_bs_accepted_sorted(self) -> None:
-        from cacheon.eval.oci_session_protocol import _validate_engine_kwargs
-
-        result = _validate_engine_kwargs({"cuda_graph_bs": [1, 8, 256]})
-        assert result == {"cuda_graph_bs": [1, 8, 256]}
+        assert _engine_kwargs({"cuda_graph_bs": [1, 8, 256]}) == {"cuda_graph_bs": [1, 8, 256]}
 
     def test_cuda_graph_bs_rejects_unsorted_or_duplicates(self) -> None:
-        from cacheon.eval.oci_session_protocol import (
-            SessionProtocolError,
-            _validate_engine_kwargs,
-        )
+        from cacheon.eval.oci_session_protocol import SessionProtocolError
 
         for bad in ([256, 8], [8, 8], [0], [], "256"):
             with pytest.raises(SessionProtocolError):
-                _validate_engine_kwargs({"cuda_graph_bs": bad})
+                _engine_kwargs({"cuda_graph_bs": bad})

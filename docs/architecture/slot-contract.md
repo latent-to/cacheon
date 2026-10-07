@@ -98,8 +98,7 @@ layer, `model` the whole decoder stack. One adapter,
 [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
 serves every width, and a bundle that lists several addresses replaces several
 nodes at once. Granularity is the model's own module tree: a span that is not a
-module (on Qwen3.5 the attention block has no module of its own) is reached
-through the nearest enclosing node.
+module is reached through the nearest enclosing node.
 
 The candidate is a drop-in for the node's stock `forward`.
 `entry(prepared, *args, **kwargs)` receives the stock arguments and returns what
@@ -113,7 +112,8 @@ Truth is the stock node in the running engine, on the same call:
 1. on an audited eager call the stock node runs first;
 2. its result tensors are kept, together with the engine-state rows the batch may
    write: the cache rows at `out_cache_loc` (whole pages where the pool stores
-   pages) and, on hybrid models, the recurrent state rows of the batch's requests;
+   pages); a runtime that keeps per-request recurrent state outside those pools
+   is refused rather than audited unchecked;
 3. the arguments stock changed and the state rows are put back;
 4. the honest twin answers the same call and is put back the same way: the stock
    node with supported fused ops on SGLang's native reference paths, giving the
@@ -137,13 +137,6 @@ An unrecognized packed layout raises instead of being interpreted as homogeneous
 FP8. The first
 failed window of each bound node is logged with its concrete name and tensor
 position, including when the contribution claims a wildcard address.
-
-Under GDN ReplaySSM speculative verification, a target-verify call also writes
-replay rings, keyed by the batch's request slots, and per-draft conv windows,
-keyed by verify scratch row. Both are preserved, restored and graded; the conv
-windows through the pool's physical buffers. A BF16 ring's residual
-(`rawv`/`rawk`) is graded summed with its high part (`d`/`k`), the one number
-the pair holds. Any other ReplaySSM state layout raises.
 
 A row passes within the larger of 2% and three times the twin's
 90th-percentile row error on that node, taking the larger of the current call

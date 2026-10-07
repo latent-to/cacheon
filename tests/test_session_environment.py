@@ -76,6 +76,16 @@ def test_the_plugin_is_named_only_when_seams_install():
     assert _env(install_seams=False)["SGLANG_PLUGINS"] == ""
 
 
+def test_the_sealed_engine_environment_rides_with_the_fence_variables():
+    """The DeepSeek-V4.1 Engram host-table switches reach every rank the same way the fence's own do."""
+
+    env = _env(engine_env={"SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT": "per_rank"})
+
+    assert env["SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT"] == "per_rank"
+    assert env["CACHEON_ACTIVE"] == "1"
+    assert _env(engine_env={"CACHEON_ACTIVE": "9"})["CACHEON_ACTIVE"] == "1"
+
+
 def test_every_value_is_a_string_because_it_becomes_process_environment():
     env = _env(audit_policy=_AuditPolicy())
 

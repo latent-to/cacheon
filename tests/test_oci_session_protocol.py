@@ -135,18 +135,24 @@ def test_engine_config_is_exact_immutable_and_digest_stable(steps, tokens) -> No
         "speculative_num_steps": steps,
         "speculative_eagle_topk": 1,
         "speculative_num_draft_tokens": tokens,
-        "enable_linear_replayssm_spec": steps == 3,
+        "cuda_graph_max_bs_decode": 8 * steps,
     }
-    config = _config(engine_kwargs=source)
+    environment = {"SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE": "1",
+                   "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT": "per_rank"}
+    config = _config(engine_kwargs=source, engine_env=environment)
     source["page_size"] = 128
+    environment.clear()
 
     assert EngineSessionConfig.from_dict(config.to_dict()) == config
     assert config.engine_kwargs["page_size"] == 64
+    assert config.engine_env["SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT"] == "per_rank"
     with pytest.raises(TypeError):
         config.engine_kwargs["page_size"] = 128  # type: ignore[index]
     assert config.digest == EngineSessionConfig.from_dict(config.to_dict()).digest
     assert len(config.digest) == 64
     assert config.digest != _config().digest
+    # The engine environment is engine identity: the host tables change what the ranks hold.
+    assert config.digest != _config(engine_kwargs=source | {"page_size": 64}).digest
 
 
 @pytest.mark.parametrize(
@@ -168,7 +174,10 @@ def test_engine_config_is_exact_immutable_and_digest_stable(steps, tokens) -> No
         ({"engine_kwargs": {"speculative_eagle_topk": True}}, "speculative_eagle_topk"),
         ({"engine_kwargs": {"speculative_num_draft_tokens": -1}}, "speculative_num_draft_tokens"),
         ({"engine_kwargs": {"speculative_algorithm": "bad value"}}, "speculative_algorithm"),
-        ({"engine_kwargs": {"enable_linear_replayssm_spec": 1}}, "enable_linear_replayssm_spec"),
+        ({"engine_kwargs": {"ep_size": 0}}, "ep_size"),
+        ({"engine_env": {"LD_PRELOAD": "/x.so"}}, "engine_env contains unsupported keys"),
+        ({"engine_env": {"SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT": "bad value"}}, "HOST_TABLE_LAYOUT"),
+        ({"engine_env": {"SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE": 1}}, "ENABLE_DSV41_ENGRAM_HOST_TABLE"),
     ],
 )
 def test_engine_config_rejects_invalid_and_unreviewed_fields(

@@ -37,9 +37,7 @@ from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
 from cacheon.chain.miner_feedback import _guidance
 from dashboard.receipts import evaluation_credit, evaluation_recovery
 from dashboard.winners import (
-    candidate_measurement,
-    measured_baseline,
-    prefill_summary,
+    baseline_kind,
     settlement_hold_notice, settlement_label,
     list_results, result_summary, reward_exclusion_notice, submission_reward_comparison,
     live_offer_shares, qualified_winners, winner_lists, winner_reward,
@@ -540,8 +538,7 @@ def submission_detail(reservation_id: str, response: Response) -> dict[str, Any]
     detail["baseline"] = submission_baseline(con, rid, detail["target_id"])
     measured_attempts = [a for a in detail["qualification_attempts"] if a["decision"] == "PASS"] or detail["qualification_attempts"]
     speed_reads = [a["speed"] for a in measured_attempts if a["speed"]]
-    detail["baseline_measurements"] = measured_baseline(speed_reads, {}, baseline=detail["baseline"])
-    detail.update(candidate_measurement(speed_reads), result=result_summary((speed_reads or [None])[-1]))
+    detail["result"] = result_summary((speed_reads or [None])[-1])
 
     detail["leases"] = rows(con, """
         SELECT el.lease_id, el.stage, el.state, el.generation, el.claimed_block,
@@ -749,13 +746,11 @@ def winners() -> dict[str, Any]:
             "waiting_for_queue": bool(row["waiting_for_queue"]),
             "speedup_primary": safe_float(primary.get("speedup")),
             "speedup_reproduction": safe_float(repro.get("speedup")),
-            **candidate_measurement(speeds_by_reservation.get(row["reservation_id"], [])),
             "passed": with_time(passed_block),
             "passed_links": links_for_block(passed_block),
             "submitted": with_time(int(row["submission_block"])),
             "competition": competition_label(row["submission_block"], row.get("competition_arena", "")),
-            **measured_baseline(speeds_by_reservation.get(row["reservation_id"], []), primary),
-            **prefill_summary(speeds_by_reservation.get(row["reservation_id"], [])),
+            **baseline_kind(primary),
             "result": result_summary((speeds_by_reservation.get(row["reservation_id"]) or [None])[-1]),
             **winner_reward(row, offer, shares),
             "settlement_status": labels[row["reservation_id"]],

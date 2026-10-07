@@ -41,7 +41,7 @@ import re
 import sys
 from collections import deque
 from contextlib import contextmanager
-from typing import Callable, NamedTuple
+from typing import Callable
 
 import torch
 
@@ -125,13 +125,14 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
 
 def _state_rows(
     runner, call: tuple, layer: int | None = None,
-) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat | _Low]]:
+) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]]:
     """Engine-state rows this call may write, as ``(buffer, dim, index, graded dtype)``.
 
-    Only a call that carries the engine's batch can reach the cache pools: cache
-    rows at ``out_cache_loc`` and, on hybrid models, the recurrent-state rows of
-    the batch's requests. An unrecognized cache layout raises rather than leaving
-    written state unchecked.
+    Only a call that carries the engine's batch can reach the cache pools: the cache
+    rows at ``out_cache_loc``. An unrecognized cache layout raises rather than
+    leaving written state unchecked, and so does a runtime that keeps per-request
+    recurrent state outside the cache pools: the retired Qwen GDN arena's 21,400-call
+    MTP audit restored and graded none of its replay writes (2026-09-22).
 
     SGLang keeps an FP8 cache in ``uint8`` storage with the real type on the pool.
     Graded as bytes, a near-zero value whose sign flips reads as a jump of 128 (7% of
@@ -145,20 +146,11 @@ def _state_rows(
     )
     if batch is None:
         return []
-    rows: list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]] = []
-    if batch.out_cache_loc is not None:
-        rows.extend(_cache_rows(runner.token_to_kv_pool, batch, layer))
-    requests = runner.req_to_token_pool
-    recurrent = getattr(requests, "mamba_pool", None)
-    if recurrent is not None:
-        index = requests.get_mamba_indices(batch.req_pool_indices).long()
-        cache = recurrent.mamba_cache
-        rows.extend(
-            (buffer, 1, index, buffer.dtype) for buffer in (*cache.conv, cache.temporal)
-        )
-        if cache.replayssm_g is not None:
-            rows.extend(_replay_rows(runner, recurrent, batch))
-    return rows
+    if getattr(runner.req_to_token_pool, "mamba_pool", None) is not None:
+        raise RuntimeError("recurrent state is not audited on this runtime")
+    if batch.out_cache_loc is None:
+        return []
+    return _cache_rows(runner.token_to_kv_pool, batch, layer)
 
 
 def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
@@ -192,50 +184,10 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
     ]
 
 
-class _Low(NamedTuple):
-    """A BF16 ring's rounding residual, graded with its high part as the one number they hold."""
-
-    high: torch.Tensor
-
-
-def _replay_rows(runner, pool, batch) -> list[tuple]:
-    """What a speculative-verify call writes besides ``conv`` and ``temporal`` under GDN ReplaySSM.
-
-    Verify leaves ``temporal`` alone and appends this step's drafts to rings keyed by
-    request slot (``req_pool_indices``, not the batch's Mamba slots); the i-th request's
-    per-draft conv windows go to verify scratch row i. Acceptance, outside the node,
-    advances the ring cursors and scatters the accepted window into ``conv``; the
-    21,400-call Qwen MTP audit restored and graded none of these writes (2026-09-22).
-
-    ``rawv``/``rawk`` hold what BF16 rounding dropped from ``d``/``k``. Honest
-    rounding moves the residual by its whole size, so each is graded summed with its
-    high part. The windows are restored through the pool's physical buffers, because
-    the per-draft view overlaps itself.
-    """
-    if pool.replayssm_cache_base is None:
-        raise RuntimeError("only the speculative-verify GDN ReplaySSM state layout is recognized")
-    if not batch.forward_mode.is_target_verify():
-        return []
-    cache = pool.mamba_cache
-    slots = batch.req_pool_indices.long()
-    scratch = runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices
-    scratch = scratch[: slots.numel()].long()
-    rows = [(ring, 1, slots, ring.dtype)
-            for ring in (cache.replayssm_d, cache.replayssm_k, cache.replayssm_g)]
-    rows.extend((low, 1, slots, _Low(high)) for low, high in (
-        (cache.replayssm_rawv, cache.replayssm_d), (cache.replayssm_rawk, cache.replayssm_k),
-    ) if low is not None)
-    rows.extend((window, 1, scratch, window.dtype) for window in pool._intermediate_conv_window_phys)
-    return rows
-
-
 def _values(buffer: torch.Tensor, dim: int, index: torch.Tensor, held) -> torch.Tensor:
     """The numbers a state row holds at ``index``."""
 
-    raw = buffer.index_select(dim, index)
-    if isinstance(held, _Low):
-        return held.high.index_select(dim, index).float() + raw.float()
-    return state_values(raw, held)
+    return state_values(buffer.index_select(dim, index), held)
 
 
 def _pieces(buffer: torch.Tensor, dim: int, index: torch.Tensor) -> list[tuple[int, torch.Tensor]]:

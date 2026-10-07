@@ -55,8 +55,8 @@ evidence.
 Versions 8–15 measured batch cells with a B/C/B′ schedule, and versions 1–7
 preceded them. Their graders are not in the tree: a speed witness below version
 16 does not decode as qualification authority, and a commission that seals no
-replay is refused. The dashboard shows retained batch-cell attempts from their
-stored JSON — raw lane rates and per-cell delivery times — without regrading them.
+replay is refused. The dashboard shows a retained batch-cell attempt's verdict
+only; its stored lane rates are not rendered.
 
 The commission seals the policy version, and the worker executes the version the
 sealed plan carries, so the plan and the execution substrate cannot disagree.
@@ -98,17 +98,6 @@ decode rate and unsuccessful requests from the retained turn records. TTFT
 includes queueing, tokenization, prefill, sampling and delivery. These are
 serving latency measurements, not isolated GPU phase durations, and they do
 not change a qualification verdict.
-
-Retained batch-cell attempts keep their per-cell `cells` table, recomputed from
-the host times in their retained timed windows and grouped by input tokens,
-output tokens and request concurrency:
-
-| Field | Definition |
-|---|---|
-| `mean_ttft_seconds` | Mean time from batch dispatch to each prompt's first delivered token |
-| `mean_tpot_seconds` | Mean `(last delivery − first delivery) / (output tokens − 1)` across prompts |
-| `end_to_end_output_tokens_per_second` | Cell output tokens divided by its timed batch spans |
-| `timed_batches` | Number of retained timed batches for this cell |
 
 ## Current qualification timeline
 
@@ -635,8 +624,7 @@ the baseline and candidate summaries. The detail includes mean and P95 TTFT,
 median per-user decode rate, unsuccessful request count and speed-stage duration.
 The attempt's retained workload and policy identify its regime, regardless of
 submission date. V17 uses pooled elapsed cost across lane orientations. Retained
-batch-cell evaluations keep their token-throughput units and are shown as stored,
-without a regrade.
+batch-cell evaluations show their verdict only.
 
 The economic interpretation assumes identical billable work, fixed GPU
 allocation and cost, and demand for the measured capacity. At fixed basket

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -137,59 +137,12 @@ def reward_bars(con, comparisons=None) -> dict[tuple[str, str], dict[str, Any]]:
     return bars
 
 
-def _lane_tokens_per_second(speed: object, role: str) -> Decimal | None:
-    if not isinstance(speed, dict):
-        return None
-    lanes = speed.get("lanes")
-    if not isinstance(lanes, list):
-        return None
-    for lane in lanes:
-        if not isinstance(lane, dict) or lane.get("role") != role:
-            continue
-        try:
-            rate = Decimal(str(lane["tokens_per_second"]))
-        except (InvalidOperation, KeyError, TypeError, ValueError):
-            return None
-        if rate.is_finite() and rate > 0:
-            return rate
-        return None
-    return None
-
-
-def conservative_candidate_tokens_per_second(
-    speeds: list[object],
-) -> Decimal | None:
-    """Use the slower independently passing candidate lane as the tok/s estimate."""
-
-    rates = [
-        rate
-        for speed in speeds
-        if (rate := _lane_tokens_per_second(speed, "C")) is not None
-    ]
-    return min(rates) if rates else None
-
-
-def measured_baseline(speed_reads: list[object], primary: dict[str, Any], *, baseline=None) -> dict[str, Any]:
-    """Slowest measured B/B-prime rate; identify stock versus an incumbent stack."""
-    rates = [rate for speed in speed_reads for role in ("B", "B_prime")
-             if (rate := _lane_tokens_per_second(speed, role)) is not None]
+def baseline_kind(primary: dict[str, Any]) -> dict[str, str]:
+    """Name what a winner was timed against: stock SGLang or the crowned incumbent stack."""
     manifest = primary.get("incumbent_manifest")
-    kind = (("stock" if not manifest.get("entries") else "incumbent") if isinstance(manifest, dict)
-            else (baseline or {}).get("kind", "unknown"))
-    return {"baseline_tokens_per_second": round(float(min(rates)), 1) if rates else None, "baseline_kind": kind}
-
-
-def candidate_measurement(speeds: list[object]) -> dict[str, float | None]:
-    """Batch-cell tok/s of the retained qualification; a replay attempt reports ``result_summary`` instead."""
-    rate = conservative_candidate_tokens_per_second(speeds)
-    return {"tokens_per_second": round(float(rate), 1) if rate is not None else None}
-
-
-def prefill_summary(speed_reads: list[object]) -> dict[str, float | None]:
-    """Keep the conservative observed prompt gain across retained passing attempts."""
-    ratios = [speed["prefill"]["speedup"] for speed in speed_reads
-              if isinstance(speed, dict) and speed.get("prefill")]
-    return {"prefill_speedup": min(ratios) if ratios else None}
+    if not isinstance(manifest, dict):
+        return {"baseline_kind": "unknown"}
+    return {"baseline_kind": "stock" if not manifest.get("entries") else "incumbent"}
 
 
 def live_offer_shares(path: object, *, submission_roots=None, submission_path=None) -> tuple[dict[str, Any] | None, dict[str, Decimal]]:

@@ -1,9 +1,10 @@
-"""Dashboard metrics retain workload boundaries and the correct prompt-pass units."""
+"""Dashboard metrics retain workload boundaries and report the replay result in its own units."""
 
 import base64
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 from decimal import Decimal
 import pytest
 
@@ -11,39 +12,49 @@ from cacheon.chain.baseline_band import qualification_evidence_roots, qualificat
 from cacheon.eval.evidence_store import (
     EvidenceArtifactRef, prepare_evidence_root, publish_canonical_json_evidence, reopen_evidence,
 )
+from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
+from cacheon.eval.qualification_runner import ResidentSpeedWitness, _resident_speed_projection_digest
+from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
+from cacheon.eval.service_capacity import LoadRead, ServiceContract
+from tests.test_service_capacity import _turn
 
 
-def _window(index, tokens, seconds, input_tokens=None, latencies=()):
-    """One timed window exactly as a retained batch-cell stage exit stores it."""
-    row = {"batch_index": index, "seconds": format(seconds, ".17g"), "tokens": tokens}
-    if latencies:
-        row.update(input_tokens=input_tokens,
-                   prompt_latencies=[[format(a, ".17g"), format(b, ".17g")] for a, b in latencies])
-    return row
+def _witness(load=2, gains=(1.02, 1.04), *, statistical=False):
+    """A retained paired-replay witness: two passes, the candidate faster by ``gains``."""
+    contract = ServiceContract(.1, 5.0, .8)
+    policy = ResidentSpeedPolicy(600, .01, 2., .02, "a" * 64, "b" * 64, 16,
+                                goodput=GoodputPolicy(contract, 1.01, .001, .02, .0))
+    if statistical:
+        policy = replace(policy, version=17, min_margin=0,
+                         goodput=GoodputPolicy(contract, 1., .001, .02, 0., .01, .001))
+    expected = tuple((str(root), 3, 0) for root in sorted(range(load), key=str))
+    arms = []
+    for arm in ("incumbent", "candidate"):
+        windows = []
+        for window, (latency, gain) in enumerate(zip((4., 1.), gains), 1):
+            rows = []
+            for root, _, _ in expected:
+                for turn in range(3):
+                    row = _turn(root, "main", turn, start_s=100 * window + turn * 10,
+                                ttft_s=.1, out=4)
+                    seconds = 50. if turn == 0 else latency / (gain if arm == "candidate" else 1)
+                    rows.append(replace(row, request_end_ns=row.credit_issued_ns + int(seconds * 1e9)))
+            lane = ("candidate" if arm == "incumbent" else "incumbent") if statistical and window == 2 else arm
+            windows.append(LoadRead(arm, window, lane, load, tuple(rows)))
+        arms.append(tuple(windows))
+    reads = GoodputReadSet(*arms, expected)
+    excluded = {"resident_policy", "rates", "goodput", "started_monotonic_s",
+                "completed_monotonic_s", "evidence_digest"}
+    fields = {name: f"{index + 1:064x}" for index, name in enumerate(ResidentSpeedWitness.__dataclass_fields__)
+              if name not in excluded}
+    fields.update(resident_policy=policy, rates=(), goodput=reads, started_monotonic_s=1.,
+                  completed_monotonic_s=301., calibration_digest=policy.calibration_digest,
+                  calibration_context_digest=policy.calibration_context_digest)
+    return ResidentSpeedWitness(**fields, evidence_digest=_resident_speed_projection_digest(**fields))
 
 
-def _rate(role, seconds, tokens, *, phase=False):
-    windows = [_window(i, n, float(s)) for i, (s, n) in enumerate(zip(seconds, tokens))]
-    if phase:
-        windows = [
-            _window(0, 8, 2.0, 1024, ((.25, 1.25), (.75, 1.75))),
-            _window(1, 32, 4.0, 2048, ((1., 3.),) * 4),
-        ]
-    return {
-        "role": role,
-        "timed_tokens": sum(w["tokens"] for w in windows),
-        "timed_seconds": str(sum(float(w["seconds"]) for w in windows)),
-        "conditioning_seconds": "1.0",
-        "windows": windows,
-        # The display must derive metrics from retained host timings.
-        "cells": [{"mean_ttft_seconds": "999999"}],
-    }
-
-
-def _publish(root, rates, target="norm.fused_add_rmsnorm", *, reports=False):
-    report = {"target_id": target, "speed_witness": {
-        "resident_policy": {"version": 12, "prefill_min_margin": "0.05"},
-        "rates": rates}}
+def _publish(root, target="norm.fused_add_rmsnorm", *, reports=False):
+    report = {"target_id": target, "speed_witness": _witness().to_dict()}
     payload = {"reports": [report]} if reports else report
     reference = publish_canonical_json_evidence(
         prepare_evidence_root(root), payload, domain="qualification.stage-exit",
@@ -51,47 +62,12 @@ def _publish(root, rates, target="norm.fused_add_rmsnorm", *, reports=False):
     return json.dumps(reference.to_dict())
 
 
-def _reads(phase=False):
-    return [
-        _rate("B", [2., 4.], [8, 32], phase=phase),
-        _rate("C", [2., 4.], [8, 32], phase=phase),
-        _rate("B_prime", [2., 4.], [8, 32], phase=phase),
-        _rate("B_prefill", [20., 20., 40., 40., 40.], [128, 128, 24, 24, 24]),
-        _rate("C_prefill", [19.88, 19.88, 39.76, 39.76, 39.76], [128, 128, 24, 24, 24]),
-        _rate("B_prime_prefill", [20., 20., 40., 40., 40.], [128, 128, 24, 24, 24]),
-    ]
-
-
-def test_prefill_uses_prompts_per_second_without_rounding_away_the_gain(tmp_path):
-    ref = _publish(tmp_path, _reads())
-    speed = qualification_speed(ref, (tmp_path,))
-    prefill = speed["lanes"][4]
-    assert prefill["tokens_per_second"] is None
-    assert prefill["prompts_per_second"] == pytest.approx(328 / 159.04, abs=1e-6)
-    assert prefill["timed_seconds"] == 159.04
-    assert prefill["cells"] == []
-    assert speed["prefill"]["speedup"] == pytest.approx(160 / 159.04)
-    assert speed["prefill"]["min_margin"] == "0.05"
-    assert all(lane["cells"] == [] for lane in speed["lanes"])
-
-
-def test_latency_cells_are_recomputed_and_keep_two_workloads_separate(tmp_path):
-    speed = qualification_speed(_publish(tmp_path, _reads(phase=True)), (tmp_path,))
-    cells = speed["lanes"][1]["cells"]
-    assert [(c["input_tokens"], c["output_tokens"], c["concurrency"]) for c in cells] == [
-        (1024, 4, 2), (2048, 8, 4)]
-    assert [float(c["mean_ttft_seconds"]) for c in cells] == [.5, 1.]
-    assert [float(c["mean_tpot_seconds"]) for c in cells] == pytest.approx([1 / 3, 2 / 7])
-    assert [float(c["end_to_end_output_tokens_per_second"]) for c in cells] == [4., 8.]
-    assert speed["lanes"][4]["cells"] == []
-
-
 def test_rotated_evidence_and_target_selection_preserve_historical_reads(tmp_path):
     state = tmp_path / "state"
     recorded = tmp_path / "retained"
     staged = tmp_path / "stage" / "rotation" / "monday-config" / "qualification-evidence"
     staged.mkdir(parents=True)
-    ref = _publish(recorded, _reads(), reports=True)
+    ref = _publish(recorded, reports=True)
     con = sqlite3.connect(":memory:")
     con.execute("CREATE TABLE settlement_qualifications(evidence_root TEXT)")
     con.execute("INSERT INTO settlement_qualifications VALUES(?)", (str(recorded),))
@@ -195,26 +171,24 @@ def test_payment_recovery_links_actual_evaluation_without_rewriting_rejection(tm
     assert client.get("/api/submissions/example").json()["evaluation_recovery"] is None
 
 
-@pytest.mark.parametrize("target,phase", [
-    ("norm.fused_add_rmsnorm", False), ("collective.dp_attention_exchange.v1", True)])
-def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, client, target, phase, monkeypatch):
+@pytest.mark.parametrize("target", ["norm.fused_add_rmsnorm", "collective.dp_attention_exchange.v1"])
+def test_real_submission_api_exposes_the_replay_result_and_baseline_kind(tmp_path, client, target, monkeypatch):
     monkeypatch.setattr("dashboard.winners.reward_comparisons", lambda con: {"example": {
         "previous_best_reservation_id": "earlier", "previous_best_speedup": Decimal("1.01"),
         "relative_speedup": Decimal("1.02"), "score_speedup": Decimal("1.02"),
         "reward_eligible": True, "grandfathered": False}})
     evidence = tmp_path / "retained"
-    ref = _publish(evidence, _reads(phase), target, reports=True)
+    ref = _publish(evidence, target, reports=True)
     db = tmp_path / "intake.sqlite3"
     _dashboard_db(db, ref, evidence, target)
     response = client.get("/api/submissions/example")
     assert response.status_code == 200
     detail = response.json()
     assert detail["target_id"] == target
-    assert detail["tokens_per_second"] == 6.7
-    assert detail["baseline_measurements"]["baseline_tokens_per_second"] == 6.7
+    assert detail["result"]["speedup"] == pytest.approx(1.04)
+    assert "tokens_per_second" not in detail and "baseline_measurements" not in detail
     speed = detail["qualification_attempts"][0]["speed"]
-    assert speed["prefill"]["speedup"] == pytest.approx(160 / 159.04)
-    assert bool(speed["lanes"][1]["cells"]) is phase
+    assert (speed["metric"], speed["grading"]["decision"]) == ("warm_turn_latency", "PASS")
 
     con = sqlite3.connect(db)
     con.execute("UPDATE reservations SET status='qualified', decision='PASS'")
@@ -233,9 +207,9 @@ def test_real_submission_api_exposes_prefill_and_optional_latency(tmp_path, clie
     assert winner["previous_best_reservation_id"] == "earlier"
     detail = client.get("/api/submissions/example").json()
     assert detail["settlement"]["relative_improvement_pct"] == 2.0
-    assert winner["baseline_tokens_per_second"] == 6.7
     assert winner["baseline_kind"] == "stock"
-    assert winner["prefill_speedup"] == pytest.approx(160 / 159.04)
+    assert winner["result"]["speedup"] == pytest.approx(1.04)
+    assert not {"baseline_tokens_per_second", "tokens_per_second", "prefill_speedup"} & set(winner)
 
 
 @pytest.mark.parametrize("target", ["norm.fused_add_rmsnorm", "collective.dp_attention_exchange.v1"])
@@ -244,7 +218,7 @@ def test_held_result_retains_metrics_without_a_disposition_and_deduplicates_impo
 ):
 
     root = tmp_path / "evidence"
-    reference = _publish(root, _reads(), target)
+    reference = _publish(root, target)
     ref = EvidenceArtifactRef.from_dict(json.loads(reference))
     db = tmp_path / "intake.sqlite3"
     _dashboard_db(db, reference, root, target)
@@ -273,10 +247,10 @@ def test_held_result_retains_metrics_without_a_disposition_and_deduplicates_impo
         "artifacts": [{"role": "adapter_result", "sha256": digest, "size": len(response)}]}))
     detail = client.get("/api/submissions/example").json()
     assert detail["status"] == "held" and detail["decision"] == ""
-    assert detail["tokens_per_second"] == 6.7
+    assert detail["result"]["speedup"] == pytest.approx(1.04)
     (attempt,) = detail["qualification_attempts"]
     assert (attempt["decision"], attempt["reason"]) == ("NO_DECISION", "speed_noise")
-    assert attempt["speed"]["prefill"]["speedup"] == pytest.approx(160 / 159.04)
+    assert attempt["speed"]["grading"]["decision"] == "PASS"
     assert attempt["request_id"] == request_id
     con.execute("INSERT INTO qualification_dispositions VALUES(?,?,?,?,?)",
                 ("example", 0, "NO_DECISION", "speed_noise", reference))
@@ -296,7 +270,7 @@ def test_graph_hold_cause_is_visible_without_inventing_a_timed_attempt(tmp_path,
 
     target, request_id = "collective.all_reduce", "b" * 64
     root, db, spool = tmp_path / "evidence", tmp_path / "intake.sqlite3", tmp_path / "spool"
-    reference = _publish(root, _reads(), target)
+    reference = _publish(root, target)
     _dashboard_db(db, reference, root, target)
     with sqlite3.connect(db) as con:
         con.execute("DELETE FROM qualification_dispositions")

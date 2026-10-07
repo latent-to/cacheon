@@ -2,7 +2,8 @@
 
 Use these inputs with the commissioned `deepseek-ai/DeepSeek-V4.1-Flash`
 checkpoint (revision `2cba9e42aa026125f3ed06c6d98c1db82f7ca027`) and the SGLang
-0.5.21 image on four B300 GPUs (TP4 with expert parallelism 4). Keep this folder
+0.5.21 image on two B300 GPUs (TP2 with expert parallelism 2), the topology the
+arena serves. Keep this folder
 outside the submitted bundle. Mount it read-only at `/arena`, the model at
 `/model`, and a writable result/cache directory at `/work`.
 
@@ -15,10 +16,21 @@ enabled, matching the agent-replay runtime. The development config caps running
 requests at 24 per lane to bound graph setup. Qualification owns its sealed
 workload and configuration; this check does not produce a speed score.
 
+The checkpoint's Engram hash-memory tables do not fit beside the weights at TP2,
+so the engine keeps them in pinned host memory: `engine-config.json` carries an
+`engine_env` object setting `SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE=1` and
+`SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT=per_rank`, which `cacheon check` exports
+to the engine and its ranks before construction. Each rank pins its own shard,
+about 95 GiB, so one TP2 engine needs about 190 GiB of free host memory plus the
+huge pages SGLang requests; a paired qualification runs two engines, and a box
+with two pairs needs twice that again. The sealed arena configuration carries the
+same two variables.
+
 Everything in this folder was derived from the 0.5.21 source and the published
 recipes before the image was run; the first boot on the commissioned lane
-confirms the image layout the Dockerfile assumes, the memory fraction, and the
-page geometry of the index cache (64 or 128 slots, by the installed DeepGEMM).
+confirms the image layout the Dockerfile assumes, the memory fraction, the host
+memory and huge pages the Engram tables pin, and the page geometry of the index
+cache (64 or 128 slots, by the installed DeepGEMM).
 
 Build the pinned image from the repository root with the selected revision:
 
@@ -56,8 +68,7 @@ development check's audit receipts before paying for a submission.
 A `tree_cache` bundle uses `target = "prefix_cache"` with the same `mode` and
 arena. The runtime factory is described in
 [the cache contract](../../../docs/architecture/slot-contract.md#the-prefix-cache).
-Development support does not advertise that target on a live arena; use the
-arena's published target availability before submitting.
+Both `forward_pass` and `prefix_cache` are open on this arena.
 
 ```bash
 python -m cacheon.cli check /bundles/my_bundle \

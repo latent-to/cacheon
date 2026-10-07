@@ -16,17 +16,19 @@ Native MTP uses the existing `EngineSessionConfig.engine_kwargs`: set
 `speculative_algorithm`, `speculative_num_steps`, `speculative_eagle_topk` and
 `speculative_num_draft_tokens` in the validator-owned engine configuration.
 These options are bound into its existing digest and forwarded to SGLang.
-For GDN models, `enable_linear_replayssm_spec` enables SGLang's native ring-based
-MTP verifier, avoiding a full recurrent-state snapshot for every draft token.
+`EngineSessionConfig.engine_env` sets process environment for the engine and
+its ranks the same way, bound into the same digest; only reviewed names cross
+the boundary, currently the DeepSeek-V4.1 Engram host-table switches, which
+SGLang reads from the environment rather than from its server arguments.
 Target node addresses bind only to the target ModelRunner; the speculative
 drafter retains stock execution. Miners keep the same node interface, including
 the target-verification modes and shapes passed to it. Requalify the exact
 model, runtime and workloads before activating this configuration; enabling
 MTP does not carry forward a non-speculative speedup or change the scoring policy.
 
-The node audit retains expected recurrent and ReplaySSM state in separate pinned
-host pieces and streams comparisons on the GPU. It still restores and grades all
-selected state rows; this storage choice does not change audit thresholds.
+The node audit retains expected engine state in separate pinned host pieces and
+streams comparisons on the GPU. It still restores and grades all selected state
+rows; this storage choice does not change audit thresholds.
 
 A green static seam canary establishes import and chokepoint compatibility only. A
 runtime pin is eligible for evaluation authority only after end-to-end GPU

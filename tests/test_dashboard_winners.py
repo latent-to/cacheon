@@ -5,40 +5,31 @@ from decimal import Decimal
 from pathlib import Path
 
 from dashboard.winners import (
-    conservative_candidate_tokens_per_second,
+    baseline_kind,
     live_offer_shares,
     winner_reward,
-    measured_baseline,
-    prefill_summary,
     settlement_hold_notice,
     settlement_label,
 )
 
 
-def test_winners_view_separates_credit_from_measured_throughput() -> None:
+def test_winners_view_separates_credit_from_the_replay_result() -> None:
     html = (
         Path(__file__).parents[1] / "dashboard" / "static" / "index.html"
     ).read_text()
 
     assert '"Gain vs baseline","Gain vs previous best","Baseline → candidate"' in html
-    assert "baseline_tokens_per_second" in html
     assert "baseline_kind" in html
-    assert "tokens_per_second" in html
-    assert "sglang_tokens_per_second" not in html
+    # Batch-cell tok/s and prefill gains are no longer rendered; the replay result carries decode tok/s per user.
+    assert "tokens_per_second" not in html
+    assert "prefill_speedup" not in html
+    assert "replayLine(w.result)" in html
 
 
-def test_winner_keeps_measured_baseline_and_prefill_separate_from_credit() -> None:
-    reads = [
-        {"lanes": [{"role": "B", "tokens_per_second": 1200},
-                   {"role": "B_prime", "tokens_per_second": 1190},
-                   {"role": "C_prefill", "tokens_per_second": None}],
-         "prefill": {"speedup": 1.12}},
-        {"lanes": [], "prefill": {"speedup": 1.08}},
-    ]
-    assert measured_baseline(reads, {"incumbent_manifest": {"entries": {}}}) == {
-        "baseline_tokens_per_second": 1190.0, "baseline_kind": "stock"}
-    assert prefill_summary(reads) == {"prefill_speedup": 1.08}
-    assert prefill_summary([]) == {"prefill_speedup": None}
+def test_baseline_kind_names_stock_or_the_incumbent_stack() -> None:
+    assert baseline_kind({"incumbent_manifest": {"entries": {}}}) == {"baseline_kind": "stock"}
+    assert baseline_kind({"incumbent_manifest": {"entries": {"forward_pass": {}}}}) == {"baseline_kind": "incumbent"}
+    assert baseline_kind({}) == {"baseline_kind": "unknown"}
 
 
 def test_emission_columns_render_the_chain_alpha_symbol_not_tao() -> None:
@@ -52,19 +43,6 @@ def test_emission_columns_render_the_chain_alpha_symbol_not_tao() -> None:
     assert 'esc(d.emission_symbol) + "/d"' in html
     assert "τ/day" not in html
     assert "τ/d" not in html
-
-
-def test_conservative_candidate_tokens_per_second_uses_slower_pass() -> None:
-    speeds = [
-        {"lanes": [{"role": "B", "tokens_per_second": 1900.0},
-                   {"role": "C", "tokens_per_second": 2100.4}]},
-        {"lanes": [{"role": "B", "tokens_per_second": 1935.2},
-                   {"role": "C", "tokens_per_second": 2174.7}]},
-    ]
-
-    rate = conservative_candidate_tokens_per_second(speeds)
-
-    assert rate == Decimal("2100.4")
 
 
 def test_live_offer_shares_reads_the_served_vector(tmp_path: Path) -> None:

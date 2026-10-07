@@ -16,11 +16,12 @@ omit it so local checks do not invent an arena identity.
 Follow [Your first bundle](your-first-kernel.md) to copy, scan, smoke-test and
 run the real engine check. Keep results and compiler caches outside the bundle.
 
-## Qwen development inputs
+## DeepSeek-V4.1-Flash development inputs
 
-The [Qwen3.6-35B-A3B input kit](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/qwen36)
-has short- and long-context checks, the H100 image recipe, engine settings,
-measured check times and routing lines. It does not change the qualification workload.
+The [DeepSeek-V4.1-Flash input kit](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/dsv41flash)
+has the B300 image recipe, the TP2 engine settings with the Engram host-table
+environment, 24 development requests and the node addresses that execute on
+this model. It does not change the qualification workload.
 
 ## GLM baseline
 

@@ -524,8 +524,8 @@ async function viewWinners() {
         <div class="muted small">${w.result ? neededLine(w.result) : ""}
         ${w.speedup_reproduction ? `${w.speedup_primary.toFixed(5)}× primary · ${w.speedup_reproduction.toFixed(5)}× repro` : ""}</div></td>
     <td>${rewardComparison(w)}</td>
-    <td>${replayLine(w.result) || `${measuredValue(w.baseline_tokens_per_second)} → ${measuredValue(w.tokens_per_second)}`}
-        <div class="muted small">${esc(w.baseline_kind)} baseline${w.prefill_speedup != null ? " · prefill " + metricGain(w.prefill_speedup) : ""}</div></td>
+    <td>${replayLine(w.result)}
+        <div class="muted small">${esc(w.baseline_kind)} baseline</div></td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
     <td>${fmtTime(w.passed)}<div class="muted small">block ${blockLink(w.passed, w.passed_links)}</div></td>
     <td>${w.waiting_for_queue ? "—" : `${w.weight_share != null ? `<b>${(w.weight_share * 100).toFixed(2)}%</b>` : "—"}
@@ -766,7 +766,6 @@ window.openDetail = async (rid) => {
     </div>` : ""}` : "";
   const baseline = d.baseline || {};
   const checkpoint = baseline.checkpoint;
-  const baselineTps = (d.baseline_measurements || {}).baseline_tokens_per_second;
   const baselineCard = `
     <h2>Evaluation baseline</h2>
     <div class="card">
@@ -775,7 +774,6 @@ window.openDetail = async (rid) => {
           ? `<a href="${esc(checkpoint.url)}" target="_blank" rel="noopener noreferrer">${esc(checkpoint.repo)} ↗</a>`
           : '<span class="muted">No retained checkpoint mapping</span>')}
         ${checkpoint ? kv("Checkpoint revision", `<code class="small">${esc(checkpoint.revision)}</code>`) : ""}
-        ${baselineTps != null ? kv("Measured baseline", measuredValue(baselineTps)) : ""}
         ${kv("Baseline submission", baseline.reservation_id ? submissionLink(baseline.reservation_id)
           : baseline.evaluated || baseline.assigned
             ? (baseline.artifact_digest ? "Sealed by the validator — no submission link retained" : "Base engine — no submission")
@@ -852,7 +850,6 @@ window.openDetail = async (rid) => {
       ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
       ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}
       ${kv("Target", esc(d.target_id || "—") + `<div class="muted small">${esc(d.target_summary)}</div>`)}
-      ${d.tokens_per_second != null ? kv("Measured candidate", measuredValue(d.tokens_per_second)) : ""}
       ${kv("Submission source", sourceLink)}
       ${kv("Content hash", `<code class="small">${esc(short(d.content_hash, 26))}</code>`)}
       ${kv("Eval fee", evalFee(d, true))}

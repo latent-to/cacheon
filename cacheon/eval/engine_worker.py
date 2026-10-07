@@ -242,6 +242,7 @@ def build_session_environment(
     receipt_dir: str,
     audit_policy: object,
     install_seams: bool,
+    engine_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """The environment the in-container engine and its TP ranks inherit.
 
@@ -252,6 +253,9 @@ def build_session_environment(
     """
     audited = audit_policy is not None
     return {
+        # The sealed configuration's switches (the DeepSeek-V4.1 Engram host
+        # tables) first, so the fence's own variables below win a name clash.
+        **(engine_env or {}),
         "CACHEON_ACTIVE": "1" if active else "0",
         "CACHEON_BUNDLE_PATH": bundle_path if active else "",
         "CACHEON_FRAMEWORK_MODE": "1" if framework_mode else "0",
@@ -548,6 +552,7 @@ def isolated_engine_session(
             receipt_dir=receipt_dir,
             audit_policy=audit_policy,
             install_seams=install_seams,
+            engine_env=getattr(cfg, "engine_env", None),
         )
         with _environment(**session_environment):
             import sglang as sgl

@@ -2,11 +2,10 @@
 
 Every graded qualification half leaves a stage-exit artifact whose speed
 witness records what each resident lane measured. This module reopens that
-artifact from whichever local evidence store retains it and reports the lane
-measurements without re-running a grader: replay witnesses report the same
-warm-turn reads and verdict the replay scorer consumed, and retained
-batch-cell witnesses (speed policies 8-15, whose grader is retired) report
-their raw lane rates and per-cell delivery times.
+artifact from whichever local evidence store retains it and reports the same
+warm-turn reads and verdict the replay scorer consumed, without re-running a
+grader. A retained batch-cell witness (speed policies 8-15, whose grader is
+retired) is not rendered: its raw lane ratio was never the credited gain.
 """
 
 from __future__ import annotations
@@ -74,7 +73,11 @@ def qualification_speed(
 def qualification_speed_from_payload(
     payload: bytes, target_id: str = ""
 ) -> dict[str, Any] | None:
-    """Read measurements from either a local artifact or retained remote result."""
+    """Read a replay attempt's measurements from a local artifact or retained remote result.
+
+    A witness without a replay read set, the retired batch-cell policies, reads
+    as ``None``: the verdict row is its record.
+    """
     try:
         result = json.loads(payload)
         if "reports" in result:
@@ -84,58 +87,14 @@ def qualification_speed_from_payload(
                 return None
             result = reports[0]
         witness = result["speed_witness"]
-        if isinstance(witness, dict) and witness.get("goodput") is not None:
-            return _replay_measurements(witness)
-        rates = witness["rates"]
     except (TypeError, ValueError, KeyError):
         return None
-    if not isinstance(rates, list):
+    if not isinstance(witness, dict) or witness.get("goodput") is None:
         return None
-    lanes: list[dict[str, Any]] = []
-    by_role: dict[str, float] = {}
-    for rate in rates:
-        try:
-            windows = [float(row["seconds"]) for row in rate["windows"]]
-            timed_tokens = int(rate["timed_tokens"])
-            timed_seconds = float(rate["timed_seconds"])
-            conditioning = float(rate["conditioning_seconds"])
-            cells = _phase_measurements(rate["windows"])
-        except (TypeError, ValueError, KeyError):
-            return None
-        if not windows or timed_seconds <= 0:
-            return None
-        average = sum(windows) / len(windows)
-        role = rate.get("role")
-        prefill = isinstance(role, str) and "prefill" in role
-        throughput = timed_tokens / timed_seconds
-        lane = {
-            "role": role,
-            "tokens_per_second": None if prefill else round(throughput, 1),
-            # A v12 prompt pass produces exactly one output token per request.
-            "prompts_per_second": round(throughput, 6) if prefill else None,
-            "timed_seconds": round(timed_seconds, 3),
-            "cells": cells,
-            "window_seconds": [round(seconds, 3) for seconds in windows],
-            "window_scatter": round((max(windows) - min(windows)) / average, 4),
-            "conditioning_ratio": round(conditioning / average, 4),
-        }
-        lanes.append(lane)
-        by_role[role] = throughput
-    speed: dict[str, Any] = {"lanes": lanes}
-    baseline, candidate = by_role.get("B"), by_role.get("C")
-    if baseline and candidate:
-        speed["speedup"] = round(candidate / baseline, 4)
-    if all(by_role.get(role) for role in ("B_prefill", "C_prefill", "B_prime_prefill")):
-        policy = witness.get("resident_policy") or {}
-        speed["prefill"] = {
-            "speedup": by_role["C_prefill"] / max(
-                by_role["B_prefill"], by_role["B_prime_prefill"]),
-            "min_margin": policy.get("prefill_min_margin"),
-        }
-    return speed
+    return replay_measurements(witness)
 
 
-def _replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
+def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
     """Report the same retained warm-turn measurements and verdict the replay scorer consumes."""
     from dataclasses import asdict
     from cacheon.eval.qualification_runner import ResidentSpeedWitness
@@ -208,40 +167,8 @@ def _replay_diagnostics(read) -> dict[str, Any]:
     }
 
 
-def _phase_measurements(windows: list[dict[str, Any]]) -> list[dict[str, object]]:
-    """Recompute per-cell delivery metrics from retained host times, not cached cell summaries.
-
-    Cells are keyed by input length, output length and concurrency, so unlike
-    workloads never blend into one mean.
-    """
-    if not any(window.get("prompt_latencies") for window in windows):
-        return []
-    groups: dict[tuple[int, int, int], list[tuple[int, float, list[tuple[float, float]]]]] = {}
-    for window in windows:
-        latencies = [(float(first), float(last)) for first, last in window.get("prompt_latencies", ())]
-        if not latencies:
-            raise ValueError("phase read lacks a timed window's token latencies")
-        tokens = int(window["tokens"])
-        key = int(window["input_tokens"]), tokens // len(latencies), len(latencies)
-        groups.setdefault(key, []).append((tokens, float(window["seconds"]), latencies))
-    rows: list[dict[str, object]] = []
-    for (input_tokens, output_tokens, concurrency), cells in sorted(groups.items()):
-        pairs = [pair for _, _, latencies in cells for pair in latencies]
-        rows.append({
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "concurrency": concurrency,
-            "timed_batches": len(cells),
-            "mean_ttft_seconds": format(sum(first for first, _ in pairs) / len(pairs), ".17g"),
-            "mean_tpot_seconds": format(
-                sum(last - first for first, last in pairs) / (len(pairs) * (output_tokens - 1)), ".17g"),
-            "end_to_end_output_tokens_per_second": format(
-                sum(tokens for tokens, _, _ in cells) / sum(seconds for _, seconds, _ in cells), ".17g"),
-        })
-    return rows
-
-
 __all__ = [
     "qualification_evidence_roots",
     "qualification_speed",
+    "replay_measurements",
 ]

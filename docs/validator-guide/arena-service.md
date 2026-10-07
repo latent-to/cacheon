@@ -144,7 +144,7 @@ known at publication; fetch and pre-publication admission remain shared.
 
 Queues, baselines, target admission, lineage and qualification recovery are
 scoped to the logical arena. Service epochs retain that arena's lineage.
-Commissioning Qwen cannot retire GLM's baseline. Two arenas can qualify
+Commissioning a second arena cannot retire the first arena's baseline. Two arenas can qualify
 concurrently. Within one arena, commission disjoint pairs with the same model,
 runtime, workload, incumbent and GPU execution policy. Physical GPU addresses
 belong to each worker's READY, registration and launch binding; equivalent pairs

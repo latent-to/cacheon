@@ -4,10 +4,10 @@
 (root) 1161
 .github 345
 bundles 2985
-cacheon 91060
+cacheon 90896
 cacheon_kernels 936
-dashboard 4322
-docs 12547
-examples 679
+dashboard 4197
+docs 12540
+examples 368
 scripts 1894
-tests 67461
+tests 67240
