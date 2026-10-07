@@ -66,7 +66,7 @@ _VERDICTS = {
     _FAKE: "served a page that does not hold the KV the engine computed for its prefix",
     _MOVED: "moved KV slots a request computed itself",
     _ROW: "left a request row that disagrees with the request's prefix",
-    _STATE: "served or changed unrecorded sliding-window or recurrent state",
+    _STATE: "served or changed unrecorded sliding-window state",
 }
 
 
@@ -140,8 +140,7 @@ class _Guard:
         self.allocator = params.token_to_kv_pool_allocator
         self.requests = params.req_to_token_pool
         self.page = int(params.page_size)
-        # The pinned tree disables EAGLE bigram keys for recurrent checkpoints.
-        self.bigram = int(bool(params.is_eagle) and not ctx.is_hybrid_ssm)
+        self.bigram = int(bool(params.is_eagle))
         self.device = self.requests.req_to_token.device  # with its index, unlike a flag string
         cuda = self.device.type == "cuda"
         # The forward pass writes KV on its own stream; the check reads behind it.

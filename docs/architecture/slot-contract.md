@@ -243,18 +243,18 @@ dtypes, architectures or eligibility never matches, and the run fails as `candid
 The same content checks run for stock and candidate. Stock checking failures are
 infrastructure failures; they are not attributed to a miner's cache. Storage
 validation is adapter work under this common contract. It recognizes full-attention
-KV, paged sliding-window KV and its index state, compressed KV and index pages, the
-runtime's canonical recurrent checkpoints, int8-encoded recurrent checkpoints read
-through the pinned codec, and per-request sliding-window rings. A request-local ring
-is never stored in the tree, so a prefix hit that skips its trailing window is
-refused. A new model does not require a new miner contract; an unfamiliar storage
-layout requires validator support before a contribution can use it.
+KV, paged sliding-window KV and its index state, compressed KV and index pages, and
+per-request sliding-window rings. A request-local ring is never stored in the tree,
+so a prefix hit that skips its trailing window is refused. Recurrent checkpoints are
+refused: no commissioned arena caches them. A new model does not require a new
+miner contract; an unfamiliar storage layout requires validator support before a
+contribution can use it.
 
-The [GLM and Qwen GPU checks](../results/prefix-cache.md) exercise prefix reuse,
+The [GLM GPU checks](../results/prefix-cache.md) exercise prefix reuse,
 native host restoration, reset, graph execution, audit import and rejection of
 corrupted cached state under this contract. The GPU results cover GLM's
-full-attention layout and Qwen's recurrent state; they do not establish GPU
-coverage for every recognized state layout.
+full-attention layout; they do not establish GPU coverage for every recognized
+state layout.
 
 Cache versions replace one another within this target. Iterative improvement
 means the next implementation retains the useful behavior of the current winner
@@ -271,8 +271,7 @@ Whenever the scheduler hands a request to the cache, before the cache sees it,
 the validator hashes each complete page of KV the request's own forward passes
 computed and records the pair of that hash and a digest of the prefix through the
 page: the request's `extra_key` and `cache_salt`, its tokens, and under EAGLE the
-token after the page, which the draft KV reads. Recurrent caches use the runtime's
-ordinary token keys even with EAGLE enabled. At the same handoff it hashes up
+token after the page, which the draft KV reads. At the same handoff it hashes up
 to 64 randomly chosen pages the request read from the cache and requires each
 pair to be on record. Hashes cover four layers, drawn at engine start, of each KV
 buffer kind in the target and draft pools, the DSA indexer's included. The pairs
@@ -288,13 +287,12 @@ bytes; the host reads each verdict at a later handoff, and only a flush or an
 audited request waits for one. A page is checked after the forward pass that read
 it, so bytes moved into a served slot after that pass are not told apart from bytes
 placed before. The check does not bound memory a cache allocates beyond the
-engine's pools. Sliding-window KV and recurrent checkpoints may be overwritten
-during forward, so their additional checks run in the existing untimed audit
-role: record computed state before handing it to the cache, verify device hits
-before use, and verify host restores after the native transfer stream completes.
-Recurrent checkpoints are bound to the prefix they actually represent, including
-ReplaySSM's uncommitted tail; unfinished requests retain their active state.
-These checks sample up to four layers per transferable state field. The handoffs
+engine's pools. Sliding-window KV may be overwritten during forward, so its
+additional checks run in the existing untimed audit role: record computed state
+before handing it to the cache, verify device hits before use, and verify host
+restores after the native transfer stream completes. Unfinished requests retain
+their live ring state. These checks sample up to four layers per transferable
+state field. The handoffs
 `match_prefix`, `cache_unfinished_req`, `cache_finished_req`,
 `ready_to_load_host_cache` and `reset` may be overridden in the class but not replaced on
 the instance or class later.

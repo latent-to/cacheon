@@ -158,8 +158,8 @@ def build(cache):
 Declare no `prepare`, dtypes, architectures or metadata. `verify` imports `build`
 and checks that it accepts the runtime cache. Run `check` with the GLM development
 inputs: their second batch reuses prefixes, so the cache audit sees enough
-completions on every rank. The Qwen development configuration disables radix
-caching, so a cache bundle cannot run there. The table has one `tree_cache` row
+completions on every rank. A cache bundle cannot run on an arena whose engine
+configuration disables radix caching. The table has one `tree_cache` row
 per rank; the cache runs outside CUDA graphs, so it needs no captured execution.
 The validator checks the bytes behind every prefix the cache serves; see
 [Slots and targets](slots.md#the-prefix-cache).

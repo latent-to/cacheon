@@ -1,10 +1,10 @@
 """Audit short-lived prefix state before the model can overwrite it.
 
-Full-attention pages survive a forward pass; sliding-window pages and recurrent
-checkpoints need not. The cache seam calls this adapter in the existing untimed
-audit role. It records engine-produced state before the cache receives it, checks
-device hits immediately, and checks host hits after the cache submits its loads.
-The ordinary full-KV checker remains active in both serving roles.
+Full-attention pages survive a forward pass; sliding-window pages need not. The
+cache seam calls this adapter in the existing untimed audit role. It records
+engine-produced state before the cache receives it, checks device hits
+immediately, and checks host hits after the cache submits its loads. The
+ordinary full-KV checker remains active in both serving roles.
 """
 
 from __future__ import annotations
@@ -46,11 +46,11 @@ class PrefixStateAudit:
         self.torch, self.requests = guard.torch, guard.requests
         self.pool = guard.allocator.get_kvcache()
         self.swa = getattr(self.pool, "swa_kv_pool", None)
-        self.mamba = getattr(self.requests, "mamba_pool", None)
-        self.checkpoints = getattr(self.requests, "mamba_ckpt_pool", None)
         self.ring_size = int(getattr(self.pool, "swa_req_ring_size", None) or 0)
         self.ring = getattr(self.pool, "unified_kv_pool", None) if self.ring_size else None
-        if (ctx.is_hybrid_swa and self.swa is None and self.ring is None) or (ctx.is_hybrid_ssm and self.mamba is None):
+        # Recurrent checkpoints are not validated: no commissioned arena caches
+        # them, and the refusal keeps that state from being served unchecked.
+        if ctx.is_hybrid_ssm or (ctx.is_hybrid_swa and self.swa is None and self.ring is None):
             raise RuntimeError("tree_cache: state validation is unavailable for this hybrid pool")
         self.window = int(self.params.sliding_window_size or 0)
         if (self.swa is not None or self.ring is not None) and self.window <= 0:
@@ -61,16 +61,13 @@ class PrefixStateAudit:
         self.owned = {}
 
     def _buffers(self):
-        """Sample the engine's transferable state, excluding request-keyed replay scratch."""
+        """Sample the engine's transferable sliding-window state."""
         from cacheon.integrations.sglang_dsa_state import KV_BUFFERS
 
         groups = {}
         if self.swa is not None:
             for name in (*KV_BUFFERS, "index_k_with_scale_buffer"):
                 groups["swa", name] = list(getattr(self.swa, name, ()) or ())
-        if self.mamba is not None:
-            for field, buffer, _, _ in self.mamba._iter_transfer_state_entries():
-                groups.setdefault(("mamba", field), []).append(buffer)
         if self.ring is not None:
             for name in ("kv_buffer", "kv_buffer_rope"):
                 groups["ring", name] = [b[:self.ring.num_slots * self.ring_size]
@@ -85,44 +82,24 @@ class PrefixStateAudit:
             buffers = [b for b in buffers if self.torch.is_tensor(b) and b.numel()]
             for index in sorted(draw.sample(range(len(buffers)), min(_LAYERS, len(buffers)))):
                 chosen[(*kind, index)] = buffers[index]
-        for family, present in (("swa", self.swa), ("mamba", self.mamba), ("ring", self.ring)):
+        for family, present in (("swa", self.swa), ("ring", self.ring)):
             if present is not None and not any(key[0] == family for key in chosen):
                 raise RuntimeError(f"tree_cache: no transferable {family} state recognized")
         return chosen
 
-    def _state(self, kind, indices, *, checkpoint=False, encode=False):
-        """Read the declared representation; encoded checkpoints have their own slot IDs."""
+    def _state(self, kind, indices):
+        """Read the rows a prefix names, in the engine's declared representation."""
         buffer = self.buffers[kind]
         if kind[:2] == ("swa", "index_k_with_scale_buffer"):
             indices = indices[:, ::self.swa.page_size] // self.swa.page_size
-        if checkpoint:
-            field, index = kind[1:]
-            if field == "temporal":
-                buffer = self.checkpoints.temporal.qdata[index]
-            elif field == "conv":
-                layers = self.checkpoints.conv[0].shape[0]
-                buffer = self.checkpoints.conv[index // layers][index % layers]
-            else:
-                raise RuntimeError(f"tree_cache: checkpoint codec does not carry {field}")
         if bool(((indices < 0) | (indices >= buffer.shape[0])).any()):
             self.guard.refuse("a prefix names state slots outside the engine's pool")
-        raw = buffer.index_select(0, indices.reshape(-1))
-        if self.checkpoints is not None and kind[:2] == ("mamba", "temporal"):
-            if checkpoint:
-                scale = self.checkpoints.temporal.scale[kind[2]].index_select(0, indices.reshape(-1))
-                raw = (raw.float() * scale.float()).to(self.buffers[kind].dtype)
-            elif encode:
-                # Independent expression of the pinned codec: scale is rounded
-                # before division, with nearest-even rounding and symmetric int8.
-                scale = (raw.float().abs().amax(-2, keepdim=True).clamp(min=1e-8) / 127).to(raw.dtype)
-                quantized = (raw.float() / scale.float()).round().clamp(-127, 127)
-                raw = (quantized * scale.float()).to(raw.dtype)
-        return raw.contiguous()
+        return buffer.index_select(0, indices.reshape(-1)).contiguous()
 
-    def _signature(self, kind, indices, *, checkpoint=False, encode=False):
-        """Fingerprint served bytes after any validator-declared checkpoint codec."""
+    def _signature(self, kind, indices):
+        """Fingerprint the served bytes of one state kind at the named rows."""
         torch = self.torch
-        raw = self._state(kind, indices, checkpoint=checkpoint, encode=encode)
+        raw = self._state(kind, indices)
         raw = raw.view(torch.uint8).reshape(len(indices), -1)
         words = raw.view(torch.int32) if raw.shape[1] % 4 == 0 else raw.to(torch.int32)
         if kind not in self.weights:
@@ -133,14 +110,14 @@ class PrefixStateAudit:
         prime = _MODULI[0][0]
         return (words.to(torch.int64) * self.weights[kind] % prime).sum(1) % prime
 
-    def _pairs(self, req, ids, lengths, indices, family, *, record, checkpoint=False):
+    def _pairs(self, req, ids, lengths, indices, family, *, record):
         """Bind each state fingerprint to the namespaced token prefix it resumes."""
         for kind in self.buffers:
             if kind[0] != family:
                 continue
             namespace = (req.extra_key, req.cache_salt or None, *kind)
             digests = self.guard._digests(ids, namespace, lengths)
-            value = self._signature(kind, indices, checkpoint=checkpoint, encode=record)
+            value = self._signature(kind, indices)
             cells = self.guard._cells(digests, value)
             if record:
                 for cell in cells:
@@ -168,16 +145,8 @@ class PrefixStateAudit:
         lengths = (pages + 1) * page + self.guard.bigram
         self._pairs(req, ids, lengths, slots, "swa", record=record)
 
-    def _physical(self, value):
-        if value is None:
-            self.guard.refuse("a served recurrent prefix has no checkpoint slot")
-        index = self.torch.as_tensor(value, device=self.guard.device).reshape(-1)
-        if len(index) != 1:
-            self.guard.refuse("a recurrent prefix must name exactly one checkpoint")
-        return self.requests.translate_mamba_indices(index).long()
-
     def record(self, req, ids, row, held, *, finished):
-        """Record reusable checkpoints and preserve an unfinished request's live state."""
+        """Record computed windows and preserve an unfinished request's live ring state."""
         if audit._rate() <= 0:
             return
         if req.rid in self.pending:
@@ -185,43 +154,15 @@ class PrefixStateAudit:
         self._swa(req, ids, row, record=True, start=max(held.own, held.recorded))
         if self.ring is not None and not finished:
             self.owned[req.rid] = self._ring_snapshot(req, len(row))
-        if self.mamba is None:
-            return
-        extra = self.params.enable_mamba_extra_buffer
-        length = req.kv.mamba_last_track_seqlen if extra else len(ids)
-        if finished and not extra and self.mamba.replayssm_write_pos is not None:
-            length -= int(self.mamba.replayssm_write_pos[req.kv.mamba_pool_idx].item())
-        if length is not None and not 0 <= length <= len(ids):
-            raise RuntimeError("tree_cache: engine checkpoint boundary is outside the committed prefix")
-        if length:
-            value = req.kv.mamba_pool_idx
-            if extra:
-                keep = self.requests.get_mamba_ping_pong_keep_idx(req)
-                value = req.kv.mamba_ping_pong_track_buffer[keep]
-            lengths = self.torch.tensor([length], device=self.guard.device)
-            self._pairs(req, ids, lengths, self._physical(value), "mamba", record=True)
-        if not finished:
-            active = self._physical(req.kv.mamba_pool_idx)
-            self.owned[req.rid] = {kind: self._signature(kind, active)
-                                   for kind in self.buffers if kind[0] == "mamba"}
 
-    def _check(self, req, ids, row, *, loaded_mamba=False):
+    def _check(self, req, ids, row):
         self._swa(req, ids, row, record=False)
-        if self.mamba is not None:
-            source = None if loaded_mamba else req.kv.mamba_cow_src_index
-            if source is None:
-                source = req.kv.mamba_pool_idx
-            lengths = self.torch.tensor([len(row) + self.guard.bigram], device=self.guard.device)
-            checkpoint = self.checkpoints is not None and not loaded_mamba
-            indices = (self.torch.as_tensor(source, device=self.guard.device).reshape(-1).long()
-                       if checkpoint else self._physical(source))
-            self._pairs(req, ids, lengths, indices, "mamba", record=False, checkpoint=checkpoint)
         self.guard.publish()
 
     def matched(self, params, result):
         """Check a served prefix before the first forward consumes its short-lived state."""
         req = params.req
-        if audit._rate() <= 0 or req is None or (self.mamba is not None and not params.cow_mamba):
+        if audit._rate() <= 0 or req is None:
             return
         length = len(result.device_indices) + result.host_hit_length
         if not length:
@@ -233,8 +174,8 @@ class PrefixStateAudit:
                 self.guard.refuse("a request-local ring requires replay of its trailing window")
             return
         ids = list(params.key.raw_token_ids())
-        if result.host_hit_length or result.swa_host_hit_length or result.mamba_host_hit_length:
-            self.pending[req.rid] = (req, ids, length, bool(result.mamba_host_hit_length))
+        if result.host_hit_length or result.swa_host_hit_length:
+            self.pending[req.rid] = (req, ids, length)
         else:
             self._check(req, ids, result.device_indices)
 
@@ -250,10 +191,10 @@ class PrefixStateAudit:
                 raise RuntimeError("tree_cache: no native transfer stream for the hybrid host audit")
             # Wait only on the submitted copies, never on unrelated model/NCCL streams.
             self.torch.cuda.current_stream(self.guard.device).wait_stream(stream)
-        for req, ids, length, loaded_mamba in self.pending.values():
+        for req, ids, length in self.pending.values():
             if len(req.prefix_indices) < length:
                 self.guard.refuse("a host load returned fewer prefix slots than it claimed")
-            self._check(req, ids, req.prefix_indices[:length], loaded_mamba=loaded_mamba)
+            self._check(req, ids, req.prefix_indices[:length])
         self.pending.clear()
         self.guard.poll(block=True)
 
@@ -268,10 +209,6 @@ class PrefixStateAudit:
             after = self._ring_snapshot(req, len(row))
             for kind, value in before.items():
                 self.guard._flag(_STATE, after[kind] != value)
-        elif before:
-            active = self._physical(req.kv.mamba_pool_idx)
-            for kind, value in before.items():
-                self.guard._flag(_STATE, self._signature(kind, active) != value)
         self.guard.publish()
 
     def _ring_snapshot(self, req, length):

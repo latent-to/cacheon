@@ -118,14 +118,14 @@ class ArenaRuntimeIdentity:
 
 @dataclass(frozen=True)
 class WorkloadCell:
-    """One scored serving cell, stated exactly as the session executes it.
+    """One sealed serving cell of the engine-conditioning and audit batches.
 
-    The declaration and the consumed ``SessionExecutionPlan`` are projections
-    of the same sealed authority: ``concurrency`` is the width of every sealed
-    prompt batch, ``output_tokens`` is the session's exact generation budget
-    (``ignore_eos``), and ``input_tokens`` is the engine-observed prompt length
-    every timed request must report.  A plan that cannot satisfy the cell
-    cannot commission, so the declared and executed workloads cannot diverge.
+    ``input_tokens`` and the batch-to-cell routing set the prompt geometry of
+    the conditioning batches that warm each engine before a replay window and
+    of the audit batches that reuse those shapes; ``concurrency`` is checked
+    against the sealed prompt batches at commissioning. ``output_tokens`` and
+    ``timed_reads`` are retained identity only: the scored work is the sealed
+    replay slice, and conditioning generates a fixed 16 tokens per request.
     """
 
     cell_id: str

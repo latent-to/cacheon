@@ -94,13 +94,13 @@ slot or host tier the bytes came through. Serving other bytes, keeping pages
 across a flush, moving a request's own slots, claiming more tokens than the key, or
 serving or protecting a length that is not whole pages stops the engine as the
 candidate's failure, as does a `match_prefix` result that is not SGLang's `MatchResult`.
-Validation covers full-attention, sliding-window, compressed and recurrent state. See
+Validation covers full-attention, sliding-window and compressed state. See
 [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
-The prefix cache is a target only on arenas that serve with prefix caching. The
-Qwen development configuration disables radix caching, and a cache bundle there
-stops with `this hybrid runtime disables prefix caching`; cache bundles apply to
-the GLM arena. The operator's announcement names each arena's open targets.
+The prefix cache is a target only on arenas that serve with prefix caching. On an
+arena whose engine configuration disables radix caching, a cache bundle stops with
+`this hybrid runtime disables prefix caching`. The operator's announcement names
+each arena's open targets.
 At the GLM arena's sealed load, the stock cache already reaches the prefix hit
 rate the workload allows, so a cache win comes from lower overhead or better
 behavior under memory pressure rather than more hits.

@@ -88,7 +88,7 @@ The table is a request, not policy. Intake resolves it against the frozen
 [target catalog](target-catalog.md) and complete observed feature set. The
 current resolver infers the target whose node roots hold every declared
 address. New competitive bundles should declare `[competition]` explicitly. Additional arenas
-require an explicit `arena`, for example `arena = "qwen36-35b-h100-bf16-tp1"`.
+require an explicit `arena`, for example `arena = "glm53-b300-node-v1"`.
 It participates in the bundle hash and selects one evaluation; submissions are
 not broadcast to every model.
 An unknown selector stays unclaimed and is subject to the ordinary intake SLA.

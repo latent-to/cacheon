@@ -29,7 +29,9 @@ The scored workload is a sealed agent-replay slice. The commission's
 `session.replay` names the slice manifest and its digest, the operating load and
 the number of paired windows; see
 [Finite agent replay](qualification.md#finite-agent-replay). The arena's declared
-workload cells still describe the engine-conditioning batches. Context length,
+workload cells set the input-token geometry and batch routing of the
+engine-conditioning and audit batches; their output-token and timed-read fields are
+retained identity only. Context length,
 admission width, graph mode and watchdog settings come from the sealed engine
 template. Qualification rejects a session that differs from its sealed authority
 before launch.

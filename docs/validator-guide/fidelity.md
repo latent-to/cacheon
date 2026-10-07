@@ -50,7 +50,7 @@ have been recorded. A request's own slots must not move between handoffs, and a 
 forgets every pair. The check is on content, so a host-memory tier that restores the
 exact bytes passes.
 
-Sliding-window KV and recurrent checkpoints can be overwritten within a forward pass,
+Sliding-window KV can be overwritten within a forward pass,
 so in the untimed audit role the adapter also records that state before the cache
 receives it and checks served device hits and, after the cache submits its loads, host hits. A candidate refusal stops the
 engine and is receipted as the candidate's; a stock refusal is an infrastructure
