@@ -77,10 +77,12 @@ python -m cacheon.cli check /bundles/my_bundle \
 ```
 
 The first batch contains eight public synthetic prompts, each tokenized to
-exactly 8,192 tokens with this model's tokenizer. A second batch reuses 512-token
-prefixes of those prompts, twice each. Both generate eight deterministic output
-tokens with EOS stopping disabled. The 24 requests exercise prefill, DSpark
-verification and prefix reuse while keeping the untimed, per-call audit bounded.
+exactly 8,192 tokens with this model's tokenizer. Two subsequent batches each
+contain the same eight 512-token prefixes. The last batch starts after the
+preceding batch finishes, allowing prefix reuse. All three generate eight output
+tokens with zero temperature and EOS stopping disabled. The 24 requests exercise
+prefill, DSpark verification and prefix reuse while keeping the untimed,
+per-call audit bounded.
 The text describes summing a list of integers and dividing by its length; each
 prompt has a distinct numbered prefix. No hidden quality questions are included.
 

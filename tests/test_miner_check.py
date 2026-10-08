@@ -32,6 +32,16 @@ def test_glm_development_inputs_cover_cache_audits_on_every_dp_rank():
     assert {tuple(row) for row in reused} == {tuple(row[:512]) for row in original}
 
 
+def test_dsv41_cache_reuse_follows_a_completed_short_batch():
+    # Concurrent short duplicates produced zero cache hits on H100 (2026-10-08).
+    arena = Path(__file__).parents[1] / "examples/arena_inputs/dsv41flash"
+    requests = json.loads((arena / "development-requests.json").read_text())
+    initial, first, repeated = (request["input_ids"] for request in requests)
+    assert len(initial) == len(first) == len(repeated) == 8
+    assert repeated == first == [row[:512] for row in initial]
+    assert all(len(row) == 8192 for row in initial)
+
+
 def _bundle(root, body="def forward(module, *args, **kwargs):\n    return None\n"):
     root.mkdir()
     (root / "entry.py").write_text(body)
