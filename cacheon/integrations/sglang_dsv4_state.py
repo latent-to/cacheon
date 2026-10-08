@@ -126,7 +126,8 @@ def dsv4_state_rows(pool, batch, layer: int | None = None) -> list[tuple] | None
         if state is not None:
             if not getattr(state, "request_scoped", False):
                 raise RuntimeError("only request-scoped DeepSeek-V4 compressor state is recognized")
-            scores = state.kv_score_buffer.kv_score
-            ring = scores.reshape(-1, int(state.ring_size) * scores.shape[-1])
+            # The allocation also holds a spare ring, sentinel and alignment rows.
+            scores = state.kv_score_buffer.kv_score[:pool.num_req_slots * state.ring_size]
+            ring = scores.reshape(pool.num_req_slots, -1)
             rows.append((ring, 0, slots, scores.dtype))
     return rows

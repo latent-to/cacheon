@@ -102,12 +102,14 @@ def test_a_window_pool_that_stores_whole_pages_is_checked_by_page(corrupt):
 
 
 @pytest.mark.parametrize("corrupt", [False, True])
-def test_request_held_compressor_state_must_survive_a_cache_handoff(corrupt):
+@pytest.mark.parametrize("ring_size", [2, 8])
+def test_request_held_compressor_state_must_survive_a_cache_handoff(corrupt, ring_size):
     swa = NS(size=64, page_size=PAGE, kv_buffer=[torch.zeros(64 // PAGE + 1, PAGE * 2)])
     ctx = _window_engine(swa)
-    scores = torch.zeros(8 * 2, 3)  # eight request slots, a pending-pair ring of two
+    scores = torch.zeros(((8 * ring_size + ring_size + 2) // 2) * 2, 3)
+    ctx.params.token_to_kv_pool_allocator.pool.num_req_slots = 8
     ctx.params.token_to_kv_pool_allocator.pool.compress_state_pools = [
-        NS(request_scoped=True, ring_size=2, kv_score_buffer=NS(kv_score=scores)), None,
+        NS(request_scoped=True, ring_size=ring_size, kv_score_buffer=NS(kv_score=scores)), None,
     ]
     guard = _Guard(ctx)
     assert guard.hybrid.live and ("request", "compress_state_pools", 0) in guard.hybrid.buffers

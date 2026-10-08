@@ -21,7 +21,7 @@ def _v4_page(tokens, nope, exponent):
     return torch.cat((data.reshape(-1), torch.full((tokens * 8,), exponent, dtype=torch.uint8)))
 
 
-def _pool():
+def _pool(ring_size=2):
     """A DeepSeek-V4.1 pool as 0.5.21 lays it out: whole pages of four tokens per row.
 
     Layer 0 keeps only its window; layer 1 is a ratio-2 kv-source layer with
@@ -32,7 +32,10 @@ def _pool():
     kv2 = SimpleNamespace(kv_buffer=[torch.zeros(3, 2 * 584, dtype=torch.uint8)], page_size=2, kv_layout="v4")
     indexer = SimpleNamespace(index_k_with_scale_buffer=[torch.zeros(6, 68, dtype=torch.uint8)], page_size=1,
                               index_head_dim=128, use_fp4_indexer=True)
-    state = SimpleNamespace(request_scoped=True, ring_size=2, kv_score_buffer=SimpleNamespace(kv_score=torch.zeros(8, 3)))
+    # Four request rings plus the runtime's spare ring, sentinel and ratio-2 padding.
+    state_rows = ((4 * ring_size + ring_size + 2) // 2) * 2
+    state = SimpleNamespace(request_scoped=True, ring_size=ring_size,
+                            kv_score_buffer=SimpleNamespace(kv_score=torch.zeros(state_rows, 3)))
     swa.kv_buffer[1][2] = _v4_page(4, 2.0, 128)
     kv2.kv_buffer[0][1] = _v4_page(2, 3.0, 127)
     indexer.index_k_with_scale_buffer[0][2:4, :64] = 0x21
@@ -40,7 +43,7 @@ def _pool():
     return SimpleNamespace(
         layer_mapping=[(0, 0, None), (2, 0, kv2)], sources_by_ratio={2: [1]}, index_pools={2: indexer},
         compress_state_pools=[None, state], swa_kv_pool=swa, unified_kv_pool=None, _stage_start=0,
-        page_size=4, translate_loc_from_full_to_swa=lambda slots: slots + 4,
+        page_size=4, num_req_slots=4, translate_loc_from_full_to_swa=lambda slots: slots + 4,
     )
 
 
@@ -48,8 +51,9 @@ def _batch():
     return SimpleNamespace(out_cache_loc=torch.tensor([4, 5, 6, 7]), req_pool_indices=torch.tensor([1]))
 
 
-def test_pages_are_addressed_by_page_and_graded_as_the_numbers_they_hold():
-    pool = _pool()
+@pytest.mark.parametrize("ring_size", [2, 8])
+def test_pages_are_addressed_by_page_and_graded_as_the_numbers_they_hold(ring_size):
+    pool = _pool(ring_size)
     window, compressed, index, ring = dsv4_state_rows(pool, _batch(), 1)
     assert window[2].tolist() == [2] and compressed[2].tolist() == [1] and index[2].tolist() == [2, 3]
     values = state_values(window[0].index_select(0, window[2]), window[3])
@@ -59,7 +63,7 @@ def test_pages_are_addressed_by_page_and_graded_as_the_numbers_they_hold():
                        torch.full((1, 2, 448), 3.0))
     keys = state_values(index[0].index_select(0, index[2]), index[3])
     assert keys.shape == (2, 1, 128) and keys[0, 0, :4].tolist() == [1.0, 2.0, 1.0, 2.0]
-    assert ring[0].shape == (4, 6) and ring[2].tolist() == [1] and ring[3] == torch.float32
+    assert ring[0].shape == (4, ring_size * 3) and ring[2].tolist() == [1] and ring[3] == torch.float32
     assert len(dsv4_state_rows(pool, _batch(), 0)) == 1  # a window-only layer
     assert len(dsv4_state_rows(pool, _batch())) == 5  # the whole stack
 

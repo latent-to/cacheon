@@ -96,7 +96,8 @@ class PrefixStateAudit:
                                         for b in getattr(self.ring, name, ()) if b is not None]
         for name in ("compress_state_pools", "indexer_compress_state_pools"):
             groups["request", name] = [
-                p.kv_score_buffer.kv_score.reshape(-1, p.ring_size * p.kv_score_buffer.kv_score.shape[-1])
+                p.kv_score_buffer.kv_score[:self.pool.num_req_slots * p.ring_size].reshape(
+                    self.pool.num_req_slots, -1)
                 for p in getattr(self.pool, name, ())
                 if p is not None and (self.ring is not None or getattr(p, "request_scoped", False))
             ]
