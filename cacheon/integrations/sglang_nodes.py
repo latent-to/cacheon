@@ -150,7 +150,15 @@ def _state_rows(
         raise RuntimeError("recurrent state is not audited on this runtime")
     if batch.out_cache_loc is None:
         return []
-    return _cache_rows(runner.token_to_kv_pool, batch, layer)
+    rows = _cache_rows(runner.token_to_kv_pool, batch, layer)
+    model = getattr(runner, "model", None)
+    hasher = getattr(getattr(model, "model", model), "engram_hasher", None)
+    history = getattr(hasher, "history", None)
+    if torch.is_tensor(history):
+        # Engram commits token history outside the KV pool; each reference must
+        # start from the same n-gram, not the previous reference's update.
+        rows.append((history, 0, batch.req_pool_indices.long(), history.dtype))
+    return rows
 
 
 def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:

@@ -133,6 +133,9 @@ decoded by the layout the pool declares: E4M3 values with one UE8M0 exponent per
 tile and a BF16 rotary tail, or packed E2M1 values with E4M3 scales; its FP4
 index pages are decoded the same way, and a kv-source layer's compressed pages,
 index pages and per-request pending-pair ring are graded with its window pages.
+Engram's per-request token history lives outside those pools. The audit restores
+and grades it too, so stock, the honest twin and the candidate each start from
+the same n-gram history.
 An unrecognized packed layout raises instead of being interpreted as homogeneous
 FP8. The first
 failed window of each bound node is logged with its concrete name and tensor

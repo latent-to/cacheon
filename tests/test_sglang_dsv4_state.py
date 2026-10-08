@@ -117,3 +117,39 @@ def test_pages_are_restored_before_the_candidate_and_wrong_pages_fail(audited, c
     assert torch.equal(runner.model.source(torch.ones(2, 4), batch), torch.full((2, 4), 2.0))
     assert torch.equal(seen[0], before)
     assert audited["source"]["violations"] == int(corrupt)
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_engram_history_is_restored_and_graded(audited, corrupt):  # noqa: F811
+    runner, batch = _served_model()
+    batch.req_pool_indices = torch.tensor([1])
+
+    class Stack(nn.Module):
+        """An Engram lookup whose answer depends on the prior request history."""
+
+        def __init__(self):
+            super().__init__()
+            self.engram_hasher = SimpleNamespace(history=torch.zeros(3, 3, dtype=torch.int32))
+
+        def forward(self, x, batch):
+            history = self.engram_hasher.history
+            history[batch.req_pool_indices] += 1
+            return x + history[batch.req_pool_indices].float()
+
+    seen = []
+
+    def candidate(module, x, batch):
+        seen.append(module.engram_hasher.history.clone())
+        result = module.forward(x, batch)
+        if corrupt:
+            module.engram_hasher.history[batch.req_pool_indices] += 10000
+        return result
+
+    runner.model.model = Stack()
+    nodes.bind(runner, _registry("model", candidate))
+    assert torch.equal(runner.model.model(torch.zeros(1, 3), batch), torch.ones(1, 3))
+    assert torch.equal(seen[0], torch.zeros(3, 3, dtype=torch.int32))
+    assert runner.model.model.engram_hasher.history.tolist() == [
+        [0, 0, 0], [10001 if corrupt else 1] * 3, [0, 0, 0],
+    ]
+    assert audited["model"]["violations"] == int(corrupt)
