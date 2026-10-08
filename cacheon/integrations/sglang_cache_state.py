@@ -160,7 +160,10 @@ class PrefixStateAudit:
         # earlier window. On reads, require the whole live window regardless of
         # eviction metadata supplied by the cache.
         begin = max(start, _evicted(req)) if record else max(0, len(row) - self.window)
-        first, last = (begin + page - 1) // page, end // page
+        # DSV4.1's window is smaller than a page: rounding its read start up
+        # skips that whole live window. Include the first partially used page.
+        first = (begin + page - 1) // page if record else begin // page
+        last = end // page
         if first >= last:
             return
         pages = torch.arange(first, last, device=self.guard.device)

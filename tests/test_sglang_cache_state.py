@@ -81,9 +81,12 @@ def test_swa_checks_live_windows_including_earlier_branches(corrupt, evicted, hi
 
 
 @pytest.mark.parametrize("corrupt", [False, True])
-def test_a_window_pool_that_stores_whole_pages_is_checked_by_page(corrupt):
+@pytest.mark.parametrize("window", [2, 6, 8])
+def test_a_window_pool_that_stores_whole_pages_is_checked_by_page(corrupt, window):
     swa = NS(size=64, page_size=PAGE, kv_buffer=[torch.zeros(64 // PAGE + 1, PAGE * 2)])
-    guard = _Guard(_window_engine(swa))
+    ctx = _window_engine(swa)
+    ctx.params.sliding_window_size = window
+    guard = _Guard(ctx)
     assert guard.hybrid.paged == {("swa", "kv_buffer", 0)}
     cache = _cache(guard)
     tokens, row = list(range(16)), torch.arange(PAGE, PAGE + 16)
@@ -92,7 +95,7 @@ def test_a_window_pool_that_stores_whole_pages_is_checked_by_page(corrupt):
         swa.kv_buffer[0][page] = float(sum(tokens[:(page + 1) * PAGE]))
     guard.handoff(cache, _request("source", tokens, 0), tokens, finished=True)
     if corrupt:
-        swa.kv_buffer[0][3, 1] += 7  # the last page of the live window, as the pool stores it
+        swa.kv_buffer[0][(len(tokens) - window) // PAGE, 1] += 7
     _query(guard, cache, tokens, row)
     if corrupt:
         with pytest.raises(RuntimeError, match="sliding-window"):
