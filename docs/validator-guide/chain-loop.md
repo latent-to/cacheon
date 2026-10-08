@@ -607,7 +607,7 @@ The controller maps failures according to where authority was lost:
 | Eval-cost payment lookup RPC/decode blip | pass aborted; cursor unchanged | Retry the pass; do not fail the miner |
 | Transient HTTPS/DNS or immutable-publication storage fault | `transport_retry` / `NO_DECISION` | Retry until the transport budget, then `held` |
 | Qualification plan/runner/raw-speed failure affecting a registered cohort | `NO_DECISION` for every member plus a persisted bisection plan | Cohort halves are retried to isolate poisoning without assigning losses |
-| Per-candidate post-attempt `NO_DECISION` | Retained report plus one-candidate requeue | Retry in primary or reproduction lane |
+| Completed remote `NO_DECISION` | Retained result; reservation remains `held` and earns no reward | No automatic rerun; later PASSes can settle and earn without releasing this hold |
 | Complete audited `PASS` | `qualified`; candidate becomes settlement-pending | No second qualification; settlement leases it when earlier economic blockers clear |
 
 The qualification retry counter counts retained qualification dispositions; the same

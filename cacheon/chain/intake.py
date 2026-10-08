@@ -1850,6 +1850,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         *,
         cohort_ids: frozenset[str],
     ) -> tuple[str, ...]:
+        from cacheon.chain.evaluation_order import _completed_no_decision
         blockers: list[str] = []
         candidate_row = self.get(candidate.reservation_digest)
         for row in self.all():
@@ -1859,7 +1860,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 break
             if row.reservation_id in cohort_ids:
                 continue
-            if row.status in {"failed", "expired"}:
+            if row.status in {"failed", "expired"} or _completed_no_decision(row):
                 continue
             if row.status == "qualified":
                 economic = self._db.execute(
@@ -1869,8 +1870,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 if economic is not None and economic["status"] in {
                     "crowned", "neutralized", "held", "discovery_bounty",
                     "duplicate_proposal", "review_pending", "reviewed_bounty",
-                    "reviewed_promotion", "review_ineligible",
-                    "review_expired",
+                    "reviewed_promotion", "review_ineligible", "review_expired",
                 }:
                     continue
             blockers.append(row.reservation_id)

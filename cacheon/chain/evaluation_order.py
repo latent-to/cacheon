@@ -4,13 +4,12 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from cacheon.chain.intake import FinalizedIntakeStore
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakeReservation
 
 # Callers join reservations as r. An infrastructure HOLD remains unresolved;
-# later measurements may finish and release devices, but cannot earn yet.
+# a completed remote NO_DECISION has no reward or priority over later PASSes.
 # Physical worker state is deliberately absent: later active jobs do not block
-# earlier completed submissions. Existing terminal disposition policy owns
-# whether an expiry or FAIL resolves a reservation.
+# earlier completed submissions.
 COMPLETED_ARRIVAL_PREFIX = """
 NOT EXISTS (
     SELECT 1 FROM reservations AS predecessor
@@ -19,8 +18,22 @@ NOT EXISTS (
            predecessor.hotkey,predecessor.content_hash)
         < (r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash)
       AND predecessor.status NOT IN ('qualified','failed','expired')
+      AND NOT (
+          predecessor.status='held'
+          AND predecessor.reason='remote_qualification_hold:legacy_no_decision'
+          AND predecessor.qualification_evidence_digest!=''
+      )
 )
 """
+
+
+def _completed_no_decision(row: "IntakeReservation") -> bool:
+    """Recognize the retained non-verdict written by remote HOLD completion."""
+    return (
+        row.status == "held"
+        and row.reason == "remote_qualification_hold:legacy_no_decision"
+        and bool(row.qualification_evidence_digest)
+    )
 
 
 def ensure_reward_prefix(store: "FinalizedIntakeStore") -> None:
