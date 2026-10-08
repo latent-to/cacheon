@@ -105,7 +105,7 @@ def dsv4_state_rows(pool, batch, layer: int | None = None) -> list[tuple] | None
     slots = batch.req_pool_indices.long()
     window_held = _page_format(swa)
     rows = []
-    for index in range(len(mapping)) if layer is None else [layer]:
+    for index in range(pool._stage_start, pool._stage_end) if layer is None else [layer]:
         item = mapping[index] if 0 <= index < len(mapping) else None
         if item is None:
             raise RuntimeError(f"layer {index} has no DeepSeek-V4 cache in this pool")

@@ -134,6 +134,7 @@ tile and a BF16 rotary tail, or packed E2M1 values with E4M3 scales; its FP4
 index pages are decoded the same way, and a kv-source layer's compressed pages,
 index pages and per-request pending-pair ring are graded with its window pages;
 allocation padding and sentinel rows are outside those request rings.
+Whole-node snapshots use the pool's active layer range, excluding unowned draft or pipeline stages.
 Engram's per-request token history lives outside those pools. The audit restores
 and grades it too, so stock, the honest twin and the candidate each start from
 the same n-gram history.

@@ -42,7 +42,7 @@ def _pool(ring_size=2):
     indexer.index_k_with_scale_buffer[0][2:4, 64:] = 128
     return SimpleNamespace(
         layer_mapping=[(0, 0, None), (2, 0, kv2)], sources_by_ratio={2: [1]}, index_pools={2: indexer},
-        compress_state_pools=[None, state], swa_kv_pool=swa, unified_kv_pool=None, _stage_start=0,
+        compress_state_pools=[None, state], swa_kv_pool=swa, unified_kv_pool=None, _stage_start=0, _stage_end=2,
         page_size=4, num_req_slots=4, translate_loc_from_full_to_swa=lambda slots: slots + 4,
     )
 
@@ -66,6 +66,21 @@ def test_pages_are_addressed_by_page_and_graded_as_the_numbers_they_hold(ring_si
     assert ring[0].shape == (4, ring_size * 3) and ring[2].tolist() == [1] and ring[3] == torch.float32
     assert len(dsv4_state_rows(pool, _batch(), 0)) == 1  # a window-only layer
     assert len(dsv4_state_rows(pool, _batch())) == 5  # the whole stack
+
+
+@pytest.mark.parametrize("start", [0, 40])
+def test_whole_node_reads_only_the_layers_owned_by_its_pool(start):
+    pool = _pool()
+    # Target and draft/PP pools share model-wide arrays; unowned entries are None.
+    pool.layer_mapping = [None] * start + pool.layer_mapping + [None] * 3
+    pool.compress_state_pools = [None] * start + pool.compress_state_pools + [None] * 3
+    pool.sources_by_ratio = {2: [start + 1]}
+    pool._stage_start, pool._stage_end = start, start + 2
+    rows = dsv4_state_rows(pool, _batch())
+    assert len(rows) == 5
+    assert rows[0][0] is pool.swa_kv_pool.kv_buffer[0]
+    assert rows[1][0] is pool.swa_kv_pool.kv_buffer[1]
+    assert len(dsv4_state_rows(pool, _batch(), start + 1)) == 4
 
 
 @pytest.mark.parametrize("fault, cause", [
