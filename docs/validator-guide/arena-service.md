@@ -124,6 +124,28 @@ must agree; every qualification executor consumes the same values.
 Commissioning requires faithful, broken and infrastructure controls through the
 production entrypoint, with graphs, audit/T roles, retained evidence and restart
 recovery. CPU composition and compatibility checks do not establish GPU success.
+The broken control must be faster than stock, so that it clears the speed gate
+and the correctness audit is what rejects it; a control that only corrupts its
+answer at stock speed fails the paired speed test first and proves nothing about
+the audit.
+The exception is a control listed by selected delta digest in the sealed
+`qualification.policy.audit_control_delta_digests`, a sorted list of distinct
+lowercase SHA-256 digests (omitted means none; the registered policy digest
+changes only when it is non-empty). Its plan carries the calibration-observation
+disposition: the audit still runs after a speed failure, pristine T does not, and
+the verdict stays the speed grade unless the audit grades `FAIL` or `NO_DECISION`,
+which exits at the audit stage. Intake and the deployment check refuse that
+disposition for every unlisted delta.
+
+A host that keeps the checkpoint in RAM reloads it at boot from an enabled
+oneshot unit ordered before the container runtime, and reapplies the GPU clock
+lock in the same unit, so a reboot cannot silently change the measured engine.
+After a host reboot, restart the CPU-side pair units: their start hook
+re-launches the pod service over the registered transport and then starts the
+relay. Retiring a pair archives its whole tree except the materialized replay
+slices and worker scratch, and the validator VM pulls those archives over the
+pinned host key, so required evidence survives both pair retirement and pod
+loss.
 
 ## Registry and CLI boundary
 

@@ -158,8 +158,9 @@ physical-lane role assignment. Evidence reopens under the arithmetic that
 produced it; a label change cannot upgrade it and pre-v16 witnesses are refused.
 
 The authoritative work is staged. Speed is decided first; audit and pristine-reference
-quality run only after the speed stage remains eligible, apart from an explicitly
-registered calibration-observation continuation.
+quality run only after the speed stage remains eligible. The one exception is a
+validator-registered control delta listed in the sealed policy: its audit still runs
+after a speed non-PASS, pristine T does not, and the verdict stays the speed grade.
 
 | Arm | Stack | Timed? | Purpose |
 |---|---|---:|---|

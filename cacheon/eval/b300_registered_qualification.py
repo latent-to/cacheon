@@ -511,7 +511,12 @@ class B300RegisteredQualificationFactory:
             speed_evidence_policy=SpeedEvidencePolicy.resident(),
             resident_speed_plan=resident_plan,
             resident_audit_plan=audit_authority,
-            speed_stage_disposition=SpeedStageDisposition.TERMINAL,
+            speed_stage_disposition=(
+                SpeedStageDisposition.CALIBRATION_OBSERVATION
+                if candidate.reservation.selected_delta_digest
+                in inputs.policy.audit_control_delta_digests
+                else SpeedStageDisposition.TERMINAL
+            ),
         )
 
 

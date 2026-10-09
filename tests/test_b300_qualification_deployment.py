@@ -41,7 +41,7 @@ from cacheon.eval.oci_backend import (
 )
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig
 from cacheon.eval.qualification_intake import QualificationReservation
-from cacheon.eval.qualification_runner import HiddenJudgeBinding
+from cacheon.eval.qualification_runner import HiddenJudgeBinding, SpeedStageDisposition
 from cacheon.stack_manifest import EvaluationStackManifest, ProposalContributionRef
 from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
@@ -592,6 +592,28 @@ def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
         baseline_executor,
     )
     assert accepted is value
+
+    # A sealed control delta is planned under calibration observation, and the
+    # deployment check accepts that disposition exactly when the delta is listed.
+    delta = harness.candidate.reservation.selected_delta_digest
+    listed_policy = replace(harness.policy, audit_control_delta_digests=(delta,))
+    assert "audit_control_delta_digests" not in harness.policy.to_dict()
+    assert listed_policy.digest != harness.policy.digest
+    with pytest.raises(fixtures.registered.B300RegisteredQualificationError, match="canonical"):
+        replace(harness.policy, audit_control_delta_digests=(delta, delta))
+    observed = fixtures.registered.build_b300_registered_qualification_factory(
+        replace(harness.inputs, policy=listed_policy)
+    ).plan_builder(harness.cohort, secret)
+    assert observed.speed_stage_disposition is SpeedStageDisposition.CALIBRATION_OBSERVATION
+    listed = replace(construction, audit_control_delta_digests=(delta,))
+    executors = (candidate_executor, baseline_executor)
+    assert deployment._validate_plan(observed, harness.cohort, secret, listed, *executors) is observed
+    for plan, authority in ((observed, construction), (value, listed)):
+        with pytest.raises(
+            deployment.B300QualificationDeploymentError,
+            match="differs from resident-v3 deployment authority",
+        ):
+            deployment._validate_plan(plan, harness.cohort, secret, authority, *executors)
 
     with pytest.raises(
         deployment.B300QualificationDeploymentError,

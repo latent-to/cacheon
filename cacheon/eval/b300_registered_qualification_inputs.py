@@ -309,6 +309,8 @@ class B300RegisteredQualificationPolicy:
     audit_minimum_calls: int = 32
     audit_max_new_tokens: int = 2
     audit_toplogprobs_num: int = 1
+    # Registered controls whose speed non-PASS still reaches the audit (never T).
+    audit_control_delta_digests: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -402,6 +404,10 @@ class B300RegisteredQualificationPolicy:
             "audit_toplogprobs_num",
         ):
             object.__setattr__(self, field, _positive(getattr(self, field), field))
+        controls = tuple(self.audit_control_delta_digests)
+        if controls != tuple(sorted({_digest(row, "audit control delta") for row in controls})):
+            raise B300RegisteredQualificationError("audit control deltas are not canonical")
+        object.__setattr__(self, "audit_control_delta_digests", controls)
 
     @classmethod
     def seal(
@@ -423,6 +429,7 @@ class B300RegisteredQualificationPolicy:
         audit_minimum_calls: int = 32,
         audit_max_new_tokens: int = 2,
         audit_toplogprobs_num: int = 1,
+        audit_control_delta_digests: tuple[str, ...] = (),
     ) -> "B300RegisteredQualificationPolicy":
         if type(catalog) is not TargetCatalog:
             raise B300RegisteredQualificationError(
@@ -450,6 +457,7 @@ class B300RegisteredQualificationPolicy:
             audit_minimum_calls,
             audit_max_new_tokens,
             audit_toplogprobs_num,
+            audit_control_delta_digests,
         )
 
     def require_catalog(self, catalog: TargetCatalog) -> None:
@@ -476,7 +484,7 @@ class B300RegisteredQualificationPolicy:
             )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "audit_max_new_tokens": self.audit_max_new_tokens,
             "audit_minimum_calls": self.audit_minimum_calls,
             "audit_sample_rate_ppm": self.audit_sample_rate_ppm,
@@ -497,6 +505,10 @@ class B300RegisteredQualificationPolicy:
             "topk_width": self.topk_width,
             "verification_policy_digest": self.verification_policy_digest,
         }
+        # Absent when empty, so every policy sealed before this field keeps its digest.
+        if self.audit_control_delta_digests:
+            payload["audit_control_delta_digests"] = list(self.audit_control_delta_digests)
+        return payload
 
     @property
     def registered_target_ids(self) -> tuple[str, ...]:

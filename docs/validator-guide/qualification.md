@@ -157,9 +157,14 @@ how many run. The retained witness records every window's turn records, lane
 identities, operational timing, and the stage and total budgets.
 
 Speed is graded before the expensive audit and pristine-reference stages. An ordinary
-speed non-PASS emits a durable stage-exit and does not run audit or T. A separately bound
-calibration-observation disposition may continue after a speed failure to collect
-diagnostic audit and T evidence, but it cannot crown the candidate.
+speed non-PASS emits a durable stage-exit and does not run audit or T. A
+validator-registered control whose selected delta digest is listed in the sealed
+`qualification.policy.audit_control_delta_digests` runs under the
+calibration-observation disposition instead: after a speed non-PASS the eager audit
+still runs. An audit `FAIL` or `NO_DECISION` exits at the audit stage as usual; an
+audit `PASS` is retained on the speed stage-exit, whose decision and reason stay the
+speed grade. Pristine T never runs after a speed non-PASS, so the control cannot
+qualify or settle. A listed control that passes speed follows the ordinary path.
 
 A speed FAIL names what the round proved, graded with the verdict itself rather than
 derived from the bare decision. A bar of 1 + u can only call a candidate slower once

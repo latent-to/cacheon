@@ -164,6 +164,13 @@ original evidence and corrected execution under the unchanged candidate,
 workload and numerical policy. A plan that requires audit cannot treat a
 missing or incomplete witness as either a PASS or an attributable candidate FAIL.
 
+A speed stage-exit carries an audit witness only under the calibration-observation
+disposition, which the sealed policy binds to listed validator-registered control
+deltas and whose authority digest has its own domain. The witness must grade `PASS`,
+start after the speed read and fit the total budget; the exit's decision remains the
+speed grade. Reopen rejects an observation speed exit without that witness and a
+terminal speed exit with one, and audit recovery cannot overturn either speed exit.
+
 ### Reopening a disputed speed pass
 
 Start with the settlement candidate and its retained qualification attempt.

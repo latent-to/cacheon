@@ -56,7 +56,7 @@ def run_continuation_quality_stage(
     *, value: Any, executor: Any, entropy_provider: Callable[..., Any],
     deadline: float, make_id: Callable[[], str], continuation: Any | None,
     quality_state: Any | None, resident_lifecycle: Any,
-    resident_speed_witness: Any,
+    resident_speed_witness: Any, speed_grade: Any, speed_reason: str | None,
 ) -> QualificationContinuationStageResult:
     """Run only missing paid stages; fresh and resumed work share the same binding."""
     # Resolve the actual owner at call time: no second registry of its operations.
@@ -135,20 +135,26 @@ def run_continuation_quality_stage(
             )
             if unavailable is not None:
                 raise owner.QualificationContinuationError("slot audit evidence unavailable: " + unavailable)
-        if any(row.decision is not owner.QualificationDecision.PASS for row in audit_witnesses.values()):
+        audit_passed = all(row.decision is owner.QualificationDecision.PASS for row in audit_witnesses.values())
+        # A non-passing speed reaches the audit only under calibration observation; it never reaches T.
+        if not audit_passed or speed_grade is not owner.QualificationDecision.PASS:
             if quality_state is not None:
                 raise owner.QualificationContinuationError(
-                    "quality continuation carries a failed resident audit"
+                    "quality continuation carries a non-passing speed or audit"
                 )
             teardown = executor.prove_quiescent()
             if teardown.observed_monotonic_s < audit_state.audit_last_completed:
                 raise owner.QualificationRunnerError("audit-exit quiescence predates candidate teardown")
             audit = audit_witnesses[value.candidates[0].selected_delta_digest]
-            # The stage exit re-checks this pair against the runner's own vocabulary.
+            # The stage exit re-checks this triple against the runner's own vocabulary.
+            if audit_passed:  # the passing audit rides on the speed verdict
+                stage, decision, reason = "speed", speed_grade, speed_reason
+            else:
+                stage, decision = "audit", audit.decision
+                reason = "slot_audit_failed" if decision is owner.QualificationDecision.FAIL else "audit_not_covered"
             terminal = owner.QualificationStageExit(
                 owner.qualification_authority_digest(value), value.prepared.source.digest,
-                value.candidates[0].selected_delta_digest, "audit", audit.decision,
-                "slot_audit_failed" if audit.decision is owner.QualificationDecision.FAIL else "audit_not_covered",
+                value.candidates[0].selected_delta_digest, stage, decision, reason,
                 speed, audit, audit_started, audit_completed, teardown.digest,
             )
             reference = owner.publish_qualification_stage_exit(value.evidence_root, terminal)

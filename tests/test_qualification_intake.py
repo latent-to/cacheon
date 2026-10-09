@@ -81,7 +81,7 @@ def _fake_plan(monkeypatch, *, count: int = 2):
     return plan, manifest
 
 
-def _factory(plan, manifest):
+def _factory(plan, manifest, controls: tuple[str, ...] = ()):
     return intake.QualificationPlanFactory(
         manifest,
         lambda reference: (
@@ -90,6 +90,7 @@ def _factory(plan, manifest):
             else b""
         ),
         lambda secret: plan,
+        controls,
     )
 
 
@@ -290,21 +291,24 @@ def test_speed_stage_exit_projects_terminal_outcome_without_settlement(
         assert result.retry_plan is None
 
 
-def test_intake_rejects_calibration_observation_before_runner(
-    monkeypatch,
+@pytest.mark.parametrize("listed", (False, True))
+def test_intake_runs_calibration_observation_only_for_listed_control_deltas(
+    monkeypatch, listed: bool,
 ) -> None:
     plan, manifest = _fake_plan(monkeypatch, count=1)
     plan.speed_stage_disposition = SpeedStageDisposition.CALIBRATION_OBSERVATION
-    monkeypatch.setattr(
-        intake,
-        "run_causal_qualification",
-        lambda *_args, **_kwargs: pytest.fail(
-            "economic intake must reject calibration authority before the runner"
-        ),
-    )
+    runs = []
 
+    def run(value, **_kwargs):
+        runs.append(value)
+        raise QualificationRunnerError("stop after authority handoff")
+
+    monkeypatch.setattr(intake, "run_causal_qualification", run)
+    # Only a sealed control delta reaches the runner; any other delta is refused
+    # before it, under the unchanged economic-qualification error.
+    controls = (_d("delta-0"),) if listed else (_d("delta-1"),)
     result = intake.run_qualification_intake(
-        _factory(plan, manifest),
+        _factory(plan, manifest, controls),
         executor=object(),
         resident_baseline_executor=object(),
         entropy_provider=lambda *_args: None,
@@ -312,14 +316,21 @@ def test_intake_rejects_calibration_observation_before_runner(
         deadline=100.0,
     )
 
+    assert runs == ([plan] if listed else [])
     assert result.attempt_ref is None
     assert len(result.outcomes) == 1
     outcome = result.outcomes[0]
     assert outcome.decision is QualificationDecision.NO_DECISION
-    assert outcome.reason == "qualification_plan"
+    assert outcome.reason == ("qualification_runner" if listed else "qualification_plan")
     assert outcome.retryable is True
     assert outcome.report_digest is None
-    assert outcome.failure_digest is not None
+    failure = (
+        QualificationRunnerError("stop after authority handoff") if listed
+        else intake.QualificationIntakeError(
+            "economic qualification cannot use calibration speed continuation"
+        )
+    )
+    assert outcome.failure_digest == intake._failure_digest(manifest, failure)
     assert outcome.settlement_qualification is None
 
 

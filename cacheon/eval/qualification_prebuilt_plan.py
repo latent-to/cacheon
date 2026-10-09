@@ -28,6 +28,7 @@ def sealed_prebuilt_qualification_plan_factory(
     selection_secret_reference: str,
     selection_secret: bytes,
     plan: CausalQualificationInput,
+    audit_control_delta_digests: tuple[str, ...] = (),
 ) -> QualificationPlanFactory:
     """Return a factory which reuses one already sealed immutable plan."""
 
@@ -72,7 +73,9 @@ def sealed_prebuilt_qualification_plan_factory(
             )
         return plan
 
-    return QualificationPlanFactory(manifest, load_secret, load_plan)
+    return QualificationPlanFactory(
+        manifest, load_secret, load_plan, audit_control_delta_digests
+    )
 
 
 __all__ = [

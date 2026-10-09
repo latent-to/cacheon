@@ -142,12 +142,12 @@ DEFAULT_SPEED_EVIDENCE_POLICY = SpeedEvidencePolicy.resident
 class SpeedStageDisposition(str, Enum):
     """Pre-B authority for handling a non-passing resident speed control.
 
-    Economic qualification is always terminal at a speed FAIL/NO_DECISION.  The
-    calibration-observation disposition exists only for the validator's
-    registered singleton bootstrap: its C arm is deliberately excluded from
-    threshold derivation, so the already-authenticated B/C/B-prime lifecycle may
-    continue to collect the stock quality observations.  The final report still
-    retains the real non-passing speed grade and therefore cannot crown.
+    Qualification is terminal at a speed FAIL/NO_DECISION.  The calibration-
+    observation disposition binds only a validator-registered control delta
+    listed in the sealed policy: its non-passing speed still runs the eager
+    audit, whose FAIL/NO_DECISION exits as usual and whose PASS witness is
+    retained on the speed exit.  Pristine T never runs after a non-passing
+    speed, and the speed grade stays the verdict, so the control cannot crown.
     """
 
     TERMINAL = "terminal"
@@ -960,7 +960,7 @@ class AuditWitness:
 
 @dataclass(frozen=True)
 class QualificationStageExit:
-    """Durable early terminal result; later expensive stages were not executed."""
+    """Durable early terminal result carrying every executed stage; T never ran."""
 
     authority_digest: str
     source_digest: str
@@ -1009,11 +1009,11 @@ class QualificationStageExit:
         }.get((self.stage, self.decision), {None})
         if self.reason not in allowed_reasons:
             raise QualificationRunnerError("qualification stage-exit reason differs")
-        if self.stage == "speed":
+        # A speed exit carries an audit only after calibration observation audited it.
+        if self.stage == "speed" and self.audit_witness is None:
             if any(
                 value is not None
                 for value in (
-                    self.audit_witness,
                     self.audit_started_monotonic_s,
                     self.audit_completed_monotonic_s,
                     self.terminal_quiescence_digest,
@@ -1025,7 +1025,8 @@ class QualificationStageExit:
         else:
             if (
                 type(self.audit_witness) is not AuditWitness
-                or self.audit_witness.decision is not self.decision
+                or self.audit_witness.decision
+                is not (QualificationDecision.PASS if self.stage == "speed" else self.decision)
                 or type(self.audit_started_monotonic_s) is not float
                 or type(self.audit_completed_monotonic_s) is not float
                 or not math.isfinite(self.audit_started_monotonic_s)
@@ -1983,25 +1984,26 @@ def reopen_qualification_stage_exit(
             expected.calibration_context,
             expected_policy=expected.speed_evidence_policy,
         )
+        observation = (
+            expected.speed_stage_disposition
+            is SpeedStageDisposition.CALIBRATION_OBSERVATION
+        )
         if result.stage == "speed":
+            # Calibration observation audits a non-passing speed before it exits,
+            # so its speed exit carries that audit; a terminal speed exit never does.
             if (
-                expected.speed_stage_disposition
-                is SpeedStageDisposition.CALIBRATION_OBSERVATION
+                observation == (result.audit_witness is None)
                 or speed_grade is not result.decision
                 or result.reason not in {speed_reason, "speed_regression"}
             ):
                 raise QualificationRunnerError(
                     "speed stage exit does not independently regrade"
                 )
-        else:
+        if result.audit_witness is not None:
             audit = result.audit_witness
             policy = expected.audit_policies[0]
             if (
-                (
-                    speed_grade is not QualificationDecision.PASS
-                    and expected.speed_stage_disposition
-                    is not SpeedStageDisposition.CALIBRATION_OBSERVATION
-                )
+                (speed_grade is not QualificationDecision.PASS and not observation)
                 or type(audit) is not AuditWitness
                 or audit.policy != policy
                 or audit.selected_delta_digest != result.selected_delta_digest
@@ -2374,7 +2376,7 @@ def run_causal_qualification(
                 f"speed continuation does not bind the sealed plan: {exc}"
             ) from None
         raise QualificationRunnerError(str(exc)) from None
-    speed_grade, _speedup, speed_reason = resident_speed_witness.regrade(
+    speed_grade, speedup, speed_reason = resident_speed_witness.regrade(
         calibration,
         value.calibration_context,
         expected_policy=value.speed_evidence_policy,
@@ -2415,6 +2417,8 @@ def run_causal_qualification(
         quality_state=quality_state,
         resident_lifecycle=lifecycle,
         resident_speed_witness=resident_speed_witness,
+        speed_grade=speed_grade,
+        speed_reason=speed_reason,
     )
     if continuation_stage.terminal:
         return continuation_stage.terminal_reference
@@ -2487,11 +2491,6 @@ def run_causal_qualification(
         raw_binding = raw.binding
         t_request_sha256 = exchange.request_sha256
         speed_witness: ResidentSpeedWitness = resident_speed_witness
-        speed_grade, speedup, speed_reason = resident_speed_witness.regrade(
-            calibration,
-            value.calibration_context,
-            expected_policy=value.speed_evidence_policy,
-        )
         speed_evidence_digest = resident_speed_witness.evidence_digest
         if speed_witness.policy != value.speed_evidence_policy:
             raise QualificationRunnerError("projected speed policy differs from authority")

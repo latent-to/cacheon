@@ -14,7 +14,9 @@ from cacheon.eval.crossover_runtime import (
 from cacheon.eval.engine_launch import PhysicalHardwareBinding
 from cacheon.eval.goodput_runtime import GoodputReadSet
 from cacheon.eval.oci_backend import OCIEngineExecutor
+from cacheon.eval.oci_session_protocol import AuditReceiptFacts, SlotAuditPolicy
 from cacheon.eval.qualification_runner import (
+    AuditWitness,
     QualificationStageExit,
     QualificationRunnerError,
     ResidentSpeedWitness,
@@ -249,6 +251,44 @@ def test_resident_speed_witness_round_trips_through_its_stage_exit(
     tampered["baseline_lane_digest"] = plan.candidate_lane_digest
     with pytest.raises(QualificationRunnerError, match="digest"):
         ResidentSpeedWitness.from_dict(tampered)
+
+
+def test_calibration_observation_speed_exit_carries_only_a_later_passing_audit(
+    tmp_path: Path,
+) -> None:
+    from cacheon.audit import gate
+
+    plan, *_ = _rig(tmp_path)
+    witness = _witness(plan)
+    policy = SlotAuditPolicy("a" * 32, 250_000, 1, ("norm.rmsnorm",), 1)
+
+    def audit(violations: int) -> AuditWitness:
+        receipt = AuditReceiptFacts(
+            "norm.rmsnorm", 32, violations, 0, 0, 1.0 - violations, 0.995, "allclose", 901, 0, 1
+        )
+        decision, detail = gate(
+            [receipt.to_gate_dict()], min_calls=1, expected_slots=("norm.rmsnorm",),
+            expected_member_count=1,
+        )
+        return AuditWitness(
+            plan.selected_delta_digest, "c" * 64, "d" * 64, "1" * 32,
+            plan.candidate.runtime_resource_policy_digest, policy, (receipt,),
+            QualificationDecision(decision), detail,
+        )
+
+    def speed_exit(audit_witness: AuditWitness, started: float = 41.0) -> QualificationStageExit:
+        return QualificationStageExit(
+            "a" * 64, "b" * 64, plan.selected_delta_digest, "speed",
+            QualificationDecision.FAIL, "speed_threshold_not_met", witness,
+            audit_witness, started, 50.0, "9" * 64,
+        )
+
+    observed = speed_exit(audit(0))
+    assert QualificationStageExit.from_dict(observed.to_dict()) == observed
+    # A failing audit exits at its own stage, and the audit must follow the speed read.
+    for violations, started in ((1, 41.0), (0, 39.0)):
+        with pytest.raises(QualificationRunnerError, match="audit stage-exit timing"):
+            speed_exit(audit(violations), started)
 
 
 def test_resident_speed_witness_binds_distinct_numa_lane_policies(

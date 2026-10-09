@@ -61,7 +61,10 @@ apart from bytes placed before. See [The prefix cache](../architecture/slot-cont
 
 ## Registered audit-only role
 
-An arena may require a sealed audit plan after the resident speed stage. This is not the
+An arena may require a sealed audit plan after the resident speed stage. The audit
+normally runs only after a speed `PASS`; for a validator-registered control delta listed
+in the sealed policy's `audit_control_delta_digests` it also runs after a speed non-PASS,
+and pristine T then never runs. This is not the
 candidate-side mechanism above. The audit role has its own plan and runtime identity,
 executes outside the charged, versioned speed reads, and emits an exact slot × TP-rank/PID
 witness. Trusted-host regrading checks expected rank coverage, unique processes, minimum
@@ -139,6 +142,10 @@ policy, and runtime identities. Retain the following controls:
    comparison errors, and the retained attempt must reopen independently.
 2. Run the registered residual-drop sabotage candidate through the same audit path. Its
    typed audit witness must make the aggregate qualification a nonretryable failure.
+   A wrong-output control that cannot pass the speed gate is listed by selected delta
+   digest in the sealed `audit_control_delta_digests`; its audit then runs after the
+   speed failure and must exit as `slot_audit_failed`. A speed stage-exit that carries a
+   passing audit witness means the audit did not reject the control.
 3. Inspect every charged speed session. Both audit environment values must be
    empty, no audit receipt may appear, and the charged result must retain the graph mode
    sealed by its speed plan.

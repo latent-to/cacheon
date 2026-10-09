@@ -798,28 +798,34 @@ def test_resident_speed_fail_exits_before_audit_t_and_legacy_lifecycle(
     assert harness.reference_calls == 0
 
 
-def test_resident_calibration_continuation_collects_audit_and_t_after_speed_fail(
-    monkeypatch,
+@pytest.mark.parametrize("audit", (QualificationDecision.PASS, QualificationDecision.FAIL))
+def test_resident_calibration_observation_audits_a_speed_fail_and_never_runs_t(
+    monkeypatch, audit,
 ) -> None:
-    harness, baseline, _stage_reference, exits = _resident_case(
+    harness, baseline, stage_reference, exits = _resident_case(
         monkeypatch,
         speed_decision=QualificationDecision.FAIL,
+        audit=(audit,),
         disposition=runner.SpeedStageDisposition.CALIBRATION_OBSERVATION,
     )
 
     reference = _run_resident_harness(harness, baseline)
 
-    assert reference == harness.attempt_reference
-    assert exits == []
-    assert harness.reference_calls == 1
+    # A passing audit rides on the speed FAIL exit; a failing audit keeps its own exit.
+    assert reference == stage_reference
+    assert len(exits) == 1
+    assert exits[0].stage == ("speed" if audit is QualificationDecision.PASS else "audit")
+    assert exits[0].decision is QualificationDecision.FAIL
+    assert exits[0].reason == (
+        "speed_threshold_not_met" if audit is QualificationDecision.PASS else "slot_audit_failed"
+    )
+    assert exits[0].audit_witness.decision is audit
+    assert exits[0].terminal_quiescence_digest is not None
     assert "audit" in harness.calls
-    assert "reference" in harness.calls
-    assert "attempt.publish" in harness.calls
-    assert "attempt.reopen" in harness.calls
-    assert harness.published_attempt is not None
-    report = harness.published_attempt.reports[0]
-    assert report.speed_decision is QualificationDecision.FAIL
-    assert report.decision is QualificationDecision.FAIL
+    assert "entropy" not in harness.calls
+    assert "reference" not in harness.calls
+    assert harness.reference_calls == 0
+    assert harness.published_attempt is None
 
 
 def test_resident_audit_fail_exits_before_t(monkeypatch) -> None:
@@ -912,7 +918,7 @@ def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> No
 
 
 @pytest.mark.parametrize(
-    ("speed_decision", "retryable"),
+    ("quality", "retryable"),
     (
         (QualificationDecision.PASS, False),
         (QualificationDecision.FAIL, False),
@@ -920,22 +926,15 @@ def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> No
     ),
 )
 def test_candidate_headlines_recompute_pass_fail_and_no_decision(
-    monkeypatch, speed_decision, retryable
+    monkeypatch, quality, retryable
 ) -> None:
-    # A non-PASS speed verdict stage-exits under the terminal disposition;
-    # the report-level headline only exists on the observation lane.
+    # A non-PASS speed stage-exits on every disposition, so quality varies the headline.
     harness, baseline, _stage_reference, _exits = _resident_case(
-        monkeypatch,
-        speed_decision=speed_decision,
-        disposition=(
-            None
-            if speed_decision is QualificationDecision.PASS
-            else runner.SpeedStageDisposition.CALIBRATION_OBSERVATION
-        ),
+        monkeypatch, quality=(quality,)
     )
     _run_resident_harness(harness, baseline)
     report = harness.published_attempt.reports[0]
-    assert report.decision is speed_decision
+    assert report.decision is quality
     assert report.retryable is retryable
     with pytest.raises(runner.QualificationRunnerError, match="headline"):
         runner.CandidateQualificationReport(
@@ -943,7 +942,7 @@ def test_candidate_headlines_recompute_pass_fail_and_no_decision(
                 **report.__dict__,
                 "decision": (
                     QualificationDecision.FAIL
-                    if speed_decision is not QualificationDecision.FAIL
+                    if quality is not QualificationDecision.FAIL
                     else QualificationDecision.PASS
                 ),
             }
