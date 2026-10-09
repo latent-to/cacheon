@@ -455,7 +455,9 @@ def _grade(slot: str, node: int, actual: list, twin: list) -> tuple[float, int] 
         return worst
 
 
-def _descriptor(module, args: tuple, kwargs: dict, in_graph: bool) -> CallDescriptor | None:
+def _call_facts(module, args: tuple, kwargs: dict) -> tuple[torch.dtype, int, int | None] | None:
+    """Dtype, trailing width and CUDA device of a call; None when nothing is handed in."""
+
     handed = _tensors((args, kwargs), [])
     if not handed or not handed[0].dim():
         return None
@@ -463,10 +465,18 @@ def _descriptor(module, args: tuple, kwargs: dict, in_graph: bool) -> CallDescri
     floating = next((t for t in handed if t.is_floating_point()), None)
     dtype_source = floating if floating is not None else next(module.parameters(), handed[0])
     floating = floating if floating is not None else handed[0]
+    return dtype_source.dtype, int(floating.shape[-1]), (floating.device.index or 0) if floating.is_cuda else None
+
+
+def _descriptor(module, args: tuple, kwargs: dict, in_graph: bool) -> CallDescriptor | None:
+    facts = _call_facts(module, args, kwargs)
+    if facts is None:
+        return None
+    dtype, last_dim, device = facts
     return CallDescriptor.from_legacy(
-        dtype_name=_dtype_name(dtype_source.dtype),
-        last_dim=int(floating.shape[-1]),
-        arch=_arch_tag(floating.device.index or 0) if floating.is_cuda else None,
+        dtype_name=_dtype_name(dtype),
+        last_dim=last_dim,
+        arch=_arch_tag(device) if device is not None else None,
     ).with_updates(graph_mode="cuda_graph" if in_graph else "eager")
 
 
@@ -487,6 +497,11 @@ def make_node_dispatcher(
     """
 
     prepared: dict[int, object] = {}
+    # Selection per call shape (graph mode, dtype, width, device): the registry is
+    # fixed once the bundle loads, and building the descriptor and matching every
+    # variant cost 12 us per call, 40 calls per eager step (DeepSeek-V4.1, B300,
+    # 2026-10-09). The first call of a shape still records not-selected reasons.
+    selections: dict[tuple, object] = {}
     reported = False
     # Read before any candidate code runs. A decoder layer's stock writes only its own
     # layer's cache; a node without one (the whole model) keeps every layer's rows.
@@ -514,8 +529,14 @@ def make_node_dispatcher(
                 _receipts.failed(slot, failure, phase="entry")
                 raise failure
             expected, twin = _references(slot, module, stock, runner, args, kwargs, layer)
-        descriptor = _descriptor(module, args, kwargs, in_graph)
-        impl = registry.select(slot, descriptor).impl if descriptor is not None else None
+        facts = _call_facts(module, args, kwargs)
+        if facts is None:
+            return stock(*args, **kwargs)
+        key = (in_graph, *facts)
+        try:
+            impl = selections[key]
+        except KeyError:
+            impl = selections[key] = registry.select(slot, _descriptor(module, args, kwargs, in_graph)).impl
         if impl is None:
             return stock(*args, **kwargs)
         if id(impl) not in prepared:

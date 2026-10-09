@@ -432,9 +432,7 @@ class KernelRegistry:
 
         The decision is validator-owned and diagnostic: out-of-domain calls
         carry structured mismatches rather than being indistinguishable from an
-        unregistered slot.  No miner code runs here.  Existing dispatchers can
-        continue using ``lookup`` until their arena bindings populate complete
-        descriptors.
+        unregistered slot.  No miner code runs here.
         """
         if not self._active:
             return SelectionDecision(

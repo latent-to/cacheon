@@ -104,10 +104,26 @@ def _root() -> str:
 
 
 def _resolved_dir(raw: str) -> Path:
+    """Resolve the receipt root; an absolute spelling is resolved once.
+
+    The once-guard keys on the resolved directory and resolving is a stat per
+    component: 35 us on every dispatched call, 40 calls per eager step on
+    DeepSeek-V4.1 (B300, 2026-10-09). A relative spelling follows the working
+    directory and is never cached.
+    """
+
+    if raw in _RESOLVED:
+        return _RESOLVED[raw]
     try:
-        return Path(raw).expanduser().resolve(strict=False)
+        resolved = Path(raw).expanduser().resolve(strict=False)
     except (OSError, RuntimeError):
-        return Path(os.path.abspath(os.path.expanduser(raw)))
+        resolved = Path(os.path.abspath(os.path.expanduser(raw)))
+    if os.path.isabs(raw):
+        _RESOLVED[raw] = resolved
+    return resolved
+
+
+_RESOLVED: dict[str, Path] = {}
 
 
 # Set the first time a real group identity resolves; see ``identity``.
