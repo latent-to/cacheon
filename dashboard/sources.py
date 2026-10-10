@@ -297,9 +297,22 @@ def _arena_targets(producer_path, sources, block):
                 or starts != sorted(set(starts)) or starts[0] != 0):
             return {}
         weights = next(row["weights_ppm"] for row in reversed(history) if row["from_block"] <= block)
-        if (type(weights) is not dict or set(weights) != set(sources)
+        if (type(weights) is not dict
                 or any(type(v) is not int or v < 0 for v in weights.values())):
             return {}
+        if set(weights) != set(sources):
+            configured = allocation["sources"]
+            if set(weights) != set(configured):
+                return {}
+            mapped = dict.fromkeys(sources, 0)
+            for key, path in configured.items():
+                database = Path(json.loads(Path(path).read_text())["intake_db"]).resolve()
+                matches = [name for name, source in sources.items()
+                           if source.values["DB_PATH"].resolve() == database]
+                if len(matches) != 1:
+                    return {}
+                mapped[matches[0]] += weights[key]
+            weights = mapped
         normalized = _allocate_pool(weights, 1_000_000) if sum(weights.values()) > 1_000_000 else weights
         return {key: normalized.get(key, 0) for key in sources}
     except (OSError, ValueError, TypeError, KeyError, StopIteration):

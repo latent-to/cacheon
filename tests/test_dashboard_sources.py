@@ -312,3 +312,15 @@ def test_live_targets_follow_producer_restart_without_stale_config_fallback(targ
         assert next(r["target_weight_ppm"] for r in rows if r["key"] == "qwen") == expected
     pidfile.unlink()
     assert all(r["target_weight_ppm"] is None for r in client.get("/api/arenas").json()["items"])
+
+
+def test_single_arena_allocation_matches_dashboard_by_database(target_settings):
+    client, stage = target_settings
+    allocation = stage.parent / "allocation.json"
+    stage.write_text(json.dumps({"arena_allocation_path": str(allocation)}))
+    allocation.write_text(json.dumps({
+        "sources": {"active_arena": str(stage.parent / "dispatcher.json")},
+        "history": [{"from_block": 0, "weights_ppm": {"active_arena": 1_000_000}}],
+    }))
+    rows = client.get("/api/arenas").json()["items"]
+    assert {r["key"]: r["target_weight_ppm"] for r in rows} == {"glm": 1_000_000, "qwen": 0}
