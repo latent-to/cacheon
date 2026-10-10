@@ -11,10 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import tests.test_b300_arena_provider as provider_fixtures
 import tests.test_b300_qualification_deployment as deployment_fixtures
 import tests.test_b300_remote_qualification_adapter as remote_fixtures
 import tests.test_b300_remote_worker_adapter as worker_fixtures
+from tests.support.b300 import FactoryBuilder
 from cacheon.arena_service import ArenaCandidateBinding, ArenaQualificationWork
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.execution_disposition import (
@@ -341,7 +341,7 @@ def test_full_owner_plans_qualification_and_closes_once(
         tmp_path / "planned-candidate",
         index=0,
     )
-    builder = provider_fixtures._FactoryBuilder()
+    builder = FactoryBuilder()
     provider._qualification_capabilities = replace(
         owner.deployment.authorities,
         qualification_factory_builder=builder,

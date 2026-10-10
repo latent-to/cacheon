@@ -392,6 +392,16 @@ def test_exact_final_result_reopens_without_adapter_or_finalization(
     _assert_published(authority)
     assert calls == {"adapter": 0, "infrastructure": 0}
 
+    # Republishing the same final result is idempotent: one archive, same receipt.
+    pod_service.publish_result(
+        authority.registration, authority.outer_request, final,
+        request_root=authority.paths.root / "completed" / authority.request_id,
+        outgoing_root=authority.paths.root / "outgoing", events_root=authority.paths.root,
+        identity=authority.identity, credential=authority.credential,
+    )
+    _assert_published(authority)
+    assert len(list((authority.paths.root / "outgoing").glob("*.tar"))) == 1
+
 
 def test_symlinked_final_result_json_holds_without_following(
     authority: RecoveryAuthority,

@@ -15,12 +15,12 @@ from tests import test_chain_intake as intake
 def test_simultaneous_coordinators_claim_four_distinct_oldest_jobs(tmp_path):
     from cacheon.arena_service import ArenaService
     from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
-    from tests import test_evaluation_coordinator as fixture
+    from tests.support import evaluation as fixture
 
-    rows = fixture._published_rows(tmp_path, 6)
-    service = ArenaService(fixture._manifest(), fixture._Provider())
-    cursor = fixture._CursorAuthority((fixture.BLOCK, fixture._block_hash(fixture.BLOCK)))
-    workers = [fixture._coordinator(tmp_path, service, cursor, owner=f"pair-{index}",
+    rows = fixture.published_rows(tmp_path, 6)
+    service = ArenaService(fixture.manifest(), fixture.Provider())
+    cursor = fixture.Cursor((fixture.BLOCK, fixture.block_hash(fixture.BLOCK)))
+    workers = [fixture.coordinator(tmp_path, service, cursor, owner=f"pair-{index}",
                store_factory=RecoverableFinalizedIntakeStore) for index in range(4)]
     start = Barrier(4)
 

@@ -42,169 +42,12 @@ from cacheon.eval.qualification_intake import (
 )
 from cacheon.stack_identity import canonical_digest, sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
-
-
-SCOPE = IntakeScope("0x" + "0" * 64, 14)
-POLICY = IntakePolicy(max_cohort=4, expiry_blocks=100)
-BLOCK = 10
-
-
-def _h(label: str) -> str:
-    return sha256_hex(label.encode())
-
-
-def _block_hash(block: int) -> str:
-    return "0x" + f"{block:064x}"
-
-
-def _manifest() -> ArenaServiceManifest:
-    runtime = ArenaRuntimeIdentity(
-        arena_id="coordinator-test",
-        runtime_digest=_h("runtime"),
-        base_engine_digest=_h("engine"),
-        validator_overlay_digest=_h("overlay"),
-        worker_distribution_digest=_h("worker-distribution"),
-        model_revision_digest=_h("model-revision"),
-        model_manifest_digest=_h("model-manifest"),
-        model_content_digest=_h("model-content"),
-        target_architecture="sm120",
-        topology_class="tp4-test",
-        topology_digest=_h("topology"),
-        gpu_count=4,
-        tensor_parallel_size=4,
-    )
-    workload = Workload(
-        _h("corpus"),
-        "test-seed-v1",
-        (WorkloadCell("s8", 8192, 1024, 64, 8),),
-    )
-    return ArenaServiceManifest(
-        runtime,
-        workload,
-        ArenaCapacityPolicy(32, 100, 4, 4),
-        _h("qualification-policy"),
-        _h("provider"),
-    )
-
-
-class _Provider:
-    provider_digest = _h("provider")
-
-    def build_qualification(self, request, state=None):
-        raise AssertionError("qualification was not expected")
-
-
-@dataclasses.dataclass
-class _CursorAuthority:
-    point: tuple[int, str]
-
-    def __post_init__(self) -> None:
-        self._lock = threading.Lock()
-
-    def __call__(self) -> tuple[int, str]:
-        with self._lock:
-            return self.point
-
-    def set(self, block: int) -> None:
-        with self._lock:
-            self.point = (block, _block_hash(block))
-
-
-def _db_path(tmp_path: Path) -> Path:
-    return tmp_path / "private" / "intake.sqlite3"
-
-
-def _store(tmp_path: Path) -> FinalizedIntakeStore:
-    return FinalizedIntakeStore(_db_path(tmp_path), POLICY, scope=SCOPE)
-
-
-def _published_rows(tmp_path: Path, count: int, *, arenas=()):
-    publications = []
-    arrivals = []
-    for index in range(count):
-        source = tmp_path / f"source-{index}"
-        source.mkdir(parents=True)
-        leaf = source / "manifest.toml"
-        leaf.write_text(f"bundle_id = 'candidate-{index}'\n")
-        source.chmod(0o700)
-        leaf.chmod(0o600)
-        committed = content_hash(source)
-        publication = publish_worker_bundle(
-            source,
-            tmp_path / "publications",
-            committed,
-        )
-        publications.append(publication)
-        arrivals.append(
-            FinalizedArrival(
-                f"miner-{index}",
-                committed,
-                f"https://example.invalid/{index}",
-                BLOCK,
-                _block_hash(BLOCK),
-                index,
-            )
-        )
-    with _store(tmp_path) as store:
-        reserved = store.reserve_finalized(
-            tuple(arrivals),
-            finalized_block=BLOCK,
-            finalized_block_hash=_block_hash(BLOCK),
-        )
-        result = []
-        for index, (row, publication) in enumerate(zip(reserved, publications, strict=True)):
-            store.mark_fetching(row.reservation_id)
-            result.append(
-                store.mark_published(
-                    row.reservation_id,
-                    delta_fingerprint=SubmittedDeltaFingerprint(
-                        "component",
-                        f"target.{index}",
-                        _h(f"base:{index}"),
-                        (f"slot.{index}",),
-                        _h(f"archive:{index}"),
-                        _h(f"selected:{index}"),
-                        _h(f"exact:{index}"),
-                        (_h(f"source:{index}"),),
-                        (_h(f"binary:{index}"),),
-                    ),
-                    publication_digest=publication.digest,
-                    publication_root=publication.root,
-                    competition_arena=arenas[index] if arenas else "",
-                )
-            )
-        return tuple(result)
-
-
-def _coordinator(
-    tmp_path: Path,
-    service: ArenaService,
-    cursor: _CursorAuthority,
-    **changes,
-) -> EvaluationCoordinator:
-    readiness = changes.pop(
-        "readiness",
-        WorkerReadiness.for_service(
-            service,
-            ready_receipt_digest=_h("ready-receipt"),
-            ready_epoch=7,
-        ),
-    )
-    options = dict(
-        intake_db=_db_path(tmp_path),
-        policy=POLICY,
-        scope=SCOPE,
-        service=service,
-        readiness=readiness,
-        owner="cpu-coordinator-test",
-        advance_finalized_cursor=cursor,
-        lease_blocks=20,
-        heartbeat_interval_s=10.0,
-        heartbeat_join_timeout_s=1.0,
-        lock_retry_delay_s=0.001,
-    )
-    options.update(changes)
-    return EvaluationCoordinator(**options)
+from tests.support.evaluation import (
+    BLOCK, Cursor as _CursorAuthority, Provider as _Provider, block_hash as _block_hash,
+    claim_qualification as _claim_qualification, coordinator as _coordinator, h as _h,
+    incumbent as _incumbent, manifest as _manifest, published_rows as _published_rows,
+    store as _store,
+)
 
 
 def _advance(tmp_path: Path, cursor: _CursorAuthority, block: int) -> None:
@@ -215,65 +58,6 @@ def _advance(tmp_path: Path, cursor: _CursorAuthority, block: int) -> None:
             finalized_block_hash=_block_hash(block),
         )
     cursor.set(block)
-
-
-def _claim_qualification(
-    coordinator: EvaluationCoordinator,
-) -> ClaimedQualificationEvaluation:
-    """Test-local qualification claim over published rows (the recoverable
-    dispatcher materializes the same DTO from its durable recovery lease)."""
-    store, point = coordinator._open_at_durable_cursor()
-    try:
-        lease = store.claim_evaluation_lease(
-            stage="qualification",
-            owner=coordinator.owner,
-            current_block=point[0],
-            lease_blocks=coordinator.lease_blocks,
-            max_members=coordinator.qualification_max_members,
-        )
-        assert lease is not None
-        reservations = tuple(store.get(row) for row in lease.reservation_ids)
-        attempts = tuple(
-            store.qualification_attempts(row.reservation_id) + 1 for row in reservations
-        )
-    finally:
-        store.close()
-    publications = tuple(
-        reopen_worker_bundle(
-            row.publication_root,
-            row.arrival.content_hash,
-            expected_receipt_digest=row.publication_digest,
-        )
-        for row in reservations
-    )
-    authority = coordinator_module._qualification_reservations(reservations, publications)
-    candidates = tuple(
-        ArenaCandidateBinding(item, publication, attempt)
-        for publication, item, attempt in zip(publications, authority, attempts, strict=True)
-    )
-    return ClaimedQualificationEvaluation(lease, reservations, publications, candidates)
-
-
-def _remote_incumbent(
-    service: ArenaService,
-    *,
-    arena_digest: str | None = None,
-    marker: str = "remote-commit",
-) -> EvaluationStackManifest:
-    snapshot = {
-        "schema_version": 1,
-        "policy_version": "target-catalog.v1",
-        "targets": [{"target_id": "target.0", "marker": marker}],
-        "composition_rules": [],
-    }
-    return EvaluationStackManifest(
-        runtime_digest=service.manifest.runtime.runtime_digest,
-        base_engine_digest=service.manifest.runtime.base_engine_digest,
-        arena_digest=arena_digest or service.identity,
-        catalog_snapshot=snapshot,
-        catalog_digest=canonical_digest("cacheon.target-catalog", snapshot),
-        entries={},
-    )
 
 
 def _remote_commit_product(
@@ -329,7 +113,7 @@ def _commit(coordinator, claim, authority, batch, envelope, root, attempt_ref):
     return coordinator.commit_remote_qualification_result(
         claim,
         authority_manifest=authority,
-        incumbent_stack=_remote_incumbent(coordinator.service),
+        incumbent_stack=_incumbent(coordinator.service),
         incumbent_tree_digest=_h("remote-tree"),
         batch=batch,
         envelope=envelope,
@@ -533,7 +317,7 @@ def test_remote_commit_accepts_completed_result_after_tree_advances(
     cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
     ids = tuple(row.reservation_id for row in _published_rows(tmp_path, 1))
     coordinator = _coordinator(tmp_path, service, cursor)
-    incumbent = _remote_incumbent(service)
+    incumbent = _incumbent(service)
     with _store(tmp_path) as store:
         store.initialize_evaluation_stack(
             incumbent,
@@ -567,7 +351,7 @@ def test_remote_commit_accepts_completed_result_after_tree_advances(
         coordinator.commit_remote_qualification_result(
             claim,
             authority_manifest=authority,
-            incumbent_stack=_remote_incumbent(
+            incumbent_stack=_incumbent(
                 service,
                 arena_digest=_h("wrong-service"),
                 marker="wrong-service",

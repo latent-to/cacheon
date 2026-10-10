@@ -8,21 +8,21 @@ from cacheon.arena_service import ArenaService
 from cacheon.chain.baseline_segments import commission_boundary
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
-from tests import test_evaluation_coordinator as fixture
+from tests.support import evaluation as fixture
 from tests.test_baseline_segments import _manifest as stack_manifest
 from tests.test_chain_intake import _qualified_settlement_candidate, _settlement_plan, _store
 
 
 def _pair(tmp_path):
-    rows = fixture._published_rows(tmp_path, 4, arenas=("", "qwen", "", "qwen"))
-    glm = ArenaService(fixture._manifest(), fixture._Provider())
+    rows = fixture.published_rows(tmp_path, 4, arenas=("", "qwen", "", "qwen"))
+    glm = ArenaService(fixture.manifest(), fixture.Provider())
     qwen = ArenaService(replace(glm.manifest, runtime=replace(
         glm.manifest.runtime, arena_id="qwen", gpu_count=1,
         tensor_parallel_size=1, target_architecture="sm90",
-        model_content_digest=fixture._h("qwen-weights"),
-    )), fixture._Provider())
-    cursor = fixture._CursorAuthority((fixture.BLOCK, fixture._block_hash(fixture.BLOCK)))
-    coordinators = tuple(fixture._coordinator(
+        model_content_digest=fixture.h("qwen-weights"),
+    )), fixture.Provider())
+    cursor = fixture.Cursor((fixture.BLOCK, fixture.block_hash(fixture.BLOCK)))
+    coordinators = tuple(fixture.coordinator(
         tmp_path, service, cursor, accept_legacy_bundles=index == 0,
         owner=f"arena-{index}", qualification_max_members=1,
         store_factory=RecoverableFinalizedIntakeStore,
@@ -41,7 +41,7 @@ def test_two_dispatchers_keep_fifo_baselines_and_recovery_independent(tmp_path):
                 row.reservation_id for row in queue
             ]
             incumbent = stack_manifest(coordinator.service.identity)
-            assert commission_boundary(store, incumbent, tree_digest=fixture._h("tree")) is None
+            assert commission_boundary(store, incumbent, tree_digest=fixture.h("tree")) is None
             recovery = store.claim_recoverable_qualification(
                 owner=coordinator.owner, current_block=point[0], max_members=1,
             )
@@ -82,7 +82,7 @@ def test_default_alias_cannot_be_taken_by_second_arena(tmp_path):
 def test_closed_targets_retire_before_claim_without_touching_glm(tmp_path):
     rows, (glm, qwen) = _pair(tmp_path)
     qwen.service = ArenaService(replace(qwen.service.manifest,
-        closed_targets=(rows[1].target_id, rows[3].target_id)), fixture._Provider())
+        closed_targets=(rows[1].target_id, rows[3].target_id)), fixture.Provider())
     for coordinator in (qwen, glm):
         store, point = coordinator._open_at_durable_cursor()
         with store:
@@ -214,7 +214,7 @@ def test_crown_cutoff_admits_commitments_once_before_qualification(tmp_path, are
         _publish(store, fresh.reservation_id, _fingerprint(target, target, "b"),
                  digest="b" * 64, root=tmp_path / "fresh")
         # A new commissioned service has its own open admission window.
-        assert store.prepare_qualification_queue(service_digest=fixture._h("new-commission")) == ()
+        assert store.prepare_qualification_queue(service_digest=fixture.h("new-commission")) == ()
         assert store.get(fresh.reservation_id).status == "published"
         # Another competition does not inherit this arena's crown cutoff.
         store.select_arena("other", accept_legacy_bundles=False)

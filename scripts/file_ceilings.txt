@@ -32,9 +32,9 @@ tests/test_chain_intake.py 1776
 tests/test_device_state.py 942
 tests/test_engine_tree.py 1063
 tests/test_eval_cost.py 1019
-tests/test_oci_backend.py 1140
+tests/test_oci_backend.py 1138
 tests/test_qualification_continuation.py 915
-tests/test_qualification_runner.py 2014
+tests/test_qualification_runner.py 1843
 tests/test_recoverable_qualification_dispatcher.py 1063
 tests/test_settlement.py 901
 tests/test_weight_publication.py 982
