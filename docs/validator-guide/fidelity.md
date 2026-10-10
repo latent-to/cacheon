@@ -202,6 +202,14 @@ and identity evidence. It is also the leg of the graph proof that catches a stal
 a candidate that is captured but returns its capture-time answer passes the execution
 check and fails here.
 
+The sealed calibration algorithm determines how a candidate interval at the quality
+boundary is graded. `teacher-familywise-upper-bound-v1`, used by the DeepSeek arena,
+requires the entire candidate regression interval to meet every delta limit and the
+entire absolute-score interval to meet every floor. Any overlap is terminal `FAIL`
+(`quality_regression`), with no retry. `teacher-familywise-v1` retains `NO_DECISION`
+for candidate overlap. Both algorithms retain `NO_DECISION` for stock-reference drift
+or provisional calibration; an infrastructure failure does not become candidate failure.
+
 ## Honest limits
 
 - Finite prompts and hidden tasks cannot rule out all shape or workload overfitting.

@@ -42,7 +42,7 @@ _NAME = re.compile(r"[a-z][a-z0-9._-]*\Z")
 _DECIMAL = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?\Z")
 _STATUSES = frozenset({"frozen", "provisional"})
 _CONTROL_OUTCOMES = {"stock": "PASS", "positive": "PASS", "negative": "FAIL"}
-_CALIBRATION_ALGORITHMS = frozenset({"teacher-familywise-v1"})
+_CALIBRATION_ALGORITHMS = frozenset({"teacher-familywise-v1", "teacher-familywise-upper-bound-v1"})
 _METRIC_DIRECTIONS = {
     "argmax_rate": "lower",
     "coverage_dev": "lower",
@@ -625,13 +625,10 @@ def _lower_bounded(values: tuple[str, ...], floor: Decimal, z: Decimal) -> str:
     return "NO_DECISION"
 
 
-def _grade_control(
-    threshold_policy: CalibrationThresholdPolicy,
-    observation: CalibrationObservation,
-) -> str:
-    """Apply the closed teacher-familywise-v1 control-grade algorithm."""
+def _grade_control(threshold_policy: CalibrationThresholdPolicy, observation: CalibrationObservation) -> str:
+    """Grade retained controls under their sealed calibration algorithm."""
 
-    if threshold_policy.algorithm_id != "teacher-familywise-v1":
+    if threshold_policy.algorithm_id not in _CALIBRATION_ALGORITHMS:
         raise CalibrationError("calibration control grading algorithm is not registered")
     rows = {row.name: row.values for row in observation.measurements}
     z = decimal_value(threshold_policy.familywise_z)
@@ -649,6 +646,8 @@ def _grade_control(
                     z,
                 )
             )
+    if threshold_policy.algorithm_id == "teacher-familywise-upper-bound-v1" and observation.control_kind != "stock":
+        decisions[1:] = ["FAIL" if grade == "NO_DECISION" else grade for grade in decisions[1:]]
     if "FAIL" in decisions:
         return "FAIL"
     if "NO_DECISION" in decisions:

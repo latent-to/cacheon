@@ -359,6 +359,21 @@ def test_threshold_policy_rejects_unregistered_control_algorithm() -> None:
         replace(_threshold_policy(), algorithm_id="invented-policy-v1")
 
 
+def test_upper_bound_policy_seals_retained_controls_and_rejects_candidate_overlap() -> None:
+    policy = replace(_threshold_policy(), algorithm_id="teacher-familywise-upper-bound-v1")
+    evidence = CalibrationEvidenceSet.create(policy, _observations())
+    manifest = derive_calibration_manifest(policy, _observations())
+    assert CalibrationEvidenceSet.from_dict(evidence.to_dict()) == evidence
+    assert manifest.algorithm_id == policy.algorithm_id
+    assert manifest.digest != _derived_manifest().digest
+    rows = list(_observations())
+    rows[0] = replace(rows[0], measurements=_observations()[1].measurements)
+    rows[0] = _with_measurement(rows[0], "mean_nll", ("0.001", "0.03"))
+    assert derive_calibration_manifest(policy, rows).controls[0].expected_outcome == "FAIL"
+    with pytest.raises(CalibrationError, match="negative control outcome contradicts"):
+        derive_calibration_manifest(_threshold_policy(), rows)
+
+
 def test_reopen_rejects_wrong_context_and_wrong_artifact_type(tmp_path) -> None:
     policy, manifest = _threshold_policy(), _derived_manifest()
     evidence = _evidence()

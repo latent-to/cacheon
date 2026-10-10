@@ -234,6 +234,9 @@ Speed problems:
 Quality problems:
 
 - required fidelity/task metric regresses: candidate FAIL;
+- the candidate's quality interval overlaps a limit under the DeepSeek arena's
+  `teacher-familywise-upper-bound-v1` calibration: terminal FAIL
+  (`quality_regression`), with no retry;
 - stock/reference drift overlaps the calibrated boundary: `NO_DECISION`;
 - referenced pristine-T identity or raw quality artifact cannot reopen:
   authority/infrastructure failure;

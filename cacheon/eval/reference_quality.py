@@ -831,6 +831,7 @@ def score_reference_quality(
                                        _mean_nll(evidence.prompts), evidence.digest, calibration.digest)
 
     failed, overlap = set(), set()
+    require_quality_bound = calibration.algorithm_id == "teacher-familywise-upper-bound-v1"
     z = float(decimal_value(calibration.familywise_z))
     if not math.isfinite(z) or not 0 < z <= 10:
         raise ReferenceQualityError("familywise z is nonfinite or outside (0, 10]")
@@ -846,7 +847,7 @@ def score_reference_quality(
             continue
         low, high = _bounds(regressions, z)[1:]
         limit = float(decimal_value(policy.candidate_delta))
-        if low > limit:
+        if low > limit or (require_quality_bound and high > limit):
             failed.add(policy.name)
         elif high > limit:
             overlap.add(policy.name)
@@ -854,7 +855,7 @@ def score_reference_quality(
             candidate = [value for _baseline, value, _control in triplets]
             low, high = _bounds(candidate, z)[1:]
             floor = float(decimal_value(policy.absolute_floor))
-            if high < floor:
+            if high < floor or (require_quality_bound and low < floor):
                 failed.add(f"{policy.name}.absolute_floor")
             elif low < floor:
                 overlap.add(f"{policy.name}.absolute_floor")
