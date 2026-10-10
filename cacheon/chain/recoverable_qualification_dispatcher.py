@@ -348,8 +348,8 @@ class RecoverableQualificationDispatcher:
             recovery = store.pending_qualification_recovery(owner=self.coordinator.owner)
             if recovery is None:
                 # Admission runs before the first claim: an exact copy of a
-                # loser inherits its FAIL, and closed targets or post-crown
-                # arrivals are released (duplicate_replay, arena_state).
+                # loser inherits its FAIL and closed targets are released
+                # (duplicate_replay, arena_state).
                 store.prepare_qualification_queue(
                     service_digest=self.coordinator.service.identity,
                     closed_targets=self.coordinator.service.manifest.closed_targets,

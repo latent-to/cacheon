@@ -385,20 +385,14 @@ class ArenaStateMixin:
         Duplicate FAIL replay follows duplicate_replay; a PASS and the
         reproduction lane are never replayed. Closed targets release payment
         through the existing no-decision transaction, before acquiring a lease.
-        The first crown on this commissioned baseline closes new commitments.
-        Earlier finalized commitments may drain even when fetched after the crown;
-        work already claimed once (its service digest is stamped) is never
-        subjected to a second admission cutoff.
+        A crown keeps the commissioned baseline open to new commitments.
+        Settlement compares completed ancestor-based results with the current
+        lineage tip; arrival after a crown is not an admission failure.
         """
         from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
         from cacheon.stack_identity import require_sha256_hex
 
         require_sha256_hex(service_digest, field="arena service digest")
-        cutoff = self._db.execute(
-            "SELECT MIN(crowned_block) AS block FROM target_lineage_nodes "
-            "WHERE competition_arena=? AND arena_id=?",
-            (self._competition_arena, service_digest),
-        ).fetchone()["block"]
         priors = tuple(
             PriorVerdict(
                 reservation_id=row["reservation_id"],
@@ -419,10 +413,6 @@ class ArenaStateMixin:
             before = len(retired)
             for row in self.claimable(limit=limit):
                 first_claim = row.status == "published" and not row.arena_service_digest
-                if first_claim and cutoff is not None and row.arrival.block > cutoff:
-                    rejected = self._expire_before_claim(row.reservation_id, "baseline_closed_at_submission")
-                    retired.append((row.reservation_id, rejected.reason))
-                    continue
                 if row.target_id in closed_targets and first_claim:
                     parked = self.mark_target_unavailable(row.reservation_id, target_id=row.target_id)
                     retired.append((row.reservation_id, parked.reason))

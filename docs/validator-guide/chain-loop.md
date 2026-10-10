@@ -35,8 +35,8 @@ failure. Plaintext submissions from older clients remain readable.
    bypass priority.
 
 The pass returns counts and dispositions. It never opens a wallet or calls
-`set_weights`. Admission (duplicate `FAIL` replay, closed targets, the post-crown
-cutoff), qualification claims, and settlement run in the
+`set_weights`. Admission (duplicate `FAIL` replay and closed targets),
+qualification claims and settlement run in the
 [standing CPU supervisor](#standing-cpu-supervisor) against the same store.
 
 ## Reservation state machine

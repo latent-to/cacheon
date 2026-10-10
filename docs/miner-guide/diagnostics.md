@@ -277,15 +277,16 @@ Do not include wallet secrets, private URLs, or validator filesystem paths.
 
 ### Baseline admission closed
 
-`baseline_closed_at_submission` means the finalized commitment was later than the
-first champion win on the commissioned baseline. It is rejected at admission,
-before its first qualification claim, with `NO_DECISION`, not a failed evaluation.
-Your submission credit is preserved, and a cited evaluation payment remains reusable.
-The message says: “This baseline closed before your submission. Your submission
-credit has been preserved.” Resubmit against the current open baseline.
-Earlier commitments keep their assigned baseline
-and may finish after the champion changes; settlement does not repeat the cutoff.
-A newly commissioned baseline opens its own admission window.
+Historical `baseline_closed_at_submission` rows were rejected before their first
+qualification claim, with `NO_DECISION`, not a failed evaluation. Their submission
+credit was preserved, and a cited evaluation payment remains reusable. These
+records remain readable; current admission no longer rejects a commitment because
+another contribution crowned. A miner can resubmit against the same commissioned
+baseline after the validator installs the open-admission rule.
+
+The commissioned baseline remains fixed until an explicit operator commission.
+Later submissions can pass against it while failing the separate comparison with
+the preceding rewarded result; see [emissions policy](../reference/emissions-policy.md#legacy-v1).
 
 `lost_potential` means evaluation passed, but the completed comparison did not clear
 the required margin. The detail notice distinguishes a reward comparison against the
