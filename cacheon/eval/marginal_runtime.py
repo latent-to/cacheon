@@ -36,7 +36,7 @@ from cacheon.stack_manifest import (
     EvaluationStackManifest,
     ProposalContributionRef,
 )
-from cacheon.stack_plan import CohortPlan, MarginalArmPlan, StackPlanError
+from cacheon.stack_plan import MarginalArmPlan, StackPlanError
 from cacheon.target_catalog import TargetCatalog
 from cacheon._strict import require_digest
 
@@ -49,7 +49,6 @@ class MarginalRuntimeError(ValueError):
 
 
 ExecutableArm = MarginalArmPlan
-RuntimeSource = MarginalArmPlan | CohortPlan
 
 
 def _digest(value: object, *, field: str) -> str:
@@ -194,14 +193,14 @@ class PreparedCandidateRuntime:
 class PreparedMarginalRuntime:
     """A completely validated B,C1..Ck,B-prime runtime lifecycle."""
 
-    source: RuntimeSource
+    source: MarginalArmPlan
     incumbent_binding: MaterializedArmBinding
     baseline_launch: EngineLaunchSpec
     baseline_session_plan: SessionExecutionPlan
     candidates: tuple[PreparedCandidateRuntime, ...]
 
     def __post_init__(self) -> None:
-        if type(self.source) not in {MarginalArmPlan, CohortPlan}:
+        if type(self.source) is not MarginalArmPlan:
             raise MarginalRuntimeError("runtime source has an unsupported type")
         if type(self.incumbent_binding) is not MaterializedArmBinding:
             raise MarginalRuntimeError("incumbent binding has the wrong type")
@@ -215,12 +214,7 @@ class PreparedMarginalRuntime:
             for candidate in self.candidates
         ):
             raise MarginalRuntimeError("prepared runtime requires typed candidates")
-        expected = (
-            (self.source,)
-            if type(self.source) is MarginalArmPlan
-            else self.source.execution_arms
-        )
-        if tuple(candidate.arm for candidate in self.candidates) != expected:
+        if tuple(candidate.arm for candidate in self.candidates) != (self.source,):
             raise MarginalRuntimeError("candidate order differs from the sealed runtime source")
         if (
             self.baseline_launch.stack_digest
@@ -398,7 +392,7 @@ def _validate_prepared_runtime(prepared: PreparedMarginalRuntime) -> None:
 
 
 def _prepare(
-    source: RuntimeSource,
+    source: MarginalArmPlan,
     arms: tuple[ExecutableArm, ...],
     *,
     expected_context: EvaluationStackContext,

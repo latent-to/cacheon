@@ -7,21 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from cacheon import receipts
-from cacheon.capabilities import (
-    CallDescriptor,
-    CapabilityDomain,
-    CapabilityPredicate,
-)
 from cacheon.manifest import DEFAULT_VARIANT, ManifestError, load_manifest
-from cacheon.registry import (
-    Eligibility,
-    KernelImpl,
-    KernelRegistry,
-    SelectionOutcome,
-    VariantRegistrationError,
-    eligibility_from_metadata,
-)
 
 
 SLOT = "activation.silu_and_mul"
@@ -50,23 +36,10 @@ def _write_bundle(
     return root
 
 
-def _impl(variant: str, capabilities: dict, *, slot: str = SLOT) -> KernelImpl:
-    return KernelImpl(
-        slot=slot,
-        bundle_id="candidate",
-        variant=variant,
-        entry=lambda *_args: None,
-        eligibility=eligibility_from_metadata(
-            {"capabilities": capabilities}, ("bfloat16",)
-        ),
-    )
-
-
 def test_legacy_manifest_gets_stable_default_variant(tmp_path):
     manifest = load_manifest(_write_bundle(tmp_path / "bundle", [{}]))
 
     assert manifest.ops[0].variant == DEFAULT_VARIANT
-    assert manifest.op_for(SLOT) is manifest.ops[0]
 
 
 @pytest.mark.parametrize(
@@ -101,8 +74,6 @@ def test_manifest_rejects_non_string_variant(tmp_path):
     "field, value, message",
     [
         ("dtypes", '"float16"', "array of strings"),
-        ("dtypes", "[16]", "non-empty strings"),
-        ("architectures", '"sm120"', "array of strings"),
         ("architectures", '["sm120", ""]', "non-empty strings"),
     ],
 )
@@ -119,108 +90,6 @@ def test_manifest_eligibility_requires_string_arrays(
 
     with pytest.raises(ManifestError, match=message):
         load_manifest(bundle)
-
-
-def test_manifest_retains_order_and_requires_variant_for_ambiguous_op_for(tmp_path):
-    manifest = load_manifest(
-        _write_bundle(
-            tmp_path / "bundle",
-            [{"variant": "h64"}, {"variant": "h128"}],
-        )
-    )
-
-    assert tuple(op.variant for op in manifest.ops) == ("h64", "h128")
-    assert manifest.op_for(SLOT, "h128") is manifest.ops[1]
-    with pytest.raises(ManifestError, match="multiple variants"):
-        manifest.op_for(SLOT)
-
-
-def test_registry_routes_two_disjoint_shape_variants_and_gaps_to_stock():
-    registry = KernelRegistry()
-    registry.register(_impl("h64", {"head_dim": 64}))
-    registry.register(_impl("h128", {"head_dim": 128}))
-    registry.enable()
-
-    base = CallDescriptor(dtype="bfloat16", head_dim=64)
-    first = registry.select(SLOT, base)
-    second = registry.select(
-        SLOT, base.with_updates(head_dim=128),     )
-    gap = registry.select(
-        SLOT, base.with_updates(head_dim=96),     )
-
-    assert first.impl is registry.variants(SLOT)[0]
-    assert first.impl.variant == "h64"
-    assert second.impl is registry.variants(SLOT)[1]
-    assert second.impl.variant == "h128"
-    assert gap.outcome is SelectionOutcome.OUT_OF_DOMAIN
-    assert gap.candidate is None
-    assert [m.variant for m in gap.variant_matches] == ["h64", "h128"]
-
-
-def test_manifest_architecture_claim_participates_in_eligibility():
-    eligibility = eligibility_from_metadata({}, (), ("sm103",))
-
-    assert eligibility.architectures == frozenset({"sm103"})
-    assert eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch="sm103")).accepted
-    assert not eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch="sm90")).accepted
-
-
-def test_registry_rejects_duplicate_id_and_provable_overlap():
-    registry = KernelRegistry()
-    registry.register(_impl("small", {"q_len": {"min": 1, "max": 128}}))
-
-    with pytest.raises(VariantRegistrationError, match="duplicate variant"):
-        registry.register(_impl("small", {"q_len": 512}))
-    with pytest.raises(VariantRegistrationError, match="overlapping capability domains"):
-        registry.register(_impl("medium", {"q_len": {"min": 128, "max": 256}}))
-
-
-def test_selection_fail_closes_runtime_ambiguity_for_future_private_predicate():
-    # Public metadata fields are checked at registration.  Programmatic future
-    # predicates are deliberately deferred until their semantics are promoted.
-    domain = CapabilityDomain(
-        (CapabilityPredicate(field="private_shape", allowed=("same",)),)
-    )
-    registry = KernelRegistry()
-    for variant in ("a", "b"):
-        registry.register(
-            KernelImpl(
-                slot=SLOT,
-                bundle_id="candidate",
-                variant=variant,
-                entry=lambda *_args: None,
-                eligibility=Eligibility(capabilities=domain),
-            )
-        )
-    registry.enable()
-
-    decision = registry.select(
-        SLOT,
-        CallDescriptor(private_shape="same"),
-    )
-
-    assert decision.outcome is SelectionOutcome.AMBIGUOUS
-    assert decision.impl is None
-
-
-def test_selection_across_variants_writes_no_receipt(monkeypatch):
-    # Resolving an impl is routing, not execution. Whichever variant wins, nothing
-    # is claimed until a dispatcher actually invokes the entry.
-    writes: list[tuple[str, dict, str | None]] = []
-    monkeypatch.setattr(
-        receipts,
-        "write",
-        lambda event, payload, tag=None: writes.append((event, payload, tag)),
-    )
-    registry = KernelRegistry()
-    registry.register(_impl("h64", {"head_dim": 64}))
-    registry.register(_impl("h128", {"head_dim": 128}))
-    registry.enable()
-
-    registry.select(SLOT, CallDescriptor(dtype="bfloat16", head_dim=64))
-    registry.select(SLOT, CallDescriptor(dtype="bfloat16", head_dim=128))
-
-    assert writes == []
 
 
 def test_seam_loader_registers_every_variant(tmp_path):

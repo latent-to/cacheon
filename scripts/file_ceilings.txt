@@ -4,7 +4,7 @@
 cacheon/chain/__init__.py 1254
 cacheon/chain/archive.py 1349
 cacheon/chain/evaluation_recovery_store.py 1222
-cacheon/chain/intake.py 3407
+cacheon/chain/intake.py 3316
 cacheon/chain/recoverable_qualification_dispatcher.py 915
 cacheon/chain/remote_worker_pod_service.py 1106
 cacheon/chain/remote_worker_request_plan.py 940
@@ -15,7 +15,7 @@ cacheon/engine_tree.py 1566
 cacheon/eval/b300_deployment.py 1287
 cacheon/eval/b300_qualification_deployment.py 963
 cacheon/eval/calibration.py 921
-cacheon/eval/device_state.py 1519
+cacheon/eval/device_state.py 1461
 cacheon/eval/native_artifact.py 1220
 cacheon/eval/oci_backend.py 1716
 cacheon/eval/oci_outer_session.py 907
@@ -28,8 +28,8 @@ cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1205
 cacheon/settlement.py 1064
 dashboard/app.py 932
-tests/test_chain_intake.py 1847
-tests/test_device_state.py 1001
+tests/test_chain_intake.py 1776
+tests/test_device_state.py 942
 tests/test_engine_tree.py 1063
 tests/test_eval_cost.py 1019
 tests/test_oci_backend.py 1140

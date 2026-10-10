@@ -67,7 +67,7 @@ chain, not a claim that every row is embedded in the attempt or SQLite:
 | Stage | Representative retained identity/evidence |
 |---|---|
 | Intake | Finalized block/event order, payload, committed hash, reservation, immutable publication |
-| Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm/cohort plans |
+| Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm plans |
 | Arena | Service manifest, capacity decision, candidate binding (reservation, publication, qualification attempt) |
 | Launch | Runtime preflight, model mount, native build/publication, hardware/resource/seccomp identity |
 | Execution | Versioned `ResidentSpeedWitness` paired-replay turn records (policies 16/17), physical-lane roles, and the richer session/device observations validated against the frozen plan. Current source requires complete per-rank execution evidence before speed grading. Witnesses below version 16 are batch-cell or MiniMax-M3 history and are refused |

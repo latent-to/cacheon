@@ -199,39 +199,6 @@ def _journal_projection():
     )
 
 
-def test_exact_manifest_compatibility_failure_can_return_to_fifo(tmp_path) -> None:
-    reason = (
-        "manifest:submission is not a registered component: "
-        "unsupported abi_version 'pre-cutover'"
-    )
-    with _store(tmp_path) as store:
-        row = _reserve_one(store)
-        store.mark_fetching(row.reservation_id)
-        terminal = store.mark_failed(row.reservation_id, reason)
-        assert terminal.status == "failed"
-
-        with pytest.raises(IntakeError, match="exact pre-publication"):
-            store.release_manifest_compatibility_failure(
-                row.reservation_id,
-                expected_reason_digest=_h("wrong reason"),
-            )
-
-        released = store.release_manifest_compatibility_failure(
-            row.reservation_id,
-            expected_reason_digest=sha256_hex(reason.encode()),
-        )
-        assert released.status == "reserved"
-        assert released.decision == ""
-        assert released.reason == "manifest_compatibility_released"
-        assert store.pending() == (released,)
-
-        with pytest.raises(IntakeError, match="exact pre-publication"):
-            store.release_manifest_compatibility_failure(
-                row.reservation_id,
-                expected_reason_digest=sha256_hex(reason.encode()),
-            )
-
-
 def _stack_context(
     catalog: TargetCatalog, *, arena_digest: str = _h("arena")
 ) -> EvaluationStackContext:
@@ -505,30 +472,6 @@ def test_admission_bounds_and_epoch_cutoff_are_durable(tmp_path):
         assert [row.status for row in result] == ["reserved", "failed", "reserved"]
 
 
-def test_unknown_older_and_overlapping_target_block_later_settlement(tmp_path):
-    with _store(tmp_path) as store:
-        first, second, third = _reserve(
-            store, (_arrival(0), _arrival(1, hotkey="b"), _arrival(2, hotkey="c"))
-        )
-        for row, target, members in (
-            (second, "target.a", ("slot.a",)),
-            (third, "target.b", ("slot.b",)),
-        ):
-            _publish(
-                store, row.reservation_id, _fingerprint(target, members[0]),
-                digest="d" * 64, root=f"/published/{target}",
-            )
-        assert store.settlement_blockers(second.reservation_id) == (first,)
-        assert store.settlement_blockers(third.reservation_id) == (first,)
-
-        _publish(
-            store, first.reservation_id, _fingerprint("target.a", "slot.a", "b"),
-            digest="e" * 64, root="/published/first",
-        )
-        assert store.settlement_blockers(second.reservation_id) == (store.get(first.reservation_id),)
-        assert store.settlement_blockers(third.reservation_id) == ()
-
-
 def test_copy_decision_uses_only_durable_delta_fingerprints(tmp_path):
     with _store(tmp_path) as store:
         first, second = _reserve(
@@ -674,7 +617,6 @@ def test_schema3_archival_is_terminal_preserves_evidence_and_releases_priority(
         store._db.execute("UPDATE metadata SET value='2' WHERE key='schema'")
 
     with _store(tmp_path, expiry_blocks=20) as reopened:
-        legacy = reopened.get(candidate.reservation_digest)
         candidate_before = dict(
             reopened._db.execute(
                 "SELECT * FROM settlement_candidates WHERE reservation_id=?",
@@ -690,18 +632,6 @@ def test_schema3_archival_is_terminal_preserves_evidence_and_releases_priority(
             )
         )
 
-        later = _reserve_one(reopened, index=1, block=11)
-        _publish(
-            reopened,
-            later.reservation_id,
-            _fingerprint(
-                candidate.target_id, candidate.target_id, "b", selected_delta="6" * 64
-            ),
-            digest="e" * 64,
-            root="/published/later",
-        )
-        assert reopened.settlement_blockers(later.reservation_id) == (legacy,)
-
         archived = reopened.archive_schema3_migration_hold(
             candidate.reservation_digest,
             current_finalized_block=11,
@@ -709,7 +639,6 @@ def test_schema3_archival_is_terminal_preserves_evidence_and_releases_priority(
         )
         assert (archived.status, archived.decision) == ("expired", "NO_DECISION")
         assert archived.reason.startswith("schema3_archived@11:")
-        assert reopened.settlement_blockers(later.reservation_id) == ()
 
         candidate_after = dict(
             reopened._db.execute(

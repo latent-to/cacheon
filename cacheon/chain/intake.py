@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -29,7 +28,6 @@ from cacheon.copy_fingerprint import (
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
-from cacheon._strict import members_overlap
 from cacheon.chain.eval_cost_credit import EVAL_COST_CREDITS_DDL
 
 if TYPE_CHECKING:
@@ -1135,81 +1133,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             raise IntakeError("closed-target disposal requires the target id")
         return self._expire_before_claim(reservation_id, f"target_unavailable:{target_id}")
 
-    def release_manifest_compatibility_failure(
-        self,
-        reservation_id: str,
-        *,
-        expected_reason_digest: str,
-    ) -> IntakeReservation:
-        """Return one exact pre-publication rollout failure to durable FIFO.
-
-        This is an operator recovery seam for a validator reader-compatibility
-        defect, not a general terminal-result override.  It refuses rows with
-        any publication, qualification, lease, or settlement history;
-        the caller must also bind the exact retained reason bytes.  The normal
-        intake loop then reopens the content-addressed private tree, reruns the
-        current manifest policy, and publishes through the ordinary path.
-        """
-
-        require_sha256_hex(
-            expected_reason_digest,
-            field="manifest compatibility reason digest",
-        )
-        with self._transaction():
-            row = self.get(reservation_id)
-            reason_digest = hashlib.sha256(row.reason.encode("utf-8")).hexdigest()
-            if (
-                row.status != "failed"
-                or row.decision != "FAIL"
-                or not row.reason.startswith("manifest:")
-                or "unsupported abi_version" not in row.reason
-                or reason_digest != expected_reason_digest
-                or row.delta_fingerprint is not None
-                or row.publication_digest
-                or row.publication_root
-                or row.qualification_authority_digest
-                or row.qualification_evidence_digest
-                or row.arena_service_digest
-            ):
-                raise IntakeError(
-                    "reservation is not the exact pre-publication compatibility failure"
-                )
-            covered = (
-                self._db.execute(
-                    "SELECT COUNT(*) AS n FROM qualification_dispositions "
-                    "WHERE reservation_id=?",
-                    (reservation_id,),
-                ).fetchone()["n"]
-                + self._db.execute(
-                    "SELECT COUNT(*) AS n FROM settlement_qualifications "
-                    "WHERE reservation_id=?",
-                    (reservation_id,),
-                ).fetchone()["n"]
-                + self._db.execute(
-                    "SELECT COUNT(*) AS n FROM settlement_candidates "
-                    "WHERE reservation_id=?",
-                    (reservation_id,),
-                ).fetchone()["n"]
-                + self._db.execute(
-                    "SELECT COUNT(*) AS n FROM evaluation_lease_members "
-                    "WHERE reservation_id=?",
-                    (reservation_id,),
-                ).fetchone()["n"]
-            )
-            if covered:
-                raise IntakeError(
-                    "compatibility failure already has downstream evaluation authority"
-                )
-            cursor = self._db.execute(
-                "UPDATE reservations SET status='reserved',decision='',"
-                "reason='manifest_compatibility_released' "
-                "WHERE reservation_id=? AND status='failed' AND decision='FAIL'",
-                (reservation_id,),
-            )
-            if cursor.rowcount != 1:
-                raise IntakeError("compatibility release lost its exact terminal row")
-        return self.get(reservation_id)
-
     def mark_held(self, reservation_id: str, reason: str) -> IntakeReservation:
         return self._transition(
             reservation_id,
@@ -1281,20 +1204,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             "SELECT COUNT(*) AS n FROM qualification_dispositions WHERE reservation_id=?",
             (reservation_id,),
         ).fetchone()["n"]
-
-    def settlement_blockers(self, reservation_id: str) -> tuple[IntakeReservation, ...]:
-        candidate = self.get(reservation_id)
-        if not candidate.target_members:
-            raise IntakeError("candidate has no resolved target members")
-        blockers: list[IntakeReservation] = []
-        for row in self.all():
-            if row.arrival.arrival_key >= candidate.arrival.arrival_key:
-                break
-            if row.status in _TERMINAL or row.competition_arena != candidate.competition_arena:
-                continue
-            if not row.target_members or members_overlap(row.target_members, candidate.target_members):
-                blockers.append(row)
-        return tuple(blockers)
 
     def copy_predecessors(self, reservation_id: str) -> tuple[IntakeReservation, ...]:
         candidate = self.get(reservation_id)
