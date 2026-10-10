@@ -67,7 +67,7 @@ chain, not a claim that every row is embedded in the attempt or SQLite:
 | Stage | Representative retained identity/evidence |
 |---|---|
 | Intake | Finalized block/event order, payload, committed hash, reservation, immutable publication |
-| Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm/cohort plans |
+| Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm plans |
 | Arena | Service manifest, capacity decision, candidate binding (reservation, publication, qualification attempt) |
 | Launch | Runtime preflight, model mount, native build/publication, hardware/resource/seccomp identity |
 | Execution | Versioned `ResidentSpeedWitness` paired-replay turn records (policies 16/17), physical-lane roles, and the richer session/device observations validated against the frozen plan. Current source requires complete per-rank execution evidence before speed grading. Witnesses below version 16 are batch-cell or MiniMax-M3 history and are refused |
@@ -164,6 +164,13 @@ original evidence and corrected execution under the unchanged candidate,
 workload and numerical policy. A plan that requires audit cannot treat a
 missing or incomplete witness as either a PASS or an attributable candidate FAIL.
 
+A speed stage-exit carries an audit witness only under the calibration-observation
+disposition, which the sealed policy binds to listed validator-registered control
+deltas and whose authority digest has its own domain. The witness must grade `PASS`,
+start after the speed read and fit the total budget; the exit's decision remains the
+speed grade. Reopen rejects an observation speed exit without that witness and a
+terminal speed exit with one, and audit recovery cannot overturn either speed exit.
+
 ### Reopening a disputed speed pass
 
 Start with the settlement candidate and its retained qualification attempt.
@@ -225,8 +232,7 @@ Retention clocks are type-specific. Settlement lease expiry can recycle a lease,
 discovery claim may have a policy lifetime. Eligible unresolved intake rows expire
 automatically against finalized arrival/progress-block authority after the configured
 SLA; wall-clock age is not the authority. Active `fetching` and `qualifying` work
-is excluded, and the dedicated schema-3 migration hold requires its
-explicit archive path. An operator may also call the typed `expire` transition after the
+is excluded. An operator may also call the typed `expire` transition after the
 configured minimum age or release a held reservation with an audited reason. None of
 these row-level transitions is a typed retirement of an entire arena. Backup or cleanup
 procedures must preserve authoritative rows and evidence until a valid transition is

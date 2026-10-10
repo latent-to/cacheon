@@ -133,8 +133,9 @@ def test_quality_round_trip_preserves_distinct_nll_and_rollout_kl() -> None:
     assert prompt.rollout_kl.mean_kl == "0.01"
 
 
-def test_faithful_candidate_passes_frozen_familywise_policy() -> None:
-    calibration = _calibration()
+@pytest.mark.parametrize("algorithm", ["teacher-familywise-v1", "teacher-familywise-upper-bound-v1"])
+def test_faithful_candidate_passes_frozen_familywise_policy(algorithm) -> None:
+    calibration = replace(_calibration(), algorithm_id=algorithm)
     verdict = score_reference_quality(
         _evidence(calibration), calibration=calibration, expected_context=_context()
     )
@@ -171,8 +172,9 @@ def test_teacher_nll_regression_fails() -> None:
     assert "mean_nll" in verdict.failed_metrics
 
 
-def test_stock_control_drift_is_no_decision_not_candidate_failure() -> None:
-    calibration = _calibration()
+@pytest.mark.parametrize("algorithm", ["teacher-familywise-v1", "teacher-familywise-upper-bound-v1"])
+def test_stock_control_drift_is_no_decision_not_candidate_failure(algorithm) -> None:
+    calibration = replace(_calibration(), algorithm_id=algorithm)
     drift = _rollout(nll="1.5")
     prompts = (_prompt("6", control=drift), _prompt("7", control=drift))
     verdict = score_reference_quality(
@@ -247,8 +249,60 @@ def test_hidden_task_floor_is_an_external_failure() -> None:
     assert "task_score.absolute_floor" in verdict.failed_metrics
 
 
-def test_provisional_calibration_can_never_pass() -> None:
-    calibration = _calibration(status="provisional")
+@pytest.mark.parametrize("algorithm", ["teacher-familywise-v1", "teacher-familywise-upper-bound-v1"])
+@pytest.mark.parametrize("metric", ["worst_nll", "mean_nll", "task_score"])
+@pytest.mark.parametrize("arena", ["8", "9"])
+def test_candidate_quality_overlap_requires_the_registered_bound(algorithm, metric, arena) -> None:
+    calibration = replace(
+        _calibration(z="2"), algorithm_id=algorithm,
+        context=replace(_context(), arena_digest=_digest(arena)),
+        quality_metrics=(MetricCalibration(metric, "higher" if metric == "task_score" else "lower",
+                                          "0.1", "0.1"),),
+    )
+    candidate = _rollout(nll="1.2", task="7")
+    candidate = replace(candidate, teacher_nll=replace(candidate.teacher_nll, nll_max="2.2"))
+    prompts = (_prompt("6"), _prompt("7", candidate=candidate))
+    verdict = score_reference_quality(
+        _evidence(calibration, prompts), calibration=calibration, expected_context=calibration.context
+    )
+    strict = algorithm == "teacher-familywise-upper-bound-v1"
+    assert verdict.decision == ("FAIL" if strict else "NO_DECISION")
+    assert verdict.failed_metrics == ((metric,) if strict else ())
+    assert verdict.overlapping_metrics == (() if strict else (metric,))
+
+
+@pytest.mark.parametrize("algorithm", ["teacher-familywise-v1", "teacher-familywise-upper-bound-v1"])
+def test_task_floor_overlap_requires_the_registered_bound(algorithm) -> None:
+    calibration = replace(
+        _calibration(z="2"), algorithm_id=algorithm,
+        quality_metrics=(MetricCalibration("task_score", "higher", "1", "1", "0.8"),),
+    )
+    verdict = score_reference_quality(
+        _evidence(calibration, (_prompt("6"), _prompt("7", candidate=_rollout(task="7")))),
+        calibration=calibration, expected_context=_context(),
+    )
+    strict = algorithm == "teacher-familywise-upper-bound-v1"
+    assert verdict.decision == ("FAIL" if strict else "NO_DECISION")
+    assert verdict.failed_metrics == (("task_score.absolute_floor",) if strict else ())
+
+
+def test_upper_bound_policy_accepts_exact_delta_and_floor_boundaries() -> None:
+    calibration = replace(
+        _calibration(z="2"), algorithm_id="teacher-familywise-upper-bound-v1",
+        quality_metrics=(MetricCalibration("mean_nll", "lower", "0.5", "0.5"),
+                         MetricCalibration("task_score", "higher", "1", "1", "0.8")),
+    )
+    candidate = _rollout(nll="1.5", task="8")
+    verdict = score_reference_quality(
+        _evidence(calibration, (_prompt("6", candidate=candidate), _prompt("7", candidate=candidate))),
+        calibration=calibration, expected_context=_context(),
+    )
+    assert verdict.decision == "PASS"
+
+
+@pytest.mark.parametrize("algorithm", ["teacher-familywise-v1", "teacher-familywise-upper-bound-v1"])
+def test_provisional_calibration_can_never_pass(algorithm) -> None:
+    calibration = replace(_calibration(status="provisional"), algorithm_id=algorithm)
     verdict = score_reference_quality(
         _evidence(calibration), calibration=calibration, expected_context=_context()
     )

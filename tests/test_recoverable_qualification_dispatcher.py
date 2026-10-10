@@ -397,12 +397,12 @@ def test_completed_no_decision_product_terminalizes_without_retry_or_second_plan
         recovery = store.pending_qualification_recovery()
         retained = store.get(outcome.lease.reservation_ids[0])
     assert recovery is None
-    # The hold is committed exactly once and the row parks. Re-running it would
-    # spend another full evaluation to observe the same non-verdict, so the
-    # queue stops here until an operator releases it.
+    # The completed non-verdict keeps its evidence and earns nothing; neither
+    # qualification dispatch nor later rewards require an operator replay.
     assert retained.status == "held"
     assert retained.decision == ""
     assert retained.reason == "remote_qualification_hold:legacy_no_decision"
+    assert retained.qualification_evidence_digest == outcome.result_digest
 
 
 def test_already_held_no_decision_product_migrates_without_gpu_redispatch(

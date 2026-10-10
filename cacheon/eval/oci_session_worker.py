@@ -556,7 +556,7 @@ def _engine_session(
         tp_size=config.tp_size,
         moe_runner_backend=config.moe_runner_backend,
         disable_custom_all_reduce=config.disable_custom_all_reduce,
-        extra_engine_kwargs=dict(config.engine_kwargs),
+        extra_engine_kwargs=dict(config.engine_kwargs), engine_env=dict(config.engine_env),
         seed=0,
         framework_mode=framework_mode,
         isolate=True,

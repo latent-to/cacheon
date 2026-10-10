@@ -33,15 +33,11 @@ failure. Plaintext submissions from older clients remain readable.
 7. **Reconcile copies.** Compare durable fingerprints in finalized order. This step is
    separate and idempotent so a crash between publication and copy disposition cannot
    bypass priority.
-8. **Admit and qualify.** If a registered arena service was injected, run admission
-   on the queue (duplicate `FAIL` replay, closed targets, the post-crown cutoff), form
-   a capacity-bounded cohort, execute authoritative resident qualification, and
-   persist outcomes. There is no separate screen stage.
-9. **Settle retained PASSes.** Lease economically unblocked, completely qualified
-   candidates and apply the resulting settlement plan transactionally.
 
 The pass returns counts and dispositions. It never opens a wallet or calls
-`set_weights`.
+`set_weights`. Admission (duplicate `FAIL` replay and closed targets),
+qualification claims and settlement run in the
+[standing CPU supervisor](#standing-cpu-supervisor) against the same store.
 
 ## Reservation state machine
 
@@ -105,31 +101,11 @@ cacheon chain-validate \
 
 Remove `--once` to run continuously; `--interval` controls the delay between passes.
 
-`chain-validate` accepts only its declared intake and arena schema. Chain-signing
-credentials, external evaluator commands, scoring policy, and weight publication belong
-to separate authorities and must not be added to the validator-loop service.
-
-Without `--intake-only`, the CLI rejects startup unless its Python caller injects an
-exact `ArenaServiceRegistry` and selects a registered `--arena-id`:
-
-```python
-from cacheon.chain.validator_loop import run_validator
-
-run_validator(
-    subtensor,
-    netuid,
-    intake_db="chain_intake/intake.sqlite3",
-    private_root="chain_intake/private",
-    publication_root="chain_intake/worker",
-    audit_log="chain_intake/chain-audit.jsonl",
-    arena_registry=registry,   # constructed by reviewed deployment code
-    arena_id="production-arena-id",
-    intake_only=False,
-)
-```
-
-This is an integration boundary, not a copy-paste complete deployment: the repository
-does not provide the production provider represented by `registry`.
+`chain-validate` requires `--intake-only` and accepts only its declared intake schema.
+Chain-signing credentials, external evaluator commands, scoring policy, and weight
+publication belong to separate authorities and must not be added to the validator-loop
+service. Qualification and settlement run in the
+[standing CPU supervisor](#standing-cpu-supervisor).
 
 In daemon mode, `run_validator` contains pass-level validator faults. It logs the full
 exception, increases the sleep multiplier up to six times the configured interval, and
@@ -553,15 +529,15 @@ and cohort limits are content-bound in the service manifest.
 Changing either policy changes operational behavior and should be reviewed and recorded;
 the code defaults are not calibrated economics.
 
-The controller applies the finalized-block SLA on every pass, including retained-only
-passes, and inside intake and settlement transactions that depend on unresolved priority.
+The controller applies the finalized-block SLA on every pass and inside intake and
+settlement transactions that depend on unresolved priority.
 Eligible `reserved`, `transport_retry`, `published`,
 `reproduction_pending`, `held`, and `no_decision` rows expire automatically when their
 arrival or retained-progress block reaches the bound. In-flight `fetching` and
 `qualifying` rows are not aged out underneath active work. A first retained PASS
 records a fresh finalized progress block and starts a full bounded reproduction window
-from that block. Legacy retained evidence with an unknown progress block, including the
-dedicated schema-3 migration hold, remains fail closed for explicit operator disposition.
+from that block. Legacy retained evidence with an unknown progress block remains fail
+closed for explicit operator disposition.
 This prevents slow reproduction from losing its complete SLA while preventing one old
 PASS from becoming a permanent priority veto.
 
@@ -607,7 +583,7 @@ The controller maps failures according to where authority was lost:
 | Eval-cost payment lookup RPC/decode blip | pass aborted; cursor unchanged | Retry the pass; do not fail the miner |
 | Transient HTTPS/DNS or immutable-publication storage fault | `transport_retry` / `NO_DECISION` | Retry until the transport budget, then `held` |
 | Qualification plan/runner/raw-speed failure affecting a registered cohort | `NO_DECISION` for every member plus a persisted bisection plan | Cohort halves are retried to isolate poisoning without assigning losses |
-| Per-candidate post-attempt `NO_DECISION` | Retained report plus one-candidate requeue | Retry in primary or reproduction lane |
+| Completed remote `NO_DECISION` | Retained result; reservation remains `held` and earns no reward | No automatic rerun; later PASSes can settle and earn without releasing this hold |
 | Complete audited `PASS` | `qualified`; candidate becomes settlement-pending | No second qualification; settlement leases it when earlier economic blockers clear |
 
 The qualification retry counter counts retained qualification dispositions; the same
@@ -641,25 +617,6 @@ the reviewed release/requeue API appropriate to the deployment. The store's
 publication and reproduction evidence; it does not erase prior attempts.
 [`cacheon chain-release-hold`](../reference/cli.md#chain-release-hold) wraps it and
 requires a stated `--reason`.
-
-### Archive an exact schema-3 migration hold
-
-One legacy database shape can retain a single-PASS schema-3 candidate that cannot satisfy
-the current audited-qualification parser. It has a dedicated terminal operation:
-
-```bash
-cacheon chain-archive-schema3-hold \
-  --netuid <NETUID> \
-  --network <NETWORK_OR_WSS_URL> \
-  --intake-db chain_intake/intake.sqlite3 \
-  --reservation-id <RESERVATION_ID> \
-  --reason "reviewed migration reason"
-```
-
-The command constructs no wallet. It accepts only the exact migration hold, records the
-current finalized height and bounded operator reason, preserves candidate and
-qualification bytes, removes the permanent queue veto, and can never release or crown
-the evidence. Generic expiry and hold release are not substitutes.
 
 ## Incident playbook
 

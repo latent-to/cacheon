@@ -1098,10 +1098,7 @@ def test_execute_reference_selects_reference_transport_and_binds_plan(
     monkeypatch.setattr(backend, "AttachedReferenceTransport", SimpleNamespace)
     executor.reference_session_runner = lambda _plan, **_kwargs: session
     result = executor.execute_reference(
-        launch,
-        SimpleNamespace(),
-        SimpleNamespace(digest=_digest("model-mount")),
-        plan,
+        launch, SimpleNamespace(), SimpleNamespace(digest=_digest("model-mount")), plan,
         deadline=200.0,
     )
     assert observed == ["reference"]
@@ -1118,9 +1115,10 @@ def test_executors_sharing_manager_share_transaction_lock(tmp_path: Path) -> Non
     with first.exclusive_transaction():
         first.prove_quiescent()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            blocked = pool.submit(second.prove_quiescent)
             with pytest.raises(OCIBackendError, match="active session"):
-                blocked.result()
+                pool.submit(second.prove_quiescent).result()
+            with pytest.raises(OCIBackendError, match="active transaction"):
+                pool.submit(lambda: second.exclusive_transaction().__enter__()).result()
 
 
 def test_trusted_backend_has_no_economic_fields_or_runtime_authority() -> None:

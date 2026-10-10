@@ -35,7 +35,6 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-validate` | validator | production intake | Consume finalized reveals; a deployment may inject qualification services |
 | `chain-snapshot` | validator | private object-store mutation | Publish and reopen a consistent validator recovery snapshot |
 | `chain-snapshot-verify` | validator | recovery verification | Download and semantically reopen one snapshot, optionally into fresh staging |
-| `chain-archive-schema3-hold` | validator | durable state transition | Terminally archive one exact legacy schema-3 reproduction hold |
 | `chain-release-hold` | validator | durable state transition | Return one held or no-decision reservation to its queue under a stated reason |
 | `chain-backfill-lineage` | validator | durable state transition | Rebuild the per-target lineage ledger from the newest recorded crown; idempotent |
 | `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation, or run the subnet-owner burn bypass |
@@ -431,11 +430,11 @@ consumes them. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.
 
-Qualification requires a deployment-owned `ArenaServiceRegistry` plus a registered
-`--arena-id`. The repository does not construct a production provider from shell text.
-A reviewed deployment wrapper calls `cmd_chain_validate(args,
-arena_registry=registry)` or `run_validator(...)` after creating the registry. Invoking
-the stock module without `--intake-only` refuses to run because no registry was injected.
+Qualification and settlement do not run in this command; invoking it without
+`--intake-only` refuses to start. The standing supervisor
+(`python -m cacheon.chain.standing_cpu_supervisor`) owns both against a commissioned
+`ArenaService`; see
+[Standing CPU supervisor](../validator-guide/chain-loop.md#standing-cpu-supervisor).
 
 ### `chain-snapshot` and `chain-snapshot-verify`
 
@@ -494,20 +493,6 @@ private `restore-map.json`. It never replaces the live database or original
 absolute evidence/publication paths. The staged database and restored files become
 authoritative only through a separately reviewed recovery cutover.
 
-### `chain-archive-schema3-hold`
-
-```bash
-python -m cacheon.cli chain-archive-schema3-hold \
-  --network <network> --netuid <netuid> \
-  --intake-db chain_intake/intake.sqlite3 \
-  --reservation-id <reservation-id> \
-  --reason "reviewed migration disposition"
-```
-
-This is a terminal, evidence-preserving disposition for one exact legacy
-schema-3 single-PASS hold. It does not qualify, reproduce, release, crown, or
-publish weights. Current-schema work must use the normal authority path.
-
 ### `chain-release-hold`
 
 ```bash
@@ -522,8 +507,7 @@ Returns one `held` or `no_decision` reservation to the queue position its
 retained state supports: `reproduction_pending` when one settlement
 qualification exists, otherwise `published`, otherwise `transport_retry`. The
 operator reason is persisted on the row. It never signs, settles, crowns, or
-touches evidence, and it refuses a legacy schema-3 migration hold, which has
-its own terminal command above.
+touches evidence.
 
 ### `chain-backfill-lineage`
 

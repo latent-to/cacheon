@@ -132,27 +132,6 @@ class ArenaStateMixin:
         return tuple(self._row(row) for row in rows)
 
 
-    def arena_queue_snapshot(self, *, current_block: int):
-        """Read capacity pressure within the selected competition."""
-        from cacheon.arena_service import ArenaQueueSnapshot
-
-        if type(current_block) is not int or current_block < 0:
-            raise _error("arena queue block is malformed")
-        rows = tuple(self._db.execute(
-            "SELECT r.status,r.block,el.stage FROM reservations AS r LEFT JOIN "
-            "evaluation_lease_members AS em ON em.reservation_id=r.reservation_id AND em.active=1 "
-            "LEFT JOIN evaluation_leases AS el USING(lease_id) WHERE r.competition_arena=? "
-            "AND r.status IN ('published','reproduction_pending','qualifying')",
-            (self._competition_arena,),
-        ))
-        queued = [row for row in rows if row["stage"] is None and row["status"] in
-                  {"published", "reproduction_pending"}]
-        return ArenaQueueSnapshot(
-            len(queued), max((current_block - row["block"] for row in queued), default=0),
-            sum(row["status"] == "qualifying" or row["stage"] == "qualification" for row in rows),
-        )
-
-
     def target_lineage_tips(self, competition_arena: str | None = None) -> Mapping[str, object]:
         """Reopen each target's contiguous active root-to-tip lineage."""
 
@@ -406,20 +385,14 @@ class ArenaStateMixin:
         Duplicate FAIL replay follows duplicate_replay; a PASS and the
         reproduction lane are never replayed. Closed targets release payment
         through the existing no-decision transaction, before acquiring a lease.
-        The first crown on this commissioned baseline closes new commitments.
-        Earlier finalized commitments may drain even when fetched after the crown;
-        work already claimed once (its service digest is stamped) is never
-        subjected to a second admission cutoff.
+        A crown keeps the commissioned baseline open to new commitments.
+        Settlement compares completed ancestor-based results with the current
+        lineage tip; arrival after a crown is not an admission failure.
         """
         from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
         from cacheon.stack_identity import require_sha256_hex
 
         require_sha256_hex(service_digest, field="arena service digest")
-        cutoff = self._db.execute(
-            "SELECT MIN(crowned_block) AS block FROM target_lineage_nodes "
-            "WHERE competition_arena=? AND arena_id=?",
-            (self._competition_arena, service_digest),
-        ).fetchone()["block"]
         priors = tuple(
             PriorVerdict(
                 reservation_id=row["reservation_id"],
@@ -440,10 +413,6 @@ class ArenaStateMixin:
             before = len(retired)
             for row in self.claimable(limit=limit):
                 first_claim = row.status == "published" and not row.arena_service_digest
-                if first_claim and cutoff is not None and row.arrival.block > cutoff:
-                    rejected = self._expire_before_claim(row.reservation_id, "baseline_closed_at_submission")
-                    retired.append((row.reservation_id, rejected.reason))
-                    continue
                 if row.target_id in closed_targets and first_claim:
                     parked = self.mark_target_unavailable(row.reservation_id, target_id=row.target_id)
                     retired.append((row.reservation_id, parked.reason))

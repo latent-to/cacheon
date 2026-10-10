@@ -32,6 +32,16 @@ def test_glm_development_inputs_cover_cache_audits_on_every_dp_rank():
     assert {tuple(row) for row in reused} == {tuple(row[:512]) for row in original}
 
 
+def test_dsv41_cache_reuse_follows_a_completed_short_batch():
+    # Concurrent short duplicates produced zero cache hits on H100 (2026-10-08).
+    arena = Path(__file__).parents[1] / "examples/arena_inputs/dsv41flash"
+    requests = json.loads((arena / "development-requests.json").read_text())
+    initial, first, repeated = (request["input_ids"] for request in requests)
+    assert len(initial) == len(first) == len(repeated) == 8
+    assert repeated == first == [row[:512] for row in initial]
+    assert all(len(row) == 8192 for row in initial)
+
+
 def _bundle(root, body="def forward(module, *args, **kwargs):\n    return None\n"):
     root.mkdir()
     (root / "entry.py").write_text(body)
@@ -231,7 +241,8 @@ def test_engine_uses_real_bootstrap_environment_and_preserves_serving_options(tm
 
     class Engine:
         def __init__(self, **options):
-            seen.update(options=options, audit=os.environ["CACHEON_SLOT_AUDIT"])
+            seen.update(options=options, audit=os.environ["CACHEON_SLOT_AUDIT"],
+                        layout=os.environ["SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT"])
 
         def generate(self, **request):
             seen["request"] = request
@@ -246,12 +257,16 @@ def test_engine_uses_real_bootstrap_environment_and_preserves_serving_options(tm
     monkeypatch.setattr(receipts, "require", lambda *_a, **_k: [{"pid": 100, "slots": ["model.layers.*.mlp"]}])
     monkeypatch.setattr(engine_worker, "_require_execution_completion", lambda *_a, **kw: seen.update(coverage=kw))
     for key in ("CACHEON_ACTIVE", "CACHEON_BUNDLE_PATH", "CACHEON_FRAMEWORK_MODE", "CACHEON_SEAM_RECEIPT_DIR",
-                "SGLANG_PLUGINS", "CACHEON_SLOT_AUDIT", "CACHEON_SLOT_AUDIT_SEED", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+                "SGLANG_PLUGINS", "CACHEON_SLOT_AUDIT", "CACHEON_SLOT_AUDIT_SEED", "HF_HUB_OFFLINE",
+                "TRANSFORMERS_OFFLINE", "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT"):
         monkeypatch.setenv(key, "")
     request = {"input_ids": [[1, 2, 3]], "sampling_params": {"max_new_tokens": 5}}
-    miner_check._engine({"model_path": "/model", "tp_size": 1, "mem_fraction_static": 0.93},
+    # The arena's engine environment reaches the engine before construction and never as an Engine kwarg.
+    miner_check._engine({"model_path": "/model", "tp_size": 1, "mem_fraction_static": 0.93,
+                         "engine_env": {"SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT": "per_rank"}},
                         "/bundle", [request], tmp_path, phase=phase, seed=7)
-    assert seen["options"]["mem_fraction_static"] == 0.93
+    assert seen["options"]["mem_fraction_static"] == 0.93 and "engine_env" not in seen["options"]
+    assert seen["layout"] == "per_rank"
     assert seen["options"].get("disable_cuda_graph", False) == (phase == "audit")
     assert seen["audit"] == ("1" if phase == "audit" else "0")
     assert seen["coverage"]["require_captured"] == (phase == "graph")

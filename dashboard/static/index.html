@@ -208,6 +208,7 @@ if (!TABS.some(([id]) => id === tab)) tab = "overview";
 let arena = decodeURIComponent(location.pathname.replace(/^\/+|\/+$/g, ""))
   || new URL(location.href).searchParams.get("arena") || "";
 let arenas = [];
+let feeTotals = { tao: 0, count: 0 };
 let allArenaEvents = false;
 let detailRequest = 0;
 let subFilters = { q: "", status: "", offset: 0 };
@@ -326,6 +327,11 @@ async function updateMeta() {
 async function viewOverview() {
   const [o, q] = await Promise.all([api("/api/overview"), api("/api/queue")]);
   const t = o.totals;
+  const feeCards = arenas.map((a) => a.fees ? card(a.fees.tao.toFixed(1) + " τ",
+    `${esc(a.label)}: ${a.fees.count} fee payments` +
+    (a.fees.by_fee.length ? " (" + a.fees.by_fee.map((f) => `${f.count} at ${f.fee_tao} τ`).join(", ") + ")" : ""))
+    : card("—", `${esc(a.label)}: fees unavailable`, "warn"));
+  const mine = (arenas.find((a) => a.key === arena) || {}).fees || { tao: 0, count: 0 };
   const days = o.submissions_per_day || [];
   const max = Math.max(1, ...days.map((d) => d.count));
   const shown = days.slice(-45);
@@ -351,8 +357,13 @@ async function viewOverview() {
       ${card(t.expired, "expired")}
       ${card(t.unique_hotkeys, "unique hotkeys")}
       ${card(t.active_leases, "active eval leases", t.active_leases ? "info" : "")}
-      ${card(t.payments_tao.toFixed(0) + " τ", t.payments_count + " eval-fee payments", "info")}
+      ${arenas.length ? card(mine.tao.toFixed(1) + " τ", mine.count + " eval-fee payments (this arena)", "info") : ""}
     </div>
+    ${arenas.length ? `<h2>Evaluation fees received, all arenas</h2>
+    <div class="cards">
+      ${card(feeTotals.tao.toFixed(1) + " τ", feeTotals.count + " fee payments ever, every arena", "info")}
+      ${feeCards.join("")}
+    </div>` : ""}
     ${lease ? `<div class="callout" style="border-left-color:var(--ok)">
       <b style="color:var(--fg)">Evaluation lease active:</b>
       ${pill(lease.stage)} <code>${esc(short(lease.reservation_id, 12))}</code>
@@ -524,8 +535,8 @@ async function viewWinners() {
         <div class="muted small">${w.result ? neededLine(w.result) : ""}
         ${w.speedup_reproduction ? `${w.speedup_primary.toFixed(5)}× primary · ${w.speedup_reproduction.toFixed(5)}× repro` : ""}</div></td>
     <td>${rewardComparison(w)}</td>
-    <td>${replayLine(w.result) || `${measuredValue(w.baseline_tokens_per_second)} → ${measuredValue(w.tokens_per_second)}`}
-        <div class="muted small">${esc(w.baseline_kind)} baseline${w.prefill_speedup != null ? " · prefill " + metricGain(w.prefill_speedup) : ""}</div></td>
+    <td>${replayLine(w.result)}
+        <div class="muted small">${esc(w.baseline_kind)} baseline</div></td>
     <td>${key(w.hotkey, w.hotkey_links)}</td>
     <td>${fmtTime(w.passed)}<div class="muted small">block ${blockLink(w.passed, w.passed_links)}</div></td>
     <td>${w.waiting_for_queue ? "—" : `${w.weight_share != null ? `<b>${(w.weight_share * 100).toFixed(2)}%</b>` : "—"}
@@ -766,7 +777,6 @@ window.openDetail = async (rid) => {
     </div>` : ""}` : "";
   const baseline = d.baseline || {};
   const checkpoint = baseline.checkpoint;
-  const baselineTps = (d.baseline_measurements || {}).baseline_tokens_per_second;
   const baselineCard = `
     <h2>Evaluation baseline</h2>
     <div class="card">
@@ -775,7 +785,6 @@ window.openDetail = async (rid) => {
           ? `<a href="${esc(checkpoint.url)}" target="_blank" rel="noopener noreferrer">${esc(checkpoint.repo)} ↗</a>`
           : '<span class="muted">No retained checkpoint mapping</span>')}
         ${checkpoint ? kv("Checkpoint revision", `<code class="small">${esc(checkpoint.revision)}</code>`) : ""}
-        ${baselineTps != null ? kv("Measured baseline", measuredValue(baselineTps)) : ""}
         ${kv("Baseline submission", baseline.reservation_id ? submissionLink(baseline.reservation_id)
           : baseline.evaluated || baseline.assigned
             ? (baseline.artifact_digest ? "Sealed by the validator — no submission link retained" : "Base engine — no submission")
@@ -852,7 +861,6 @@ window.openDetail = async (rid) => {
       ${kv("Hotkey", key(d.hotkey, d.hotkey_links, 20))}
       ${kv("Submitted", fmtTime(d.submitted) + " · block " + blockLink(d.submitted, d.block_links))}
       ${kv("Target", esc(d.target_id || "—") + `<div class="muted small">${esc(d.target_summary)}</div>`)}
-      ${d.tokens_per_second != null ? kv("Measured candidate", measuredValue(d.tokens_per_second)) : ""}
       ${kv("Submission source", sourceLink)}
       ${kv("Content hash", `<code class="small">${esc(short(d.content_hash, 26))}</code>`)}
       ${kv("Eval fee", evalFee(d, true))}
@@ -893,6 +901,7 @@ async function refresh() {
 async function loadArenas() {
   const data = await api("/api/arenas");
   arenas = data.items;
+  feeTotals = { tao: data.fees_total_tao || 0, count: data.fees_count || 0 };
   arena = arenas.find(s => s.slug === arena)?.key || arena;
   if (!arena) arena = data.default || "";
   $("#arena-select").innerHTML = arenas.length ? arenas.map(s =>

@@ -76,8 +76,7 @@ Principal code: [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/mai
 
 ## 3. Arena and target resolution
 
-An `ArenaServiceRegistry` maps a public arena identifier to a closed
-`ArenaService`. Its manifest directly binds:
+Each commissioned arena is a closed `ArenaService`. Its manifest directly binds:
 
 - runtime, base-engine, validator-overlay, worker, model, architecture, GPU,
   and topology identities;
@@ -95,7 +94,7 @@ manifest itself.
 
 The proposal is resolved against the exact target catalog snapshot. A registered candidate must match its target members and permitted features; unregistered work fails resolution.
 
-The command-line `chain-validate` loop can perform intake alone. Full production qualification requires the operator to inject a real `ArenaServiceRegistry` and select `--arena-id`; the repository does not manufacture a production arena provider from implicit defaults.
+The command-line `chain-validate` loop performs intake alone. Production qualification runs in the standing supervisor against a commissioned `ArenaService`; the repository does not manufacture a production arena provider from implicit defaults.
 
 Principal code: [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py), [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py), and [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 
@@ -110,12 +109,10 @@ Admission runs when a queued row is first claimed, before any lease exists:
 - an exact copy of bytes that already lost under this arena inherits that `FAIL`; a
   `PASS` is never replayed;
 - a reservation for a target the commissioned arena cannot measure is released as
-  target-unavailable without a verdict; and
-- a commitment after the first crown on the commissioned baseline is rejected as
-  `baseline_closed_at_submission`.
+  target-unavailable without a verdict.
 
-The first claim stamps the arena service identity the row is measured under, and a row
-claimed once never meets a second admission cutoff. Infrastructure errors release the
+A crown leaves the commissioned baseline open to later commitments. The first claim
+stamps the arena service identity the row is measured under. Infrastructure errors release the
 lease without consuming a qualification attempt; three consecutive infrastructure
 releases hold the row instead of converting it into a loss.
 
@@ -158,8 +155,9 @@ physical-lane role assignment. Evidence reopens under the arithmetic that
 produced it; a label change cannot upgrade it and pre-v16 witnesses are refused.
 
 The authoritative work is staged. Speed is decided first; audit and pristine-reference
-quality run only after the speed stage remains eligible, apart from an explicitly
-registered calibration-observation continuation.
+quality run only after the speed stage remains eligible. The one exception is a
+validator-registered control delta listed in the sealed policy: its audit still runs
+after a speed non-PASS, pristine T does not, and the verdict stays the speed grade.
 
 | Arm | Stack | Timed? | Purpose |
 |---|---|---:|---|
@@ -258,11 +256,9 @@ verdict. The references may live under the same content-addressed store root. It
   result beats the composed improvement to the current tip;
 - the requested stack update matches the measured candidate.
 
-The submission cutoff is enforced during admission before the first qualification claim:
-commitments after the first crown on that commissioned baseline are rejected as
-`baseline_closed_at_submission`. Commitments in the finalized crown block or earlier
-can drain, including delayed fetches. A new commission has its own admission window.
-Settlement never repeats this arrival-time check.
+Commitments after a crown remain eligible against the commissioned baseline.
+Settlement compares their retained results with the current lineage tip; changing
+the measurement baseline requires an explicit operator commission.
 
 The planner leases one cohort whose rows share qualification authority and incumbent
 state. Incomparable or insufficient ancestor results are held, and one registered winner is selected across
@@ -302,7 +298,7 @@ See the [emissions policy](../reference/emissions-policy.md).
 
 ## 11. Integration
 
-A settled crown changes the evaluation stack and nothing else. Integration into maintained source, release, and serving are separate authorities that this repository does not implement; see [After a crown](../engine/integration.md).
+A settled crown changes the evaluation stack and nothing else. Integration into maintained source, release, and serving are separate authorities that this repository does not implement; see [Crown and ship are different decisions](product-model.md#crown-and-ship-are-different-decisions).
 
 ## Operational handoff checklist
 

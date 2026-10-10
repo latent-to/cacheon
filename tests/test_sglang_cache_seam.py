@@ -452,6 +452,51 @@ def test_a_raise_anywhere_in_the_bundle_s_methods_is_the_candidate_s(sglang):
     _refusal(sglang, "eviction bug")
 
 
+class Releasing(UnifiedRadixCache):
+    """SGLang 0.5.21's finished handoff: ``insert_req`` keeps the row, ``on_release`` lets it go."""
+
+    def insert_req(self, req, *, up_to, **kwargs):
+        self._insert(req, up_to)
+
+    def on_release(self, req, *, inserted):
+        self.released = req.rid
+
+
+class Reinserting(Releasing):
+    """Keeps the page a request finished with under the previous page's slots."""
+
+    def insert_req(self, req, *, up_to, **kwargs):
+        row, last = self.req_to_token_pool.req_to_token[req.kv.req_pool_idx], up_to // PAGE * PAGE
+        row[last - PAGE:last] = row[last - 2 * PAGE:last - PAGE]
+        super().insert_req(req, up_to=up_to, **kwargs)
+
+
+@pytest.mark.parametrize("entry, fake", [(Releasing, False), (Reinserting, True)])
+def test_the_release_handoffs_check_what_is_inserted_and_forget_the_request(sglang, entry, fake):
+    engine = _engine(sglang, entry)
+    req = engine.admit(A)
+    engine.compute(req, 0, len(A))
+    engine.cache.cache_unfinished_req(req)
+    for step in range(2):  # the page completed by decoding reaches the tree only at the finish
+        req.output_ids.append(9000 + step)
+        engine.compute(req, req.fill, req.fill + 1)
+    engine.cache.insert_req(req, up_to=req.fill)
+    engine.cache.on_release(req, inserted=True)
+    assert engine.cache.released == req.rid
+    assert receipts.collect(sglang.receipts, "completed")[0]["slot"] == ADDRESS
+    follow = engine.admit(A + list(req.output_ids) + B)
+    assert len(follow.prefix_indices) == 24
+    engine.compute(follow, 24, len(A) + 2 + len(B))
+    engine.cache.cache_unfinished_req(follow)
+    if fake:
+        with pytest.raises(RuntimeError, match="does not hold the KV the engine computed"):
+            engine.cache.insert_req(follow, up_to=follow.fill)
+        _refusal(sglang, "does not hold the KV")
+    else:
+        engine.cache.insert_req(follow, up_to=follow.fill)
+        assert receipts.collect(sglang.receipts, "failed") == []
+
+
 @pytest.mark.parametrize("eagle", [False, True])
 def test_an_honest_cache_passes_reuse_chunks_duplicates_and_a_flush(sglang, eagle):
     engine = _engine(sglang, eagle=eagle)

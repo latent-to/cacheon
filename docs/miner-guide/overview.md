@@ -57,8 +57,7 @@ submissions.
   kernels with the incumbent cache (stock SGLang's until a cache is commissioned),
   and the validator checks the bytes behind every served prefix on both arms. The
   cache runs outside CUDA graphs. It applies only to arenas that serve with prefix
-  caching; the Qwen development configuration disables it. See
-  [the prefix cache](slots.md#the-prefix-cache).
+  caching. See [the prefix cache](slots.md#the-prefix-cache).
 
 Batching, sampling and unrelated serving configuration remain outside the
 contribution.

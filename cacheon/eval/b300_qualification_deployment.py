@@ -280,6 +280,7 @@ class B300QualificationConstructionAuthority:
     hidden_judge: object
     deadline_policy_digest: str
     deadline_provider: QualificationDeadlineProvider
+    audit_control_delta_digests: tuple[str, ...] = ()  # the sealed policy's control deltas
 
     def __post_init__(self) -> None:
         if type(self.catalog) is not TargetCatalog:
@@ -633,9 +634,8 @@ def _validate_plan(
         or type(prepared_rows[0]) is not PreparedCandidateRuntime
         or type(authorities[0]) is not CandidateQualificationAuthority
         or value.speed_evidence_policy.version != 3
-        or value.speed_stage_disposition is not SpeedStageDisposition.TERMINAL
-        or value.resident_speed_plan is None
-        or value.resident_audit_plan is None
+        or (value.speed_stage_disposition is SpeedStageDisposition.CALIBRATION_OBSERVATION)
+        != (reservation.selected_delta_digest in construction.audit_control_delta_digests)
         or value.evidence_root != construction.evidence_root
         or value.pristine_stack != construction.pristine_stack
         or value.pristine_launch.stack_digest != construction.pristine_stack.digest
@@ -773,8 +773,8 @@ def _factory_builder(
             selection_secret_reference=reference,
         )
         return sealed_prebuilt_qualification_plan_factory(
-            manifest, selection_secret_reference=reference,
-            selection_secret=secret, plan=first,
+            manifest, selection_secret_reference=reference, selection_secret=secret,
+            plan=first, audit_control_delta_digests=construction.audit_control_delta_digests,
         )
 
     return build

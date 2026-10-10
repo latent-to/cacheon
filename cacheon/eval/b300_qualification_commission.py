@@ -363,6 +363,9 @@ def compose_commissioned_qualifications(
             hidden_tasks_required=policy_block["hidden_tasks_required"],
             select_count=policy_block["select_count"],
             audit_minimum_calls=policy_block["audit_minimum_calls"],
+            audit_control_delta_digests=tuple(
+                policy_block.get("audit_control_delta_digests", ())
+            ),
         )
     except B300RegisteredQualificationError as exc:
         raise B300QualificationCommissionError(
@@ -717,6 +720,7 @@ def _compose_locked(
         hidden_judge=hidden_judge,
         deadline_policy_digest=declared_qualification_deadline_digest(),
         deadline_provider=_tracked_deadline_provider(),
+        audit_control_delta_digests=policy.audit_control_delta_digests,
     )
     if (
         construction.qualification_policy_digest

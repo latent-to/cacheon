@@ -10,11 +10,7 @@ from cacheon.stack_manifest import (
     EvaluationStackManifest,
     ProposalContributionRef,
 )
-from cacheon.stack_plan import (
-    CohortPlan,
-    StackPlanError,
-    plan_marginal_arm,
-)
+from cacheon.stack_plan import StackPlanError, plan_marginal_arm
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
@@ -202,107 +198,9 @@ def test_marginal_plan_rejects_equal_tree_and_detects_incumbent_rebase():
     _plan(incumbent, replacement, catalog, context)
 
 
-def _two_arms():
+def test_plan_schema_version_is_type_exact():
     catalog = default_target_catalog()
     context = _context(catalog, (FORWARD, CACHE))
-    incumbent = _stack(catalog)
-    model = _plan(incumbent, _ref(catalog, FORWARD, "model"), catalog, context)
-    cache = _plan(incumbent, _ref(catalog, CACHE, "cache"), catalog, context)
-    return catalog, context, incumbent, model, cache
-
-
-def test_cohort_order_is_entropy_derived_and_authority_remains_distinct():
-    _, context, incumbent, model, cache = _two_arms()
-    entropy = _h("post-seal entropy")
-    authority = (cache.transition.replacement, model.transition.replacement)
-    first = CohortPlan.seal(
-        (model, cache),
-        entropy_digest=entropy,
-        authority_order=authority,
-        catalog=default_target_catalog(),
-        expected_context=context,
-    )
-    second = CohortPlan.seal(
-        (cache, model),
-        entropy_digest=entropy,
-        authority_order=authority,
-        catalog=default_target_catalog(),
-        expected_context=context,
-    )
-
-    assert first.digest == second.digest
-    assert first.execution_order == second.execution_order
-    assert first.authority_order == authority
-    assert set(first.execution_order) == {
-        model.selected_delta_digest,
-        cache.selected_delta_digest,
-    }
-    assert first.reopen(
-        catalog=default_target_catalog(), expected_context=context
-    ) is first
-    with pytest.raises(StackPlanError, match="sealed entropy"):
-        replace(first, execution_order=tuple(reversed(first.execution_order)))
-
-
-@pytest.mark.parametrize(
-    "case",
-    ["duplicate_delta", "duplicate_tree", "duplicate_authority", "missing_authority"],
-)
-def test_cohort_rejects_duplicate_work_and_invalid_authority(case):
-    catalog, context, incumbent, model, cache = _two_arms()
-    arms = (model, cache)
-    authority = (model.transition.replacement, cache.transition.replacement)
-    message = ""
-    if case == "duplicate_delta":
-        alias = _ref(catalog, FORWARD, "padding alias", payload="model")
-        # _ref's payload label matches the original selected payload while the
-        # whole artifact and attribution identities differ.
-        duplicate = _plan(
-            incumbent,
-            alias,
-            catalog,
-            _context(catalog, (FORWARD, CACHE)),
-            candidate_tree="tree:alias",
-        )
-        arms = (model, duplicate)
-        authority = (model.transition.replacement, duplicate.transition.replacement)
-        message = "duplicate selected deltas"
-    elif case == "duplicate_tree":
-        duplicate_tree = _plan(
-            incumbent,
-            cache.transition.replacement,
-            catalog,
-            _context(catalog, (FORWARD, CACHE)),
-            candidate_tree=f"tree:c:{model.selected_delta_digest}",
-        )
-        arms = (model, duplicate_tree)
-        message = "duplicate candidate trees"
-    elif case == "duplicate_authority":
-        authority = (model.transition.replacement, model.transition.replacement)
-        message = "duplicate contributions"
-    else:
-        authority = (model.transition.replacement,)
-        message = "every cohort contribution exactly once"
-
-    with pytest.raises(StackPlanError, match=message):
-        CohortPlan.seal(
-            arms,
-            entropy_digest=_h("entropy"),
-            authority_order=authority,
-            catalog=catalog,
-            expected_context=context,
-        )
-
-
-def test_plan_schema_versions_are_type_exact():
-    catalog, context, _, model, cache = _two_arms()
-    cohort = CohortPlan.seal(
-        (model, cache),
-        entropy_digest=_h("entropy"),
-        authority_order=(model.transition.replacement, cache.transition.replacement),
-        catalog=catalog,
-        expected_context=context,
-    )
-    for record in (model, cohort):
-        with pytest.raises(StackPlanError, match="schema_version"):
-            replace(record, schema_version=True)
+    model = _plan(_stack(catalog), _ref(catalog, FORWARD, "model"), catalog, context)
+    with pytest.raises(StackPlanError, match="schema_version"):
+        replace(model, schema_version=True)

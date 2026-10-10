@@ -16,7 +16,6 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from enum import Enum
 from typing import Protocol
 
 from cacheon.chain.publication import WorkerBundlePublication
@@ -118,14 +117,14 @@ class ArenaRuntimeIdentity:
 
 @dataclass(frozen=True)
 class WorkloadCell:
-    """One scored serving cell, stated exactly as the session executes it.
+    """One sealed serving cell of the engine-conditioning and audit batches.
 
-    The declaration and the consumed ``SessionExecutionPlan`` are projections
-    of the same sealed authority: ``concurrency`` is the width of every sealed
-    prompt batch, ``output_tokens`` is the session's exact generation budget
-    (``ignore_eos``), and ``input_tokens`` is the engine-observed prompt length
-    every timed request must report.  A plan that cannot satisfy the cell
-    cannot commission, so the declared and executed workloads cannot diverge.
+    ``input_tokens`` and the batch-to-cell routing set the prompt geometry of
+    the conditioning batches that warm each engine before a replay window and
+    of the audit batches that reuse those shapes; ``concurrency`` is checked
+    against the sealed prompt batches at commissioning. ``output_tokens`` and
+    ``timed_reads`` are retained identity only: the scored work is the sealed
+    replay slice, and conditioning generates a fixed 16 tokens per request.
     """
 
     cell_id: str
@@ -267,25 +266,6 @@ class ArenaServiceManifest:
 
 
 @dataclass(frozen=True)
-class ArenaQueueSnapshot:
-    queued: int
-    oldest_age_blocks: int
-    active_qualifications: int
-
-    def __post_init__(self) -> None:
-        for field in self.__dataclass_fields__:
-            value = getattr(self, field)
-            if type(value) is not int or value < 0:
-                raise ArenaServiceError(f"queue snapshot {field} must be nonnegative")
-
-
-class AdmissionDecision(str, Enum):
-    ADMIT = "admit"
-    QUEUE = "queue"
-    HOLD = "hold"
-
-
-@dataclass(frozen=True)
 class ArenaCandidateBinding:
     """Trusted local binding whose digest excludes the validator host path.
 
@@ -405,24 +385,6 @@ class ArenaService:
     def identity(self) -> str:
         return self.manifest.digest
 
-    def admit_qualification(
-        self, state: ArenaQueueSnapshot, *, cohort_size: int
-    ) -> AdmissionDecision:
-        if type(state) is not ArenaQueueSnapshot:
-            raise ArenaServiceError("queue state is not exactly typed")
-        size = _positive(cohort_size, "cohort_size")
-        policy = self.manifest.capacity
-        if size > policy.max_cohort_size:
-            return AdmissionDecision.HOLD
-        if (
-            state.queued >= policy.max_queue_depth
-            or state.oldest_age_blocks >= policy.max_queue_age_blocks
-        ):
-            return AdmissionDecision.HOLD
-        if state.active_qualifications + size > policy.max_active_qualifications:
-            return AdmissionDecision.QUEUE
-        return AdmissionDecision.ADMIT
-
     def plan_qualification(
         self,
         candidates: tuple[ArenaCandidateBinding, ...],
@@ -447,58 +409,16 @@ class ArenaService:
         return work
 
 
-class ArenaServiceRegistry:
-    """Closed validator configuration for registered arena services."""
-
-    def __init__(self, services: tuple[ArenaService, ...]):
-        rows = tuple(services)
-        if not rows or any(type(row) is not ArenaService for row in rows):
-            raise ArenaServiceError("arena service registry is empty or ambiguous")
-        arena_ids = tuple(row.manifest.runtime.arena_id for row in rows)
-        if (
-            arena_ids != tuple(sorted(arena_ids))
-            or len(set(arena_ids)) != len(arena_ids)
-            or len({row.identity for row in rows}) != len(rows)
-        ):
-            raise ArenaServiceError("arena service registry is empty or ambiguous")
-        self._services = rows
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest(
-            "cacheon.arena.service-registry",
-            {
-                "services": [
-                    {
-                        "arena_id": row.manifest.runtime.arena_id,
-                        "service_digest": row.identity,
-                    }
-                    for row in self._services
-                ]
-            },
-        )
-
-    def require(self, arena_id: str) -> ArenaService:
-        expected = _identifier(arena_id, "arena_id")
-        for service in self._services:
-            if service.manifest.runtime.arena_id == expected:
-                return service
-        raise ArenaServiceError(f"arena {expected!r} is not registered")
-
-
 __all__ = [
-    "AdmissionDecision",
     "ArenaCandidateBinding",
     "ArenaCapacityPolicy",
     "ArenaQualificationRequest",
     "ArenaQualificationWork",
-    "ArenaQueueSnapshot",
     "ArenaRuntimeIdentity",
     "ArenaService",
     "ArenaServiceError",
     "ArenaServiceManifest",
     "ArenaServiceProvider",
-    "ArenaServiceRegistry",
     "Workload",
     "WorkloadCell",
 ]

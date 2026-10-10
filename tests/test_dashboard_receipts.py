@@ -26,7 +26,8 @@ def _witness_rate(role: str, seconds: float) -> dict[str, object]:
     }
 
 
-def test_qualification_speed_reads_the_retained_stage_exit(tmp_path: Path) -> None:
+def test_a_retained_batch_cell_witness_renders_no_rates(tmp_path: Path) -> None:
+    """Its C/B lane ratio was never the credited gain, so the reader reports nothing for it."""
     root = prepare_evidence_root(tmp_path / "evidence")
     reference = publish_canonical_json_evidence(
         root,
@@ -37,16 +38,7 @@ def test_qualification_speed_reads_the_retained_stage_exit(tmp_path: Path) -> No
         schema="cacheon.qualification.stage-exit.v1",
     )
 
-    speed = qualification_speed(
-        json.dumps(reference.to_dict()), (tmp_path / "empty", root))
-
-    assert speed is not None
-    assert [lane["role"] for lane in speed["lanes"]] == ["B", "C"]
-    assert speed["lanes"][0]["tokens_per_second"] == 2087.6
-    assert speed["lanes"][1]["tokens_per_second"] == 1886.7
-    assert speed["lanes"][0]["window_scatter"] == 0.0
-    assert speed["lanes"][0]["conditioning_ratio"] == 1.0
-    assert speed["speedup"] == 0.9038
+    assert qualification_speed(json.dumps(reference.to_dict()), (tmp_path / "empty", root)) is None
 
 
 def test_qualification_speed_absence_is_none_not_an_error(tmp_path: Path) -> None:
@@ -63,9 +55,7 @@ def test_qualification_speed_absence_is_none_not_an_error(tmp_path: Path) -> Non
     assert qualification_speed("not json", (root,)) is None
     assert qualification_speed(json.dumps(missing), (root,)) is None
     assert qualification_speed(json.dumps(reference.to_dict()), ()) is None
-    # Retained but rate-free artifacts render as an empty lane list.
-    assert qualification_speed(
-        json.dumps(reference.to_dict()), (root,)) == {"lanes": []}
+    assert qualification_speed(json.dumps(reference.to_dict()), (root,)) is None
 
 
 def test_qualification_evidence_roots_scan_rotated_stores(tmp_path: Path) -> None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +13,7 @@ import cacheon.eval.qualification_runner as runner
 from cacheon.eval.device_state import DeviceStateReceipt, DeviceStateSample
 from cacheon.eval.qualification import declared_qualification_entropy_digest
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
-from cacheon.eval.oci_backend import OCIBackendError, OCIEngineExecutor
+from cacheon.eval.oci_backend import OCIEngineExecutor
 from cacheon.eval.oci_outer_session import OuterSessionWorkerError
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.qualification import (
@@ -22,12 +21,13 @@ from cacheon.eval.qualification import (
     SelectionCommitment,
     SelectionEntropyReceipt,
 )
-from cacheon.eval.reference_protocol import ReferenceRoleInput, ReferenceTokenEvidence
 from cacheon.eval.reference_quality import ReferenceQualityVerdict
 from tests.support.replay import GOODPUT, replay_plan, replay_session
 
 
 _REAL_PUBLISH_CAUSAL = runner.publish_causal_qualification
+
+
 _REAL_REOPEN_CAUSAL = runner.reopen_causal_qualification
 _REAL_QUALIFICATION_AUTHORITY = runner.qualification_authority_digest
 
@@ -84,7 +84,6 @@ class _Harness:
         quality: tuple[QualificationDecision, ...],
         audit: tuple[QualificationDecision, ...] | None = None,
         fail_pre_t_quiescence: bool = False,
-        exercise_judge_cache: bool = False,
     ) -> None:
         assert len(quality) == len(speed)
         audit = audit or (QualificationDecision.PASS,) * len(speed)
@@ -390,11 +389,7 @@ class _Harness:
                 hidden_task_policy,
             )
 
-            def __init__(self):
-                self.calls = 0
-
             def __call__(self, *, prompt_digest, output_ids, task_digests):
-                self.calls += 1
                 return runner.HiddenJudgeReceipt(
                     self.binding.digest,
                     prompt_digest,
@@ -439,14 +434,6 @@ class _Harness:
             nonlocal raw_index
             self.calls.append(f"raw.{raw_index}")
             raw_index += 1
-            if exercise_judge_cache:
-                judge = _args[-1]
-                for _ in range(3):
-                    judge(
-                        prompt_digest=_d("memo-prompt"),
-                        output_ids=(1, 2),
-                        task_digests=(_d("memo-task"),),
-                    )
             binding = object.__new__(runner.ReferenceQualityRawBinding)
             binding_values = {
                 "qualification_identity_digest": _d("qualification-identity"),
@@ -798,28 +785,34 @@ def test_resident_speed_fail_exits_before_audit_t_and_legacy_lifecycle(
     assert harness.reference_calls == 0
 
 
-def test_resident_calibration_continuation_collects_audit_and_t_after_speed_fail(
-    monkeypatch,
+@pytest.mark.parametrize("audit", (QualificationDecision.PASS, QualificationDecision.FAIL))
+def test_resident_calibration_observation_audits_a_speed_fail_and_never_runs_t(
+    monkeypatch, audit,
 ) -> None:
-    harness, baseline, _stage_reference, exits = _resident_case(
+    harness, baseline, stage_reference, exits = _resident_case(
         monkeypatch,
         speed_decision=QualificationDecision.FAIL,
+        audit=(audit,),
         disposition=runner.SpeedStageDisposition.CALIBRATION_OBSERVATION,
     )
 
     reference = _run_resident_harness(harness, baseline)
 
-    assert reference == harness.attempt_reference
-    assert exits == []
-    assert harness.reference_calls == 1
+    # A passing audit rides on the speed FAIL exit; a failing audit keeps its own exit.
+    assert reference == stage_reference
+    assert len(exits) == 1
+    assert exits[0].stage == ("speed" if audit is QualificationDecision.PASS else "audit")
+    assert exits[0].decision is QualificationDecision.FAIL
+    assert exits[0].reason == (
+        "speed_threshold_not_met" if audit is QualificationDecision.PASS else "slot_audit_failed"
+    )
+    assert exits[0].audit_witness.decision is audit
+    assert exits[0].terminal_quiescence_digest is not None
     assert "audit" in harness.calls
-    assert "reference" in harness.calls
-    assert "attempt.publish" in harness.calls
-    assert "attempt.reopen" in harness.calls
-    assert harness.published_attempt is not None
-    report = harness.published_attempt.reports[0]
-    assert report.speed_decision is QualificationDecision.FAIL
-    assert report.decision is QualificationDecision.FAIL
+    assert "entropy" not in harness.calls
+    assert "reference" not in harness.calls
+    assert harness.reference_calls == 0
+    assert harness.published_attempt is None
 
 
 def test_resident_audit_fail_exits_before_t(monkeypatch) -> None:
@@ -833,6 +826,9 @@ def test_resident_audit_fail_exits_before_t(monkeypatch) -> None:
     assert len(exits) == 1
     assert exits[0].stage == "audit"
     assert exits[0].decision is QualificationDecision.FAIL
+    # The hard slot_audit_failed reason carries the violating receipt.
+    assert exits[0].reason == "slot_audit_failed"
+    assert exits[0].audit_witness.receipts[0].violations == 1
     assert "audit" in harness.calls
     assert "reference" not in harness.calls
     assert "attempt.publish" not in harness.calls
@@ -852,8 +848,6 @@ def test_resident_pass_issues_one_t_request_without_legacy_speed_projection(
     assert harness.reference_request_counts == [1]
     assert harness.reference_calls == 1
     assert "resident.speed" in harness.calls
-    assert "lifecycle" not in harness.calls
-    assert not any(call.startswith("speed.") for call in harness.calls)
     assert harness.published_attempt is not None
     report = harness.published_attempt.reports[0]
     # The repeat-quality leg left with the five-read schedule; the report
@@ -912,7 +906,7 @@ def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> No
 
 
 @pytest.mark.parametrize(
-    ("speed_decision", "retryable"),
+    ("quality", "retryable"),
     (
         (QualificationDecision.PASS, False),
         (QualificationDecision.FAIL, False),
@@ -920,22 +914,15 @@ def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> No
     ),
 )
 def test_candidate_headlines_recompute_pass_fail_and_no_decision(
-    monkeypatch, speed_decision, retryable
+    monkeypatch, quality, retryable
 ) -> None:
-    # A non-PASS speed verdict stage-exits under the terminal disposition;
-    # the report-level headline only exists on the observation lane.
+    # A non-PASS speed stage-exits on every disposition, so quality varies the headline.
     harness, baseline, _stage_reference, _exits = _resident_case(
-        monkeypatch,
-        speed_decision=speed_decision,
-        disposition=(
-            None
-            if speed_decision is QualificationDecision.PASS
-            else runner.SpeedStageDisposition.CALIBRATION_OBSERVATION
-        ),
+        monkeypatch, quality=(quality,)
     )
     _run_resident_harness(harness, baseline)
     report = harness.published_attempt.reports[0]
-    assert report.decision is speed_decision
+    assert report.decision is quality
     assert report.retryable is retryable
     with pytest.raises(runner.QualificationRunnerError, match="headline"):
         runner.CandidateQualificationReport(
@@ -943,31 +930,11 @@ def test_candidate_headlines_recompute_pass_fail_and_no_decision(
                 **report.__dict__,
                 "decision": (
                     QualificationDecision.FAIL
-                    if speed_decision is not QualificationDecision.FAIL
+                    if quality is not QualificationDecision.FAIL
                     else QualificationDecision.PASS
                 ),
             }
         )
-
-
-def test_slot_audit_violation_is_a_hard_nonretryable_qualification_fail(
-    monkeypatch,
-) -> None:
-    # An audit violation terminates at the audit stage exit on every
-    # disposition; the exit names the hard slot_audit_failed reason and
-    # carries the violating receipt.
-    harness, baseline, stage_reference, exits = _resident_case(
-        monkeypatch, audit=(QualificationDecision.FAIL,)
-    )
-    reference = _run_resident_harness(harness, baseline)
-
-    assert reference == stage_reference
-    assert len(exits) == 1
-    assert exits[0].stage == "audit"
-    assert exits[0].decision is QualificationDecision.FAIL
-    assert exits[0].reason == "slot_audit_failed"
-    assert exits[0].audit_witness.receipts[0].violations == 1
-    assert harness.published_attempt is None
 
 
 def test_pre_t_quiescence_failure_prevents_reference_launch(monkeypatch) -> None:
@@ -994,87 +961,6 @@ def test_stale_hidden_judge_binding_is_rejected_before_b(monkeypatch) -> None:
     assert harness.reference_calls == 0
 
 
-def test_identical_hidden_judge_inputs_are_memoized(monkeypatch) -> None:
-    harness, baseline, _stage_reference, _exits = _resident_case(
-        monkeypatch, exercise_judge_cache=True
-    )
-    _run_resident_harness(harness, baseline)
-    assert harness.hidden_judge.calls == 1
-
-
-@pytest.mark.parametrize("mislabeled", ("prompt", "output"))
-def test_hidden_judge_receipt_cannot_relabel_prompt_or_output(mislabeled) -> None:
-    prompt_digest = _d("judge-prompt")
-    output_ids = (1,)
-    binding = runner.HiddenJudgeBinding(
-        _d("hidden-corpus"),
-        _d("hidden-judge"),
-        _d("hidden-task-policy"),
-    )
-    profile = SimpleNamespace(
-        reference=SimpleNamespace(
-            hidden_corpus_commitment=binding.hidden_corpus_commitment,
-            hidden_judge_digest=binding.hidden_judge_digest,
-        ),
-        hidden_task_policy_digest=binding.hidden_task_policy_digest,
-        hidden_tasks_per_prompt=1,
-    )
-
-    class MislabeledJudge:
-        def __init__(self) -> None:
-            self.binding = binding
-
-        def __call__(self, *, prompt_digest, output_ids, task_digests):
-            receipt_prompt = _d("other-prompt") if mislabeled == "prompt" else prompt_digest
-            output_digest = runner.hidden_judge_output_digest(prompt_digest, output_ids)
-            if mislabeled == "output":
-                output_digest = _d("other-output")
-            return runner.HiddenJudgeReceipt(
-                self.binding.digest,
-                receipt_prompt,
-                output_digest,
-                task_digests,
-                (True,) * len(task_digests),
-            )
-
-    with pytest.raises(runner.QualificationRunnerError):
-        runner._rollout(
-            profile=profile,
-            prompt_digest=prompt_digest,
-            frame={"top_logprobs": (((-0.1, 1), (-1.0, 2)),)},
-            role_input=ReferenceRoleInput(output_ids, ((1, 2),)),
-            role_evidence=SimpleNamespace(
-                tokens=(ReferenceTokenEvidence(-0.25, 1, (-0.1, -1.0)),)
-            ),
-            hidden_judge=MislabeledJudge(),
-        )
-
-
-def test_shared_manager_reservation_excludes_another_thread() -> None:
-    lock = threading.RLock()
-    first = object.__new__(OCIEngineExecutor)
-    second = object.__new__(OCIEngineExecutor)
-    first._lock = second._lock = lock
-    entered, release = threading.Event(), threading.Event()
-
-    def hold() -> None:
-        with first.exclusive_transaction():
-            entered.set()
-            assert release.wait(timeout=2)
-
-    thread = threading.Thread(target=hold)
-    thread.start()
-    assert entered.wait(timeout=2)
-    try:
-        with pytest.raises(OCIBackendError, match="active transaction"):
-            with second.exclusive_transaction():
-                raise AssertionError("another thread entered the reserved manager")
-    finally:
-        release.set()
-        thread.join(timeout=2)
-    assert not thread.is_alive()
-
-
 def test_reports_and_attempt_expose_no_score_crown_or_settlement_fields(monkeypatch) -> None:
     harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     _run_resident_harness(harness, baseline)
@@ -1092,7 +978,7 @@ def test_reports_and_attempt_expose_no_score_crown_or_settlement_fields(monkeypa
 
 
 def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
-    monkeypatch, tmp_path: Path
+    monkeypatch,
 ) -> None:
     harness, baseline, _stage_reference, _exits = _resident_case(monkeypatch)
     _run_resident_harness(harness, baseline)
@@ -1186,18 +1072,6 @@ def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
         "operational_timing",
     )
 
-    monkeypatch.setattr(runner, "publish_evidence", publish_evidence)
-    root = tmp_path / "registered-wire"
-    reference = _REAL_PUBLISH_CAUSAL(root, attempt)
-    assert (reference.domain, reference.schema) == (
-        runner.ATTEMPT_DOMAIN,
-        runner.ATTEMPT_SCHEMA_V3,
-    )
-    assert reopen_evidence(root, reference) == runner.canonical_json_bytes(
-        attempt.to_dict()
-    )
-
-
 def _audit_witness(prefix, policy, receipts, session_id):
     execution = runner.EngineExecutionEvidence(
         "cacheon.oci-engine-execution.v1",
@@ -1254,18 +1128,6 @@ def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
         match="worst_frac is not canonical",
     ):
         runner.AuditWitness.from_dict(spelling_tamper)
-
-
-def test_audit_witness_grades_policy_bound_empty_receipts_as_no_decision() -> None:
-    policy = runner.SlotAuditPolicy(
-        "a" * 32, 250_000, 32, ("moe.fused_experts",), 4
-    )
-    witness = _audit_witness("empty-audit", policy, (), "3" * 32)
-
-    assert witness.decision is QualificationDecision.NO_DECISION
-    assert witness.receipts == ()
-    assert witness.detail == "no audit receipts (need >= 32 audited calls)"
-    assert runner.AuditWitness.from_dict(witness.to_dict()) == witness
 
 
 def test_audit_witness_host_regrade_does_not_import_torch(monkeypatch) -> None:
@@ -1753,40 +1615,6 @@ def _typed_resident_qualification_input(
         resident_speed_plan=resident_plan,
         resident_audit_plan=resident_audit_plan,
     )
-
-
-def test_typed_resident_input_derives_calibration_from_candidate_reference(
-    tmp_path: Path,
-) -> None:
-    value = _typed_resident_qualification_input(tmp_path)
-    plan = value.resident_speed_plan
-    assert plan is not None
-    reference = value.candidates[0].profile.reference
-    assert (
-        plan.baseline.runtime_resource_policy_digest
-        != plan.candidate.runtime_resource_policy_digest
-    )
-    assert (
-        plan.baseline.launch.resource_policy_digest
-        != plan.candidate.launch.resource_policy_digest
-    )
-    assert value.calibration_context == runner.CalibrationContext(
-        reference.measured_digest,
-        reference.arena_digest,
-        reference.runtime_digest,
-        reference.base_engine_digest,
-        reference.model_revision_digest,
-        reference.model_manifest_digest,
-        reference.model_content_digest,
-        reference.logical_hardware_digest,
-        reference.workload_digest,
-        _d("verification-policy"),
-    )
-    assert reference.logical_hardware_digest == plan.candidate.launch.hardware.digest
-    assert reference.workload_digest == runner.marginal_workload_digest(
-        plan.baseline.session_plan
-    )
-    assert plan.policy.calibration_context_digest == value.calibration_context.digest
 
 
 def test_typed_resident_input_rejects_self_consistent_mismatched_context(

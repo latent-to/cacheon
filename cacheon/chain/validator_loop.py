@@ -1,11 +1,11 @@
-"""Finalized chain intake, immutable publication, qualification, and settlement.
+"""Finalized chain intake and immutable publication.
 
-This production loop deliberately stops before weight signing.  It reserves
-the complete finalized event order before network transport, publishes submitted bytes
-into a separate immutable worker tree, optionally invokes the current batch causal
-qualification authority, and transactionally adopts its retained PASS projection. The
-old shell/CPU fake-score evaluator and JSON Ledger settlement do not exist on this path;
-wallet access belongs only to the separate control-plane signer.
+This production loop reserves the complete finalized event order before network
+transport and publishes submitted bytes into a separate immutable worker tree.
+Qualification claims and settlement belong to the standing supervisor, which
+imports ``_settle_pending`` from here; wallet access belongs only to the separate
+control-plane signer.  The old shell/CPU fake-score evaluator and JSON Ledger
+settlement do not exist on this path.
 """
 
 from __future__ import annotations
@@ -18,20 +18,12 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from cacheon import chain
-from cacheon.arena_service import (
-    AdmissionDecision,
-    ArenaCandidateBinding,
-    ArenaQualificationWork,
-    ArenaService,
-    ArenaServiceRegistry,
-)
 from cacheon.chain.fetch import FetchError, FetchTransientError, fetch_bundle
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
     IntakePolicy,
     IntakeError,
-    IntakeReservation,
     IntakeScope,
     is_lock_collision,
 )
@@ -47,20 +39,12 @@ from cacheon.chain.eval_cost_payment import (
 )
 from cacheon.chain.payload import decode_payload
 from cacheon.chain.publication import (
-    WorkerBundlePublication,
     WorkerBundlePublicationError,
     WorkerBundleSourceError,
     publish_worker_bundle,
-    reopen_worker_bundle,
 )
 from cacheon.chain.reference_copy_policy import reconcile_reference_copies
 from cacheon.copy_fingerprint import fingerprint_submitted_delta
-from cacheon.eval.qualification_intake import (
-    QualificationAuthorityManifest,
-    QualificationIntakeBatch,
-    QualificationReservation,
-    run_qualification_intake,
-)
 
 
 logger = logging.getLogger("cacheon.chain.validator")
@@ -70,11 +54,6 @@ _DISABLED_EVAL_COST_POLICY = EvalCostPolicy(amount_rao=0)
 
 class IntakeControllerError(RuntimeError):
     """Validator-owned intake/qualification authority is inconsistent."""
-
-
-# Compatibility names for code constructing trusted providers.  The live loop
-# accepts only a closed ArenaServiceRegistry, never an arbitrary planner callback.
-QualificationWork = ArenaQualificationWork
 
 
 @dataclass
@@ -205,130 +184,6 @@ def _fingerprint_private_bundle(root: Path):
         ) from None
 
 
-def _qualification_reservations(
-    reservations: tuple[IntakeReservation, ...],
-    publications: tuple[WorkerBundlePublication, ...],
-) -> tuple[QualificationReservation, ...]:
-    if len(reservations) != len(publications):
-        raise IntakeControllerError("qualification publication coverage differs")
-    rows: list[QualificationReservation] = []
-    for index, (reservation, publication) in enumerate(
-        zip(reservations, publications, strict=True)
-    ):
-        fingerprint = reservation.delta_fingerprint
-        if (
-            fingerprint is None
-            or reservation.publication_digest != publication.digest
-            or reservation.arrival.content_hash != publication.content_hash
-        ):
-            raise IntakeControllerError("qualification intake provenance differs")
-        rows.append(
-            QualificationReservation(
-                reservation.reservation_id,
-                publication.digest,
-                fingerprint.target_id,
-                fingerprint.selected_delta_digest,
-                index,
-                reservation.arrival.hotkey,
-                reservation.arrival.block,
-                reservation.arrival.event_index,
-                reservation.arrival.event_subindex,
-                reservation.target_members,
-            )
-        )
-    return tuple(rows)
-
-
-def _validate_work(
-    work: ArenaQualificationWork,
-    expected: tuple[QualificationReservation, ...],
-) -> None:
-    if type(work) is not ArenaQualificationWork:
-        raise IntakeControllerError("qualification planner returned an untyped work item")
-    if work.factory.manifest.reservations != expected:
-        raise IntakeControllerError("qualification factory changed finalized cohort order")
-
-
-def _apply_qualification(
-    store: FinalizedIntakeStore,
-    reservations: tuple[IntakeReservation, ...],
-    publications: tuple[WorkerBundlePublication, ...],
-    service: ArenaService,
-    *,
-    minimum_finalized_block: int,
-    finalized_block_provider: Callable[[], int],
-) -> QualificationIntakeBatch:
-    authority_rows = _qualification_reservations(reservations, publications)
-    candidates = tuple(
-        ArenaCandidateBinding(
-            authority,
-            publication,
-            store.qualification_attempts(reservation.reservation_id) + 1,
-        )
-        for reservation, publication, authority in zip(
-            reservations, publications, authority_rows, strict=True
-        )
-    )
-    work = service.plan_qualification(candidates, state=store)
-    _validate_work(work, authority_rows)
-    prepared = None
-    if type(work.factory.manifest) is QualificationAuthorityManifest:
-        prepared = work.factory.build()
-        arms = tuple(row.arm for row in prepared.prepared.candidates)
-        if (
-            not arms
-            or len({row.baseline_before for row in arms}) != 1
-            or any(row.incumbent != arms[0].incumbent for row in arms)
-        ):
-            raise IntakeControllerError("qualification planner has no single incumbent")
-        store.initialize_evaluation_stack(
-            arms[0].incumbent,
-            tree_digest=arms[0].baseline_before.tree_digest,
-        )
-    authority_digest = work.factory.manifest.digest
-    authority_manifest = work.factory.manifest.to_dict()
-    for row in reservations:
-        store.mark_qualifying(
-            row.reservation_id,
-            authority_digest,
-            authority_manifest,
-            service_digest=service.identity,
-        )
-    batch = run_qualification_intake(
-        work.factory,
-        executor=work.executor,
-        resident_baseline_executor=work.resident_baseline_executor,
-        entropy_provider=work.entropy_provider,
-        hidden_judge=work.hidden_judge,
-        deadline=float(work.deadline),
-    )
-    if (
-        type(batch) is not QualificationIntakeBatch
-        or batch.authority_manifest_digest != authority_digest
-        or tuple(row.reservation_digest for row in batch.outcomes)
-        != tuple(row.reservation_id for row in reservations)
-        or tuple(row.selected_delta_digest for row in batch.outcomes)
-        != tuple(row.selected_delta_digest for row in authority_rows)
-    ):
-        raise IntakeControllerError("qualification outcomes changed cohort authority")
-    # Qualification can occupy the GPU for hours.  Timestamp retained PASS
-    # evidence from a finalized head read after the work completes, not from the
-    # pass-start reveal snapshot, or the reproduction SLA can be mostly (or
-    # entirely) consumed before the first PASS is durable.
-    retained_block = finalized_block_provider()
-    if (
-        type(retained_block) is not int
-        or retained_block < minimum_finalized_block
-    ):
-        raise IntakeControllerError("finalized qualification clock regressed")
-    store.apply_qualification_batch(
-        batch,
-        current_finalized_block=retained_block,
-        evidence_root=None if prepared is None else prepared.evidence_root,
-    )
-    return batch
-
-
 def _settle_pending(
     store: FinalizedIntakeStore,
     *,
@@ -398,76 +253,41 @@ def run_pass(
     publication_root: str | Path,
     policy: IntakePolicy = IntakePolicy(),
     eval_cost_policy: EvalCostPolicy = _DISABLED_EVAL_COST_POLICY,
-    arena_registry: ArenaServiceRegistry | None = None,
-    arena_id: str | None = None,
-    accept_legacy_bundles: bool = True,
-    intake_only: bool = False,
-    retained_only: bool = False,
 ) -> PassResult:
-    """Run one non-emitting intake/qualification pass.
-
-    ``retained_only`` evaluates the already-durable queue at the current
-    finalized head without rereading or advancing reveal history.
-    """
+    """Run one non-emitting intake and publication pass."""
 
     if type(eval_cost_policy) is not EvalCostPolicy:
         raise IntakeControllerError("eval-cost policy is not typed")
-    if type(intake_only) is not bool or type(retained_only) is not bool:
-        raise IntakeControllerError("pass mode flags must be exact booleans")
-    if intake_only and retained_only:
-        raise IntakeControllerError("intake-only and retained-only modes conflict")
-    if intake_only:
-        if arena_registry is not None or arena_id is not None:
-            raise IntakeControllerError("intake-only mode cannot receive arena authority")
-        service = None
-    else:
-        if type(arena_registry) is not ArenaServiceRegistry or not arena_id:
-            raise IntakeControllerError(
-                "live validation requires an injected registered arena service"
-            )
-        service = arena_registry.require(arena_id)
 
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), netuid)
     with _open_store(intake_db, policy, scope) as store:
-        if service is not None:
-            store.select_arena(arena_id, accept_legacy_bundles=accept_legacy_bundles)
         cursor = store.finalized_cursor()
-        if retained_only:
-            if cursor is None:
-                raise IntakeControllerError("retained-only pass has no finalized cursor")
-            finalized_block, finalized_hash = chain.read_finalized_head(subtensor)
-            if finalized_block < cursor[0]:
-                raise IntakeControllerError("retained-only finalized head regressed")
-            result = PassResult(finalized_block, finalized_hash)
-            inserted = ()
-        else:
-            snapshot = chain.read_finalized_reveal_history(
-                subtensor,
-                netuid,
-                after_block=None if cursor is None else cursor[0],
-            )
-            result = PassResult(snapshot.finalized_block, snapshot.finalized_block_hash)
-            arrivals = _finalized_arrivals(
-                snapshot,
-                netuid=netuid,
-                eval_cost_policy=eval_cost_policy,
-                payment_lookup=lambda block, index: read_eval_cost_payment(
-                    subtensor, block, index
-                ),
-                owner_lookup=lambda block: read_subnet_owner_coldkey(
-                    subtensor, netuid, block=block
-                ),
-            )
-            result.seen = len(arrivals)
-            inserted = store.reserve_finalized(
-                arrivals,
-                finalized_block=snapshot.finalized_block,
-                finalized_block_hash=snapshot.finalized_block_hash.lower(),
-                eval_cost_amount_tao_rao=eval_cost_policy.amount_rao,
-            )
-        # Retained-only operation has no reservation transaction in which to
-        # apply the finalized-block SLA.  The call is idempotent for normal
-        # intake passes and keeps all downstream qualification/settlement bounded.
+        snapshot = chain.read_finalized_reveal_history(
+            subtensor,
+            netuid,
+            after_block=None if cursor is None else cursor[0],
+        )
+        result = PassResult(snapshot.finalized_block, snapshot.finalized_block_hash)
+        arrivals = _finalized_arrivals(
+            snapshot,
+            netuid=netuid,
+            eval_cost_policy=eval_cost_policy,
+            payment_lookup=lambda block, index: read_eval_cost_payment(
+                subtensor, block, index
+            ),
+            owner_lookup=lambda block: read_subnet_owner_coldkey(
+                subtensor, netuid, block=block
+            ),
+        )
+        result.seen = len(arrivals)
+        inserted = store.reserve_finalized(
+            arrivals,
+            finalized_block=snapshot.finalized_block,
+            finalized_block_hash=snapshot.finalized_block_hash.lower(),
+            eval_cost_amount_tao_rao=eval_cost_policy.amount_rao,
+        )
+        # Idempotent per pass; it keeps all downstream qualification and
+        # settlement bounded by the finalized-block SLA.
         store.expire_stale(current_block=result.finalized_block)
         result.reserved.extend(row.reservation_id for row in inserted)
 
@@ -497,19 +317,6 @@ def run_pass(
             except (OSError, TypeError, ValueError) as exc:
                 rejected = store.mark_failed(active.reservation_id, f"manifest:{exc}")
                 result.rejected[rejected.reservation_id] = rejected.reason
-                continue
-            if (
-                service is not None
-                and store.publication_arena(selected_arena) == store._competition_arena
-                and fingerprint.target_id in service.manifest.closed_targets
-            ):
-                # The sealed arena cannot measure this registered family right
-                # now. Park without charging: payment stays spendable and the
-                # identical bytes may return when the family reopens.
-                parked = store.mark_target_unavailable(
-                    active.reservation_id, target_id=fingerprint.target_id
-                )
-                result.rejected[parked.reservation_id] = parked.reason
                 continue
             try:
                 publication = publish_worker_bundle(
@@ -550,66 +357,6 @@ def run_pass(
             result.copies[copied] = f"validator_reference:{reference}"
             result.published.pop(copied, None)
 
-        if service is not None:
-            for reservation_id, reason in store.prepare_qualification_queue(
-                service_digest=service.identity,
-                closed_targets=service.manifest.closed_targets,
-            ):
-                result.rejected[reservation_id] = reason
-            # Drain only what this arena can seal; otherwise a singleton arena
-            # sees an oversized cohort and holds the entire queue.
-            cohort = store.qualification_cohort(
-                limit=min(
-                    policy.max_cohort,
-                    service.manifest.capacity.max_cohort_size,
-                )
-            )
-            if cohort:
-                admission = service.admit_qualification(
-                    store.arena_queue_snapshot(
-                        current_block=result.finalized_block
-                    ),
-                    cohort_size=len(cohort),
-                )
-                if admission is AdmissionDecision.HOLD:
-                    for row in cohort:
-                        store.mark_held(
-                            row.reservation_id, "arena_qualification_capacity_hold"
-                        )
-                    cohort = ()
-                elif admission is AdmissionDecision.QUEUE:
-                    cohort = ()
-            if cohort:
-                publications = tuple(
-                    reopen_worker_bundle(
-                        row.publication_root,
-                        row.arrival.content_hash,
-                        expected_receipt_digest=row.publication_digest,
-                    )
-                    for row in cohort
-                )
-                batch = _apply_qualification(
-                    store,
-                    cohort,
-                    publications,
-                    service,
-                    minimum_finalized_block=result.finalized_block,
-                    finalized_block_provider=lambda: chain.read_finalized_head(
-                        subtensor
-                    )[0],
-                )
-                result.decisions.update(
-                    (row.reservation_digest, row.decision.value)
-                    for row in batch.outcomes
-                )
-        if not intake_only:
-            result.settlements.update(
-                _settle_pending(
-                    store,
-                    current_block=result.finalized_block,
-                    finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
-                )
-            )
         result.rejected.update(
             (row.reservation_id, row.reason)
             for row in inserted
@@ -663,11 +410,6 @@ def run_validator(
     publication_root: str | Path,
     policy: IntakePolicy = IntakePolicy(),
     eval_cost_policy: EvalCostPolicy = _DISABLED_EVAL_COST_POLICY,
-    arena_registry: ArenaServiceRegistry | None = None,
-    arena_id: str | None = None,
-    accept_legacy_bundles: bool = True,
-    intake_only: bool = False,
-    retained_only: bool = False,
     interval_s: float = DEFAULT_INTERVAL_S,
     once: bool = False,
     max_consecutive_failures: int = 10,
@@ -687,11 +429,6 @@ def run_validator(
                 publication_root=publication_root,
                 policy=policy,
                 eval_cost_policy=eval_cost_policy,
-                arena_registry=arena_registry,
-                arena_id=arena_id,
-                accept_legacy_bundles=accept_legacy_bundles,
-                intake_only=intake_only,
-                retained_only=retained_only,
             )
             failures = 0
             if audit_log is not None:
@@ -748,7 +485,4 @@ def run_validator(
         time.sleep(float(interval_s) * (1 + min(failures, 5)))
 
 
-__all__ = [
-    "IntakeControllerError", "PassResult", "QualificationWork", "run_pass",
-    "run_validator",
-]
+__all__ = ["IntakeControllerError", "PassResult", "run_pass", "run_validator"]

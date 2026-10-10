@@ -44,31 +44,34 @@ _HEX_128 = re.compile(r"[0-9a-f]{32}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 
-# Only reviewed runtime options cross this boundary; arbitrary Engine kwargs do not.
+# Only reviewed runtime options and environment names cross this boundary.
 _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     **dict.fromkeys("""
-        chunked_prefill_size context_length dp_size max_mamba_cache_size
-        max_prefill_tokens page_size speculative_num_steps speculative_eagle_topk
-        speculative_num_draft_tokens hicache_size
+        chunked_prefill_size context_length dp_size ep_size max_prefill_tokens page_size
+        speculative_num_steps speculative_eagle_topk speculative_num_draft_tokens hicache_size
+        speculative_dspark_block_size cuda_graph_max_bs_decode swa_prefix_tails prefill_decode_interval
     """.split(), "positive_int"),
     **dict.fromkeys("""
-        cuda_graph_backend_prefill kv_cache_dtype mamba_ssm_dtype quantization
-        speculative_algorithm hicache_mem_layout hicache_io_backend
+        cuda_graph_backend_prefill kv_cache_dtype quantization speculative_algorithm
+        hicache_mem_layout hicache_io_backend
     """.split(), "token"),
     **dict.fromkeys("""
         disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
-        enable_linear_replayssm_spec trust_remote_code enable_hierarchical_cache
+        trust_remote_code enable_hierarchical_cache
     """.split(), "bool"),
     **dict.fromkeys(("cuda_graph_bs", "cuda_graph_bs_decode"), "int_list"),
     # Resident sessions recapture CUDA graphs on a LIVE scheduler loop; the
     # default 300s watchdog kills the rank mid-capture (measured 2026-07-20).
     "watchdog_timeout": "positive_int",
 }
+# SGLang reads the DeepSeek-V4.1 Engram host-table switches from the environment,
+# not ServerArgs; at TP2 the tables do not fit beside the weights in HBM.
+_ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
+    ("SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE", "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT"), "token")
 
 ENGINE_CONFIG_FIELDS = frozenset("""
-attention_backend deterministic disable_cuda_graph disable_custom_all_reduce dtype
-engine_kwargs log_level max_running_requests mem_fraction_static model_path
-moe_runner_backend tp_size
+attention_backend deterministic disable_cuda_graph disable_custom_all_reduce dtype engine_env
+engine_kwargs log_level max_running_requests mem_fraction_static model_path moe_runner_backend tp_size
 """.split())
 
 PREFLIGHT_FACT_FIELDS = frozenset("""
@@ -394,20 +397,17 @@ def _binding_id(value: object, *, field_name: str) -> str:
     return value
 
 
-def _validate_engine_kwargs(value: object) -> dict[str, object]:
+def _validate_options(value: object, kinds: Mapping[str, str], *, label: str) -> dict[str, object]:
     if not isinstance(value, Mapping):
-        raise SessionProtocolError("engine_config.engine_kwargs must be an object")
-    unknown = set(value) - set(_ENGINE_KWARG_KINDS)
+        raise SessionProtocolError(f"{label} must be an object")
+    unknown = set(value) - set(kinds)
     if unknown:
-        raise SessionProtocolError(
-            "engine_config.engine_kwargs contains unsupported keys: "
-            f"{sorted(unknown)!r}"
-        )
+        raise SessionProtocolError(f"{label} contains unsupported keys: {sorted(unknown)!r}")
     result: dict[str, object] = {}
     for key in sorted(value):
         item = value[key]
-        kind = _ENGINE_KWARG_KINDS[key]
-        field_name = f"engine_config.engine_kwargs.{key}"
+        kind = kinds[key]
+        field_name = f"{label}.{key}"
         if kind == "bool":
             result[key] = _bool(item, field_name=field_name)
         elif kind == "positive_int":
@@ -453,6 +453,7 @@ class EngineSessionConfig:
     moe_runner_backend: str | None
     disable_custom_all_reduce: bool
     engine_kwargs: Mapping[str, object] = field(default_factory=dict)
+    engine_env: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.model_path != CONTAINER_MODEL_PATH:
@@ -490,14 +491,13 @@ class EngineSessionConfig:
             self.disable_custom_all_reduce,
             field_name="engine_config.disable_custom_all_reduce",
         ))
-        set_value(self, "engine_kwargs", MappingProxyType(
-            _validate_engine_kwargs(self.engine_kwargs)
-        ))
+        for name, kinds in (("engine_kwargs", _ENGINE_KWARG_KINDS), ("engine_env", _ENGINE_ENV_KINDS)):
+            set_value(self, name, MappingProxyType(
+                _validate_options(getattr(self, name), kinds, label=f"engine_config.{name}")))
 
     def to_dict(self) -> dict[str, object]:
-        row = {name: getattr(self, name) for name in ENGINE_CONFIG_FIELDS}
-        row["engine_kwargs"] = dict(self.engine_kwargs)
-        return row
+        return {name: dict(value) if isinstance(value, Mapping) else value
+                for name, value in ((name, getattr(self, name)) for name in ENGINE_CONFIG_FIELDS)}
 
     @property
     def digest(self) -> str:

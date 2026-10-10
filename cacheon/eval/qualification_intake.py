@@ -277,6 +277,7 @@ class QualificationPlanFactory:
     manifest: QualificationAuthorityManifest
     secret_loader: SecretLoader
     plan_builder: PlanBuilder
+    audit_control_delta_digests: tuple[str, ...] = ()  # sealed controls intake may observe
 
     def __post_init__(self) -> None:
         if type(self.manifest) is not QualificationAuthorityManifest:
@@ -620,7 +621,11 @@ def run_qualification_intake(
                 raise QualificationIntakeError(
                     "prebuilt qualification authority differs"
                 )
-        if value.speed_stage_disposition is not SpeedStageDisposition.TERMINAL:
+        if (
+            value.speed_stage_disposition is not SpeedStageDisposition.TERMINAL
+            and value.candidates[0].selected_delta_digest
+            not in factory.audit_control_delta_digests
+        ):
             raise QualificationIntakeError(
                 "economic qualification cannot use calibration speed continuation"
             )

@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 
+from cacheon.chain.baseline_segments import commission_boundary
 from cacheon.chain.intake import (
     EvaluationLease,
     FinalizedArrival,
@@ -137,28 +138,8 @@ def _published_rows(store: FinalizedIntakeStore, count: int = 2):
         _publish(store, row, chr(ord("a") + index)) for index, row in enumerate(rows)
     )
     # Qualification drains only rows bound to the queue head's baseline segment.
-    store.backfill_reservation_baseline_segments()
+    commission_boundary(store, store.evaluation_stack(_h("service")).manifest, tree_digest=_h("tree"))
     return published
-
-
-def test_additive_schema_migrates_a_legacy_database(tmp_path):
-    with _store(tmp_path) as store:
-        path = store.path
-    db = sqlite3.connect(path)
-    try:
-        db.execute("DROP TABLE evaluation_lease_events")
-        db.execute("DROP TABLE evaluation_lease_members")
-        db.execute("DROP TABLE evaluation_leases")
-        db.execute("DELETE FROM metadata WHERE key='evaluation_lease_schema'")
-        db.commit()
-    finally:
-        db.close()
-
-    with _store(tmp_path) as migrated:
-        assert migrated._db.execute(
-            "SELECT value FROM metadata WHERE key='evaluation_lease_schema'"
-        ).fetchone()["value"] == "3"
-        assert migrated.active_evaluation_leases() == ()
 
 
 def test_active_lease_survives_reopen_and_hides_legacy_queue_reader(tmp_path):
@@ -175,134 +156,6 @@ def test_active_lease_survives_reopen_and_hides_legacy_queue_reader(tmp_path):
         assert reopened.active_evaluation_leases() == (lease,)
         assert reopened.get(row.reservation_id).status == "published"
         assert reopened.claimable() == ()
-
-
-def test_preview_and_claim_use_fifo_with_reproduction_priority(tmp_path):
-    with _store(tmp_path) as store:
-        first, second, third = _published_rows(store, 3)
-        # Existing product policy gives a pending independent reproduction
-        # priority over primary FIFO.  This direct setup isolates ordering from
-        # the much larger settlement fixture.
-        store._db.execute(
-            "UPDATE reservations SET status='reproduction_pending',"
-            "screen_lane='reproduction' WHERE reservation_id=?",
-            (third.reservation_id,),
-        )
-        assert store.preview_evaluation_claim(stage="qualification") == (
-            third.reservation_id,
-        )
-        reproduction = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-a", current_block=10
-        )
-        assert reproduction is not None
-        assert reproduction.reservation_ids == (third.reservation_id,)
-        # The default capacity of one hides the primary cohort until more
-        # qualification capacity is granted.
-        assert store.preview_evaluation_claim(stage="qualification") == ()
-        primary = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-b", current_block=10, max_active=2
-        )
-        assert primary.reservation_ids == (first.reservation_id, second.reservation_id)
-
-
-def test_expiry_requeues_exact_status_without_attempt_and_advances_generation(tmp_path):
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        before = store.get(row.reservation_id)
-        first = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-a", current_block=10, lease_blocks=2
-        )
-        assert first is not None
-        _advance(store, 11)
-        assert store.expire_evaluation_leases(current_block=11) == ()
-        _advance(store, 12)
-        assert store.expire_evaluation_leases(current_block=12) == (first,)
-        requeued = store.get(row.reservation_id)
-        assert (requeued.status, store.qualification_attempts(row.reservation_id)) == (
-            before.status,
-            0,
-        )
-        second = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-b", current_block=12, lease_blocks=2
-        )
-        assert second is not None
-        assert second.generation == first.generation + 1
-        assert second.lease_id != first.lease_id
-        assert [event.event_type for event in store.evaluation_lease_events(
-            reservation_id=row.reservation_id
-        )] == ["claimed", "expired", "claimed"]
-
-
-def test_expiry_wins_over_a_qualification_result_at_its_deadline(tmp_path):
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        lease = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-a", current_block=10, lease_blocks=2
-        )
-        assert lease is not None
-        _advance(store, 12)
-        with pytest.raises(IntakeError, match="after lease expiry"):
-            with store.accept_evaluation_result(
-                lease, current_block=12, result_digest=_h("late-result")
-            ):
-                raise AssertionError("late result entered its mutation context")
-        assert store.active_evaluation_leases() == ()
-        retained = store.get(row.reservation_id)
-        assert (retained.status, store.qualification_attempts(row.reservation_id)) == (
-            "published",
-            0,
-        )
-        assert [event.event_type for event in store.evaluation_lease_events(
-            lease_id=lease.lease_id
-        )] == ["claimed", "expired"]
-
-
-def test_only_one_claimer_can_own_one_queue_row(tmp_path):
-    with _store(tmp_path) as store:
-        row = _published_rows(store, 1)[0]
-        first = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-a", current_block=10
-        )
-        second = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-b", current_block=10, max_active=2
-        )
-        assert first is not None and first.reservation_ids == (row.reservation_id,)
-        assert second is None
-        assert store._db.execute(
-            "SELECT COUNT(*) AS n FROM evaluation_lease_members WHERE "
-            "reservation_id=? AND active=1",
-            (row.reservation_id,),
-        ).fetchone()["n"] == 1
-
-
-def test_active_leases_report_full_finalized_arrival_order(tmp_path):
-    with _store(tmp_path, max_cohort=4) as store:
-        rows = _published_rows(store, 4)
-        leases = []
-        leases.append(store.claim_evaluation_lease(
-            stage="qualification", owner="worker-0", current_block=10,
-            max_members=1, max_active=4,
-        ))
-        # Force later rows through the contract's reproduction-priority lane so
-        # claim order differs from finalized event order.
-        for index in (3, 2):
-            store._db.execute(
-                "UPDATE reservations SET status='reproduction_pending',"
-                "screen_lane='reproduction' WHERE reservation_id=?",
-                (rows[index].reservation_id,),
-            )
-            leases.append(store.claim_evaluation_lease(
-                stage="qualification", owner=f"worker-{index}", current_block=10,
-                max_members=1, max_active=4,
-            ))
-        leases.append(store.claim_evaluation_lease(
-            stage="qualification", owner="worker-1", current_block=10,
-            max_members=1, max_active=4,
-        ))
-        assert all(lease is not None for lease in leases)
-        assert tuple(
-            lease.reservation_ids[0] for lease in store.active_evaluation_leases()
-        ) == tuple(row.reservation_id for row in rows)
 
 
 def test_legacy_mutation_is_fenced_but_exact_accept_context_is_authorized(tmp_path):
@@ -332,56 +185,6 @@ def test_legacy_mutation_is_fenced_but_exact_accept_context_is_authorized(tmp_pa
             _complete(store, lease)
         assert store.get(row.reservation_id).status == "failed"
         assert store.get(unrelated.reservation_id).status == "published"
-
-
-def test_default_capacity_is_one_and_unresolved_predecessors_fence_settlement(tmp_path):
-    with _store(tmp_path, max_cohort=3) as store:
-        rows = _published_rows(store, 3)
-        active = store.claim_evaluation_lease(
-            stage="qualification",
-            owner="worker-a",
-            current_block=10,
-            lease_blocks=1,
-            max_members=1,
-        )
-        assert active is not None
-        assert store.preview_evaluation_claim(
-            stage="qualification", max_members=1
-        ) == ()
-        assert store.claim_evaluation_lease(
-            stage="qualification",
-            owner="worker-b",
-            current_block=10,
-            max_members=1,
-        ) is None
-
-        # A retained candidate is enough to prove the settlement availability
-        # fence without constructing an unrelated full settlement fixture.
-        candidate = rows[2]
-        store._db.execute(
-            "UPDATE reservations SET status='qualified' WHERE reservation_id=?",
-            (candidate.reservation_id,),
-        )
-        store._db.execute(
-            "INSERT INTO settlement_candidates(reservation_id,authority_digest,"
-            "candidate_digest,candidate_json,evidence_root,status) "
-            "VALUES(?,?,?,?,?,'pending')",
-            (
-                candidate.reservation_id,
-                _h("settlement-authority"),
-                _h("settlement-candidate"),
-                "{}",
-                "/evidence",
-            ),
-        )
-        assert store.has_pending_settlement() is False
-        assert store.lease_settlement_cohort(current_block=10) is None
-        _advance(store, 11)
-        assert store.expire_evaluation_leases(current_block=11) == (active,)
-        assert store.has_pending_settlement() is False
-        for row in rows[:2]:
-            store.expire(row.reservation_id, current_block=500010, reason="operator_terminal_expiry")
-        assert store.has_pending_settlement() is True
 
 
 def test_qualification_cohort_is_claimed_and_completed_atomically(tmp_path):
@@ -563,19 +366,3 @@ def test_lease_clock_rejects_unretained_future_block(tmp_path):
             store.claim_evaluation_lease(
                 stage="qualification", owner="worker-a", current_block=11
             )
-
-
-def test_event_reader_recomputes_canonical_identity(tmp_path):
-    with _store(tmp_path) as store:
-        _published_rows(store, 1)
-        lease = store.claim_evaluation_lease(
-            stage="qualification", owner="worker-a", current_block=10
-        )
-        assert lease is not None
-        store._db.execute("DROP TRIGGER evaluation_lease_events_reject_update")
-        store._db.execute(
-            "UPDATE evaluation_lease_events SET event_id=? WHERE lease_id=?",
-            ("f" * 64, lease.lease_id),
-        )
-        with pytest.raises(IntakeError, match="event identity"):
-            store.evaluation_lease_events(lease_id=lease.lease_id)

@@ -7,10 +7,10 @@ repository. A crowned miner bundle is still hostile proposal material. It is not
 production release, and a serving fleet never needs chain access or a miner-hosted URL.
 
 !!! important
-    The public `cacheon chain-validate` command can run finalized **intake only**. Full
-    qualification requires deployment code to inject a trusted
-    `ArenaServiceRegistry` and select `--arena-id`. This repository defines the typed
-    interface and enforcement logic; it does not ship a production arena provider.
+    The public `cacheon chain-validate` command runs finalized **intake only**.
+    Qualification and settlement run in the standing supervisor against a commissioned
+    `ArenaService`. This repository defines the typed interface and enforcement logic;
+    it does not ship a production arena provider.
 
 ## Deployment topology
 
@@ -125,7 +125,6 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 | Inspect private reservation/miner outcomes | `cacheon chain-reservation-status`, `cacheon chain-miner-report` |
 | Grant/list one-use eval-cost make-goods | `cacheon chain-eval-cost-credit` |
 | Run bounded finalized public intake | `cacheon chain-validate --intake-only` |
-| Run full referee service | Deployment code calling `run_validator(...)` with an injected registry/provider |
 | Run the standing qualification/settlement/offer loop | `python -m cacheon.chain.standing_cpu_supervisor --config <SEALED_CONFIG>`; deployment supplies sealed capabilities and transport identities |
 | Publish a private recovery snapshot | `cacheon chain-snapshot` |
 | Verify or stage a recovery snapshot | `cacheon chain-snapshot-verify` |

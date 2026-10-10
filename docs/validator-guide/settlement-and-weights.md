@@ -68,24 +68,18 @@ settlement work does not make these extra finalized-height reads.
 
 Lease expiry is not arena retirement. Intake reservations have explicit `release_hold`
 and minimum-age `expire` transitions. Eligible unresolved rows also expire automatically
-against the finalized arrival/progress-block SLA; active in-flight work and the dedicated
-schema-3 migration hold are excluded. This row-level expiry is not a generic wall-clock
+against the finalized arrival/progress-block SLA; active in-flight work is excluded.
+This row-level expiry is not a generic wall-clock
 TTL or a typed transition that retires an entire arena. Before a valid explicit or
 automatic disposition, held state can block later overlapping work; deleting rows is not
 a recovery mechanism.
 
 ## Deterministic plan
 
-Admission owns the baseline cutoff. The first crown on a commissioned baseline closes
-that baseline to later finalized commitments in the same competition. The
-qualification queue's admission step rejects them as `baseline_closed_at_submission`
-before any qualification lease or candidate execution. A commitment in the finalized
-crown block or earlier remains admissible even if its bundle is fetched later. A new
-commissioned service has its own admission window. Work claimed once never meets a
-second cutoff, and completed evaluations are not readmitted.
-
-Settlement does not repeat the commitment-time check. An admitted candidate retains its
-measured baseline. Among eligible registered candidates, the planner chooses the highest
+A crown leaves the commissioned baseline open to new commitments. Qualification
+continues against that baseline until an explicit operator commission changes it.
+An admitted candidate retains its measured baseline; arrival after a crown is not
+an admission failure. Among eligible registered candidates, the planner chooses the highest
 conservative speedup and uses finalized order as a stable tie-break.
 
 `target_lineage_tips` records each target's active root-to-tip lineage, parent artifacts,

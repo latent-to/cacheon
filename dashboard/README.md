@@ -24,11 +24,11 @@ to run the dashboard and its API tests.
 
 | Tab | Content |
 |-----|---------|
-| Overview | Status counts, submissions/day sparkline, failure reasons, currently running eval |
+| Overview | Status counts, evaluation fees received by this arena and by every arena, submissions/day sparkline, failure reasons, currently running eval |
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
 | Submissions | All reservations: status, hotkey, submit time/block, fee tx, decisions, full detail drawer (qualification attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (0.5 τ minimum): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
-| Winners | Retained PASS settlement candidates: credited gain, measured candidate and baseline tok/s, prefill gain, served weight share, settlement status, and current on-chain emission |
+| Winners | Retained PASS settlement candidates: credited gain, the replay result (decode tok/s per user and first-token time, baseline → candidate), baseline kind, served weight share, settlement status, and current on-chain emission |
 | Miners | Per-hotkey leaderboard sorted by served weight share: submissions, crowns, qualified/failed, fees paid, registration + emission |
 | Timeline | Settlement events (CROWN/ADOPTION/HOLD/…), the served weight offer's vector, and this validator's follower journal (intent/pending/held/confirmed) |
 | System | DB/chain/process/heartbeat health, intake lag |
@@ -142,10 +142,9 @@ includes every batch-cell attempt: its raw lane ratio is not the credited gain.
 The submission detail renders the signed evaluation records in full. Each
 qualification attempt carries
 `speed` — the measurements from the retained stage-exit artifact: the paired
-replay windows and the retained grade for replay attempts, or the stored lane
-rates (per-role tokens/second, timed windows, window scatter, conditioning ratio,
-and the C/B speedup) for retained batch-cell attempts; `speed` is null when no
-local evidence store retains that attempt's artifact. It also reuses the validator's `worker_log` explanation.
+replay windows and the retained grade; `speed` is null when no local evidence
+store retains that attempt's artifact, and for an attempt graded by a retired
+batch-cell policy, whose stored lane rates are not rendered. It also reuses the validator's `worker_log` explanation.
 Each request with retained forensics links to
 `/api/submissions/{reservation_id}/forensics/{request_id}.log`. The response is
 built read-only from the hash-verified result and contains the exact
@@ -166,28 +165,10 @@ Each qualification attempt also has a **Performance** section:
   pass pairs the baseline and the candidate that ran at the same moment: gain,
   time for the same work, decode tok/s pooled over the arm, mean and p95
   first-token time, and service attainment.
-- **Output throughput:** retained batch-cell attempts show B/C/B′ output tok/s
-  and total timed batch seconds from their stored reads, without a regrade.
-  This includes prompt processing and generation; it is not isolated decode time.
-- **Prefill:** retained v12 prompt-pass throughput in **prompts/s**, total timed batch
-  seconds, observed candidate gain over the faster baseline read, and the
-  retained prefill margin. Each prompt pass generates one output token, so the
-  output-token count is a request count, not an input-token throughput measure.
-  The comparison describes the measurements; it does not replace the verdict.
-- **TTFT / TPOT by workload:** mean first-token latency, mean time per subsequent
-  token, and output throughput, separated by input tokens, output tokens and
-  request concurrency. Cells are recomputed from retained host timing windows.
-  Evaluations without these timings explicitly show **Not measured**.
+- A retained batch-cell attempt (speed policies 8–15) shows that its
+  measurements are unavailable; its stored lane rates are not rendered.
 
-For batch-cell rows the Winners table shows measured baseline → candidate tok/s
-and the conservative observed prefill gain when prompt passes were retained.
-`session.measure_phase_latency` must have been enabled in the evaluation to
-display TTFT/TPOT; a dashboard panel cannot reconstruct timings for old runs.
-
-The API keeps ordinary lane `tokens_per_second` and adds `timed_seconds` and
-`cells`. Prefill lanes set `tokens_per_second` to null and expose
-`prompts_per_second` instead. `speed.prefill` contains the observed `speedup`
-and retained `min_margin`. The reader also follows database-recorded and staged
+The reader follows database-recorded and staged
 evidence roots and selects the submission's target from historical multi-target
 reports, so changing worker generations does not hide retained measurements.
 An unreadable retained response or grading artifact is shown as an evidence
@@ -301,6 +282,7 @@ Set `CACHEON_DASH_SOURCES` to an absolute JSON config path. It has `default`
 ```json
 {
   "key": "secondary",
+  "slug": "secondary-1.0",
   "label": "Secondary arena",
   "model": "Commissioned model name",
   "paths": {
@@ -334,11 +316,11 @@ The dashboard reads current WAL contents and reports an unreadable DB; it does
 not substitute an immutable snapshot. Config changes take effect after restart.
 
 The page's arena selector scopes every data tab, detail link, and delayed
-bundle/log download. Share a competition at `/<key>#<tab>`, for example
-`/qwen3.6#winners` or `/glm-5.3#winners`. Submission links use
-`/qwen3.6?submission=<id>#winners`. Only the versioned paths are accepted;
-`/qwen` and `/glm` return 404. Query parameters accept both the versioned
-names and the existing `?arena=qwen` / `?arena=glm` keys.
+bundle/log download. Share a competition at `/<slug>#<tab>`, where `slug` is
+the versioned path name each source declares, for example `/glm-5.3#winners`
+or `/dsv41-flash#winners`. Submission links use `/glm-5.3?submission=<id>#winners`.
+Only the declared slugs are accepted as paths; a bare key such as `/glm`
+returns 404. Query parameters accept both the slug and the `?arena=<key>` key.
 The root page selects the configured default; `?arena=<key>` page
 links also work and become path links in the address bar without losing the
 tab or submission. A path takes precedence over an `arena` query parameter.
@@ -358,6 +340,15 @@ this scope without changing the intake database. `/api/arenas` reports each
 source's health independently. `/api/arena-events` combines events by retained
 block, using source and local sequence only for ties, and names unavailable
 sources. The Timeline offers an all-arena toggle.
+
+Every listener records the fee payments it observed at its own configured fee,
+so a database's payment table is shared chain observation rather than the
+arena's income. `/api/payments` lists only the payments consumed by the selected
+arena's reservations, and `/api/arenas` carries each arena's `fees` (count,
+total, grouped by the fee charged; `null` while its database is unavailable)
+plus `fees_total_tao` and `fees_count` across every arena, counting an on-chain
+payment once under the first configured arena that owns it. The Overview shows
+these totals.
 
 Process health matches command arguments plus a configured source path, rather
 than global module substrings. The configured `heartbeat` path is the CPU relay's

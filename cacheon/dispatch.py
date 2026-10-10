@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
 from typing import Optional
 
 import torch
@@ -24,27 +26,31 @@ def _dynamo_compiling() -> bool:
         return False
 
 
+# (module name, detector attribute) of the pinned and the legacy piecewise-capture
+# authorities. Each name is imported at most once per process: a failed import of
+# the absent one cost 28 us on every dispatched call, 40 calls per eager step on
+# DeepSeek-V4.1 (B300, 2026-10-09), and the scheduler thread is CPU-bound there.
+_CAPTURE_DETECTORS = (
+    ("sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph",
+     "is_in_tc_piecewise_cuda_graph"),
+    ("sglang.srt.compilation.piecewise_context_manager", "is_in_piecewise_cuda_graph"),
+)
+_IMPORT_ATTEMPTED: set[str] = set()
+
+
 def _in_cuda_graph() -> bool:
     """Probe pinned, legacy, then direct CUDA capture authorities."""
 
-    detectors = []
-    try:
-        from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph import (
-            is_in_tc_piecewise_cuda_graph,
-        )
-
-        detectors.append(is_in_tc_piecewise_cuda_graph)
-    except Exception:  # noqa: BLE001 - older pin or CPU-only unit environment
-        pass
-    try:
-        from sglang.srt.compilation.piecewise_context_manager import (
-            is_in_piecewise_cuda_graph,
-        )
-
-        detectors.append(is_in_piecewise_cuda_graph)
-    except Exception:  # noqa: BLE001 - current pin removed this legacy module
-        pass
-    for detector in detectors:
+    for name, attribute in _CAPTURE_DETECTORS:
+        if name not in sys.modules and name not in _IMPORT_ATTEMPTED:
+            _IMPORT_ATTEMPTED.add(name)
+            try:
+                importlib.import_module(name)
+            except Exception:  # noqa: BLE001 - older pin, removed legacy module, or CPU-only unit environment
+                pass
+        detector = getattr(sys.modules.get(name), attribute, None)
+        if detector is None:
+            continue
         try:
             if bool(detector()):
                 return True

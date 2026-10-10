@@ -231,6 +231,22 @@ def test_quant_context_is_enforced_by_canonical_selection():
     assert [m.field for m in quant.capability_match.mismatches] == ["quant"]
 
 
+def test_registration_rejects_duplicate_variants_and_inclusive_range_overlap():
+    def impl(variant, capabilities):
+        return KernelImpl(
+            slot="activation.silu_and_mul", bundle_id="candidate", variant=variant,
+            entry=lambda *_args: None,
+            eligibility=eligibility_from_metadata({"capabilities": capabilities}, ("bfloat16",)),
+        )
+
+    registry = KernelRegistry()
+    registry.register(impl("small", {"q_len": {"min": 1, "max": 128}}))
+    with pytest.raises(VariantRegistrationError, match="duplicate variant"):
+        registry.register(impl("small", {"q_len": 512}))
+    with pytest.raises(VariantRegistrationError, match="overlapping capability domains"):
+        registry.register(impl("medium", {"q_len": {"min": 128, "max": 256}}))
+
+
 def test_implicit_dense_and_nvfp4_domains_do_not_overlap():
     implicit_dense = Eligibility()
     explicit_dense = Eligibility(quant=frozenset({"dense"}))

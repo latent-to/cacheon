@@ -90,8 +90,9 @@ workload allows, so more hits are not available. A cache win has to come from
 lower cache overhead on the scheduler's critical path or better behavior under
 memory pressure: eviction, host-tier movement, and what stays resident when the
 pools fill. Faking a hit is not a win: the validator checks the bytes behind every
-served prefix. The Qwen development configuration disables radix caching, so
-cache work applies to the GLM arena. See [the prefix cache](slots.md#the-prefix-cache).
+served prefix. An arena whose engine configuration disables radix caching has no
+cache target; the operator's announcement names each arena's open targets. See
+[the prefix cache](slots.md#the-prefix-cache).
 
 ## Match the workload regime
 

@@ -126,9 +126,10 @@ run.
 ### “How did a finalized reveal become a crown?”
 
 Start at `chain/intake.py`, then follow `chain/fetch.py` and
-`chain/publication.py` into `chain/validator_loop.py`. The loop resolves the
-closed `ArenaServiceRegistry`, receives qualification work,
-persists evidence references, and invokes transactional settlement. Read
+`chain/publication.py` into `chain/validator_loop.py`. The loop reserves finalized
+order and publishes bundles; `chain/standing_cpu_supervisor.py` and
+`chain/evaluation_coordinator.py` claim qualification work, persist evidence
+references, and invoke transactional settlement. Read
 `eval/qualification_runner.py` alongside `eval/qualification.py`: the runner
 orchestrates work; the schema and regrader define what counts as authority.
 

@@ -66,8 +66,8 @@ Common failures and fixes:
 | `tree_cache entry ... must be a function accepting the runtime cache` or `... must be callable with only the runtime cache` | the entry is not a synchronous function in the declared source, or needs other arguments | define `entry(cache)` and return `type(cache)` or a subclass of it; do not supply a constructor or `prepare` |
 | `tree_cache: the cache served a page that does not hold the KV the engine computed for its prefix` | a served prefix's slots held other bytes: a stale or reused slot, a page kept across a flush, a host copy not brought back, or a page from another namespace | serve only slots whose bytes the engine computed for that exact prefix, and drop every page at a flush |
 | `tree_cache: it replaced match_prefix on the instance ...` or `... on its class, which skips the check` | the cache assigned or deleted a protected handoff method after binding | override methods in the subclass returned by the factory |
-| `tree_cache: state validation is unavailable for this hybrid pool` | the engine's sliding-window or recurrent pool has a layout the validator does not recognize | this is missing validator coverage, not a failed miner contribution |
-| `tree_cache: this hybrid runtime disables prefix caching` | the arena's engine configuration turns radix caching off, as the Qwen development inputs do | the prefix cache is not a target on that arena; use an arena that serves with prefix caching |
+| `tree_cache: state validation is unavailable for this hybrid pool` | the engine's sliding-window pool has a layout the validator does not recognize, or the engine holds recurrent state, which is not validated | this is missing validator coverage, not a failed miner contribution |
+| `tree_cache: this hybrid runtime disables prefix caching` | the arena's engine configuration turns radix caching off | the prefix cache is not a target on that arena; use an arena that serves with prefix caching |
 | `... overlap; claim the wider node alone` | two rows of one bundle name a node and a node inside it | keep the wider address and drop the narrower one |
 | feature not allowed | `setup` or an unknown extra is outside policy; `override points are retired` names a row that sets `base_kernel` or `override_point` | remove it; both targets admit declared CUDA sources and the registered rebuild |
 | incomplete feature evidence | intake could not independently observe the rebuild feature set | use only registered rebuild declarations and complete source inventory |
@@ -234,6 +234,9 @@ Speed problems:
 Quality problems:
 
 - required fidelity/task metric regresses: candidate FAIL;
+- the candidate's quality interval overlaps a limit under the DeepSeek arena's
+  `teacher-familywise-upper-bound-v1` calibration: terminal FAIL
+  (`quality_regression`), with no retry;
 - stock/reference drift overlaps the calibrated boundary: `NO_DECISION`;
 - referenced pristine-T identity or raw quality artifact cannot reopen:
   authority/infrastructure failure;
@@ -274,15 +277,16 @@ Do not include wallet secrets, private URLs, or validator filesystem paths.
 
 ### Baseline admission closed
 
-`baseline_closed_at_submission` means the finalized commitment was later than the
-first champion win on the commissioned baseline. It is rejected at admission,
-before its first qualification claim, with `NO_DECISION`, not a failed evaluation.
-Your submission credit is preserved, and a cited evaluation payment remains reusable.
-The message says: “This baseline closed before your submission. Your submission
-credit has been preserved.” Resubmit against the current open baseline.
-Earlier commitments keep their assigned baseline
-and may finish after the champion changes; settlement does not repeat the cutoff.
-A newly commissioned baseline opens its own admission window.
+Historical `baseline_closed_at_submission` rows were rejected before their first
+qualification claim, with `NO_DECISION`, not a failed evaluation. Their submission
+credit was preserved, and a cited evaluation payment remains reusable. These
+records remain readable; current admission no longer rejects a commitment because
+another contribution crowned. A miner can resubmit against the same commissioned
+baseline after the validator installs the open-admission rule.
+
+The commissioned baseline remains fixed until an explicit operator commission.
+Later submissions can pass against it while failing the separate comparison with
+the preceding rewarded result; see [emissions policy](../reference/emissions-policy.md#legacy-v1).
 
 `lost_potential` means evaluation passed, but the completed comparison did not clear
 the required margin. The detail notice distinguishes a reward comparison against the

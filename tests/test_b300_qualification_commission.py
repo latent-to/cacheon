@@ -1,4 +1,4 @@
-"""Qualification composition and authority checks for GLM/TP4 and Qwen/TP1."""
+"""Qualification composition and authority checks for GLM/TP4 and an H100/TP1 profile."""
 
 from __future__ import annotations
 

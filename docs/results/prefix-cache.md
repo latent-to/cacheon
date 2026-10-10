@@ -64,55 +64,23 @@ violation rather than passing with incorrect output or failing at admission.
 
 ## Coverage boundary
 
-The GLM checks cover full-attention KV, draft and index state. The Qwen checks
-below add canonical recurrent checkpoints under the same runtime-object factory.
-Paged sliding-window validation is implemented and tested against native SGLang
-cache classes on CPU; no sliding-window model GPU result is claimed here.
-Validation of encoded recurrent checkpoints, per-request sliding-window rings,
-paged sliding-window index state and compressed KV pages is implemented and
-tested on CPU only; no GPU result is claimed for them.
+The GLM checks cover full-attention KV, draft and index state. Paged
+sliding-window validation is implemented and tested against native SGLang cache
+classes on CPU; no sliding-window model GPU result is claimed here. Validation of
+per-request sliding-window rings, window pools that store whole pages (including
+windows smaller than one page), compressed
+KV and index pages, and the pending-pair rings a DeepSeek-V4 kv-source layer holds
+per request is implemented and tested on CPU only; no GPU result is claimed for them.
+Recurrent checkpoints are refused rather than validated.
 
 Target-level preservation through successive cache replacements is separately
 tested through the production stack planner and materializer. The GPU controls
 use development bundles and do not establish settlement or mainnet qualification
 for a cache proposal.
 
-## Qwen recurrent state and final-source regression
+## Final-source regression
 
-Revision `4ed4777` served the public Qwen3.6-35B-A3B checkpoint in BF16 on B300,
-TP1, using SGLang 0.5.20 and FP8 KV. These are B300 functional checks, not an H100
-arena qualification. The common cache factory also worked without the retained
-GLM kernel contribution. Each batch contained eight requests with eight output
-tokens; contexts were capped at 16,384 tokens, the device KV pool at 65,536
-tokens, and the recurrent pool at 48 states. Each generation retained the
-120-second deadline and engines stayed resident between commands.
-
-| Check | Observed result |
-|---|---|
-| MTP, ReplaySSM and eager audit | 160 audited calls; zero violations, comparison errors or refused references |
-| Speculation disabled, eager audit | 160 audited calls with the same clean result |
-| MTP and CUDA graphs | Prefix reuse, branches, reset, cache pressure and generated-token continuations completed |
-| Recurrent corruption control | Changing recurrent bytes while leaving full KV intact produced the intended `tree_cache` candidate failure |
-| Native host restore, MTP | Eight requests per mode restored 1,984 KV tokens and a recurrent checkpoint each; 88 clean audited calls through final reset |
-
-The honest cases passed the typed audit parser where applicable and the serving
-lifecycle's terminal completion gate. Repeated 2,048-token prompts reused 1,024
-tokens; 64-token branches reused 2,048. The continuation checks included the
-actual generated tokens. All Qwen checks used real speculative acceptance.
-
-The host restoration checks used a 16 GB native host tier. A 4 GB tier was too
-small to retain both the original and pressure banks, and those earlier probes
-produced no host hits. With the larger tier, the test primed the original
-prefixes, sent eight distinct 7,168-token prompts to force device eviction, then
-revisited the originals. Both the native match result and the completed response
-metadata identified host restoration: zero device-hit tokens, 1,984 host-hit
-tokens per request, and a recurrent-state host hit. The eager audit checked the
-restored state before the model consumed it. Restoration took 0.97 seconds for
-the audit batch and 0.16 seconds for the graph batch; these are functional case
-timings, not a measured optimization gain.
-Both host-test engines then passed reset, replay, branch and terminal completion.
-
-The same revision also completed a GLM TP4/DP4 regression with the retained
+Revision `4ed4777` completed a GLM TP4/DP4 regression with the retained
 kernel contribution, native HiCache and graphs enabled: 24 short prefixes,
 reuse, flush, replay and reuse, with cache completions on all four ranks and
 the full-stack terminal completion gate satisfied.

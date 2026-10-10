@@ -8,21 +8,21 @@ from cacheon.arena_service import ArenaService
 from cacheon.chain.baseline_segments import commission_boundary
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
-from tests import test_evaluation_coordinator as fixture
+from tests.support import evaluation as fixture
 from tests.test_baseline_segments import _manifest as stack_manifest
 from tests.test_chain_intake import _qualified_settlement_candidate, _settlement_plan, _store
 
 
 def _pair(tmp_path):
-    rows = fixture._published_rows(tmp_path, 4, arenas=("", "qwen", "", "qwen"))
-    glm = ArenaService(fixture._manifest(), fixture._Provider())
+    rows = fixture.published_rows(tmp_path, 4, arenas=("", "qwen", "", "qwen"))
+    glm = ArenaService(fixture.manifest(), fixture.Provider())
     qwen = ArenaService(replace(glm.manifest, runtime=replace(
         glm.manifest.runtime, arena_id="qwen", gpu_count=1,
         tensor_parallel_size=1, target_architecture="sm90",
-        model_content_digest=fixture._h("qwen-weights"),
-    )), fixture._Provider())
-    cursor = fixture._CursorAuthority((fixture.BLOCK, fixture._block_hash(fixture.BLOCK)))
-    coordinators = tuple(fixture._coordinator(
+        model_content_digest=fixture.h("qwen-weights"),
+    )), fixture.Provider())
+    cursor = fixture.Cursor((fixture.BLOCK, fixture.block_hash(fixture.BLOCK)))
+    coordinators = tuple(fixture.coordinator(
         tmp_path, service, cursor, accept_legacy_bundles=index == 0,
         owner=f"arena-{index}", qualification_max_members=1,
         store_factory=RecoverableFinalizedIntakeStore,
@@ -41,7 +41,7 @@ def test_two_dispatchers_keep_fifo_baselines_and_recovery_independent(tmp_path):
                 row.reservation_id for row in queue
             ]
             incumbent = stack_manifest(coordinator.service.identity)
-            assert commission_boundary(store, incumbent, tree_digest=fixture._h("tree")) is None
+            assert commission_boundary(store, incumbent, tree_digest=fixture.h("tree")) is None
             recovery = store.claim_recoverable_qualification(
                 owner=coordinator.owner, current_block=point[0], max_members=1,
             )
@@ -63,7 +63,6 @@ def test_two_dispatchers_keep_fifo_baselines_and_recovery_independent(tmp_path):
     with store:
         assert store.pending_qualification_recovery() == recoveries[0]
         assert len(store.active_evaluation_leases()) == 2
-        assert store.arena_queue_snapshot(current_block=fixture.BLOCK).active_qualifications == 1
 
 
 def test_default_alias_cannot_be_taken_by_second_arena(tmp_path):
@@ -82,7 +81,7 @@ def test_default_alias_cannot_be_taken_by_second_arena(tmp_path):
 def test_closed_targets_retire_before_claim_without_touching_glm(tmp_path):
     rows, (glm, qwen) = _pair(tmp_path)
     qwen.service = ArenaService(replace(qwen.service.manifest,
-        closed_targets=(rows[1].target_id, rows[3].target_id)), fixture._Provider())
+        closed_targets=(rows[1].target_id, rows[3].target_id)), fixture.Provider())
     for coordinator in (qwen, glm):
         store, point = coordinator._open_at_durable_cursor()
         with store:
@@ -156,7 +155,7 @@ def test_pre_namespace_lineage_migrates_without_changing_retained_evidence(tmp_p
     ("glm", "forward_pass"), ("qwen", "prefix_cache"),
 ))
 @pytest.mark.parametrize("payment_kind", ("credit", "payment"))
-def test_crown_cutoff_admits_commitments_once_before_qualification(tmp_path, arena, target, payment_kind):
+def test_crown_keeps_later_commitments_and_payments_eligible(tmp_path, arena, target, payment_kind):
     from cacheon.chain.eval_cost_credit import grant_eval_cost_credit, list_eval_cost_credits
     from tests.test_chain_intake import _arrival, _bh, _fingerprint, _publish
 
@@ -166,8 +165,8 @@ def test_crown_cutoff_admits_commitments_once_before_qualification(tmp_path, are
         lease = store.lease_settlement_cohort(current_block=11)
         plan, evidence = _settlement_plan(store, lease)
         store.commit_settlement(lease, plan, evidence, current_block=11)
-        # Neither commitment was in the transition's reservation snapshot.
-        # Their chain blocks, not fetch/completion order, decide admission.
+        # Regression: pausing after a crown expired the entire next day's queue.
+        # Both commitments arrive after the transition's reservation snapshot.
         late_arrival = _arrival(2, hotkey="late", block=12)
         if payment_kind == "credit":
             grant_eval_cost_credit(store.path, hotkey="late", amount_tao_rao=25)
@@ -183,40 +182,40 @@ def test_crown_cutoff_admits_commitments_once_before_qualification(tmp_path, are
         for row, marker in ((early, "a"), (late, "b")):
             _publish(store, row.reservation_id, _fingerprint(target, target, marker),
                      digest=marker * 64, root=tmp_path / marker)
-        rejected = store.prepare_qualification_queue(service_digest=winner.arena_digest)
-        assert rejected == ((late.reservation_id, "baseline_closed_at_submission"),)
+        assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
         assert store.get(early.reservation_id).status == "published"
-        rejected_row = store.get(late.reservation_id)
-        assert rejected_row.status == "expired" and rejected_row.arena_service_digest == ""
-        assert rejected_row.decision == "NO_DECISION"
+        admitted = store.get(late.reservation_id)
+        assert admitted.status == "published" and admitted.arena_service_digest == ""
+        assert admitted.decision == "" and admitted.reason == ""
         assert not store.active_evaluation_leases()
         if payment_kind == "credit":
             credit = list_eval_cost_credits(store.path, hotkey="late")[0]
-            assert (credit.reservation_id, credit.spent_block) == ("", 0)
+            assert (credit.reservation_id, credit.spent_block) == (late.reservation_id, 12)
         else:
             assert store._db.execute("SELECT reservation_id FROM eval_cost_payments "
-                                     "WHERE payment_extrinsic_index=4").fetchone() is None
+                                     "WHERE payment_extrinsic_index=4").fetchone()[0] == late.reservation_id
         assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
         assert store.get(winner.reservation_digest).decision == "PASS"
 
-    # Reopening does not turn an earlier accepted commitment into a late one.
+    # Restarting the dispatcher must preserve both rows and their original fees.
     with _store(tmp_path) as store:
         store.select_arena(arena, accept_legacy_bundles=False)
         assert store.prepare_qualification_queue(service_digest=winner.arena_digest) == ()
-        assert store.get(early.reservation_id).status == "published"
-        fresh = store.reserve_finalized(
-            (replace(late_arrival, block=13, block_hash=_bh(13)),),
-            finalized_block=13, finalized_block_hash=_bh(13), eval_cost_amount_tao_rao=25,
-        )[0]
-        assert fresh.status == "reserved" and fresh.reason == ""
+        assert store.get(late.reservation_id).status == "published"
         if payment_kind == "credit":
-            assert list_eval_cost_credits(store.path, hotkey="late")[0].reservation_id == fresh.reservation_id
-        _publish(store, fresh.reservation_id, _fingerprint(target, target, "b"),
-                 digest="b" * 64, root=tmp_path / "fresh")
-        # A new commissioned service has its own open admission window.
-        assert store.prepare_qualification_queue(service_digest=fixture._h("new-commission")) == ()
-        assert store.get(fresh.reservation_id).status == "published"
-        # Another competition does not inherit this arena's crown cutoff.
+            assert list_eval_cost_credits(store.path, hotkey="late")[0].reservation_id == late.reservation_id
+        else:
+            assert store._db.execute("SELECT reservation_id FROM eval_cost_payments "
+                                     "WHERE payment_extrinsic_index=4").fetchone()[0] == late.reservation_id
+        assert commission_boundary(store, winner.incumbent_manifest,
+                                   tree_digest=winner.incumbent_tree_digest) is None
+        claim = store.claim_evaluation_lease(
+            stage="qualification", owner="late-commitments", current_block=12, max_members=2,
+        )
+        assert claim is not None
+        assert claim.reservation_ids == (early.reservation_id, late.reservation_id)
+        assert store.preview_evaluation_claim(stage="qualification") == ()
+        # Arena routing remains separate from the current crown's admission.
         store.select_arena("other", accept_legacy_bundles=False)
         other = store.reserve_finalized(
             (_arrival(4, hotkey="other", block=14),),

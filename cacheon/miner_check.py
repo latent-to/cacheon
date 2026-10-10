@@ -160,16 +160,20 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
         CACHEON_SLOT_AUDIT="1" if phase == "audit" else "0",
         CACHEON_SLOT_AUDIT_SEED=str(seed), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
     )
+    # The arena's engine environment, as the sealed configuration sets it for the
+    # validator's ranks: the DeepSeek-V4.1 Engram host tables are switched on here.
+    options = dict(config)
+    environment = options.pop("engine_env", {})
+    os.environ.update(environment)
     seam.mark_driver()
     bootstrap.install()
     import sglang as sgl
 
-    options = dict(config)
     if phase == "audit":
         options["disable_cuda_graph"] = True
     options["custom_sigquit_handler"] = _engine_child_failed
     report = {"phase": phase, "sglang_version": sgl.__version__, "engine": options,
-              "decision": "ERROR", "detail": "engine did not complete"}
+              "environment": environment, "decision": "ERROR", "detail": "engine did not complete"}
     engine = None
     try:
         engine = sgl.Engine(**options)
@@ -228,6 +232,10 @@ def check(args: argparse.Namespace) -> int:
             raise ValueError("engine config must be an object and requests a nonempty array")
         if not all(isinstance(request, dict) for request in requests):
             raise ValueError("each request must be an Engine.generate keyword-argument object")
+        environment = config.get("engine_env", {})
+        if not isinstance(environment, dict) or not all(
+                isinstance(name, str) and isinstance(value, str) for name, value in environment.items()):
+            raise ValueError("engine_env must map variable names to string values")
         model = str(Path(args.model).resolve(strict=True))
         if "model_path" in config and str(Path(config["model_path"]).resolve()) != model:
             raise ValueError("--model differs from engine config model_path")

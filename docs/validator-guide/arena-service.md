@@ -29,7 +29,9 @@ The scored workload is a sealed agent-replay slice. The commission's
 `session.replay` names the slice manifest and its digest, the operating load and
 the number of paired windows; see
 [Finite agent replay](qualification.md#finite-agent-replay). The arena's declared
-workload cells still describe the engine-conditioning batches. Context length,
+workload cells set the input-token geometry and batch routing of the
+engine-conditioning and audit batches; their output-token and timed-read fields are
+retained identity only. Context length,
 admission width, graph mode and watchdog settings come from the sealed engine
 template. Qualification rejects a session that differs from its sealed authority
 before launch.
@@ -58,8 +60,8 @@ authoritative.
 | `hold` | Retains work when age/depth/cohort limits require intervention |
 
 Admission runs before the first claim: an exact copy of a loser inherits its
-FAIL, closed targets release payment as NO_DECISION, and commitments after the first crown on the
-commissioned baseline expire as `baseline_closed_at_submission` (NO_DECISION, payment released).
+FAIL and closed targets release payment as NO_DECISION. A crown keeps the
+commissioned baseline open to later commitments.
 Candidate-caused qualification failure rejects; provider, baseline, teardown and
 incomplete-evidence failures remain infrastructure failures. Qualification HOLD
 has an explicit recovery path. Monitor held rows and preserve evidence; deleting
@@ -70,7 +72,7 @@ them is not recovery.
 `ArenaCandidateBinding` binds reservation, publication and the one-based
 qualification attempt; a retry after an infrastructure hold is a new binding.
 `ArenaQualificationRequest` and `ArenaQualificationWork` bind authoritative
-qualification. `ArenaServiceRegistry` resolves exact logical arena IDs.
+qualification.
 
 ## Provider interface
 
@@ -122,6 +124,28 @@ must agree; every qualification executor consumes the same values.
 Commissioning requires faithful, broken and infrastructure controls through the
 production entrypoint, with graphs, audit/T roles, retained evidence and restart
 recovery. CPU composition and compatibility checks do not establish GPU success.
+The broken control must be faster than stock, so that it clears the speed gate
+and the correctness audit is what rejects it; a control that only corrupts its
+answer at stock speed fails the paired speed test first and proves nothing about
+the audit.
+The exception is a control listed by selected delta digest in the sealed
+`qualification.policy.audit_control_delta_digests`, a sorted list of distinct
+lowercase SHA-256 digests (omitted means none; the registered policy digest
+changes only when it is non-empty). Its plan carries the calibration-observation
+disposition: the audit still runs after a speed failure, pristine T does not, and
+the verdict stays the speed grade unless the audit grades `FAIL` or `NO_DECISION`,
+which exits at the audit stage. Intake and the deployment check refuse that
+disposition for every unlisted delta.
+
+A host that keeps the checkpoint in RAM reloads it at boot from an enabled
+oneshot unit ordered before the container runtime, and reapplies the GPU clock
+lock in the same unit, so a reboot cannot silently change the measured engine.
+After a host reboot, restart the CPU-side pair units: their start hook
+re-launches the pod service over the registered transport and then starts the
+relay. Retiring a pair archives its whole tree except the materialized replay
+slices and worker scratch, and the validator VM pulls those archives over the
+pinned host key, so required evidence survives both pair retirement and pod
+loss.
 
 ## Registry and CLI boundary
 
@@ -142,7 +166,7 @@ known at publication; fetch and pre-publication admission remain shared.
 
 Queues, baselines, target admission, lineage and qualification recovery are
 scoped to the logical arena. Service epochs retain that arena's lineage.
-Commissioning Qwen cannot retire GLM's baseline. Two arenas can qualify
+Commissioning a second arena cannot retire the first arena's baseline. Two arenas can qualify
 concurrently. Within one arena, commission disjoint pairs with the same model,
 runtime, workload, incumbent and GPU execution policy. Physical GPU addresses
 belong to each worker's READY, registration and launch binding; equivalent pairs
@@ -199,11 +223,9 @@ Upgrade all CPU controllers at an idle boundary before enabling a second arena;
 old controllers cannot operate the new schema. Keep a database backup and
 commissioned packets for rollback.
 
-Python `run_pass` / `run_validator` accept an injected `ArenaServiceRegistry`,
-`arena_id` and `accept_legacy_bundles`. Standalone `chain-validate --arena-id`
-cannot construct executable capabilities. `retained_only=True` processes the
-queue at a fresh finalized head without advancing reveal history; it requires
-injected arena authority and conflicts with `intake_only`.
+`chain-validate` runs intake only. The standing supervisor's dispatcher binds the
+commissioned `ArenaService` and selects its arena with `accept_legacy_bundles`; no
+command-line flag selects an arena.
 
 ## Operating signals
 

@@ -98,8 +98,7 @@ layer, `model` the whole decoder stack. One adapter,
 [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
 serves every width, and a bundle that lists several addresses replaces several
 nodes at once. Granularity is the model's own module tree: a span that is not a
-module (on Qwen3.5 the attention block has no module of its own) is reached
-through the nearest enclosing node.
+module is reached through the nearest enclosing node.
 
 The candidate is a drop-in for the node's stock `forward`.
 `entry(prepared, *args, **kwargs)` receives the stock arguments and returns what
@@ -112,8 +111,9 @@ Truth is the stock node in the running engine, on the same call:
 
 1. on an audited eager call the stock node runs first;
 2. its result tensors are kept, together with the engine-state rows the batch may
-   write: the cache rows at `out_cache_loc` and, on hybrid models, the recurrent
-   state rows of the batch's requests;
+   write: the cache rows at `out_cache_loc` (whole pages where the pool stores
+   pages); a runtime that keeps per-request recurrent state outside those pools
+   is refused rather than audited unchecked;
 3. the arguments stock changed and the state rows are put back;
 4. the honest twin answers the same call and is put back the same way: the stock
    node with supported fused ops on SGLang's native reference paths, giving the
@@ -128,17 +128,20 @@ Truth is the stock node in the running engine, on the same call:
 
 Packed DSA MLA records are decoded as FP8 latent values with FP32 scales and BF16
 rotary values. The separate index cache is decoded as FP8 keys with FP32 scales;
-its touched pages are preserved and restored as raw bytes. An unrecognized
-packed layout raises instead of being interpreted as homogeneous FP8. The first
+its touched pages are preserved and restored as raw bytes. DeepSeek-V4 pages are
+decoded by the layout the pool declares: E4M3 values with one UE8M0 exponent per
+tile and a BF16 rotary tail, or packed E2M1 values with E4M3 scales; its FP4
+index pages are decoded the same way, and a kv-source layer's compressed pages,
+index pages and per-request pending-pair ring are graded with its window pages;
+allocation padding and sentinel rows are outside those request rings.
+Whole-node snapshots use the pool's active layer range, excluding unowned draft or pipeline stages.
+Engram's per-request token history lives outside those pools. The audit restores
+and grades it too, so stock, the honest twin and the candidate each start from
+the same n-gram history.
+An unrecognized packed layout raises instead of being interpreted as homogeneous
+FP8. The first
 failed window of each bound node is logged with its concrete name and tensor
 position, including when the contribution claims a wildcard address.
-
-Under GDN ReplaySSM speculative verification, a target-verify call also writes
-replay rings, keyed by the batch's request slots, and per-draft conv windows,
-keyed by verify scratch row. Both are preserved, restored and graded; the conv
-windows through the pool's physical buffers. A BF16 ring's residual
-(`rawv`/`rawk`) is graded summed with its high part (`d`/`k`), the one number
-the pair holds. Any other ReplaySSM state layout raises.
 
 A row passes within the larger of 2% and three times the twin's
 90th-percentile row error on that node, taking the larger of the current call
@@ -243,18 +246,20 @@ dtypes, architectures or eligibility never matches, and the run fails as `candid
 The same content checks run for stock and candidate. Stock checking failures are
 infrastructure failures; they are not attributed to a miner's cache. Storage
 validation is adapter work under this common contract. It recognizes full-attention
-KV, paged sliding-window KV and its index state, compressed KV and index pages, the
-runtime's canonical recurrent checkpoints, int8-encoded recurrent checkpoints read
-through the pinned codec, and per-request sliding-window rings. A request-local ring
-is never stored in the tree, so a prefix hit that skips its trailing window is
-refused. A new model does not require a new miner contract; an unfamiliar storage
-layout requires validator support before a contribution can use it.
+KV, sliding-window KV and its index state (by slot, or by page where the window pool
+stores whole pages), compressed KV and index pages, per-request sliding-window rings,
+and the pending-pair ring a DeepSeek-V4 kv-source layer holds per request, which a
+cache handoff must leave unchanged. A request-local ring is never stored in the tree,
+so a prefix hit that skips its trailing window is refused. Recurrent checkpoints are
+refused: no commissioned arena caches them. A new model does not require a new
+miner contract; an unfamiliar storage layout requires validator support before a
+contribution can use it.
 
-The [GLM and Qwen GPU checks](../results/prefix-cache.md) exercise prefix reuse,
+The [GLM GPU checks](../results/prefix-cache.md) exercise prefix reuse,
 native host restoration, reset, graph execution, audit import and rejection of
 corrupted cached state under this contract. The GPU results cover GLM's
-full-attention layout and Qwen's recurrent state; they do not establish GPU
-coverage for every recognized state layout.
+full-attention layout; they do not establish GPU coverage for every recognized
+state layout.
 
 Cache versions replace one another within this target. Iterative improvement
 means the next implementation retains the useful behavior of the current winner
@@ -271,11 +276,11 @@ Whenever the scheduler hands a request to the cache, before the cache sees it,
 the validator hashes each complete page of KV the request's own forward passes
 computed and records the pair of that hash and a digest of the prefix through the
 page: the request's `extra_key` and `cache_salt`, its tokens, and under EAGLE the
-token after the page, which the draft KV reads. Recurrent caches use the runtime's
-ordinary token keys even with EAGLE enabled. At the same handoff it hashes up
+token after the page, which the draft KV reads. At the same handoff it hashes up
 to 64 randomly chosen pages the request read from the cache and requires each
 pair to be on record. Hashes cover four layers, drawn at engine start, of each KV
-buffer kind in the target and draft pools, the DSA indexer's included. The pairs
+buffer kind in the target and draft pools, the DSA indexer's pages and the shorter
+DeepSeek-V4 index pages of each full page included. The pairs
 live in a 16 MB table on the device, and a flush forgets them. After the cache
 handles an unfinished request, the request's own slots beyond what the cache now
 protects must be unmoved, and the row the next forward pass reads must agree with
@@ -288,13 +293,12 @@ bytes; the host reads each verdict at a later handoff, and only a flush or an
 audited request waits for one. A page is checked after the forward pass that read
 it, so bytes moved into a served slot after that pass are not told apart from bytes
 placed before. The check does not bound memory a cache allocates beyond the
-engine's pools. Sliding-window KV and recurrent checkpoints may be overwritten
-during forward, so their additional checks run in the existing untimed audit
-role: record computed state before handing it to the cache, verify device hits
-before use, and verify host restores after the native transfer stream completes.
-Recurrent checkpoints are bound to the prefix they actually represent, including
-ReplaySSM's uncommitted tail; unfinished requests retain their active state.
-These checks sample up to four layers per transferable state field. The handoffs
+engine's pools. Sliding-window KV may be overwritten during forward, so its
+additional checks run in the existing untimed audit role: record computed state
+before handing it to the cache, verify device hits before use, and verify host
+restores after the native transfer stream completes. Unfinished requests retain
+their live ring state. These checks sample up to four layers per transferable
+state field. The handoffs
 `match_prefix`, `cache_unfinished_req`, `cache_finished_req`,
 `ready_to_load_host_cache` and `reset` may be overridden in the class but not replaced on
 the instance or class later.

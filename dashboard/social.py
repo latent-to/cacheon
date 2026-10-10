@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from dashboard.forensics import retained_speed
 from dashboard.sources import selected
 from dashboard.sglang import sglang_build
-from dashboard.winners import candidate_measurement, result_summary
+from dashboard.winners import result_summary
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class SubmissionCard:
     stock: float | None = None
     ttft: float | None = None
     stock_ttft: float | None = None
-    metric: str = "OUTPUT THROUGHPUT"
+    metric: str = "DECODE THROUGHPUT"
     commit: str = ""
     version: str = ""
     stock_reference_date: str = ""
@@ -111,9 +111,8 @@ def submission_card(reservation, api):
                            "WHERE reservation_id=? ORDER BY reproduction_index", (rid,)).fetchall()
         if not rows:
             result = detail.get("result")
-            return SubmissionCard(**fields, submission=result["decode_tps"][1] if result else detail.get("tokens_per_second"),
-                                  ttft=result["ttft_s"][1] if result else None,
-                                  metric="DECODE THROUGHPUT" if result else "OUTPUT THROUGHPUT")
+            return SubmissionCard(**fields, submission=result["decode_tps"][1] if result else None,
+                                  ttft=result["ttft_s"][1] if result else None)
         # Historical paired qualifications retain the lower accepted score.
         row = min(rows, key=lambda r: float(json.loads(r["qualification_json"])["speedup"]))
         qualification = json.loads(row["qualification_json"])
@@ -123,20 +122,13 @@ def submission_card(reservation, api):
     stock = bool(runtime) and incumbent.get("entries") == {} and incumbent.get("runtime_digest") == runtime
     source = selected.get()
     fields.update(sglang_build(runtime, source))
-    if speed:
-        result = result_summary(speed)
-        if result:
-            baseline, candidate = result["decode_tps"]
-            fields.update(metric="DECODE THROUGHPUT", submission=candidate, stock=baseline if stock else None,
-                          ttft=result["ttft_s"][1], stock_ttft=result["ttft_s"][0] if stock else None)
-            if not stock and candidate is not None:
-                fields.update(stock_reference(qualification, speed))
-        else:
-            baseline = [lane["tokens_per_second"] for lane in speed["lanes"]
-                        if lane["role"] in ("B", "B_prime", "B_double_prime")
-                        and lane.get("tokens_per_second") is not None]
-            fields.update(submission=candidate_measurement([speed])["tokens_per_second"],
-                          stock=max(baseline) if stock and baseline else None)
+    result = result_summary(speed)
+    if result:
+        baseline, candidate = result["decode_tps"]
+        fields.update(submission=candidate, stock=baseline if stock else None,
+                      ttft=result["ttft_s"][1], stock_ttft=result["ttft_s"][0] if stock else None)
+        if not stock and candidate is not None:
+            fields.update(stock_reference(qualification, speed))
     return SubmissionCard(**fields)
 
 

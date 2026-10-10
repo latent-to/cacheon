@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-import time
 from pathlib import Path
 
 import pytest
@@ -12,11 +11,10 @@ import pytest
 import cacheon.eval.b300_mainnet_worker as worker_module
 from cacheon.arena_service import (
     ArenaCandidateBinding,
-    ArenaCapacityPolicy,
+    ArenaQualificationRequest,
+    ArenaQualificationWork,
     ArenaService,
     ArenaServiceManifest,
-    Workload,
-    WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.evaluation_coordinator import (
@@ -29,11 +27,11 @@ from cacheon.chain.publication import publish_worker_bundle
 from cacheon.chain.remote_qualification_hold import RemoteQualificationHoldReason
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
 from cacheon.eval.b300_arena_provider import (
+    B300ArenaProviderError,
     B300ArenaServiceProvider,
     B300DeclaredAuthorities,
     B300DeploymentAuthorities,
     B300QualificationLanePair,
-    B300QualificationLanePolicy,
     b300_arena_provider_digest,
 )
 from cacheon.eval.b300_mainnet_worker import (
@@ -41,16 +39,10 @@ from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorkerError,
     B300RemoteQualificationRun,
 )
-from cacheon.eval.device_state import DeviceStatePolicy
-from cacheon.eval.oci_backend import (
-    OCIBackendConfig,
-    OCIEngineExecutor,
-)
-from cacheon.eval.oci_prebuild import OCIPrebuildConfig
+from cacheon.eval.oci_backend import OCIEngineExecutor
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
-    QualificationAuthorityManifest,
     QualificationIntakeBatch,
     QualificationIntakeError,
     QualificationIntakeOutcome,
@@ -58,7 +50,13 @@ from cacheon.eval.qualification_intake import (
     QualificationReservation,
     QualificationRetryPlan,
 )
-from tests.support.b300 import StubHiddenJudge as _Judge, arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
+from tests.support.b300 import (
+    FactoryBuilder as _FactoryBuilder,
+    arena_manifest as _manifest,
+    deployment_authorities as _authorities,
+    executors,
+    sha as _h,
+)
 
 
 SLOT = "activation.silu_and_mul"
@@ -66,116 +64,7 @@ SLOT = "activation.silu_and_mul"
 
 @pytest.fixture
 def executor_factory(tmp_path: Path):
-    executors: list[OCIEngineExecutor] = []
-    sequence = 0
-
-    def create(role: str, lane: str = "A") -> OCIEngineExecutor:
-        nonlocal sequence
-        sequence += 1
-        normalized_role = (
-            "candidate" if role == "candidate" else "resident_baseline"
-        )
-        if lane not in {"A", "B"}:
-            raise AssertionError("fixture lane must be A or B")
-        first_gpu = 0 if lane == "A" else 4
-        runtime = _runtime_policy()
-        root = tmp_path / f"executor-{sequence}-{role}"
-        executor = OCIEngineExecutor(
-            OCIBackendConfig(
-                OCIPrebuildConfig(
-                    docker_binary="/usr/bin/docker",
-                    recovery_root=root / "recovery",
-                    publication_root=root / "publications",
-                    seccomp_profile=root / "seccomp.json",
-                    executor_id=f"qualification-{normalized_role}",
-                    policy=_prebuild_policy(runtime),
-                ),
-                runtime,
-            ),
-            DeviceStatePolicy(
-                expected_gpus=tuple(
-                    _gpu(index) for index in range(first_gpu, first_gpu + 4)
-                ),
-                required_consecutive_idle_samples=2,
-                poll_interval_s=0.05,
-                ready_poll_interval_s=0.05,
-                drain_timeout_s=2.0,
-                maximum_samples=8,
-            ),
-        )
-        executors.append(executor)
-        return executor
-
-    yield create
-    for executor in executors:
-        executor.manager.close()
-
-
-class _FactoryBuilder:
-    def __init__(self) -> None:
-        self.calls: list[tuple[object, object | None]] = []
-
-    def __call__(self, request, state):
-        self.calls.append((request, state))
-        reservations = tuple(row.reservation for row in request.candidates)
-        manifest = QualificationAuthorityManifest(
-            "registered",
-            _h("qualification-authority"),
-            _h("qualification-source"),
-            _h("selection-commitment"),
-            _h("selection-secret-reference"),
-            tuple(row.selected_delta_digest for row in reservations),
-            reservations,
-        )
-        return QualificationPlanFactory(
-            manifest,
-            lambda _reference: b"s" * 32,
-            lambda _secret: None,
-        )
-
-
-def _authorities(executor_factory):
-    builder = _FactoryBuilder()
-    candidate_executor = executor_factory("candidate", "A")
-    baseline_executor = executor_factory("resident_baseline", "B")
-    lane_pair = B300QualificationLanePair(
-        B300QualificationLanePolicy.from_device_policy(
-            "A", candidate_executor.device_policy
-        ),
-        B300QualificationLanePolicy.from_device_policy(
-            "B", baseline_executor.device_policy
-        ),
-    )
-    authorities = B300DeploymentAuthorities(
-        runtime_identity=_runtime(),
-        qualification_policy_digest=_h("qualification-policy"),
-        qualification_builder_digest=_h("qualification-builder"),
-        qualification_factory_builder=builder,
-        executor=candidate_executor,
-        resident_baseline_executor=baseline_executor,
-        entropy_provider_digest=_h("entropy-provider"),
-        entropy_provider=lambda *_args: None,
-        hidden_judge=_Judge(),
-        deadline_policy_digest=_h("deadline-policy"),
-        deadline_provider=lambda _request, _state: time.monotonic() + 600.0,
-        qualification_lane_pair=lane_pair,
-        qualification_stage="primary",
-    )
-    return authorities, builder
-
-
-def _manifest(authorities: B300DeploymentAuthorities) -> ArenaServiceManifest:
-    return ArenaServiceManifest(
-        runtime=authorities.runtime_identity,
-        workload=Workload(
-            _h("prompt-corpus"),
-            "sealed-prompt-seeds-v1",
-            (WorkloadCell("s8", 8192, 1024, 64, 8),),
-        ),
-        capacity=ArenaCapacityPolicy(32, 100, 8, 4),
-        qualification_policy_digest=authorities.qualification_policy_digest,
-        provider_digest=b300_arena_provider_digest(authorities),
-    )
+    yield from executors(tmp_path)
 
 
 def _readiness(
@@ -618,3 +507,91 @@ def test_readiness_drift_and_declared_only_authority_are_rejected_before_work(
     with pytest.raises(B300MainnetWorkerError, match="authorities are not exact"):
         B300MainnetWorker(manifest, declared, readiness)
     assert builder.calls == []
+
+
+def test_qualification_preserves_exact_request_order_and_real_authorities(
+    tmp_path: Path, executor_factory
+) -> None:
+    authorities, builder = _authorities(executor_factory)
+    manifest = _manifest(authorities)
+    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
+    first = _bound_row(tmp_path / "first", manifest, 0)[2]
+    second = _bound_row(tmp_path / "second", manifest, 1)[2]
+
+    work = service.plan_qualification((first, second), state={"attempt": 1})
+
+    assert type(work) is ArenaQualificationWork
+    assert type(work.factory) is QualificationPlanFactory
+    assert work.factory.manifest.reservations == (first.reservation, second.reservation)
+    assert type(work.executor) is OCIEngineExecutor
+    assert work.executor is authorities.executor
+    assert work.resident_baseline_executor is authorities.resident_baseline_executor
+    assert work.entropy_provider is authorities.entropy_provider
+    assert work.hidden_judge is authorities.hidden_judge
+    assert builder.calls[0][0].candidates == (first, second)
+    assert builder.calls[0][1] == {"attempt": 1}
+
+
+def test_runtime_model_topology_and_policy_must_match_manifest(executor_factory) -> None:
+    authorities, _builder = _authorities(executor_factory)
+    runtime_mismatch = dataclasses.replace(
+        authorities.runtime_identity, model_content_digest=_h("another-model")
+    )
+    with pytest.raises(B300ArenaProviderError, match="runtime, model, topology"):
+        B300ArenaServiceProvider(_manifest(authorities, runtime=runtime_mismatch), authorities)
+    with pytest.raises(B300ArenaProviderError, match="qualification policy"):
+        B300ArenaServiceProvider(
+            _manifest(authorities, qualification_policy_digest=_h("another-policy")),
+            authorities,
+        )
+
+
+def test_lane_pair_rejects_overlap_and_authority_rejects_lane_drift(executor_factory) -> None:
+    # Two physical TP4 lanes never share a GPU, and an executor that drifts onto
+    # the other lane after construction loses the provider identity.
+    primary, _builder = _authorities(executor_factory)
+    with pytest.raises(B300ArenaProviderError, match="overlapping"):
+        B300QualificationLanePair(
+            primary.qualification_lane_pair.lane_a,
+            dataclasses.replace(primary.qualification_lane_pair.lane_a, lane_id="B"),
+        )
+    primary.executor.device_policy = executor_factory("candidate", "B").device_policy
+    with pytest.raises(B300ArenaProviderError, match="selected physical TP4 lane"):
+        b300_arena_provider_digest(primary)
+
+
+def test_declared_only_provider_refuses_to_build_qualification(
+    tmp_path: Path, executor_factory
+) -> None:
+    full, builder = _authorities(executor_factory)
+    manifest = _manifest(full)
+    sealed = B300DeclaredAuthorities(full.runtime_identity, full.qualification)
+    request = ArenaQualificationRequest(
+        manifest.digest,
+        manifest.qualification_policy_digest,
+        (_bound_row(tmp_path / "candidate", manifest, 0)[2],),
+    )
+    with pytest.raises(B300ArenaProviderError, match="declared-only provider"):
+        B300ArenaServiceProvider(manifest, sealed).build_qualification(request)
+    assert builder.calls == []
+
+
+def test_closed_provider_refuses_qualification(tmp_path: Path, executor_factory) -> None:
+    authorities, builder = _authorities(executor_factory)
+    manifest = _manifest(authorities)
+    provider = B300ArenaServiceProvider(manifest, authorities)
+    service = ArenaService(manifest, provider)
+    provider.close()
+
+    with pytest.raises(B300ArenaProviderError, match="provider is closed"):
+        service.plan_qualification((_bound_row(tmp_path / "candidate", manifest, 0)[2],))
+    assert builder.calls == []
+
+
+def test_factory_exception_stays_a_provider_error(tmp_path: Path, executor_factory) -> None:
+    authorities, _builder = _authorities(executor_factory, builder=_FactoryBuilder(fail=True))
+    manifest = _manifest(authorities)
+    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
+
+    with pytest.raises(B300ArenaProviderError, match="factory construction"):
+        service.plan_qualification((_bound_row(tmp_path / "candidate", manifest, 0)[2],))

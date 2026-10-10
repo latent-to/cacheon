@@ -57,16 +57,18 @@ _LAYERS = 4  # layers hashed per KV buffer kind, drawn once per engine
 _SAMPLE = 64  # served pages checked per handoff
 _CHUNK = 64  # pages hashed per pass, which bounds the temporaries
 _CELLS = 1 << 24  # one-byte cells of the pair table, two per pair
-# The methods the scheduler hands requests through; the check runs inside them.
-_HANDOFFS = frozenset({"match_prefix", "cache_unfinished_req", "cache_finished_req", "reset",
-                       "ready_to_load_host_cache"})
+# The methods the scheduler hands requests through; the check runs inside them. A
+# finished request arrives through ``cache_finished_req`` on 0.5.20 and through
+# ``insert_req`` then ``on_release`` on 0.5.21.
+_HANDOFFS = frozenset({"match_prefix", "cache_unfinished_req", "cache_finished_req", "insert_req",
+                       "on_release", "reset", "ready_to_load_host_cache"})
 # Verdict bits: the device raises them, a later handoff reads them.
 _FAKE, _MOVED, _ROW, _STATE = 1, 2, 4, 8
 _VERDICTS = {
     _FAKE: "served a page that does not hold the KV the engine computed for its prefix",
     _MOVED: "moved KV slots a request computed itself",
     _ROW: "left a request row that disagrees with the request's prefix",
-    _STATE: "served or changed unrecorded sliding-window or recurrent state",
+    _STATE: "served or changed unrecorded sliding-window or request-held state",
 }
 
 
@@ -140,8 +142,7 @@ class _Guard:
         self.allocator = params.token_to_kv_pool_allocator
         self.requests = params.req_to_token_pool
         self.page = int(params.page_size)
-        # The pinned tree disables EAGLE bigram keys for recurrent checkpoints.
-        self.bigram = int(bool(params.is_eagle) and not ctx.is_hybrid_ssm)
+        self.bigram = int(bool(params.is_eagle))
         self.device = self.requests.req_to_token.device  # with its index, unlike a flag string
         cuda = self.device.type == "cuda"
         # The forward pass writes KV on its own stream; the check reads behind it.
@@ -185,28 +186,31 @@ class _Guard:
                 *, allow_empty=False) -> list[tuple[Any, bool]]:
         """Draw the layers hashed, per KV buffer kind of the target and draft pools.
 
-        Token-addressed buffers hold one row per slot; the DSA indexer's hold one
-        row per page. A pool with no recognized buffer is the arena's configuration.
+        Each kind is held with its rows per page: token-addressed buffers hold one
+        row per slot (zero), paged pools and the DSA indexer one row per page, and
+        the DeepSeek-V4 indexer a few shorter rows per page. A pool with no
+        recognized buffer is the arena's configuration.
         """
 
         torch = self.torch
         pools = (self.allocator.get_kvcache(), *params.mtp_draft_device_pools)
         pools = tuple(getattr(pool, "full_kv_pool", pool) for pool in pools)
-        kinds = [(getattr(pool, name, None), False) for pool in pools for name in names]
-        kinds += [(getattr(pool, "index_k_with_scale_buffer", None), True) for pool in pools]
+        kinds = [(getattr(pool, name, None), 0) for pool in pools for name in names]
+        kinds += [(getattr(pool, "index_k_with_scale_buffer", None), 1) for pool in pools]
         from cacheon.integrations.sglang_cache_state import compressed_page_buffers
 
         paged_kv = []
         for pool in pools:
             kv, index = compressed_page_buffers(pool)
             paged_kv.extend(kv)
-            kinds.extend((buffers, True) for buffers in (*kv, *index))
+            kinds.extend((buffers, 1) for buffers in kv)
+            kinds.extend(index)
         chosen = []
-        for layers, by_page in kinds:
+        for layers, per_page in kinds:
             layers = [b for b in (layers or ()) if torch.is_tensor(b) and b.shape[0]]
             picks = torch.randperm(len(layers), generator=draws)[:_LAYERS].tolist()
-            chosen += [(layers[i], by_page) for i in sorted(picks)]
-        if not any(not by_page for _, by_page in chosen) and not any(paged_kv):
+            chosen += [(layers[i], per_page) for i in sorted(picks)]
+        if all(per_page for _, per_page in chosen) and not any(paged_kv):
             if allow_empty and all(getattr(pool, "layer_num", None) == 0 for pool in pools):
                 return []
             raise RuntimeError(f"{ADDRESS}: no KV buffer recognized on {type(pools[0]).__name__}")
@@ -217,8 +221,12 @@ class _Guard:
 
         torch = self.torch
         parts = []
-        for buffer, by_page in self.layers:
-            index = slots[:, 0] // self.page if by_page else slots.reshape(-1)
+        for buffer, per_page in self.layers:
+            if per_page:
+                pages = (slots[:, 0] // self.page)[:, None] * per_page
+                index = (pages + torch.arange(per_page, device=self.device)).reshape(-1)
+            else:
+                index = slots.reshape(-1)
             rows = buffer.index_select(0, index).reshape(len(slots), -1)
             rows = rows if rows.dtype == torch.uint8 else rows.view(torch.uint8)
             parts.append(rows.view(torch.int32) if rows.shape[1] % 4 == 0 else rows.to(torch.int32))
@@ -471,6 +479,17 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
             tokens = req.origin_input_ids + req.output_ids
             guard.handoff(self, req, tokens[: kwargs["kv_len_to_handle"]], finished=True)
             guard.invoke(super().cache_finished_req, req, *args, **kwargs)
+            guard.finished(req)
+
+        @pinned
+        def insert_req(self, req, *, up_to, **kwargs):
+            tokens = req.origin_input_ids + req.output_ids
+            guard.handoff(self, req, tokens[:up_to], finished=True)
+            return guard.invoke(super().insert_req, req, up_to=up_to, **kwargs)
+
+        @pinned
+        def on_release(self, req, *, inserted):
+            guard.invoke(super().on_release, req, inserted=inserted)
             guard.finished(req)
 
         @pinned

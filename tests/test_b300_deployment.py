@@ -62,6 +62,7 @@ def _m3_engine_config() -> dict[str, object]:
             "quantization": "modelopt_fp4",
             "trust_remote_code": True,
         },
+        "engine_env": {},
         "log_level": "error",
         "mem_fraction_static": 0.70,
         "moe_runner_backend": "flashinfer_cutlass",
@@ -69,17 +70,16 @@ def _m3_engine_config() -> dict[str, object]:
     }
 
 
-def _qwen_engine_config():
+def _h100_engine_config():
     config = _m3_engine_config()
     config.update(tp_size=1, mem_fraction_static=0.93, moe_runner_backend="triton")
-    # The measured H100 arena settings. SGLang 0.5.19 refuses language_model_only for
-    # this model, and chunked prefill at 4096 served 1,599 tok/s against 1,903 at the
-    # engine default (2026-09-20).
+    # The measured H100 settings of the second profile. SGLang 0.5.19 refused
+    # language_model_only for that model, and chunked prefill at 4096 served 1,599 tok/s
+    # against 1,903 at the engine default (2026-09-20).
     config["engine_kwargs"] = {
         "disable_radix_cache": True,
         "cuda_graph_bs_decode": [1, 2, 4, 8, 16, 24, 32, 40, 48],
         "kv_cache_dtype": "fp8_e4m3",
-        "max_mamba_cache_size": 48, "mamba_ssm_dtype": "float32",
     }
     return config
 
@@ -127,7 +127,7 @@ def _case(
     }
     if gpu_model == "h100":
         prompt_value.update(
-            model_profile_key="Qwen3.6-35B-A3B-BF16", engine_config=_qwen_engine_config(),
+            model_profile_key="Qwen3.6-35B-A3B-BF16", engine_config=_h100_engine_config(),
         )
     prompt_value["engine_config"]["tp_size"] = len(lane)
     prompt_sha = _write(prompt, prompt_value)

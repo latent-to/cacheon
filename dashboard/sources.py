@@ -1,5 +1,6 @@
 """Request-scoped dashboard sources; presentation never changes reward authority."""
 
+from contextlib import closing
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
@@ -13,7 +14,6 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 selected = ContextVar("dashboard_source", default=None)
-_ARENA_SLUGS = {"qwen": "qwen3.6", "glm": "glm-5.3"}
 _PATHS = {"db": "DB_PATH", "mission": "MISSION", "audit": "AUDIT_PATH",
           "spool": "SPOOL", "heartbeat": "HEARTBEAT_PATH", "registration": "REGISTRATION_PATH",
           "logs": "LOG_ROOT", "evidence_state": "QUAL_EVIDENCE_STATE", "stage": "STAGE_ROOT"}
@@ -30,10 +30,11 @@ class DashboardSource:
     processes: dict
     weights_included: bool
     checkpoint: dict | None
+    slug: str = ""
 
     def public(self):
         """Expose labels and reward status, never operator filesystem coordinates."""
-        return {"key": self.key, "slug": _ARENA_SLUGS.get(self.key, self.key),
+        return {"key": self.key, "slug": self.slug or self.key,
                 "label": self.label, "model": self.model,
                 "weights_status": "included in global offer" if self.weights_included
                 else "weights off / not yet in served vector"}
@@ -94,12 +95,15 @@ def load_sources(path, network, netuid, enrich):
         raise ValueError("enrichment cache cannot be an intake database")
     result, databases, caches, private_roots = {}, set(), set(), []
     for row in raw["sources"]:
-        if set(row) != {"key", "label", "model", "paths", "cache", "evidence_roots",
+        if set(row) != {"key", "slug", "label", "model", "paths", "cache", "evidence_roots",
                         "cutoff_reservation", "processes", "weights_included", "checkpoint"}:
             raise ValueError("dashboard source fields do not match")
-        key = row["key"]
+        key, slug = row["key"], row["slug"]
         if not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key) or key in result:
             raise ValueError("dashboard source keys must be unique")
+        if not isinstance(slug, str) or not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", slug) or any(
+                source.slug == slug for source in result.values()):
+            raise ValueError("dashboard source slugs must be unique path names")
         if set(row["paths"]) != set(_PATHS) or type(row["weights_included"]) is not bool:
             raise ValueError("source paths and weight status must be explicit")
         paths = {name: Path(path) for name, path in row["paths"].items()}
@@ -118,7 +122,7 @@ def load_sources(path, network, netuid, enrich):
         values.update(QUAL_EVIDENCE_EXTRA=extras, CUTOFF_RESERVATION=row["cutoff_reservation"],
                       ENRICHER=Enrichment(cache, network, netuid))
         result[key] = DashboardSource(key, row["label"], row["model"], values,
-                                      row["processes"], row["weights_included"], row["checkpoint"])
+                                      row["processes"], row["weights_included"], row["checkpoint"], slug)
         databases.add(db)
         caches.add(cache.resolve())
         private_roots.append(private)
@@ -208,6 +212,30 @@ def scope_reservations(connection):
     return connection
 
 
+def owned_fee_payments(connection):
+    """Fee payments consumed by the selected arena's reservations, one row per on-chain transfer.
+
+    Every listener records the arrivals it observed at its own configured fee, so a
+    database's payment table is shared chain observation, not the arena's income: on
+    2026-10-11 the GLM page summed 165 τ and the DeepSeek page 158.5 τ from the same rows.
+    """
+    return [dict(row) for row in connection.execute("""
+        SELECT p.payment_block AS block, p.payment_extrinsic_index AS extrinsic_index, p.amount_tao_rao
+        FROM eval_cost_payments p JOIN reservations r ON r.reservation_id = p.reservation_id
+        ORDER BY p.payment_block, p.payment_extrinsic_index""")]
+
+
+def _fee_summary(rows):
+    """Count and sum fee payments grouped by the fee charged; None when the database was unavailable."""
+    if rows is None:
+        return None
+    by_fee = {}
+    for row in rows:
+        by_fee[int(row["amount_tao_rao"])] = by_fee.get(int(row["amount_tao_rao"]), 0) + 1
+    return {"count": len(rows), "tao": sum(int(row["amount_tao_rao"]) for row in rows) / 1e9,
+            "by_fee": [{"fee_tao": fee / 1e9, "count": n} for fee, n in sorted(by_fee.items(), reverse=True)]}
+
+
 def qualify_response(payload, source):
     """Keep source-qualified links through detail, recovery and delayed downloads."""
     if isinstance(payload, list):
@@ -269,9 +297,22 @@ def _arena_targets(producer_path, sources, block):
                 or starts != sorted(set(starts)) or starts[0] != 0):
             return {}
         weights = next(row["weights_ppm"] for row in reversed(history) if row["from_block"] <= block)
-        if (type(weights) is not dict or set(weights) != set(sources)
+        if (type(weights) is not dict
                 or any(type(v) is not int or v < 0 for v in weights.values())):
             return {}
+        if set(weights) != set(sources):
+            configured = allocation["sources"]
+            if set(weights) != set(configured):
+                return {}
+            mapped = dict.fromkeys(sources, 0)
+            for key, path in configured.items():
+                database = Path(json.loads(Path(path).read_text())["intake_db"]).resolve()
+                matches = [name for name, source in sources.items()
+                           if source.values["DB_PATH"].resolve() == database]
+                if len(matches) != 1:
+                    return {}
+                mapped[matches[0]] += weights[key]
+            weights = mapped
         normalized = _allocate_pool(weights, 1_000_000) if sum(weights.values()) > 1_000_000 else weights
         return {key: normalized.get(key, 0) for key in sources}
     except (OSError, ValueError, TypeError, KeyError, StopIteration):
@@ -298,20 +339,36 @@ def install_sources(app, api):
 
     @app.get("/api/arenas")
     def arenas():
-        items = []
+        """Every plane with its health, target weight and the evaluation fees it received.
+
+        Listeners observe the same chain, so one payment can sit in several databases, each at
+        that listener's fee; a payment counts once, under the first configured arena that owns it.
+        """
+        items, seen, total_rao = [], set(), 0
         for source in app.state.dashboard_sources.values():
             token = selected.set(source)
             try:
-                items.append({**source.public(), "health": api["health"]()})
+                fees = None
+                try:
+                    with closing(api["intake_conn"]()) as con:
+                        fees = [row for row in owned_fee_payments(con)
+                                if (row["block"], row["extrinsic_index"]) not in seen]
+                except sqlite3.Error:
+                    pass
+                items.append({**source.public(), "health": api["health"](), "fees": _fee_summary(fees)})
             finally:
                 selected.reset(token)
+            for row in fees or ():
+                seen.add((row["block"], row["extrinsic_index"]))
+                total_rao += int(row["amount_tao_rao"])
         blocks = [row["health"].get("intake_finalized", {}).get("block") for row in items]
         block = max((n for n in blocks if type(n) is int), default=None)
         producer = _producer_config(app.state.dashboard_weight_producer_config, app.state.dashboard_weight_producer_pidfile)
         targets = _arena_targets(producer, app.state.dashboard_sources, block)
         for row in items:
             row["target_weight_ppm"] = targets.get(row["key"])
-        return {"default": app.state.dashboard_default, "items": items}
+        return {"default": app.state.dashboard_default, "items": items,
+                "fees_count": len(seen), "fees_total_tao": total_rao / 1e9}
 
     @app.get("/api/arena-events")
     def arena_events():

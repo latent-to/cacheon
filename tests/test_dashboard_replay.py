@@ -2,52 +2,13 @@
 
 import json
 import sqlite3
-from dataclasses import replace
 from decimal import Decimal
 
 import pytest
 
 from cacheon.chain.baseline_band import qualification_speed_from_payload
-from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
-from cacheon.eval.qualification_runner import ResidentSpeedWitness, _resident_speed_projection_digest
-from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
-from cacheon.eval.service_capacity import LoadRead, ServiceContract
-from dashboard.winners import candidate_measurement, measured_baseline, result_summary
-from tests.test_dashboard_metrics import _dashboard_db, client  # noqa: F401
-from tests.test_service_capacity import _turn
-
-
-def _witness(load=2, gains=(1.02, 1.04), *, statistical=False):
-    contract = ServiceContract(.1, 5.0, .8)
-    policy = ResidentSpeedPolicy(600, .01, 2., .02, "a" * 64, "b" * 64, 16,
-                                goodput=GoodputPolicy(contract, 1.01, .001, .02, .0))
-    if statistical:
-        policy = replace(policy, version=17, min_margin=0,
-                         goodput=GoodputPolicy(contract, 1., .001, .02, 0., .01, .001))
-    expected = tuple((str(root), 3, 0) for root in sorted(range(load), key=str))
-    arms = []
-    for arm in ("incumbent", "candidate"):
-        windows = []
-        for window, (latency, gain) in enumerate(zip((4., 1.), gains), 1):
-            rows = []
-            for root, _, _ in expected:
-                for turn in range(3):
-                    row = _turn(root, "main", turn, start_s=100 * window + turn * 10,
-                                ttft_s=.1, out=4)
-                    seconds = 50. if turn == 0 else latency / (gain if arm == "candidate" else 1)
-                    rows.append(replace(row, request_end_ns=row.credit_issued_ns + int(seconds * 1e9)))
-            lane = ("candidate" if arm == "incumbent" else "incumbent") if statistical and window == 2 else arm
-            windows.append(LoadRead(arm, window, lane, load, tuple(rows)))
-        arms.append(tuple(windows))
-    reads = GoodputReadSet(*arms, expected)
-    excluded = {"resident_policy", "rates", "goodput", "started_monotonic_s",
-                "completed_monotonic_s", "evidence_digest"}
-    fields = {name: f"{index + 1:064x}" for index, name in enumerate(ResidentSpeedWitness.__dataclass_fields__)
-              if name not in excluded}
-    fields.update(resident_policy=policy, rates=(), goodput=reads, started_monotonic_s=1.,
-                  completed_monotonic_s=301., calibration_digest=policy.calibration_digest,
-                  calibration_context_digest=policy.calibration_context_digest)
-    return ResidentSpeedWitness(**fields, evidence_digest=_resident_speed_projection_digest(**fields))
+from dashboard.winners import result_summary
+from tests.test_dashboard_metrics import _dashboard_db, _witness, client  # noqa: F401
 
 
 @pytest.mark.parametrize("load,gains,decision", [(2, (1.02, 1.04), "PASS"), (24, (1., 1.), "FAIL")])
@@ -65,8 +26,6 @@ def test_replay_report_uses_fastest_pass_score_and_preserves_workload(load, gain
     assert speed["lanes"][0]["mean_warm_latency_s"] == 4.
     assert speed["lanes"][0]["attainment"] == pytest.approx(2 / 3)
     result = result_summary(speed)
-    assert candidate_measurement([speed]) == {"tokens_per_second": None}
-    assert measured_baseline([speed], {})["baseline_tokens_per_second"] is None
     assert (result["speedup"], result["required_speedup"]) == (speed["speedup"], speed["grading"]["required_speedup"])
     assert (result["passes"], result["pass_limit"], result["detail"]) == (2, speed["window_limit"], speed["grading"]["detail"])
     assert result["ttft_s"] == [pytest.approx(.1), pytest.approx(.1)]
@@ -121,9 +80,8 @@ def test_replay_measurements_reach_submission_and_winner_apis(tmp_path, client, 
         con.execute("INSERT INTO reservation_baseline_segments VALUES(?,?,?,?,?)", (
             "example", "arena", "stack", "tree", json.dumps({"entries": {target: {"artifact_digest": "incumbent"}}})))
     detail = client.get("/api/submissions/example").json()
-    assert detail["tokens_per_second"] is None
     assert detail["result"]["speedup"] == pytest.approx(1.04)
-    assert detail["baseline_measurements"] == {"baseline_tokens_per_second": None, "baseline_kind": "incumbent"}
+    assert detail["baseline"]["kind"] == "incumbent"
     listed = client.get("/api/submissions").json()["items"][0]
     assert listed["result"] == detail["result"]
     assert (listed["reward"]["relative_improvement_pct"], listed["reward"]["reward_eligible"]) == (pytest.approx(2.), True)
@@ -137,7 +95,6 @@ def test_replay_measurements_reach_submission_and_winner_apis(tmp_path, client, 
             "example", "crowned", "", json.dumps({"primary": primary})))
         con.execute("INSERT INTO settlement_events VALUES(?,?,?,?)", (1, "CROWN", "example", target))
     winner = client.get("/api/winners").json()["items"][0]
-    assert winner["tokens_per_second"] is None
     assert winner["result"] == detail["result"]
     assert winner["baseline_kind"] == "stock"
     assert winner["speedup"] == 1.03

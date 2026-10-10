@@ -72,9 +72,9 @@ with writable cache and result directories. Expose the full arena GPU topology.
 The [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
 provide two batches, 24 requests in all, that exercise prefill, decode and
 prefix reuse on its published B300 configuration.
-The [Qwen3.6-35B-A3B inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/qwen36)
-provide a short and a long-context set, the H100 image recipe and the
-`[competition]` lines for arena `qwen36-35b-h100-bf16-tp1`.
+The [DeepSeek-V4.1-Flash inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/dsv41flash)
+provide the same layout for its B300 TP2 configuration, including the engine
+environment the Engram host tables need.
 Use the input set for your arena; its model and topology must match. Then run:
 
 ```bash
@@ -85,7 +85,9 @@ python -m cacheon.cli check /bundles/my_bundle \
   --output /work/check-001
 ```
 
-`engine-config.json` is the published SGLang option object. The model path comes
+`engine-config.json` is the published SGLang option object. An `engine_env`
+object inside it sets process environment for the engine and its ranks before
+construction, as the sealed arena configuration does for the validator's. The model path comes
 from `--model`; a conflicting `model_path` fails. Each item in the requests file
 is a keyword-argument object for `Engine.generate`, for example:
 
@@ -158,8 +160,8 @@ def build(cache):
 Declare no `prepare`, dtypes, architectures or metadata. `verify` imports `build`
 and checks that it accepts the runtime cache. Run `check` with the GLM development
 inputs: their second batch reuses prefixes, so the cache audit sees enough
-completions on every rank. The Qwen development configuration disables radix
-caching, so a cache bundle cannot run there. The table has one `tree_cache` row
+completions on every rank. A cache bundle cannot run on an arena whose engine
+configuration disables radix caching. The table has one `tree_cache` row
 per rank; the cache runs outside CUDA graphs, so it needs no captured execution.
 The validator checks the bytes behind every prefix the cache serves; see
 [Slots and targets](slots.md#the-prefix-cache).

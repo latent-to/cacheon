@@ -90,7 +90,7 @@ The target catalog determines the transition:
 - the other entries stay byte-identical;
 - unregistered work fails resolution rather than being disguised as a target.
 
-The planner records both the old and new contribution references, the selected-delta digest, the exact target specification, and the expected execution order. See [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
+The planner records both the old and new contribution references, the selected-delta digest, and the exact target specification. See [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 
 ### Concrete substitution example
 
@@ -217,7 +217,7 @@ transition lacks authority.
 
 ## No release path
 
-There is no supported arrow from a mutable miner URL, chain record, evaluation bundle, or crown to serving. Integration into maintained source and any release are decisions made outside this repository; see [After a crown](../engine/integration.md).
+There is no supported arrow from a mutable miner URL, chain record, evaluation bundle, or crown to serving. Integration into maintained source and any release are decisions made outside this repository; see [Crown and ship are different decisions](product-model.md#crown-and-ship-are-different-decisions).
 
 ## Source map
 

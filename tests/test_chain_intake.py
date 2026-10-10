@@ -6,8 +6,6 @@ from dataclasses import replace
 
 import pytest
 
-import cacheon.cli as cli
-from cacheon import chain
 from cacheon.chain.intake import (
     FinalizedArrival, FinalizedIntakeStore, IntakeError, IntakePolicy,
     IntakeScope, SQLiteWeightPublicationJournal,
@@ -197,39 +195,6 @@ def _journal_projection():
         _h("evaluation"), _h("metagraph"), (_h("arena-state"),),
         1, 10, 1, (_h("evidence"),), (("miner", 1_000_000),),
     )
-
-
-def test_exact_manifest_compatibility_failure_can_return_to_fifo(tmp_path) -> None:
-    reason = (
-        "manifest:submission is not a registered component: "
-        "unsupported abi_version 'pre-cutover'"
-    )
-    with _store(tmp_path) as store:
-        row = _reserve_one(store)
-        store.mark_fetching(row.reservation_id)
-        terminal = store.mark_failed(row.reservation_id, reason)
-        assert terminal.status == "failed"
-
-        with pytest.raises(IntakeError, match="exact pre-publication"):
-            store.release_manifest_compatibility_failure(
-                row.reservation_id,
-                expected_reason_digest=_h("wrong reason"),
-            )
-
-        released = store.release_manifest_compatibility_failure(
-            row.reservation_id,
-            expected_reason_digest=sha256_hex(reason.encode()),
-        )
-        assert released.status == "reserved"
-        assert released.decision == ""
-        assert released.reason == "manifest_compatibility_released"
-        assert store.pending() == (released,)
-
-        with pytest.raises(IntakeError, match="exact pre-publication"):
-            store.release_manifest_compatibility_failure(
-                row.reservation_id,
-                expected_reason_digest=sha256_hex(reason.encode()),
-            )
 
 
 def _stack_context(
@@ -505,30 +470,6 @@ def test_admission_bounds_and_epoch_cutoff_are_durable(tmp_path):
         assert [row.status for row in result] == ["reserved", "failed", "reserved"]
 
 
-def test_unknown_older_and_overlapping_target_block_later_settlement(tmp_path):
-    with _store(tmp_path) as store:
-        first, second, third = _reserve(
-            store, (_arrival(0), _arrival(1, hotkey="b"), _arrival(2, hotkey="c"))
-        )
-        for row, target, members in (
-            (second, "target.a", ("slot.a",)),
-            (third, "target.b", ("slot.b",)),
-        ):
-            _publish(
-                store, row.reservation_id, _fingerprint(target, members[0]),
-                digest="d" * 64, root=f"/published/{target}",
-            )
-        assert store.settlement_blockers(second.reservation_id) == (first,)
-        assert store.settlement_blockers(third.reservation_id) == (first,)
-
-        _publish(
-            store, first.reservation_id, _fingerprint("target.a", "slot.a", "b"),
-            digest="e" * 64, root="/published/first",
-        )
-        assert store.settlement_blockers(second.reservation_id) == (store.get(first.reservation_id),)
-        assert store.settlement_blockers(third.reservation_id) == ()
-
-
 def test_copy_decision_uses_only_durable_delta_fingerprints(tmp_path):
     with _store(tmp_path) as store:
         first, second = _reserve(
@@ -636,192 +577,6 @@ def test_legacy_retained_primary_unknown_block_stays_manual(tmp_path):
         assert len(reopened.passed_reward_claims()) == 1
 
 
-def test_schema3_migration_hold_survives_all_generic_expiry_paths(tmp_path):
-    with _store(tmp_path, expiry_blocks=20) as store:
-        candidate = _qualified_settlement_candidate(store)
-        assert isinstance(candidate, SettlementCandidate)
-        # Reopen through the real v2 -> v3 migration path.
-        store._db.execute("UPDATE metadata SET value='2' WHERE key='schema'")
-
-    with _store(tmp_path, expiry_blocks=20) as reopened:
-        held = reopened.get(candidate.reservation_digest)
-        assert (held.status, held.decision, held.reason) == (
-            "held",
-            "NO_DECISION",
-            "schema3_reproduction_required",
-        )
-        assert reopened.expire_stale(current_block=100) == ()
-        assert reopened.get(candidate.reservation_digest) == held
-        with pytest.raises(IntakeError, match="archival migration"):
-            reopened.expire(
-                candidate.reservation_digest,
-                current_block=100,
-                reason="generic operator expiry",
-            )
-        with pytest.raises(IntakeError, match="archival migration"):
-            reopened.release_hold(
-                candidate.reservation_digest,
-                reason="generic operator release",
-            )
-
-
-def test_schema3_archival_is_terminal_preserves_evidence_and_releases_priority(
-    tmp_path,
-):
-    with _store(tmp_path, expiry_blocks=20) as store:
-        candidate = _qualified_settlement_candidate(store)
-        assert isinstance(candidate, SettlementCandidate)
-        store._db.execute("UPDATE metadata SET value='2' WHERE key='schema'")
-
-    with _store(tmp_path, expiry_blocks=20) as reopened:
-        legacy = reopened.get(candidate.reservation_digest)
-        candidate_before = dict(
-            reopened._db.execute(
-                "SELECT * FROM settlement_candidates WHERE reservation_id=?",
-                (candidate.reservation_digest,),
-            ).fetchone()
-        )
-        qualifications_before = tuple(
-            tuple(row)
-            for row in reopened._db.execute(
-                "SELECT * FROM settlement_qualifications WHERE reservation_id=? "
-                "ORDER BY reproduction_index",
-                (candidate.reservation_digest,),
-            )
-        )
-
-        later = _reserve_one(reopened, index=1, block=11)
-        _publish(
-            reopened,
-            later.reservation_id,
-            _fingerprint(
-                candidate.target_id, candidate.target_id, "b", selected_delta="6" * 64
-            ),
-            digest="e" * 64,
-            root="/published/later",
-        )
-        assert reopened.settlement_blockers(later.reservation_id) == (legacy,)
-
-        archived = reopened.archive_schema3_migration_hold(
-            candidate.reservation_digest,
-            current_finalized_block=11,
-            reason="operator verified legacy evidence remains audit-only",
-        )
-        assert (archived.status, archived.decision) == ("expired", "NO_DECISION")
-        assert archived.reason.startswith("schema3_archived@11:")
-        assert reopened.settlement_blockers(later.reservation_id) == ()
-
-        candidate_after = dict(
-            reopened._db.execute(
-                "SELECT * FROM settlement_candidates WHERE reservation_id=?",
-                (candidate.reservation_digest,),
-            ).fetchone()
-        )
-        assert candidate_after["status"] == "held"
-        assert candidate_after["reason"] == archived.reason
-        assert candidate_after["candidate_json"] == candidate_before["candidate_json"]
-        assert candidate_after["candidate_digest"] == candidate_before["candidate_digest"]
-        assert candidate_after["evidence_root"] == candidate_before["evidence_root"]
-        assert candidate_after["reproduction_evidence_root"] == candidate_before[
-            "reproduction_evidence_root"
-        ]
-        assert tuple(
-            tuple(row)
-            for row in reopened._db.execute(
-                "SELECT * FROM settlement_qualifications WHERE reservation_id=? "
-                "ORDER BY reproduction_index",
-                (candidate.reservation_digest,),
-            )
-        ) == qualifications_before
-        assert reopened.has_pending_settlement() is False
-        assert reopened.lease_settlement_cohort(current_block=11) is None
-        with pytest.raises(IntakeError, match="only held intake"):
-            reopened.release_hold(
-                candidate.reservation_digest,
-                reason="must not restore crown eligibility",
-            )
-        with pytest.raises(IntakeError, match="exact schema3"):
-            reopened.archive_schema3_migration_hold(
-                candidate.reservation_digest,
-                current_finalized_block=12,
-                reason="must not archive twice",
-            )
-
-
-def test_schema3_archival_rejects_ordinary_or_inconsistent_holds(tmp_path):
-    with _store(tmp_path) as store:
-        ordinary = _reserve_one(store)
-        ordinary = store.mark_held(ordinary.reservation_id, "ordinary operator hold")
-        with pytest.raises(IntakeError, match="exact schema3"):
-            store.archive_schema3_migration_hold(
-                ordinary.reservation_id,
-                current_finalized_block=10,
-                reason="must not archive an ordinary hold",
-            )
-        assert store.get(ordinary.reservation_id) == ordinary
-
-    other_root = tmp_path / "inconsistent"
-    with _store(other_root) as store:
-        candidate = _qualified_settlement_candidate(store)
-        assert isinstance(candidate, SettlementCandidate)
-        store._db.execute("UPDATE metadata SET value='2' WHERE key='schema'")
-    with _store(other_root) as reopened:
-        reopened._db.execute(
-            "UPDATE settlement_candidates SET status='pending' WHERE reservation_id=?",
-            (candidate.reservation_digest,),
-        )
-        held = reopened.get(candidate.reservation_digest)
-        with pytest.raises(IntakeError, match="settlement authority"):
-            reopened.archive_schema3_migration_hold(
-                candidate.reservation_digest,
-                current_finalized_block=10,
-                reason="must fail closed on inconsistent authority",
-            )
-        assert reopened.get(candidate.reservation_digest) == held
-
-
-def test_schema3_archival_cli_uses_finalized_public_scope_without_a_wallet(
-    tmp_path, monkeypatch, capsys
-):
-    with _store(tmp_path) as store:
-        candidate = _qualified_settlement_candidate(store)
-        assert isinstance(candidate, SettlementCandidate)
-        store._db.execute("UPDATE metadata SET value='2' WHERE key='schema'")
-
-    class Subtensor:
-        def get_block_hash(self, block):
-            assert block == 0
-            return SCOPE.genesis_hash
-
-    monkeypatch.setattr(chain, "connect", lambda network: Subtensor())
-    monkeypatch.setattr(
-        chain, "read_finalized_head", lambda _subtensor: (12, _bh(12))
-    )
-    args = cli.build_parser().parse_args(
-        [
-            "chain-archive-schema3-hold",
-            "--network",
-            "mock",
-            "--netuid",
-            str(SCOPE.netuid),
-            "--intake-db",
-            str(tmp_path / "private" / "intake.sqlite3"),
-            "--reservation-id",
-            candidate.reservation_digest,
-            "--reason",
-            "reviewed before testnet restart",
-        ]
-    )
-    assert args.func is cli.cmd_chain_archive_schema3_hold
-    result = args.func(args)
-    assert result == 0
-    assert "retained evidence remains non-crownable" in capsys.readouterr().out
-    with _store(tmp_path) as reopened:
-        archived = reopened.get(candidate.reservation_digest)
-        assert archived.status == "expired"
-        assert archived.reason.startswith("schema3_archived@12:")
-
-
 def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_path):
     with _store(tmp_path, max_cohort=2) as store:
         rows = _reserve(store, (_arrival(0), _arrival(1, hotkey="other")))
@@ -852,7 +607,7 @@ def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_pat
         assert [row.status for row in stored] == ["published", "published"]
         # The live cohort selector must isolate the first republished retry
         # group rather than merging both groups back into one failing cohort.
-        assert tuple(row.reservation_id for row in store.qualification_cohort()) == (
+        assert store.preview_evaluation_claim(stage="qualification", max_members=2) == (
             rows[0].reservation_id,
         )
         assert store.qualification_dispositions(rows[0].reservation_id)[0][
@@ -1063,23 +818,16 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
             ),
         )
         store._db.execute("DELETE FROM reservation_baseline_segments")
-        assert set(store.backfill_reservation_baseline_segments()) == {
-            *(row.reservation_id for row in old_rows),
-            new_row.reservation_id,
-        }
-        assert all(
-            store.reservation_baseline_segment(row.reservation_id) == old_stack
-            for row in old_rows
-        )
+        for row in old_rows:
+            store._bind_reservation_baseline_segment(row.reservation_id, old_stack, reason="old_backfill")
+        store._bind_reservation_baseline_segment(new_row.reservation_id, new_stack, reason="old_backfill")
+        assert store.reservation_baseline_segment(new_row.reservation_id) == new_stack
         assert commission_boundary(store, old_stack.manifest, tree_digest=old_stack.tree_digest) is None
         assert store.reservation_baseline_segment(new_row.reservation_id) == old_stack
         assert store.qualification_queue_baseline() == old_stack
         assert store.preview_evaluation_claim(
             stage="qualification", max_members=8
         ) == tuple(row.reservation_id for row in old_rows)
-        assert tuple(row.reservation_id for row in store.qualification_cohort()) == tuple(
-            row.reservation_id for row in old_rows
-        )
 
         store._db.executemany(
             "UPDATE reservations SET status='failed',decision='FAIL',reason='test' "

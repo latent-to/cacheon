@@ -1069,50 +1069,18 @@ class DeviceStateGuard:
             return False, "; ".join(violations)[:4096]
         return True, "loaded engine is quiescent in the pinned active configuration"
 
-    def _capture_verdict(
-        self,
-        telemetry: tuple[GPUTelemetry, ...],
-        processes: tuple[GPUProcess, ...],
-    ) -> tuple[bool, str]:
-        """Graph capture tolerates a retained engine, never foreign work.
-
-        Capture demanded the idle envelope, which no retained pair can satisfy:
-        the pair deliberately holds a process on every selected GPU.  So every
-        hand-off retired the pair, captured, and reloaded it -- paying a full
-        engine load per bundle to satisfy a precondition capture does not
-        actually need.  Capture writes no timed measurement; what would corrupt
-        it is another workload competing for the device, not the pinned engine
-        it is about to capture against.
-
-        Both safe states are accepted and nothing else.  With no processes this
-        is exactly the previous idle verdict, so a cold lane is unaffected --
-        important because ``_ready_envelope_verdict`` alone would reject a cold
-        start for having no process on every GPU.  With the pair resident it is
-        the same quiescence bar that already gates *timed* measurement after
-        release, and capture is strictly less sensitive than a timed run.
-        """
-
-        if not processes:
-            return self._idle_verdict(telemetry, processes)
-        return self._ready_envelope_verdict(telemetry, processes)
-
     def _drain(
         self,
         *,
         launch_id: str,
         phase: str,
         deadline: float | None,
-        envelope: str = "idle",
     ) -> DeviceStateReceipt:
         if not isinstance(launch_id, str) or _LABEL.fullmatch(launch_id) is None:
             raise DeviceStatePolicyError("launch_id must be a simple 1..128 character identifier")
         if phase not in {"pre", "post"}:
             raise DeviceStatePolicyError("device receipt phase must be 'pre' or 'post'")
-        if envelope not in {"idle", "capture"}:
-            raise DeviceStatePolicyError(
-                "device drain envelope must be 'idle' or 'capture'"
-            )
-        verdict = self._idle_verdict if envelope == "idle" else self._capture_verdict
+        verdict = self._idle_verdict
         started = self._now()
         if started < self._last_receipt_completed:
             raise DeviceStateClockError("device receipt order is not monotonic")
@@ -1182,7 +1150,7 @@ class DeviceStateGuard:
                 break
             self._sleep(min(float(self.policy.poll_interval_s), remaining))
         raise DeviceStateTimeoutError(
-            f"selected GPUs did not satisfy the {envelope} envelope before the "
+            "selected GPUs did not satisfy the idle envelope before the "
             f"bounded drain ended: {last_reason}"
         )
 
@@ -1199,32 +1167,6 @@ class DeviceStateGuard:
         """Drain and attest the exact selected GPUs after one launch."""
 
         return self._drain(launch_id=launch_id, phase="post", deadline=deadline)
-
-    def before_capture(
-        self, launch_id: str, *, deadline: float | None = None
-    ) -> DeviceStateReceipt:
-        """Attest the selected GPUs before a graph capture launch.
-
-        Accepts a cold lane or a quiescent retained engine; see
-        ``_capture_verdict``.  Never used to admit a timed measurement.
-        """
-
-        return self._drain(
-            launch_id=launch_id, phase="pre", deadline=deadline, envelope="capture"
-        )
-
-    def after_capture(
-        self, launch_id: str, *, deadline: float | None = None
-    ) -> DeviceStateReceipt:
-        """Attest the selected GPUs after a graph capture launch.
-
-        The retained engine is still loaded here by design, so the post drain
-        must accept it for the same reason the pre drain does.
-        """
-
-        return self._drain(
-            launch_id=launch_id, phase="post", deadline=deadline, envelope="capture"
-        )
 
     def condition_active(
         self,

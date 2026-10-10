@@ -1632,24 +1632,16 @@ def cmd_chain_miner_report(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_chain_validate(
-    args: argparse.Namespace, *, arena_registry=None
-) -> int:
+def cmd_chain_validate(args: argparse.Namespace) -> int:
     import logging
 
     from cacheon import chain
     from cacheon.chain.validator_loop import run_validator
 
-    from cacheon.arena_service import ArenaServiceRegistry
-
-    injected = arena_registry
-    if not args.intake_only and (
-        type(injected) is not ArenaServiceRegistry
-        or not getattr(args, "arena_id", None)
-    ):
+    if not args.intake_only:
         raise SystemExit(
-            "chain-validate requires --intake-only or a validator-injected "
-            "ArenaServiceRegistry plus --arena-id"
+            "chain-validate requires --intake-only; qualification and settlement "
+            "run in the standing supervisor"
         )
     subtensor = chain.connect(args.network, retry_forever=not args.once)
     # Daemon-mode observability: between passes the loop reports only through the
@@ -1693,9 +1685,6 @@ def cmd_chain_validate(
         private_root=args.private_root,
         publication_root=args.publication_root,
         eval_cost_policy=eval_cost_policy,
-        arena_registry=injected,
-        arena_id=None if args.intake_only else args.arena_id,
-        intake_only=args.intake_only,
         interval_s=args.interval,
         once=args.once,
         audit_log=args.audit_log,
@@ -1710,8 +1699,7 @@ def cmd_chain_validate(
         )
         for reservation, why in res.rejected.items():
             print(f"  rejected {reservation[:16]}… {why}")
-        if args.intake_only:
-            print("local qualification: disabled by --intake-only")
+        print("local qualification: disabled by --intake-only")
     return 0
 
 
@@ -1831,28 +1819,6 @@ def cmd_chain_backfill_lineage(args: argparse.Namespace) -> int:
             f"winner_speedup={lineage.winner_speedup} edges={len(lineage.nodes)}"
         )
     print(f"backfilled lineage tips for {len(lineages)} target(s)")
-    return 0
-
-
-def cmd_chain_archive_schema3_hold(args: argparse.Namespace) -> int:
-    """Archive one legacy schema-v3 hold without loading any signer authority."""
-
-    from cacheon import chain
-    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
-
-    subtensor = chain.connect(args.network)
-    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
-    finalized_block, _finalized_hash = chain.read_finalized_head(subtensor)
-    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
-        archived = store.archive_schema3_migration_hold(
-            args.reservation_id,
-            current_finalized_block=finalized_block,
-            reason=args.reason,
-        )
-    print(
-        f"archived schema3 migration hold {archived.reservation_id} "
-        f"at finalized block {finalized_block}; retained evidence remains non-crownable"
-    )
     return 0
 
 
@@ -2718,10 +2684,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--netuid", type=int, required=True)
     sp.add_argument("--network", required=True)
     sp.add_argument("--intake-only", action="store_true",
-                    help="explicitly disable local qualification, signing, and weights; "
-                         "settlement of already-retained PASS pairs still runs")
-    sp.add_argument("--arena-id", default=None,
-                    help="validator-owned registered arena selected from injected services")
+                    help="required: run finalized intake and publication only; "
+                         "qualification, settlement, signing, and weights belong to "
+                         "the standing supervisor and the control-plane signer")
     sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
     sp.add_argument("--private-root", default="chain_intake/private",
                     help="validator-private 0700/0600 fetch storage")
@@ -2798,20 +2763,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_archive_store_args(sp)
     sp.set_defaults(func=cmd_chain_snapshot_verify)
-
-    sp = sub.add_parser(
-        "chain-archive-schema3-hold",
-        help=(
-            "terminally archive one exact legacy schema-v3 reproduction hold; "
-            "preserves evidence and never signs, releases, or crowns"
-        ),
-    )
-    sp.add_argument("--netuid", type=int, required=True)
-    sp.add_argument("--network", required=True)
-    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
-    sp.add_argument("--reservation-id", required=True)
-    sp.add_argument("--reason", required=True, help="bounded operator audit reason")
-    sp.set_defaults(func=cmd_chain_archive_schema3_hold)
 
     sp = sub.add_parser(
         "chain-release-hold",

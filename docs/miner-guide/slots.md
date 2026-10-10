@@ -31,7 +31,14 @@ The GLM node arena is `glm53-b300-node-v1`, using GLM-5.3 NVFP4 with
 SGLang 0.5.20 on B300, TP4 and attention DP4. `forward_pass` and `prefix_cache`
 are both open, and its incumbent is the composed champion implementation. Use the
 [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
-with that model and topology; Qwen checks do not establish GLM coverage.
+with that model and topology; checks against another arena's inputs do not
+establish GLM coverage.
+
+The DeepSeek-V4.1-Flash node arena is `dsv41flash-b300-node-v1`, using SGLang
+0.5.21 on B300 at TP2 with expert parallelism 2 and the Engram host tables in
+pinned host memory. `forward_pass` and `prefix_cache` are both open. Use the
+[DeepSeek-V4.1-Flash development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/dsv41flash)
+with that model and topology; its README lists which node addresses execute.
 
 ## Arena availability
 
@@ -94,13 +101,13 @@ slot or host tier the bytes came through. Serving other bytes, keeping pages
 across a flush, moving a request's own slots, claiming more tokens than the key, or
 serving or protecting a length that is not whole pages stops the engine as the
 candidate's failure, as does a `match_prefix` result that is not SGLang's `MatchResult`.
-Validation covers full-attention, sliding-window, compressed and recurrent state. See
+Validation covers full-attention, sliding-window and compressed state. See
 [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
-The prefix cache is a target only on arenas that serve with prefix caching. The
-Qwen development configuration disables radix caching, and a cache bundle there
-stops with `this hybrid runtime disables prefix caching`; cache bundles apply to
-the GLM arena. The operator's announcement names each arena's open targets.
+The prefix cache is a target only on arenas that serve with prefix caching. On an
+arena whose engine configuration disables radix caching, a cache bundle stops with
+`this hybrid runtime disables prefix caching`. The operator's announcement names
+each arena's open targets.
 At the GLM arena's sealed load, the stock cache already reaches the prefix hit
 rate the workload allows, so a cache win comes from lower overhead or better
 behavior under memory pressure rather than more hits.

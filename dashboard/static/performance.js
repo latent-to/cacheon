@@ -1,9 +1,5 @@
 "use strict";
 
-// Batch-cell rows only (speed policies 8-15); a replay row reports resultLine and replayLine.
-const measuredValue = (tokensPerSecond) => tokensPerSecond != null
-  ? `<b>${metricNumber(tokensPerSecond)}</b> tok/s` : '<span class="muted">Unavailable</span>';
-
 // "A → B" for a baseline and a candidate reading, with the candidate's gain when one direction is better.
 const sideBySide = (base, cand, digits, better, unit = "") => `${metricNumber(base, digits)} → ${metricNumber(cand, digits)}${unit}${
   better && base && cand ? ` <span class="muted small">${metricGain(better === "more" ? cand / base : base / cand)}</span>` : ""}`;
@@ -72,11 +68,7 @@ function replayPerformance(speed, title) {
 
 const metricNumber = (value, digits = 1) => value != null && Number.isFinite(Number(value))
   ? Number(value).toLocaleString(undefined, {minimumFractionDigits: digits, maximumFractionDigits: digits}) : "—";
-const metricMilliseconds = (seconds) => metricNumber(seconds == null ? null : Number(seconds) * 1000, 2);
 const metricGain = (ratio) => `${Number(ratio) >= 1 ? "+" : ""}${metricNumber((Number(ratio) - 1) * 100, 2)}%`;
-const readLabel = (role) => ({B: "B · baseline before", C: "C · candidate", B_prime: "B′ · baseline after",
-  B_double_prime: "B″ · baseline after", B_prefill: "B · baseline before",
-  C_prefill: "C · candidate", B_prime_prefill: "B′ · baseline after"})[role] || role;
 
 function performanceMetrics(attempt) {
   const speed = attempt.speed;
@@ -85,41 +77,6 @@ function performanceMetrics(attempt) {
   if (speed?.grading_error && !speed.lanes.length)
     return `<section class="performance">${title}<p class="notice">Retained grading evidence could not be read: ${esc(speed.grading_error)}</p></section>`;
   if (["warm_turn_latency", "fixed_work_rate"].includes(speed?.metric)) return replayPerformance(speed, title);
-  if (!speed || !speed.lanes.length)
-    return `<section class="performance">${title}<p class="metric-note">Retained measurements are unavailable for this attempt.</p></section>`;
-  const output = speed.lanes.filter((lane) => lane.tokens_per_second != null);
-  const prefill = speed.lanes.filter((lane) => lane.prompts_per_second != null);
-  const rateRows = (lanes, field, digits) => lanes.map((lane) => `<tr>
-    <td>${esc(readLabel(lane.role))}</td><td class="mono">${metricNumber(lane[field], digits)}</td>
-    <td class="mono">${metricNumber(lane.timed_seconds, 3)}</td></tr>`);
-  const workloads = new Map();
-  for (const lane of output) for (const cell of lane.cells || []) {
-    const shape = [cell.input_tokens, cell.output_tokens, cell.concurrency].join(":");
-    if (!workloads.has(shape)) workloads.set(shape, {cell, rows: []});
-    workloads.get(shape).rows.push(`<tr><td>${esc(readLabel(lane.role))}</td>
-      <td class="mono">${metricMilliseconds(cell.mean_ttft_seconds)}</td>
-      <td class="mono">${metricMilliseconds(cell.mean_tpot_seconds)}</td>
-      <td class="mono">${metricNumber(cell.end_to_end_output_tokens_per_second)}</td>
-      <td>${metricNumber(cell.timed_batches, 0)}</td></tr>`);
-  }
-  const latencyTables = [...workloads.values()].map(({cell, rows}) => `
-    <p class="workload-label">${metricNumber(cell.input_tokens, 0)} input tokens · ${metricNumber(cell.output_tokens, 0)} output tokens · concurrency ${metricNumber(cell.concurrency, 0)}</p>
-    <div class="metrics-table">${table(["Read", "Mean TTFT (ms)", "Mean TPOT (ms)", "Output tok/s", "Batches"], rows)}</div>`).join("");
-  const promptGain = speed.prefill;
-  return `<section class="performance">${title}
-    <h4>Output throughput</h4>
-    <div class="metrics-table">${table(["Read", "Output tok/s", "Timed batches (s)"], rateRows(output, "tokens_per_second", 1))}</div>
-    <p class="metric-note">Output throughput includes prompt processing and generation across the measured workload.</p>
-    <h4>Prefill</h4>
-    ${promptGain ? `<div class="cards">
-      ${card(metricGain(promptGain.speedup), "Measured prompt-throughput gain")}
-      ${card(promptGain.min_margin != null ? metricNumber(Number(promptGain.min_margin) * 100, 2) + "%" : "Not recorded", "Required prefill margin")}
-    </div><p class="metric-note">Compared with the faster baseline read. Qualification also checks decode performance and correctness.</p>` : ""}
-    <div class="metrics-table">${table(["Read", "Prompts/s", "Timed batches (s)"], rateRows(prefill, "prompts_per_second", 3), "Prefill was not measured separately in this evaluation.")}</div>
-    ${prefill.length ? '<p class="metric-note">Each prompt pass generates one output token. Prompts/s counts completed requests; batch times include every timed prompt batch.</p>' : ""}
-    <h4>TTFT / TPOT by workload</h4>
-    ${latencyTables ? `${latencyTables}
-      <p class="metric-note">TTFT is time to the first delivered token. TPOT is delivery time per subsequent output token. Input length, output length and concurrency are kept separate.</p>`
-      : '<div class="empty">Not measured in this evaluation. First-token and subsequent-token delivery timings were not recorded.</div>'}
-  </section>`;
+  // A retained batch-cell attempt (speed policies 8-15) renders no rates: its lane ratio was never the credited gain.
+  return `<section class="performance">${title}<p class="metric-note">Retained measurements are unavailable for this attempt.</p></section>`;
 }

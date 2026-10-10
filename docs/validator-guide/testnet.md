@@ -164,9 +164,9 @@ Do not perform these drills against the only copy of standing production evidenc
 
 ## Full qualification is a deployment integration
 
-The console entry point cannot construct a production `ArenaServiceRegistry`. Full
-validation requires reviewed Python deployment code to inject a registry/provider and
-select the arena. See [Arena service](arena-service.md) and
+The console entry point runs intake only. Full validation runs in the standing
+supervisor, which reviewed deployment code configures with a sealed `ArenaService`
+provider. See [Arena service](arena-service.md) and
 [Qualification](qualification.md).
 
 `chain-validate` accepts only its documented intake and arena controls. External evaluator
@@ -272,7 +272,7 @@ Passing only the first two bullets proves intake, not a launch-ready validator.
 | Reveal not visible | Timelock, finality, endpoint/netuid, hotkey registration |
 | Fetch rejected | DNS/global routing, TLS certificate, redirect chain, archive limits, committed hash |
 | Reservation held | Store reason, retry count, controller restart, queue/arena capacity |
-| No qualification | `--intake-only`, or missing injected registry/provider |
+| No qualification | The standing supervisor is not running, or its sealed provider is missing |
 | Weight projection refused | No genuine crown, incomplete/stale family, metagraph change, held publication journal |
 | Burn projection refused | A claim/crown/V2 activation exists, or burn hotkey is absent from the exact metagraph |
 | Database ownership error | Another validator pass or signer owns the exclusive store; coordinate, never remove the lock |

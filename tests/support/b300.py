@@ -11,12 +11,34 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import os
+import time
+from pathlib import Path
 
-from cacheon.arena_service import ArenaRuntimeIdentity
+from cacheon.arena_service import (
+    ArenaCapacityPolicy,
+    ArenaRuntimeIdentity,
+    ArenaServiceManifest,
+    Workload,
+    WorkloadCell,
+)
+from cacheon.eval.b300_arena_provider import (
+    B300DeploymentAuthorities,
+    B300QualificationLanePair,
+    B300QualificationLanePolicy,
+    b300_arena_provider_digest,
+)
 from cacheon.eval.b300_qualification_commission import B300QualificationCapabilities
-from cacheon.eval.device_state import GPUConfiguration
-from cacheon.eval.oci_backend import OCIRuntimeResourcePolicy
-from cacheon.eval.oci_prebuild import OCIPrebuildPolicy
+from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
+from cacheon.eval.oci_backend import (
+    OCIBackendConfig,
+    OCIEngineExecutor,
+    OCIRuntimeResourcePolicy,
+)
+from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
+from cacheon.eval.qualification_intake import (
+    QualificationAuthorityManifest,
+    QualificationPlanFactory,
+)
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 
 
@@ -162,3 +184,120 @@ def gpu(index: int = 0, model: str = "b300") -> GPUConfiguration:
         max_graphics_clock_mhz=2_500,
         max_memory_clock_mhz=5_000,
     )
+
+
+def executors(tmp_path: Path):
+    """Yield a builder of one executor per (role, physical lane), then close them all.
+
+    Wrap it in a pytest fixture: ``yield from executors(tmp_path)``.
+    """
+
+    built: list[OCIEngineExecutor] = []
+    sequence = 0
+
+    def create(role: str, lane: str = "A") -> OCIEngineExecutor:
+        nonlocal sequence
+        sequence += 1
+        normalized_role = "candidate" if role == "candidate" else "resident_baseline"
+        if lane not in {"A", "B"}:
+            raise AssertionError("fixture lane must be A or B")
+        first_gpu = 0 if lane == "A" else 4
+        runtime = runtime_policy()
+        root = tmp_path / f"executor-{sequence}-{role}"
+        executor = OCIEngineExecutor(
+            OCIBackendConfig(
+                OCIPrebuildConfig(
+                    docker_binary="/usr/bin/docker",
+                    recovery_root=root / "recovery",
+                    publication_root=root / "publications",
+                    seccomp_profile=root / "seccomp.json",
+                    executor_id=f"qualification-{normalized_role}",
+                    policy=prebuild_policy(runtime),
+                ),
+                runtime,
+            ),
+            DeviceStatePolicy(
+                expected_gpus=tuple(gpu(index) for index in range(first_gpu, first_gpu + 4)),
+                required_consecutive_idle_samples=2,
+                poll_interval_s=0.05,
+                ready_poll_interval_s=0.05,
+                drain_timeout_s=2.0,
+                maximum_samples=8,
+            ),
+        )
+        built.append(executor)
+        return executor
+
+    yield create
+    for executor in built:
+        executor.manager.close()
+
+
+class FactoryBuilder:
+    """Records every qualification request; ``fail`` raises like a lost authority store."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[tuple[object, object | None]] = []
+
+    def __call__(self, request, state):
+        self.calls.append((request, state))
+        if self.fail:
+            raise OSError("private authority store unavailable")
+        reservations = tuple(row.reservation for row in request.candidates)
+        manifest = QualificationAuthorityManifest(
+            "registered",
+            sha("qualification-authority"),
+            sha("qualification-source"),
+            sha("selection-commitment"),
+            sha("selection-secret-reference"),
+            tuple(row.selected_delta_digest for row in reservations),
+            reservations,
+        )
+        return QualificationPlanFactory(
+            manifest, lambda _reference: b"s" * 32, lambda _secret: None
+        )
+
+
+def deployment_authorities(executor_factory, *, builder: FactoryBuilder | None = None):
+    """A full primary-orientation deployment: candidate on lane A, resident baseline on B."""
+
+    factory_builder = builder or FactoryBuilder()
+    candidate_executor = executor_factory("candidate", "A")
+    baseline_executor = executor_factory("resident_baseline", "B")
+    lane_pair = B300QualificationLanePair(
+        B300QualificationLanePolicy.from_device_policy("A", candidate_executor.device_policy),
+        B300QualificationLanePolicy.from_device_policy("B", baseline_executor.device_policy),
+    )
+    authorities = B300DeploymentAuthorities(
+        runtime_identity=arena_runtime(),
+        qualification_policy_digest=sha("qualification-policy"),
+        qualification_builder_digest=sha("qualification-builder"),
+        qualification_factory_builder=factory_builder,
+        executor=candidate_executor,
+        resident_baseline_executor=baseline_executor,
+        entropy_provider_digest=sha("entropy-provider"),
+        entropy_provider=lambda *_args: None,
+        hidden_judge=StubHiddenJudge(),
+        deadline_policy_digest=sha("deadline-policy"),
+        deadline_provider=lambda _request, _state: time.monotonic() + 600.0,
+        qualification_lane_pair=lane_pair,
+        qualification_stage="primary",
+    )
+    return authorities, factory_builder
+
+
+def arena_manifest(authorities: B300DeploymentAuthorities, **changes) -> ArenaServiceManifest:
+    values = {
+        "runtime": authorities.runtime_identity,
+        "workload": Workload(
+            sha("prompt-corpus"),
+            "sealed-prompt-seeds-v1",
+            (WorkloadCell("s8", 8192, 1024, 64, 8),),
+        ),
+        "capacity": ArenaCapacityPolicy(32, 100, 8, 4),
+        "qualification_policy_digest": authorities.qualification_policy_digest,
+        "provider_digest": b300_arena_provider_digest(authorities),
+    }
+    values.update(changes)
+    return ArenaServiceManifest(**values)

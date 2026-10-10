@@ -6,9 +6,6 @@ from pathlib import Path
 import pytest
 
 import cacheon.chain.validator_loop as loop
-from cacheon.arena_service import (
-    AdmissionDecision, ArenaQualificationWork, ArenaService, ArenaServiceRegistry,
-)
 from cacheon.bundle_hash import content_hash
 from cacheon.chain import FinalizedRevealSnapshot, RevealedCommitment
 from cacheon.chain.eval_cost import (
@@ -22,12 +19,6 @@ from cacheon.chain.eval_cost import (
 )
 from cacheon.chain.intake import FinalizedIntakeStore, IntakePolicy, IntakeScope
 from cacheon.chain.payload import encode_payload
-from cacheon.eval.evidence_store import EvidenceArtifactRef
-from cacheon.eval.qualification import QualificationDecision
-from cacheon.eval.qualification_intake import (
-    QualificationAuthorityManifest, QualificationIntakeBatch,
-    QualificationIntakeOutcome, QualificationPlanFactory,
-)
 
 
 BLOCK = 90
@@ -83,8 +74,6 @@ def _run(
     monkeypatch,
     snapshot,
     sources,
-    *,
-    head_provider=None,
     **changes,
 ):
     monkeypatch.setattr(
@@ -92,9 +81,7 @@ def _run(
         "read_finalized_reveal_history",
         lambda *_, **__: snapshot,
     )
-    provider = head_provider or (
-        lambda: (snapshot.finalized_block, snapshot.finalized_block_hash)
-    )
+    provider = lambda: (snapshot.finalized_block, snapshot.finalized_block_hash)  # noqa: E731
     monkeypatch.setattr(
         loop.chain,
         "read_finalized_head",
@@ -112,7 +99,6 @@ def _run(
         intake_db=tmp_path / "state" / "intake.sqlite3",
         private_root=tmp_path / "private-cache",
         publication_root=tmp_path / "worker",
-        intake_only=True,
     )
     options.update(changes)
     return loop.run_pass(_NoWeightsSubtensor(), 307, **options), calls, options
@@ -490,149 +476,6 @@ def test_reformatted_later_delta_is_copy_without_any_weight_edge(tmp_path, monke
         assert rows[1].reason.startswith("copy_of:")
 
 
-def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
-    tmp_path, monkeypatch
-):
-    source = _bundle(
-        tmp_path / "source",
-        _NODE_BODY,
-    )
-    digest = content_hash(source)
-    snapshot = _snapshot([("miner", encode_payload(digest, "https://example.com/a"))])
-
-    calls = []
-    progress_events = []
-    cohort_limits = []
-    retained_blocks = []
-    resident_baseline_executor = object()
-    service = object.__new__(ArenaService)
-    service.manifest = type(
-        "Manifest",
-        (),
-        {
-            "digest": "e" * 64,
-            "qualification_policy_digest": "f" * 64,
-            "capacity": type("Capacity", (), {"max_cohort_size": 1})(),
-            "closed_targets": (),
-        },
-    )()
-    registry = object.__new__(ArenaServiceRegistry)
-    monkeypatch.setattr(ArenaServiceRegistry, "require", lambda *_: service)
-    monkeypatch.setattr(
-        ArenaService, "admit_qualification", lambda *_args, **_kwargs: AdmissionDecision.ADMIT
-    )
-
-    def plan(_self, candidates, state=None):
-        assert [row.attempt for row in candidates] == [1]
-        reservations = tuple(row.reservation for row in candidates)
-        authority = QualificationAuthorityManifest(
-            "registered", "a" * 64, "b" * 64, "c" * 64, "d" * 64,
-            tuple(row.selected_delta_digest for row in reservations), reservations,
-        )
-        factory = QualificationPlanFactory(
-            authority, lambda _ref: b"s" * 32, lambda _secret: None
-        )
-        return ArenaQualificationWork(
-            factory,
-            object(),
-            lambda *_: None,
-            lambda **_: None,
-            30.0,
-            _self.manifest.qualification_policy_digest,
-            resident_baseline_executor,
-        )
-
-    monkeypatch.setattr(ArenaService, "plan_qualification", plan)
-    # The focused test uses a deliberately non-building plan and a mocked runner.
-    monkeypatch.setattr(loop, "QualificationAuthorityManifest", type("NotManifest", (), {}))
-
-    def qualify(factory, **_kwargs):
-        assert (
-            _kwargs["resident_baseline_executor"] is resident_baseline_executor
-        )
-        progress_events.append("qualification_complete")
-        calls.append(factory.manifest.digest)
-        authority = factory.manifest.reservations[0]
-        outcome = QualificationIntakeOutcome(
-            authority.reservation_digest,
-            authority.selected_delta_digest,
-            factory.manifest.digest,
-            QualificationDecision.FAIL,
-            "rejected",
-            False,
-            attempt_artifact_sha256="b" * 64,
-            report_digest="c" * 64,
-        )
-        ref = EvidenceArtifactRef(
-            "qualification.cohort-attempt", "b" * 64, 1,
-            "application/json", "cacheon.qualification.cohort-attempt.v1",
-        )
-        return QualificationIntakeBatch(factory.manifest.digest, (outcome,), ref)
-
-    monkeypatch.setattr(loop, "run_qualification_intake", qualify)
-    original_apply = FinalizedIntakeStore.apply_qualification_batch
-
-    def apply_with_progress(self, batch, **kwargs):
-        progress_events.append("apply")
-        retained_blocks.append(kwargs["current_finalized_block"])
-        return original_apply(self, batch, **kwargs)
-
-    monkeypatch.setattr(
-        FinalizedIntakeStore,
-        "apply_qualification_batch",
-        apply_with_progress,
-    )
-    original_cohort = FinalizedIntakeStore.qualification_cohort
-
-    def cohort_with_limit(self, *, limit=None):
-        cohort_limits.append(limit)
-        return original_cohort(self, limit=limit)
-
-    monkeypatch.setattr(FinalizedIntakeStore, "qualification_cohort", cohort_with_limit)
-
-    def refreshed_head():
-        progress_events.append("finalized_head")
-        return BLOCK + 100, "0x" + "a" * 64
-
-    result, _fetches, options = _run(
-        tmp_path,
-        monkeypatch,
-        snapshot,
-        {digest: source},
-        head_provider=refreshed_head,
-        intake_only=False,
-        arena_registry=registry,
-        arena_id="test-arena",
-    )
-    assert len(calls) == 1 and len(calls[0]) == 64
-    assert cohort_limits == [1]
-    assert progress_events == ["qualification_complete", "finalized_head", "apply"]
-    assert retained_blocks == [BLOCK + 100]
-    assert set(result.decisions.values()) == {"FAIL"}
-    with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
-        row = store.all()[0]
-        assert row.status == "failed" and row.decision == "FAIL"
-        assert row.arena_service_digest == service.identity
-        assert store.qualification_dispositions(row.reservation_id)[0]["decision"] == "FAIL"
-
-
-def test_once_mode_propagates_validator_fault(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        loop,
-        "run_pass",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("finality failed")),
-    )
-    with pytest.raises(RuntimeError, match="finality failed"):
-        loop.run_validator(
-            _NoWeightsSubtensor(),
-            307,
-            intake_db=tmp_path / "state.sqlite3",
-            private_root=tmp_path / "private",
-            publication_root=tmp_path / "worker",
-            once=True,
-        )
-
-
 def _colliding_store(monkeypatch, collisions):
     """Install a store factory that reports a peer's lock hold ``collisions`` times."""
 
@@ -691,22 +534,6 @@ def test_intake_pass_does_not_retry_other_store_errors(monkeypatch, tmp_path):
         loop._open_store(tmp_path / "i.sqlite3", None, None, sleep=naps.append)
 
     assert attempts == [1] and naps == []
-
-
-def test_intake_only_pass_never_moves_the_incumbent(tmp_path, monkeypatch):
-    calls = []
-
-    def recorder(store, *, current_block, finalized_block_provider):
-        calls.append(current_block)
-        return {"lease-digest": "plan-digest"}
-
-    monkeypatch.setattr(loop, "_settle_pending", recorder)
-    snapshot = _snapshot([])
-    result, _fetches, _options = _run(
-        tmp_path, monkeypatch, snapshot, {}, intake_only=True
-    )
-    assert calls == []
-    assert result.settlements == {}
 
 
 def test_settlement_refreshes_stale_pass_height_before_leasing():
@@ -783,38 +610,18 @@ def test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes(
         ("miner-fused", encode_payload(fused_digest, "https://example.com/b")),
     ])
 
-    service = object.__new__(ArenaService)
-    service.manifest = type(
-        "Manifest",
-        (),
-        {
-            "digest": "e" * 64,
-            "qualification_policy_digest": "f" * 64,
-            "capacity": type("Capacity", (), {"max_cohort_size": 1})(),
-            "closed_targets": ("forward_pass", "attention.sdpa"),
-        },
-    )()
-    registry = object.__new__(ArenaServiceRegistry)
-    monkeypatch.setattr(ArenaServiceRegistry, "require", lambda *_: service)
-    monkeypatch.setattr(
-        ArenaService, "admit_qualification", lambda *_args, **_kwargs: AdmissionDecision.QUEUE
-    )
-
     result, _calls, options = _run(
-        tmp_path,
-        monkeypatch,
-        snapshot,
-        {closed_digest: closed, fused_digest: fused},
-        intake_only=False,
-        arena_registry=registry,
-        arena_id="test-arena",
+        tmp_path, monkeypatch, snapshot, {closed_digest: closed, fused_digest: fused}
     )
+    assert result.rejected == {} and len(result.published) == 2
 
-    assert list(result.rejected.values()) == [
-        "target_unavailable:forward_pass"
-    ]
-    assert len(result.published) == 1
+    # Intake publishes both; the supervisor's admission pass parks by name.
     with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
+        by_hotkey = {row.arrival.hotkey: row for row in store.all()}
+        assert store.prepare_qualification_queue(
+            service_digest="e" * 64,
+            closed_targets=("forward_pass", "attention.sdpa"),
+        ) == ((by_hotkey["miner-closed"].reservation_id, "target_unavailable:forward_pass"),)
         by_hotkey = {row.arrival.hotkey: row for row in store.all()}
         parked = by_hotkey["miner-closed"]
         assert parked.status == "expired"

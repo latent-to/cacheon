@@ -332,9 +332,11 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     ):
         _digest(value.get(field), f"sealed qualification {field}")
     policy = value.get("policy")
+    # The one optional policy key lists validator-registered audit control deltas.
     if (
         type(policy) is not dict
-        or set(policy) != _COMMISSION_POLICY_FIELDS
+        or set(policy) - {"audit_control_delta_digests"} != _COMMISSION_POLICY_FIELDS
+        or type(policy.get("audit_control_delta_digests", [])) is not list
         or not isinstance(policy.get("nll_tail_threshold"), str)
         or type(policy.get("hidden_tasks_required")) is not bool
     ):

@@ -24,7 +24,7 @@ def test_published_quote_and_payment_defaults_agree(capsys) -> None:
 
 def test_chain_validate_refuses_implicit_fake_grading(monkeypatch):
     args = argparse.Namespace(intake_only=False)
-    with pytest.raises(SystemExit, match="requires --intake-only or"):
+    with pytest.raises(SystemExit, match="requires --intake-only"):
         cli.cmd_chain_validate(args)
 
 
@@ -43,7 +43,7 @@ def test_chain_validate_intake_path_has_no_wallet_or_weight_arguments():
         for option in action.option_strings
     }
     assert "--intake-only" in options
-    assert "--arena-id" in options
+    assert "--arena-id" not in options
     assert "--audit-log" in options
     assert not {
         "--eval-cmd", "--eval-device", "--eval-timeout", "--margin",
