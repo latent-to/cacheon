@@ -155,6 +155,7 @@ nav:
       - MiniMax-M3 case study: results/minimax-m3.md
       - Qwen H100 node slots: results/qwen-h100-node-slots.md
       - Prefix-cache slot: results/prefix-cache.md
+      - DeepSeek-V4.1-Flash B300 arena: results/deepseek-v41-flash-b300.md
       - GPU setup: dev/gpu-setup.md
       - Development environment: dev/environment.md
       - SGLang compatibility: dev/sglang-tracking.md
