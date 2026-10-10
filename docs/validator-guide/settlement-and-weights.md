@@ -68,8 +68,8 @@ settlement work does not make these extra finalized-height reads.
 
 Lease expiry is not arena retirement. Intake reservations have explicit `release_hold`
 and minimum-age `expire` transitions. Eligible unresolved rows also expire automatically
-against the finalized arrival/progress-block SLA; active in-flight work and the dedicated
-schema-3 migration hold are excluded. This row-level expiry is not a generic wall-clock
+against the finalized arrival/progress-block SLA; active in-flight work is excluded.
+This row-level expiry is not a generic wall-clock
 TTL or a typed transition that retires an entire arena. Before a valid explicit or
 automatic disposition, held state can block later overlapping work; deleting rows is not
 a recovery mechanism.

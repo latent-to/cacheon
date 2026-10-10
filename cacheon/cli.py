@@ -1834,28 +1834,6 @@ def cmd_chain_backfill_lineage(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_chain_archive_schema3_hold(args: argparse.Namespace) -> int:
-    """Archive one legacy schema-v3 hold without loading any signer authority."""
-
-    from cacheon import chain
-    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
-
-    subtensor = chain.connect(args.network)
-    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
-    finalized_block, _finalized_hash = chain.read_finalized_head(subtensor)
-    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
-        archived = store.archive_schema3_migration_hold(
-            args.reservation_id,
-            current_finalized_block=finalized_block,
-            reason=args.reason,
-        )
-    print(
-        f"archived schema3 migration hold {archived.reservation_id} "
-        f"at finalized block {finalized_block}; retained evidence remains non-crownable"
-    )
-    return 0
-
-
 def cmd_chain_evaluation_lease(args: argparse.Namespace) -> int:
     """Run one sealed evaluation-lease store operation."""
 
@@ -2798,20 +2776,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_archive_store_args(sp)
     sp.set_defaults(func=cmd_chain_snapshot_verify)
-
-    sp = sub.add_parser(
-        "chain-archive-schema3-hold",
-        help=(
-            "terminally archive one exact legacy schema-v3 reproduction hold; "
-            "preserves evidence and never signs, releases, or crowns"
-        ),
-    )
-    sp.add_argument("--netuid", type=int, required=True)
-    sp.add_argument("--network", required=True)
-    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
-    sp.add_argument("--reservation-id", required=True)
-    sp.add_argument("--reason", required=True, help="bounded operator audit reason")
-    sp.set_defaults(func=cmd_chain_archive_schema3_hold)
 
     sp = sub.add_parser(
         "chain-release-hold",

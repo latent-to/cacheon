@@ -232,8 +232,7 @@ Retention clocks are type-specific. Settlement lease expiry can recycle a lease,
 discovery claim may have a policy lifetime. Eligible unresolved intake rows expire
 automatically against finalized arrival/progress-block authority after the configured
 SLA; wall-clock age is not the authority. Active `fetching` and `qualifying` work
-is excluded, and the dedicated schema-3 migration hold requires its
-explicit archive path. An operator may also call the typed `expire` transition after the
+is excluded. An operator may also call the typed `expire` transition after the
 configured minimum age or release a held reservation with an audited reason. None of
 these row-level transitions is a typed retirement of an entire arena. Backup or cleanup
 procedures must preserve authoritative rows and evidence until a valid transition is

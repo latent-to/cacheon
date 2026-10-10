@@ -59,8 +59,6 @@ _VALIDATOR_DOWNTIME_REQUEUE_REASON = "validator_downtime_requeued"
 # One refresh of the SLA anchor after a prior validator-downtime requeue
 # re-expired (operator/SLA mismatch).  A third attempt still fails closed.
 _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON = "validator_downtime_requeued_refresh"
-_SCHEMA3_MIGRATION_HOLD_REASON = "schema3_reproduction_required"
-_SCHEMA3_ARCHIVE_REASON_PREFIX = "schema3_archived@"
 
 # These domain separators are durable protocol identifiers, not product-facing
 # package names. They were already committed to SQLite state before the
@@ -712,24 +710,12 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         ).fetchone()
         if schema is None:
             self._db.execute("INSERT INTO metadata(key,value) VALUES('schema','3')")
-        elif schema["value"] in {"1", "2"}:
-            # v1/v2 allowed one PASS to become settlement-pending.  Preserve all
-            # rows for audit but fail them closed until a fresh two-PASS service
-            # qualification is run under this schema.
-            self._db.execute(
-                "UPDATE settlement_candidates SET status='held',lease_id='',"
-                "lease_expires_block=0,reason='schema3_reproduction_required'"
-            )
-            self._db.execute(
-                "UPDATE reservations SET status='held',decision='NO_DECISION',"
-                "reason='schema3_reproduction_required' WHERE reservation_id IN "
-                "(SELECT reservation_id FROM settlement_candidates)"
-            )
-            self._db.execute("UPDATE metadata SET value='3' WHERE key='schema'")
         elif schema["value"] not in {"3", "4", "5", "6"}:
             # Databases opened by controllers before 2026-09-05 carry the stamps
             # 4 and 5 (and their retired V2 tables); every value here stays
-            # accepted so those databases keep opening unchanged.
+            # accepted so those databases keep opening unchanged.  The stamp-1/2
+            # single-PASS migration left with its last live database (2026-07-13);
+            # an older stamp now fails here instead of being rewritten.
             raise IntakeError("intake database schema is unsupported")
     def _bind_scope(self) -> None:
         encoded = json.dumps(self.scope.to_dict(), separators=(",", ":"), sort_keys=True)
@@ -2567,8 +2553,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         progress block, so independent reproduction gets a full bounded window
         without regaining a permanent priority veto.  Legacy retained evidence with
         an unknown (zero) progress block remains fail-closed for explicit operator
-        disposition.  Schema-v3 migration holds require their dedicated migration
-        path instead.
+        disposition.
         """
 
         threshold = current_block - self.policy.expiry_blocks
@@ -2594,7 +2579,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             raise IntakeError("retained qualification block is not finalized")
         placeholders = ",".join("?" for _ in _AUTOMATICALLY_EXPIRABLE)
         predicate = (
-            f"r.status IN ({placeholders}) AND r.reason!=? AND NOT EXISTS ("
+            f"r.status IN ({placeholders}) AND NOT EXISTS ("
             "SELECT 1 FROM evaluation_lease_members AS em WHERE "
             "em.reservation_id=r.reservation_id AND em.active=1) AND ("
             "(COALESCE((SELECT s.reset_block FROM reservation_sla_resets AS s "
@@ -2613,7 +2598,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash",
                 (
                     *_AUTOMATICALLY_EXPIRABLE,
-                    _SCHEMA3_MIGRATION_HOLD_REASON,
                     threshold,
                     threshold,
                 ),
@@ -2626,7 +2610,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 (
                     _AUTOMATIC_EXPIRY_REASON,
                     *_AUTOMATICALLY_EXPIRABLE,
-                    _SCHEMA3_MIGRATION_HOLD_REASON,
                     threshold,
                     threshold,
                 ),
@@ -2648,10 +2631,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         retained_block=0 — are terminalized only through this typed path."""
 
         row = self.get(reservation_id)
-        if row.reason == _SCHEMA3_MIGRATION_HOLD_REASON:
-            raise IntakeError(
-                "legacy single-PASS settlement requires explicit archival migration"
-            )
         if not isinstance(reason, str) or not reason:
             raise IntakeError("explicit expiry requires an operator reason")
         if type(current_block) is not int or current_block - row.arrival.block < self.policy.expiry_blocks:
@@ -2664,98 +2643,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             reason,
         )
 
-    def archive_schema3_migration_hold(
-        self,
-        reservation_id: str,
-        *,
-        current_finalized_block: int,
-        reason: str,
-    ) -> IntakeReservation:
-        """Terminally archive one exact schema-v3 migration hold.
-
-        This is deliberately narrower than generic expiry/release.  It preserves
-        the retained candidate and qualification rows, cannot make them pending or
-        crownable, and only removes the reservation's permanent queue/priority veto
-        after an operator supplies a bounded audit reason at a finalized height.
-        """
-
-        if (
-            type(current_finalized_block) is not int
-            or current_finalized_block < 0
-            or not isinstance(reason, str)
-            or not reason
-            or reason.strip() != reason
-            or any(ord(char) < 32 or ord(char) == 127 for char in reason)
-        ):
-            raise IntakeError("schema3 archival authority is malformed")
-        archive_reason = (
-            f"{_SCHEMA3_ARCHIVE_REASON_PREFIX}{current_finalized_block}:{reason}"
-        )
-        if len(archive_reason) > 2_048:
-            raise IntakeError("schema3 archival reason is oversized")
-
-        with self._transaction():
-            row = self.get(reservation_id)
-            if (
-                row.status != "held"
-                or row.reason != _SCHEMA3_MIGRATION_HOLD_REASON
-                or current_finalized_block < row.arrival.block
-            ):
-                raise IntakeError(
-                    "only an exact schema3 reproduction migration hold may be archived"
-                )
-            candidate_row = self._db.execute(
-                "SELECT * FROM settlement_candidates WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()
-            if candidate_row is None:
-                raise IntakeError("schema3 migration hold lacks retained settlement authority")
-            # Legacy candidate bytes may predate the current two-PASS parser.
-            # Preserve them verbatim rather than pretending to regrade them; this
-            # transition only removes priority and can never make them crownable.
-            if (
-                not candidate_row["candidate_json"]
-                or require_sha256_hex(
-                    candidate_row["candidate_digest"], field="candidate_digest"
-                )
-                != candidate_row["candidate_digest"]
-                or candidate_row["status"] != "held"
-                or candidate_row["reason"] != _SCHEMA3_MIGRATION_HOLD_REASON
-                or candidate_row["lease_id"]
-                or candidate_row["lease_expires_block"] != 0
-                or candidate_row["settlement_evidence_digest"]
-                or self._db.execute(
-                    "SELECT 1 FROM settlement_events WHERE reservation_id=? LIMIT 1",
-                    (reservation_id,),
-                ).fetchone()
-                is not None
-            ):
-                raise IntakeError(
-                    "schema3 migration hold has settlement authority that cannot be archived"
-                )
-            reservation_update = self._db.execute(
-                "UPDATE reservations SET status='expired',decision='NO_DECISION',"
-                "reason=? WHERE reservation_id=? AND status='held' AND reason=?",
-                (
-                    archive_reason,
-                    reservation_id,
-                    _SCHEMA3_MIGRATION_HOLD_REASON,
-                ),
-            )
-            candidate_update = self._db.execute(
-                "UPDATE settlement_candidates SET reason=? WHERE reservation_id=? "
-                "AND status='held' AND reason=? AND lease_id='' "
-                "AND lease_expires_block=0 AND settlement_evidence_digest=''",
-                (
-                    archive_reason,
-                    reservation_id,
-                    _SCHEMA3_MIGRATION_HOLD_REASON,
-                ),
-            )
-            if reservation_update.rowcount != 1 or candidate_update.rowcount != 1:
-                raise IntakeError("schema3 migration hold changed during archival")
-        return self.get(reservation_id)
-
     def release_hold(self, reservation_id: str, *, reason: str) -> IntakeReservation:
         if not reason:
             raise IntakeError("hold release requires an operator reason")
@@ -2763,10 +2650,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             row = self.get(reservation_id)
             if row.status not in {"held", "no_decision"}:
                 raise IntakeError("only held intake may be released")
-            if row.reason == _SCHEMA3_MIGRATION_HOLD_REASON:
-                raise IntakeError(
-                    "legacy single-PASS settlement requires explicit archival migration"
-                )
             reproductions = self._db.execute(
                 "SELECT COUNT(*) AS n FROM settlement_qualifications "
                 "WHERE reservation_id=?",

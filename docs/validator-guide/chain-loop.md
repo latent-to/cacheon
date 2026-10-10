@@ -560,8 +560,8 @@ Eligible `reserved`, `transport_retry`, `published`,
 arrival or retained-progress block reaches the bound. In-flight `fetching` and
 `qualifying` rows are not aged out underneath active work. A first retained PASS
 records a fresh finalized progress block and starts a full bounded reproduction window
-from that block. Legacy retained evidence with an unknown progress block, including the
-dedicated schema-3 migration hold, remains fail closed for explicit operator disposition.
+from that block. Legacy retained evidence with an unknown progress block remains fail
+closed for explicit operator disposition.
 This prevents slow reproduction from losing its complete SLA while preventing one old
 PASS from becoming a permanent priority veto.
 
@@ -641,25 +641,6 @@ the reviewed release/requeue API appropriate to the deployment. The store's
 publication and reproduction evidence; it does not erase prior attempts.
 [`cacheon chain-release-hold`](../reference/cli.md#chain-release-hold) wraps it and
 requires a stated `--reason`.
-
-### Archive an exact schema-3 migration hold
-
-One legacy database shape can retain a single-PASS schema-3 candidate that cannot satisfy
-the current audited-qualification parser. It has a dedicated terminal operation:
-
-```bash
-cacheon chain-archive-schema3-hold \
-  --netuid <NETUID> \
-  --network <NETWORK_OR_WSS_URL> \
-  --intake-db chain_intake/intake.sqlite3 \
-  --reservation-id <RESERVATION_ID> \
-  --reason "reviewed migration reason"
-```
-
-The command constructs no wallet. It accepts only the exact migration hold, records the
-current finalized height and bounded operator reason, preserves candidate and
-qualification bytes, removes the permanent queue veto, and can never release or crown
-the evidence. Generic expiry and hold release are not substitutes.
 
 ## Incident playbook
 
