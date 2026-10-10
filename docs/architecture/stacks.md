@@ -217,7 +217,7 @@ transition lacks authority.
 
 ## No release path
 
-There is no supported arrow from a mutable miner URL, chain record, evaluation bundle, or crown to serving. Integration into maintained source and any release are decisions made outside this repository; see [After a crown](../engine/integration.md).
+There is no supported arrow from a mutable miner URL, chain record, evaluation bundle, or crown to serving. Integration into maintained source and any release are decisions made outside this repository; see [Crown and ship are different decisions](product-model.md#crown-and-ship-are-different-decisions).
 
 ## Source map
 

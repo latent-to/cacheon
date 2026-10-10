@@ -12,7 +12,7 @@ are maintainer decisions outside this repository.
 [Build a kernel](miner-guide/overview.md){ .md-button .md-button--primary }
 [How miners earn rewards](miner-guide/incentives.md){ .md-button }
 [Operate the referee](validator-guide/overview.md){ .md-button }
-[Understand the architecture](architecture/overview.md){ .md-button }
+[Understand the architecture](architecture/product-model.md){ .md-button }
 </div>
 </div>
 
@@ -33,9 +33,9 @@ subnet control plane from the hostile-code referee, giving readers three
 cooperating surfaces with different trust boundaries.
 
 <div class="cacheon-grid" markdown>
-<a class="cacheon-card" href="engine/integration/">
+<a class="cacheon-card" href="engine/model-provision/">
 <strong>Cacheon Engine</strong>
-<span>What a crown does and does not authorize, and how model bytes are provisioned.</span>
+<span>The chain-independent product: how the model bytes an engine serves are sealed and provisioned. A crown never ships by itself.</span>
 </a>
 <a class="cacheon-card" href="architecture/pipeline/">
 <strong>The referee</strong>
@@ -49,46 +49,23 @@ cooperating surfaces with different trust boundaries.
 
 ## One idea, four objects
 
-The system keeps two objects deliberately separate, and keeps both away from serving:
-
-```mermaid
-flowchart LR
-  P["Proposal<br/>hostile input"] --> Q["Crown<br/>measured contribution"]
-  Q -. "never automatic" .-> R["Integration, release, serving<br/>outside this repository"]
-```
-
-A miner submits a **proposal** for one registered target delta. The referee may
-establish a **crown** after one complete audited passing qualification. Whether crowned
-source is ever integrated into maintained code is a maintainer decision outside this
-repository. Work that does not fit
-a registered target is not a valid proposal; widening the catalog is a reviewed
-validator-side change.
+A miner submits a **proposal** for one registered target delta; the referee may
+establish a **crown** after one complete audited passing qualification. Integration into
+maintained source and release are separate authorities outside this repository, so a
+crown is never permission to run miner source in production. Work that does not fit a
+registered target is not a valid proposal.
 
 [Learn the product model →](architecture/product-model.md)
 
 ## Why the architecture is composable
 
-Every candidate runs as a complete isolated engine, but it is rewarded only for the
-smallest validator-controlled delta it contributes. Authoritative qualification uses:
-
-- **B** — the exact incumbent evaluation stack, which also generates the
-  quality gate's stock-drift controls after a speed PASS;
-- **C** — the same stack with one registered target replaced;
-- **A** — a separate eager, untimed sampled-audit role when registered; and
-- **T** — a candidate-free pristine reference that grades sealed trajectories after
-  candidate destruction.
-
-Every candidate is measured by the paired replay (speed policy 17): separate
-incumbent and candidate engines replay the same sealed agent workload
-concurrently on two isolated lanes over paired windows, then swap lanes and boot
-fresh, so a stable lane factor cancels out of the score. The last sealed window
-yields PASS or FAIL. Earlier batch-cell results are retained as stored and not
-regraded. There is no separate screen.
-
-This separates the **execution unit** (a complete disposable engine) from the
-**economic unit** (one registered target). A new optimization can
-build on previous wins without repackaging or
-copying them.
+Every candidate runs as a complete isolated engine but is rewarded only for the smallest
+validator-controlled delta it contributes: the incumbent evaluation stack and the same
+stack with one registered target replaced replay the same sealed agent workload
+concurrently on two isolated lanes, swap lanes and boot fresh, and a candidate-free
+pristine reference grades the sealed trajectories afterwards. The execution unit is a
+disposable engine; the economic unit is one registered target, so a new optimization
+builds on previous wins without copying them.
 
 [Follow a proposal through the system →](architecture/pipeline.md)
 
@@ -99,7 +76,6 @@ copying them.
 | Write a Triton, CuTeDSL, or Python kernel, or a prefix cache | [Miner guide](miner-guide/overview.md) |
 | Validate the repository locally without a GPU | [Local quickstart](get-started/quickstart.md) |
 | Deploy intake, an arena provider, and qualification workers | [Validator guide](validator-guide/overview.md) |
-| See what a crown does and does not authorize | [After a crown](engine/integration.md) |
 | Audit trust boundaries and failure behavior | [Security model](security/threat-model.md) |
 
 ## Evidence is scoped, not blended

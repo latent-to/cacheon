@@ -10,26 +10,9 @@ dependency of Cacheon Engine.
 
 ## A useful mental model
 
-Think of Cacheon as a compiler contest whose winning patches must pass through a product
-release process:
-
-```text
-miner source       validator competition                 product work
-------------       ---------------------                 ------------
-proposal      ->   immutable candidate -> crown     ->   reviewed integration
-                         |                  |                    |
-                         | measurement      | economic record    | signed release
-                         v                  v                    v
-                    retained evidence   emissions policy    Cacheon Engine
-```
-
-The arrows are deliberately not automatic. A validator can prove that one exact source
-delta is faster without deciding that the source is maintainable or safe to ship. A
-maintainer can integrate the useful idea while preserving the crowned selected-payload
-bytes and still wait for a later release. A serving operator can verify and run that
-release without consulting the chain.
-
-This separation answers three questions that otherwise get mixed together:
+Cacheon is a compiler contest whose winning patches must still pass through a product
+release process. That separation answers three questions that otherwise get mixed
+together:
 
 - **Who arrived first?** Finalized chain ordering and durable intake answer this.
 - **What was actually faster and faithful?** Validator-owned qualification evidence
@@ -67,12 +50,11 @@ serving release.
 
 ## The two objects
 
-| Object | Trust level | What it establishes |
-|---|---|---|
-| **Proposal** | Hostile input | A miner asks the validator to evaluate one target-scoped delta. |
-| **Crown** | Retained measurement evidence | One complete audited qualification shows that the delta improved one registered arena and target. |
-
-Integration into maintained source, release, and serving are separate authorities outside this repository.
+A **proposal** is hostile input: a miner asks the validator to evaluate one target-scoped
+delta. A **crown** is retained measurement evidence that one complete audited
+qualification improved one registered arena and target. Integration into maintained
+source, release, and serving are separate authorities outside this repository; the
+[product model](../architecture/product-model.md) is the normative statement of each.
 
 No transition is implicit. In particular, a crown is not permission to run miner source
 in production.
@@ -137,16 +119,10 @@ arena calls cannot contribute measurable speedup.
 
 ## One stack and a reference
 
-`EvaluationStackManifest`
-: The referee's incumbent. It may refer to crowned but unintegrated hostile proposals and
-  is executed only inside isolation.
-
-`ReferenceManifest`
-: A pristine validator-owned semantic reference. It contains no proposal and never
-  competes for speed.
-
-This separation prevents the fastest current proposal from becoming its own correctness
-oracle and prevents chain state from leaking into deployment.
+The referee's `EvaluationStackManifest` may carry crowned but unintegrated hostile
+proposals and runs only inside isolation; the pristine `ReferenceManifest` contains no
+proposal and never competes for speed, so the fastest current proposal is never its own
+correctness oracle. See [Stacks and manifests](../architecture/stacks.md).
 
 ## Authority levels
 
@@ -171,5 +147,5 @@ policies, evidence, and audited qualification bound to the production path.
 
 - [See why miners participate and how rewards work](../miner-guide/incentives.md)
 - [Run the CPU quickstart](quickstart.md)
-- [Understand the architecture](../architecture/overview.md)
+- [Understand the product model](../architecture/product-model.md)
 - [Choose a registered target](../miner-guide/slots.md)

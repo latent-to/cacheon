@@ -303,7 +303,7 @@ See the [emissions policy](../reference/emissions-policy.md).
 
 ## 11. Integration
 
-A settled crown changes the evaluation stack and nothing else. Integration into maintained source, release, and serving are separate authorities that this repository does not implement; see [After a crown](../engine/integration.md).
+A settled crown changes the evaluation stack and nothing else. Integration into maintained source, release, and serving are separate authorities that this repository does not implement; see [Crown and ship are different decisions](product-model.md#crown-and-ship-are-different-decisions).
 
 ## Operational handoff checklist
 

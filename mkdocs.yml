@@ -105,7 +105,6 @@ nav:
       - What Cacheon is: get-started/concepts.md
       - Local quickstart: get-started/quickstart.md
   - Architecture:
-      - System overview: architecture/overview.md
       - Product model: architecture/product-model.md
       - Evaluation pipeline: architecture/pipeline.md
       - Target and slot contract: architecture/slot-contract.md
@@ -136,7 +135,6 @@ nav:
       - Verification and diagnostics: validator-guide/running-evals.md
       - Testnet: validator-guide/testnet.md
   - Cacheon Engine:
-      - After a crown: engine/integration.md
       - Model provisioning: engine/model-provision.md
   - Security:
       - Threat model: security/threat-model.md

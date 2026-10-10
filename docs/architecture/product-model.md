@@ -108,14 +108,7 @@ economic transition describes only B's registered delta.
 
 ## One stack and a trusted reference
 
-The product model is reflected directly in manifest types:
-
-| Manifest | May contain hostile proposal code? | Arena-bound? | Used for timing? | Used for serving? |
-|---|---:|---:|---:|---:|
-| `EvaluationStackManifest` | Yes | Yes | Yes | No |
-| `ReferenceManifest` | No; validator-owned | Quality profile-bound | No | No |
-
-The evaluation stack is an economic hill-climb state; the reference manifest is semantic authority. A crown can transactionally update the first and never touches the second. See [Stacks and manifests](stacks.md).
+`EvaluationStackManifest` is the arena-bound economic hill-climb state and may contain hostile proposal code; `ReferenceManifest` is validator-owned semantic authority that is never timed. A crown can transactionally update the first and never touches the second, and neither is used for serving. See [Stacks and manifests](stacks.md).
 
 ## Registered targets
 
@@ -207,6 +200,6 @@ confuses the execution unit with the reward unit.
 ## Source map
 
 - This page — normative product invariants
-- [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — proposal, integration, evaluation-stack, and release-stack identities
+- [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — contribution references and the evaluation-stack identity
 - [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — reward-unit policy
-- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic proposal and integrated-source materialization
+- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic proposal materialization

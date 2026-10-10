@@ -20,11 +20,10 @@ runtime, and settlement and incentive machinery.
 
 | Goal | Documentation |
 |---|---|
-| Understand the system | [Concepts](docs/get-started/concepts.md) and [architecture overview](docs/architecture/overview.md) |
+| Understand the system | [Concepts](docs/get-started/concepts.md) and the [product model](docs/architecture/product-model.md) |
 | Understand why miners participate and how rewards work | [How miners earn rewards](docs/miner-guide/incentives.md) |
 | Build a miner contribution | [Miner guide](docs/miner-guide/overview.md) |
 | Operate a validator | [Validator guide](docs/validator-guide/overview.md) |
-| See what a crown does and does not authorize | [After a crown](docs/engine/integration.md) |
 | Review trust boundaries | [Security model](docs/security/threat-model.md) |
 | Contribute to the repository | [Contributing](CONTRIBUTING.md) |
 
