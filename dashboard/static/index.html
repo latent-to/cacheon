@@ -288,7 +288,7 @@ function recoveryLink(recovery) {
 
 async function api(path) {
   const url = new URL(path, location.origin);
-  if (arena && !["/api/weights", "/api/arenas", "/api/arena-events", "/api/bundle-encryption-key"].includes(url.pathname))
+  if (arena && !["/api/weights", "/api/arenas", "/api/arena-events", "/api/revenue", "/api/bundle-encryption-key"].includes(url.pathname))
     url.searchParams.set("arena", arena);
   const res = await fetch(url);
   if (!res.ok) throw new Error(path + " → " + res.status);
@@ -324,8 +324,12 @@ async function updateMeta() {
 
 /* ---------------- views ---------------- */
 async function viewOverview() {
-  const [o, q] = await Promise.all([api("/api/overview"), api("/api/queue")]);
+  const [o, q, rev] = await Promise.all([api("/api/overview"), api("/api/queue"), api("/api/revenue")]);
   const t = o.totals;
+  const feeCards = rev.items.map((a) => card(a.payments_tao.toFixed(1) + " τ",
+    `${esc(a.label || "this database")}: ${a.payments_count} fee payments` +
+    (a.by_fee.length ? " (" + a.by_fee.map((f) => `${f.count} at ${f.fee_tao} τ`).join(", ") + ")" : "")));
+  const mine = rev.items.find((a) => a.key === arena) || rev.items[0] || { payments_tao: 0, payments_count: 0 };
   const days = o.submissions_per_day || [];
   const max = Math.max(1, ...days.map((d) => d.count));
   const shown = days.slice(-45);
@@ -351,8 +355,14 @@ async function viewOverview() {
       ${card(t.expired, "expired")}
       ${card(t.unique_hotkeys, "unique hotkeys")}
       ${card(t.active_leases, "active eval leases", t.active_leases ? "info" : "")}
-      ${card(t.payments_tao.toFixed(0) + " τ", t.payments_count + " eval-fee payments", "info")}
+      ${card(mine.payments_tao.toFixed(1) + " τ", mine.payments_count + " eval-fee payments (this arena)", "info")}
     </div>
+    <h2>Evaluation fees received, all arenas</h2>
+    <div class="cards">
+      ${card(rev.total_tao.toFixed(1) + " τ", rev.payments_count + " fee payments ever, every arena", "info")}
+      ${feeCards.join("")}
+    </div>
+    ${rev.unavailable_sources.length ? `<div class="callout">Fee totals exclude unavailable arenas: ${esc(rev.unavailable_sources.join(", "))}</div>` : ""}
     ${lease ? `<div class="callout" style="border-left-color:var(--ok)">
       <b style="color:var(--fg)">Evaluation lease active:</b>
       ${pill(lease.stage)} <code>${esc(short(lease.reservation_id, 12))}</code>

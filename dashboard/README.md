@@ -24,7 +24,7 @@ to run the dashboard and its API tests.
 
 | Tab | Content |
 |-----|---------|
-| Overview | Status counts, submissions/day sparkline, failure reasons, currently running eval |
+| Overview | Status counts, evaluation fees received by this arena and by every arena, submissions/day sparkline, failure reasons, currently running eval |
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
 | Submissions | All reservations: status, hotkey, submit time/block, fee tx, decisions, full detail drawer (qualification attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (0.5 τ minimum): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
@@ -91,8 +91,9 @@ separate from finalized `items` / `pass_total`. Waiting rows have
 
 `/api/overview`, `/api/queue`, `/api/submissions` (filters: `status`,
 `hotkey`, `q`, `active`, `limit`, `offset`, `order`),
-`/api/submissions/{id}`, `/api/payments`, `/api/winners`, `/api/miners`,
-`/api/events`, `/api/weights`, `/api/hotkey/{ss58}`, `/api/health`.
+`/api/submissions/{id}`, `/api/payments`, `/api/revenue`, `/api/winners`,
+`/api/miners`, `/api/events`, `/api/weights`, `/api/hotkey/{ss58}`,
+`/api/health`.
 
 Submission list and detail responses expose `evaluation_recovery` when an
 operator has linked a payment rejection to a corrected submission. The existing
@@ -340,6 +341,14 @@ this scope without changing the intake database. `/api/arenas` reports each
 source's health independently. `/api/arena-events` combines events by retained
 block, using source and local sequence only for ties, and names unavailable
 sources. The Timeline offers an all-arena toggle.
+
+Every listener records the fee payments it observed at its own configured fee,
+so a database's payment table is shared chain observation rather than the
+arena's income. `/api/overview` and `/api/payments` count only the payments
+consumed by the selected arena's reservations. `/api/revenue` is global: it
+reports each arena's fee payments grouped by amount, the total received across
+every arena, and unavailable sources. An on-chain payment is counted once, under
+the first configured arena that owns it. The Overview shows these totals.
 
 Process health matches command arguments plus a configured source path, rather
 than global module substrings. The configured `heartbeat` path is the CPU relay's

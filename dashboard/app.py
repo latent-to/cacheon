@@ -399,7 +399,6 @@ def overview() -> dict[str, Any]:
     """, (cutoff,))}
     claims = {r["status"]: r["n"] for r in rows(
         con, "SELECT status, count(*) AS n FROM standing_reward_claims GROUP BY status")}
-    payments = rows(con, "SELECT payment_block, amount_tao_rao FROM eval_cost_payments")
     hotkey_count = con.execute(
         "SELECT count(DISTINCT hotkey) FROM reservations WHERE block >= ?",
         (cutoff,)).fetchone()[0]
@@ -428,8 +427,6 @@ def overview() -> dict[str, Any]:
             "expired": counts.get("expired", 0),
             "unique_hotkeys": hotkey_count,
             "active_leases": active_leases,
-            "payments_count": len(payments),
-            "payments_tao": sum(int(p["amount_tao_rao"]) for p in payments) / 1e9,
             "crowned": settlement.get("crowned", 0),
             "settlement_held": settlement.get("held", 0),
             "claims": claims,
@@ -651,7 +648,7 @@ def payments() -> dict[str, Any]:
                r.block AS reservation_block,
                r.eval_cost_payment_block AS applied_block
         FROM eval_cost_payments p
-        LEFT JOIN reservations r ON r.reservation_id = p.reservation_id
+        JOIN reservations r ON r.reservation_id = p.reservation_id
         ORDER BY p.payment_block DESC
     """)
     credits = rows(con, """

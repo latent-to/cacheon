@@ -1,5 +1,6 @@
 """Request-scoped dashboard sources; presentation never changes reward authority."""
 
+from contextlib import closing
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
@@ -211,6 +212,19 @@ def scope_reservations(connection):
     return connection
 
 
+def owned_fee_payments(connection):
+    """Fee payments consumed by the selected arena's reservations, one row per on-chain transfer.
+
+    Every listener records the arrivals it observed at its own configured fee, so a
+    database's payment table is shared chain observation, not the arena's income: on
+    2026-10-11 the GLM page summed 165 τ and the DeepSeek page 158.5 τ from the same rows.
+    """
+    return [dict(row) for row in connection.execute("""
+        SELECT p.payment_block AS block, p.payment_extrinsic_index AS extrinsic_index, p.amount_tao_rao
+        FROM eval_cost_payments p JOIN reservations r ON r.reservation_id = p.reservation_id
+        ORDER BY p.payment_block, p.payment_extrinsic_index""")]
+
+
 def qualify_response(payload, source):
     """Keep source-qualified links through detail, recovery and delayed downloads."""
     if isinstance(payload, list):
@@ -330,10 +344,45 @@ def install_sources(app, api):
         items.sort(key=lambda row: ((row.get("when") or {}).get("block", 0), row["source"], row["sequence"]), reverse=True)
         return {"items": items[:200], "unavailable_sources": unavailable}
 
+    @app.get("/api/revenue")
+    def revenue():
+        """Evaluation fees received per arena and in total, each on-chain payment counted once.
+
+        Listeners observe the same chain, so one payment can sit in several databases, each
+        at that listener's fee; the owning arena's row is read first and the rest are skipped.
+        """
+        seen, items, unavailable = set(), [], []
+        for source in list(app.state.dashboard_sources.values()) or [None]:
+            token = selected.set(source)
+            try:
+                with closing(api["intake_conn"]()) as con:
+                    fees = owned_fee_payments(con)
+            except sqlite3.Error:
+                unavailable.append(source.key if source else "default")
+                continue
+            finally:
+                selected.reset(token)
+            by_fee, total_rao = {}, 0
+            for row in fees:
+                ref = (row["block"], row["extrinsic_index"])
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                total_rao += int(row["amount_tao_rao"])
+                by_fee[int(row["amount_tao_rao"])] = by_fee.get(int(row["amount_tao_rao"]), 0) + 1
+            public = source.public() if source else {"key": "default", "slug": "", "label": "", "model": ""}
+            items.append({**public, "payments_count": sum(by_fee.values()), "payments_rao": total_rao,
+                          "payments_tao": total_rao / 1e9,
+                          "by_fee": [{"fee_tao": fee / 1e9, "count": n} for fee, n in sorted(by_fee.items(), reverse=True)]})
+        total_rao = sum(item.pop("payments_rao") for item in items)
+        return {"items": items, "payments_count": sum(item["payments_count"] for item in items),
+                "total_tao": total_rao / 1e9, "unavailable_sources": unavailable}
+
     @app.middleware("http")
     async def source_request(request, call_next):
         sources = app.state.dashboard_sources
-        global_route = request.url.path in {"/api/weights", "/api/arenas", "/api/arena-events", "/api/bundle-encryption-key"}
+        global_route = request.url.path in {"/api/weights", "/api/arenas", "/api/arena-events", "/api/revenue",
+                                            "/api/bundle-encryption-key"}
         page_source = next((s for s in sources.values() if request.url.path == "/" + s.public()["slug"]), None)
         page = request.url.path == "/" or page_source is not None
         if not (request.url.path.startswith("/api/") or page) or global_route:
