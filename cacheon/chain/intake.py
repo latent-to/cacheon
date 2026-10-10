@@ -1750,15 +1750,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
 
         bind_unbound_queue_to_stack(self, state, reason=reason)
 
-    def backfill_reservation_baseline_segments(self) -> tuple[str, ...]:
-        """Bind pre-upgrade queue rows to the stack active when they arrived."""
-
-        from cacheon.chain.baseline_segments import (
-            backfill_reservation_baseline_segments,
-        )
-
-        return backfill_reservation_baseline_segments(self)
-
     def initialize_evaluation_stack(
         self,
         manifest: EvaluationStackManifest,

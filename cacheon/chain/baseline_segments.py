@@ -162,109 +162,6 @@ def bind_unbound_queue_to_stack(
         )
 
 
-def backfill_reservation_baseline_segments(
-    store: "FinalizedIntakeStore",
-) -> tuple[str, ...]:
-    """Bind pre-upgrade queue rows to the stack active when they arrived.
-
-    Each CROWN snapshots every reservation already present. The first
-    target-lineage transition containing a reservation therefore identifies
-    the exact incumbent segment that must drain it. Rows arriving after the
-    latest transition bind to the current durable stack.
-    """
-
-    from cacheon.settlement import SettlementCandidate
-
-    bound: list[str] = []
-    active_marks = ",".join("?" for _ in _ACTIVE)
-    with store._transaction():
-        pending = tuple(
-            store._db.execute(
-                "SELECT r.reservation_id,r.target_id,r.arena_service_digest "
-                "FROM reservations AS r WHERE "
-                f"r.status IN ({active_marks}) AND r.competition_arena=? AND NOT EXISTS (SELECT 1 FROM "
-                "reservation_baseline_segments AS b WHERE "
-                "b.reservation_id=r.reservation_id) "
-                "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,"
-                "r.content_hash",
-                (*_ACTIVE, store._competition_arena),
-            )
-        )
-        for reservation in pending:
-            transition = store._db.execute(
-                "SELECT n.arena_id,se.sequence,se.reservation_id AS winner_id "
-                "FROM target_lineage_pretransition_reservations AS p "
-                "JOIN target_lineage_nodes AS n "
-                "ON n.transition_event_id=p.transition_event_id "
-                "JOIN settlement_events AS se "
-                "ON se.event_id=n.transition_event_id "
-                "WHERE p.reservation_id=? "
-                "ORDER BY se.sequence LIMIT 1",
-                (reservation["reservation_id"],),
-            ).fetchone()
-            if transition is None:
-                state = store._unambiguous_evaluation_stack(
-                    reservation["arena_service_digest"]
-                )
-                reason = "backfill_current_stack"
-            else:
-                candidate_row = store._db.execute(
-                    "SELECT * FROM settlement_candidates WHERE reservation_id=?",
-                    (transition["winner_id"],),
-                ).fetchone()
-                if candidate_row is None:
-                    raise IntakeError(
-                        "baseline segment backfill lost its crown candidate"
-                    )
-                candidate = store._settlement_candidate(candidate_row)
-                if (
-                    type(candidate) is not SettlementCandidate
-                    or candidate.arena_digest != transition["arena_id"]
-                ):
-                    raise IntakeError(
-                        "baseline segment backfill candidate is malformed"
-                    )
-                previous = store._db.execute(
-                    "SELECT event_id FROM settlement_events WHERE arena_id=? "
-                    "AND event_type='STACK_TRANSITION' AND sequence<? "
-                    "ORDER BY sequence DESC LIMIT 1",
-                    (transition["arena_id"], transition["sequence"]),
-                ).fetchone()
-                generation = store._db.execute(
-                    "SELECT COUNT(*) AS n FROM settlement_events "
-                    "WHERE arena_id=? AND event_type='STACK_TRANSITION' "
-                    "AND sequence<?",
-                    (transition["arena_id"], transition["sequence"]),
-                ).fetchone()["n"]
-                event_id = (
-                    previous["event_id"]
-                    if previous is not None
-                    else canonical_digest(
-                        _EVALUATION_STACK_GENESIS_DOMAIN,
-                        {
-                            "arena_digest": candidate.arena_digest,
-                            "stack_digest": candidate.incumbent_manifest.digest,
-                            "tree_digest": candidate.incumbent_tree_digest,
-                        },
-                    )
-                )
-                state = EvaluationStackState(
-                    candidate.arena_digest,
-                    generation,
-                    candidate.incumbent_manifest,
-                    candidate.incumbent_tree_digest,
-                    event_id,
-                )
-                reason = "backfill_pretransition_stack"
-            if state is None:
-                continue
-            bind_reservation_baseline_segment(
-                store, reservation["reservation_id"], state, reason=reason
-            )
-            bound.append(reservation["reservation_id"])
-    return tuple(bound)
-
-
 def reservation_baseline_segment(
     store: "FinalizedIntakeStore", reservation_id: str
 ) -> EvaluationStackState | None:
@@ -369,7 +266,6 @@ def commission_boundary(
 
 
 __all__ = [
-    "backfill_reservation_baseline_segments",
     "bind_reservation_baseline_segment",
     "bind_unbound_queue_to_stack",
     "commission_boundary",

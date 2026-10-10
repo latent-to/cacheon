@@ -1063,14 +1063,10 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
             ),
         )
         store._db.execute("DELETE FROM reservation_baseline_segments")
-        assert set(store.backfill_reservation_baseline_segments()) == {
-            *(row.reservation_id for row in old_rows),
-            new_row.reservation_id,
-        }
-        assert all(
-            store.reservation_baseline_segment(row.reservation_id) == old_stack
-            for row in old_rows
-        )
+        for row in old_rows:
+            store._bind_reservation_baseline_segment(row.reservation_id, old_stack, reason="old_backfill")
+        store._bind_reservation_baseline_segment(new_row.reservation_id, new_stack, reason="old_backfill")
+        assert store.reservation_baseline_segment(new_row.reservation_id) == new_stack
         assert commission_boundary(store, old_stack.manifest, tree_digest=old_stack.tree_digest) is None
         assert store.reservation_baseline_segment(new_row.reservation_id) == old_stack
         assert store.qualification_queue_baseline() == old_stack
