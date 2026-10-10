@@ -96,7 +96,8 @@ def planes(tmp_path, monkeypatch):
         return {"reservation_id": reservation_id, "status": status, "reason": reason,
                 "log_url": f"/api/submissions/{reservation_id}/logs"}
 
-    install_sources(app, {"health": lambda: {"intake_finalized": {"block": 100}}})
+    install_sources(app, {"health": lambda: {"intake_finalized": {"block": 100}},
+                          "intake_conn": dashboard.intake_conn})
     sources = {}
     for key, status, reason, publication in (
         ("glm", "failed", "manifest: unknown arena", ""),
@@ -109,6 +110,8 @@ def planes(tmp_path, monkeypatch):
                 target_id DEFAULT '', arena_service_digest DEFAULT '',
                 decision DEFAULT '', competition_arena DEFAULT '')""")
             con.execute("CREATE TABLE metadata (key, value)")
+            con.execute("CREATE TABLE eval_cost_payments (payment_block, payment_extrinsic_index, "
+                        "reservation_id, content_hash, hotkey, amount_tao_rao)")
             if key == "glm":
                 con.execute("INSERT INTO metadata VALUES ('legacy_arena_id', 'glm-arena')")
             con.execute("INSERT INTO reservations (reservation_id,status,reason,publication_digest) "
@@ -211,6 +214,38 @@ def test_legacy_ownership_is_unavailable_when_peer_cannot_be_read(planes):
     response = client.get("/api/submissions/shared?arena=glm")
     assert response.status_code == 503
     assert response.json()["arena"]["key"] == "glm"
+
+
+def test_arena_fees_count_each_payment_once_under_the_arena_that_consumed_it(planes):
+    client, sources = planes
+    tao = 1_000_000_000
+    with sqlite3.connect(sources["glm"].values["DB_PATH"]) as con:
+        con.execute("INSERT INTO reservations (reservation_id,status,reason,publication_digest,competition_arena) "
+                    "VALUES ('paid','published','','pub-paid','glm-arena')")
+        con.execute("INSERT INTO eval_cost_payments VALUES (100,1,'paid','h','miner',?)", (tao,))
+        # The GLM listener also observed the Qwen arrival and recorded it at its own 0.5 τ fee.
+        con.execute("INSERT INTO eval_cost_payments VALUES (200,2,'shared','h','miner',?)", (tao // 2,))
+    with sqlite3.connect(sources["qwen"].values["DB_PATH"]) as con:
+        con.execute("INSERT INTO eval_cost_payments VALUES (200,2,'shared','h','miner',?)", (tao // 5,))
+
+    def fees():
+        data = client.get("/api/arenas").json()
+        return {row["key"]: row["fees"] for row in data["items"]}, data["fees_count"], data["fees_total_tao"]
+
+    by_arena, count, total = fees()
+    assert by_arena["glm"] == {"count": 1, "tao": 1.0, "by_fee": [{"fee_tao": 1.0, "count": 1}]}
+    assert by_arena["qwen"] == {"count": 1, "tao": 0.2, "by_fee": [{"fee_tao": 0.2, "count": 1}]}
+    assert (count, total) == (2, 1.2)
+    # A publication replicated into the other arena must not count its payment twice.
+    with sqlite3.connect(sources["qwen"].values["DB_PATH"]) as con:
+        con.execute("INSERT INTO reservations (reservation_id,status,reason,publication_digest,competition_arena) "
+                    "VALUES ('paid','published','','pub-paid','qwen-arena')")
+        con.execute("INSERT INTO eval_cost_payments VALUES (100,1,'paid','h','miner',?)", (tao // 5,))
+    assert fees()[1:] == (2, 1.2)
+    # With the GLM database unreadable, the replicated payment counts under the arena that can be read.
+    sources["glm"].values["DB_PATH"].unlink()
+    by_arena, count, total = fees()
+    assert (by_arena["glm"], by_arena["qwen"]["tao"], count, total) == (None, 0.4, 2, 0.4)
 
 
 @pytest.fixture

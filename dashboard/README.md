@@ -91,9 +91,8 @@ separate from finalized `items` / `pass_total`. Waiting rows have
 
 `/api/overview`, `/api/queue`, `/api/submissions` (filters: `status`,
 `hotkey`, `q`, `active`, `limit`, `offset`, `order`),
-`/api/submissions/{id}`, `/api/payments`, `/api/revenue`, `/api/winners`,
-`/api/miners`, `/api/events`, `/api/weights`, `/api/hotkey/{ss58}`,
-`/api/health`.
+`/api/submissions/{id}`, `/api/payments`, `/api/winners`, `/api/miners`,
+`/api/events`, `/api/weights`, `/api/hotkey/{ss58}`, `/api/health`.
 
 Submission list and detail responses expose `evaluation_recovery` when an
 operator has linked a payment rejection to a corrected submission. The existing
@@ -344,11 +343,12 @@ sources. The Timeline offers an all-arena toggle.
 
 Every listener records the fee payments it observed at its own configured fee,
 so a database's payment table is shared chain observation rather than the
-arena's income. `/api/overview` and `/api/payments` count only the payments
-consumed by the selected arena's reservations. `/api/revenue` is global: it
-reports each arena's fee payments grouped by amount, the total received across
-every arena, and unavailable sources. An on-chain payment is counted once, under
-the first configured arena that owns it. The Overview shows these totals.
+arena's income. `/api/payments` lists only the payments consumed by the selected
+arena's reservations, and `/api/arenas` carries each arena's `fees` (count,
+total, grouped by the fee charged; `null` while its database is unavailable)
+plus `fees_total_tao` and `fees_count` across every arena, counting an on-chain
+payment once under the first configured arena that owns it. The Overview shows
+these totals.
 
 Process health matches command arguments plus a configured source path, rather
 than global module substrings. The configured `heartbeat` path is the CPU relay's

@@ -208,6 +208,7 @@ if (!TABS.some(([id]) => id === tab)) tab = "overview";
 let arena = decodeURIComponent(location.pathname.replace(/^\/+|\/+$/g, ""))
   || new URL(location.href).searchParams.get("arena") || "";
 let arenas = [];
+let feeTotals = { tao: 0, count: 0 };
 let allArenaEvents = false;
 let detailRequest = 0;
 let subFilters = { q: "", status: "", offset: 0 };
@@ -288,7 +289,7 @@ function recoveryLink(recovery) {
 
 async function api(path) {
   const url = new URL(path, location.origin);
-  if (arena && !["/api/weights", "/api/arenas", "/api/arena-events", "/api/revenue", "/api/bundle-encryption-key"].includes(url.pathname))
+  if (arena && !["/api/weights", "/api/arenas", "/api/arena-events", "/api/bundle-encryption-key"].includes(url.pathname))
     url.searchParams.set("arena", arena);
   const res = await fetch(url);
   if (!res.ok) throw new Error(path + " → " + res.status);
@@ -324,12 +325,13 @@ async function updateMeta() {
 
 /* ---------------- views ---------------- */
 async function viewOverview() {
-  const [o, q, rev] = await Promise.all([api("/api/overview"), api("/api/queue"), api("/api/revenue")]);
+  const [o, q] = await Promise.all([api("/api/overview"), api("/api/queue")]);
   const t = o.totals;
-  const feeCards = rev.items.map((a) => card(a.payments_tao.toFixed(1) + " τ",
-    `${esc(a.label || "this database")}: ${a.payments_count} fee payments` +
-    (a.by_fee.length ? " (" + a.by_fee.map((f) => `${f.count} at ${f.fee_tao} τ`).join(", ") + ")" : "")));
-  const mine = rev.items.find((a) => a.key === arena) || rev.items[0] || { payments_tao: 0, payments_count: 0 };
+  const feeCards = arenas.map((a) => a.fees ? card(a.fees.tao.toFixed(1) + " τ",
+    `${esc(a.label)}: ${a.fees.count} fee payments` +
+    (a.fees.by_fee.length ? " (" + a.fees.by_fee.map((f) => `${f.count} at ${f.fee_tao} τ`).join(", ") + ")" : ""))
+    : card("—", `${esc(a.label)}: fees unavailable`, "warn"));
+  const mine = (arenas.find((a) => a.key === arena) || {}).fees || { tao: 0, count: 0 };
   const days = o.submissions_per_day || [];
   const max = Math.max(1, ...days.map((d) => d.count));
   const shown = days.slice(-45);
@@ -355,14 +357,13 @@ async function viewOverview() {
       ${card(t.expired, "expired")}
       ${card(t.unique_hotkeys, "unique hotkeys")}
       ${card(t.active_leases, "active eval leases", t.active_leases ? "info" : "")}
-      ${card(mine.payments_tao.toFixed(1) + " τ", mine.payments_count + " eval-fee payments (this arena)", "info")}
+      ${arenas.length ? card(mine.tao.toFixed(1) + " τ", mine.count + " eval-fee payments (this arena)", "info") : ""}
     </div>
-    <h2>Evaluation fees received, all arenas</h2>
+    ${arenas.length ? `<h2>Evaluation fees received, all arenas</h2>
     <div class="cards">
-      ${card(rev.total_tao.toFixed(1) + " τ", rev.payments_count + " fee payments ever, every arena", "info")}
+      ${card(feeTotals.tao.toFixed(1) + " τ", feeTotals.count + " fee payments ever, every arena", "info")}
       ${feeCards.join("")}
-    </div>
-    ${rev.unavailable_sources.length ? `<div class="callout">Fee totals exclude unavailable arenas: ${esc(rev.unavailable_sources.join(", "))}</div>` : ""}
+    </div>` : ""}
     ${lease ? `<div class="callout" style="border-left-color:var(--ok)">
       <b style="color:var(--fg)">Evaluation lease active:</b>
       ${pill(lease.stage)} <code>${esc(short(lease.reservation_id, 12))}</code>
@@ -900,6 +901,7 @@ async function refresh() {
 async function loadArenas() {
   const data = await api("/api/arenas");
   arenas = data.items;
+  feeTotals = { tao: data.fees_total_tao || 0, count: data.fees_count || 0 };
   arena = arenas.find(s => s.slug === arena)?.key || arena;
   if (!arena) arena = data.default || "";
   $("#arena-select").innerHTML = arenas.length ? arenas.map(s =>
