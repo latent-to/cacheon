@@ -138,8 +138,8 @@ cacheon chain-validate \
 ```
 
 This command reads finalized history, reserves arrivals, verifies bundle hashes, and
-publishes immutable copies. It needs no wallet and cannot qualify or settle while
-`--intake-only` is set; the commissioned standing supervisor owns those stages.
+publishes immutable copies. It needs no wallet and never qualifies or settles;
+`--intake-only` is required, and the commissioned standing supervisor owns those stages.
 Eval-cost admission defaults off; set `--eval-cost-tao-rao 500000000` only when
 the operator requires the published 0.5 TAO transfer.
 
@@ -153,8 +153,8 @@ Interpret the one-pass summary by stage:
 | `copies` | Later authoritative submitted-delta copies demoted against an earlier miner |
 | `rejected` | Terminal attributable intake failures |
 | `held` | Work requiring operator or bounded retry disposition |
-| `decisions` | Disabled in intake-only mode |
-| `settlements` | Committed settlement leases; runs in every mode over retained accepted PASS evidence |
+| `decisions` | Always empty; qualification runs in the standing supervisor |
+| `settlements` | Always empty; settlement runs in the standing supervisor |
 
 Run the identical command a second time. With no newly finalized reveals, it should not
 refetch or republish the same arrival. That checks the finalized cursor and idempotent
@@ -214,8 +214,8 @@ pristine reference, retained evidence, and audited qualification described in
 
 ## 7. Commission the arena integration
 
-This step begins deployment-owned work. Before removing `--intake-only`, freeze and
-review all of the following as one service identity:
+This step begins deployment-owned work. Before starting the standing supervisor, freeze
+and review all of the following as one service identity:
 
 1. exact runtime, base engine, validator overlay, worker distribution, model revision,
    model content, GPU architecture, topology, GPU count, and TP size;
@@ -226,30 +226,11 @@ review all of the following as one service identity:
    plan, calibration, pristine reference, evidence-root, entropy, hidden judge, OCI
    executor, and absolute-deadline authorities used by `build_qualification`.
 
-Deployment code then constructs the provider, `ArenaService`, and closed
-`ArenaServiceRegistry`, and calls `run_validator(...)` with the exact registered arena
-ID. Start with `once=True` under supervision. The following is deliberately only the
-composition boundary—the `provider` object is not supplied by this repository:
-
-```python
-from cacheon.arena_service import ArenaService, ArenaServiceRegistry
-from cacheon.chain.validator_loop import run_validator
-
-service = ArenaService(reviewed_manifest, provider)
-registry = ArenaServiceRegistry((service,))
-
-result = run_validator(
-    subtensor,
-    netuid,
-    intake_db="chain_intake/intake.sqlite3",
-    private_root="chain_intake/private",
-    publication_root="chain_intake/worker",
-    arena_registry=registry,
-    arena_id=reviewed_manifest.runtime.arena_id,
-    intake_only=False,
-    once=True,
-)
-```
+Deployment code then constructs the provider and `ArenaService` and starts
+`python -m cacheon.chain.standing_cpu_supervisor --config <SEALED_CONFIG>` beside the
+intake-only `chain-validate` process, over the same store; see
+[Standing CPU supervisor](chain-loop.md#standing-cpu-supervisor). The `provider`
+object is not supplied by this repository.
 
 Do not substitute a shell command, dynamic import path, or fake provider that declares
 success. A commissioned provider must construct the sealed paired-replay speed
@@ -304,7 +285,7 @@ Before enabling full validation, an operator still needs to supply and review:
 - trusted native prebuild and runtime hosts with durable lease recovery;
 - sealed model bytes and exact runtime/topology identities;
 - a representative workload and frozen calibration;
-- an `ArenaServiceProvider` and closed `ArenaServiceRegistry`;
+- an `ArenaServiceProvider` and a sealed standing-supervisor configuration;
 - an evidence-retention root and restore procedure;
 - a private object-store archive policy plus scheduled semantic restore drills;
 - queue, timeout, retry, and disk-capacity monitoring;

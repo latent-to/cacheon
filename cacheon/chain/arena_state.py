@@ -132,27 +132,6 @@ class ArenaStateMixin:
         return tuple(self._row(row) for row in rows)
 
 
-    def arena_queue_snapshot(self, *, current_block: int):
-        """Read capacity pressure within the selected competition."""
-        from cacheon.arena_service import ArenaQueueSnapshot
-
-        if type(current_block) is not int or current_block < 0:
-            raise _error("arena queue block is malformed")
-        rows = tuple(self._db.execute(
-            "SELECT r.status,r.block,el.stage FROM reservations AS r LEFT JOIN "
-            "evaluation_lease_members AS em ON em.reservation_id=r.reservation_id AND em.active=1 "
-            "LEFT JOIN evaluation_leases AS el USING(lease_id) WHERE r.competition_arena=? "
-            "AND r.status IN ('published','reproduction_pending','qualifying')",
-            (self._competition_arena,),
-        ))
-        queued = [row for row in rows if row["stage"] is None and row["status"] in
-                  {"published", "reproduction_pending"}]
-        return ArenaQueueSnapshot(
-            len(queued), max((current_block - row["block"] for row in queued), default=0),
-            sum(row["status"] == "qualifying" or row["stage"] == "qualification" for row in rows),
-        )
-
-
     def target_lineage_tips(self, competition_arena: str | None = None) -> Mapping[str, object]:
         """Reopen each target's contiguous active root-to-tip lineage."""
 

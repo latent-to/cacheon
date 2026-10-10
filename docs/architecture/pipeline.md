@@ -76,8 +76,7 @@ Principal code: [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/mai
 
 ## 3. Arena and target resolution
 
-An `ArenaServiceRegistry` maps a public arena identifier to a closed
-`ArenaService`. Its manifest directly binds:
+Each commissioned arena is a closed `ArenaService`. Its manifest directly binds:
 
 - runtime, base-engine, validator-overlay, worker, model, architecture, GPU,
   and topology identities;
@@ -95,7 +94,7 @@ manifest itself.
 
 The proposal is resolved against the exact target catalog snapshot. A registered candidate must match its target members and permitted features; unregistered work fails resolution.
 
-The command-line `chain-validate` loop can perform intake alone. Full production qualification requires the operator to inject a real `ArenaServiceRegistry` and select `--arena-id`; the repository does not manufacture a production arena provider from implicit defaults.
+The command-line `chain-validate` loop performs intake alone. Production qualification runs in the standing supervisor against a commissioned `ArenaService`; the repository does not manufacture a production arena provider from implicit defaults.
 
 Principal code: [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py), [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py), and [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 

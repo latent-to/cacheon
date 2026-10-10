@@ -72,7 +72,7 @@ them is not recovery.
 `ArenaCandidateBinding` binds reservation, publication and the one-based
 qualification attempt; a retry after an infrastructure hold is a new binding.
 `ArenaQualificationRequest` and `ArenaQualificationWork` bind authoritative
-qualification. `ArenaServiceRegistry` resolves exact logical arena IDs.
+qualification.
 
 ## Provider interface
 
@@ -223,11 +223,9 @@ Upgrade all CPU controllers at an idle boundary before enabling a second arena;
 old controllers cannot operate the new schema. Keep a database backup and
 commissioned packets for rollback.
 
-Python `run_pass` / `run_validator` accept an injected `ArenaServiceRegistry`,
-`arena_id` and `accept_legacy_bundles`. Standalone `chain-validate --arena-id`
-cannot construct executable capabilities. `retained_only=True` processes the
-queue at a fresh finalized head without advancing reveal history; it requires
-injected arena authority and conflicts with `intake_only`.
+`chain-validate` runs intake only. The standing supervisor's dispatcher binds the
+commissioned `ArenaService` and selects its arena with `accept_legacy_bundles`; no
+command-line flag selects an arena.
 
 ## Operating signals
 

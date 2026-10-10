@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 import cacheon.chain.validator_loop as loop
-from cacheon.arena_service import AdmissionDecision, ArenaService, ArenaServiceRegistry
 from cacheon.bundle_hash import content_hash
 from cacheon.chain import FinalizedRevealSnapshot, RevealedCommitment
 from cacheon.chain.eval_cost import (
@@ -100,7 +99,6 @@ def _run(
         intake_db=tmp_path / "state" / "intake.sqlite3",
         private_root=tmp_path / "private-cache",
         publication_root=tmp_path / "worker",
-        intake_only=True,
     )
     options.update(changes)
     return loop.run_pass(_NoWeightsSubtensor(), 307, **options), calls, options
@@ -538,22 +536,6 @@ def test_intake_pass_does_not_retry_other_store_errors(monkeypatch, tmp_path):
     assert attempts == [1] and naps == []
 
 
-def test_intake_only_pass_never_moves_the_incumbent(tmp_path, monkeypatch):
-    calls = []
-
-    def recorder(store, *, current_block, finalized_block_provider):
-        calls.append(current_block)
-        return {"lease-digest": "plan-digest"}
-
-    monkeypatch.setattr(loop, "_settle_pending", recorder)
-    snapshot = _snapshot([])
-    result, _fetches, _options = _run(
-        tmp_path, monkeypatch, snapshot, {}, intake_only=True
-    )
-    assert calls == []
-    assert result.settlements == {}
-
-
 def test_settlement_refreshes_stale_pass_height_before_leasing():
     class Store:
         lease_blocks = []
@@ -628,38 +610,18 @@ def test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes(
         ("miner-fused", encode_payload(fused_digest, "https://example.com/b")),
     ])
 
-    service = object.__new__(ArenaService)
-    service.manifest = type(
-        "Manifest",
-        (),
-        {
-            "digest": "e" * 64,
-            "qualification_policy_digest": "f" * 64,
-            "capacity": type("Capacity", (), {"max_cohort_size": 1})(),
-            "closed_targets": ("forward_pass", "attention.sdpa"),
-        },
-    )()
-    registry = object.__new__(ArenaServiceRegistry)
-    monkeypatch.setattr(ArenaServiceRegistry, "require", lambda *_: service)
-    monkeypatch.setattr(
-        ArenaService, "admit_qualification", lambda *_args, **_kwargs: AdmissionDecision.QUEUE
-    )
-
     result, _calls, options = _run(
-        tmp_path,
-        monkeypatch,
-        snapshot,
-        {closed_digest: closed, fused_digest: fused},
-        intake_only=False,
-        arena_registry=registry,
-        arena_id="test-arena",
+        tmp_path, monkeypatch, snapshot, {closed_digest: closed, fused_digest: fused}
     )
+    assert result.rejected == {} and len(result.published) == 2
 
-    assert list(result.rejected.values()) == [
-        "target_unavailable:forward_pass"
-    ]
-    assert len(result.published) == 1
+    # Intake publishes both; the supervisor's admission pass parks by name.
     with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
+        by_hotkey = {row.arrival.hotkey: row for row in store.all()}
+        assert store.prepare_qualification_queue(
+            service_digest="e" * 64,
+            closed_targets=("forward_pass", "attention.sdpa"),
+        ) == ((by_hotkey["miner-closed"].reservation_id, "target_unavailable:forward_pass"),)
         by_hotkey = {row.arrival.hotkey: row for row in store.all()}
         parked = by_hotkey["miner-closed"]
         assert parked.status == "expired"

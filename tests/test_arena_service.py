@@ -6,16 +6,13 @@ from pathlib import Path
 import pytest
 
 from cacheon.arena_service import (
-    AdmissionDecision,
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
     ArenaQualificationWork,
-    ArenaQueueSnapshot,
     ArenaRuntimeIdentity,
     ArenaService,
     ArenaServiceError,
     ArenaServiceManifest,
-    ArenaServiceRegistry,
     Workload,
     WorkloadCell,
 )
@@ -171,47 +168,6 @@ def test_workload_requires_typed_unique_cells() -> None:
         Workload(_h("corpus"), "seed-v1", (cell, cell))
     with pytest.raises(ArenaServiceError, match="positive integer"):
         WorkloadCell("s8", 8192, 0, 64, 8)
-
-
-def test_admission_is_capacity_bounded_and_fail_closed() -> None:
-    service = ArenaService(_manifest(), _Provider())
-    assert (
-        service.admit_qualification(ArenaQueueSnapshot(0, 0, 0), cohort_size=4)
-        is AdmissionDecision.ADMIT
-    )
-    assert (
-        service.admit_qualification(ArenaQueueSnapshot(0, 0, 5), cohort_size=4)
-        is AdmissionDecision.QUEUE
-    )
-    assert (
-        service.admit_qualification(ArenaQueueSnapshot(64, 1, 0), cohort_size=1)
-        is AdmissionDecision.HOLD
-    )
-    assert (
-        service.admit_qualification(ArenaQueueSnapshot(1, 600, 0), cohort_size=1)
-        is AdmissionDecision.HOLD
-    )
-    assert (
-        service.admit_qualification(ArenaQueueSnapshot(0, 0, 0), cohort_size=5)
-        is AdmissionDecision.HOLD
-    )
-    with pytest.raises(ArenaServiceError, match="not exactly typed"):
-        service.admit_qualification(object(), cohort_size=1)
-    with pytest.raises(ArenaServiceError, match="cohort_size"):
-        service.admit_qualification(ArenaQueueSnapshot(0, 0, 0), cohort_size=0)
-    with pytest.raises(ArenaServiceError, match="nonnegative"):
-        ArenaQueueSnapshot(-1, 0, 0)
-
-
-def test_registry_is_closed_and_unambiguous() -> None:
-    service = ArenaService(_manifest(), _Provider())
-    registry = ArenaServiceRegistry((service,))
-    assert registry.require("minimax-m3-sm120") is service
-    assert len(registry.digest) == 64
-    with pytest.raises(ArenaServiceError, match="not registered"):
-        registry.require("miner-chosen-arena")
-    with pytest.raises(ArenaServiceError, match="empty or ambiguous"):
-        ArenaServiceRegistry((service, service))
 
 
 def test_provider_is_validator_supplied_and_digest_bound() -> None:

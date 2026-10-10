@@ -4,13 +4,13 @@
 cacheon/chain/__init__.py 1254
 cacheon/chain/archive.py 1349
 cacheon/chain/evaluation_recovery_store.py 1222
-cacheon/chain/intake.py 3199
+cacheon/chain/intake.py 3188
 cacheon/chain/recoverable_qualification_dispatcher.py 915
 cacheon/chain/remote_worker_pod_service.py 1106
 cacheon/chain/remote_worker_request_plan.py 940
 cacheon/chain/remote_worker_spool.py 994
 cacheon/chain/weight_share.py 1523
-cacheon/cli.py 2862
+cacheon/cli.py 2849
 cacheon/engine_tree.py 1566
 cacheon/eval/b300_deployment.py 1287
 cacheon/eval/b300_qualification_deployment.py 963
@@ -28,7 +28,7 @@ cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1205
 cacheon/settlement.py 1064
 dashboard/app.py 932
-tests/test_chain_intake.py 1602
+tests/test_chain_intake.py 1599
 tests/test_device_state.py 942
 tests/test_engine_tree.py 1063
 tests/test_eval_cost.py 1019

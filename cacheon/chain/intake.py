@@ -1171,17 +1171,6 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             )
         return self.get(reservation_id)
 
-    def qualification_cohort(
-        self, *, limit: int | None = None
-    ) -> tuple[IntakeReservation, ...]:
-        """The exact ordered cohort the next qualification claim would bind."""
-
-        bound = self.policy.max_cohort if limit is None else limit
-        if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
-            raise IntakeError("qualification cohort limit is invalid")
-        rows = self._select_evaluation_rows("qualification", bound)
-        return tuple(self._row(row) for row in rows)
-
     def qualification_attempts(self, reservation_id: str) -> int:
         """Retained qualification attempts of one reservation, for its next binding."""
 

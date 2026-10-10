@@ -607,7 +607,7 @@ def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_pat
         assert [row.status for row in stored] == ["published", "published"]
         # The live cohort selector must isolate the first republished retry
         # group rather than merging both groups back into one failing cohort.
-        assert tuple(row.reservation_id for row in store.qualification_cohort()) == (
+        assert store.preview_evaluation_claim(stage="qualification", max_members=2) == (
             rows[0].reservation_id,
         )
         assert store.qualification_dispositions(rows[0].reservation_id)[0][
@@ -828,9 +828,6 @@ def test_baseline_segments_survive_transition_and_drain_in_order(tmp_path):
         assert store.preview_evaluation_claim(
             stage="qualification", max_members=8
         ) == tuple(row.reservation_id for row in old_rows)
-        assert tuple(row.reservation_id for row in store.qualification_cohort()) == tuple(
-            row.reservation_id for row in old_rows
-        )
 
         store._db.executemany(
             "UPDATE reservations SET status='failed',decision='FAIL',reason='test' "

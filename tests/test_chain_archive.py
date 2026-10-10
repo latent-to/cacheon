@@ -93,7 +93,6 @@ def _published_database(tmp_path: Path, monkeypatch):
         intake_db=database,
         private_root=tmp_path / "private",
         publication_root=tmp_path / "worker",
-        intake_only=True,
     )
     assert len(result.published) == 1
     return database, result, digest
@@ -207,7 +206,6 @@ def test_validator_loop_writes_success_and_redacted_fault_audits(
         intake_db=tmp_path / "unused.sqlite3",
         private_root=tmp_path / "private",
         publication_root=tmp_path / "worker",
-        intake_only=True,
         once=True,
         audit_log=audit_log,
     )
@@ -224,7 +222,6 @@ def test_validator_loop_writes_success_and_redacted_fault_audits(
             intake_db=tmp_path / "unused.sqlite3",
             private_root=tmp_path / "private",
             publication_root=tmp_path / "worker",
-            intake_only=True,
             once=True,
             audit_log=audit_log,
         )

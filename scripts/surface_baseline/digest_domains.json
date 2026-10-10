@@ -1,6 +1,6 @@
 {
  "cacheon/arena_allocation.py": ["cacheon.arena-allocation.v1"],
- "cacheon/arena_service.py": ["cacheon.arena.candidate-binding","cacheon.arena.service","cacheon.arena.service-registry","cacheon.arena.workload-cells.v1"],
+ "cacheon/arena_service.py": ["cacheon.arena.candidate-binding","cacheon.arena.service","cacheon.arena.workload-cells.v1"],
  "cacheon/chain/archive.py": ["cacheon.chain.intake-scope","cacheon.validator-archive-restore-map.v1","cacheon.validator-archive.v1","cacheon.validator.archive-manifest","cacheon.validator.archived-evidence-root","cacheon.validator.archived-tree"],
  "cacheon/chain/arena_weight_projection.py": ["cacheon.static-arena-decay.v1","cacheon.static-arena-policy.v1","cacheon.static-arena-sources.v1"],
  "cacheon/chain/audit_log.py": ["cacheon.chain-audit.v1","cacheon.chain-audit.v2"],

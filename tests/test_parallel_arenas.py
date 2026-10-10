@@ -63,7 +63,6 @@ def test_two_dispatchers_keep_fifo_baselines_and_recovery_independent(tmp_path):
     with store:
         assert store.pending_qualification_recovery() == recoveries[0]
         assert len(store.active_evaluation_leases()) == 2
-        assert store.arena_queue_snapshot(current_block=fixture.BLOCK).active_qualifications == 1
 
 
 def test_default_alias_cannot_be_taken_by_second_arena(tmp_path):

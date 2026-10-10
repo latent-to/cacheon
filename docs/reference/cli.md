@@ -430,11 +430,11 @@ consumes them. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.
 
-Qualification requires a deployment-owned `ArenaServiceRegistry` plus a registered
-`--arena-id`. The repository does not construct a production provider from shell text.
-A reviewed deployment wrapper calls `cmd_chain_validate(args,
-arena_registry=registry)` or `run_validator(...)` after creating the registry. Invoking
-the stock module without `--intake-only` refuses to run because no registry was injected.
+Qualification and settlement do not run in this command; invoking it without
+`--intake-only` refuses to start. The standing supervisor
+(`python -m cacheon.chain.standing_cpu_supervisor`) owns both against a commissioned
+`ArenaService`; see
+[Standing CPU supervisor](../validator-guide/chain-loop.md#standing-cpu-supervisor).
 
 ### `chain-snapshot` and `chain-snapshot-verify`
 
