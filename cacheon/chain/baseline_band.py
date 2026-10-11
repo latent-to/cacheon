@@ -91,7 +91,10 @@ def qualification_speed_from_payload(
         return None
     if not isinstance(witness, dict) or witness.get("goodput") is None:
         return None
-    return replay_measurements(witness)
+    speed = replay_measurements(witness)
+    if audit := result.get("audit_witness"):
+        speed["audit"] = {key: audit[key] for key in ("decision", "detail")}
+    return speed
 
 
 def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:

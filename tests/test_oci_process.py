@@ -255,8 +255,9 @@ def test_run_uses_no_shell_new_session_and_proves_absence(tmp_path: Path, monkey
     assert lease.record_path.exists(), "caller retains staged state until publication"
 
 
-def test_run_continuously_drains_and_retains_only_bounded_stderr_tail(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_run_continuously_drains_and_retains_both_streams_after_any_exit(
+    tmp_path: Path, monkeypatch, exit_code
 ) -> None:
     manager = _manager(tmp_path)
     lease = manager.register(lease_id="lease-1", container_name="container-1")
@@ -266,7 +267,8 @@ def test_run_continuously_drains_and_retains_only_bounded_stderr_tail(
         "import sys; "
         f"sys.stderr.buffer.write(b'A' * {ATTACHED_STDERR_MAX_BYTES * 4}); "
         f"sys.stderr.buffer.write({marker!r}); sys.stderr.buffer.flush(); "
-        "raise SystemExit(7)"
+        "sys.stdout.buffer.write(b'BUILD-STDOUT'); sys.stdout.buffer.flush(); "
+        f"raise SystemExit({exit_code})"
     )
 
     def spawn(_argv, **kwargs):
@@ -279,14 +281,14 @@ def test_run_continuously_drains_and_retains_only_bounded_stderr_tail(
         timeout_s=5.0,
     )
     diagnostic = result.stderr_diagnostic
-    assert result.returncode == 7 and diagnostic is not None
+    assert result.returncode == exit_code and diagnostic is not None
     assert len(diagnostic.stderr_tail) == ATTACHED_STDERR_MAX_BYTES
     assert diagnostic.stderr_truncated and diagnostic.capture_complete
-    assert diagnostic.client_returncode == 7
-    assert diagnostic.stderr_tail.endswith(marker)
+    assert diagnostic.client_returncode == exit_code
+    assert diagnostic.stderr_tail.endswith(marker + b"BUILD-STDOUT")
     artifact = diagnostic.artifact
     assert type(artifact) is OCIStderrArtifactReceipt
-    expected = b"A" * (ATTACHED_STDERR_MAX_BYTES * 4) + marker
+    expected = b"A" * (ATTACHED_STDERR_MAX_BYTES * 4) + marker + b"BUILD-STDOUT"
     assert diagnostic.stream_bytes == len(expected)
     assert diagnostic.stream_sha256 == hashlib.sha256(expected).hexdigest()
     assert artifact.stream_bytes == len(expected)

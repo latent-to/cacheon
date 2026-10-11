@@ -517,23 +517,6 @@ class _AttachedStderrCapture:
                 self._artifact,
             )
 
-    def discard_artifact(self) -> None:
-        with self._lock:
-            artifact = self._artifact
-            writer = self._artifact_writer
-        if artifact is None:
-            return
-        if writer is None:
-            raise OCIProcessError("stderr artifact lacks its manager authority")
-        writer.manager.reopen_stderr_artifact(artifact)
-        artifact.receipt_path.unlink(missing_ok=True)
-        OCIProcessManager._fsync_directory(artifact.artifact_path.parent)
-        artifact.artifact_path.unlink(missing_ok=True)
-        OCIProcessManager._fsync_directory(artifact.artifact_path.parent)
-        with self._lock:
-            if self._artifact == artifact:
-                self._artifact = None
-
 
 @dataclass(frozen=True)
 class OCIQuiescenceReceipt:
@@ -1507,7 +1490,7 @@ class OCIProcessManager:
             process = subprocess.Popen(
                 list(argv),
                 stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
+                stdout=stderr_write_fd,
                 # Keep Docker stderr off ``communicate`` so the dedicated drain
                 # can hash every byte while retaining only a bounded memory tail
                 # and bounded private disk prefix.
@@ -1565,8 +1548,6 @@ class OCIProcessManager:
                 diagnostic,
             ) from None
         self.force_remove_container(lease)
-        if int(process.returncode) == 0:
-            stderr_capture.discard_artifact()
         diagnostic = stderr_capture.snapshot()
         diagnostic = OCIAttachedDiagnostic(
             diagnostic.stderr_tail,

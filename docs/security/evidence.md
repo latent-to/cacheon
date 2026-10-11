@@ -86,6 +86,28 @@ Not every artifact is public. Selection secrets and hidden tasks remain in priva
 validator storage; serializable authority records contain references and commitments, not
 the secret bytes.
 
+Failed node-audit windows also emit `CACHEON-AUDIT-WINDOW` diagnostics into the
+existing retained worker log. They identify the node, tensor position, rank,
+window and timestamp, and retain each contributing call's counts, numerical
+tolerance, current/reference-history noise measurements, and candidate/reference
+row errors. Earlier calls pooled into the same failed window are included.
+The unchanged audit receipt remains the verdict authority.
+
+Diagnostic row arrays are limited to 4,096 rows per window and their combined
+output to 1 MiB per worker. `rows_omitted` and
+`CACHEON-AUDIT-DIAGNOSTICS-LIMIT` identify incomplete numerical detail explicitly;
+they do not change the comparison counts or verdict. These records explain the
+comparison without retaining full model tensors or a GPU-memory snapshot.
+They cannot recover measurements from older runs that never emitted them.
+
+One-shot build stdout and stderr use the same retained diagnostic stream, even
+when the build succeeds. Runtime streams remain attached to the request's
+downloadable worker log after container teardown. The stream receipt states
+whether its bounded artifact is truncated; operators must retain VM/service
+logs separately on durable storage and inspect that flag before claiming a
+complete log. Deployment paths and log-rotation configuration belong to the
+operator's VM configuration.
+
 Pristine-reference requests can carry text or canonical input token IDs. The `ORQ3`
 frame carries the IDs directly, so the reference engine scores the same chat-template
 input used by a replay without decoding and tokenizing it again. Its response must
