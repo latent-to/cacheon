@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from urllib.parse import quote, urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 def _get(url: str) -> dict:
-    with urlopen(url, timeout=15) as response:
+    request = Request(url, headers={"User-Agent": "Cacheon/1.0"})
+    with urlopen(request, timeout=15) as response:
         return json.load(response)
 
 
