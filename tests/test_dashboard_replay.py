@@ -60,6 +60,13 @@ def test_corrupt_replay_witness_reports_its_original_error():
     assert "speedup" not in speed
 
 
+def test_result_includes_the_retained_audit_reason_beside_passing_speed():
+    audit = {"decision": "FAIL", "detail": "872 audited calls, 2 violations, worst_frac=0.7148"}
+    payload = {"speed_witness": _witness(statistical=True).to_dict(), "audit_witness": audit}
+    speed = qualification_speed_from_payload(json.dumps(payload).encode())
+    assert result_summary(speed)["audit"] == audit
+
+
 def test_replay_measurements_reach_submission_and_winner_apis(tmp_path, client, monkeypatch):  # noqa: F811
     from cacheon.eval.evidence_store import prepare_evidence_root, publish_canonical_json_evidence
 

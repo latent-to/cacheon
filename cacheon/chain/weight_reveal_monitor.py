@@ -1,4 +1,4 @@
-"""Read-only reveal monitoring in a separate process; Discord alerts never gate signing."""
+"""Read-only result and reveal notifications; Discord delivery never gates evaluation or signing."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 from cacheon import chain
 from cacheon.chain.weight_share import CurrentWeightOffer
+from cacheon.chain.bundle_result_monitor import check_results
 
 
 def send_discord(webhook: str, message: str) -> None:
@@ -117,11 +118,20 @@ def check_reveals(subtensor, journal: Path, state: dict, *, deadline_blocks: int
     return _send_info(state, notify)
 
 
+def _save_state(path: Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, sort_keys=True) + "\n")
+    temporary.replace(path)
+
+
 def main() -> None:
+    """Poll the existing dashboard and publication journal without controlling either."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--journal-db", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--webhook-file", type=Path, required=True)
+    parser.add_argument("--dashboard-url", help="Dashboard origin to watch for bundle results")
     parser.add_argument("--network", default="finney")
     parser.add_argument("--deadline-blocks", type=int, default=600)
     parser.add_argument("--interval", type=int, default=60)
@@ -137,16 +147,20 @@ def main() -> None:
     client = None
     failures = 0
     while True:
+        if args.dashboard_url:
+            try:
+                check_results(args.dashboard_url, state,
+                              notify=lambda message: send_discord(webhook, message),
+                              persist=lambda: _save_state(args.state, state))
+            except Exception as exc:
+                print(f"bundle-result-monitor check failed: {type(exc).__name__}", flush=True)
         try:
             if client is None:
                 client = chain.connect(args.network)
             state = check_reveals(client, args.journal_db, state,
                                   deadline_blocks=args.deadline_blocks,
                                   notify=lambda message: send_discord(webhook, message))
-            args.state.parent.mkdir(parents=True, exist_ok=True)
-            temporary = args.state.with_suffix(".tmp")
-            temporary.write_text(json.dumps(state, sort_keys=True) + "\n")
-            temporary.replace(args.state)
+            _save_state(args.state, state)
             print(f"weight-reveal-monitor block={state.get('checked_block')} "
                   f"pending={len(state.get('pending', []))} alerted={bool(state.get('alerted'))}", flush=True)
             failures = 0

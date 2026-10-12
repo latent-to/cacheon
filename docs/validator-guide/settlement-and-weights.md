@@ -585,6 +585,7 @@ python -m cacheon.chain.weight_reveal_monitor \
   --journal-db /absolute/path/follow.sqlite3 \
   --state /absolute/path/reveal-monitor.json \
   --webhook-file /absolute/path/discord-webhook.txt \
+  --dashboard-url https://dash.cacheon.ai \
   --network finney --deadline-blocks 600 --interval 60
 ```
 
@@ -603,6 +604,21 @@ seed its initial inventory; subsequent share changes and ordinary restarts do
 not repeat the new-hotkey announcement. Undelivered info messages remain queued
 in the monitor's own state. Activation describes this validator's weight row,
 not network-wide emissions.
+With `--dashboard-url`, the same monitor also watches every arena advertised by
+that dashboard. Each new bundle result posts its verdict and reason, measured
+and required speed gain, replay count, decode/first-token measurements when
+available, audit details, reward eligibility, and an arena-qualified link to
+the submission and its downloadable logs. It does not post raw stdout.
+Qualification PASS, reward eligibility, and observed on-chain activation remain
+separate statements.
+
+The first successful observation seeds each arena's existing results without
+posting historical messages; unfinished submissions are announced when they
+finish. A changed result or reward-eligibility decision is announced again.
+Every successful delivery checkpoints the monitor's state. Failed sends retry
+on the next poll, and a chain outage does not prevent result checks. A crash
+after Discord accepts a message but before its checkpoint can repeat that
+message; deleting the state seeds a new starting inventory.
 The legacy combined `set-weights` reconciler described above remains separate.
 
 When `serve-weights` is deliberately run without push credentials, raw local

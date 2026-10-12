@@ -37,9 +37,13 @@ Threat notes:
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import os
 import random
+import sys
+import time
 from typing import Callable, Optional
 
 import torch
@@ -51,6 +55,9 @@ logger = logging.getLogger("cacheon.audit")
 
 _state: dict = {"rate": None, "rng": None}
 _stats: dict[str, dict] = {}
+_diagnostic_bytes = 0
+_diagnostic_limit_reported = False
+_DIAGNOSTIC_LIMIT = 1 << 20
 
 
 def _rate() -> float:
@@ -118,6 +125,41 @@ def compare_error(slot: str) -> None:
     """Count a candidate result that could not be compared with stock's."""
     _slot_stats(slot)["compare_errors"] += 1
     _receipt(slot)
+
+
+def window_diagnostic(slot: str, node: str, position: int, window: int,
+                      calls: list[dict], fraction: float, bar: float) -> None:
+    """Keep failed-window numerics in the existing request log, within 1 MiB per worker.
+
+    The caller retains at most 4,096 rows per window. Counts always cover the
+    full comparison; omitted rows and an exhausted byte budget are explicit.
+    Diagnostics cannot change the audit verdict or mask its original failure.
+    """
+    global _diagnostic_bytes, _diagnostic_limit_reported
+    if fraction >= bar or _diagnostic_limit_reported:
+        return
+    try:
+        def finite(value):
+            return str(value) if isinstance(value, float) and not math.isfinite(value) else value
+
+        rows = [{key: [finite(x) for x in value] if isinstance(value, list) else finite(value)
+                 for key, value in call.items()} for call in calls]
+        packet = {"time_unix_ns": time.time_ns(), **receipts.identity(),
+                  "slot": slot, "node": node, "tensor_position": position,
+                  "window": window, "passing_fraction": fraction, "minimum_fraction": bar,
+                  "calls": rows}
+        packet["rows_omitted"] = sum(row["rows"] - len(row["row_errors"]) for row in rows)
+        prefix = "CACHEON-AUDIT-WINDOW: "
+        line = prefix + json.dumps(packet, separators=(",", ":"), allow_nan=False)
+        if _diagnostic_bytes + len(line.encode()) + 1 > _DIAGNOSTIC_LIMIT:
+            print("CACHEON-AUDIT-DIAGNOSTICS-LIMIT: 1 MiB reached; later row details omitted; "
+                  "audit counts and verdict remain complete", file=sys.stderr, flush=True)
+            _diagnostic_limit_reported = True
+            return
+        _diagnostic_bytes += len(line.encode()) + 1
+        print(line, file=sys.stderr, flush=True)
+    except Exception:  # diagnostics must not turn a numerical result into infrastructure failure
+        logger.exception("cacheon: failed-window diagnostic could not be emitted")
 
 
 def capture_reference(

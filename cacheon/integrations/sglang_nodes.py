@@ -85,10 +85,11 @@ _PIECE = 4 << 20
 # The wire vocabulary (oci_session_protocol.AuditReceiptFacts) is closed: a share of
 # rows within tolerance against a bar is its matched_ratio.
 _MODE = "matched_ratio"
-# Per bound node and graded-tensor position: recent twin noise, and [passed, seen]
-# rows. Per node, not per address: layers under one `*` differ severalfold in noise.
+# Per node, not per address: layers under one `*` differ severalfold in noise.
+# Diagnostic rows travel with pooled counts, including earlier calls in a window.
 _noise: dict[tuple[int, int], deque] = {}
-_pooled: dict[tuple[int, int], list[int]] = {}
+_pooled: dict[tuple[int, int], list] = {}
+_DIAGNOSTIC_ROWS = 4096
 
 
 def node_pattern(slot: str) -> re.Pattern[str]:
@@ -429,7 +430,8 @@ def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int,
     return errors[torch.isfinite(e).all(dim=1)]
 
 
-def _grade(slot: str, node: int, actual: list, twin: list) -> tuple[float, int] | None:
+def _grade(slot: str, node: int, actual: list, twin: list,
+           *, node_name: str = "") -> tuple[float, int] | None:
     """Pool each graded tensor's passing rows; record a unit when a window fills."""
 
     filled = []
@@ -441,14 +443,25 @@ def _grade(slot: str, node: int, actual: list, twin: list) -> tuple[float, int] 
         noise.append(torch.quantile(honest, 0.9).item())
         # History stabilizes one-row calls, but cannot discard this call's reference
         # noise: quiet decode history falsely rejected GLM's 4096-row prefill calls.
-        measured = _TWIN_FACTOR * max(noise[-1], sorted(noise)[int(0.9 * (len(noise) - 1))])
+        history_p90 = sorted(noise)[int(0.9 * (len(noise) - 1))]
+        measured = _TWIN_FACTOR * max(noise[-1], history_p90)
         tolerance = min(_CEILING, max(_FLOOR, measured))
-        pooled = _pooled.setdefault(key, [0, 0])
-        pooled[0] += int((errors <= tolerance).sum().item())
+        pooled = _pooled.setdefault(key, [0, 0, [], 1])
+        kept = max(0, _DIAGNOSTIC_ROWS - pooled[1])
+        passed = int((errors <= tolerance).sum().item())
+        pooled[2].append({
+            "rows": errors.numel(), "passed": passed, "tolerance": tolerance,
+            "reference_p90": noise[-1], "history_p90": history_p90,
+            "row_errors": errors[:kept].tolist(), "reference_row_errors": honest[:kept].tolist(),
+        })
+        pooled[0] += passed
         pooled[1] += errors.numel()
         if pooled[1] >= _WINDOW:
-            filled.append((pooled[0] / pooled[1], position))
-            pooled[:] = [0, 0]
+            fraction = pooled[0] / pooled[1]
+            _audit.window_diagnostic(slot, node_name or slot, position, pooled[3],
+                                     pooled[2], fraction, _ROW_BAR)
+            filled.append((fraction, position))
+            pooled[:] = [0, 0, [], pooled[3] + 1]
     if filled:
         worst = min(filled)
         _audit.record_fraction(slot, worst[0], _ROW_BAR, _MODE)
@@ -554,7 +567,7 @@ def make_node_dispatcher(
                     [(t, 0) for t in _tensors(result, [], fields=True)],
                     _state_rows(runner, (*args, *kwargs.values()), layer), expected, module=module,
                 )
-                grade = _grade(slot, id(module), actual, twin)
+                grade = _grade(slot, id(module), actual, twin, node_name=node_name or slot)
                 if grade is not None and grade[0] < _ROW_BAR and not reported:
                     logging.getLogger(__name__).error(
                         "node audit mismatch: node=%s tensor_position=%d passing_fraction=%.6f",
@@ -563,6 +576,8 @@ def make_node_dispatcher(
                     reported = True
             except ValueError:
                 _audit.compare_error(slot)
+                logging.getLogger(__name__).exception(
+                    "node audit comparison failed: node=%s", node_name or slot)
         _receipts.completed(slot)
         return result
 

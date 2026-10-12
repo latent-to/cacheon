@@ -93,6 +93,7 @@ def result_summary(speed: object) -> dict[str, Any] | None:
         values = [lane[field] for lane in speed["lanes"] if lane["role"] == role and lane[field] is not None]
         return sum(values) / len(values) if values else None
     return {"speedup": speed["speedup"], "required_speedup": grade["required_speedup"],
+            "audit": speed.get("audit"),
             "passes": speed["windows"], "pass_limit": speed["window_limit"], "detail": grade["detail"],
             "decode_tps": [mean("B", "decode_tps"), mean("C", "decode_tps")],
             "ttft_s": [mean("B", "mean_ttft_s"), mean("C", "mean_ttft_s")]}
