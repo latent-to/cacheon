@@ -155,6 +155,26 @@ def test_engine_config_is_exact_immutable_and_digest_stable(steps, tokens) -> No
     assert config.digest != _config(engine_kwargs=source | {"page_size": 64}).digest
 
 
+def test_cache_tiers_are_sealed_engine_identity() -> None:
+    # A host pool, a file tier under it and the tier's directory and byte cap: both arms
+    # get exactly this budget, and changing any of it is a different engine.
+    tiers = {"enable_hierarchical_cache": True, "hicache_size": 256, "hicache_write_policy": "write_through",
+             "hicache_storage_backend": "file", "hicache_storage_prefetch_policy": "wait_complete",
+             "hicache_host_memory_mode": "cache"}
+    budget = {"SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR": "/var/cache/hicache",
+              "SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE": "512G"}
+    config = _config(engine_kwargs=tiers, engine_env=budget)
+    assert EngineSessionConfig.from_dict(config.to_dict()) == config
+    digests = {config.digest, _config().digest, _config(engine_kwargs=tiers).digest,
+               _config(engine_kwargs=tiers, engine_env=budget | {"SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE": "1T"}).digest,
+               _config(engine_kwargs=tiers | {"hicache_storage_backend": "mooncake"}, engine_env=budget).digest}
+    # Under dfs-weight the scheduler asks the cache object for the waiting queue's order.
+    ordered = _config(engine_kwargs=tiers | {"schedule_policy": "dfs-weight"}, engine_env=budget)
+    assert len(digests | {ordered.digest}) == 6
+    with pytest.raises(SessionProtocolError, match="hicache_storage_backend"):
+        _config(engine_kwargs={"hicache_storage_backend": "bad value"})
+
+
 @pytest.mark.parametrize(
     ("changes", "match"),
     [

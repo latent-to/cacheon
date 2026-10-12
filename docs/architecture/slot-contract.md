@@ -243,6 +243,25 @@ interfaces and state guarantees; returning a subclass is not correctness proof.
 The choice is made once, at engine start, with an empty call descriptor: an op declaring
 dtypes, architectures or eligibility never matches, and the run fails as `candidate_never_executed`.
 
+The tiers are part of that object. The arena's sealed engine options decide which
+tiers both arms start with: the host pool (`enable_hierarchical_cache`,
+`hicache_size`, `hicache_host_memory_mode`), a storage backend under it
+(`hicache_storage_backend` with `hicache_write_policy` and
+`hicache_storage_prefetch_policy`) and, for the file backend, its directory and
+byte cap (`SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR`,
+`SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE`). SGLang builds the transfer controller,
+host pools and storage attachment on the cache before the factory runs, and the
+factory may drive, wrap or replace them. The checks read content, so any tier
+passes when it returns the exact bytes. A cache that restores host KV through a
+transfer path of its own keeps the stream those copies run on at
+`cache_controller.l2_transfer_engine.host_to_device_stream`, where stock keeps
+it: the untimed state audit waits on that stream before it checks a restore, and
+a cache that reports host hits with no stream there is refused. On an arena that
+seals `schedule_policy` as `dfs-weight`, the scheduler orders its waiting queue
+by the cache's `dfs_weight_order`, so admission order is a cache method as well.
+The sealed budget sizes stock's tiers. It is not a quota on what a bundle's own
+tier allocates in host memory or writes to the container's disk.
+
 The same content checks run for stock and candidate. Stock checking failures are
 infrastructure failures; they are not attributed to a miner's cache. Storage
 validation is adapter work under this common contract. It recognizes full-attention
@@ -292,11 +311,10 @@ The check runs on the scheduler's stream behind the forward pass that wrote the
 bytes; the host reads each verdict at a later handoff, and only a flush or an
 audited request waits for one. A page is checked after the forward pass that read
 it, so bytes moved into a served slot after that pass are not told apart from bytes
-placed before. The check does not bound memory a cache allocates beyond the
-engine's pools. Sliding-window KV may be overwritten during forward, so its
+placed before. Sliding-window KV may be overwritten during forward, so its
 additional checks run in the existing untimed audit role: record computed state
 before handing it to the cache, verify device hits before use, and verify host
-restores after the native transfer stream completes. Unfinished requests retain
+restores after the cache's transfer stream completes. Unfinished requests retain
 their live ring state. These checks sample up to four layers per transferable
 state field. The handoffs
 `match_prefix`, `cache_unfinished_req`, `cache_finished_req`,

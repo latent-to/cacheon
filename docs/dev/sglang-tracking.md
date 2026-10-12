@@ -18,8 +18,14 @@ Native MTP uses the existing `EngineSessionConfig.engine_kwargs`: set
 These options are bound into its existing digest and forwarded to SGLang.
 `EngineSessionConfig.engine_env` sets process environment for the engine and
 its ranks the same way, bound into the same digest; only reviewed names cross
-the boundary, currently the DeepSeek-V4.1 Engram host-table switches, which
+the boundary, currently the DeepSeek-V4.1 Engram host-table switches and the
+file cache tier's directory and byte cap, which
 SGLang reads from the environment rather than from its server arguments.
+The cache tiers are sealed the same way: `enable_hierarchical_cache`,
+`hicache_size`, `hicache_host_memory_mode`, `hicache_write_policy`,
+`hicache_storage_backend` and `hicache_storage_prefetch_policy` size and select
+the host pool and the storage backend both arms start with, and
+`schedule_policy` selects how the scheduler orders its waiting queue.
 Target node addresses bind only to the target ModelRunner; the speculative
 drafter retains stock execution. Miners keep the same node interface, including
 the target-verification modes and shapes passed to it. Requalify the exact

@@ -53,7 +53,8 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     """.split(), "positive_int"),
     **dict.fromkeys("""
         cuda_graph_backend_prefill kv_cache_dtype quantization speculative_algorithm
-        hicache_mem_layout hicache_io_backend
+        hicache_mem_layout hicache_io_backend hicache_host_memory_mode hicache_write_policy
+        hicache_storage_backend hicache_storage_prefetch_policy schedule_policy
     """.split(), "token"),
     **dict.fromkeys("""
         disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
@@ -65,9 +66,12 @@ _ENGINE_KWARG_KINDS: Mapping[str, str] = {
     "watchdog_timeout": "positive_int",
 }
 # SGLang reads the DeepSeek-V4.1 Engram host-table switches from the environment,
-# not ServerArgs; at TP2 the tables do not fit beside the weights in HBM.
-_ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
-    ("SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE", "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT"), "token")
+# not ServerArgs; at TP2 the tables do not fit beside the weights in HBM. The file
+# cache tier's directory and byte cap are environment too: the tier's sealed budget.
+_ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys("""
+    SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT
+    SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE
+""".split(), "token")
 
 ENGINE_CONFIG_FIELDS = frozenset("""
 attention_backend deterministic disable_cuda_graph disable_custom_all_reduce dtype engine_env
@@ -411,9 +415,7 @@ def _validate_options(value: object, kinds: Mapping[str, str], *, label: str) ->
         if kind == "bool":
             result[key] = _bool(item, field_name=field_name)
         elif kind == "positive_int":
-            result[key] = _bounded_int(
-                item, field_name=field_name, minimum=1, maximum=16_777_216
-            )
+            result[key] = _bounded_int(item, field_name=field_name, minimum=1, maximum=16_777_216)
         elif kind == "token":
             result[key] = _optional_token(item, field_name=field_name)
             if result[key] is None:
@@ -422,10 +424,7 @@ def _validate_options(value: object, kinds: Mapping[str, str], *, label: str) ->
             if (
                 not isinstance(item, (list, tuple))
                 or not 1 <= len(item) <= 128
-                or any(
-                    type(value) is not int or not 1 <= value <= 16_777_216
-                    for value in item
-                )
+                or any(type(value) is not int or not 1 <= value <= 16_777_216 for value in item)
                 or list(item) != sorted(set(item))
             ):
                 raise SessionProtocolError(

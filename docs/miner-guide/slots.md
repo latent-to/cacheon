@@ -92,6 +92,18 @@ other cache methods. It inherits the runtime cache interface instead of naming a
 particular SGLang cache class. The identity implementation establishes binding,
 not a speed win.
 
+The tiers under the tree are yours too. When the arena seals a host pool or a
+storage backend, the cache you receive already carries SGLang's transfer
+controller, host pools and storage attachment, and `build` may drive, wrap or
+replace them: decide what is backed up and when, what is evicted from the GPU,
+what is prefetched, or store pages in a format of your own. A bundle may write
+files inside the container through `os` calls and run worker threads; the
+arena's announcement names the storage directory and the byte budget stock
+runs with. If your cache restores host KV through its own copies, keep their
+stream at `cache_controller.l2_transfer_engine.host_to_device_stream`. On an
+arena sealed with `schedule_policy = "dfs-weight"`, overriding
+`dfs_weight_order` decides which waiting requests the scheduler admits first.
+
 A cache bundle is judged as the incumbent kernels with the candidate cache against
 the incumbent kernels with the incumbent cache, which is stock SGLang's until a
 cache is commissioned. The cache runs outside CUDA graphs, so it needs no captured

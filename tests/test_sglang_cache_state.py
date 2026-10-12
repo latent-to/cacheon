@@ -139,3 +139,18 @@ def test_recurrent_state_is_refused_rather_than_served_unchecked():
     ctx.params.req_to_token_pool.mamba_pool = NS()
     with pytest.raises(RuntimeError, match="state validation is unavailable"):
         _Guard(ctx)
+
+
+def test_a_host_restore_is_checked_on_the_cache_s_own_load_stream_or_refused():
+    """A cache with tiers of its own names its load stream where stock keeps it, or is refused."""
+    swa = NS(size=64, page_size=PAGE, kv_buffer=[torch.zeros(64 // PAGE + 1, PAGE * 2)])
+    guard = _Guard(_window_engine(swa))
+    tokens, row = list(range(16)), torch.arange(PAGE, PAGE + 16)
+    params = NS(key=Key(tokens + [99]), req=_request("query", tokens + [99], 1))
+    hit = NS(device_indices=row[:0], host_hit_length=16, swa_host_hit_length=0)
+    guard.matched(_cache(guard), params, hit, NS)
+    # The host hit waits for its load; on a GPU the validator waits on the stream the cache holds.
+    assert list(guard.hybrid.pending) == ["query"]
+    guard.device = NS(type="cuda")
+    with pytest.raises(RuntimeError, match="must keep its load stream at cache_controller"):
+        guard.hybrid.ready(_cache(guard))

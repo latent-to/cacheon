@@ -215,7 +215,10 @@ class PrefixStateAudit:
             transfer = getattr(controller, "l2_transfer_engine", None)
             stream = getattr(transfer, "host_to_device_stream", None)
             if stream is None:
-                raise RuntimeError("tree_cache: no native transfer stream for the hybrid host audit")
+                # A cache that brings its own tiers keeps its load stream where stock keeps
+                # it; without one its restores cannot be checked, which is its refusal.
+                self.guard.refuse("a cache that restores host KV must keep its load stream at "
+                                  "cache_controller.l2_transfer_engine.host_to_device_stream")
             # Wait only on the submitted copies, never on unrelated model/NCCL streams.
             self.torch.cuda.current_stream(self.guard.device).wait_stream(stream)
         for req, ids, length in self.pending.values():
