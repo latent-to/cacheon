@@ -572,39 +572,23 @@ def make_node_dispatcher(
 def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
     """Bind every registered node slot to the served model; return the bound names."""
 
-    # A served model may reach one module by several paths: the DeepSeek-V4.1 fork
-    # registers each decoder layer's successor as ``_next_layer``, and the
-    # deduplicating ``named_modules()`` then lists layer 3 only as
-    # ``model.layers.1._next_layer._next_layer``, so ``model.layers.*.mlp`` kept 3 of
-    # 40 layers on the 2026-10-12 image. Every path is listed; a slot binds a module
-    # once, and a second slot reaching it by any path is an overlap.
-    named: dict[str, torch.nn.Module] = {}
-    for name, module in runner.model.named_modules(remove_duplicate=False):
-        named.setdefault(name, module)
+    # Every path is listed: the DeepSeek-V4.1 fork reaches each decoder layer a second
+    # time as its predecessor's ``_next_layer``, and the deduplicating listing hid 37 of
+    # 40 layers from ``model.layers.*.mlp`` (2026-10-12 image). A module binds once; a
+    # second path to a bound module, under any slot, is the overlap error below.
+    named = dict(runner.model.named_modules(remove_duplicate=False))
     bound: dict[str, str] = {}
     for slot in sorted(s for s in registry.slots() if s != _CACHE):
         pattern = node_pattern(slot)
-        names: list[str] = []
-        for name in named:
-            if pattern.match(name) and not any(named[n] is named[name] for n in names):
-                names.append(name)
+        names = [name for name in named if pattern.match(name)]
         error = None
         if not names:
             error = f"node slot {slot!r} names no module of the served model"
         for name in names:
             # A claimed node inside another claimed node would run as the candidate
             # while the outer node's stock reference is taken, and never otherwise.
-            clash = next(
-                (
-                    o
-                    for o in bound
-                    if o == name
-                    or o.startswith(name + ".")
-                    or name.startswith(o + ".")
-                    or named[o] is named[name]
-                ),
-                None,
-            )
+            clash = next((o for o in bound if o == name or o.startswith(name + ".")
+                          or name.startswith(o + ".") or named[o] is named[name]), None)
             if clash is not None:
                 error = (
                     f"node {name!r} of {slot!r} overlaps node {clash!r} of {bound[clash]!r}"
