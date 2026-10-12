@@ -572,11 +572,22 @@ def make_node_dispatcher(
 def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
     """Bind every registered node slot to the served model; return the bound names."""
 
-    named = dict(runner.model.named_modules())
+    # A served model may reach one module by several paths: the DeepSeek-V4.1 fork
+    # registers each decoder layer's successor as ``_next_layer``, and the
+    # deduplicating ``named_modules()`` then lists layer 3 only as
+    # ``model.layers.1._next_layer._next_layer``, so ``model.layers.*.mlp`` kept 3 of
+    # 40 layers on the 2026-10-12 image. Every path is listed; a slot binds a module
+    # once, and a second slot reaching it by any path is an overlap.
+    named: dict[str, torch.nn.Module] = {}
+    for name, module in runner.model.named_modules(remove_duplicate=False):
+        named.setdefault(name, module)
     bound: dict[str, str] = {}
     for slot in sorted(s for s in registry.slots() if s != _CACHE):
         pattern = node_pattern(slot)
-        names = [name for name in named if pattern.match(name)]
+        names: list[str] = []
+        for name in named:
+            if pattern.match(name) and not any(named[n] is named[name] for n in names):
+                names.append(name)
         error = None
         if not names:
             error = f"node slot {slot!r} names no module of the served model"
@@ -584,7 +595,14 @@ def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
             # A claimed node inside another claimed node would run as the candidate
             # while the outer node's stock reference is taken, and never otherwise.
             clash = next(
-                (o for o in bound if o == name or o.startswith(name + ".") or name.startswith(o + ".")),
+                (
+                    o
+                    for o in bound
+                    if o == name
+                    or o.startswith(name + ".")
+                    or name.startswith(o + ".")
+                    or named[o] is named[name]
+                ),
                 None,
             )
             if clash is not None:

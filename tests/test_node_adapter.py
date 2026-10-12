@@ -296,6 +296,25 @@ def test_one_row_binds_every_matching_node_and_a_do_nothing_candidate_passes(aud
     assert torch.allclose(runner.token_to_kv_pool.k_buffer[0][batch.out_cache_loc], 2 * (x + 1.0)[:, :2])
 
 
+def test_bind_finds_a_node_the_model_also_reaches_through_another_path(audited):
+    # The DeepSeek-V4.1 fork registers each decoder layer's successor as ``_next_layer``;
+    # the deduplicating ``named_modules()`` then lists layer 1 only under
+    # ``layers.0._next_layer`` and ``layers.*.mlp`` kept 3 of 40 layers on the
+    # 2026-10-12 image.
+    runner, batch = _served_model()
+    runner.model.layers[0]._next_layer = runner.model.layers[1]
+    assert [n for n, _ in runner.model.named_modules() if n.endswith(".mlp")] == [
+        "layers.0.mlp",
+        "layers.0._next_layer.mlp",
+    ]
+    slot = "layers.*.mlp"
+    assert nodes.bind(runner, _registry(slot, _do_nothing)) == ["layers.0.mlp", "layers.1.mlp"]
+    x = torch.randn(2, 4)
+    for layer in runner.model.layers:
+        assert torch.allclose(layer.mlp(x.clone(), batch), (x + 1.0) * 2.0)
+    assert (audited[slot]["n"], audited[slot]["violations"]) == (2, 0)
+
+
 def test_candidate_sees_the_call_stock_saw_and_a_wrong_answer_is_a_violation(audited):
     runner, batch = _served_model()
     seen = []
