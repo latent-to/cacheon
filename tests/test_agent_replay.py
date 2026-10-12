@@ -65,13 +65,17 @@ def _inputs(tmp_path, turns=(('main', 0, ''), ('inner', 1, '::sub:000'))):
         }})
     path = export / 'profile_export.jsonl'
     path.write_text('\n'.join(json.dumps(m) for m in reversed(metadata)))
-    return plan, SimpleNamespace(rows=rows, stamps=stamps, _ns=lambda t: round(t * 1e9)), path
+    return plan, SimpleNamespace(rows=rows, stamps=stamps, cached={}, _ns=lambda t: round(t * 1e9)), path
 
 
 def test_join_keeps_source_kind_clock_and_exact_work(tmp_path):
     plan, bridge, _ = _inputs(tmp_path)
+    # The engine reported a cached-token count for the warm turn only; an unreported one stays unknown.
+    bridge.cached[f'{2:032x}'] = 48
     read = collect_read(plan, bridge)
     assert [(r.kind, r.ordinal) for r in read.records] == [('main', 0), ('inner', 0)]
+    assert [r.cached_tokens for r in read.records] == [None, 48]
+    assert json.loads((plan.output_directory / 'turns.jsonl').read_text().splitlines()[1])['cached_tokens'] == 48
     assert read.records[0].ttft_s == pytest.approx(.2)
     assert read.records[0].request_end_ns == 1_500_000_000
     # The credit is the round stamp: two rounds of 0.5 s each, not the 1.5 s makespan.
@@ -202,6 +206,70 @@ def test_window_is_one_sealed_load_flushed_before_its_read_and_retained(tmp_path
     assert events == ['flush', ('ready', 2, 1), ('read', 2, 1), 'flush', ('ready', 2, 2)]
     assert [r.window for r in result] == [1] and tuple(session.replay_reads) == result
     assert len(json.loads((stopped_plan.output_directory / 'window.json').read_text())['reads']) == 1
+
+    # A plan that retains its cache flushes once: the second window meets what the first left behind.
+    events.clear()
+    kept = replace(plan, output_directory=tmp_path / 'kept', retain_cache=True)
+    asyncio.run(agent_replay.run_replay(SimpleNamespace(replay_reads=[]), kept, tokenizer=object(), before_read=ready))
+    assert events == ['flush', ('ready', 2, 1), ('read', 2, 1), ('ready', 2, 2), ('read', 2, 2)]
+    assert plan.workload_identity()['cache_boundary'] == 'flush_device_and_host_before_each_load'
+    assert kept.workload_identity()['cache_boundary'] == 'flush_device_and_host_before_first_window'
+
+
+def test_round_width_is_sealed_work_and_bounded_by_half_the_load(tmp_path):
+    manifest = _write_slice(tmp_path, [_session(i, k=1, inner=0) for i in range(1, 5)])
+
+    def plan(**kwargs):
+        return AgentReplayPlan(manifest, (4,), Path('/bin/aiperf'), Path('/model'), tmp_path / 'out',
+                               ServiceContract(20, 2, .8), 'candidate', 1, 'B', **kwargs)
+
+    # Existing sealed identities carry no width key, so their digests are unchanged.
+    assert 'round_width' not in plan().workload_identity()
+    assert plan(round_width=2).workload_identity()['round_width'] == 2
+    for kwargs in ({'round_width': 3}, {'round_width': -1}, {'round_width': True}, {'retain_cache': 1}):
+        with pytest.raises(ValueError, match="round width|cache retention"):
+            plan(**kwargs)
+
+
+@pytest.mark.parametrize('arrival', [(0, 1, 2, 3), (3, 2, 1, 0)])
+def test_a_width_serves_the_longest_idle_conversations_whatever_order_their_requests_arrive(arrival):
+    import asyncio
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        rounds = _Rounds(4, loop.time, settle_s=0.01, first_wait_s=0.5, width=2)
+        released, turn = [], dict.fromkeys('abcd', 0)
+
+        async def request(name):
+            turn[name] += 1
+            request_id = f'{name}{turn[name]}'
+            stamp, ordinal = await rounds.hold(request_id, f'session-{name}')
+            released.append((stamp, ordinal, name))
+            return request_id
+
+        async def drain(tasks):
+            """Finish every released request and send each conversation's next turn in the given order."""
+            done, held = await asyncio.wait(tasks, timeout=0.1)
+            finished = sorted(task.result() for task in done)
+            for request_id in finished:
+                rounds.done(request_id)
+            names = [request_id[0] for request_id in finished]
+            return list(held) + [asyncio.create_task(request('abcd'[i])) for i in arrival if 'abcd'[i] in names]
+
+        # The first round still opens all four at once; every later round holds two back.
+        tasks = [asyncio.create_task(request('abcd'[i])) for i in arrival]
+        for _ in range(5):
+            tasks = await drain(tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        stamps = sorted({stamp for stamp, _, _ in released})
+        by_round = [[name for stamp, _, name in sorted(released) if stamp == s] for s in stamps]
+        # a and b ran in round 2, so c and d (idle longest) run in round 3, then a and b again.
+        assert by_round == [['a', 'b', 'c', 'd'], ['a', 'b'], ['c', 'd'], ['a', 'b'], ['c', 'd']]
+        assert [ordinal for _, ordinal, _ in sorted(released)] == list(range(12))
+
+    asyncio.run(scenario())
 
 
 def test_lockstep_rounds_release_together_in_session_order_and_fail_a_starved_first_round():

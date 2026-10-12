@@ -94,6 +94,10 @@ def test_sealed_commission_block_round_trips() -> None:
     listed = _block()
     listed["policy"] = {**listed["policy"], "audit_control_delta_digests": [_h("control")]}
     assert sealed.sealed_qualification_commission(listed) is listed
+    # Cache pressure and retention are optional sealed replay settings.
+    pressured = _block()
+    pressured["session"]["replay"] |= {"load": 4, "round_width": 2, "retain_cache": True}
+    assert sealed.sealed_qualification_commission(pressured) is pressured
 
 
 def test_pre_catalog_expansion_commission_schema_is_rejected() -> None:
@@ -139,6 +143,8 @@ def _mutations() -> list[tuple[str, dict[str, object]]]:
     case("non-list audit controls", policy__audit_control_delta_digests=_h("control"))
     case("open session block", session__extra=0)
     case("negative warmup", session__warmup_count=-1)
+    case("zero round width", session__replay={**_block()["session"]["replay"], "round_width": 0})
+    case("false cache retention", session__replay={**_block()["session"]["replay"], "retain_cache": False})
     case("non-string temperature", session__temperature=0.0)
     case("negative temperature", session__temperature="-0.5")
     case("open speed block", resident_speed__extra=0)

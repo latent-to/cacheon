@@ -178,8 +178,8 @@ host-owned cleanup; the trusted controller also owns timing.
 
 The sealed stopping rule, not the candidate, decides how many paired windows
 run, and the regrade checks that the retained windows stopped exactly where the
-rule stops. Both engines condition and flush before each window, and every
-window is retained. The last sealed window yields PASS or FAIL; a sealed futility
+rule stops. Both engines condition and flush before each window (before the first
+only when the replay is sealed to retain its cache), and every window is retained. The last sealed window yields PASS or FAIL; a sealed futility
 margin may FAIL the stage after the first orientation. Invalid baseline evidence
 cannot produce a candidate verdict.
 

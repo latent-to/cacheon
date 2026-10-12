@@ -244,6 +244,33 @@ def test_progress_cannot_supply_timing_or_escape_its_request(mutation, match):
         collector.observe(message)
 
 
+def test_engine_cache_accounting_rides_the_last_boundary_and_only_well_formed():
+    request, clock = _request(prompts=("alpha",)), _Clock(2.0)
+    split = {"device": 2, "host": 1, "storage_backend": "file"}
+    final = _chunk(0, 4, complete=True)
+    final["meta_info"] |= {"cached_tokens": 3, "cached_tokens_details": split}
+    frames = []
+    _generate(_engine([_chunk(0, 1), final], []), request, frames.append)
+    first, last = (parse_frame_bytes(frame, max_bytes=MAX_CONTROL_BYTES) for frame in frames)
+    assert "cached_tokens" not in first
+    assert (last["cached_tokens"], last["cached_tokens_details"]) == (3, split)
+    collector = HostTokenClock(request, clock, 1.0)
+    collector.observe(first)
+    clock.value = 3.0
+    collector.observe(last)
+    # A count the engine reports malformed is dropped at the worker, never framed.
+    final["meta_info"] |= {"cached_tokens": -1, "cached_tokens_details": {"device": 1.5}}
+    frames.clear()
+    _generate(_engine([final], []), request, frames.append)
+    assert not {"cached_tokens", "cached_tokens_details"} & set(parse_frame_bytes(frames[-1], max_bytes=MAX_CONTROL_BYTES))
+    # On the wire the fields belong to the last boundary alone and keep their bounded shape.
+    for boundary, cache in (("first", {"cached_tokens": 3}), ("last", {"cached_tokens": True}),
+                            ("last", {"cached_tokens_details": {}})):
+        forged = parse_frame_bytes(token_boundary(request, 0, boundary, 0, cache), max_bytes=MAX_CONTROL_BYTES)
+        with pytest.raises(SessionProtocolError, match="differs from the disclosed request"):
+            HostTokenClock(request, clock, 1.0).observe(forged)
+
+
 def test_missing_duplicate_and_forged_token_boundaries_are_not_metrics():
     request, clock = _request(prompts=("alpha",)), _Clock(2.0)
     collector = HostTokenClock(request, clock, 1.0)

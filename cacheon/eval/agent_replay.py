@@ -46,6 +46,11 @@ class AgentReplayPlan:
     windows: int = 1
     elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
     max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
+    # Cache pressure: a round releases at most this many of the load's live conversations,
+    # least recently served first, so each waits load / round_width - 1 rounds with its KV cold.
+    round_width: int = field(default=0, metadata={"wire_optional": True})
+    # Flush before the first window only, so later windows meet what the cache kept.
+    retain_cache: bool = field(default=False, metadata={"wire_optional": True})
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -64,6 +69,12 @@ class AgentReplayPlan:
             raise ValueError("replay cost accounting must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
             raise ValueError("replay work deadline is outside its bound")
+        # At most half the load: a round then always fills from conversations that were already
+        # waiting, so its membership never depends on how fast a finished one sends its next turn.
+        if type(self.round_width) is not int or not 0 <= 2 * self.round_width <= self.loads[0]:
+            raise ValueError("replay round width must be at most half its load, or zero for every conversation")
+        if type(self.retain_cache) is not bool:
+            raise ValueError("replay cache retention must be boolean")
         object.__setattr__(self, "slice", manifest)
 
     def workload_identity(self) -> dict:
@@ -71,6 +82,7 @@ class AgentReplayPlan:
         return {
             **({"time_accounting": "elapsed-serving-span"} if self.elapsed_cost else {}),
             **({"max_work_seconds": self.max_work_seconds} if self.max_work_seconds else {}),
+            **({"round_width": self.round_width} if self.round_width else {}),
             "slice": self.slice.digest, "dataset": self.slice.dataset,
             "revision": self.slice.revision,
             "rules_json": json.dumps(self.slice.rules, sort_keys=True, separators=(",", ":"), allow_nan=False),
@@ -81,7 +93,8 @@ class AgentReplayPlan:
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
-            "cache_boundary": "flush_device_and_host_before_each_load",
+            "cache_boundary": ("flush_device_and_host_before_first_window" if self.retain_cache
+                               else "flush_device_and_host_before_each_load"),
         }
 
 
@@ -163,14 +176,24 @@ class _Rounds:
     order so rank placement is the same in every read, and each release is
     numbered in that order: the engine requires batch indices in dispatch
     order, which arrival order no longer is.
+
+    With a ``width``, every round after the first releases at most that many
+    requests and the rest stay held: the conversations served longest ago go
+    first, then session-key order, so each one waits its turn with its KV cold
+    while the others run. The choice depends on which round last served a
+    conversation, never on when its request arrived. The first round still
+    opens every conversation at once, so the untimed cold round is unchanged.
     """
 
     def __init__(self, openings: int, clock, settle_s: float = _ROUND_SETTLE_S,
-                 first_wait_s: float = _FIRST_ROUND_WAIT_S):
+                 first_wait_s: float = _FIRST_ROUND_WAIT_S, width: int = 0):
         self.openings, self.clock, self.settle_s, self.first_wait_s = openings, clock, settle_s, first_wait_s
+        self.width = width
         self.pending: dict[str, tuple[str, asyncio.Future]] = {}
         self.inflight: set[str] = set()
+        self.served: dict[str, int] = {}
         self.first_released = False
+        self.round = 0
         self.released = 0
         self._timer = None
 
@@ -205,14 +228,22 @@ class _Rounds:
         if (self.inflight or not self.pending
             or (not self.first_released and len(self.pending) < self.openings)):
             return
+        held = sorted(self.pending.items(), key=lambda item: item[1][0])
+        if self.width and self.first_released:
+            held.sort(key=lambda item: self.served.get(item[1][0], -1))  # stable: key order within a round
+            held = sorted(held[: self.width], key=lambda item: item[1][0])
         self.first_released = True
         stamp = self.clock()
-        for request_id, (_key, future) in sorted(self.pending.items(), key=lambda item: item[1][0]):
+        for request_id, (key, future) in held:
+            del self.pending[request_id]
             if not future.done():
                 self.inflight.add(request_id)
+                self.served[key] = self.round
                 future.set_result((stamp, self.released))
                 self.released += 1
-        self.pending.clear()
+        self.round += 1
+        if not self.inflight:  # every chosen request had already failed: the held ones still need a round
+            self._arm()
 
     def _starve(self) -> None:
         self._timer = None
@@ -227,12 +258,13 @@ class _Rounds:
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
-    def __init__(self, session, exchange, tokenizer, output: Path, load: int):
+    def __init__(self, session, exchange, tokenizer, output: Path, load: int, width: int = 0):
         self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
         self.stamps: dict[str, int] = {}
-        self.rounds = _Rounds(load, session.clock)
+        self.cached: dict[str, int] = {}
+        self.rounds = _Rounds(load, session.clock, width=width)
         self.placement = _Placement(session.plan.engine_config.engine_kwargs.get("dp_size", 1))
         self.failed = asyncio.Event()
         self.offset_ns = time.time_ns() - round(session.clock() * 1e9)
@@ -316,6 +348,14 @@ class ReplayBridge:
                 raise ValueError("tokenizer's final output changed its delivered prefix")
             usage = {"prompt_tokens": prompt.prompt_tokens, "completion_tokens": len(prompt.output_ids),
                      "total_tokens": prompt.prompt_tokens + len(prompt.output_ids)}
+            # The engine's own cache accounting rode the last token boundary, already validated.
+            cache = {}
+            while not progress.empty():
+                event = progress.get_nowait()
+                if event["boundary"] == "last":
+                    cache = {key: event[key] for key in ("cached_tokens", "cached_tokens_details") if key in event}
+            if "cached_tokens" in cache:
+                self.cached[external_id] = cache["cached_tokens"]
             self.rows[external_id] = row
             self.raw.write(json.dumps({
                 "x_request_id": external_id, "batch_index": index,
@@ -323,7 +363,7 @@ class ReplayBridge:
                 "request_start_ns": self._ns(row.request_started_at),
                 "first_token_ns": self._ns(row.request_started_at + row.prompt_latencies[0][0]),
                 "request_end_ns": self._ns(row.response_completed_at),
-                **usage,
+                **usage, **cache,
             }) + "\n")
             self.raw.flush()
             await emit(text[len(prefix):], usage=usage)
@@ -370,6 +410,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
             root, kind, ordinals[key], bridge.stamps[external_id], bridge._ns(row.request_started_at),
             bridge._ns(row.request_started_at + row.prompt_latencies[0][0]),
             bridge._ns(row.response_completed_at), prompt.prompt_tokens, len(prompt.output_ids), "ok",
+            bridge.cached.get(external_id),
         ))
         ordinals[key] += 1
     if seen != set(bridge.rows):
@@ -404,7 +445,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
     for source in sorted(current.directory.glob("*.json"))[:load]:
         (pool / source.name).symlink_to(source.resolve())
     async with session.exchange() as exchange:
-        bridge = ReplayBridge(session, exchange, tokenizer, output, load)
+        bridge = ReplayBridge(session, exchange, tokenizer, output, load, plan.round_width)
         app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
         app.router.add_post("/v1/chat/completions", bridge.chat)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)
@@ -476,7 +517,10 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
 async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_read=None) -> tuple[LoadRead, ...]:
     """Execute the sealed windows of one load, flushing cache before each window's read.
 
-    ``before_read`` synchronizes paired lanes after their cache flushes and
+    A plan that retains its cache flushes before the first window only: later
+    windows replay the same prompts against whatever the cache kept, on device
+    or in a lower tier, which is how a conversation returning after a long idle
+    is scored. ``before_read`` synchronizes paired lanes after their cache flushes and
     before releasing either client's first request of that window, and returns
     whether the sealed sequential rule still wants that window. Single-lane
     execution uses the identical read and retained evidence path without a
@@ -490,7 +534,8 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_r
     reads = []
     (load,) = plan.loads
     for window in range(1, plan.windows + 1):
-        await flush_cache(session)
+        if window == 1 or not plan.retain_cache:
+            await flush_cache(session)
         if before_read is not None and not await before_read(load, window):
             break
         read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")

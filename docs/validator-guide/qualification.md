@@ -526,11 +526,17 @@ same epoch clock domain, with the monotonic-to-epoch anchor retained in `clock.j
 
 Each engine stays loaded across the windows of its orientation. Before each load, the controller
 requires an acknowledged SGLang cache flush covering device radix state and
-the HiCache host pool. Failure stops the window. Each load's fresh output
+the HiCache host pool. Failure stops the window. A replay sealed with
+`retain_cache` flushes before the first window of an orientation only: every
+later window replays the same prompts against what the cache kept on the device
+or in a lower tier. Each load's fresh output
 directory retains the AIPerf command, log and raw export,
 `bridge.jsonl` with canonical inputs, actual output IDs and host timing,
 `turns.jsonl` in the service-capacity record format, and `read.json` with fixed
-work rate and attainment. `window.json` retains the workload identity and the
+work rate and attainment. Both files also carry the engine's own `cached_tokens`
+count for each request, and `bridge.jsonl` its per-tier `cached_tokens_details`
+when the engine reports one. The count comes from inside the measured process:
+it explains a cost and decides no verdict. `window.json` retains the workload identity and the
 read. The existing engine-session evidence also carries
 the typed `LoadRead` records, so continuation retains them with the token evidence.
 A window does not by itself provide the paired capacity comparison, quality audit or
@@ -567,7 +573,15 @@ Replay qualification is commissioned with `session.replay`: absolute `manifest_p
 single operating `load`, and the number of paired `windows`. Optional
 `max_work_seconds` bounds replay work, split across orientations in proportion to
 their window budgets; expiry aborts, never grades incomplete work. Engine startup
-retains its separate OCI initialization deadline. `resident_speed.goodput`
+retains its separate OCI initialization deadline. Optional `round_width` puts the
+prefix cache under pressure: after the opening round, a round releases at most
+that many of the `load` live conversations, the ones served longest ago first and
+session-key order among equals, so each conversation waits
+`load / round_width - 1` rounds while the others run. It is at most half of
+`load`, so a round's members never depend on client timing. Optional
+`retain_cache: true` keeps the cache across the windows of an orientation.
+Both settings are part of the sealed workload identity; a replay without them
+keeps its existing identity. `resident_speed.goodput`
 seals the service `contract`
 (`decode_floor_tps`, `ttft_bound_s`, `attainment`), `required` ratio, paired
 `null_noise`, fixed `attainment_tolerance`, and its calibrated one-sided

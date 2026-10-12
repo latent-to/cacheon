@@ -24,10 +24,30 @@ _BINDING = ("session_id", "launch_digest", "request_id", "nonce", "batch_index")
 _FIELDS = frozenset(
     (*_BINDING, "schema", "type", "prompt_index", "boundary", "token_id")
 )
+# What the engine says a finished request read from its prefix cache, and from which
+# tier. It rides the last boundary as observability: the count comes from inside the
+# candidate's process, so no verdict reads it.
+_CACHE_FIELDS = ("cached_tokens", "cached_tokens_details")
+
+
+def cache_report(meta: dict) -> dict:
+    """The well-formed part of the engine's cached-token accounting, or nothing."""
+    report: dict = {}
+    cached = meta.get("cached_tokens")
+    if type(cached) is int and cached >= 0:
+        report["cached_tokens"] = cached
+    details = meta.get("cached_tokens_details")
+    if type(details) is dict and 0 < len(details) <= 8 and all(
+        type(key) is str and 0 < len(key) <= 32
+        and ((type(value) is int and value >= 0) or (type(value) is str and len(value) <= 64))
+        for key, value in details.items()
+    ):
+        report["cached_tokens_details"] = dict(details)
+    return report
 
 
 def token_boundary(
-    request: BatchRequest, index: int, boundary: str, token: int
+    request: BatchRequest, index: int, boundary: str, token: int, cache: dict | None = None
 ) -> bytes:
     """Frame one token boundary under the existing batch identity."""
     return frame_message(
@@ -38,6 +58,7 @@ def token_boundary(
             "prompt_index": index,
             "boundary": boundary,
             "token_id": token,
+            **(cache or {}),
         },
         max_bytes=MAX_CONTROL_BYTES,
     )
@@ -116,7 +137,7 @@ async def generate_outputs(
                     "stream completed before its exact token budget"
                 )
             final[index] = row
-            await emit(token_boundary(request, index, "last", ids[-1]))
+            await emit(token_boundary(request, index, "last", ids[-1], cache_report(meta)))
     if len(final) != request.prompt_count:
         raise SessionProtocolError("stream ended without every prompt's final output")
     return [final[index] for index in range(request.prompt_count)]
@@ -191,9 +212,11 @@ class HostTokenClock:
         now = float(self.clock())
         if not math.isfinite(now) or now < self.previous:
             raise SessionProtocolError("host token clock moved backwards")
+        cache = {key: message[key] for key in _CACHE_FIELDS if key in message} if type(message) is dict else {}
         if (
             type(message) is not dict
-            or set(message) != _FIELDS
+            or set(message) - cache.keys() != _FIELDS
+            or (cache and (message.get("boundary") != "last" or cache_report(cache) != cache))
             or message["schema"] != SESSION_SCHEMA
             or message["type"] != "token_boundary"
             or any(

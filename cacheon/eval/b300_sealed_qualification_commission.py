@@ -373,15 +373,17 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
         )
     from cacheon.eval.goodput_runtime import GoodputPolicy
     replay = session["replay"]
-    if type(replay) is not dict or set(replay) - {"max_work_seconds"} != {
+    if type(replay) is not dict or set(replay) - {"max_work_seconds", "round_width", "retain_cache"} != {
         "manifest_path", "slice_digest", "load", "windows", "aiperf_binary", "tokenizer_path",
     }:
         raise B300RegisteredQualificationError("sealed replay fields differ")
     _digest(replay["slice_digest"], "replay slice")
     _commission_int(replay["load"], "replay load", minimum=1)
     _commission_int(replay["windows"], "replay windows", minimum=1)
-    if "max_work_seconds" in replay:
-        _commission_int(replay["max_work_seconds"], "replay work seconds", minimum=1)
+    for name in {"max_work_seconds", "round_width"} & set(replay):
+        _commission_int(replay[name], f"replay {name}", minimum=1)
+    if replay.get("retain_cache", True) is not True:
+        raise B300RegisteredQualificationError("sealed replay retain_cache must be true or absent")
     if any(type(replay[key]) is not str or not Path(replay[key]).is_absolute()
            for key in ("manifest_path", "aiperf_binary", "tokenizer_path")):
         raise B300RegisteredQualificationError("sealed replay paths must be absolute")

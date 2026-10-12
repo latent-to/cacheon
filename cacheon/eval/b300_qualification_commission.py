@@ -481,6 +481,7 @@ def _compose_locked(
         goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
         elapsed_cost=True,
         max_work_seconds=settings.get("max_work_seconds", 0),
+        round_width=settings.get("round_width", 0), retain_cache=settings.get("retain_cache", False),
     )
     if replay.slice.digest != settings["slice_digest"]:
         raise B300QualificationCommissionError("replay slice differs from its sealed authority")
