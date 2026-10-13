@@ -417,11 +417,22 @@ def result_execution_authorities(expected, reference, clocks):
     body, values = reopen_recovery(expected.evidence_root, reference, expected=expected)
     domains = tuple(body["origins"][stage]["boot"] if stage in body["origins"]
                     else body["replacement_boot"] for stage in ("speed", "audit", "quality"))
-    if tuple(clocks) != domains[:len(clocks)] or len(clocks) not in (2, 3):
+    if tuple(clocks) != domains[:len(clocks)] or len(clocks) not in (1, 2, 3):
         raise QualificationContinuationError("result clock domains differ from its worker handoff")
     audit = values.get("audit", values["replacement"])
     quality = values.get("quality", values["replacement"])
-    reference_value = replace(expected, pristine_launch=quality.pristine_launch,
-        pristine_binding=quality.pristine_binding, reference_preflight=quality.reference_preflight,
-        expected_device_policy_digest=quality.expected_device_policy_digest)
-    return audit.resident_audit_plan, reference_value
+    return audit.resident_audit_plan, quality
+
+
+def reference_execution_matches(expected, actual, session):
+    """Keep frozen reference math while binding T to its actual replacement launch."""
+    from cacheon.eval.qualification import ReferenceManifest
+
+    actual = expected if actual is None else actual
+    if type(actual) is not ReferenceManifest:
+        return False
+    movable = {"pristine_launch_digest", "logical_hardware_digest"}
+    return (all(getattr(expected, name) == getattr(actual, name)
+                for name in expected.__dataclass_fields__ if not name.startswith("_") and name not in movable)
+            and session.reference_manifest_digest == actual.digest
+            and session.launch_digest == actual.pristine_launch_digest)

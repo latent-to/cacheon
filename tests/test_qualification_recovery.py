@@ -30,6 +30,72 @@ def test_recovery_excludes_repair_downtime_without_retiming_evidence():
         replace(timing, audit_started_monotonic_s=2.0)
 
 
+def test_replacement_reference_uses_its_actual_launch_and_frozen_math(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import tests.test_b300_registered_qualification as fixtures
+    from tests.test_device_state import _policy
+    from tests.test_oci_reference_session import _request
+    from cacheon.eval import qualification_worker_checkpoint as checkpoint
+    from cacheon.eval.evidence_store import publish_evidence
+    from cacheon.eval.oci_backend import expected_runtime_preflight
+    from cacheon.eval.oci_reference_session import ReferenceSessionPlan
+    from cacheon.eval.qualification_continuation import QualificationContinuationStore
+    from cacheon.stack_identity import canonical_json_bytes
+
+    original_case, original_binding = fixtures._case, fixtures._local_binding
+
+    def moved_binding(tree, native, launch, preflight):
+        binding = original_binding(tree, native, launch, preflight, physical_id="2")
+        return replace(binding, launch_binding=replace(binding.launch_binding,
+            physical_hardware=replace(binding.launch_binding.physical_hardware,
+                device_policy_digest=launch.hardware.device_policy_digest)))
+
+    def moved_case(path):
+        case = original_case(path)
+        case.launch = replace(case.launch, hardware=replace(case.launch.hardware,
+            device_policy_digest=_d("replacement-device-policy")))
+        case.baseline_binding = moved_binding(case.baseline_tree,
+            case.baseline_binding.launch_binding.native_build_spec, case.launch, case.preflight)
+        case.session = replace(case.session, launch_digest=case.launch.digest,
+            expected_preflight=expected_runtime_preflight(case.launch, case.preflight))
+        return case
+
+    first = fixtures._harness(tmp_path / "original")
+    secret = b"replacement-regression-private-seed"
+    value = first.factory.plan_builder(first.cohort, secret)
+    with monkeypatch.context() as changed:
+        changed.setattr(fixtures, "_case", moved_case)
+        changed.setattr(fixtures, "_local_binding", moved_binding)
+        second = fixtures._harness(tmp_path / "replacement")
+        replacement = second.factory.plan_builder(second.cohort, secret)
+    scope = QualificationContinuationStore(tmp_path / "checkpoint").scope(
+        request_digest=_d("original-request"), authority_digest=runner.qualification_authority_digest(value),
+        source_digest=value.prepared.source.digest)
+    executor = SimpleNamespace(device_policy=_policy())
+    origins = []
+    for clock, plan in (("old-boot", value), ("new-boot", replacement)):
+        monkeypatch.setattr(checkpoint, "_clock_domain", lambda clock=clock: clock)
+        origins.append(checkpoint._public_origin(checkpoint.capture_origin(plan, scope, executor, executor)))
+    body = {"schema": checkpoint.RECOVERY_SCHEMA, "authority": runner.qualification_authority_digest(value),
+            "origins": {"speed": origins[0]}, "replacement_boot": "new-boot", "replacement": origins[1]}
+    reference = publish_evidence(value.evidence_root, canonical_json_bytes(body),
+        domain=checkpoint.RECOVERY_DOMAIN, media_type="application/json", schema=checkpoint.RECOVERY_SCHEMA)
+    _audit, actual = checkpoint.result_execution_authorities(value, reference, ("old-boot", "new-boot", "new-boot"))
+    assert actual.pristine_launch.digest != value.pristine_launch.digest
+    manifest = actual.candidates[0].profile.reference
+    request = _request(manifest, session_id="1" * 32, plan_digest=_d("reference-request"), index=0)
+    plan = ReferenceSessionPlan(manifest, actual.pristine_stack, actual.reference_engine_config.digest,
+        actual.reference_engine_config, actual.reference_preflight, request.plan_digest, (request,))
+    assert plan.reference.pristine_launch_digest == actual.pristine_launch.digest
+    session = SimpleNamespace(reference_manifest_digest=manifest.digest, launch_digest=actual.pristine_launch.digest)
+    frozen = value.candidates[0].profile.reference
+    assert checkpoint.reference_execution_matches(frozen, manifest, session)
+    assert not checkpoint.reference_execution_matches(frozen, None, session)
+    assert not checkpoint.reference_execution_matches(frozen, replace(manifest, model_content_digest=_d("other-model")), session)
+    with pytest.raises(QualificationContinuationError, match="clock domains"):
+        checkpoint.result_execution_authorities(value, reference, ("new-boot", "new-boot", "new-boot"))
+
+
 @pytest.mark.parametrize("failure", ["reference", "missing_rank", "empty", "under_covered"])
 def test_audit_infrastructure_does_not_publish_miner_failure(monkeypatch, failure):
     harness, baseline, _reference, exits = _resident_case(monkeypatch)

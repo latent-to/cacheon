@@ -52,7 +52,7 @@ from cacheon.eval.oci_session_protocol import (
 )
 from cacheon.eval.qualification import (
     QualificationDecision, QualificationProfile, SelectionCommitment,
-    SelectionEntropyReceipt, SelectionReceipt, _selected_prompt_texts, _trajectory_rows,
+    SelectionEntropyReceipt, SelectionReceipt, _trajectory_rows,
     candidate_lifecycle_digest, cohort_trajectory_digest, derived_hidden_task_plan_digest,
     qualification_identity_digest,
     declared_qualification_entropy_digest,
@@ -959,10 +959,6 @@ class AuditWitness:
         return canonical_digest("cacheon.qualification.slot-audit-witness.v1", self.to_dict())
 
 
-
-
-
-
 def _candidate_runtime_resource_policy_digest(value: object) -> str:
     if type(value) is ResidentSpeedWitness:
         return value.candidate_runtime_resource_policy_digest
@@ -1388,7 +1384,7 @@ def _selected_frames(
     if lifecycle.plan.selected_delta_digest != selected_delta_digest:
         raise QualificationRunnerError("selected candidate is absent or ambiguous")
     by_prompt = dict(_trajectory_rows(lifecycle)[1])
-    texts = _selected_prompt_texts(lifecycle)
+    texts = {row.prompt_digest: row.input_ids for row in lifecycle.crossover.reference_inputs}
     result = []
     for prompt in prompts:
         if prompt not in by_prompt or prompt not in texts:
@@ -1853,11 +1849,10 @@ def reopen_qualification_stage_exit(
                 raise QualificationRunnerError(
                     "speed stage exit does not independently regrade"
                 )
-        if result.audit_witness is not None:
-            from cacheon.eval.qualification_worker_checkpoint import result_execution_authorities
+        from cacheon.eval.qualification_worker_checkpoint import result_execution_authorities
 
-            actual_audit, _ = result_execution_authorities(expected, result.worker_recovery,
-                                                           result.clock_domains)
+        actual_audit, _ = result_execution_authorities(expected, result.worker_recovery, result.clock_domains)
+        if result.audit_witness is not None:
             audit = result.audit_witness
             policy = expected.audit_policies[0]
             if (
@@ -2263,6 +2258,8 @@ def run_causal_qualification(
             None,
             None,
             None,
+            **({"worker_recovery": continuation.worker_recovery_reference,
+                "clock_domains": (recovery["speed"].origin["boot"],)} if recovery else {}),
         )
         reference = publish_qualification_stage_exit(
             value.evidence_root, terminal
@@ -2336,6 +2333,7 @@ def run_causal_qualification(
             calibration=calibration,
             reference_execution=reference_execution,
             reference_request_sha256=exchange.request_sha256,
+            **({"execution_reference": plan.reference} if recovery else {}),
         )
         raw_ref = publish_evidence(
             value.evidence_root,

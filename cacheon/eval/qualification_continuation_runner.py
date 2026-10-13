@@ -214,21 +214,21 @@ def run_continuation_quality_stage(
              "speed_evidence_policy": value.speed_evidence_policy.to_dict(),
              "resident_speed_evidence": speed.evidence_digest},
         )
+        reference_value = recovery["quality"].execution if "quality" in recovery else execution_value
         if quality_state is None:
             session_id = make_id()
             requests = tuple(owner._reference_request(
                 lifecycle, authority, selection, session_id=session_id,
                 plan_digest=request_plan_digest, request_id=make_id(), nonce=make_id(), index=index,
-            ) for index, authority in enumerate(value.candidates))
+            ) for index, authority in enumerate(reference_value.candidates))
         else:
             requests = quality_state.requests
             if len(requests) != len(value.candidates) or any(row.plan_digest != request_plan_digest for row in requests):
                 raise owner.QualificationContinuationError(
                     "quality continuation requests differ from the sealed request plan"
                 )
-        reference_value = recovery["quality"].execution if "quality" in recovery else execution_value
         plan = owner.ReferenceSessionPlan(
-            value.candidates[0].profile.reference, reference_value.pristine_stack,
+            reference_value.candidates[0].profile.reference, reference_value.pristine_stack,
             reference_value.reference_engine_config.digest, reference_value.reference_engine_config,
             reference_value.reference_preflight, request_plan_digest, requests,
         )

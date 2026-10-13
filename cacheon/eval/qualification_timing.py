@@ -167,7 +167,8 @@ class QualificationStageExit:
         object.__setattr__(self, "decision", owner._decision(self.decision))
         if (bool(self.clock_domains) != (self.worker_recovery is not None)
                 or self.worker_recovery is not None and (type(self.worker_recovery) is not EvidenceArtifactRef
-                    or type(self.clock_domains) is not tuple or len(self.clock_domains) != 2
+                    or type(self.clock_domains) is not tuple
+                    or len(self.clock_domains) != (1 if self.audit_witness is None else 2)
                     or any(type(row) is not str or not row for row in self.clock_domains))):
             raise owner.QualificationRunnerError("stage exit clocks lack their worker recovery")
         if (

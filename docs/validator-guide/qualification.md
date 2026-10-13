@@ -265,6 +265,10 @@ original speed policy, workload, model, image, contribution and numerical thresh
 remain bound throughout recovery. Public recovery evidence excludes private
 selection secrets.
 
+Pristine T's request, reference manifest and execution receipt name the worker that
+actually executes it. Recovery preserves the original selection and calibration
+for grading and verifies that the reference differs only in its hardware binding.
+
 The registered pod service exposes `checkpoint-status --request-id ID` with its
 ordinary pod-path arguments. `cpu-serve` polls it alongside result status; operators
 do not need a separate mirror or import script. Register the provided SSH login

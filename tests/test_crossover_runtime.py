@@ -246,6 +246,14 @@ def test_resident_speed_witness_round_trips_through_its_stage_exit(
         None,
     )
     assert QualificationStageExit.from_dict(stage.to_dict()) == stage
+    from cacheon.eval.evidence_store import EvidenceArtifactRef
+
+    recovered = replace(stage, clock_domains=("original-worker",),
+        worker_recovery=EvidenceArtifactRef("qualification.worker-recovery", "c" * 64, 1,
+            "application/json", "cacheon.qualification.worker-recovery.v1"))
+    assert QualificationStageExit.from_dict(recovered.to_dict()) == recovered
+    with pytest.raises(QualificationRunnerError, match="clocks"):
+        replace(recovered, clock_domains=("original-worker", "unused-worker"))
 
     tampered = witness.to_dict()
     tampered["baseline_lane_digest"] = plan.candidate_lane_digest
