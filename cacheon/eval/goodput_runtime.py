@@ -8,6 +8,7 @@ import hashlib
 import math
 import threading
 from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 
 from cacheon.eval.continuation_codec import ContinuationCodec
 from cacheon.eval.service_capacity import (
@@ -209,7 +210,42 @@ def _orientation_plan(plan, windows, *, swapped=False):
                    candidate=arm(plan.candidate, candidate_lane))
 
 
-def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount, deadline, clock, quality_control):
+def _host_boot_id():
+    """Linux's boot ID binds retained monotonic timestamps across controller restarts."""
+    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+
+def _reopen_orientation(plan, retained):
+    """Recompute the first orientation from the same raw sessions used by final regrading."""
+    from cacheon.eval.qualification_continuation import QualificationContinuationError
+    from cacheon.eval.scoring import marginal_workload_digest
+
+    replay = plan.baseline.session_plan.replay
+    first_plan = _orientation_plan(plan, replay.windows // 2)
+    executions, quiet = retained["executions"], retained["quiescence"]
+    expected = tuple(sorted((root, main, inner) for root, (main, inner) in
+                            replay.slice.expected_work(replay.loads[0]).items()))
+    try:
+        reads = GoodputReadSet(*(row.session.replay_reads for row in executions), expected, replay.windows)
+        sessions = [(read, execution, arm, ()) for read, execution, arm in zip(
+            (reads.incumbent, reads.candidate), executions,
+            (first_plan.baseline, first_plan.candidate), strict=True)]
+        _validate_replay_sessions(sessions, replay)
+        for (_, execution, arm, _), receipt in zip(sessions, quiet, strict=True):
+            if (len(execution.session.replay_reads) != replay.windows // 2
+                or receipt.namespace_digest != arm.executor_namespace_digest
+                or not retained["started"] <= execution.session.ready_completed_at
+                <= execution.session.session_completed_at <= receipt.observed_monotonic_s):
+                raise ValueError("first orientation is incomplete or its closure differs")
+        return dict(reads=reads, grade=reads.grade(plan.policy.goodput), executions=executions,
+                    started=retained["started"], quality=((), (), None),
+                    workload=marginal_workload_digest(plan.baseline.session_plan))
+    except (ValueError, CrossoverRuntimeError) as exc:
+        raise QualificationContinuationError(f"retained speed orientation is invalid: {exc}") from None
+
+
+def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount, deadline, clock,
+                     quality_control, continuation=None):
     """Run both lane orientations of one statistically graded replay, or only the first on a futility FAIL."""
     from transformers import AutoTokenizer
 
@@ -218,8 +254,6 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
     tokenizers = tuple(AutoTokenizer.from_pretrained(
         arm.session_plan.replay.tokenizer_path, trust_remote_code=True, local_files_only=True,
     ) for arm in (plan.baseline, plan.candidate))
-    kwargs = dict(model_mount=model_mount, deadline=deadline, clock=clock,
-                  quality_control=quality_control, tokenizers=tokenizers)
     if not plan.policy.goodput.error_rate:
         raise ValueError("V16 replay is regrade-only; new runs require the statistical policy")
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _expected_lane_digest
@@ -228,8 +262,33 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
     if not 2 <= windows <= 5:
         raise ValueError("statistical replay requires two to five paired windows")
     split = windows // 2
-    first = _run_orientation(_orientation_plan(plan, split), baseline_executor=baseline_executor,
-                             candidate_executor=candidate_executor, full_plan=plan, **kwargs)
+    boot_id = None if continuation is None else _host_boot_id()
+    retained = None if continuation is None else continuation.load_speed_orientation(plan.digest, boot_id)
+    kwargs = dict(model_mount=model_mount, deadline=deadline, clock=clock,
+                  quality_control=quality_control, tokenizers=tokenizers)
+    if retained is None:
+        first = _run_orientation(_orientation_plan(plan, split), baseline_executor=baseline_executor,
+                                 candidate_executor=candidate_executor, full_plan=plan, **kwargs)
+        if continuation is not None:
+            quiet = (baseline_executor.prove_quiescent(), candidate_executor.prove_quiescent())
+            continuation.record_speed_orientation(plan.digest, boot_id, first["started"],
+                                                   tuple(first["executions"]), quiet)
+    else:
+        from cacheon.eval.crossover_runtime import _lane_digest
+        from cacheon.eval.qualification_continuation import QualificationContinuationError
+
+        first = _reopen_orientation(plan, retained)
+        try:
+            _lane_digest(baseline_executor, plan.baseline)
+            _lane_digest(candidate_executor, plan.candidate)
+        except CrossoverRuntimeError as exc:
+            raise QualificationContinuationError(f"retained speed executor changed: {exc}") from None
+        now = float(clock())
+        deadline = min(deadline, first["started"] + plan.policy.max_stage_seconds)
+        if (not math.isfinite(now) or now < max(row.observed_monotonic_s for row in retained["quiescence"])
+            or now >= deadline):
+            raise QualificationContinuationError("retained speed orientation has no remaining clock budget")
+        kwargs["deadline"] = deadline
     if first["grade"].decision is SpeedStageDecision.FAIL:
         # Only the sealed futility margin fails one orientation; simulated at the live seal, the second
         # boot would have turned fewer than 1 in 500 of these stops into a PASS.
@@ -374,8 +433,6 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
 
 def regrade_goodput_execution(evidence, plan):
     """Verify complete replay records against the sealed workload and host pipe evidence."""
-    from cacheon.eval.crossover_runtime import _validate_execution_binding, _expected_lane_digest
-
     replay = plan.baseline.session_plan.replay
     (load,) = replay.loads
     expected = tuple(sorted((root, main, inner) for root, (main, inner) in replay.slice.expected_work(load).items()))
@@ -407,6 +464,34 @@ def regrade_goodput_execution(evidence, plan):
             if completed > min(evidence.baseline_execution.session.ready_completed_at,
                                evidence.candidate_execution.session.ready_completed_at):
                 raise CrossoverRuntimeError("swapped read predates completion of its first orientation")
+    _validate_replay_sessions(sessions, replay)
+    # The lanes stopped where the sealed sequential rule stopped them, replayed from the retained rates.
+    work = replay.slice.expected_work(load)
+    ratios = [fixed_work_rate(cand, work).rate / fixed_work_rate(inc, work).rate
+              for cand, inc in zip(evidence.goodput.candidate, evidence.goodput.incumbent, strict=True)]
+    for read in range(1, len(ratios) + 1):
+        if plan.policy.goodput.error_rate:
+            prefix = replace(evidence.goodput, incumbent=evidence.goodput.incumbent[:read],
+                             candidate=evidence.goodput.candidate[:read])
+            again = prefix.grade(plan.policy.goodput).decision is SpeedStageDecision.NO_DECISION
+        else:
+            again = continue_windows(ratios[:read], required=plan.policy.goodput.required,
+                                     null_noise=plan.policy.goodput.null_noise, max_windows=replay.windows)
+        if again != (read < len(ratios)):
+            raise CrossoverRuntimeError("goodput reads did not stop where the sealed sequential rule stops")
+    if evidence.decision is SpeedStageDecision.PASS:
+        if not evidence.reference_inputs or not evidence.prompt_pairs or evidence.quality_entropy is None:
+            raise CrossoverRuntimeError("passing replay lacks its selected incumbent quality controls")
+        from cacheon.eval.qualification_trajectories import validate_controls
+        validate_controls(evidence, plan)
+    return evidence.goodput.grade(plan.policy.goodput)
+
+
+def _validate_replay_sessions(sessions, replay):
+    """Share raw-request validation between orientation recovery and final regrading."""
+    from cacheon.eval.crossover_runtime import _validate_execution_binding, _expected_lane_digest
+
+    (load,) = replay.loads
     for reads, execution, arm, controls in sessions:
         _validate_execution_binding(execution, arm)
         session = execution.session
@@ -443,23 +528,3 @@ def regrade_goodput_execution(evidence, plan):
                 or control.roles[2].output_ids != row.evidence.prompts[0].output_ids
                 or row.input_ids_sha256 != (hashlib.sha256(control.input_bytes).hexdigest(),)):
                 raise CrossoverRuntimeError("incumbent quality control differs from its completed request")
-    # The lanes stopped where the sealed sequential rule stopped them, replayed from the retained rates.
-    work = replay.slice.expected_work(load)
-    ratios = [fixed_work_rate(cand, work).rate / fixed_work_rate(inc, work).rate
-              for cand, inc in zip(evidence.goodput.candidate, evidence.goodput.incumbent, strict=True)]
-    for read in range(1, len(ratios) + 1):
-        if plan.policy.goodput.error_rate:
-            prefix = replace(evidence.goodput, incumbent=evidence.goodput.incumbent[:read],
-                             candidate=evidence.goodput.candidate[:read])
-            again = prefix.grade(plan.policy.goodput).decision is SpeedStageDecision.NO_DECISION
-        else:
-            again = continue_windows(ratios[:read], required=plan.policy.goodput.required,
-                                     null_noise=plan.policy.goodput.null_noise, max_windows=replay.windows)
-        if again != (read < len(ratios)):
-            raise CrossoverRuntimeError("goodput reads did not stop where the sealed sequential rule stops")
-    if evidence.decision is SpeedStageDecision.PASS:
-        if not evidence.reference_inputs or not evidence.prompt_pairs or evidence.quality_entropy is None:
-            raise CrossoverRuntimeError("passing replay lacks its selected incumbent quality controls")
-        from cacheon.eval.qualification_trajectories import validate_controls
-        validate_controls(evidence, plan)
-    return evidence.goodput.grade(plan.policy.goodput)

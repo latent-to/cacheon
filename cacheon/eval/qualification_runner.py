@@ -2243,10 +2243,9 @@ def run_causal_qualification(
     The speed read shape comes only from ``value.speed_evidence_policy`` so an
     operator cannot silently change the estimator after sealing intake authority.
 
-    With a ``continuation`` scope, authenticated durable products are written
-    after B/C/B-prime, after pristine T, and after the final product; on a
-    later call with the same sealed identity only the missing downstream work
-    runs — never the already-durable expensive stage.
+    A ``continuation`` retains completed speed orientations, audit, pristine T
+    and the final product. Reinvoking the original sealed scope reuses completed
+    work and executes only its missing stages.
     """
 
     if value.speed_evidence_policy.version != 3:
@@ -2355,7 +2354,7 @@ def run_causal_qualification(
                 baseline_executor=resident_baseline_executor,
                 candidate_executor=executor,
                 model_mount=value.model_mount,
-                deadline=float(deadline),
+                deadline=float(deadline), continuation=continuation,
                 quality_control=lambda controller, candidate, baseline_dir, candidate_dir, quiescence:
                     create_controls(value, controller, candidate, baseline_dir, candidate_dir,
                                     quiescence, entropy_provider),

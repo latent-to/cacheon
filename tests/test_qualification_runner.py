@@ -674,7 +674,7 @@ def _install_resident_runner_path(
             return type(other) is type(self) and self.to_dict() == other.to_dict()
 
     def run_resident(plan, *, baseline_executor, candidate_executor, model_mount, deadline,
-                     quality_control):
+                     quality_control, continuation=None):
         assert plan is harness.value.resident_speed_plan
         assert plan is not harness.value.resident_audit_plan
         harness.resident_speed_plans.append(plan)

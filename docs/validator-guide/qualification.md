@@ -221,6 +221,40 @@ Original timestamps, speed policy, numerical thresholds and bundle identity stay
 intact. Conflicting evidence, exhausted time or a clock reset stop before launch. Recovery grants no PASS or reward by itself: the
 normal grader, evidence import and settlement still consume the completed result.
 
+### Interrupted replay controllers
+
+When the ordinary qualification runner receives its authenticated continuation
+scope, it writes `speed_first.json` after both engines complete the first lane
+orientation and close, before launching the swapped orientation. This extends
+the existing continuation record with the two complete engine executions and
+their quiescence receipts; it does not introduce a new speed policy or verdict.
+The record also binds the original speed plan, start time and host boot ID.
+
+An explicit reinvocation of the same sealed qualification and continuation
+scope regrades the retained raw requests, reuses the first orientation and
+executes the swapped orientation. Partial swapped windows are not combined
+with a new engine lifetime. No first-orientation record means that orientation
+must execute in full. An existing malformed, incomplete or mismatched record
+holds before new execution rather than buying another first orientation.
+
+This recovery requires the same physical allocation and host boot. The speed
+stage keeps its original wall-clock budget, including interruption downtime;
+the inter-stage downtime exclusion above does not extend an unfinished speed
+stage. Moving to another machine, rebooting, or exhausting that budget is not
+supported by this checkpoint. The record must remain in the validator's private
+continuation store; local fsync alone does not provide off-instance durability.
+The pod service's restart disposition and chain retry behavior are unchanged:
+creating a replacement request is not a resume of this scope.
+
+Recovery acceptance requires a controlled-interruption run through the ordinary
+qualification runner on the commissioned image/model/topology. Interrupt its
+controller after the first-orientation record is durable, reopen the same sealed
+scope and verify that only the swapped orientation executes before the terminal
+result. Repeat with an interruption inside a swapped replay window. Retain the
+original plan, continuation and evidence roots, and recover only that run's owned
+stale containers before resuming. A VM shutdown, Docker restart, GPU reset or broad
+process kill is unnecessary for this test and can interrupt other work.
+
 T remains untimed and candidate-free. The host owns role assignment, monotonic clocks,
 token numerators, conditioning windows, absolute deadlines, device observations, audit
 grading, selection entropy, and teardown. Candidate wall-clock reports and aggregate

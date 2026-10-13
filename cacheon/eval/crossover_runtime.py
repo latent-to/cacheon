@@ -530,6 +530,7 @@ def run_resident_crossover_speed(
     deadline: float,
     clock: Callable[[], float] = time.monotonic,
     quality_control=None,
+    continuation=None,
 ) -> ResidentCrossoverEvidence:
     """Run the exact production speed stage for one candidate."""
 
@@ -546,6 +547,7 @@ def run_resident_crossover_speed(
     return run_goodput_pair(
         plan, baseline_executor=baseline_executor, candidate_executor=candidate_executor,
         model_mount=model_mount, deadline=deadline, clock=clock, quality_control=quality_control,
+        continuation=continuation,
     )
 
 
