@@ -59,7 +59,6 @@ from cacheon.chain.remote_worker_request_plan import (
 )
 from cacheon.chain.publication import reopen_worker_bundle
 from cacheon.chain.qualification_wait import await_response, _PreResidentRefusalObserved
-from cacheon.chain.qualification_request import qualification_request_body
 from cacheon.stack_identity import require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
 
@@ -604,18 +603,14 @@ class RecoverableQualificationDispatcher:
     def _expected_request(
         self, claim: ClaimedQualificationEvaluation, retained_body=None,
     ) -> RemoteEvaluationRequest:
+        from cacheon.chain.remote_worker_checkpoints import request_body
         return seal_remote_request(
             claim.lease,
             self.coordinator.readiness,
             self.coordinator.service.manifest.service_id,
             self.transport_identity,
             self.credential,
-            qualification_request_body(
-                self.coordinator, claim,
-                incumbent_stack_digest=self.qualification_incumbent_stack.digest,
-                incumbent_tree_digest=self.qualification_incumbent_tree_digest,
-                retained_body=retained_body,
-            ),
+            request_body(self, claim, retained_body),
         )
 
     def _reopen_plan(
@@ -780,9 +775,14 @@ class RecoverableQualificationDispatcher:
         | RecoverableQualificationRequeue
         | None
     ):
-        """Run or resume one FIFO item without ever creating replacement work."""
+        """Run one FIFO item, retaining its completed stages across worker replacement."""
 
         self._validate_live_authority()
+        from cacheon.chain.remote_worker_checkpoints import recover_replaced_worker
+
+        completed = recover_replaced_worker(self)
+        if completed is not None:
+            return completed
         selected = self._claim_or_reopen()
         if selected is None:
             return None

@@ -148,6 +148,7 @@ ALLOWED_ARTIFACT_ROLES = frozenset(
         "incumbent_authority",
         "qualification_authority",
         "qualification_payload",
+        "qualification_checkpoint",
         "worker_log",
     }
 )
@@ -221,11 +222,9 @@ def spool_digest(domain: str, payload: object) -> str:
 
 
 def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
+    """Hash the consumed file bytes without loading the whole carrier."""
     with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def require_digest(value: object, field: str) -> str:

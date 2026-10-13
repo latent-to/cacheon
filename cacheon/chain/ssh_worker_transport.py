@@ -168,6 +168,25 @@ def run_checked(
         fail(f"closed transport command failed: {type(exc).__name__}: {exc}")
 
 
+def copy_remote_file(registration, local: Path, remote: str, *, upload: bool, timeout: int = 1800) -> None:
+    """Stream one fixed spool file through the pod's registered SSH account."""
+    if not remote.startswith("/") or SAFE_ID.fullmatch(remote) is None:
+        fail("remote spool file path is not closed")
+    if registration["pod_user"] == "root":
+        endpoint = f"root@{registration['pod_host']}:{remote}"
+        pair = [str(local), endpoint] if upload else [endpoint, str(local)]
+        run_checked(scp_base(registration) + ["--", *pair], timeout=timeout)
+        return
+    command = ssh_base(registration) + ["sudo", "-n", "--", "tee" if upload else "cat", "--", remote]
+    try:
+        with local.open("rb" if upload else "wb") as handle:
+            subprocess.run(command, check=True, timeout=timeout,
+                stdin=handle if upload else subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL if upload else handle, stderr=subprocess.PIPE)
+    except (OSError, subprocess.SubprocessError) as exc:
+        fail(f"registered spool transfer failed: {type(exc).__name__}: {exc}")
+
+
 def remote_python_command(
     registration: Mapping[str, Any],
     site: RemotePodSite,
@@ -176,7 +195,8 @@ def remote_python_command(
     for value in arguments:
         if not isinstance(value, str) or SAFE_ID.fullmatch(value) is None:
             fail("remote service argument is not closed")
-    return [registration["python_executable"], site.service_path, *arguments]
+    prefix = [] if registration["pod_user"] == "root" else ["sudo", "-n", "--"]
+    return [*prefix, registration["python_executable"], site.service_path, *arguments]
 
 
 def remote_json(
@@ -215,11 +235,7 @@ def transfer_request(
     else:
         archive_sha = file_sha256(archive)
     remote_part = f"{site.pod_root}/incoming/.{request_id}.{archive_sha}.tar.part"
-    run_checked(
-        scp_base(registration)
-        + ["--", str(archive), f"root@{registration['pod_host']}:{remote_part}"],
-        timeout=1800,
-    )
+    copy_remote_file(registration, archive, remote_part, upload=True)
     run_checked(
         ssh_base(registration)
         + remote_python_command(
@@ -265,11 +281,8 @@ def pull_result(
     incoming.mkdir(parents=True, exist_ok=True, mode=0o700)
     archive = incoming / f"{request_id}.{archive_sha}.tar"
     if not archive.exists():
-        remote = (
-            f"root@{registration['pod_host']}:"
-            f"{site.pod_root}/outgoing/{request_id}.{archive_sha}.tar"
-        )
-        run_checked(scp_base(registration) + ["--", remote, str(archive)], timeout=1800)
+        copy_remote_file(registration, archive,
+                         f"{site.pod_root}/outgoing/{request_id}.{archive_sha}.tar", upload=False)
     if archive.stat().st_size != archive_size or file_sha256(archive) != archive_sha:
         fail("result archive bytes differ from pod receipt")
     temporary = results_root / f".{request_id}.extracting"
@@ -519,6 +532,10 @@ def cpu_serve(
                         )
                         active = None
                         continue
+                    from cacheon.chain.remote_worker_checkpoints import pull_checkpoint
+
+                    pull_checkpoint(registration, site, job_dir, request, spool_root,
+                                    identity=identity, credential=credential)
                     if active not in {None, request_id}:
                         break
                     if state is None or state.get("state") != "transferred":
@@ -703,6 +720,11 @@ class DurableSpoolAuthenticatedWorkerTransport:
                 publication_path = scratch / f"candidate-publication-{index}.tar"
                 publication_archive(publication, publication_path)
                 carriers.append(("candidate_publication", publication_path))
+            if "checkpoint_digest" in request.body:
+                checkpoint = self.spool_root / "checkpoints" / (request.body["checkpoint_digest"] + ".json.gz")
+                if file_sha256(checkpoint) != request.body["checkpoint_digest"]:
+                    fail("requested replacement checkpoint changed before dispatch")
+                carriers.append(("qualification_checkpoint", checkpoint))
             lease = EvaluationLease(
                 request.lease_id,
                 request.generation,
@@ -739,6 +761,9 @@ class DurableSpoolAuthenticatedWorkerTransport:
     def materialize_planned_qualification(
         self, plan: QualificationRequestPlan, request: RemoteEvaluationRequest
     ) -> PlannedQualificationObservation:
+        from cacheon.chain.remote_worker_checkpoints import retain_authority
+
+        retain_authority(self)
         return self._with_qualification_artifacts(
             request,
             lambda _lease, artifacts: materialize_qualification_plan(

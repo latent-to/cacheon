@@ -13,6 +13,7 @@ LEGACY_QUALIFICATION_FIELDS = frozenset({
 })
 INCUMBENT_FIELDS = frozenset({"incumbent_stack_digest", "incumbent_tree_digest"})
 QUALIFICATION_FIELDS = LEGACY_QUALIFICATION_FIELDS | INCUMBENT_FIELDS
+CHECKPOINT_QUALIFICATION_FIELDS = QUALIFICATION_FIELDS | {"checkpoint_digest"}
 
 
 def qualification_request_body(
@@ -51,6 +52,8 @@ def qualification_request_body(
         )
     elif INCUMBENT_FIELDS.issubset(retained_body):
         body.update((field, retained_body[field]) for field in INCUMBENT_FIELDS)
+    if retained_body is not None and "checkpoint_digest" in retained_body:
+        body["checkpoint_digest"] = retained_body["checkpoint_digest"]
     return body
 
 

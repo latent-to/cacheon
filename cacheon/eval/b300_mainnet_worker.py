@@ -300,6 +300,10 @@ class B300MainnetWorker:
     ):
         work = self.service.plan_qualification(candidates, state=None)
         self._validate_work(work, candidates)
+        if request_digest is not None:
+            from cacheon.eval.qualification_worker_checkpoint import prepare_work
+
+            work = prepare_work(work, continuation_store, request_digest)
         supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
         if request_digest is not None:
             try:
@@ -349,6 +353,15 @@ class B300MainnetWorker:
                 )
                 if attempt.audit_recovery is not None:
                     supporting_evidence_refs += (attempt.audit_recovery,)
+                if attempt.worker_recovery is not None:
+                    supporting_evidence_refs += (attempt.worker_recovery, plan.calibration_artifact_ref)
+            elif batch.attempt_ref is not None:
+                from cacheon.eval.qualification_runner import STAGE_EXIT_SCHEMA, reopen_qualification_stage_exit
+
+                if batch.attempt_ref.schema == STAGE_EXIT_SCHEMA:
+                    terminal = reopen_qualification_stage_exit(plan.evidence_root, batch.attempt_ref, expected=plan)
+                    if terminal.worker_recovery is not None:
+                        supporting_evidence_refs += (terminal.worker_recovery, plan.calibration_artifact_ref)
             supporting_evidence_refs = tuple(sorted(
                 set(supporting_evidence_refs),
                 key=lambda row: (

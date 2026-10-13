@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from cacheon.chain import ssh_worker_transport as transport
+from cacheon.chain import remote_worker_checkpoints as checkpoints
 
 
 @pytest.mark.parametrize("stage", ["qualification", "screen"])
@@ -57,6 +58,7 @@ def test_cpu_relay_heartbeat_survives_long_copy_and_stops_on_exit(
         lambda *_args: {"state": "idle", "active_request_id": None},
     )
     monkeypatch.setattr(transport, "pull_result", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(checkpoints, "pull_checkpoint", lambda *_args, **_kwargs: None)
     heartbeat_path = tmp_path / "state" / "heartbeat.json"
     heartbeat_path.parent.mkdir()
     updated = threading.Event()

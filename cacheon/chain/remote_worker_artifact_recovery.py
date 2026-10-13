@@ -30,6 +30,7 @@ from cacheon.stack_identity import sha256_hex
 QUALIFICATION_ARTIFACT_ROLES = (
     "qualification_payload",
     "candidate_publication",
+    "qualification_checkpoint",
 )
 _PLANNED_ARTIFACT_FIELDS = frozenset({"role", "sha256", "size"})
 
@@ -67,14 +68,20 @@ def qualification_source_map(
     """Close qualification inputs to one payload plus its ordered carriers."""
 
     rows = tuple((role, source) for role, source in artifact_inputs)
-    roles = tuple(role for role, _source in rows)
+    require_qualification_roles(tuple(role for role, _source in rows))
+    return rows
+
+
+def require_qualification_roles(roles: tuple[str, ...]) -> None:
+    """Keep candidate carriers ordered, followed by at most one checkpoint."""
+    if roles and roles[-1] == "qualification_checkpoint":
+        roles = roles[:-1]
     if (
-        len(rows) < 2
+        len(roles) < 2
         or roles[0] != "qualification_payload"
         or any(role != "candidate_publication" for role in roles[1:])
     ):
         fail("qualification artifact inputs are not one payload plus its carriers")
-    return rows
 
 
 def stable_artifact_identity(path: Path) -> tuple[int, str]:

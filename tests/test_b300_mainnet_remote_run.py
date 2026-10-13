@@ -245,6 +245,7 @@ def test_native_rebuild_uses_dedicated_candidate_launch(
         "reopen_causal_qualification",
         lambda *_args, **_kwargs: SimpleNamespace(
             audit_recovery=None,
+            worker_recovery=None,
             reports=(
                 SimpleNamespace(
                     raw_quality_artifact=raw_quality_ref,

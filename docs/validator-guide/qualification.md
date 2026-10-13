@@ -237,14 +237,41 @@ with a new engine lifetime. No first-orientation record means that orientation
 must execute in full. An existing malformed, incomplete or mismatched record
 holds before new execution rather than buying another first orientation.
 
-This recovery requires the same physical allocation and host boot. The speed
-stage keeps its original wall-clock budget, including interruption downtime;
-the inter-stage downtime exclusion above does not extend an unfinished speed
-stage. Moving to another machine, rebooting, or exhausting that budget is not
-supported by this checkpoint. The record must remain in the validator's private
-continuation store; local fsync alone does not provide off-instance durability.
-The pod service's restart disposition and chain retry behavior are unchanged:
-creating a replacement request is not a resume of this scope.
+Reusing an unfinished speed stage requires the same physical allocation and
+clock domain. Its original wall-clock budget includes interruption downtime.
+Opposite lane orientations from different allocations cannot be combined.
+
+The standing CPU relay also saves compressed checkpoints of completed speed,
+audit, and pristine-T stages. Each checkpoint preserves the original plan,
+calibration, private selection state, stage records, and clock domains. It becomes
+available for replacement only after the CPU has copied, verified and fsynced it.
+The relay's `checkpoints/` directory must live on storage independent of the GPU
+worker. These files contain private validator inputs and must not be published.
+
+When a new commissioned worker replaces an old epoch, the recoverable dispatcher
+first imports any complete result already on the CPU using its original authority.
+Otherwise it retires the old lease, retains its carrier, and seals a new request
+with the CPU-held checkpoint digest. A late old-worker result cannot commit under
+the replacement lease. The replacement verifies the original work and device
+contract before execution, keeps completed stages under their original authority,
+and runs missing stages with its own hardware receipts. An interrupted speed stage
+restarts in full when the allocation changes. An interrupted audit or pristine T
+restarts that stage; completed predecessor stages remain reusable.
+
+Clock-domain changes do not rewrite old timestamps. The result carries an optional
+worker-recovery artifact and per-stage clock domains; regrading checks them against
+the handoff and charges the retained and newly executed stage durations. The
+original speed policy, workload, model, image, contribution and numerical thresholds
+remain bound throughout recovery. Public recovery evidence excludes private
+selection secrets.
+
+The registered pod service exposes `checkpoint-status --request-id ID` with its
+ordinary pod-path arguments. `cpu-serve` polls it alongside result status; operators
+do not need a separate mirror or import script. Register the provided SSH login
+with `make-registration --pod-user USER` when it is not root. That account must
+already be able to execute the fixed service and transfer its private spool files
+using noninteractive sudo. Replacement provisioning remains an operator/provider
+action; registration of the new worker activates the recovery path.
 
 Recovery acceptance requires a controlled-interruption run through the ordinary
 qualification runner on the commissioned image/model/topology. Interrupt its

@@ -30,6 +30,7 @@ class QualificationContinuationStageResult:
     teardown_after: Any | None = None
     t_pre: Any | None = None
     t_post: Any | None = None
+    clock_domains: tuple[str, ...] = ()
 
 
 def _audit_operation_digest(value: Any, lifecycle: Any, owner: Any) -> str:
@@ -64,8 +65,15 @@ def run_continuation_quality_stage(
 
     lifecycle = resident_lifecycle
     speed = resident_speed_witness
+    recovery = {} if continuation is None else getattr(continuation, "worker_recovery", {})
+    execution_value = (getattr(continuation, "replacement_execution", None) or value)
+    current_clock = continuation.checkpoint_origin["boot"] if recovery else ""
+    stage_clock = lambda stage: recovery[stage].origin["boot"] if stage in recovery else current_clock
+    speed_same_clock = not recovery or stage_clock("speed") == current_clock
     audit_operation = _audit_operation_digest(value, lifecycle, owner)
     audit_state = None if continuation is None else continuation.load_audit(audit_operation)
+    if audit_state is None and "audit" in recovery:
+        audit_state = recovery["audit"].continuation.load_audit(audit_operation)
     if quality_state is not None and audit_state is None:
         raise owner.QualificationContinuationError(
             "quality continuation exists without durable audit completion"
@@ -78,8 +86,9 @@ def run_continuation_quality_stage(
             used += audit_state.audit_completed - audit_state.audit_started
         remaining = value.resident_speed_plan.policy.max_qualification_seconds - used
         now = float(executor.manager.clock())
-        last = max(speed.completed_monotonic_s,
-                   audit_state.audit_completed if audit_state is not None else 0.0)
+        last = max(speed.completed_monotonic_s if speed_same_clock else 0.0,
+                   audit_state.audit_completed if audit_state is not None
+                   and stage_clock("audit") == current_clock else 0.0)
         if not math.isfinite(now) or now < last:
             raise owner.QualificationContinuationError(
                 "current clock predates retained qualification; refusing new work"
@@ -107,8 +116,9 @@ def run_continuation_quality_stage(
                 completed_audits.append(record)
 
             witnesses, last_completed = owner._run_slot_audits(
-                value, lifecycle, executor=executor, deadline=float(deadline),
+                execution_value, lifecycle, executor=executor, deadline=float(deadline),
                 completion_sink=commit_audit if continuation is not None else None,
+                same_clock=speed_same_clock,
             )
             if continuation is None:
                 audit_state = owner.AuditContinuation(
@@ -156,6 +166,9 @@ def run_continuation_quality_stage(
                 owner.qualification_authority_digest(value), value.prepared.source.digest,
                 value.candidates[0].selected_delta_digest, stage, decision, reason,
                 speed, audit, audit_started, audit_completed, teardown.digest,
+                worker_recovery=(getattr(continuation, "worker_recovery_reference", None)),
+                clock_domains=(tuple(stage_clock(stage) for stage in ("speed", "audit"))
+                               if recovery else ()),
             )
             reference = owner.publish_qualification_stage_exit(value.evidence_root, terminal)
             owner.reopen_qualification_stage_exit(value.evidence_root, reference, expected=value)
@@ -168,13 +181,15 @@ def run_continuation_quality_stage(
             # Bind quiescence to the FINAL executed baseline (B'' under repeat
             # reads, B-prime otherwise) — baseline_after is mid-run in the
             # 5-leg shape.
-            last_post = max(owner._lifecycle_causal_completion(lifecycle), audit_state.audit_last_completed)
+            last_post = max(owner._lifecycle_causal_completion(lifecycle) if speed_same_clock else 0.0,
+                audit_state.audit_last_completed if stage_clock("audit") == current_clock else 0.0)
             if teardown_before.observed_monotonic_s < last_post:
                 raise owner.QualificationRunnerError("pre-T quiescence predates the final baseline teardown")
             # Replay controls bound this entropy to the candidate's last lane, which V17 swaps away
             # from this executor (every V17 PASS failed here, 2026-09-30); present that lane's receipt.
             bound = teardown_before if lifecycle.crossover.goodput is None else lifecycle.crossover.candidate_quiescence
-            entropy = entropy_provider(value.commitment, bound)
+            entropy = (lifecycle.crossover.quality_entropy if recovery
+                       else entropy_provider(value.commitment, bound))
             if type(entropy) is not owner.SelectionEntropyReceipt:
                 raise owner.QualificationRunnerError("entropy provider returned an untyped receipt")
             entropy_observed = float(executor.manager.clock())
@@ -211,10 +226,11 @@ def run_continuation_quality_stage(
                 raise owner.QualificationContinuationError(
                     "quality continuation requests differ from the sealed request plan"
                 )
+        reference_value = recovery["quality"].execution if "quality" in recovery else execution_value
         plan = owner.ReferenceSessionPlan(
-            value.candidates[0].profile.reference, value.pristine_stack,
-            value.reference_engine_config.digest, value.reference_engine_config,
-            value.reference_preflight, request_plan_digest, requests,
+            value.candidates[0].profile.reference, reference_value.pristine_stack,
+            reference_value.reference_engine_config.digest, reference_value.reference_engine_config,
+            reference_value.reference_preflight, request_plan_digest, requests,
         )
         t_operation = _t_operation_digest(value, plan, owner)
         if quality_state is not None:
@@ -247,7 +263,8 @@ def run_continuation_quality_stage(
                 quality_completion.append((execution, completed))
 
             reference_execution = executor.execute_reference(
-                value.pristine_launch, value.pristine_binding, value.model_mount, plan,
+                reference_value.pristine_launch, reference_value.pristine_binding,
+                reference_value.model_mount, plan,
                 deadline=float(deadline),
                 completion_sink=commit_quality if continuation is not None else None,
             )
@@ -262,6 +279,7 @@ def run_continuation_quality_stage(
         False, None, lifecycle, audit_witnesses, audit_started, audit_completed,
         teardown_before, entropy, entropy_observed, selection, requests, plan,
         reference_execution, teardown_after, t_pre, t_post,
+        tuple(stage_clock(stage) for stage in ("speed", "audit", "quality")) if recovery else (),
     )
 
 

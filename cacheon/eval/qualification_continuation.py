@@ -174,6 +174,9 @@ class QualificationContinuation:
         self.directory.chmod(0o700)
         self._codec = _codec()
         self.recovery_reference: EvidenceArtifactRef | None = None
+        self.worker_recovery_reference: EvidenceArtifactRef | None = None
+        self.replacement_execution = getattr(store, "worker_replacements", {}).get(request_digest)
+        self.checkpoint_root = getattr(store, "checkpoint_root", store.root / "checkpoints")
 
     # -- closed record file handling ----------------------------------------
 
@@ -236,6 +239,9 @@ class QualificationContinuation:
         finally:
             if temporary.exists():
                 temporary.unlink()
+        from cacheon.eval.qualification_worker_checkpoint import publish_snapshot
+
+        publish_snapshot(self)
 
     def _load(self, stage: str) -> object | None:
         if stage not in _STAGES:
