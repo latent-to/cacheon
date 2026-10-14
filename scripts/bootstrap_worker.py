@@ -62,9 +62,9 @@ def provision_model(args: argparse.Namespace, uv: str, env: dict[str, str]) -> N
     for path in (args.model_dir, *args.model_dir.rglob("*")):
         if path.is_symlink():
             raise RuntimeError(f"model tree contains a symlink: {path}")
-        mode = path.stat().st_mode
-        if mode & 0o222:
-            path.chmod(mode & ~0o222)
+        mode = 0o555 if path.is_dir() else 0o444
+        if path.stat().st_mode & 0o777 != mode:
+            path.chmod(mode)
     if args.ram_model:
         mount_model_ram(args, json.loads(args.model_receipt.read_bytes()))
 

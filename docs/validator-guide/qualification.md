@@ -295,8 +295,8 @@ python3 scripts/bootstrap_worker.py \
 
 Model download, image retrieval and the controller/replay environment installation
 run concurrently. Repeating the command reuses the local image, environments and
-completed model files, and resumes partial Hugging Face downloads. Full model
-content verification must pass before `bootstrap-complete.json` is written.
+completed model files, and resumes partial Hugging Face downloads. Downloaded
+directories use mode 0555 and files 0444. Model verification precedes `bootstrap-complete.json`.
 An existing `uv` on `PATH` is reused before downloading an installer.
 When running a separately retained bootstrap script, pass `--source-root` with
 the exported Cacheon source matching the worker image. Existing read-only model
