@@ -1,4 +1,5 @@
-FROM lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+ARG SGLANG_IMAGE=lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+FROM ${SGLANG_IMAGE}
 LABEL org.opencontainers.image.source="https://github.com/latent-to/cacheon" org.opencontainers.image.title="Cacheon DeepSeek-V4.1-Flash B300 qualification worker"
 # The dependency relocation is a 20 GB layer that never changes between source
 # revisions; it stays above COPY so a source-only rebuild reuses it (measured

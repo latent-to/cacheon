@@ -45,6 +45,14 @@ docker build -t cacheon-dsv41flash \
 Inside that image, run `python -m cacheon.cli compat --sglang-version 0.5.21`
 before the development check.
 
+For a commissioned SGLang fork, first build that fork's Dockerfile at the
+selected source commit, then pass that image with
+`docker build --build-arg SGLANG_IMAGE=<FORK_IMAGE> ...` to the command above.
+Retain its source revision and inspected image ID with the build. The default
+remains the pinned 0.5.21 release. The new worker must pass
+commissioning against its installed SGLang version and receive fresh image,
+runtime and service identities; prior runtime results do not qualify it.
+
 Route the bundle to this arena in its existing competition table:
 
 ```toml

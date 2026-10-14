@@ -277,6 +277,35 @@ already be able to execute the fixed service and transfer its private spool file
 using noninteractive sudo. Replacement provisioning remains an operator/provider
 action; registration of the new worker activates the recovery path.
 
+To prepare a fresh Ubuntu worker, copy the selected Cacheon source tree and the
+retained model receipt to it, then run this command from that source tree as the
+deployment user. The host needs Docker, the NVIDIA runtime, Python 3.12, and
+enough disk and memory for the commissioned model. The model token stays on the
+worker. Use the previously built worker image's immutable repository digest:
+
+```bash
+python3 scripts/bootstrap_worker.py \
+  --root /srv/cacheon/bootstrap \
+  --model-repo <MODEL_REPOSITORY> --model-revision <MODEL_COMMIT> \
+  --model-dir /srv/models/commissioned-model \
+  --model-receipt /srv/cacheon/inputs/model-provision.json \
+  --token-file /srv/cacheon/credentials/model-token \
+  --image <REGISTRY/WORKER_IMAGE@sha256:DIGEST>
+```
+
+Model download, image retrieval and the controller/replay environment installation
+run concurrently. Repeating the command reuses the local image, environments and
+completed model files, and resumes partial Hugging Face downloads. Full model
+content verification must pass before `bootstrap-complete.json` is written.
+Downloader metadata stays outside the sealed model tree. Individual subprocess
+logs remain in the bootstrap root's `logs/` directory; `--download-timeout`
+defaults to 7,200 seconds. On hosts with at least twice the model size in available
+RAM, `--ram-model` downloads directly into tmpfs, avoiding contention with Docker
+layer extraction on the host disk. It requires root and an empty model directory
+or its existing tmpfs; those bytes must be restored after a host reboot.
+This prepares inputs for the existing commissioner;
+it does not register a worker, allocate GPUs, or resume an evaluation itself.
+
 Recovery acceptance requires a controlled-interruption run through the ordinary
 qualification runner on the commissioned image/model/topology. Interrupt its
 controller after the first-orientation record is durable, reopen the same sealed
