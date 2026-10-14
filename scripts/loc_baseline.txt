@@ -7,7 +7,7 @@ bundles 2398
 cacheon 90349
 cacheon_kernels 936
 dashboard 4270
-docs 12515
-examples 378
+docs 12523
+examples 535
 scripts 1893
 tests 66258

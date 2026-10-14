@@ -1,0 +1,18 @@
+{
+  "dtype": "bfloat16",
+  "quantization": "fp8",
+  "tp_size": 1,
+  "mem_fraction_static": 0.85,
+  "context_length": 262144,
+  "max_running_requests": 8,
+  "chunked_prefill_size": 4096,
+  "cuda_graph_bs_decode": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "disable_radix_cache": false,
+  "disable_cuda_graph": false,
+  "log_level": "info"
+}

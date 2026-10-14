@@ -23,6 +23,14 @@ has the B300 image recipe, the TP2 engine settings with the Engram host-table
 environment, 24 development requests and the node addresses that execute on
 this model. It does not change the qualification workload.
 
+## Qwen3.8-27B FP8 development inputs
+
+The [Qwen3.8-27B input kit](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/qwen38_27b)
+contains the pinned SGLang 0.5.20 image recipe, TP1 RTX PRO 6000 configuration
+with 262,144-token context, and repeated-prefix requests for the recurrent-state
+node audit. Its README specifies the arena selector and planned 0.2 TAO fee.
+Public availability is published separately from these development inputs.
+
 ## GLM baseline
 
 The [GLM champion node bundle](https://github.com/latent-to/cacheon/tree/main/bundles/glm53_champion_nodes)
