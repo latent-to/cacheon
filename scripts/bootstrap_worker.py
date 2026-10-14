@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import urllib.request
 
 
@@ -55,35 +57,75 @@ def provision_model(args: argparse.Namespace, uv: str, env: dict[str, str]) -> N
         log, env=env, timeout=args.download_timeout)
     cache = args.model_dir / ".cache"
     if cache.exists():
-        destination = args.root / "model-download-cache"
-        if destination.exists():
-            raise RuntimeError(f"download cache destination already exists: {destination}")
+        destination = Path(tempfile.mkdtemp(prefix="model-download-", dir=args.root)) / "cache"
         shutil.move(str(cache), destination)
     for path in (args.model_dir, *args.model_dir.rglob("*")):
         if path.is_symlink():
             raise RuntimeError(f"model tree contains a symlink: {path}")
-        path.chmod(path.stat().st_mode & ~0o222)
+        mode = path.stat().st_mode
+        if mode & 0o222:
+            path.chmod(mode & ~0o222)
+    if args.ram_model:
+        mount_model_ram(args, json.loads(args.model_receipt.read_bytes()))
 
 
 def mount_model_ram(args: argparse.Namespace, expected: dict) -> None:
-    """Keep model reconstruction off the disk used to unpack Docker layers."""
-    size = sum(row["size"] for row in expected["files"])
-    available = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
-                         if line.startswith("MemAvailable:"))) * 1024
-    if available < 2 * size:
-        raise RuntimeError("RAM model staging needs twice the model size available before loading")
+    """Restore a retained disk model to RAM, or mount an empty download destination."""
     args.model_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
     if args.model_dir.is_mount():
         kind = subprocess.check_output(["findmnt", "-n", "-o", "FSTYPE", "--target",
                                         str(args.model_dir)], text=True).strip()
         if kind != "tmpfs":
-            raise RuntimeError("--ram-model requires an existing tmpfs or an empty directory")
-    else:
-        if any(args.model_dir.iterdir()):
-            raise RuntimeError("refusing to hide existing model files under a RAM mount")
+            raise RuntimeError("existing model mount is not tmpfs")
+        return
+    retained = any(args.model_dir.iterdir())
+    ram = args.root / "model-ram" if retained else args.model_dir
+    size = sum(row["size"] for row in expected["files"])
+    resident = sum(p.stat().st_blocks * 512 for p in ram.rglob("*") if p.is_file()) if ram.is_mount() else 0
+    available = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
+                         if line.startswith("MemAvailable:"))) * 1024
+    if available < size + max(0, size - resident):
+        raise RuntimeError("RAM model staging needs twice the model size available before loading")
+    ram.mkdir(parents=True, exist_ok=True, mode=0o755)
+    if not ram.is_mount():
+        if any(ram.iterdir()):
+            raise RuntimeError(f"RAM staging directory is not empty: {ram}")
         subprocess.run(["mount", "-t", "tmpfs", "-o",
                         f"size={size + (1 << 30)},nosuid,nodev,mode=0755",
-                        "tmpfs", str(args.model_dir)], check=True, timeout=30)
+                        "tmpfs", str(ram)], check=True, timeout=30)
+    if not retained:
+        return
+    inventory = {str(path.relative_to(args.model_dir)) for path in args.model_dir.rglob("*") if path.is_file()}
+    if inventory != {row["path"] for row in expected["files"]}:
+        raise RuntimeError("retained model inventory differs from its receipt")
+
+    def copy(row):
+        source, destination = args.model_dir / row["path"], ram / row["path"]
+        if destination.is_file():
+            with destination.open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() == row["sha256"]:
+                    return
+            raise RuntimeError(f"retained RAM file differs from its receipt: {row['path']}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(destination.name + ".partial")
+        digest = hashlib.sha256()
+        with source.open("rb") as incoming, temporary.open("wb") as output:
+            while block := incoming.read(8 << 20):
+                output.write(block); digest.update(block)
+            output.flush(); os.fsync(output.fileno())
+        if temporary.stat().st_size != row["size"] or digest.hexdigest() != row["sha256"]:
+            raise RuntimeError(f"disk model file differs from its receipt: {row['path']}")
+        shutil.copystat(source, temporary)
+        temporary.replace(destination)
+        print("MODEL_RAM_COPIED", row["path"], row["size"], flush=True)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(copy, expected["files"]))
+    for path in sorted([args.model_dir, *[p for p in args.model_dir.rglob("*") if p.is_dir()]],
+                       key=lambda p: len(p.parts), reverse=True):
+        shutil.copystat(path, ram / path.relative_to(args.model_dir))
+    subprocess.run(["mount", "--bind", str(ram), str(args.model_dir)], check=True, timeout=30)
+    subprocess.run(["mount", "-o", "remount,bind,ro", str(args.model_dir)], check=True, timeout=30)
 
 
 def provision_image(args: argparse.Namespace, env: dict[str, str]) -> str:
@@ -121,6 +163,9 @@ def main() -> None:
     for name in ("model-repo", "model-revision", "image"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--download-timeout", type=int, default=7200)
+    parser.add_argument("--source-root", type=Path,
+                        default=Path(__file__).resolve().parents[1],
+                        help="exported Cacheon source matching the worker image")
     parser.add_argument("--ram-model", action="store_true",
                         help="download directly into a model-sized tmpfs (requires root)")
     args = parser.parse_args()
@@ -137,11 +182,12 @@ def main() -> None:
         raise RuntimeError("bootstrap filesystem probe changed")
     probe.unlink()
     expected = json.loads(args.model_receipt.read_bytes())
-    if args.ram_model:
+    if args.ram_model and (not args.model_dir.exists() or args.model_dir.is_mount()
+                          or not any(args.model_dir.iterdir())):
         mount_model_ram(args, expected)
     env = {**os.environ, "UV_CACHE_DIR": str(args.root / "uv-cache"),
            "HF_HOME": str(args.root / "hf-cache"), "PYTHONDONTWRITEBYTECODE": "1"}
-    uv = args.root / "bin/uv"
+    uv = Path(shutil.which("uv") or args.root / "bin/uv")
     if not uv.is_file():
         installer = args.root / "uv-installer.sh"
         urllib.request.urlretrieve("https://astral.sh/uv/0.11.32/install.sh", installer)
@@ -154,7 +200,7 @@ def main() -> None:
         controller = pool.submit(provision_environments, args, str(uv), env)
         model.result()
         image_id, python = image.result(), controller.result()
-    source = Path(__file__).resolve().parents[1]
+    source = args.source_root.resolve(strict=True)
     publication = args.root / "model-publication"
     publication.mkdir(exist_ok=True, mode=0o700)
     run([python, "-B", "-m", "cacheon.cli", "model-provision", str(args.model_dir),

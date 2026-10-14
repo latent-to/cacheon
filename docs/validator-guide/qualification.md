@@ -297,12 +297,17 @@ Model download, image retrieval and the controller/replay environment installati
 run concurrently. Repeating the command reuses the local image, environments and
 completed model files, and resumes partial Hugging Face downloads. Full model
 content verification must pass before `bootstrap-complete.json` is written.
+An existing `uv` on `PATH` is reused before downloading an installer.
+When running a separately retained bootstrap script, pass `--source-root` with
+the exported Cacheon source matching the worker image. Existing read-only model
+mounts can be reused without changing their permissions.
 Downloader metadata stays outside the sealed model tree. Individual subprocess
 logs remain in the bootstrap root's `logs/` directory; `--download-timeout`
 defaults to 7,200 seconds. On hosts with at least twice the model size in available
 RAM, `--ram-model` downloads directly into tmpfs, avoiding contention with Docker
-layer extraction on the host disk. It requires root and an empty model directory
-or its existing tmpfs; those bytes must be restored after a host reboot.
+layer extraction on the host disk. It requires root. After a host reboot,
+retained disk files are copied into RAM and checked against the receipt; partial
+disk downloads finish first, and verified RAM copies survive a process restart.
 This prepares inputs for the existing commissioner;
 it does not register a worker, allocate GPUs, or resume an evaluation itself.
 
