@@ -9,7 +9,6 @@ import cacheon.chain.validator_loop as loop
 from cacheon.bundle_hash import content_hash
 from cacheon.chain import FinalizedRevealSnapshot, RevealedCommitment
 from cacheon.chain.eval_cost import (
-    EvalCostError,
     EvalCostFetchError,
     EvalCostPaymentProof,
     EvalCostPolicy,
@@ -284,79 +283,6 @@ def test_payment_must_cover_both_the_fee_and_its_declared_quote(quoted, transfer
         proof=proof,
         reveal_block=90,
     ) == "eval_cost_payment_invalid"
-
-
-@pytest.mark.parametrize("arena,paid,accepted", [
-    ("qwen38", 200_000_000, True),
-    ("qwen36", 150_000_000, True),
-    ("qwen38", 150_000_000, False),
-    ("", 200_000_000, False),
-    ("unknown", 200_000_000, False),
-    ("", 500_000_000, True),
-    ("qwen38", 500_000_000, True),
-])
-def test_fee_follows_verified_arena_and_records_actual_transfer(
-    tmp_path, monkeypatch, arena, paid, accepted,
-):
-    source = _bundle(tmp_path / "source", _NODE_BODY)
-    if arena:
-        with (source / "manifest.toml").open("a") as handle:
-            handle.write(f'\n[competition]\ntarget = "forward_pass"\nmode = "slot"\narena = "{arena}"\n')
-    digest = content_hash(source)
-    request = EvalCostRequest(netuid=307, hotkey="miner", content_hash=digest)
-    quote = quote_eval_cost(request, policy=EvalCostPolicy(amount_rao=paid, destination="treasury"), at_block=70)
-    proof = replace(_paid_proof(digest), amount_rao=paid, remark=encode_payment_remark(request, quote))
-    monkeypatch.setattr(loop, "read_eval_cost_payment", lambda *_args, **_kwargs: proof)
-    _stub_owner(monkeypatch)
-    snapshot = _snapshot([("miner", encode_payload(
-        digest, "https://example.com/a", payment_block=80, payment_extrinsic_index=4))])
-    result, calls, options = _run(
-        tmp_path, monkeypatch, snapshot, {digest: source},
-        policy=IntakePolicy(expiry_blocks=100),
-        eval_cost_policy=EvalCostPolicy(amount_rao=500_000_000, arena_amounts_rao=(
-            ("qwen38", 200_000_000), ("qwen36", 150_000_000))),
-    )
-    assert calls == [digest]
-    assert bool(result.published) is accepted
-    with FinalizedIntakeStore(options["intake_db"], IntakePolicy(expiry_blocks=100), scope=SCOPE) as store:
-        row = store.all()[0]
-        assert row.status == ("published" if accepted else "failed")
-        assert row.reason == ("" if accepted else "eval_cost_payment_invalid")
-        payment = store._db.execute("SELECT amount_tao_rao FROM eval_cost_payments").fetchone()
-        assert payment["amount_tao_rao"] == paid
-
-
-def test_arena_fee_lookup_failure_retains_transport_retry(tmp_path, monkeypatch):
-    source = _bundle(tmp_path / "source", _NODE_BODY)
-    digest = content_hash(source)
-    monkeypatch.setattr(loop, "read_eval_cost_payment", lambda *_args: _paid_proof(digest))
-    lookups = []
-
-    def owner(*_args, **_kwargs):
-        lookups.append(1)
-        if len(lookups) == 2:
-            raise EvalCostFetchError("owner RPC unavailable")
-        return "treasury"
-
-    monkeypatch.setattr(loop, "read_subnet_owner_coldkey", owner)
-    result, _, options = _run(
-        tmp_path, monkeypatch,
-        _snapshot([("miner", encode_payload(digest, "https://example.com/a", payment_block=80, payment_extrinsic_index=4))]),
-        {digest: source}, policy=IntakePolicy(expiry_blocks=100),
-        eval_cost_policy=EvalCostPolicy(amount_rao=10, arena_amounts_rao=(("qwen38", 2),)),
-    )
-    assert not result.published and not result.rejected
-    with FinalizedIntakeStore(options["intake_db"], IntakePolicy(expiry_blocks=100), scope=SCOPE) as store:
-        assert store.all()[0].status == "transport_retry"
-
-
-@pytest.mark.parametrize("fees", [
-    (("qwen", 0),), (("qwen", -1),), (("qwen", True),),
-    (("qwen", 2), ("qwen", 3)), (("../qwen", 2),),
-])
-def test_arena_fee_configuration_refuses_ambiguous_prices(fees):
-    with pytest.raises(EvalCostError, match="arena fees"):
-        EvalCostPolicy(amount_rao=5, arena_amounts_rao=fees)
 
 
 def test_payment_to_a_stale_owner_is_invalid(tmp_path, monkeypatch):

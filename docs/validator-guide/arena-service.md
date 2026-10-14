@@ -164,27 +164,6 @@ verified runtime's `arena_id` and cannot be claimed by another arena. Explicit
 selectors equal to that ID resolve to the historical namespace. Routing becomes
 known at publication; fetch and pre-publication admission remain shared.
 
-The intake service can set different upload fees with repeatable
-`--eval-cost-arena-tao-rao ARENA=RAO` options. Keep `--eval-cost-tao-rao`
-as the fee for the default arena and any selector without an override. For
-example, a default of `500000000` and
-`--eval-cost-arena-tao-rao qwen38-27b-rtxpro6000-fp8-tp1=200000000`
-charge 0.5 TAO for the default arena and 0.2 TAO for Qwen3.8. Overrides require
-positive fees and a positive default fee.
-
-Intake verifies payment against the lowest configured fee before fetching.
-After the bundle hash and manifest are verified, it checks the selected arena's
-fee before publication or GPU dispatch. A payment for a cheaper arena cannot
-admit an underpaid submission to another arena. Existing one-use credits still
-cover one admission. The payment ledger records the verified transfer amount,
-including overpayments. An owner/payment RPC failure during this check leaves
-the submission eligible for transport retry.
-
-Publish each arena's fee with its submission instructions. Miners use the
-existing `chain-submit --eval-cost-tao-rao` option with that arena's amount;
-the default CLI quote remains unchanged. Fee overrides alone do not register
-an arena or enable its dispatcher.
-
 Queues, baselines, target admission, lineage and qualification recovery are
 scoped to the logical arena. Service epochs retain that arena's lineage.
 Commissioning a second arena cannot retire the first arena's baseline. Two arenas can qualify
