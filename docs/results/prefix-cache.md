@@ -71,7 +71,8 @@ per-request sliding-window rings, window pools that store whole pages (including
 windows smaller than one page), compressed
 KV and index pages, and the pending-pair rings a DeepSeek-V4 kv-source layer holds
 per request is implemented and tested on CPU only; no GPU result is claimed for them.
-Recurrent checkpoints are refused rather than validated.
+At the time of these GLM runs, recurrent checkpoints were refused rather than
+validated. These GLM results do not establish recurrent-state coverage.
 
 Target-level preservation through successive cache replacements is separately
 tested through the production stack planner and materializer. The GPU controls

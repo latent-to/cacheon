@@ -41,10 +41,19 @@ def _bind_schedule(store, allocation, source_digests, block):
     if row:
         previous = json.loads(row[0])
         old = ArenaAllocation.from_dict(previous["schedule"])
+        sources = dict(allocation.sources)
+        added = sources.keys() - dict(old.sources).keys()
+        # New arenas had no historical offer. Extend each accepted row with
+        # zero terms; existing authorities and submission prices stay fixed.
+        history = tuple((start, tuple(sorted((dict(weights) | dict.fromkeys(added, 0)).items())), bonus)
+                        for start, weights, bonus in old.history)
         if (allocation.activation_block != old.activation_block
-                or allocation.burn_hotkey != old.burn_hotkey or allocation.sources != old.sources
-                or allocation.history[:len(old.history)] != old.history
-                or source_digests != previous["source_digests"]):
+                or allocation.burn_hotkey != old.burn_hotkey
+                or any(sources.get(key) != path for key, path in old.sources)
+                or allocation.history[:len(old.history)] != history
+                or set(source_digests) != set(sources)
+                or any(source_digests.get(key) != digest
+                       for key, digest in previous["source_digests"].items())):
             raise IntakeError("accepted allocation history or source authority changed")
         boundary = max(block, previous["seen_through"])
         if any(row[0] <= boundary for row in allocation.history[len(old.history):]):

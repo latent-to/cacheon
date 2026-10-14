@@ -66,9 +66,16 @@ class PrefixStateAudit:
         self.swa = getattr(self.pool, "swa_kv_pool", None)
         self.ring_size = int(getattr(self.pool, "swa_req_ring_size", None) or 0)
         self.ring = getattr(self.pool, "unified_kv_pool", None) if self.ring_size else None
-        # Recurrent checkpoints are not validated: no commissioned arena caches
-        # them, and the refusal keeps that state from being served unchecked.
-        if ctx.is_hybrid_ssm or (ctx.is_hybrid_swa and self.swa is None and self.ring is None):
+        self.mamba = getattr(self.requests, "mamba_pool", None) if ctx.is_hybrid_ssm else None
+        state = getattr(self.mamba, "mamba_cache", None)
+        # Unknown layouts stay refused rather than serving unchecked state. Int8
+        # checkpoints and ReplaySSM have different stored bytes and boundaries.
+        if (ctx.is_hybrid_ssm and (state is None
+                or getattr(state, "intermediate_ssm", None) is not None
+                or getattr(self.requests, "mamba_ckpt_pool", None) is not None
+                or getattr(self.mamba, "enable_linear_replayssm", False)
+                or getattr(self.mamba, "enable_linear_replayssm_spec", False))
+                or (ctx.is_hybrid_swa and self.swa is None and self.ring is None)):
             raise RuntimeError("tree_cache: state validation is unavailable for this hybrid pool")
         self.window = int(self.params.sliding_window_size or 0)
         if (self.swa is not None or self.ring is not None) and self.window <= 0:
@@ -77,16 +84,21 @@ class PrefixStateAudit:
         # A window pool that stores whole pages has fewer rows than slots.
         self.paged = {kind for kind, buffer in self.buffers.items()
                       if kind[0] == "swa" and buffer.shape[0] < self.swa.size}
-        self.live = any(kind[0] in ("ring", "request") for kind in self.buffers)
+        self.live = any(kind[0] in ("ring", "request", "mamba") for kind in self.buffers)
         self.weights = {}
         self.pending = {}
         self.owned = {}
 
     def _buffers(self):
-        """Sample the engine's transferable sliding-window state and its request-held rings."""
+        """Sample transferable window/checkpoint buffers and live request state."""
         from cacheon.integrations.sglang_dsa_state import KV_BUFFERS
 
         groups = {}
+        if self.mamba is not None:
+            state = self.mamba.mamba_cache
+            groups["mamba", "temporal"] = list(state.temporal.unbind(0))
+            for index, buffer in enumerate(state.conv):
+                groups["mamba", f"conv{index}"] = list(buffer.unbind(0))
         if self.swa is not None:
             for name in (*KV_BUFFERS, "index_k_with_scale_buffer"):
                 groups["swa", name] = list(getattr(self.swa, name, ()) or ())
@@ -107,7 +119,7 @@ class PrefixStateAudit:
             buffers = [b for b in buffers if self.torch.is_tensor(b) and b.numel()]
             for index in sorted(draw.sample(range(len(buffers)), min(_LAYERS, len(buffers)))):
                 chosen[(*kind, index)] = buffers[index]
-        for family, present in (("swa", self.swa), ("ring", self.ring)):
+        for family, present in (("swa", self.swa), ("ring", self.ring), ("mamba", self.mamba)):
             if present is not None and not any(key[0] == family for key in chosen):
                 raise RuntimeError(f"tree_cache: no transferable {family} state recognized")
         return chosen
@@ -179,12 +191,44 @@ class PrefixStateAudit:
         if req.rid in self.pending:
             self.guard.refuse("a host prefix was consumed before its state audit completed")
         self._swa(req, ids, row, record=True, start=max(held.own, held.recorded))
+        if self.mamba is not None:
+            extra = self.params.enable_mamba_extra_buffer
+            length = req.kv.mamba_last_track_seqlen if extra else len(ids)
+            if length is not None and length > max(held.own, held.recorded):
+                if length > len(ids):
+                    self.guard.refuse("a recurrent checkpoint extends beyond computed tokens")
+                slot = (req.kv.mamba_ping_pong_track_buffer[
+                    self.requests.get_mamba_ping_pong_keep_idx(req)] if extra else req.kv.mamba_pool_idx)
+                self._mamba_pair(req, ids, length, slot, record=True)
         if self.live and not finished:
             self.owned[req.rid] = self._ring_snapshot(req, len(row))
 
-    def _check(self, req, ids, row):
+    def _check(self, req, ids, row, *, recurrent):
         self._swa(req, ids, row, record=False)
+        if recurrent:
+            slot = req.kv.mamba_cow_src_index
+            # A native host load can restore directly into the request slot;
+            # device matches defer their copy to the next forward pass.
+            if slot is None:
+                slot = req.kv.mamba_pool_idx
+            if req.kv.mamba_needs_clear:
+                self.guard.refuse("a recurrent prefix would clear its restored state")
+            self._mamba_pair(req, ids, len(row), slot, record=False)
         self.guard.publish()
+
+    def _mamba_slots(self, slot):
+        """Translate checkpoint and request indices to the engine's physical rows."""
+        if slot is None:
+            self.guard.refuse("a recurrent prefix has no state slot")
+        slots = self.torch.as_tensor(slot, device=self.guard.device, dtype=self.torch.int64).reshape(-1)
+        if slots.numel() != 1 or bool((slots < 0).any()):
+            self.guard.refuse("a recurrent prefix must name one valid state slot")
+        return self.requests.translate_mamba_indices(slots).long().reshape(1, 1)
+
+    def _mamba_pair(self, req, ids, length, slot, *, record):
+        """Bind a recurrent checkpoint to the complete prefix that produced it."""
+        lengths = self.torch.tensor([length], device=self.guard.device)
+        self._pairs(req, ids, lengths, self._mamba_slots(slot), "mamba", record=record)
 
     def matched(self, params, result, device_length):
         """Check a served prefix before the first forward consumes its short-lived state."""
@@ -201,16 +245,22 @@ class PrefixStateAudit:
                 self.guard.refuse("a request-local ring requires replay of its trailing window")
             return
         ids = list(params.key.raw_token_ids())
-        if result.host_hit_length or result.swa_host_hit_length or not hasattr(result, "device_indices"):
-            self.pending[req.rid] = (req, ids, length, bool(result.host_hit_length or result.swa_host_hit_length))
+        # Cache insertion also matches with req set but cow_mamba=False. That
+        # lookup only rearranges KV: live recurrent state may be past the last
+        # checkpoint and is preserved by settled(), not restored from this hit.
+        recurrent = self.mamba is not None and params.cow_mamba
+        host = bool(result.host_hit_length or result.swa_host_hit_length
+                    or getattr(result, "mamba_host_hit_length", 0))
+        if host or not hasattr(result, "device_indices"):
+            self.pending[req.rid] = (req, ids, length, host, recurrent)
         else:
-            self._check(req, ids, result.device_indices)
+            self._check(req, ids, result.device_indices, recurrent=recurrent)
 
     def prefix(self, req, indices, cache):
         """Check the lazy prefix when the runtime resolves the slots it will consume."""
         pending = self.pending.pop(req.rid, None)
         if pending is not None:
-            _, ids, length, host = pending
+            _, ids, length, host, recurrent = pending
             if len(indices) < length:
                 self.guard.refuse("a host load returned fewer prefix slots than it claimed")
             if host and self.guard.device.type == "cuda":
@@ -221,7 +271,7 @@ class PrefixStateAudit:
                     raise RuntimeError("tree_cache: no native transfer stream for the hybrid host audit")
                 # Wait only on the submitted copies, never on unrelated model/NCCL streams.
                 self.torch.cuda.current_stream(self.guard.device).wait_stream(stream)
-            self._check(req, ids, indices[:length])
+            self._check(req, ids, indices[:length], recurrent=recurrent)
             self.guard.poll(block=True)
 
     def ready(self, cache):
@@ -254,8 +304,13 @@ class PrefixStateAudit:
         if self.ring is not None:
             positions = self.torch.arange(max(0, length - self.window), length, device=self.guard.device)
             rows = (slot * self.ring_size + positions % self.ring_size)[None]
-        return {kind: self._signature(kind, rows if kind[0] == "ring" else slot)
+        snapshot = {kind: self._signature(kind, rows if kind[0] == "ring" else slot)
                 for kind in self.buffers if kind[0] in ("ring", "request")}
+        if self.mamba is not None:
+            rows = self._mamba_slots(req.kv.mamba_pool_idx)
+            snapshot.update({kind: self._signature(kind, rows)
+                             for kind in self.buffers if kind[0] == "mamba"})
+        return snapshot
 
     def reset(self):
         """Forget pending handoffs after the owning guard drains its verdict."""

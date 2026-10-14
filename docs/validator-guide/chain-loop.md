@@ -448,10 +448,15 @@ To change percentages or waiting-bonus strength, atomically replace the file wit
 plus a new row whose `from_block` is later than both current intake and projection
 blocks. Existing rows cannot change or disappear. The accepted history survives
 restart in primary intake metadata. Removing an activated config cannot restore
-the single-store producer. Activation, source config identities and burn recipient
-remain fixed for this configured deployment; adding a new source requires a
-separately reviewed transition. Preconfigure additional sources with zero weight
-when they should become eligible through a later settings row.
+the single-store producer. Activation, existing source config identities and the
+burn recipient remain fixed. To add an arena, append its source config and give
+it zero weight in every previously accepted history row; all existing terms and
+bonus values must remain unchanged. Add its nonzero share only in a new future
+row. The new store must already be readable with a consistent finalized cursor.
+The producer accepts the extended history transactionally with its projection;
+failure leaves the accepted history unchanged. Existing sources cannot be
+removed or redirected. Earlier submissions retain their original terms even
+after the new arena opens.
 
 For an already registered full-strength schedule, append a future row with the
 existing complete `weights_ppm` and `stall_bonus_ppm: 250000`; do not edit an

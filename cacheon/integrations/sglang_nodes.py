@@ -131,9 +131,10 @@ def _state_rows(
 
     Only a call that carries the engine's batch can reach the cache pools: the cache
     rows at ``out_cache_loc``. An unrecognized cache layout raises rather than
-    leaving written state unchecked, and so does a runtime that keeps per-request
-    recurrent state outside the cache pools: the retired Qwen GDN arena's 21,400-call
-    MTP audit restored and graded none of its replay writes (2026-09-22).
+    leaving written state unchecked. Native recurrent live and checkpoint rows
+    are restored too; speculative and ReplaySSM layouts remain refused: the
+    retired Qwen GDN arena's 21,400-call MTP audit restored and graded none of its
+    replay writes (2026-09-22).
 
     SGLang keeps an FP8 cache in ``uint8`` storage with the real type on the pool.
     Graded as bytes, a near-zero value whose sign flips reads as a jump of 128 (7% of
@@ -147,11 +148,10 @@ def _state_rows(
     )
     if batch is None:
         return []
-    if getattr(runner.req_to_token_pool, "mamba_pool", None) is not None:
-        raise RuntimeError("recurrent state is not audited on this runtime")
+    rows = _recurrent_rows(runner.req_to_token_pool, batch, layer)
     if batch.out_cache_loc is None:
-        return []
-    rows = _cache_rows(runner.token_to_kv_pool, batch, layer)
+        return rows
+    rows += _cache_rows(runner.token_to_kv_pool, batch, layer)
     model = getattr(runner, "model", None)
     hasher = getattr(getattr(model, "model", model), "engram_hasher", None)
     history = getattr(hasher, "history", None)
@@ -160,6 +160,35 @@ def _state_rows(
         # start from the same n-gram, not the previous reference's update.
         rows.append((history, 0, batch.req_pool_indices.long(), history.dtype))
     return rows
+
+
+def _recurrent_rows(requests, batch, layer):
+    """The native live and tracked recurrent rows a non-speculative forward can write."""
+    pool = getattr(requests, "mamba_pool", None)
+    if pool is None:
+        return []
+    state = getattr(pool, "mamba_cache", None)
+    if (state is None or getattr(state, "intermediate_ssm", None) is not None
+            or getattr(pool, "enable_linear_replayssm", False)
+            or getattr(pool, "enable_linear_replayssm_spec", False)):
+        raise RuntimeError("recurrent state is not audited on this runtime")
+    live = requests.translate_mamba_indices(requests.get_mamba_indices(batch.req_pool_indices))
+    real = getattr(batch, "_original_batch_size", None)
+    if real is not None:
+        live = live[:real]
+    indices = [live.reshape(-1)]
+    track = batch.mamba_track_indices
+    if track is not None and batch.mamba_track_mask is not None:
+        # The attention backend already translates these destinations while
+        # building forward metadata. Translating again corrupts unified pools.
+        indices.append(track[batch.mamba_track_mask].reshape(-1))
+    indices = torch.cat(indices).long().unique()
+    indices = indices[indices >= 0]  # graph-padding slots are not written
+    layers = range(state.temporal.shape[0]) if layer is None else (
+        [requests.mamba_map[layer]] if layer in requests.mamba_map else [])
+    return [(buffer[index], 0, indices, buffer.dtype)
+            for buffer in (state.temporal, *state.conv) for index in layers
+            if buffer[index].numel()]
 
 
 def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
