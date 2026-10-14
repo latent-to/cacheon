@@ -89,6 +89,7 @@ def _contract_fields(value, *, portable=False):
     commitment.pop("reference_manifest_digest")
     if portable:
         commitment.pop("source_plan_digest")
+        commitment.pop("secret_commitment")  # The original secret and commitment are restored together.
     threshold = value.calibration_threshold_policy.to_dict()
     threshold.pop("context")
     speed_policy = value.resident_speed_plan.policy.to_dict()
@@ -107,6 +108,8 @@ def _contract_fields(value, *, portable=False):
     if portable:
         def stack(manifest):
             return {key: item for key, item in manifest.to_dict().items() if key != "arena_digest"}
+        for audit in result["audit"]:
+            audit.pop("validator_seed")
         source = value.prepared.source
         result.update(
             source={"incumbent": stack(source.incumbent), "candidate": stack(source.candidate),
@@ -256,6 +259,13 @@ def restore_origin(value, origin):
                     session_plan=candidate.session_plan),))
     pristine_launch, pristine_binding = _restore_binding(value.pristine_binding, origin["pristine"])
     audit = value.resident_audit_plan
+    audit_policy = audit.audit_policy
+    if "selection_secret" in origin:
+        from cacheon.eval.b300_registered_qualification import AUDIT_SEED_DOMAIN
+
+        audit_policy = replace(audit_policy, validator_seed=hashlib.sha256(
+            AUDIT_SEED_DOMAIN + bytes.fromhex(origin["selection_secret"])
+            + bytes.fromhex(value.candidates[0].selected_delta_digest)).hexdigest()[:32])
     codec = _codec()
     context, calibration, threshold = (codec.decode(row) for row in origin["calibration"])
     calibration_ref = EvidenceArtifactRef.from_dict(origin["calibration_ref"])
@@ -272,11 +282,12 @@ def restore_origin(value, origin):
                           if "selection_secret" in origin else value.selection_secret),
         calibration_context=context, calibration_manifest=calibration,
         calibration_threshold_policy=threshold, calibration_artifact_ref=calibration_ref,
+        audit_policies=(audit_policy,),
         resident_speed_plan=ResidentCrossoverPlan(value.resident_speed_plan.selected_delta_digest,
             baseline, candidate, ResidentSpeedPolicy.from_dict(origin["speed_policy"])),
         resident_audit_plan=ResidentAuditExecutionAuthority.derive(
             candidate.launch, candidate.binding, candidate.session_plan,
-            audit_policy=audit.audit_policy, max_new_tokens=audit.plan.max_new_tokens,
+            audit_policy=audit_policy, max_new_tokens=audit.plan.max_new_tokens,
             top_logprobs_num=audit.plan.top_logprobs_num,
             executor_namespace_digest=candidate.executor_namespace_digest,
             runtime_resource_policy_digest=candidate.runtime_resource_policy_digest,
@@ -440,7 +451,7 @@ def prepare_work(work, store, request_digest):
         return work
     origin = stage["origin"]
     secret = bytes.fromhex(origin["selection_secret"])
-    replacement = work.factory.plan_builder(secret)
+    replacement = work.factory.build()
     original = restore_origin(replacement, origin)
     manifest = QualificationAuthorityManifest.seal(original,
         reservations=work.factory.manifest.reservations,

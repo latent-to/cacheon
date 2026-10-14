@@ -104,6 +104,9 @@ def test_recommissioned_arena_reconstructs_the_original_measured_work(tmp_path, 
     import tests.test_marginal_runtime as runtime_fixtures
     from cacheon.eval import qualification_worker_checkpoint as checkpoint
     from cacheon.eval.qualification_continuation import QualificationContinuationStore
+    from cacheon.eval.qualification_intake import QualificationAuthorityManifest
+    from cacheon.eval.qualification_prebuilt_plan import sealed_prebuilt_qualification_plan_factory
+    from cacheon.arena_service import ArenaQualificationWork
     from tests.test_device_state import _policy
 
     source = fixtures.FUSED if profile == "glm" else None
@@ -115,7 +118,7 @@ def test_recommissioned_arena_reconstructs_the_original_measured_work(tmp_path, 
         changed.setattr(runtime_fixtures, "_digest", lambda value:
             original_digest("new-worker-arena") if value == "arena" else original_digest(value))
         second = fixtures._harness(tmp_path / "replacement", source)
-        replacement = second.factory.plan_builder(second.cohort, secret)
+        replacement = second.factory.plan_builder(second.cohort, b"replacement-prebuilt-plan-private-seed")
     assert replacement.prepared.source.digest != original.prepared.source.digest
     scope = QualificationContinuationStore(tmp_path / "checkpoint").scope(
         request_digest=_d("request"), authority_digest=runner.qualification_authority_digest(original),
@@ -123,6 +126,26 @@ def test_recommissioned_arena_reconstructs_the_original_measured_work(tmp_path, 
     executor = SimpleNamespace(device_policy=_policy())
     monkeypatch.setattr(checkpoint, "_clock_domain", lambda: "original-boot")
     origin = checkpoint.capture_origin(original, scope, executor, executor)
+    scope.checkpoint_origin = origin
+    scope.record_resident_speed(_retained_speed(original, tmp_path / "speed"))
+    pointer = json.loads((scope.checkpoint_root / (scope.request_digest + ".json")).read_bytes())
+    store = QualificationContinuationStore(tmp_path / "replacement-checkpoint")
+    imported = store.root / "imports"
+    imported.mkdir()
+    name = pointer["sha256"] + ".json.gz"
+    (imported / name).write_bytes((scope.checkpoint_root / name).read_bytes())
+    request = _d("replacement-request")
+    (imported / (request + ".json")).write_text(json.dumps(pointer))
+    manifest = QualificationAuthorityManifest.seal(replacement,
+        reservations=(second.candidate.reservation,), selection_secret_reference=_d("replacement-secret"))
+    factory = sealed_prebuilt_qualification_plan_factory(manifest, plan=replacement,
+        selection_secret=replacement.selection_secret, selection_secret_reference=_d("replacement-secret"))
+    work = ArenaQualificationWork(factory, executor, lambda: None, lambda: None, 1000.0,
+                                  second.cohort.request.qualification_policy_digest, executor)
+    recovered = checkpoint.prepare_work(work, store, request)
+    assert recovered.factory.build().selection_secret == secret
+    assert recovered.factory.build().commitment == original.commitment
+    assert store.worker_replacements[request] == replacement
     restored = checkpoint.restore_origin(replacement, origin)
     assert runner.qualification_authority_digest(restored) == runner.qualification_authority_digest(original)
     assert restored.prepared.source == original.prepared.source
