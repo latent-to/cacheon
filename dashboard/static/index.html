@@ -260,11 +260,15 @@ const STATUS_TONE = {
   qualifying: "info", reproduction_pending: "info",
   reserved: "mute", deferred: "mute", fetching: "info", transport_retry: "warn",
   held: "warn", no_decision: "warn", failed: "bad", expired: "mute",
-  active: "ok", completed: "ok", released: "mute", inactive: "warn",
+  active: "ok", idle: "warn", completed: "ok", released: "mute", inactive: "warn",
   confirmed: "ok", pending: "info", earning: "ok", excluded: "bad", passed: "ok",
   awaiting_settlement: "info", stale: "warn",
 };
 const pill = (s) => `<span class="pill ${STATUS_TONE[s] || "mute"}">${esc(s || "—")}</span>`;
+function workerActive(hb) {
+  return Boolean(hb.fresh && hb.adapter_alive && hb.active_request_id
+    && ["evaluating", "running"].includes(hb.state));
+}
 function baselineSummary(b) {
   if (!b || (!b.evaluated && !b.assigned))
     return '<span class="pill mute">not assigned</span>';
@@ -426,7 +430,7 @@ async function viewQueue() {
       ${card(q.pending.length, "pending in queue", q.pending.length ? "info" : "")}
       ${card(q.active_leases.length, "active eval leases", q.active_leases.length ? "info" : "")}
       ${card(q.gpu_requests.length, "GPU requests in spool")}
-      ${card(esc(sup.phase || "—"), "supervisor phase")}
+      ${card(workerActive(hb) ? "active" : "idle", "supervisor", workerActive(hb) ? "ok" : "warn")}
       ${card(hb.age_s != null ? dur(hb.age_s) : "unknown", "Last worker heartbeat", hb.fresh ? "ok" : "warn")}
       ${card(relay.age_s != null ? dur(relay.age_s) : "unknown", "CPU relay heartbeat", relay.fresh ? "ok" : "warn")}
     </div>
@@ -654,10 +658,11 @@ async function viewTimeline() {
 
 async function viewSystem() {
   const h = await api("/api/health");
+  const hb = h.gpu_heartbeat || {}, relay = h.relay_heartbeat || {};
   const procs = h.processes.map((p) => `<tr>
     <td>${esc(p.name)}</td>
-    <td>${p.up ? '<span class="pill ok">up</span>' : '<span class="pill bad">down</span>'}</td></tr>`);
-  const hb = h.gpu_heartbeat || {}, relay = h.relay_heartbeat || {};
+    <td>${p.name === "standing supervisor" ? pill(workerActive(hb) ? "active" : "idle")
+      : p.up ? '<span class="pill ok">up</span>' : '<span class="pill bad">down</span>'}</td></tr>`);
   return `
     <div class="cards">
       ${card(h.db.ok ? "ok" : "down", "intake DB", h.db.ok ? "ok" : "bad")}
@@ -908,12 +913,11 @@ async function loadArenas() {
     `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}</option>`).join("") : '<option>Current arena</option>';
   $("#arena-status").innerHTML = arenas.map(s => {
     const h = s.health, hb = h.gpu_heartbeat || {};
-    const healthyWorker = hb.fresh && ["idle", "running"].includes(hb.state);
-    const weightsOff = s.weights_status === "weights off / not yet in served vector";
-    const status = weightsOff ? "weights off" : h.db.ok ? (hb.state || "worker unknown") : "database unavailable";
+    const active = workerActive(hb);
+    const status = h.db.ok ? (active ? "active" : "idle") : "database unavailable";
     const weight = Number.isInteger(s.target_weight_ppm) ? `${(s.target_weight_ppm / 10000).toLocaleString(undefined, {maximumFractionDigits: 4})}% target` : "target unavailable";
     const basis = "Current configured arena target, not the actual reward split.";
-    return `<span class="pill ${!weightsOff && h.db.ok && healthyWorker ? "ok" : "warn"}">${esc(s.label)}: ${esc(status)} <span title="${esc(basis)}">· ${esc(weight)}</span></span>`;
+    return `<span class="pill ${h.db.ok && active ? "ok" : "warn"}">${esc(s.label)}: ${esc(status)} <span title="${esc(basis)}">· ${esc(weight)}</span></span>`;
   }).join(" ") + (arenas.length ? '<span> Reward offer is global. Sponsorship revenue, evaluation fees/credits, and miner alpha rewards are separate.</span>' : "");
   const current = arenas.find(s => s.key === arena);
   if (current) $("#arena-status").innerHTML += `<strong> ${esc(current.label)}: ${esc(current.weights_status)}</strong>`;
