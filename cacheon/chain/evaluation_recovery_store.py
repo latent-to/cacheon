@@ -1018,8 +1018,8 @@ class EvaluationRecoveryStoreMixin:
         A worker replacement retires a request whatever parked it once the
         store proves the live epoch differs from the sealed plan's (a refusal
         crash-looped the supervisor); a completed-product hold needs the same
-        proof. Replacements are exempt from the cap; other failures still park
-        for operator recovery.
+        proof. Replacements and refused checkpoints are exempt from the cap and
+        never re-hold a reservation the operator released; other failures park.
         """
 
         from cacheon.chain.execution_disposition import (
@@ -1029,10 +1029,7 @@ class EvaluationRecoveryStoreMixin:
             WORKER_INFRASTRUCTURE_HOLD_REASON,
         )
 
-        parked_held = (
-            type(recovery) is EvaluationRecovery
-            and recovery.phase is RecoveryPhase.HELD
-        )
+        parked_held = type(recovery) is EvaluationRecovery and recovery.phase is RecoveryPhase.HELD
         retired_epoch = (
             type(recovery) is EvaluationRecovery
             and bool(recovery.request_id)
@@ -1072,7 +1069,8 @@ class EvaluationRecoveryStoreMixin:
             ),
             allow_expired=held_migration,
         )
-        self._cap_infrastructure_releases(lease)
+        if failure_code not in ("worker_replaced", "checkpoint_computation_changed"):
+            self._cap_infrastructure_releases(lease)
         return lease
 
     def release_stale_incumbent_qualification_recovery(

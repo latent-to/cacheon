@@ -40,8 +40,8 @@ _COMPLETE = {
 class CheckpointComputationChanged(QualificationContinuationError):
     """The replacement would measure other work, so the saved stages cannot score it.
 
-    Only executable, native build, launch envelope, stack, portable contract and
-    replay GPU configuration comparisons raise it; damage stays the plain error.
+    Only executable, native build, launch envelope, stack, workload, portable contract
+    and replay GPU configuration comparisons raise it; damage stays the plain error.
     """
 
 
@@ -238,6 +238,7 @@ def restore_origin(value, origin):
     from cacheon.eval.qualification_runner import qualification_authority_digest
     from cacheon.eval.resident_audit_authority import ResidentAuditExecutionAuthority
     from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
+    from cacheon.eval.scoring import marginal_workload_digest
     from cacheon.engine_tree import reopen_materialized_engine_tree
     from cacheon.stack_manifest import EvaluationStackManifest
     from cacheon.stack_plan import StackArmIdentity
@@ -257,6 +258,11 @@ def restore_origin(value, origin):
         return replace(template, launch_digest=launch.digest,
                        expected_preflight=expected_runtime_preflight(launch, binding.runtime_preflight_receipt))
 
+    codec = _codec()
+    # Otherwise CausalQualificationInput raises QualificationRunnerError, killing the epoch.
+    if (marginal_workload_digest(value.resident_speed_plan.baseline.session_plan)
+            != codec.decode(origin["candidates"][0]).profile.reference.workload_digest):
+        raise CheckpointComputationChanged("worker checkpoint workload changed")
     speed_plan = restore_speed_plan(value.resident_speed_plan, origin)
     candidate = speed_plan.candidate
     base_launch, base_binding = _restore_binding(
@@ -287,7 +293,6 @@ def restore_origin(value, origin):
         audit_policy = replace(audit_policy, validator_seed=hashlib.sha256(
             AUDIT_SEED_DOMAIN + bytes.fromhex(origin["selection_secret"])
             + bytes.fromhex(value.candidates[0].selected_delta_digest)).hexdigest()[:32])
-    codec = _codec()
     context, calibration, threshold = (codec.decode(row) for row in origin["calibration"])
     calibration_ref = EvidenceArtifactRef.from_dict(origin["calibration_ref"])
     if "calibration_bytes" in origin:

@@ -494,7 +494,7 @@ def cpu_serve(
                 )
                 active = heartbeat.get("active_request_id")
                 # Finished carriers of any epoch leave the queue; iter_queue
-                # skips the old-epoch rest a replacement imports (2026-10-14).
+                # leaves older epochs' carriers to the dispatcher (2026-10-14).
                 if archive_intake_db:
                     for job_dir in outbox.iterdir():
                         if (job_dir / "REQUEST_READY").is_file():

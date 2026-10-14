@@ -13,7 +13,7 @@ import os
 
 from cacheon.chain.remote_worker_spool import (
     append_event, artifact_for_role, atomic_bytes, atomic_json, authenticated_wire_request,
-    file_sha256, load_json, require_digest, spool_canonical_json, fail,
+    file_sha256, load_json, require_digest, spool_canonical_json, fail, MAX_WIRE_PAYLOAD_BYTES,
 )
 from cacheon.chain.remote_worker_registration import (
     registration_credential, registration_transport_identity, verify_registration,
@@ -160,20 +160,23 @@ def _previous_work_checkpoint(transport, body):
         if len(jobs) != 1:
             fail("retained checkpoint has ambiguous request carriers")
         job, = jobs
+        request = load_json(job / "request.json")
+        # Another cohort's entry never gates this claim; only a match is authenticated.
+        if _work_key(load_json(artifact_for_role(request, job, "qualification_payload"),
+                               maximum=MAX_WIRE_PAYLOAD_BYTES)["body"]) != _work_key(body):
+            continue
         root = spool / "checkpoints" / "authorities" / ready["worker_epoch"]
         registration = verify_registration(load_json(root / "registration.json"))
-        wire = RemoteEvaluationRequest.from_dict(authenticated_wire_request(load_json(job / "request.json"), job,
+        wire = RemoteEvaluationRequest.from_dict(authenticated_wire_request(request, job,
             identity=registration_transport_identity(registration),
             credential=registration_credential(registration, root / "credential.secret")))
-        if _work_key(wire.body) != _work_key(body):
-            continue
         snapshot = read_snapshot(spool / "checkpoints" / (ready["sha256"] + ".json.gz"), ready["sha256"])
         if snapshot["origin"]["request"] != ready["request_digest"] or wire.digest != ready["request_digest"]:
             fail("retained checkpoint differs from its original request")
         stages = snapshot["stages"]
         progress = tuple(name in stages for name in ("quality", "audit", "speed", "speed_first"))
         progress += (sum(name.startswith("speed_window_") for name in stages),)
-        matches.append((progress, load_json(job / "request.json")["queued_at_unix_ns"], ready))
+        matches.append((progress, request["queued_at_unix_ns"], ready))
     return max(matches, key=lambda row: row[:2])[2] if matches else None
 
 
@@ -278,8 +281,13 @@ def recover_replaced_worker(dispatcher):
         if plan.worker_epoch == transport.registration["worker_epoch"]:
             return None
         result_root = transport.spool_root / "results" / plan.request_id
-        completed = ((result_root / "RESULT_READY").is_file()
-                     and load_json(result_root / "result.json")["state"] == "completed")
+        marked = (result_root / "RESULT_READY").is_file()
+        if result_root.exists() and not marked:
+            # Unmarked result bytes may be finished paid work: hold under that cause, never rerun.
+            if recovery.phase is not RecoveryPhase.HELD:
+                store.hold_recovery(recovery, current_block=point[0], reason="transport_hold:result_partial")
+            return None
+        completed = marked and load_json(result_root / "result.json")["state"] == "completed"
         if not completed:
             # Park the old carrier before release. A crash here reopens the
             # same stored plan and repeats this move without creating work.

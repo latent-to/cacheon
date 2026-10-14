@@ -78,7 +78,10 @@ The lease layer caps ordinary qualification infrastructure failures at three
 releases since the reservation's most recent completed lease. Deliberate
 `operator` dispositions are exempt. Worker replacements are also exempt when
 the store verifies that the new epoch differs from the retired request's sealed
-epoch. Repeated spot losses do not consume the broken-worker retry budget, and
+epoch. So is the release that retires a checkpoint its replacement refused as
+changed computation; each retires a distinct digest, recorded under
+`checkpoints/retired/`. Neither exempt release counts or re-holds a reservation the
+operator released. Repeated spot losses do not consume the broken-worker retry budget, and
 successful completion resets the count. At the cap the reservation is `held` with
 reason `systemic_release_cap:<count>` and waits for the operator `release_hold`
 disposition. Infrastructure failures are never converted into a candidate verdict.

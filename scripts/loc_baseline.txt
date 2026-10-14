@@ -2,14 +2,14 @@
 # Raising a ceiling is a reviewed decision made in the same diff
 # that needs it; lowering one locks in a deletion. check_loc_ratchet.py
 # Portable replay windows: +356 runtime, +177 regression, +8 docs; existing consumers replace
-# discarded mid-speed progress. Replacement-path fixes: +74 runtime, +12 docs (PR 151 review).
+# discarded mid-speed progress. Replacement-path fixes: +86 runtime, +17 docs, +2 test fixture (PR 151 review).
 (root) 1158
 .github 345
 bundles 2398
-cacheon 91843
+cacheon 91855
 cacheon_kernels 936
 dashboard 4281
-docs 12633
+docs 12638
 examples 396
 scripts 2117
-tests 66815
+tests 66817

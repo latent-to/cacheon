@@ -306,9 +306,10 @@ class B300MainnetWorker:
 
             try:
                 work = prepare_work(work, continuation_store, request_digest)
-            except QualificationContinuationError as exc:
+            except Exception as exc:
                 # Nothing has executed. Changed computation lets the CPU retire the
-                # checkpoint and evaluate the cohort fresh; damage holds it.
+                # checkpoint and evaluate the cohort fresh; any other restore failure
+                # holds this request instead of failing the worker epoch.
                 _LOG.exception("request %s refused its checkpoint before execution", request_digest)
                 return _resident_evidence_hold(
                     request_digest, work.factory.manifest.authority_digest,

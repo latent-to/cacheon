@@ -263,10 +263,11 @@ When a new commissioned worker replaces an old epoch, the recoverable dispatcher
 first imports any complete result already on the CPU under the worker and arena
 service that produced it; every epoch's service is retained before it publishes work.
 Otherwise it retires the old lease, whatever held it, retains its carrier, and seals
-a new request with the CPU-held checkpoint digest. The relay transfers only carriers
-bound to its own worker epoch, so an older carrier in any state waits for the
-dispatcher and cannot block the replacement's queue. A late old-worker result cannot
-commit under the replacement lease. Checkpoint lookup follows the submitted cohort and lane
+a new request with the CPU-held checkpoint digest. A result the CPU moved in but never
+marked is held as `transport_hold:result_partial`, since it may be finished paid work.
+The relay transfers only carriers bound to its own worker epoch; older carriers stay
+in the spool for the dispatcher and cannot block the replacement's queue. A late
+old-worker result cannot commit under the replacement lease. Checkpoint lookup follows the submitted cohort and lane
 across commissioning generations. The worker then compares the executable code,
 model, workload and grading rules, and reconstructs the original stack metadata
 through the materializer. Changed commissioning identities do not discard saved
@@ -278,13 +279,14 @@ The CPU then records that checkpoint under `checkpoints/retired/`, logs
 consumed attempt and no retry-cap charge; the next request evaluates the cohort from
 the start. Any other restore failure holds it as `resident_evidence_unavailable`
 with its original cause. Existing checkpoint
-indexes are reopened through their original authenticated requests without replacing
-the saved bytes. Completed stages retain their original work and hardware
+indexes for the submitted cohort are reopened through their original authenticated
+requests without replacing the saved bytes; another cohort's retained entry is not
+authenticated and cannot stop the claim. Completed stages retain their original work and hardware
 receipts; replacement driver or power settings do not invalidate that evidence.
 Missing stages use the replacement's commissioned hardware. Interrupted audit or
-pristine T repeats that stage; completed predecessors remain reusable. A repeated
-audit runs under the replacement's sealed seed and runtime policy, which its
-worker-recovery record binds.
+pristine T repeats that stage; completed predecessors remain reusable. An audit
+run on the replacement uses the replacement's sealed seed and runtime policy, which
+its worker-recovery record binds.
 
 Clock-domain changes do not rewrite old timestamps. The result carries an optional
 worker-recovery artifact and per-stage clock domains; regrading checks them against
