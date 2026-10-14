@@ -297,8 +297,10 @@ action; registration of the new worker activates the recovery path.
 To prepare a fresh Ubuntu worker, copy the selected Cacheon source tree and the
 retained model receipt to it, then run this command from that source tree as the
 deployment user. The host needs Docker, the NVIDIA runtime, Python 3.12, and
-enough disk and memory for the commissioned model. The model token stays on the
-worker. Use the previously built worker image's immutable repository digest:
+enough disk and memory for the commissioned model. Keep the model-download token
+on the durable controller and deliver an owner-only copy to the replacement's
+`--token-file` path. Exclude it from images, checkpoints, logs and result artifacts.
+Use the previously built worker image's immutable repository digest:
 
 ```bash
 python3 scripts/bootstrap_worker.py \
@@ -327,6 +329,9 @@ retained disk files are copied into RAM and checked against the receipt; partial
 disk downloads finish first, and verified RAM copies survive a process restart.
 This prepares inputs for the existing commissioner;
 it does not register a worker, allocate GPUs, or resume an evaluation itself.
+
+Fault injection belongs in private operational scripts. The production recovery
+path does not schedule synthetic interruptions.
 
 Recovery acceptance requires a controlled-interruption run through the ordinary
 qualification runner on the commissioned image/model/topology. Interrupt its
