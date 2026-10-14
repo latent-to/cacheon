@@ -332,6 +332,9 @@ def publish_snapshot(continuation):
         if all(path.is_file() for path in paths):
             stages[name] = {"origin": origin,
                             "records": {path.stem: json.loads(path.read_bytes()) for path in paths}}
+    if "speed" in stages:
+        # Full speed embeds every original window; older immutable snapshots remain available.
+        stages = {name: row for name, row in stages.items() if not name.startswith("speed_window_")}
     body = {"schema": SCHEMA, "origin": origin, "stages": stages}
     raw = canonical_json_bytes(body)
     if len(raw) > MAX_CHECKPOINT_BYTES:
