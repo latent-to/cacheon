@@ -501,6 +501,69 @@ def test_a_runtime_with_recurrent_state_is_refused_rather_than_audited_unchecked
         nodes._state_rows(runner, (batch,))
 
 
+def _recurrent_model():
+    runner, batch = _served_model()
+    state = SimpleNamespace(temporal=torch.zeros(2, 8, 2), conv=[torch.zeros(2, 8, 3)])
+    runner.req_to_token_pool = SimpleNamespace(
+        mamba_pool=SimpleNamespace(mamba_cache=state), mamba_map={0: 0, 2: 1},
+        get_mamba_indices=lambda requests: requests + 1,
+        translate_mamba_indices=lambda indices: indices + 1,
+    )
+    batch.mamba_track_indices = torch.tensor([5])
+    batch.mamba_track_mask = torch.tensor([True])
+
+    class Recurrent(nn.Module):
+        def forward(self, x, batch):
+            for buffer in (state.temporal, *state.conv):
+                buffer[:, [2, 5]] += x.sum()
+            return x * 2
+
+    runner.model.leaf = Recurrent()
+    return runner, batch, state
+
+
+@pytest.mark.parametrize("change", [None, "live", "checkpoint", "conv"])
+def test_recurrent_reference_restores_and_grades_live_and_checkpoint_writes(audited, change):
+    runner, batch, state = _recurrent_model()
+
+    def candidate(module, x, batch):
+        output = module.forward(x, batch)
+        if change is not None:
+            buffer = state.conv[0] if change == "conv" else state.temporal
+            buffer[:, 5 if change == "checkpoint" else 2] += 100
+        return output
+
+    nodes.bind(runner, _registry("leaf", candidate))
+    output = runner.model.leaf(torch.ones(2, 4), batch)
+    assert torch.equal(output, torch.full((2, 4), 2.0))
+    assert audited['leaf']['violations'] == int(change is not None)
+    if change is None:
+        # Reference and honest-twin calls must not accumulate extra updates.
+        for buffer in (state.temporal, *state.conv):
+            assert (buffer[:, [2, 5]] == 8).all()
+            assert (buffer[:, [0, 1, 3, 4, 6, 7]] == 0).all()
+
+
+def test_recurrent_rows_use_physical_track_indices_and_local_layer_map():
+    runner, batch, state = _recurrent_model()
+    rows = nodes._recurrent_rows(runner.req_to_token_pool, batch, 2)
+    assert len(rows) == 2
+    assert rows[0][0].data_ptr() == state.temporal[1].data_ptr()
+    assert rows[0][2].tolist() == [2, 5]
+    assert nodes._recurrent_rows(runner.req_to_token_pool, batch, 1) == []
+    batch.mamba_track_mask.zero_()
+    assert nodes._recurrent_rows(runner.req_to_token_pool, batch, None)[0][2].tolist() == [2]
+
+
+@pytest.mark.parametrize("feature", ["intermediate_ssm", "enable_linear_replayssm", "enable_linear_replayssm_spec"])
+def test_recurrent_speculative_writes_remain_refused(feature):
+    runner, batch, state = _recurrent_model()
+    target = state if feature == 'intermediate_ssm' else runner.req_to_token_pool.mamba_pool
+    setattr(target, feature, True)
+    with pytest.raises(RuntimeError, match="recurrent state"):
+        nodes._state_rows(runner, (batch,))
+
+
 @pytest.mark.parametrize("dim", [0, 1])
 def test_state_comparison_pieces_preserve_dense_row_errors(monkeypatch, dim):
     expected = torch.arange(120, dtype=torch.float32).reshape(6, 4, 5) / 17

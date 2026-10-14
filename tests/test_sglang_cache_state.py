@@ -134,8 +134,147 @@ def test_request_held_compressor_state_must_survive_a_cache_handoff(corrupt, rin
 
 
 def test_recurrent_state_is_refused_rather_than_served_unchecked():
-    """No commissioned arena caches recurrent checkpoints; the pool is refused before any handoff."""
+    """Unrecognized recurrent layouts remain refused before any handoff."""
     ctx = _ctx(eagle=True, is_hybrid_ssm=True)
     ctx.params.req_to_token_pool.mamba_pool = NS()
+    with pytest.raises(RuntimeError, match="state validation is unavailable"):
+        _Guard(ctx)
+
+
+def _recurrent_engine(extra=True):
+    ctx = _ctx(is_hybrid_ssm=True)
+    ctx.params.sliding_window_size = None
+    ctx.params.enable_mamba_extra_buffer = extra
+    requests = ctx.params.req_to_token_pool
+    requests.mamba_pool = NS(mamba_cache=NS(
+        temporal=torch.randn(2, 16, 3, 4), conv=[torch.randn(2, 16, 3, 2)]))
+    # Exercise virtual-to-physical translation, not only identity slot maps.
+    requests.translate_mamba_indices = lambda slots: (slots + 1) % 16
+    requests.get_mamba_ping_pong_keep_idx = lambda req: req.kv.mamba_last_track_idx
+    return ctx
+
+
+def _recurrent_request(rid, tokens, row):
+    req = _request(rid, tokens, row)
+    req.kv.mamba_pool_idx = torch.tensor(3)
+    req.kv.mamba_last_track_seqlen = len(tokens)
+    req.kv.mamba_last_track_idx = 1
+    req.kv.mamba_ping_pong_track_buffer = torch.tensor([4, 5])
+    req.kv.mamba_cow_src_index = None
+    req.kv.mamba_needs_clear = False
+    return req
+
+
+def _recurrent_match(guard, cache, tokens, slot, *, host=False, salt=None, cow=True):
+    req = _recurrent_request("query", tokens + [99], 1)
+    req.cache_salt = salt
+    req.kv.mamba_cow_src_index = None if host else torch.tensor([slot])
+    req.kv.mamba_pool_idx = torch.tensor(slot)
+    row = torch.arange(PAGE, PAGE + len(tokens))
+    req.prefix_indices = row
+    params = NS(key=Key(tokens + [99]), req=req, cow_mamba=cow)
+    result = NS(device_indices=row, host_hit_length=0, swa_host_hit_length=0,
+                mamba_host_hit_length=int(host))
+    guard.matched(cache, params, result, NS)
+    return req
+
+
+@pytest.mark.parametrize("extra", [False, True])
+@pytest.mark.parametrize("host", [False, True])
+@pytest.mark.parametrize("change", [None, "conv", "temporal", "prefix", "namespace", "reset"])
+def test_recurrent_hits_bind_all_state_kinds_to_prefix_and_flush(extra, host, change):
+    guard = _Guard(_recurrent_engine(extra))
+    cache = _cache(guard)
+    tokens = list(range(16))
+    req = _recurrent_request("source", tokens, 0)
+    guard.requests.req_to_token[0, :16] = torch.arange(PAGE, PAGE + 16).int()
+    guard.handoff(cache, req, tokens, finished=True)
+    state = guard.requests.mamba_pool.mamba_cache
+    source = 6 if extra else 4  # translated tracked/live slot
+    # Legitimate movement (including a host round trip) preserves content.
+    for buffer in [state.temporal, *state.conv]:
+        buffer[:, 10].copy_(buffer[:, source])
+    if change in ("conv", "temporal"):
+        buffer = state.temporal if change == "temporal" else state.conv[0]
+        buffer[0, 10].add_(1)
+    elif change == "prefix":
+        tokens[0] += 1
+    elif change == "reset":
+        guard.reset()
+    _recurrent_match(guard, cache, tokens, 9, host=host,
+                     salt="different" if change == "namespace" else None)
+    if change:
+        with pytest.raises(RuntimeError, match="recurrent"):
+            guard.hybrid.ready(cache) if host else guard.poll(block=True)
+    else:
+        if host:
+            guard.hybrid.ready(cache)
+        guard.poll(block=True)
+
+
+@pytest.mark.parametrize("extra", [False, True])
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_unfinished_request_keeps_live_recurrent_state_across_donation(extra, corrupt):
+    guard = _Guard(_recurrent_engine(extra))
+    cache = _cache(guard)
+    tokens = list(range(16))
+    req = _recurrent_request("source", tokens, 0)
+    row = torch.arange(PAGE, PAGE + 16)
+    guard.requests.req_to_token[0, :16] = row.int()
+    handed = guard.handoff(cache, req, tokens)
+    # The cache can donate/replace a checkpoint buffer; it cannot alter live state.
+    req.kv.mamba_ping_pong_track_buffer[1] = 8
+    req.kv.mamba_last_track_seqlen = None
+    if corrupt:
+        guard.requests.mamba_pool.mamba_cache.temporal[0, 4].add_(1)
+    req.prefix_indices, req.kv.cache_protected_len = row.clone(), 16
+    guard.settle(req, handed)
+    if corrupt:
+        with pytest.raises(RuntimeError, match="recurrent"):
+            guard.poll(block=True)
+    else:
+        guard.poll(block=True)
+
+
+def test_checkpoint_length_uses_tracked_boundary_and_rejects_uncomputed_tail():
+    guard = _Guard(_recurrent_engine())
+    cache = _cache(guard)
+    tokens = list(range(16))
+    req = _recurrent_request("source", tokens, 0)
+    guard.requests.req_to_token[0, :16] = torch.arange(PAGE, PAGE + 16).int()
+    req.kv.mamba_last_track_seqlen = 12
+    guard.handoff(cache, req, tokens, finished=True)
+    _recurrent_match(guard, cache, tokens[:12], 5)
+    guard.poll(block=True)
+    _recurrent_match(guard, cache, tokens, 5)
+    with pytest.raises(RuntimeError, match="recurrent"):
+        guard.poll(block=True)
+
+
+def test_internal_match_does_not_restore_an_older_checkpoint_over_live_state():
+    """UnifiedRadixCache rematches a request with cow_mamba=False after insertion."""
+    guard = _Guard(_recurrent_engine())
+    cache = _cache(guard)
+    tokens = list(range(16))
+    req = _recurrent_request("source", tokens, 0)
+    guard.requests.req_to_token[0, :16] = torch.arange(PAGE, PAGE + 16).int()
+    req.kv.mamba_last_track_seqlen = 12
+    guard.handoff(cache, req, tokens, finished=True)
+    # Live slot 3 contains the newer 16-token state, not tracked slot 5's prefix.
+    _recurrent_match(guard, cache, tokens[:12], 3, cow=False)
+    guard.poll(block=True)
+    _recurrent_match(guard, cache, tokens[:12], 5)
+    guard.poll(block=True)
+
+
+@pytest.mark.parametrize("feature", ["mamba_ckpt_pool", "enable_linear_replayssm", "enable_linear_replayssm_spec", "intermediate_ssm"])
+def test_other_recurrent_representations_still_require_adapter_support(feature):
+    ctx = _recurrent_engine()
+    target = ctx.params.req_to_token_pool
+    if feature != "mamba_ckpt_pool":
+        target = target.mamba_pool
+    if feature == "intermediate_ssm":
+        target = target.mamba_cache
+    setattr(target, feature, True)
     with pytest.raises(RuntimeError, match="state validation is unavailable"):
         _Guard(ctx)

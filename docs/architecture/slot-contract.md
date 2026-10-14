@@ -112,8 +112,9 @@ Truth is the stock node in the running engine, on the same call:
 1. on an audited eager call the stock node runs first;
 2. its result tensors are kept, together with the engine-state rows the batch may
    write: the cache rows at `out_cache_loc` (whole pages where the pool stores
-   pages); a runtime that keeps per-request recurrent state outside those pools
-   is refused rather than audited unchecked;
+   pages), plus native recurrent convolution and temporal rows for both live
+   requests and tracked checkpoints. Speculative recurrent and ReplaySSM state
+   are refused rather than audited unchecked;
 3. the arguments stock changed and the state rows are put back;
 4. the honest twin answers the same call and is put back the same way: the stock
    node with supported fused ops on SGLang's native reference paths, giving the
@@ -250,8 +251,14 @@ KV, sliding-window KV and its index state (by slot, or by page where the window 
 stores whole pages), compressed KV and index pages, per-request sliding-window rings,
 and the pending-pair ring a DeepSeek-V4 kv-source layer holds per request, which a
 cache handoff must leave unchanged. A request-local ring is never stored in the tree,
-so a prefix hit that skips its trailing window is refused. Recurrent checkpoints are
-refused: no commissioned arena caches them. A new model does not require a new
+so a prefix hit that skips its trailing window is refused. In the untimed audit,
+native recurrent convolution and temporal checkpoints are bound to their complete
+token prefix and namespace before donation, then checked before reuse. Live
+recurrent request state must survive cache handoffs unchanged. Physical slot
+translation and tracked checkpoint boundaries follow the pinned runtime. Cache
+flushes forget recorded fingerprints as well as pending handoffs; each replay
+window starts after the engine acknowledges its cache reset. Int8 recurrent
+checkpoints and ReplaySSM layouts remain unsupported and are refused. A new model does not require a new
 miner contract; an unfamiliar storage layout requires validator support before a
 contribution can use it.
 
