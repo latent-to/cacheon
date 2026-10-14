@@ -68,7 +68,7 @@ _VERDICTS = {
     _FAKE: "served a page that does not hold the KV the engine computed for its prefix",
     _MOVED: "moved KV slots a request computed itself",
     _ROW: "left a request row that disagrees with the request's prefix",
-    _STATE: "served or changed unrecorded sliding-window or request-held state",
+    _STATE: "served or changed unrecorded sliding-window, recurrent or request-held state",
 }
 
 
