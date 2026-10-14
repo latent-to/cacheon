@@ -312,6 +312,13 @@ Set `CACHEON_DASH_SOURCES` to an absolute JSON config path. It has `default`
 Paths are absolute; private bundles remain under `mission/private`. Each source
 needs distinct intake, enrichment cache and private roots. Caches must never
 point to an intake DB. Configure separate spool, log and evidence roots too.
+For replaceable GPU workers, point `heartbeat` and `registration` at the durable
+CPU spool's current files, which the worker handoff updates, and `stage` at the
+directory containing its worker generations. Process checks may name that
+common deployment directory. The header and supervisor cards show green
+`active` only while a fresh worker heartbeat reports a live evaluator and an
+active request; otherwise they show yellow `idle`. A live CPU relay alone does
+not imply GPU activity. Weight publication status remains separate.
 The dashboard reads current WAL contents and reports an unreadable DB; it does
 not substitute an immutable snapshot. Config changes take effect after restart.
 
