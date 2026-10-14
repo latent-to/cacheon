@@ -39,6 +39,8 @@ from cacheon.chain.remote_worker_request_plan import (
     PlannedQualificationObservation,
     QualificationRecoveryHold,
     QualificationRequestPlan,
+    _LOCK_NAME,
+    _fsync_directory,
     create_qualification_request_plan,
     inspect_planned_qualification as inspect_qualification_plan,
     materialize_planned_qualification as materialize_qualification_plan,
@@ -404,13 +406,12 @@ def _archive_completed_request(job_dir: Path, request: Mapping[str, Any], intake
                 return
         archive = job_dir.parent.parent / "outbox-archive"
         archive.mkdir(mode=0o700, exist_ok=True)
-        job_dir.rename(archive / job_dir.name)
+        # The dispatcher's checkpoint scan reads old carriers under this lock.
+        with (job_dir.parent / _LOCK_NAME).open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            job_dir.rename(archive / job_dir.name)
         for directory in (archive, job_dir.parent):
-            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            _fsync_directory(directory)
     finally:
         con.close()
     append_event(job_dir.parent.parent, "request_archived", request_id=request["request_id"])
@@ -492,8 +493,8 @@ def cpu_serve(
                     worker_hold_state, heartbeat, spool_root, registration
                 )
                 active = heartbeat.get("active_request_id")
-                # A replacement imports old results before this relay can
-                # authenticate their old-epoch carriers (2026-10-14).
+                # Finished carriers of any epoch leave the queue; iter_queue
+                # skips the old-epoch rest a replacement imports (2026-10-14).
                 if archive_intake_db:
                     for job_dir in outbox.iterdir():
                         if (job_dir / "REQUEST_READY").is_file():
@@ -770,9 +771,6 @@ class DurableSpoolAuthenticatedWorkerTransport:
     def materialize_planned_qualification(
         self, plan: QualificationRequestPlan, request: RemoteEvaluationRequest
     ) -> PlannedQualificationObservation:
-        from cacheon.chain.remote_worker_checkpoints import retain_authority
-
-        retain_authority(self)
         return self._with_qualification_artifacts(
             request,
             lambda _lease, artifacts: materialize_qualification_plan(

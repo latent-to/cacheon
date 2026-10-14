@@ -237,7 +237,9 @@ quality controls and normal engine teardown.
 
 A replacement regrades the saved windows and executes only the remaining sealed
 windows. It reloads the model and repeats the interrupted, unacknowledged window.
-Completed reads keep their original timestamps and physical bindings, including
+The resumed engine numbers its windows from 1 again; grading tells its reads from
+the saved ones by their request start times, so resuming on the same lanes is not
+a duplicate read. Completed reads keep their original timestamps and physical bindings, including
 when the replacement has different GPU IDs or a different monotonic clock origin.
 Model, image, workload, contribution, GPU operating configuration and numerical
 policy must match. The precommitted orientation sequence, equal orientation weights,
@@ -258,21 +260,31 @@ The relay's `checkpoints/` directory must live on storage independent of the GPU
 worker. These files contain private validator inputs and must not be published.
 
 When a new commissioned worker replaces an old epoch, the recoverable dispatcher
-first imports any complete result already on the CPU using its original authority.
-Otherwise it retires the old lease, retains its carrier, and seals a new request
-with the CPU-held checkpoint digest. The relay archives terminal, unleased carriers
-before checking the current epoch, so an imported old-worker result cannot block
-the replacement's queue. A late old-worker result cannot commit under
-the replacement lease. Checkpoint lookup follows the submitted cohort and lane
+first imports any complete result already on the CPU under the worker and arena
+service that produced it; every epoch's service is retained before it publishes work.
+Otherwise it retires the old lease, whatever held it, retains its carrier, and seals
+a new request with the CPU-held checkpoint digest. The relay transfers only carriers
+bound to its own worker epoch, so an older carrier in any state waits for the
+dispatcher and cannot block the replacement's queue. A late old-worker result cannot
+commit under the replacement lease. Checkpoint lookup follows the submitted cohort and lane
 across commissioning generations. The worker then compares the executable code,
 model, workload and grading rules, and reconstructs the original stack metadata
 through the materializer. Changed commissioning identities do not discard saved
-work; changed computation refuses recovery before GPU execution. Existing checkpoint
+work. Changed code, image, engine configuration, model, workload or grading rules,
+or a changed GPU operating configuration for unfinished replay windows, makes the
+worker return the typed `checkpoint_computation_changed` HOLD before GPU execution.
+The CPU then records that checkpoint under `checkpoints/retired/`, logs
+`checkpoint_retired`, keeps its bytes, and releases the lease with no decision, no
+consumed attempt and no retry-cap charge; the next request evaluates the cohort from
+the start. Any other restore failure holds it as `resident_evidence_unavailable`
+with its original cause. Existing checkpoint
 indexes are reopened through their original authenticated requests without replacing
 the saved bytes. Completed stages retain their original work and hardware
 receipts; replacement driver or power settings do not invalidate that evidence.
 Missing stages use the replacement's commissioned hardware. Interrupted audit or
-pristine T repeats that stage; completed predecessors remain reusable.
+pristine T repeats that stage; completed predecessors remain reusable. A repeated
+audit runs under the replacement's sealed seed and runtime policy, which its
+worker-recovery record binds.
 
 Clock-domain changes do not rewrite old timestamps. The result carries an optional
 worker-recovery artifact and per-stage clock domains; regrading checks them against

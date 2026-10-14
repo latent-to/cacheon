@@ -1015,9 +1015,11 @@ class EvaluationRecoveryStoreMixin:
     ) -> EvaluationLease:
         """Retire an infrastructure request before a fresh lease can claim it.
 
-        A completed-product hold requires a different live worker epoch.
-        Worker replacements prove that mismatch against the sealed plan and
-        are exempt from the cap; other failures still park for operator recovery.
+        A worker replacement retires a request whatever parked it once the
+        store proves the live epoch differs from the sealed plan's (a refusal
+        crash-looped the supervisor); a completed-product hold needs the same
+        proof. Replacements are exempt from the cap; other failures still park
+        for operator recovery.
         """
 
         from cacheon.chain.execution_disposition import (
@@ -1031,18 +1033,18 @@ class EvaluationRecoveryStoreMixin:
             type(recovery) is EvaluationRecovery
             and recovery.phase is RecoveryPhase.HELD
         )
-        completed_orphan = (
-            parked_held
-            and recovery.reason == COMPLETED_NO_DECISION_HOLD_REASON
+        retired_epoch = (
+            type(recovery) is EvaluationRecovery
+            and bool(recovery.request_id)
             and isinstance(live_worker_epoch, str)
             and re.fullmatch(r"[0-9a-f]{32}", live_worker_epoch) is not None
             and self.reopen_recovery_request_plan(recovery).worker_epoch
             != live_worker_epoch
         )
-        held_migration = completed_orphan or (
-            parked_held
-            and recovery.reason
-            in (
+        held_migration = parked_held and (
+            (retired_epoch and (failure_code == "worker_replaced"
+                                or recovery.reason == COMPLETED_NO_DECISION_HOLD_REASON))
+            or recovery.reason in (
                 WORKER_INFRASTRUCTURE_HOLD_REASON,
                 AUTHORITY_CHANGED_HOLD_REASON,
                 ORPHANED_CARRIER_HOLD_REASON,
@@ -1056,11 +1058,7 @@ class EvaluationRecoveryStoreMixin:
             or len(failure_code) > 256
             or any(ord(char) < 32 or ord(char) == 127 for char in failure_code)
             or not (recovery.phase is RecoveryPhase.REQUEST_READY or held_migration)
-            or (failure_code == "worker_replaced" and (
-                not isinstance(live_worker_epoch, str)
-                or re.fullmatch(r"[0-9a-f]{32}", live_worker_epoch) is None
-                or self.reopen_recovery_request_plan(recovery).worker_epoch == live_worker_epoch
-            ))
+            or (failure_code == "worker_replaced" and not retired_epoch)
         ):
             raise _intake_error("worker infrastructure recovery release is forbidden")
         lease = self._release_recovery(

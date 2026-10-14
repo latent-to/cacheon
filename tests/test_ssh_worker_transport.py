@@ -22,7 +22,7 @@ def test_checkpoint_lookup_reuses_authenticated_work_after_recommissioning(tmp_p
 
     authority = _authority(tmp_path, profile=profile)
     worker = authority.transport()
-    checkpoints.retain_authority(worker)
+    checkpoints.retain_authority(worker, authority.service.manifest)
     plan = _plan(authority)
     _materialize(authority, plan)
     _publish(authority, plan)

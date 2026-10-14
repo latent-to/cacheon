@@ -598,7 +598,8 @@ class EvaluationLeaseStoreMixin:
     # let the retired screen stage's catch-all reason retry one FIFO head row
     # through 31 lease generations (2026-08-25..28) and another 30+ on
     # 2026-08-29, starving the whole queue both times. A verified replacement
-    # epoch is a different worker, not another retry of that broken worker.
+    # epoch is a different worker, not another retry of that broken worker, and
+    # a refused checkpoint is retired once per digest, so neither can loop.
     _CAP_EXEMPT_RELEASE_PREFIXES = ("operator",)
 
     def _cap_infrastructure_releases(self, lease: EvaluationLease) -> None:
@@ -623,7 +624,8 @@ class EvaluationLeaseStoreMixin:
                 "SELECT COUNT(*) FROM evaluation_lease_events AS e "
                 "JOIN evaluation_lease_members AS m ON m.lease_id=e.lease_id "
                 "WHERE m.reservation_id=? AND e.event_type='released' "
-                "AND e.reason<>'systemic:worker_infrastructure:worker_replaced' "
+                "AND e.reason NOT IN ('systemic:worker_infrastructure:worker_replaced',"
+                "'systemic:worker_infrastructure:checkpoint_computation_changed') "
                 + exempt +
                 " AND e.sequence > COALESCE(("
                 "SELECT MAX(e2.sequence) FROM evaluation_lease_events AS e2 "

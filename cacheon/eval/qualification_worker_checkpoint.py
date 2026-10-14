@@ -37,6 +37,14 @@ _COMPLETE = {
 }
 
 
+class CheckpointComputationChanged(QualificationContinuationError):
+    """The replacement would measure other work, so the saved stages cannot score it.
+
+    Only executable, native build, launch envelope, stack, portable contract and
+    replay GPU configuration comparisons raise it; damage stays the plain error.
+    """
+
+
 def _clock_domain():
     """Distinguish Linux boots and time namespaces without altering timestamps."""
     return Path("/proc/sys/kernel/random/boot_id").read_text().strip() + ":" + os.readlink("/proc/self/ns/time")
@@ -187,10 +195,10 @@ def _restore_binding(template, row):
                        for item in tree.files if item.path != metadata_path},
                 runtime_manifest=tree.runtime_manifest, contributions=metadata["contributions"])
             if tree.tree_digest != launch.tree_digest:
-                raise QualificationContinuationError("worker checkpoint executable tree changed")
+                raise CheckpointComputationChanged("worker checkpoint executable tree changed")
     native = replace(template.native_build_spec, tree_digest=tree.tree_digest)
     if native.digest != launch.native_build_spec_digest:
-        raise QualificationContinuationError("worker checkpoint native build environment changed")
+        raise CheckpointComputationChanged("worker checkpoint native build environment changed")
     binding = replace(template, materialized_tree_root=tree.root, native_build_spec=native,
                       controller_distribution_digest=launch.controller_distribution_digest,
                       physical_hardware=codec.decode(row["physical"]),
@@ -213,7 +221,7 @@ def restore_speed_plan(plan, origin):
             old.pop(field)
             new.pop(field)
         if old != new:
-            raise QualificationContinuationError("worker checkpoint changed its executable envelope")
+            raise CheckpointComputationChanged("worker checkpoint changed its executable envelope")
         arms.append(replace(template, launch=launch, binding=binding,
                             session_plan=replace(template.session_plan, launch_digest=launch.digest,
                                 expected_preflight=expected_runtime_preflight(launch, binding.runtime_preflight_receipt)),
@@ -237,7 +245,7 @@ def restore_origin(value, origin):
     def stack(template, launch):
         original = EvaluationStackManifest.from_dict({**template.to_dict(), "arena_digest": launch.arena_digest})
         if original.digest != launch.stack_digest:
-            raise QualificationContinuationError("worker checkpoint incumbent or candidate changed")
+            raise CheckpointComputationChanged("worker checkpoint incumbent or candidate changed")
         return original
 
     def materialized(template, binding):
@@ -311,9 +319,10 @@ def restore_origin(value, origin):
         expected_launch_resource_policy_digest=candidate.launch.resource_policy_digest,
         expected_runtime_resource_policy_digest=candidate.runtime_resource_policy_digest,
         expected_device_policy_digest=base_launch.hardware.device_policy_digest)
-    if (_contract_fields(value, portable=True) != _contract_fields(restored, portable=True)
-            or _contract(restored) != origin["contract"] or restored.prepared.source.digest != origin["source"]):
-        raise QualificationContinuationError("worker checkpoint changed the sealed evaluation")
+    if _contract_fields(value, portable=True) != _contract_fields(restored, portable=True):
+        raise CheckpointComputationChanged("worker checkpoint changed the sealed evaluation")
+    if _contract(restored) != origin["contract"] or restored.prepared.source.digest != origin["source"]:
+        raise QualificationContinuationError("worker checkpoint sealed evaluation cannot be reconstructed")
     if qualification_authority_digest(restored) != origin["authority"]:
         raise QualificationContinuationError("worker checkpoint original authority cannot be reconstructed")
     return restored
@@ -380,8 +389,6 @@ def restore_stages(value, continuation, snapshot):
     restored = {}
     for stage, row in stages.items():
         origin = row["origin"]
-        if stage.startswith("speed_window_") and origin["devices"] != current["devices"]:
-            raise QualificationContinuationError("replay continuation changed its GPU operating configuration")
         if stage == "speed_first" and "speed" not in stages and (
             origin["boot"] != current["boot"] or origin["devices"] != current["devices"]
             or row["records"]["speed_first"]["payload"]["plan_digest"] != value.resident_speed_plan.digest
@@ -490,6 +497,10 @@ def prepare_work(work, store, request_digest):
     if stage is None:
         return work
     origin = stage["origin"]
+    devices = [_device_contract(row.device_policy) for row in (work.resident_baseline_executor, work.executor)]
+    if any(name.startswith("speed_window_") and row["origin"]["devices"] != devices
+           for name, row in snapshot["stages"].items()):
+        raise CheckpointComputationChanged("replay continuation changed its GPU operating configuration")
     secret = bytes.fromhex(origin["selection_secret"])
     replacement = work.factory.build()
     original = restore_origin(replacement, origin)

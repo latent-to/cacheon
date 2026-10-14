@@ -959,12 +959,6 @@ class AuditWitness:
         return canonical_digest("cacheon.qualification.slot-audit-witness.v1", self.to_dict())
 
 
-def _candidate_runtime_resource_policy_digest(value: object) -> str:
-    if type(value) is ResidentSpeedWitness:
-        return value.candidate_runtime_resource_policy_digest
-    raise QualificationRunnerError("speed witness type is unsupported")
-
-
 @dataclass(frozen=True)
 class CandidateQualificationReport:
     # v3 dropped v2's graph_grade_digest and graph_decision with the offline graph
@@ -1021,8 +1015,6 @@ class CandidateQualificationReport:
                 self.audit_witness.candidate_launch_digest, self.candidate_launch_digest,
                 resident=type(self.speed_witness) is ResidentSpeedWitness,
             )
-            or self.audit_witness.runtime_resource_policy_digest
-            != _candidate_runtime_resource_policy_digest(self.speed_witness)
             or self.decision is not expected
             or type(self.retryable) is not bool
             or self.retryable != (expected is QualificationDecision.NO_DECISION)
@@ -1253,6 +1245,10 @@ class CohortQualificationAttempt:
             raise QualificationRunnerError(
                 "resident attempt timing differs from retained evidence"
             )
+        # A replacement audits under its own runtime; reopen binds it to the worker-recovery record.
+        if self.worker_recovery is None and (report.audit_witness.runtime_resource_policy_digest
+                != report.speed_witness.candidate_runtime_resource_policy_digest):
+            raise QualificationRunnerError("candidate aggregate headline is inconsistent")
         before, after = self.teardown_before_t, self.teardown_after_t
         if (
             (before.executor_id, before.manager_instance_id, before.namespace_digest)
@@ -1854,15 +1850,15 @@ def reopen_qualification_stage_exit(
         actual_audit, _ = result_execution_authorities(expected, result.worker_recovery, result.clock_domains)
         if result.audit_witness is not None:
             audit = result.audit_witness
-            policy = expected.audit_policies[0]
+            # A replacement audits under its own sealed seed and runtime policy,
+            # which its worker-recovery record binds; uninterrupted runs are unchanged.
             if (
                 (speed_grade is not QualificationDecision.PASS and not observation)
                 or type(audit) is not AuditWitness
-                or audit.policy != policy
+                or audit.policy != actual_audit.audit_policy
                 or audit.selected_delta_digest != result.selected_delta_digest
                 or audit.candidate_launch_digest != actual_audit.launch.digest
-                or audit.runtime_resource_policy_digest
-                != expected.expected_runtime_resource_policy_digest
+                or audit.runtime_resource_policy_digest != actual_audit.runtime_resource_policy_digest
             ):
                 raise QualificationRunnerError(
                     "audit stage exit does not independently regrade"
@@ -1940,11 +1936,10 @@ def reopen_causal_qualification(
             expected_manifest=expected.calibration_manifest,
             expected_context=expected.calibration_context,
         )
-        for report, authority, prepared, audit_policy in zip(
+        for report, authority, prepared in zip(
             attempt.reports,
             expected.candidates,
             expected.prepared.candidates,
-            expected.audit_policies,
             strict=True,
         ):
             raw = report.raw_quality_binding
@@ -1988,8 +1983,9 @@ def reopen_causal_qualification(
             )
             audit_witness = report.audit_witness
             audit_grade, audit_detail = audit_witness.regrade()
+            # A replacement audits under its own sealed seed and runtime policy.
             if (
-                audit_witness.policy != (corrected_audit.policy if corrected_audit else audit_policy)
+                audit_witness.policy != (corrected_audit.policy if corrected_audit else actual_audit.audit_policy)
                 or (corrected_audit is not None and audit_witness != corrected_audit)
                 or audit_witness.selected_delta_digest
                 != authority.selected_delta_digest
@@ -1997,7 +1993,8 @@ def reopen_causal_qualification(
                 != (corrected_audit.candidate_launch_digest if corrected_audit else
                     actual_audit.launch.digest)
                 or audit_witness.runtime_resource_policy_digest
-                != expected.expected_runtime_resource_policy_digest
+                != (expected.expected_runtime_resource_policy_digest if corrected_audit
+                    else actual_audit.runtime_resource_policy_digest)
                 or audit_witness.decision is not audit_grade
                 or audit_witness.detail != audit_detail
                 or audit_witness.digest != report.audit_evidence_digest

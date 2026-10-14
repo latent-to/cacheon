@@ -8,10 +8,11 @@ worker authority; a new worker is not permission to repeat completed work.
 from __future__ import annotations
 
 import copy
+import fcntl
 import os
 
 from cacheon.chain.remote_worker_spool import (
-    artifact_for_role, atomic_bytes, atomic_json, authenticated_wire_request,
+    append_event, artifact_for_role, atomic_bytes, atomic_json, authenticated_wire_request,
     file_sha256, load_json, require_digest, spool_canonical_json, fail,
 )
 from cacheon.chain.remote_worker_registration import (
@@ -30,12 +31,13 @@ def _work_key(body):
     })
 
 
-def retain_authority(transport):
-    """Keep the original verification authority before publishing paid work."""
+def retain_authority(transport, manifest):
+    """Keep an epoch's worker and arena authority so its results import after replacement."""
     root = transport.spool_root / "checkpoints" / "authorities" / transport.registration["worker_epoch"]
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     for name, data in (("registration.json", spool_canonical_json(transport.registration)),
-                       ("credential.secret", transport.credential_path.read_bytes())):
+                       ("credential.secret", transport.credential_path.read_bytes()),
+                       ("service.json", spool_canonical_json(manifest.to_dict()))):
         path = root / name
         if path.exists():
             if path.read_bytes() != data:
@@ -111,13 +113,17 @@ def pull_checkpoint(registration, site, job, request, spool_root, *, identity, c
 
 def checkpoint_for_request(transport, body):
     """Find this cohort's progress across worker commissioning generations."""
+    from cacheon.chain.remote_worker_request_plan import _LOCK_NAME
     from cacheon.chain.ssh_worker_transport import DurableSpoolAuthenticatedWorkerTransport
 
     if type(transport) is not DurableSpoolAuthenticatedWorkerTransport:
         return None
     path = transport.spool_root / "checkpoints" / "index" / (_work_key(body) + ".json")
     if not path.exists():
-        retained = _previous_work_checkpoint(transport, body)
+        # The relay archives carriers under this lock; a move mid-scan failed the claim.
+        with (transport.spool_root / "outbox" / _LOCK_NAME).open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            retained = _previous_work_checkpoint(transport, body)
         if retained is None:
             return None
         atomic_json(path, retained, mode=0o400)
@@ -125,6 +131,8 @@ def checkpoint_for_request(transport, body):
     if ready["worker_epoch"] == transport.registration["worker_epoch"]:
         return None
     digest = require_digest(ready["sha256"], "retained checkpoint digest")
+    if (transport.spool_root / "checkpoints" / "retired" / (digest + ".json")).exists():
+        return None  # A replacement refused it as other work; the cohort restarts fresh.
     if file_sha256(transport.spool_root / "checkpoints" / (digest + ".json.gz")) != digest:
         fail("CPU-held checkpoint changed before replacement dispatch")
     return digest
@@ -184,6 +192,41 @@ def request_body(dispatcher, claim, retained_body):
     return body
 
 
+def retire_refused_checkpoint(dispatcher, recovery, plan, product):
+    """Retire a checkpoint its replacement refused as other work and requeue the cohort fresh.
+
+    The worker refuses before execution. The saved bytes and index stay; this
+    record keeps later requests from carrying them, so the cohort restarts under
+    the live commission with no decision and no consumed attempt.
+    """
+    from cacheon.chain.execution_disposition import (
+        WORKER_INFRASTRUCTURE_REQUEUE_FAILURE, ExecutionDisposition, ExecutionOutcome)
+    from cacheon.chain.recoverable_qualification_dispatcher import RecoverableQualificationRequeue
+    from cacheon.chain.remote_qualification_hold import RemoteQualificationHoldProduct, RemoteQualificationHoldReason
+
+    code = RemoteQualificationHoldReason.CHECKPOINT_COMPUTATION_CHANGED
+    digest = plan.remote_request.body.get("checkpoint_digest")
+    if type(product) is not RemoteQualificationHoldProduct or product.reason is not code or digest is None:
+        return None
+    spool = dispatcher.transport.spool_root
+    record = spool / "checkpoints" / "retired" / (digest + ".json")
+    if not record.exists():  # Written before the release, so a restart repeats only the release.
+        record.parent.mkdir(mode=0o700, exist_ok=True)
+        atomic_json(record, {"checkpoint_sha256": digest, "request_id": plan.request_id,
+                             "worker_epoch": plan.worker_epoch, "failure_type": product.failure_type,
+                             "failure_message": product.failure_message}, mode=0o400)
+        append_event(spool, "checkpoint_retired", request_id=plan.request_id, checkpoint_sha256=digest)
+    recovery = dispatcher._renew_before_transition(recovery)
+    store, point, current = dispatcher._current_recovery(recovery.recovery_id)
+    try:
+        store.release_worker_infrastructure_recovery(current, failure_code=code.value, current_block=point[0])
+    finally:
+        store.close()
+    return RecoverableQualificationRequeue(recovery.recovery_id, plan.request_id, ExecutionOutcome(
+        ExecutionDisposition.REQUEUE, decision="NO_DECISION",
+        failure_code=WORKER_INFRASTRUCTURE_REQUEUE_FAILURE, reason=code.value))
+
+
 def install_checkpoint(runtime, outer, request_dir, wire):
     """Install only the checkpoint explicitly sealed into the replacement request."""
     from cacheon.eval.qualification_worker_checkpoint import read_snapshot
@@ -214,14 +257,18 @@ def install_checkpoint(runtime, outer, request_dir, wire):
 
 def recover_replaced_worker(dispatcher):
     """Import an old completed product or retire its lease before replacement."""
+    from cacheon.arena_service import ArenaService
     from cacheon.chain.evaluation_coordinator import WorkerReadiness
     from cacheon.chain.execution_disposition import AUTHORITY_CHANGED_HOLD_REASON
     from cacheon.chain.evaluation_recovery import RecoveryPhase
+    from cacheon.chain.mainnet_screen_dispatcher import RemoteOnlyArenaProvider, _manifest_from_dict
     from cacheon.chain.ssh_worker_transport import DurableSpoolAuthenticatedWorkerTransport
 
     transport = dispatcher.transport
     if type(transport) is not DurableSpoolAuthenticatedWorkerTransport:
         return None
+    # Every dispatched epoch keeps its arena service before it can publish paid work.
+    retain_authority(transport, dispatcher.coordinator.service.manifest)
     store, point = dispatcher._open_store()
     try:
         recovery = store.pending_qualification_recovery(owner=dispatcher.coordinator.owner)
@@ -252,17 +299,21 @@ def recover_replaced_worker(dispatcher):
             return None
     finally:
         store.close()
-    # No network or evaluator call is needed: the normal dispatcher consumes
-    # the complete local result with the exact authority that authenticated it.
+    # No network or evaluator call is needed: the normal dispatcher consumes the
+    # complete local result under the worker and arena service that produced it.
+    # Recommissioning changes the service, which can neither re-seal nor commit it.
     root = transport.spool_root / "checkpoints" / "authorities" / plan.worker_epoch
+    manifest = _manifest_from_dict(load_json(root / "service.json"))
     retained = copy.copy(transport)
     retained.registration = verify_registration(load_json(root / "registration.json"))
     retained.identity = registration_transport_identity(retained.registration)
-    retained.credential = registration_credential(retained.registration, root / "credential.secret")
+    retained.credential_path = root / "credential.secret"
+    retained.credential = registration_credential(retained.registration, retained.credential_path)
     original = copy.copy(dispatcher)
     original.transport = retained
     original.transport_identity = retained.identity
     original.credential = retained.credential
     original.coordinator = copy.copy(dispatcher.coordinator)
+    original.coordinator.service = ArenaService(manifest, RemoteOnlyArenaProvider(manifest.provider_digest))
     original.coordinator.readiness = WorkerReadiness(**retained.registration["worker_readiness"])
     return original.dispatch_once()

@@ -58,6 +58,7 @@ from cacheon.chain.remote_worker_request_plan import (
     QualificationRequestPlan,
 )
 from cacheon.chain.publication import reopen_worker_bundle
+from cacheon.chain import remote_worker_checkpoints as checkpoints
 from cacheon.chain.qualification_wait import await_response, _PreResidentRefusalObserved
 from cacheon.stack_identity import require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -603,14 +604,13 @@ class RecoverableQualificationDispatcher:
     def _expected_request(
         self, claim: ClaimedQualificationEvaluation, retained_body=None,
     ) -> RemoteEvaluationRequest:
-        from cacheon.chain.remote_worker_checkpoints import request_body
         return seal_remote_request(
             claim.lease,
             self.coordinator.readiness,
             self.coordinator.service.manifest.service_id,
             self.transport_identity,
             self.credential,
-            request_body(self, claim, retained_body),
+            checkpoints.request_body(self, claim, retained_body),
         )
 
     def _reopen_plan(
@@ -778,9 +778,7 @@ class RecoverableQualificationDispatcher:
         """Run one FIFO item, retaining its completed stages across worker replacement."""
 
         self._validate_live_authority()
-        from cacheon.chain.remote_worker_checkpoints import recover_replaced_worker
-
-        completed = recover_replaced_worker(self)
+        completed = checkpoints.recover_replaced_worker(self)
         if completed is not None:
             return completed
         selected = self._claim_or_reopen()
@@ -866,6 +864,8 @@ class RecoverableQualificationDispatcher:
                 if recovery.phase is RecoveryPhase.REQUEST_READY:
                     recovery, response = await_response(self, recovery, plan)
                     product = self._product(plan, response)
+                    if (requeue := checkpoints.retire_refused_checkpoint(self, recovery, plan, product)) is not None:
+                        return requeue
                     recovery = self._record_result(recovery)
                 elif recovery.phase in {
                     RecoveryPhase.RESULT_READY,

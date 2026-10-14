@@ -274,7 +274,11 @@ def grade(
         if (cand.arm, inc.arm) != ("candidate", "incumbent") or (cand.window, cand.load) != (inc.window, inc.load):
             raise ServiceEvidenceError("a window pairs one candidate and one incumbent read at one load")
         if elapsed_time:
-            identity = cand.lane, inc.lane, cand.window
+            # A session resumed on the same lanes numbers its windows from 1 again;
+            # the reads' own request stamps tell a new read from a repeated one.
+            identity = (cand.lane, inc.lane, cand.window,
+                        min(row.request_start_ns for row in cand.records),
+                        min(row.request_start_ns for row in inc.records))
             if identity in seen:
                 raise ServiceEvidenceError("elapsed-work windows contain a duplicate paired read")
             seen.add(identity)

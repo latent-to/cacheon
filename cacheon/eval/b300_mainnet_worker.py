@@ -74,6 +74,7 @@ def _resident_evidence_hold(
     authority_digest: str,
     source_digest: str,
     failure: BaseException | None = None,
+    reason: RemoteQualificationHoldReason = RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE,
 ) -> RemoteQualificationWorkerHold:
     failure_type = ""
     failure_message = ""
@@ -95,7 +96,7 @@ def _resident_evidence_hold(
         if len(failure_message) > 2_000:
             failure_message = failure_message[:500] + " ... " + failure_message[-1_495:]
     return RemoteQualificationWorkerHold(
-        RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE,
+        reason,
         diagnostic_digest or canonical_digest(
             "cacheon.eval.b300-resident-qualification-hold.v1",
             {"authority": authority_digest, "request": request_digest,
@@ -301,9 +302,20 @@ class B300MainnetWorker:
         work = self.service.plan_qualification(candidates, state=None)
         self._validate_work(work, candidates)
         if request_digest is not None:
-            from cacheon.eval.qualification_worker_checkpoint import prepare_work
+            from cacheon.eval.qualification_worker_checkpoint import CheckpointComputationChanged, prepare_work
 
-            work = prepare_work(work, continuation_store, request_digest)
+            try:
+                work = prepare_work(work, continuation_store, request_digest)
+            except QualificationContinuationError as exc:
+                # Nothing has executed. Changed computation lets the CPU retire the
+                # checkpoint and evaluate the cohort fresh; damage holds it.
+                _LOG.exception("request %s refused its checkpoint before execution", request_digest)
+                return _resident_evidence_hold(
+                    request_digest, work.factory.manifest.authority_digest,
+                    work.factory.manifest.source_digest, exc,
+                    RemoteQualificationHoldReason.CHECKPOINT_COMPUTATION_CHANGED
+                    if isinstance(exc, CheckpointComputationChanged)
+                    else RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE)
         supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
         if request_digest is not None:
             try:
