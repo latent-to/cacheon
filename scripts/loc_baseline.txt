@@ -1,15 +1,15 @@
 # Reviewed tracked-line ceilings per top-level directory.
 # Raising a ceiling is a reviewed decision made in the same diff
 # that needs it; lowering one locks in a deletion. check_loc_ratchet.py
-# Spot recovery: +109 orientation reuse; +809 worker replacement runtime lines.
-# Docs +64; fixture updates +3; recovery +67 and nightly cache +92 test lines.
+# Recommissioning recovery: +119 runtime, +85 regression and +7 documentation lines.
+# Reuses saved work across service identities and reconstructs original tree bytes.
 (root) 1158
 .github 345
 bundles 2398
-cacheon 91145
+cacheon 91264
 cacheon_kernels 936
 dashboard 4270
-docs 12558
+docs 12565
 examples 387
 scripts 2117
-tests 66206
+tests 66291

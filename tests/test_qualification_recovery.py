@@ -97,6 +97,48 @@ def test_replacement_reference_uses_its_actual_launch_and_frozen_math(tmp_path, 
         checkpoint.result_execution_authorities(value, reference, ("new-boot", "new-boot", "new-boot"))
 
 
+@pytest.mark.parametrize("profile", ["ordinary", "glm"])
+def test_recommissioned_arena_reconstructs_the_original_measured_work(tmp_path, monkeypatch, profile):
+    from types import SimpleNamespace
+    import tests.test_b300_registered_qualification as fixtures
+    import tests.test_marginal_runtime as runtime_fixtures
+    from cacheon.eval import qualification_worker_checkpoint as checkpoint
+    from cacheon.eval.qualification_continuation import QualificationContinuationStore
+    from tests.test_device_state import _policy
+
+    source = fixtures.FUSED if profile == "glm" else None
+    first = fixtures._harness(tmp_path / "original", source)
+    secret = b"recommissioned-arena-regression-seed"
+    original = first.factory.plan_builder(first.cohort, secret)
+    original_digest = runtime_fixtures._digest
+    with monkeypatch.context() as changed:
+        changed.setattr(runtime_fixtures, "_digest", lambda value:
+            original_digest("new-worker-arena") if value == "arena" else original_digest(value))
+        second = fixtures._harness(tmp_path / "replacement", source)
+        replacement = second.factory.plan_builder(second.cohort, secret)
+    assert replacement.prepared.source.digest != original.prepared.source.digest
+    scope = QualificationContinuationStore(tmp_path / "checkpoint").scope(
+        request_digest=_d("request"), authority_digest=runner.qualification_authority_digest(original),
+        source_digest=original.prepared.source.digest)
+    executor = SimpleNamespace(device_policy=_policy())
+    monkeypatch.setattr(checkpoint, "_clock_domain", lambda: "original-boot")
+    origin = checkpoint.capture_origin(original, scope, executor, executor)
+    restored = checkpoint.restore_origin(replacement, origin)
+    assert runner.qualification_authority_digest(restored) == runner.qualification_authority_digest(original)
+    assert restored.prepared.source == original.prepared.source
+    assert restored.pristine_stack == original.pristine_stack
+    assert restored.model_mount.model_root == replacement.model_mount.model_root
+    assert restored.prepared.candidates[0].binding.tree.root != original.prepared.candidates[0].binding.tree.root
+    assert checkpoint.restore_origin(replacement, origin).prepared.source == restored.prepared.source
+    actual = replacement.candidates[0].profile.reference
+    assert checkpoint.reference_execution_matches(original.candidates[0].profile.reference, actual,
+        SimpleNamespace(reference_manifest_digest=actual.digest, launch_digest=actual.pristine_launch_digest))
+    changed = json.loads(json.dumps(origin))
+    changed["arms"][0]["launch"]["engine_config_digest"] = _d("different-engine-settings")
+    with pytest.raises(QualificationContinuationError, match="executable envelope"):
+        checkpoint.restore_origin(replacement, changed)
+
+
 @pytest.mark.parametrize("failure", ["reference", "missing_rank", "empty", "under_covered"])
 def test_audit_infrastructure_does_not_publish_miner_failure(monkeypatch, failure):
     harness, baseline, _reference, exits = _resident_case(monkeypatch)

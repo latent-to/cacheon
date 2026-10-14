@@ -68,7 +68,8 @@ def _device_contract(policy):
     return row
 
 
-def _contract(value):
+def _contract_fields(value, *, portable=False):
+    """Separate measured work from the commissioning identities that wrap it."""
     from cacheon.eval.qualification_runner import _encode_record
     from cacheon.eval.scoring import marginal_workload_digest
 
@@ -79,14 +80,21 @@ def _contract(value):
             profile.pop(field)
         for field in ("pristine_launch_digest", "logical_hardware_digest"):
             profile["reference"].pop(field)
+        if portable:
+            profile.pop("runtime_resource_policy_digest")
+            for field in ("arena_digest", "pristine_stack_digest", "pristine_tree_digest",
+                          "controller_distribution_digest"):
+                profile["reference"].pop(field)
     commitment = _encode_record(value.commitment)
     commitment.pop("reference_manifest_digest")
+    if portable:
+        commitment.pop("source_plan_digest")
     threshold = value.calibration_threshold_policy.to_dict()
     threshold.pop("context")
     speed_policy = value.resident_speed_plan.policy.to_dict()
     speed_policy.pop("calibration_digest")
     speed_policy.pop("calibration_context_digest")
-    return canonical_digest(SCHEMA + ".work", {
+    result = {
         "source": value.prepared.source.digest,
         "candidates": candidates, "commitment": commitment,
         "model": value.model_mount.digest,
@@ -95,7 +103,22 @@ def _contract(value):
         "reference": [value.pristine_stack.digest, value.reference_engine_config.digest],
         "workload": marginal_workload_digest(value.resident_speed_plan.baseline.session_plan),
         "speed_policy": speed_policy,
-    })
+    }
+    if portable:
+        def stack(manifest):
+            return {key: item for key, item in manifest.to_dict().items() if key != "arena_digest"}
+        source = value.prepared.source
+        result.update(
+            source={"incumbent": stack(source.incumbent), "candidate": stack(source.candidate),
+                    "transition": source.transition.to_dict()},
+            model={key: getattr(value.model_mount, key) for key in
+                   ("model_revision_digest", "model_manifest_digest", "model_content_digest")},
+            reference=[stack(value.pristine_stack), value.reference_engine_config.digest])
+    return result
+
+
+def _contract(value):
+    return canonical_digest(SCHEMA + ".work", _contract_fields(value))
 
 
 def capture_origin(value, continuation, baseline_executor, candidate_executor):
@@ -135,9 +158,34 @@ def capture_origin(value, continuation, baseline_executor, candidate_executor):
 
 
 def _restore_binding(template, row):
+    """Reproduce the original tree while retaining the replacement's local paths."""
+    from cacheon.engine_tree import reopen_materialized_engine_tree, _write_materialized_tree
+
     codec = _codec()
     launch = EngineLaunchSpec.from_dict(row["launch"])
-    binding = replace(template,
+    tree = reopen_materialized_engine_tree(template.materialized_tree_root,
+        expected_tree_digest=template.native_build_spec.tree_digest)
+    if tree.tree_digest != launch.tree_digest:
+        # Recommissioning changes the arena and therefore the stack metadata.
+        # The materializer must reproduce the old tree from the unchanged code
+        # bytes; the old digest is checked, never assigned to different bytes.
+        destination = tree.root.parent / ("checkpoint-" + launch.tree_digest)
+        if destination.exists():
+            tree = reopen_materialized_engine_tree(destination, expected_tree_digest=launch.tree_digest)
+        else:
+            metadata_path = "metadata/cacheon_engine_tree.json"
+            metadata = json.loads((tree.root / metadata_path).read_bytes())
+            tree = _write_materialized_tree(destination, stack_digest=launch.stack_digest,
+                files={item.path: (tree.root / item.path).read_bytes()
+                       for item in tree.files if item.path != metadata_path},
+                runtime_manifest=tree.runtime_manifest, contributions=metadata["contributions"])
+            if tree.tree_digest != launch.tree_digest:
+                raise QualificationContinuationError("worker checkpoint executable tree changed")
+    native = replace(template.native_build_spec, tree_digest=tree.tree_digest)
+    if native.digest != launch.native_build_spec_digest:
+        raise QualificationContinuationError("worker checkpoint native build environment changed")
+    binding = replace(template, materialized_tree_root=tree.root, native_build_spec=native,
+                      controller_distribution_digest=launch.controller_distribution_digest,
                       physical_hardware=codec.decode(row["physical"]),
                       runtime_preflight_receipt=codec.decode(row["preflight"]))
     return launch, binding
@@ -151,9 +199,20 @@ def restore_origin(value, origin):
     from cacheon.eval.resident_audit_authority import ResidentAuditExecutionAuthority
     from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
     from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
+    from cacheon.engine_tree import reopen_materialized_engine_tree
+    from cacheon.stack_manifest import EvaluationStackManifest
+    from cacheon.stack_plan import StackArmIdentity
 
-    if origin["contract"] != _contract(value) or origin["source"] != value.prepared.source.digest:
-        raise QualificationContinuationError("worker checkpoint changed the sealed evaluation")
+    def stack(template, launch):
+        original = EvaluationStackManifest.from_dict({**template.to_dict(), "arena_digest": launch.arena_digest})
+        if original.digest != launch.stack_digest:
+            raise QualificationContinuationError("worker checkpoint incumbent or candidate changed")
+        return original
+
+    def materialized(template, binding):
+        return replace(template, launch_binding=binding,
+            tree=reopen_materialized_engine_tree(binding.materialized_tree_root,
+                expected_tree_digest=binding.native_build_spec.tree_digest))
 
     def session(template, launch, binding):
         return replace(template, launch_digest=launch.digest,
@@ -167,6 +226,10 @@ def restore_origin(value, origin):
         old, new = launch.to_dict(), template.launch.to_dict()
         old["hardware"].pop("device_policy_digest")
         new["hardware"].pop("device_policy_digest")
+        for field in ("arena_digest", "stack_digest", "tree_digest", "native_build_spec_digest",
+                      "resource_policy_digest", "controller_distribution_digest"):
+            old.pop(field)
+            new.pop(field)
         if old != new:
             raise QualificationContinuationError("worker checkpoint changed its executable envelope")
         arms.append(replace(template, launch=launch, binding=binding,
@@ -177,13 +240,19 @@ def restore_origin(value, origin):
     baseline, candidate = arms
     base_launch, base_binding = _restore_binding(
         value.prepared.incumbent_binding.launch_binding, origin["baseline"])
+    source = replace(value.prepared.source,
+        incumbent=stack(value.prepared.source.incumbent, base_launch),
+        candidate=stack(value.prepared.source.candidate, candidate.launch),
+        baseline_before=StackArmIdentity(base_launch.stack_digest, base_launch.tree_digest),
+        baseline_after=StackArmIdentity(base_launch.stack_digest, base_launch.tree_digest),
+        challenger=StackArmIdentity(candidate.launch.stack_digest, candidate.launch.tree_digest))
     prepared_candidate, = value.prepared.candidates
-    prepared = replace(value.prepared,
+    prepared = replace(value.prepared, source=source,
         baseline_launch=base_launch,
         baseline_session_plan=session(value.prepared.baseline_session_plan, base_launch, base_binding),
-        incumbent_binding=replace(value.prepared.incumbent_binding, launch_binding=base_binding),
-        candidates=(replace(prepared_candidate, launch=candidate.launch,
-                    binding=replace(prepared_candidate.binding, launch_binding=candidate.binding),
+        incumbent_binding=materialized(value.prepared.incumbent_binding, base_binding),
+        candidates=(replace(prepared_candidate, arm=source, launch=candidate.launch,
+                    binding=materialized(prepared_candidate.binding, candidate.binding),
                     session_plan=candidate.session_plan),))
     pristine_launch, pristine_binding = _restore_binding(value.pristine_binding, origin["pristine"])
     audit = value.resident_audit_plan
@@ -196,6 +265,7 @@ def restore_origin(value, origin):
         if published != calibration_ref:
             raise QualificationContinuationError("worker checkpoint calibration bytes changed")
     restored = replace(value, prepared=prepared,
+        model_mount=replace(value.model_mount, arena_digest=base_launch.arena_digest),
         candidates=tuple(codec.decode(row) for row in origin["candidates"]),
         commitment=codec.decode(origin["commitment"]),
         selection_secret=(bytes.fromhex(origin["selection_secret"])
@@ -211,10 +281,14 @@ def restore_origin(value, origin):
             executor_namespace_digest=candidate.executor_namespace_digest,
             runtime_resource_policy_digest=candidate.runtime_resource_policy_digest,
             device_configuration_digest=candidate.device_configuration_digest),
+        pristine_stack=stack(value.pristine_stack, pristine_launch),
         pristine_launch=pristine_launch, pristine_binding=pristine_binding,
         reference_preflight=expected_runtime_preflight(pristine_launch,
                                                        pristine_binding.runtime_preflight_receipt),
         expected_device_policy_digest=base_launch.hardware.device_policy_digest)
+    if (_contract_fields(value, portable=True) != _contract_fields(restored, portable=True)
+            or _contract(restored) != origin["contract"] or restored.prepared.source.digest != origin["source"]):
+        raise QualificationContinuationError("worker checkpoint changed the sealed evaluation")
     if qualification_authority_digest(restored) != origin["authority"]:
         raise QualificationContinuationError("worker checkpoint original authority cannot be reconstructed")
     return restored
@@ -428,7 +502,10 @@ def reference_execution_matches(expected, actual, session):
     actual = expected if actual is None else actual
     if type(actual) is not ReferenceManifest:
         return False
-    movable = {"pristine_launch_digest", "logical_hardware_digest"}
+    # result_execution_authorities has already reconstructed each exact tree
+    # and launch. These are commissioning identities, not different T math.
+    movable = {"pristine_launch_digest", "logical_hardware_digest", "arena_digest",
+               "pristine_stack_digest", "pristine_tree_digest", "controller_distribution_digest"}
     return (all(getattr(expected, name) == getattr(actual, name)
                 for name in expected.__dataclass_fields__ if not name.startswith("_") and name not in movable)
             and session.reference_manifest_digest == actual.digest

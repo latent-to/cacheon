@@ -252,7 +252,13 @@ When a new commissioned worker replaces an old epoch, the recoverable dispatcher
 first imports any complete result already on the CPU using its original authority.
 Otherwise it retires the old lease, retains its carrier, and seals a new request
 with the CPU-held checkpoint digest. A late old-worker result cannot commit under
-the replacement lease. Completed stages retain their original work and hardware
+the replacement lease. Checkpoint lookup follows the submitted cohort and lane
+across commissioning generations. The worker then compares the executable code,
+model, workload and grading rules, and reconstructs the original stack metadata
+through the materializer. Changed commissioning identities do not discard saved
+work; changed computation refuses recovery before GPU execution. Existing checkpoint
+indexes are reopened through their original authenticated requests without replacing
+the saved bytes. Completed stages retain their original work and hardware
 receipts; replacement driver or power settings do not invalidate that evidence.
 Missing stages use the replacement's commissioned hardware. A first-orientation-only
 snapshot restarts speed when its boot, plan or device contract changes. Interrupted
@@ -267,7 +273,8 @@ selection secrets.
 
 Pristine T's request, reference manifest and execution receipt name the worker that
 actually executes it. Recovery preserves the original selection and calibration
-for grading and verifies that the reference differs only in its hardware binding.
+for grading and verifies the reference math after reconstructing the exact
+original and replacement commissioning identities.
 
 The registered pod service exposes `checkpoint-status --request-id ID` with its
 ordinary pod-path arguments. `cpu-serve` polls it alongside result status; operators

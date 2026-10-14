@@ -22,9 +22,10 @@ from cacheon.stack_identity import canonical_digest
 
 
 def _work_key(body):
-    return canonical_digest("cacheon.qualification.checkpoint-work.v1", {
-        **{name: body[name] for name in ("service_digest", "qualification_policy_digest",
-            "screen_lane", "incumbent_stack_digest", "incumbent_tree_digest")},
+    # A new commissioning changes service/policy and their derived stack IDs.
+    # The worker compares the actual executable and scoring contract on restore.
+    return canonical_digest("cacheon.qualification.checkpoint-work.v2", {
+        "screen_lane": body["screen_lane"],
         "candidates": [row["candidate_digest"] for row in body["candidates"]],
     })
 
@@ -109,14 +110,17 @@ def pull_checkpoint(registration, site, job, request, spool_root, *, identity, c
 
 
 def checkpoint_for_request(transport, body):
-    """Select only progress for this exact candidate, incumbent and policy."""
+    """Find this cohort's progress across worker commissioning generations."""
     from cacheon.chain.ssh_worker_transport import DurableSpoolAuthenticatedWorkerTransport
 
     if type(transport) is not DurableSpoolAuthenticatedWorkerTransport:
         return None
     path = transport.spool_root / "checkpoints" / "index" / (_work_key(body) + ".json")
     if not path.exists():
-        return None
+        retained = _previous_work_checkpoint(transport, body)
+        if retained is None:
+            return None
+        atomic_json(path, retained, mode=0o400)
     ready = load_json(path)
     if ready["worker_epoch"] == transport.registration["worker_epoch"]:
         return None
@@ -124,6 +128,44 @@ def checkpoint_for_request(transport, body):
     if file_sha256(transport.spool_root / "checkpoints" / (digest + ".json.gz")) != digest:
         fail("CPU-held checkpoint changed before replacement dispatch")
     return digest
+
+
+def _previous_work_checkpoint(transport, body):
+    """Reindex retained v1 progress using its original authenticated request.
+
+    The October 14 replacement changed commissioning identities and missed a
+    completed speed stage. Keep those expensive bytes and the old index intact.
+    """
+    from cacheon.eval.qualification_worker_checkpoint import read_snapshot
+    from cacheon.chain.remote_evaluation_dispatcher import RemoteEvaluationRequest
+
+    spool = transport.spool_root
+    matches = []
+    for pointer in (spool / "checkpoints" / "index").glob("*.json"):
+        ready = load_json(pointer)
+        if ready["worker_epoch"] == transport.registration["worker_epoch"]:
+            continue
+        jobs = [job for area in ("outbox", "retired", "outbox-archive")
+                for job in (spool / area).glob("*-" + ready["request_id"])]
+        if not jobs:
+            continue
+        if len(jobs) != 1:
+            fail("retained checkpoint has ambiguous request carriers")
+        job, = jobs
+        root = spool / "checkpoints" / "authorities" / ready["worker_epoch"]
+        registration = verify_registration(load_json(root / "registration.json"))
+        wire = RemoteEvaluationRequest.from_dict(authenticated_wire_request(load_json(job / "request.json"), job,
+            identity=registration_transport_identity(registration),
+            credential=registration_credential(registration, root / "credential.secret")))
+        if _work_key(wire.body) != _work_key(body):
+            continue
+        snapshot = read_snapshot(spool / "checkpoints" / (ready["sha256"] + ".json.gz"), ready["sha256"])
+        if snapshot["origin"]["request"] != ready["request_digest"] or wire.digest != ready["request_digest"]:
+            fail("retained checkpoint differs from its original request")
+        stages = snapshot["stages"]
+        progress = tuple(name in stages for name in ("quality", "audit", "speed", "speed_first"))
+        matches.append((progress, load_json(job / "request.json")["queued_at_unix_ns"], ready))
+    return max(matches, key=lambda row: row[:2])[2] if matches else None
 
 
 def request_body(dispatcher, claim, retained_body):

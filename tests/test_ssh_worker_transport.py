@@ -12,6 +12,49 @@ from cacheon.chain import ssh_worker_transport as transport
 from cacheon.chain import remote_worker_checkpoints as checkpoints
 
 
+@pytest.mark.parametrize("profile", ["alpha", "beta"])
+def test_checkpoint_lookup_reuses_authenticated_work_after_recommissioning(tmp_path, profile):
+    import gzip
+    import hashlib
+    from tests.test_remote_worker_request_plan import _authority, _plan, _materialize, _publish
+    from cacheon.eval.qualification_worker_checkpoint import SCHEMA
+    from cacheon.stack_identity import canonical_digest, canonical_json_bytes
+
+    authority = _authority(tmp_path, profile=profile)
+    worker = authority.transport()
+    checkpoints.retain_authority(worker)
+    plan = _plan(authority)
+    _materialize(authority, plan)
+    _publish(authority, plan)
+    body = authority.request.body
+    legacy_key = canonical_digest("cacheon.qualification.checkpoint-work.v1", {
+        **{key: body[key] for key in ("service_digest", "qualification_policy_digest", "screen_lane",
+                                    "incumbent_stack_digest", "incumbent_tree_digest")},
+        "candidates": [row["candidate_digest"] for row in body["candidates"]]})
+    data = gzip.compress(canonical_json_bytes({"schema": SCHEMA,
+        "origin": {"request": authority.request.digest}, "stages": {"speed": {}}}), mtime=0)
+    digest = hashlib.sha256(data).hexdigest()
+    root = worker.spool_root / "checkpoints"
+    (root / "index").mkdir()
+    (root / (digest + ".json.gz")).write_bytes(data)
+    ready = {"sha256": digest, "size": len(data), "request_id": plan.request_id,
+             "request_digest": authority.request.digest, "worker_epoch": worker.registration["worker_epoch"]}
+    old_index = root / "index" / (legacy_key + ".json")
+    old_index.write_text(json.dumps(ready))
+    original = old_index.read_bytes()
+    replacement_body = {**body, **{key: authority.fixtures._h("replacement-" + key)
+        for key in ("service_digest", "qualification_policy_digest", "incumbent_stack_digest", "incumbent_tree_digest")}}
+    worker.registration = {**worker.registration, "worker_epoch": "e" * 32}
+    assert checkpoints.checkpoint_for_request(worker, replacement_body) == digest
+    assert old_index.read_bytes() == original
+    assert json.loads((root / "index" / (checkpoints._work_key(replacement_body) + ".json")).read_bytes()) == ready
+    other = {**replacement_body, "candidates": [{"candidate_digest": authority.fixtures._h("other-candidate")}]}
+    assert checkpoints.checkpoint_for_request(worker, other) is None
+    (root / (digest + ".json.gz")).write_bytes(data + b"changed")
+    with pytest.raises(transport.RemoteWorkerError, match="CPU-held checkpoint changed"):
+        checkpoints.checkpoint_for_request(worker, replacement_body)
+
+
 @pytest.mark.parametrize("stage", ["qualification", "screen"])
 def test_result_deadline_distinguishes_qualification_wait_from_screen_failure(tmp_path, monkeypatch, stage):
     from tests.test_remote_worker_request_plan import _authority
