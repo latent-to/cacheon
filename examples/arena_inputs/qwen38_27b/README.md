@@ -6,10 +6,10 @@ Use `Qwen/Qwen3.8-27B-FP8` at revision
 tokens. Qualification compares two independent TP1 engines on separate GPUs
 and swaps their physical lanes. A single GPU is sufficient for development.
 
-The arena selector is `qwen38-27b-rtxpro6000-fp8-tp1`. Its planned upload fee
-is 0.2 TAO (200,000,000 RAO), with a 10% allocation of arena rewards. These
-inputs do not enable public intake; check the published arena availability
-before paying for a submission.
+The arena selector is `qwen38-27b-rtxpro6000-fp8-tp1`. The upload fee
+is 0.2 TAO (200,000,000 RAO), with a 10% allocation of arena rewards.
+Check the [live arena dashboard](https://dash.cacheon.ai/qwen3.8-27b)
+for availability before paying for a submission.
 
 Build the development image from the commissioned runtime source:
 
